@@ -59,9 +59,40 @@ public interface BuildWorld extends AutoCloseable {
                 WorldTerrainTextureSource.BatchResult.unsupported(tiles));
     }
 
-    /** Optional actual-source streaming capability; custom providers perform no fallback IO. */
+    /** Optional single-root static water preview joined to actual prepared terrain tiles. */
+    default java.util.Optional<WorldWaterPreview> waterPreview() {
+        return java.util.Optional.empty();
+    }
+
+    /** Prepares the native tables water qualification reads; true only when both are ready. */
+    default CompletableFuture<Boolean> prepareWaterTables(Cancellation token) {
+        return CompletableFuture.completedFuture(false);
+    }
+
+    /** Optional actual-source global scene capability; custom providers perform no fallback IO. */
+    default java.util.Optional<WorldGlobalScenes> globalScenes() {
+        return java.util.Optional.empty();
+    }
+
     default java.util.Optional<WorldTerrainStreaming> terrainStreaming() {
         return java.util.Optional.empty();
+    }
+
+    /** Optional recorded area music/ambience relationships; custom providers report none. */
+    default CompletableFuture<WorldAreaAudio.Plan> areaAudio(
+            long mapId,
+            WorldCurrentArea.Result area,
+            WorldAreaAudio.Variant variant,
+            Cancellation token) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Recorded area audio is unavailable"));
+    }
+
+    /** Optional bounded original audio bytes for a recorded sound-kit file. */
+    default CompletableFuture<WorldAreaAudio.AudioFile> audioFile(
+            long fileDataId, Cancellation token) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Recorded area audio is unavailable"));
     }
 
     CompletableFuture<Void> closeAsync();

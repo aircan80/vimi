@@ -112,7 +112,12 @@ public final class RacesUiTest {
                                                         List.of(
                                                                 new com.vibeminer.concepts.races
                                                                         .RaceMediaTypes.Variant(
-                                                                        1, 0, 1, 1, 1)),
+                                                                        1,
+                                                                        0,
+                                                                        1,
+                                                                        1,
+                                                                        1,
+                                                                        authoredDefinition())),
                                                         List.of(),
                                                         null));
                                     }
@@ -145,7 +150,12 @@ public final class RacesUiTest {
                                                         RaceTypes.State.PARTIAL,
                                                         new com.vibeminer.concepts.races
                                                                 .RaceMediaTypes.Variant(
-                                                                1, 0, 1, 1, 1),
+                                                                1,
+                                                                0,
+                                                                1,
+                                                                1,
+                                                                1,
+                                                                authoredDefinition()),
                                                         mesh,
                                                         java.util.Set.of(0),
                                                         List.of(
@@ -175,7 +185,9 @@ public final class RacesUiTest {
                                                                         329,
                                                                         "Authored joke",
                                                                         100,
-                                                                        200)),
+                                                                        200,
+                                                                        null)),
+                                                        List.of(),
                                                         List.of(
                                                                 "Authored voice metadata; no"
                                                                         + " recording."),
@@ -330,6 +342,27 @@ public final class RacesUiTest {
                                         return future;
                                     }
 
+                                    public CompletableFuture<
+                                                    com.vibeminer.concepts.races.RaceMediaTypes
+                                                            .Idle>
+                                            idle(long raceId, long modelId, Cancellation token) {
+                                        return CompletableFuture.completedFuture(
+                                                new com.vibeminer.concepts.races.RaceMediaTypes
+                                                        .Idle(
+                                                        RaceTypes.State.UNSUPPORTED,
+                                                        new com.vibeminer.concepts.races
+                                                                .RaceMediaTypes.Variant(
+                                                                1,
+                                                                0,
+                                                                1,
+                                                                1,
+                                                                1,
+                                                                authoredDefinition()),
+                                                        List.of("Authored bone-file refusal."),
+                                                        List.of("Authored Stand fact."),
+                                                        "Authored bone-file refusal."));
+                                    }
+
                                     public CompletableFuture<Void> closeAsync() {
                                         closes.incrementAndGet();
                                         return CompletableFuture.completedFuture(null);
@@ -414,6 +447,27 @@ public final class RacesUiTest {
                                                 labels(view).contains("Authored Diplomacy"),
                                                 "Readable partial racial card displayed");
                                         require(
+                                                labels(view)
+                                                                .contains(
+                                                                        "Model definition: HD ·"
+                                                                                + " ChrRaces #1"
+                                                                                + " HighResMaleDisplayID")
+                                                        && view.lookup("#race-model-variant")
+                                                                        instanceof
+                                                                        javafx.scene.control
+                                                                                        .ComboBox<?>
+                                                                                combo
+                                                        && combo.getValue()
+                                                                instanceof
+                                                                com.vibeminer.concepts.races
+                                                                                .RaceMediaTypes
+                                                                                .Variant
+                                                                        selectedModel
+                                                        && selectedModel.label().equals("Male · HD"),
+                                                "Source-stated definition and its field are"
+                                                        + " shown: "
+                                                        + labels(view));
+                                        require(
                                                 !view.lookupAll(".image-view").isEmpty()
                                                         || descendantsImage(view),
                                                 "Racial image rendered");
@@ -426,6 +480,21 @@ public final class RacesUiTest {
                                                                                     + " textured"
                                                                                     + " sample")),
                                                 "Async textured sample reaches the view: "
+                                                        + labels(view));
+                                        require(
+                                                labels(view)
+                                                                .contains(
+                                                                        "Idle animation"
+                                                                                + " unavailable:"
+                                                                                + " Authored"
+                                                                                + " bone-file"
+                                                                                + " refusal.")
+                                                        && labels(view)
+                                                                .contains("Authored Stand fact.")
+                                                        && !view.lookup("#model-idle-animation")
+                                                                .isVisible(),
+                                                "Race idle refusal replaces the toggle and its"
+                                                        + " facts reach the details: "
                                                         + labels(view));
                                         var imageSnapshot = scene.snapshot(null);
                                         var out =
@@ -973,7 +1042,8 @@ public final class RacesUiTest {
                         "Authored",
                         List.of(
                                 new com.vibeminer.concepts.races.RaceVoiceTypes.Clip(
-                                        1, 1, "Authored", 1, 1)),
+                                        1, 1, "Authored", 1, 1, null)),
+                        List.of(),
                         List.of(),
                         null);
         var panel = new RaceVoicePanel(handle, external::get);
@@ -1059,6 +1129,18 @@ public final class RacesUiTest {
                                                                                                     + " records."),
                                                                                 "Voice retirement"
                                                                                     + " explicit");
+                                                                        require(
+                                                                                labels(panel)
+                                                                                        .stream()
+                                                                                        .noneMatch(
+                                                                                                text ->
+                                                                                                        text
+                                                                                                                .startsWith(
+                                                                                                                        "Source:")),
+                                                                                "Retired voice"
+                                                                                    + " clears its"
+                                                                                    + " source"
+                                                                                    + " chain");
                                                                         panel.close();
                                                                         voiceRetirementChecks
                                                                                 .complete(null);
@@ -1090,6 +1172,7 @@ public final class RacesUiTest {
     private static void voiceLoadingFeedback() {
         var catalog = new CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Catalog>();
         var audio = new CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Audio>();
+        var decodes = new java.util.concurrent.atomic.AtomicInteger();
         BuildRaces handle =
                 new BuildRaces() {
                     public CompletableFuture<RaceTypes.Catalog> catalog(Cancellation token) {
@@ -1113,6 +1196,7 @@ public final class RacesUiTest {
                                     int sex,
                                     long entry,
                                     Cancellation token) {
+                        decodes.incrementAndGet();
                         return audio;
                     }
 
@@ -1132,13 +1216,41 @@ public final class RacesUiTest {
                         "Authored locale",
                         List.of(
                                 new com.vibeminer.concepts.races.RaceVoiceTypes.Clip(
-                                        1, 1, "Authored joke", 1, 1)),
-                        List.of(),
+                                        1,
+                                        1,
+                                        "Authored joke",
+                                        1,
+                                        1,
+                                        new com.vibeminer.concepts.races.RaceVoiceTypes.Source(
+                                                "JOKE", 7, 1, 0, 0))),
+                        List.of(
+                                new com.vibeminer.concepts.races.RaceVoiceTypes.Refusal(
+                                        "Authored link #9",
+                                        "Authored reason; no recording.")),
+                        List.of("Authored voice note."),
                         null));
         Platform.runLater(
                 () -> {
                     try {
                         require(activityCount(panel) == 0, "Ready voice catalog retires activity");
+                        require(decodes.get() == 0, "Voice catalog never autoplays");
+                        require(
+                                labels(panel)
+                                        .contains(
+                                                "Source: EmotesText #1 JOKE → EmotesTextSound #7"
+                                                        + " (race 1, sex 0, every class) →"
+                                                        + " SoundKit #1 → SoundKitEntry #1 →"
+                                                        + " FileDataID 1"),
+                                "Selected voice shows its recorded source chain");
+                        require(
+                                labels(panel)
+                                        .contains(
+                                                "Not playable (1 listed):\nAuthored link #9 —"
+                                                        + " Authored reason; no recording."),
+                                "Refused voice links show their reasons");
+                        require(
+                                labels(panel).contains("Authored voice note."),
+                                "Voice record notes are shown");
                         panel.lookupAll(".button").stream()
                                 .filter(
                                         node ->
@@ -1168,6 +1280,9 @@ public final class RacesUiTest {
                                                                         "Voice preview is"
                                                                                 + " unavailable."),
                                                 "Voice failure retires loading");
+                                        require(
+                                                decodes.get() == 1,
+                                                "Only the explicit Play button decodes");
                                         panel.selection(1, 1, 1);
                                         panel.close();
                                         require(
@@ -1327,5 +1442,17 @@ public final class RacesUiTest {
 
     private static void require(boolean value, String message) {
         if (!value) throw new AssertionError(message);
+    }
+
+    /** Authored explicit pair: display 1 is the recorded high-resolution male display. */
+    private static com.vibeminer.concepts.races.RaceMediaTypes.Definition authoredDefinition() {
+        return new com.vibeminer.concepts.races.RaceMediaTypes.Definition(
+                com.vibeminer.concepts.races.RaceMediaTypes.DefinitionState.SELECTED,
+                com.vibeminer.concepts.races.RaceMediaTypes.Quality.HD,
+                "ChrRaces #1 HighResMaleDisplayID",
+                2,
+                1,
+                "Display 1 is the recorded high-resolution display; its SD counterpart is display"
+                        + " 2.");
     }
 }

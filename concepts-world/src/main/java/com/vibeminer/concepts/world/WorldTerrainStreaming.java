@@ -478,6 +478,14 @@ public final class WorldTerrainStreaming {
         }
     }
 
+    static <T extends AutoCloseable> T withWaterJoin(
+            WrittenTile<?> terrain,
+            WorldPreparedTerrain expected,
+            java.util.function.BiFunction<WorldStreamScopes.Scope, WorldPreparedTerrain.Borrow, T>
+                    use) {
+        return Objects.requireNonNull(terrain).tile.withWaterJoin(expected, use);
+    }
+
     private volatile WorldPreparedTerrain source;
 
     private WorldTerrainStreaming(WorldPreparedTerrain source) {
@@ -515,6 +523,29 @@ public final class WorldTerrainStreaming {
     public void activate(Scope scope) {
         try {
             source().activate(Objects.requireNonNull(scope).token);
+        } catch (RuntimeException failure) {
+            throw WorldSourceRefusals.boundary(failure);
+        }
+    }
+
+    /**
+     * Prepares one recorded tile's BASIC_EXTERIOR_V1 outdoor building set as its own serialized
+     * source operation. Call it outside any terrain write. The returned set is immutable neutral
+     * heap data that the caller closes; omissions are counted, never guessed.
+     */
+    public WorldExteriorObjects.TileObjects prepareExteriorObjects(
+            Scope scope, WorldFormats.Tile comparison, Cancellation cancel) {
+        Objects.requireNonNull(scope);
+        Objects.requireNonNull(comparison);
+        Objects.requireNonNull(cancel);
+        if (comparison.x() < 0
+                || comparison.x() >= 64
+                || comparison.y() < 0
+                || comparison.y() >= 64) {
+            throw new IllegalArgumentException("Tile coordinate profile");
+        }
+        try {
+            return source().exteriorObjects(scope.token, comparison, cancel);
         } catch (RuntimeException failure) {
             throw WorldSourceRefusals.boundary(failure);
         }

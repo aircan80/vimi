@@ -29,6 +29,8 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
     private final ComboBox<RaceTypes.PlayerClass> classes = new ComboBox<>();
     private final ComboBox<RaceMediaTypes.Variant> variants = new ComboBox<>();
     private final Label state = new Label("Loading model variants…");
+    private final Label definition = new Label();
+    private RaceMediaTypes.Variant assessedModel;
     private final ModelPreviewView viewer = new ModelPreviewView();
     private final ProgressIndicator activity = new ProgressIndicator(-1);
     private final VBox evidence = new VBox(7);
@@ -40,6 +42,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
     private final java.util.Map<Long, Long> picks = new java.util.TreeMap<>();
     private final java.util.Map<Long, ComboBox<RaceCustomizationTypes.Choice>> pickers = new java.util.HashMap<>();
     private RaceCustomizationTypes.Catalog customization;
+    private RaceMediaTypes.Idle idleFacts;
     private long shownModel = -1, shownClass = -1;
     private boolean updatingChoices, waitingForRequests;
 
@@ -119,6 +122,11 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         classes.setId("race-model-class");
         variants.setId("race-model-variant");
         state.setId("race-model-state");
+        definition.setId("race-model-definition");
+        definition.setWrapText(true);
+        definition.getStyleClass().add("muted");
+        definition.setVisible(false);
+        definition.managedProperty().bind(definition.visibleProperty());
         appearanceControls.setId("race-appearance-controls");
         controlsState.setWrapText(true);
         controlsState.getStyleClass().add("muted");
@@ -139,7 +147,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         appearanceHeading.getStyleClass().add("section-title");
         var appearanceCard = new VBox(10, new HBox(12, appearanceHeading, resetAppearance), controlsState, appearanceControls);
         appearanceCard.getStyleClass().add("card");
-        getChildren().addAll(choices, appearanceCard, new HBox(9, activity, state), viewer, voices, source);
+        getChildren().addAll(choices, definition, appearanceCard, new HBox(9, activity, state), viewer, voices, source);
         viewer.loading("Loading model variants…");
         long variantsRequest = generation;
         request(() -> handle.modelVariants(raceId, token))
@@ -206,14 +214,19 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         if (model == null) {
             activity.setVisible(false);
             state.setText("No recorded model is selected.");
+            definition.setVisible(false);
             return;
         }
+        showDefinition(latest(model));
         long request = generation;
         var selected = classes.getValue();
         long classId = selected == null ? 0 : selected.id();
         if (shownModel == model.chrModelId() && shownClass == classId && customization != null) {
             state.setText("Preparing selected appearance…");
             viewer.appearanceLoading("Preparing selected textures…");
+            if (idleFacts == null || idleFacts.variant().chrModelId() != model.chrModelId()) {
+                requestIdle(model, request);
+            }
             loadAppearance(model, classId, request);
             return;
         }
@@ -231,6 +244,17 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                             if (stale(request)) {
                                                 return;
                                             }
+                                            // The preview reassesses the definition; show its
+                                            // latest result rather than the list's first read.
+                                            var assessed =
+                                                    result != null
+                                                                    && result.variant() != null
+                                                                    && result.variant().chrModelId()
+                                                                            == model.chrModelId()
+                                                            ? result.variant()
+                                                            : model;
+                                            assessedModel = assessed;
+                                            showDefinition(assessed);
                                             if (error != null
                                                     || result == null
                                                     || result.mesh() == null) {
@@ -255,6 +279,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                                             + " · M2 FileDataID "
                                                                             + model
                                                                                     .modelFileDataId()),
+                                                            definitionEvidence(assessed),
                                                             new Label(
                                                                     result.restored()
                                                                             ? "Restored derived"
@@ -270,12 +295,46 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                             }
                                             activity.setVisible(true);
                                             viewer.setMesh(result.mesh(), result.visibleParts());
+                                            requestIdle(model, request);
                                             shownModel = model.chrModelId();
                                             shownClass = classId;
                                             viewer.appearanceLoading(
                                                     "Preparing textures and starting clothing…");
                                             loadAppearance(model, classId, request);
                                         }));
+    }
+
+    /** The most recent preview assessment of this model, or the listed one before any. */
+    private RaceMediaTypes.Variant latest(RaceMediaTypes.Variant model) {
+        return assessedModel != null && assessedModel.chrModelId() == model.chrModelId()
+                ? assessedModel
+                : model;
+    }
+
+    /** Names the selected display's definition only when its recorded source states it. */
+    private void showDefinition(RaceMediaTypes.Variant model) {
+        definition.setText("Model definition: " + model.definition().label());
+        definition.setAccessibleText(definition.getText());
+        definition.setVisible(true);
+    }
+
+    private static Label definitionEvidence(RaceMediaTypes.Variant model) {
+        var value = model.definition();
+        var label =
+                new Label(
+                        "Definition "
+                                + value.state()
+                                + (value.quality() == null ? "" : " · " + value.quality())
+                                + (value.standardDisplayId() > 0
+                                        ? " · SD display " + value.standardDisplayId()
+                                        : "")
+                                + (value.highDisplayId() > 0
+                                        ? " · HD display " + value.highDisplayId()
+                                        : "")
+                                + " · "
+                                + value.message());
+        label.setWrapText(true);
+        return label;
     }
 
     private void loadAppearance(RaceMediaTypes.Variant model, long classId, long request) {
@@ -343,6 +402,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                                             + " · M2 FileDataID "
                                                                             + model
                                                                                     .modelFileDataId()),
+                                                            definitionEvidence(latest(model)),
                                                             new Label(
                                                                     result.restored()
                                                                             ? "Restored composed"
@@ -376,7 +436,49 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                 note.getStyleClass().add("muted");
                                                 evidence.getChildren().add(note);
                                             }
+                                            showIdleEvidence();
                                         }));
+    }
+
+    /** Assesses Stand idle for the shown model and states why it is not offered. */
+    private void requestIdle(RaceMediaTypes.Variant model, long request) {
+        idleFacts = null;
+        request(() -> handle.idle(raceId, model.chrModelId(), token))
+                .whenComplete((idle, failure) -> Platform.runLater(() -> {
+                    if (stale(request)) return;
+                    if (failure != null || idle == null) {
+                        viewer.animationUnavailable("Idle animation could not be assessed.");
+                        return;
+                    }
+                    if (idle.variant() == null
+                            || idle.variant().chrModelId() != model.chrModelId()) {
+                        viewer.animationUnavailable(null);
+                        return;
+                    }
+                    if (idle.state() != RaceTypes.State.UNSUPPORTED) {
+                        // Unreadable sources: say why; the next selection asks again.
+                        viewer.animationUnavailable(
+                                "Idle animation could not be assessed: " + idle.message());
+                        return;
+                    }
+                    viewer.animationUnavailable("Idle animation unavailable: " + idle.message());
+                    idleFacts = idle;
+                    showIdleEvidence();
+                }));
+    }
+
+    /** Appends the shown model's idle facts; evidence rebuilds call this again. */
+    private void showIdleEvidence() {
+        if (idleFacts == null || idleFacts.facts().isEmpty()) return;
+        var heading = new Label("Idle animation (Stand)");
+        heading.setId("race-idle-evidence");
+        evidence.getChildren().add(heading);
+        for (String line : idleFacts.facts()) {
+            var note = new Label(line);
+            note.setWrapText(true);
+            note.getStyleClass().add("muted");
+            evidence.getChildren().add(note);
+        }
     }
 
     private void loadCustomizations(RaceMediaTypes.Variant model, long classId, long request) {

@@ -94,7 +94,8 @@ folder is private.
 ## Executable and native boundaries
 
 - Runtime subprocess sites are [VoiceDecoder.java](../formats-audio/src/main/java/com/vibeminer/formats/audio/VoiceDecoder.java)
-  `decode`, [GpuPreviewService.java](../gui/src/main/java/com/vimi/gui/GpuPreviewService.java)
+  `decode`, [AudioStreamDecoder.java](../formats-audio/src/main/java/com/vibeminer/formats/audio/AudioStreamDecoder.java)
+  `open`, [GpuPreviewService.java](../gui/src/main/java/com/vimi/gui/GpuPreviewService.java)
   `nativeCommand`/`startChild`/`startStreamingChild`, and the packaged diagnostic
   [PackageSmoke.java](../gui/src/main/java/com/vimi/gui/PackageSmoke.java).
   They use `ProcessBuilder` argument lists and the executable under `java.home`;
@@ -107,6 +108,11 @@ folder is private.
   completion/cancellation/error. These are useful denial-of-service protections,
   not proof of codec memory safety or sandbox confinement. See `VoiceDecoder`,
   `OggVoiceInput`, `VorbisWorker` and `PcmClip` in `formats-audio/src/main/java`.
+- World explorer streaming audio accepts byte-identified Ogg Vorbis (same framing
+  preflight) or MPEG-1 audio (JavaMP3 1.0.1, unmaintained since 2017) up to 16 MiB,
+  uses `-Xmx128m`/48 MiB metaspace, bounds output to 15 minutes, fails after 8 s
+  without output and destroys the child on close. See `AudioStreamDecoder`,
+  `AudioStreamWorker` and `PcmStream`, and [the checkpoint](world-area-audio-checkpoint.md).
 - GPU preview uses LWJGL/bgfx/GLFW and OS graphics drivers in a child JVM with
   `--enable-native-access=ALL-UNNAMED`. [WorldStreamPreparedFiles.java](../rendering-bgfx/src/main/java/com/vibeminer/rendering/bgfx/WorldStreamPreparedFiles.java)
   creates random per-session directories; bootstrap uses CREATE_NEW and

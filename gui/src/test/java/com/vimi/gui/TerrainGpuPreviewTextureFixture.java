@@ -88,7 +88,7 @@ final class TerrainGpuPreviewTextureFixture implements AutoCloseable {
                                                             "b".repeat(32),
                                                             "us");
                                             case "locale" -> "enUS";
-                                            case "stat" -> {
+                                            case "stat", "statContent" -> {
                                                 ((Cancellation) args[1]).check();
                                                 long id =
                                                         ((FileTypes.FileRef) args[0]).fileDataId();

@@ -39,6 +39,7 @@ public final class WorldStreamSourceControllerTest {
         fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(false);
         fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(true);
         backDemandDoesNotTreatPresentedOnlySourceAsLiveGpuResident();
+        pickedAreaUsesRetainedResidentMetadataWithoutBorrowing();
         uncoveredCameraFrameKeepsOldPixelsWhileNearestTileLoads();
         cameraPublicationSerializesInitialAndFxForwarding();
         initialSeedHeldReplacementCameraAndPresentationDrain();
@@ -50,6 +51,236 @@ public final class WorldStreamSourceControllerTest {
         sameResidentCameraFrameDoesNotRetryMaterialPool();
         queuedGpuOwnerLateCloseIsPartOfControllerDrain();
         closeDuringActualInitialWdtQualificationIsCleanAndWaitsSourceDrain();
+        terrainNeverWaitsForBlockedObjectPreparation();
+        lateObjectsAttachAfterTerrainAndReportBuildings();
+        lateObjectFailuresStayIsolatedFromTerrain();
+        lateObjectsCompletingAfterRetirementAreIgnored();
+    }
+
+    /** One authored building: a quad drawn by one range of one 2x2 image, placed once. */
+    private static com.vibeminer.rendering.bgfx.WorldStreamTileWriter.Exterior building() {
+        var builder = com.vibeminer.rendering.bgfx.WorldStreamTileWriter.Exterior.builder();
+        builder.image(2, 2, ByteBuffer.wrap(new byte[16]));
+        builder.model();
+        float[] vertices = new float[4 * 8];
+        for (int v = 0; v < 4; v++) {
+            vertices[v * 8] = v % 2 * 10;
+            vertices[v * 8 + 1] = v / 2 * 10;
+            vertices[v * 8 + 5] = 1;
+        }
+        builder.mesh(java.nio.FloatBuffer.wrap(vertices),
+                java.nio.IntBuffer.wrap(new int[] {0, 1, 2, 2, 1, 3}), new int[] {0, 6, 0});
+        builder.placement(0, -100, -200, 12, 1, 1, 0);
+        return builder.build();
+    }
+
+    /**
+     * Object preparation starts only once terrain is idle, and terrain preempts it: an injected
+     * preparer that blocks until canceled never holds up the first tile's commit nor the rest of
+     * the neighborhood, and close drains it cleanly.
+     */
+    private static void terrainNeverWaitsForBlockedObjectPreparation() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 9);
+        fixture.exteriors = true;
+        var entered = new java.util.concurrent.atomic.AtomicInteger();
+        var preempted = new java.util.concurrent.atomic.AtomicInteger();
+        var blocked = new java.util.concurrent.atomic.AtomicBoolean();
+        var early = new java.util.concurrent.atomic.AtomicBoolean();
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) -> {
+            // The child logs each commit before acknowledging it.
+            if (fixture.commitLines().isEmpty()) early.set(true);
+            entered.incrementAndGet();
+            blocked.set(true);
+            try {
+                while (!cancellation.isCanceled()) Thread.sleep(1);
+            } catch (InterruptedException error) {
+                throw new AssertionError(error);
+            } finally {
+                blocked.set(false);
+            }
+            preempted.incrementAndGet();
+            cancellation.check();
+            throw new AssertionError("Canceled preparation returned");
+        };
+        try {
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY && blocked.get());
+            check(entered.get() == 1, "Idle terrain starts one object preparation");
+            check(!early.get(), "Object preparation never starts before the first commit");
+            check(fixture.controller.snapshot().detail().contains("loading buildings"),
+                    "Ready status discloses buildings still loading: " + fixture.controller.snapshot());
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 9));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 9 && blocked.get());
+            check(preempted.get() >= 1, "Wanted terrain preempted the blocked preparation");
+            check(fixture.commitLines().size() >= 9, "All nine tiles committed past the blocked preparer");
+            check(fixture.objectLines().isEmpty(), "No objects were delivered");
+        } finally {
+            fixture.close();
+        }
+        check(!blocked.get(), "Close cancels and drains the blocked preparation");
+    }
+
+    /** Late objects attach to committed tiles after terrain; the ready line reports them. */
+    private static void lateObjectsAttachAfterTerrainAndReportBuildings() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 3);
+        fixture.exteriors = true;
+        var prepared = new java.util.concurrent.ConcurrentLinkedQueue<Integer>();
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) -> {
+            prepared.add(tile.y());
+            return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
+        };
+        try {
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 3));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().detail().contains("3 BASIC exterior buildings on 3")
+                    && !fixture.controller.snapshot().detail().contains("loading buildings"));
+            check(fixture.objectLines().size() == 3
+                    && fixture.objectLines().stream().allMatch(line -> line.endsWith(" ATTACHED")),
+                    "Each committed tile received its objects once: " + fixture.objectLines());
+            check(prepared.size() == 3, "Each tile was prepared once: " + prepared);
+            // Commits only ever carried terrain: none waited for an objects reply.
+            check(fixture.commitLines().size() >= 3, "Terrain committed");
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /** Throwing preparers and failed child uploads cost only the buildings. */
+    private static void lateObjectFailuresStayIsolatedFromTerrain() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        fixture.exteriors = true;
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) -> {
+            if (tile.y() == 19) throw new IllegalStateException("authored preparation failure");
+            return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
+        };
+        try {
+            Files.writeString(fixture.directory.resolve("authored-fail-objects"), "fail");
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 2));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2
+                    && fixture.controller.snapshot().detail().contains("building objects failed on 2"));
+            check(fixture.objectLines().equals(List.of("20 FAILED")),
+                    "Only the second tile reached the child: " + fixture.objectLines());
+            check(fixture.controller.snapshot().detail().startsWith("2 tiles"),
+                    "Both terrain tiles stay current: " + fixture.controller.snapshot());
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * An attach still in flight when its tile retires completes late: the retired entry is not
+     * recorded as tried and its closed source is left untouched.
+     */
+    private static void lateObjectsCompletingAfterRetirementAreIgnored() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 10);
+        fixture.exteriors = true;
+        // Only the first tile has buildings, so the only delivery is the one that goes stale.
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) ->
+                tile.y() == 19
+                        ? new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored")
+                        : new WorldStreamSourceBridge.ExteriorCopy(null, 0, false, "none");
+        Path hold = fixture.directory.resolve("authored-hold-objects");
+        try {
+            Files.writeString(hold, "hold");
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            // The child has decided ATTACHED for the first tile and holds its reply.
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && Files.exists(fixture.directory.resolve("authored-held-objects")));
+            check(fixture.objectLines().equals(List.of("19 ATTACHED")),
+                    "First tile's objects decided: " + fixture.objectLines());
+            Object retired = quiet(() -> {
+                for (var entry : controllerEntries(fixture.controller).values()) {
+                    var accessor = entry.getClass().getDeclaredMethod("resident");
+                    accessor.setAccessible(true);
+                    var resident = (WorldStreamTransport.Resident) accessor.invoke(entry);
+                    if (resident.tileY() == 19) return entry;
+                }
+                throw new AssertionError("No resident for the first tile");
+            });
+            // Nine other wanted tiles fill every slot, so a commit retires the first tile while
+            // its attach is still in flight.
+            fixture.controller.neighborhood(fixture.tiles.subList(1, 10));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 9
+                    && quiet(() -> !controllerEntries(fixture.controller).containsValue(retired)));
+            Files.delete(hold);
+            // The late reply is consumed and every remaining tile is then tried (none has objects).
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && !fixture.controller.snapshot().detail().contains("loading buildings")
+                    && quiet(() -> {
+                        var field = WorldStreamSourceController.class.getDeclaredField("exteriorTried");
+                        field.setAccessible(true);
+                        return ((java.util.Set<?>) field.get(fixture.controller)).size() == 9;
+                    }));
+            check(fixture.objectLines().equals(List.of("19 ATTACHED")),
+                    "Only the stale delivery reached the child: " + fixture.objectLines());
+            check(!fixture.controller.snapshot().detail().contains("BASIC exterior buildings"),
+                    "No current tile reports buildings: " + fixture.controller.snapshot());
+            var tried = quiet(() -> {
+                var field = WorldStreamSourceController.class.getDeclaredField("exteriorTried");
+                field.setAccessible(true);
+                return new ArrayList<>((java.util.Set<?>) field.get(fixture.controller));
+            });
+            check(tried.stream().noneMatch(entry -> entry == retired),
+                    "Retired entry is not recorded as tried: " + tried);
+            var sourceAccessor = retired.getClass().getDeclaredMethod("source");
+            sourceAccessor.setAccessible(true);
+            var source = sourceAccessor.invoke(retired);
+            var placements = WorldStreamSourceBridge.Prepared.class
+                    .getDeclaredField("exteriorPlacements");
+            placements.setAccessible(true);
+            check(placements.getInt(source) == 0, "Closed source is left untouched");
+        } finally {
+            Files.deleteIfExists(hold);
+            fixture.close();
+        }
+    }
+
+    /** The controller's resident entries (worker-owned; read only while it is quiet). */
+    private static java.util.Map<?, ?> controllerEntries(WorldStreamSourceController controller)
+            throws ReflectiveOperationException {
+        var field = WorldStreamSourceController.class.getDeclaredField("entries");
+        field.setAccessible(true);
+        return new java.util.IdentityHashMap<>((java.util.Map<?, ?>) field.get(controller));
+    }
+
+    @FunctionalInterface
+    private interface Read<T> {
+        T get() throws Exception;
+    }
+
+    /** Retries a reflective read of worker-owned state that raced a worker update. */
+    private static <T> T quiet(Read<T> read) {
+        for (int attempt = 0; ; attempt++) {
+            try {
+                return read.get();
+            } catch (java.util.ConcurrentModificationException race) {
+                if (attempt == 100) throw race;
+            } catch (RuntimeException | Error failure) {
+                throw failure;
+            } catch (Exception failure) {
+                throw new AssertionError(failure);
+            }
+        }
     }
 
     private static void retryCommitKeepsExactTargetUntilPriorFileActuallyRetires() throws Exception {
@@ -376,6 +607,28 @@ public final class WorldStreamSourceControllerTest {
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
             check(fixture.files.opens(1002)>0,"Actual nearest tile readiness unblocks presentation");
         } finally { release.complete(null); fixture.close(); }
+    }
+
+    private static void pickedAreaUsesRetainedResidentMetadataWithoutBorrowing() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 1);
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().area() != null);
+            var view = fixture.controller.snapshot().seed().camera();
+            var picked = fixture.controller.areaAt(view.x() + 1, view.y());
+            var current = fixture.controller.snapshot().area();
+            check(picked.equals(current), "Picked area matches the controller's camera-area lookup: "
+                    + picked + " vs " + current);
+            check(fixture.controller.areaAt(1e6, 1e6).reason() == WorldCurrentArea.Reason.NO_COVERAGE,
+                    "Points off the residents have no coverage, never a nearest guess");
+        } finally {
+            fixture.close();
+        }
+        check(fixture.controller.areaAt(0, 0).reason() == WorldCurrentArea.Reason.NO_LOADED_METADATA,
+                "A closing controller retains no area metadata for picks");
     }
 
     private static void backDemandDoesNotTreatPresentedOnlySourceAsLiveGpuResident() throws Exception {
@@ -933,6 +1186,7 @@ public final class WorldStreamSourceControllerTest {
         final ConcurrentLinkedQueue<Runnable> fx = new ConcurrentLinkedQueue<>();
         final AtomicLong clock = new AtomicLong();
         final Gpu gpu = new Gpu();
+        volatile boolean exteriors;
         WorldStreamSourceController controller;
 
         Fixture(AuthoredTerrainSource.Files files, int count) throws Exception {
@@ -952,6 +1206,11 @@ public final class WorldStreamSourceControllerTest {
         }
 
         void start(WorldStreamSourceController.GpuStarter starter, Runnable beforeController) {
+            start(starter, beforeController, WorldStreamSourceBridge::prepareExterior);
+        }
+
+        void start(WorldStreamSourceController.GpuStarter starter, Runnable beforeController,
+                WorldStreamSourceBridge.ExteriorPreparer preparer) {
             var map = new WorldService.MapInfo(7, "Authored", null, 0, 1L);
             var inventory = world.inventory(map, Cancellation.NONE).join();
             beforeController.run();
@@ -968,7 +1227,8 @@ public final class WorldStreamSourceControllerTest {
                             starter,
                             () -> {},
                             fx::add,
-                            clock::get);
+                            clock::get,
+                            preparer);
         }
 
         void camera(long revision) {
@@ -997,10 +1257,21 @@ public final class WorldStreamSourceControllerTest {
         }
 
         void until(BooleanSupplier condition) throws Exception {
-            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(12);
+            // A stall is 12s with no observable controller progress (any snapshot change), not
+            // 12s of wall clock: slow, loaded CI hosts may need longer for a full neighborhood.
+            long idle = TimeUnit.SECONDS.toNanos(12);
+            long start = System.nanoTime(), until = start + idle;
+            long cap = start + TimeUnit.SECONDS.toNanos(120);
+            var observed = controller.snapshot();
             boolean matched = false;
-            while (!(matched = condition.getAsBoolean()) && System.nanoTime() < until) {
+            while (!(matched = condition.getAsBoolean())
+                    && System.nanoTime() < Math.min(until, cap)) {
                 pump();
+                var latest = controller.snapshot();
+                if (!latest.equals(observed)) {
+                    observed = latest;
+                    until = System.nanoTime() + idle;
+                }
                 Thread.sleep(2);
             }
             if (!matched) {
@@ -1053,6 +1324,15 @@ public final class WorldStreamSourceControllerTest {
             return held[0];
         }
 
+        List<String> objectLines() {
+            try {
+                var path = gpu.scratch.getParent().resolve("authored-objects.log");
+                return Files.exists(path) ? Files.readAllLines(path) : List.of();
+            } catch (java.io.IOException error) {
+                throw new java.io.UncheckedIOException(error);
+            }
+        }
+
         List<String> commitLines() {
             try {
                 var path = gpu.scratch.getParent().resolve("authored-commits.log");
@@ -1092,7 +1372,8 @@ public final class WorldStreamSourceControllerTest {
                             WorldStreamTransport.prepare(
                                     directory,
                                     new WorldStreamTransport.Spec(
-                                            scope, 1, WorldStreamTransport.Backend.VULKAN));
+                                            scope, 1, WorldStreamTransport.Backend.VULKAN,
+                                            exteriors));
                     session =
                             prepared.launch(
                                     arguments -> {

@@ -100,6 +100,24 @@ public final class WorldCurrentArea {
             Collection<WorldService.LoadedTile> loaded,
             Index index) {
         Objects.requireNonNull(loaded);
+        var metadata = new ArrayList<WorldFormats.AreaMetadata>(loaded.size());
+        for (var tile : loaded) {
+            metadata.add(tile.areas());
+        }
+        return locateIn(mapId, nativeX, nativeY, metadata, index);
+    }
+
+    /**
+     * The same lookup over retained per-tile area metadata; null entries are tiles without recorded
+     * metadata.
+     */
+    public static Result locateIn(
+            long mapId,
+            double nativeX,
+            double nativeY,
+            Collection<WorldFormats.AreaMetadata> loaded,
+            Index index) {
+        Objects.requireNonNull(loaded);
         Objects.requireNonNull(index);
         if (!Double.isFinite(nativeX)
                 || !Double.isFinite(nativeY)
@@ -109,12 +127,12 @@ public final class WorldCurrentArea {
         }
         WorldFormats.AreaChunk selected = null;
         boolean metadata = false;
-        for (var tile : loaded) {
-            if (tile.areas() == null) {
+        for (var areas : loaded) {
+            if (areas == null) {
                 continue;
             }
             metadata = true;
-            for (var chunk : tile.areas().chunks()) {
+            for (var chunk : areas.chunks()) {
                 // The same float endpoint arithmetic as the original 17-row geometry grid.
                 float minX = (float) (chunk.originX() - 16 * (WorldFormats.TILE_SIZE / 256));
                 float minY = (float) (chunk.originY() - 8 * (WorldFormats.TILE_SIZE / 128));

@@ -66,6 +66,89 @@ class NativeIdDomainTest {
     }
 
     @Test
+    void canonicalStampHasExactDetachedEqualityAndMatchesExistingSha() throws Exception {
+        NativeIdReceiptFingerprint.CanonicalStamp saved;
+        try (var fixture = new AuthoredPartialNativeMap(borrowed());
+                var rows = capture(fixture)) {
+            var receipt = rows.receipt();
+            saved = NativeIdReceiptFingerprint.canonicalStamp(receipt);
+            var repeated = NativeIdReceiptFingerprint.canonicalStamp(rows.receipt());
+            assertEquals(saved, repeated);
+            assertEquals(saved.hashCode(), repeated.hashCode());
+            assertFalse(saved.equals(null));
+            assertFalse(saved.equals("not a receipt stamp"));
+            assertTrue(saved.encodedBytes() > 0 && saved.encodedBytes() <= 128 << 10);
+            var changed =
+                    (CapturedRowsTypes.Receipt)
+                            replaceRecord(receipt, "readerRevision", "different-reader");
+            assertFalse(saved.equals(NativeIdReceiptFingerprint.canonicalStamp(changed)));
+            var bytes = saved.getClass().getDeclaredField("bytes");
+            bytes.setAccessible(true);
+            assertEquals(
+                    NativeIdReceiptFingerprint.sha256(receipt),
+                    java.util.HexFormat.of()
+                            .formatHex(
+                                    java.security.MessageDigest.getInstance("SHA-256")
+                                            .digest((byte[]) bytes.get(saved))));
+            assertEquals(0, fixture.opens.get());
+            for (var method : saved.getClass().getMethods()) {
+                assertFalse(method.getReturnType().isArray(), "No mutable array accessor");
+                assertFalse(
+                        java.nio.Buffer.class.isAssignableFrom(method.getReturnType()),
+                        "No buffer accessor");
+            }
+            for (var constructor : saved.getClass().getDeclaredConstructors()) {
+                assertTrue(Modifier.isPrivate(constructor.getModifiers()));
+            }
+        }
+        assertTrue(saved.encodedBytes() > 0, "Detached metadata survives reader close");
+    }
+
+    @Test
+    void canonicalStampStorageRefusesBeyondHardCapBeforeGrowing() throws Exception {
+        var type = Class.forName(NativeIdReceiptFingerprint.class.getName() + "$StampOutput");
+        var constructor = type.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        var out = (java.io.OutputStream) constructor.newInstance();
+        out.write(new byte[128 << 10]);
+        assertThrows(UnsupportedOperationException.class, () -> out.write(1));
+        assertThrows(UnsupportedOperationException.class, () -> out.write(new byte[1]));
+        var backing = type.getDeclaredField("bytes");
+        backing.setAccessible(true);
+        assertEquals(128 << 10, ((byte[]) backing.get(out)).length);
+    }
+
+    @Test
+    void canonicalStampProfilesMalformedAndOversizedInputsBeforeSerializing() throws Exception {
+        try (var fixture = new AuthoredPartialNativeMap(borrowed());
+                var rows = capture(fixture)) {
+            var receipt = rows.receipt();
+            var oversized =
+                    (CapturedRowsTypes.Receipt)
+                            replaceRecord(
+                                    receipt,
+                                    "table",
+                                    replaceRecord(receipt.table(), "name", "n".repeat(65536)));
+            assertThrows(
+                    UnsupportedOperationException.class,
+                    () -> NativeIdReceiptFingerprint.canonicalStamp(oversized));
+            var malformed =
+                    (CapturedRowsTypes.Receipt)
+                            replaceRecord(
+                                    receipt,
+                                    "issueChannelEvidence",
+                                    replaceRecord(
+                                            receipt.issueChannelEvidence(),
+                                            "actualColumnsSha256",
+                                            "0".repeat(64)));
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> NativeIdReceiptFingerprint.canonicalStamp(malformed));
+            assertEquals(0, fixture.opens.get());
+        }
+    }
+
+    @Test
     void receiptFingerprintBoundsExactSerializedTableNameBeforeHashAllocation() throws Exception {
         try (var fixture = new AuthoredPartialNativeMap(borrowed());
                 var rows = capture(fixture)) {

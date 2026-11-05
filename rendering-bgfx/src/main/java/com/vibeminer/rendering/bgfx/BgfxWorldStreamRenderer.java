@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_NORMAL;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_POSITION;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TEXCOORD0;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TEXCOORD1;
@@ -27,12 +28,14 @@ import static org.lwjgl.bgfx.BGFX.BGFX_UNIFORM_TYPE_SAMPLER;
 import static org.lwjgl.bgfx.BGFX.BGFX_UNIFORM_TYPE_VEC4;
 import static org.lwjgl.bgfx.BGFX.BGFX_VIEW_MODE_SEQUENTIAL;
 import static org.lwjgl.bgfx.BGFX.bgfx_copy;
+import static org.lwjgl.bgfx.BGFX.bgfx_create_dynamic_index_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_create_dynamic_vertex_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_create_program;
 import static org.lwjgl.bgfx.BGFX.bgfx_create_shader;
 import static org.lwjgl.bgfx.BGFX.bgfx_create_texture_2d;
 import static org.lwjgl.bgfx.BGFX.bgfx_create_uniform;
 import static org.lwjgl.bgfx.BGFX.bgfx_create_vertex_buffer;
+import static org.lwjgl.bgfx.BGFX.bgfx_destroy_dynamic_index_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_destroy_dynamic_vertex_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_destroy_program;
 import static org.lwjgl.bgfx.BGFX.bgfx_destroy_shader;
@@ -41,6 +44,8 @@ import static org.lwjgl.bgfx.BGFX.bgfx_destroy_uniform;
 import static org.lwjgl.bgfx.BGFX.bgfx_destroy_vertex_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_get_caps;
 import static org.lwjgl.bgfx.BGFX.bgfx_make_ref_release;
+import static org.lwjgl.bgfx.BGFX.bgfx_set_dynamic_index_buffer;
+import static org.lwjgl.bgfx.BGFX.bgfx_set_dynamic_vertex_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_set_instance_data_from_dynamic_vertex_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_set_state;
 import static org.lwjgl.bgfx.BGFX.bgfx_set_texture;
@@ -50,6 +55,7 @@ import static org.lwjgl.bgfx.BGFX.bgfx_set_view_clear;
 import static org.lwjgl.bgfx.BGFX.bgfx_set_view_mode;
 import static org.lwjgl.bgfx.BGFX.bgfx_set_view_rect;
 import static org.lwjgl.bgfx.BGFX.bgfx_submit;
+import static org.lwjgl.bgfx.BGFX.bgfx_update_dynamic_index_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_update_dynamic_vertex_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_update_texture_2d;
 import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_add;
@@ -71,7 +77,15 @@ import org.lwjgl.system.MemoryUtil;
 
 /** Fixed-resource context-owned persistent terrain. All bgfx methods run on its native owner. */
 final class BgfxWorldStreamRenderer implements AutoCloseable {
-    static final int SLOT_COUNT = 10, MAX_TRIANGLES = 65536, INSTANCE_BYTES = 48;
+    static final int SLOT_COUNT = 10, INSTANCE_BYTES = 48;
+
+    /** Terrain 65536 plus optional static water 16384 instances in one per-slot buffer. */
+    static final int MAX_TRIANGLES = 65536 + WorldStreamPackedTile.MAX_WATER_TRIANGLES;
+
+    /** Constant 0.40 diagonal blend factor for diagnostic water over opaque terrain. */
+    static final int WATER_BLEND_FACTOR = 0x66666666;
+
+    private static final int MAX_TICKETS = 64;
     static final int GEOMETRY_CHUNK = 2048 * INSTANCE_BYTES, ATLAS_CHUNK = 32 * 512 * 4;
     private static final short INVALID = -1;
     private static final int SAMPLER_FLAGS =
@@ -83,13 +97,18 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     record Ticket(long camera, long content, long policy, int width, int height) {}
 
+    /** objectBytes: issued GPU bytes of all resident and building exterior object sets. */
     record Stats(
             long callbacks,
             int references,
             long liveUploadBytes,
             long peakUploadBytes,
             int peakStepBytes,
-            long maximumStepNanos) {}
+            long maximumStepNanos,
+            long objectBytes) {}
+
+    /** Bounded object upload slice; same bound as the terrain step. */
+    static final int OBJECT_CHUNK = 262144;
 
     static final class Upload {
         private final long tag;
@@ -100,12 +119,37 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         private int geometryAt, atlasRow, tickets;
         private boolean canceled, finished, successful;
         private volatile String failure;
+        // Inline objects named by the tile header; the build owns their packed input.
+        private final ObjectsBuild objects;
+        private final int initialObjectsState;
 
         private Upload(long tag, WorldStreamPackedTile.Source source) {
             this.tag = tag;
             this.source = source;
             lease = source.header.lease();
             atlasRow = source.atlas == null ? 512 : 0;
+            initialObjectsState = source.objectsState;
+            objects =
+                    source.objectsState == 1 && source.objects != null
+                            ? new ObjectsBuild(source.objects)
+                            : null;
+            source.objects = null;
+        }
+
+        /** -1 outside the exterior profile; else 0 none, 1 drawn, 2 failed (terrain kept). */
+        int objectsState() {
+            return objects != null && objects.failed ? 2 : initialObjectsState;
+        }
+
+        private boolean objectsPending() {
+            return objects != null && objects.pending();
+        }
+
+        private void closeInputs() {
+            source.close();
+            if (objects != null) {
+                objects.closeSource();
+            }
         }
 
         boolean finished() {
@@ -129,7 +173,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
 
         long retainedInputBytes() {
-            return source.payloadBytes();
+            return source.payloadBytes() + (objects == null ? 0 : objects.inputBytes());
         }
 
         WorldStreamState.Lease lease() {
@@ -140,9 +184,130 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private static final class Slot {
         short buffer = INVALID, texture = INVALID;
         WorldStreamState.Lease lease;
-        int triangles, x, y;
+        int triangles, water, x, y;
         float anchorX, anchorY;
         boolean textured, ready;
+        SlotObjects objects;
+    }
+
+    /**
+     * Bounded building of one tile's objects: resource creation, then vertex, index and image
+     * slices of at most OBJECT_CHUNK bytes, each a bgfx_copy. Owns its packed input until the last
+     * slice is issued; any failure destroys only this build.
+     */
+    private static final class ObjectsBuild {
+        private WorldStreamPackedObjects source;
+        private SlotObjects building;
+        private int vertexAt, indexAt, image;
+        private boolean failed;
+
+        ObjectsBuild(WorldStreamPackedObjects source) {
+            this.source = java.util.Objects.requireNonNull(source);
+        }
+
+        boolean pending() {
+            return source != null;
+        }
+
+        long inputBytes() {
+            return source == null ? 0 : source.payloadBytes();
+        }
+
+        long builtBytes() {
+            return building == null ? 0 : building.bytes;
+        }
+
+        void closeSource() {
+            if (source != null) {
+                source.close();
+                source = null;
+            }
+        }
+
+        /** Drops everything without attaching; idempotent. */
+        void abandon() {
+            if (building != null) {
+                building.destroy();
+                building = null;
+            }
+            closeSource();
+        }
+
+        void fail() {
+            abandon();
+            failed = true;
+        }
+
+        SlotObjects take() {
+            if (pending() || failed || building == null) {
+                throw new IllegalStateException("Objects build not complete");
+            }
+            var result = building;
+            building = null;
+            return result;
+        }
+    }
+
+    /**
+     * Late objects for an already staged or active slot generation, delivered after its terrain.
+     * They attach only if that exact generation is still active when the last slice is issued.
+     */
+    static final class LateUpload {
+        private final WorldStreamState.Lease lease;
+        private final ObjectsBuild build;
+        private boolean dropped;
+
+        private LateUpload(WorldStreamState.Lease lease, ObjectsBuild build) {
+            this.lease = lease;
+            this.build = build;
+        }
+
+        WorldStreamState.Lease lease() {
+            return lease;
+        }
+
+        /** True once no further slice is needed: built, failed or dropped. */
+        boolean ready() {
+            return !build.pending();
+        }
+    }
+
+    /** One tile's uploaded exterior objects; dropped with its slot generation. */
+    private static final class SlotObjects {
+        final int[] models, meshes, ranges, placementModels, images;
+        final double[] placements;
+        final short[] textures;
+        short vertices = INVALID, indices = INVALID;
+        long bytes;
+
+        SlotObjects(WorldStreamPackedObjects source) {
+            models = source.models;
+            meshes = source.meshes;
+            ranges = source.ranges;
+            placementModels = source.placementModels;
+            images = source.images;
+            placements = source.placements;
+            textures = new short[source.imageCount()];
+            java.util.Arrays.fill(textures, INVALID);
+        }
+
+        void destroy() {
+            if (vertices != INVALID) {
+                bgfx_destroy_dynamic_vertex_buffer(vertices);
+                vertices = INVALID;
+            }
+            if (indices != INVALID) {
+                bgfx_destroy_dynamic_index_buffer(indices);
+                indices = INVALID;
+            }
+            for (int i = 0; i < textures.length; i++) {
+                if (textures[i] != INVALID) {
+                    bgfx_destroy_texture(textures[i]);
+                    textures[i] = INVALID;
+                }
+            }
+            bytes = 0;
+        }
     }
 
     private final Thread owner = Thread.currentThread();
@@ -156,9 +321,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private short program = INVALID, skyProgram = INVALID, template = INVALID;
     private short eye = INVALID, projection = INVALID, rebase = INVALID, atlasUniform = INVALID;
     private short sampler = INVALID, sky = INVALID;
+    // Optional exterior objects pass (existing world-wmo shaders); INVALID program disables it.
+    private short wmoProgram = INVALID, wmoEye = INVALID, wmoProjection = INVALID;
+    private short wmoModel = INVALID, wmoNormal = INVALID, wmoSampler = INVALID;
     private List<WorldStreamState.Lease> active = List.of();
     private WorldStreamState.Lease staged;
-    private long content, nextTag, liveBytes, peakBytes, maximumStepNanos;
+    private LateUpload late;
+    private long content, nextTag, liveBytes, peakBytes, maximumStepNanos, objectsRevision;
     private int peakStepBytes;
     private boolean closed, callbackFreed;
 
@@ -203,6 +372,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             atlasUniform = valid(bgfx_create_uniform("u_worldAtlas", BGFX_UNIFORM_TYPE_VEC4, 1));
             sampler = valid(bgfx_create_uniform("s_worldAtlas", BGFX_UNIFORM_TYPE_SAMPLER, 1));
             sky = valid(bgfx_create_uniform("u_terrainMode", BGFX_UNIFORM_TYPE_VEC4, 1));
+            if (session.exteriorObjects()) {
+                objectPass(profile);
+            }
         } catch (IOException | RuntimeException | Error failure) {
             close();
             // No upload is reachable before construction succeeds, hence no callback was
@@ -211,6 +383,37 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             callbackFreed = true;
             throw failure;
         }
+    }
+
+    /** Optional: on failure every tile's objects report failed while terrain stays intact. */
+    private void objectPass(String profile) {
+        try {
+            if (!org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
+                    0, false, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
+                throw new IOException("Exterior objects need RGBA8 textures");
+            }
+            wmoProgram = program(profile, "world-wmo/");
+            wmoEye = valid(bgfx_create_uniform("u_wmoEye", BGFX_UNIFORM_TYPE_MAT4, 1));
+            wmoProjection =
+                    valid(bgfx_create_uniform("u_wmoProjection", BGFX_UNIFORM_TYPE_MAT4, 1));
+            wmoModel = valid(bgfx_create_uniform("u_wmoModel", BGFX_UNIFORM_TYPE_MAT4, 1));
+            wmoNormal = valid(bgfx_create_uniform("u_wmoNormal", BGFX_UNIFORM_TYPE_MAT4, 1));
+            wmoSampler = valid(bgfx_create_uniform("s_wmoDiffuse", BGFX_UNIFORM_TYPE_SAMPLER, 1));
+        } catch (IOException | RuntimeException failed) {
+            destroyObjectPass();
+        }
+    }
+
+    private void destroyObjectPass() {
+        if (wmoProgram != INVALID) {
+            bgfx_destroy_program(wmoProgram);
+        }
+        for (short uniform : new short[] {wmoEye, wmoProjection, wmoModel, wmoNormal, wmoSampler}) {
+            if (uniform != INVALID) {
+                bgfx_destroy_uniform(uniform);
+            }
+        }
+        wmoProgram = wmoEye = wmoProjection = wmoModel = wmoNormal = wmoSampler = INVALID;
     }
 
     Upload begin(WorldStreamPackedTile packed) {
@@ -233,12 +436,22 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             if (nextTag == (Long.MAX_VALUE >>> 8)) {
                 throw new IllegalStateException("Callback tags exhausted");
             }
+            long payload = source.payloadBytes();
             var upload = new Upload(++nextTag, source);
             var slot = slots[lease.slot()];
             slot.ready = false;
             slot.lease = lease;
+            // A new slot generation drops the previous generation's objects, late ones included.
+            if (slot.objects != null) {
+                slot.objects.destroy();
+                slot.objects = null;
+            }
+            dropLate(lease.slot());
+            if (upload.objectsPending() && wmoProgram == INVALID) {
+                upload.objects.fail();
+            }
             uploading.set(upload);
-            liveBytes = source.payloadBytes();
+            liveBytes = payload;
             peakBytes = Math.max(peakBytes, liveBytes);
             return upload;
         } catch (RuntimeException | Error failure) {
@@ -303,6 +516,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 bytes += ATLAS_CHUNK;
             }
         }
+        if (!upload.canceled && bytes == 0 && terrainSubmitted(upload) && upload.objectsPending()) {
+            bytes = stepObjects(upload.objects);
+        }
         maximumStepNanos = Math.max(maximumStepNanos, System.nanoTime() - started);
         peakStepBytes = Math.max(peakStepBytes, bytes);
         if (bytes > 262144) {
@@ -312,11 +528,225 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         return bytes;
     }
 
+    private static boolean terrainSubmitted(Upload upload) {
+        return (upload.source.geometry == null
+                        || upload.geometryAt == upload.source.geometry.capacity())
+                && upload.atlasRow == 512;
+    }
+
+    /**
+     * One bounded object slice: resource creation, then vertex, index and image copies of at most
+     * OBJECT_CHUNK bytes. Any failure drops only this build's objects.
+     */
+    private int stepObjects(ObjectsBuild build) {
+        var source = build.source;
+        try {
+            if (build.building == null) {
+                var built = new SlotObjects(source);
+                build.building = built;
+                try (var layout = objectLayout()) {
+                    built.vertices =
+                            valid(
+                                    bgfx_create_dynamic_vertex_buffer(
+                                            source.vertices.capacity()
+                                                    / WorldStreamObjectsFile.VERTEX_BYTES,
+                                            layout,
+                                            BGFX_BUFFER_NONE));
+                }
+                built.indices =
+                        valid(
+                                bgfx_create_dynamic_index_buffer(
+                                        source.indices.capacity() / 2, BGFX_BUFFER_NONE));
+                built.bytes = source.vertices.capacity() + (long) source.indices.capacity();
+                return 0;
+            }
+            var built = build.building;
+            if (build.vertexAt < source.vertices.capacity()) {
+                int count = Math.min(OBJECT_CHUNK, source.vertices.capacity() - build.vertexAt);
+                bgfx_update_dynamic_vertex_buffer(
+                        built.vertices,
+                        build.vertexAt / WorldStreamObjectsFile.VERTEX_BYTES,
+                        bgfx_copy(source.vertices.slice(build.vertexAt, count)));
+                build.vertexAt += count;
+                return count;
+            }
+            if (build.indexAt < source.indices.capacity()) {
+                int count = Math.min(OBJECT_CHUNK, source.indices.capacity() - build.indexAt);
+                bgfx_update_dynamic_index_buffer(
+                        built.indices,
+                        build.indexAt / 2,
+                        bgfx_copy(source.indices.slice(build.indexAt, count)));
+                build.indexAt += count;
+                return count;
+            }
+            if (build.image < source.imageCount()) {
+                int image = build.image;
+                int width = source.images[image * 2], height = source.images[image * 2 + 1];
+                int count = width * height * 4;
+                built.textures[image] =
+                        valid(
+                                bgfx_create_texture_2d(
+                                        width,
+                                        height,
+                                        false,
+                                        1,
+                                        BGFX_TEXTURE_FORMAT_RGBA8,
+                                        BGFX_TEXTURE_NONE,
+                                        bgfx_copy(
+                                                source.pixels.slice(
+                                                        source.imageOffset(image), count)),
+                                        0));
+                built.bytes += count;
+                build.image++;
+                return count;
+            }
+            // Every slice is a bgfx-owned copy; the packed native input can retire now.
+            build.closeSource();
+            return 0;
+        } catch (IOException | RuntimeException failed) {
+            build.fail();
+            return 0;
+        }
+    }
+
+    /**
+     * Takes ownership of one late objects set for {@code lease}. If this renderer's slot does not
+     * hold that generation, or the objects pass is unavailable, the upload is born dropped or
+     * failed and issues nothing.
+     */
+    LateUpload beginLate(WorldStreamState.Lease lease, WorldStreamPackedObjects packed) {
+        java.util.Objects.requireNonNull(packed);
+        try {
+            requireOwner();
+            requireOpen();
+            java.util.Objects.requireNonNull(lease);
+            if (late != null) {
+                throw new IllegalStateException("One late objects upload already held");
+            }
+        } catch (RuntimeException | Error refused) {
+            packed.close();
+            throw refused;
+        }
+        var upload = new LateUpload(lease, new ObjectsBuild(packed));
+        if (!lateTarget(lease)) {
+            upload.dropped = true;
+            upload.build.abandon();
+        } else if (wmoProgram == INVALID) {
+            upload.build.fail();
+        }
+        late = upload;
+        return upload;
+    }
+
+    /** One bounded late slice; the caller gives terrain uploads priority. */
+    int stepLate(LateUpload upload) {
+        requireOwner();
+        requireOpen();
+        requireLate(upload);
+        if (upload.ready()) {
+            return 0;
+        }
+        if (!upload.dropped && !lateTarget(upload.lease)) {
+            // Retired by a commit since it began: stop building for a generation never drawn.
+            upload.dropped = true;
+            upload.build.abandon();
+            return 0;
+        }
+        long started = System.nanoTime();
+        int bytes = stepObjects(upload.build);
+        maximumStepNanos = Math.max(maximumStepNanos, System.nanoTime() - started);
+        peakStepBytes = Math.max(peakStepBytes, bytes);
+        if (bytes > OBJECT_CHUNK) {
+            throw new IllegalStateException("Object slice escaped bound");
+        }
+        return bytes;
+    }
+
+    /**
+     * Retires a ready late upload. It attaches only when {@code live} (the child state still admits
+     * that generation) and this renderer's slot still holds that exact active generation without
+     * objects. Otherwise the built resources are destroyed and the result is DROPPED.
+     */
+    WorldStreamStatus.LateOutcome finishLate(LateUpload upload, boolean live) {
+        requireOwner();
+        requireOpen();
+        requireLate(upload);
+        if (!upload.ready()) {
+            throw new IllegalStateException("Late objects upload still building");
+        }
+        late = null;
+        if (upload.dropped || !live || !lateTarget(upload.lease)) {
+            upload.build.abandon();
+            return WorldStreamStatus.LateOutcome.DROPPED;
+        }
+        if (upload.build.failed) {
+            return WorldStreamStatus.LateOutcome.FAILED;
+        }
+        slots[upload.lease.slot()].objects = upload.build.take();
+        objectsRevision++;
+        return WorldStreamStatus.LateOutcome.ATTACHED;
+    }
+
+    /** Changes whenever late objects become drawable, so an unchanged camera redraws once. */
+    long objectsRevision() {
+        return objectsRevision;
+    }
+
+    private boolean lateTarget(WorldStreamState.Lease lease) {
+        var slot = slots[lease.slot()];
+        return lateTarget(lease, slot.ready, slot.lease, slot.objects != null, active);
+    }
+
+    /** The exact active generation in its ready slot, still without objects. */
+    static boolean lateTarget(
+            WorldStreamState.Lease lease,
+            boolean ready,
+            WorldStreamState.Lease slotLease,
+            boolean hasObjects,
+            List<WorldStreamState.Lease> active) {
+        return ready && lease.equals(slotLease) && !hasObjects && active.contains(lease);
+    }
+
+    private void dropLate(int slot) {
+        if (late != null && late.lease.slot() == slot && !late.dropped) {
+            late.dropped = true;
+            late.build.abandon();
+        }
+    }
+
+    private void requireLate(LateUpload upload) {
+        if (upload == null || upload != late) {
+            throw new IllegalStateException("Foreign or finished late objects upload");
+        }
+    }
+
+    private static BGFXVertexLayout objectLayout() throws IOException {
+        var layout = BGFXVertexLayout.calloc();
+        bgfx_vertex_layout_begin(layout, bgfx_get_caps().rendererType());
+        bgfx_vertex_layout_add(
+                layout, BGFX_ATTRIB_POSITION, 3, BGFX_ATTRIB_TYPE_FLOAT, false, false);
+        bgfx_vertex_layout_add(layout, BGFX_ATTRIB_NORMAL, 3, BGFX_ATTRIB_TYPE_FLOAT, false, false);
+        bgfx_vertex_layout_add(
+                layout, BGFX_ATTRIB_TEXCOORD0, 2, BGFX_ATTRIB_TYPE_FLOAT, false, false);
+        bgfx_vertex_layout_end(layout);
+        if (layout.stride() != WorldStreamObjectsFile.VERTEX_BYTES) {
+            layout.free();
+            throw new IOException("Object vertex layout differs");
+        }
+        return layout;
+    }
+
     void cancel(Upload upload) {
         requireOwner();
         requireOpen();
         if (upload != null && upload.finished && upload.successful && upload.lease.equals(staged)) {
-            slots[upload.lease.slot()].ready = false;
+            var slot = slots[upload.lease.slot()];
+            slot.ready = false;
+            if (slot.objects != null) {
+                slot.objects.destroy();
+                slot.objects = null;
+            }
+            dropLate(upload.lease.slot());
             staged = null;
             upload.canceled = true;
             upload.successful = false;
@@ -339,10 +769,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         if (upload.failure != null) {
             throw new IllegalStateException(upload.failure);
         }
-        boolean submitted =
-                (upload.source.geometry == null
-                                || upload.geometryAt == upload.source.geometry.capacity())
-                        && upload.atlasRow == 512;
+        boolean submitted = terrainSubmitted(upload) && !upload.objectsPending();
         if (upload.references.get() != 0 || !upload.canceled && !submitted) {
             return;
         }
@@ -355,23 +782,29 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         if (!upload.canceled) {
             var slot = slots[upload.lease.slot()];
             slot.triangles = upload.source.triangles;
+            slot.water = upload.source.waterTriangles;
             slot.x = upload.source.header.x();
             slot.y = upload.source.header.y();
             staged = upload.lease;
             slot.anchorX = upload.source.header.maxX();
             slot.anchorY = upload.source.header.maxY();
             slot.textured = upload.source.header.outcome() == WorldStreamTileFile.Outcome.TEXTURED;
+            if (upload.objects != null && !upload.objects.failed) {
+                slot.objects = upload.objects.take();
+            }
             slot.ready = true;
             upload.successful = true;
+        } else if (upload.objects != null) {
+            upload.objects.abandon();
         }
-        upload.source.close();
+        upload.closeInputs();
         liveBytes = 0;
         upload.finished = true;
         uploading.set(null);
     }
 
     private org.lwjgl.bgfx.BGFXMemory reference(Upload upload, ByteBuffer data) {
-        if (upload.tickets >= 48) {
+        if (upload.tickets >= MAX_TICKETS) {
             throw new IllegalStateException("Upload references exceed bound");
         }
         int ticket = upload.tickets++;
@@ -388,7 +821,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
         int ticket = (int) (userData & 255);
         long bit = 1L << ticket;
-        if (ticket >= 48 || (upload.issued.get() & bit) == 0) {
+        if (ticket >= MAX_TICKETS || (upload.issued.get() & bit) == 0) {
             upload.failure = "Unknown callback ticket";
             return;
         }
@@ -508,8 +941,139 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         0);
                 bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
             }
+            if (wmoProgram != INVALID) {
+                for (var lease : active) {
+                    var objects = slots[lease.slot()].objects;
+                    if (objects != null) {
+                        drawObjects(stack, objects, origin, matrix, project);
+                    }
+                }
+            }
+            // Static diagnostic water after ALL opaque terrain: nearest flat surface wins under
+            // strict reversed depth, so coincident duplicates cannot blend twice. RGB only keeps
+            // the opaque output alpha.
+            for (var lease : active) {
+                var slot = slots[lease.slot()];
+                if (slot.water == 0) {
+                    continue;
+                }
+                bgfx_set_uniform(eye, matrix, 1);
+                bgfx_set_uniform(projection, project, 1);
+                bgfx_set_uniform(rebase, shift, 1);
+                bgfx_set_uniform(atlasUniform, stack.floats(slot.anchorX, slot.anchorY, 0, 0), 1);
+                bgfx_set_texture(0, sampler, slot.texture, SAMPLER_FLAGS);
+                bgfx_set_vertex_buffer(0, template, 0, 3);
+                bgfx_set_instance_data_from_dynamic_vertex_buffer(
+                        slot.buffer, slot.triangles, slot.water);
+                bgfx_set_state(
+                        BGFX_STATE_WRITE_RGB
+                                | BGFX_STATE_WRITE_Z
+                                | BGFX_STATE_DEPTH_TEST_GREATER
+                                | org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_FUNC(
+                                        org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_FACTOR,
+                                        org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_INV_FACTOR),
+                        WATER_BLEND_FACTOR);
+                bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
+            }
         }
         return new Ticket(cameraRevision, content, policy, width, height);
+    }
+
+    /**
+     * Opaque BASIC exterior objects after all terrain and before water, sharing terrain's camera,
+     * reversed depth and float origin. Each model matrix is the double placement position minus
+     * that origin, cast to float once.
+     */
+    private void drawObjects(
+            MemoryStack stack,
+            SlotObjects objects,
+            TerrainScene.Origin origin,
+            java.nio.FloatBuffer eyeMatrix,
+            java.nio.FloatBuffer projectionMatrix) {
+        var model = stack.mallocFloat(16);
+        var normal = stack.mallocFloat(16);
+        for (int p = 0; p < objects.placementModels.length; p++) {
+            objectMatrices(objects.placements, p, origin, model, normal);
+            // bgfx uniforms persist across submits, so they change once per placement.
+            bgfx_set_uniform(wmoEye, eyeMatrix, 1);
+            bgfx_set_uniform(wmoProjection, projectionMatrix, 1);
+            bgfx_set_uniform(wmoModel, model, 1);
+            bgfx_set_uniform(wmoNormal, normal, 1);
+            int m = objects.placementModels[p];
+            for (int mesh = objects.models[m * 2];
+                    mesh < objects.models[m * 2] + objects.models[m * 2 + 1];
+                    mesh++) {
+                int at = mesh * 6;
+                for (int r = objects.meshes[at + 4];
+                        r < objects.meshes[at + 4] + objects.meshes[at + 5];
+                        r++) {
+                    bgfx_set_dynamic_vertex_buffer(
+                            0, objects.vertices, objects.meshes[at], objects.meshes[at + 1]);
+                    bgfx_set_dynamic_index_buffer(
+                            objects.indices,
+                            objects.meshes[at + 2] + objects.ranges[r * 3],
+                            objects.ranges[r * 3 + 1]);
+                    bgfx_set_texture(
+                            0,
+                            wmoSampler,
+                            objects.textures[objects.ranges[r * 3 + 2]],
+                            BgfxWorldWmoPass.SAMPLER_STATE);
+                    bgfx_set_state(BgfxWorldWmoPass.DRAW_STATE, 0);
+                    bgfx_submit(0, wmoProgram, 0, BGFX_DISCARD_ALL);
+                }
+            }
+        }
+    }
+
+    /**
+     * Column-major model and normal matrices for placement p relative to origin. The translation is
+     * computed in double and cast to float once; rotation is the reviewed ADT heading rule.
+     */
+    static void objectMatrices(
+            double[] placements,
+            int p,
+            TerrainScene.Origin origin,
+            java.nio.FloatBuffer model,
+            java.nio.FloatBuffer normal) {
+        double x = placements[p * 6], y = placements[p * 6 + 1], z = placements[p * 6 + 2];
+        double s = placements[p * 6 + 3], co = placements[p * 6 + 4], si = placements[p * 6 + 5];
+        model.clear()
+                .put((float) (-s * co))
+                .put((float) (-s * si))
+                .put(0)
+                .put(0)
+                .put((float) (s * si))
+                .put((float) (-s * co))
+                .put(0)
+                .put(0)
+                .put(0)
+                .put(0)
+                .put((float) s)
+                .put(0)
+                .put((float) (x - origin.x()))
+                .put((float) (y - origin.y()))
+                .put((float) (z - origin.z()))
+                .put(1)
+                .flip();
+        float c = (float) co, n = (float) si;
+        normal.clear()
+                .put(-c)
+                .put(-n)
+                .put(0)
+                .put(0)
+                .put(n)
+                .put(-c)
+                .put(0)
+                .put(0)
+                .put(0)
+                .put(0)
+                .put(1)
+                .put(0)
+                .put(0)
+                .put(0)
+                .put(0)
+                .put(1)
+                .flip();
     }
 
     long contentRevision() {
@@ -525,7 +1089,21 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 liveBytes,
                 peakBytes,
                 peakStepBytes,
-                maximumStepNanos);
+                maximumStepNanos,
+                objectBytes(upload));
+    }
+
+    private long objectBytes(Upload upload) {
+        long total = upload == null || upload.objects == null ? 0 : upload.objects.builtBytes();
+        if (late != null) {
+            total += late.build.builtBytes();
+        }
+        for (var slot : slots) {
+            if (slot != null && slot.objects != null) {
+                total += slot.objects.bytes;
+            }
+        }
+        return total;
     }
 
     private void requireOwner() {
@@ -556,8 +1134,20 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         var pending = uploading.get();
         if (pending != null) {
             pending.canceled = true;
+            if (pending.objects != null) {
+                pending.objects.abandon();
+            }
+        }
+        if (late != null) {
+            late.dropped = true;
+            late.build.abandon();
+            late = null;
         }
         for (var slot : slots) {
+            if (slot != null && slot.objects != null) {
+                slot.objects.destroy();
+                slot.objects = null;
+            }
             if (slot != null) {
                 if (slot.buffer != INVALID) {
                     bgfx_destroy_dynamic_vertex_buffer(slot.buffer);
@@ -583,6 +1173,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         if (skyProgram != INVALID) {
             bgfx_destroy_program(skyProgram);
         }
+        destroyObjectPass();
         active = List.of();
         // Callback closure/source pointers are intentionally retained until actual bgfx_shutdown.
     }
@@ -594,7 +1185,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
         var pending = uploading.getAndSet(null);
         if (pending != null) {
-            pending.source.close();
+            pending.closeInputs();
             pending.finished = true;
         }
         liveBytes = 0;

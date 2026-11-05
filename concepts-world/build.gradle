@@ -6,6 +6,7 @@ buildscript {
 
 plugins {
     id 'java-library'
+    id 'java-test-fixtures'
     id 'checkstyle'
     id 'com.diffplug.spotless' version '8.10.4'
 }
@@ -40,6 +41,7 @@ dependencies {
     api project(':files')
     implementation project(':formats-assets')
 
+    testFixturesImplementation testFixtures(project(':formats-tables'))
     testImplementation testFixtures(project(':formats-tables'))
     testImplementation platform('org.junit:junit-bom:5.13.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'

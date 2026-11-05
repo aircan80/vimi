@@ -23,6 +23,7 @@ public final class WmoFormats {
             MOMT = 0x4d4f4d54,
             GFID = 0x47464944,
             MOTX = 0x4d4f5458,
+            MOGN = 0x4d4f474e,
             MOGP = 0x4d4f4750,
             MOVT = 0x4d4f5654,
             MOVI = 0x4d4f5649,
@@ -31,7 +32,7 @@ public final class WmoFormats {
             MOBA = 0x4d4f4241,
             MOPY = 0x4d4f5059;
 
-    private static final Set<Integer> ROOT_TAGS = Set.of(MVER, MOHD, MOMT, GFID, MOTX);
+    private static final Set<Integer> ROOT_TAGS = Set.of(MVER, MOHD, MOMT, GFID, MOTX, MOGN);
     private static final Set<Integer> GROUP_TAGS = Set.of(MVER, MOGP);
     private static final Set<Integer> MESH_TAGS = Set.of(MOVT, MONR, MOVI, MOTV, MOBA, MOPY);
 
@@ -163,6 +164,7 @@ public final class WmoFormats {
         private final byte[] names;
         private final List<Chunk> chunks;
         private final boolean gfidPresent, namesPresent;
+        private final GroupNames groupNames;
 
         private Root(
                 RootHeader h,
@@ -171,7 +173,9 @@ public final class WmoFormats {
                 byte[] n,
                 List<Chunk> c,
                 boolean gp,
-                boolean np) {
+                boolean np,
+                GroupNames gn) {
+            groupNames = gn;
             header = h;
             materials = List.copyOf(m);
             gfids = g;
@@ -211,6 +215,69 @@ public final class WmoFormats {
 
         public List<Chunk> chunks() {
             return chunks;
+        }
+
+        /** Recorded MOGN group-name block, or {@link GroupNames#absent()} when not retained. */
+        public GroupNames groupNames() {
+            return groupNames;
+        }
+    }
+
+    /**
+     * Recorded MOGN bytes, retained only when they fit the root fact budget. A name is read at a
+     * recorded MOGP name offset up to its NUL; nothing is inferred from file paths or ordinals.
+     */
+    public static final class GroupNames {
+        public static final int MAX_BLOCK_BYTES = 16 << 10, MAX_NAME_BYTES = 255;
+        private static final GroupNames ABSENT = new GroupNames(null);
+        private final byte[] block;
+
+        private GroupNames(byte[] block) {
+            this.block = block;
+        }
+
+        public static GroupNames absent() {
+            return ABSENT;
+        }
+
+        /** Detached copy of recorded bytes; tests and fact builders only. */
+        public static GroupNames of(byte[] recorded) {
+            Objects.requireNonNull(recorded);
+            if (recorded.length > MAX_BLOCK_BYTES) {
+                throw invalid("Group name block exceeds limit");
+            }
+            return new GroupNames(recorded.clone());
+        }
+
+        public boolean present() {
+            return block != null;
+        }
+
+        /**
+         * The NUL-terminated printable-ASCII name at {@code offset}; empty when the block is
+         * absent, the offset is outside it, the name is unterminated, over 255 bytes, or not
+         * printable ASCII. A recorded empty name returns {@code ""}.
+         */
+        public java.util.Optional<String> name(long offset) {
+            if (block == null || offset < 0 || offset >= block.length) {
+                return java.util.Optional.empty();
+            }
+            int start = (int) offset;
+            for (int at = start; at < block.length && at - start <= MAX_NAME_BYTES; at++) {
+                int value = block[at] & 255;
+                if (value == 0) {
+                    return java.util.Optional.of(
+                            new String(
+                                    block,
+                                    start,
+                                    at - start,
+                                    java.nio.charset.StandardCharsets.US_ASCII));
+                }
+                if (value < 0x20 || value > 0x7e) {
+                    return java.util.Optional.empty();
+                }
+            }
+            return java.util.Optional.empty();
         }
     }
 
@@ -353,6 +420,8 @@ public final class WmoFormats {
         RootHeader header = null;
         long[] gfids = new long[0];
         byte[] names = new byte[0];
+        GroupNames groupNames = GroupNames.absent();
+        int namesAt = -1, namesBytes = 0;
         while (input.hasRemaining()) {
             check(canceled);
             var chunk = chunk(input, input.limit(), chunks, budget, ROOT_TAGS);
@@ -420,6 +489,12 @@ public final class WmoFormats {
                     names = new byte[chunk.bytes()];
                     input.get(names);
                 }
+                case MOGN -> {
+                    unique(seen, MOGN);
+                    // Retained after every other declaration has claimed its budget.
+                    namesAt = at;
+                    namesBytes = chunk.bytes();
+                }
                 default -> {
                     /* All unparsed declarations remain in chunks, never inferred empty. */
                 }
@@ -433,8 +508,24 @@ public final class WmoFormats {
                 || materials.size() != header.materialCount()) {
             throw invalid("Root missing required declarations or material count mismatch");
         }
+        // Descriptive only and claimed last: an oversized block or a tight budget leaves names
+        // absent rather than declining a root that qualifies without them.
+        if (namesAt >= 0
+                && namesBytes <= GroupNames.MAX_BLOCK_BYTES
+                && budget.tryClaim(64L + namesBytes)) {
+            var block = new byte[namesBytes];
+            input.get(namesAt, block);
+            groupNames = new GroupNames(block);
+        }
         return new Root(
-                header, materials, gfids, names, chunks, seen.contains(GFID), seen.contains(MOTX));
+                header,
+                materials,
+                gfids,
+                names,
+                chunks,
+                seen.contains(GFID),
+                seen.contains(MOTX),
+                groupNames);
     }
 
     public static Group group(byte[] bytes, Limits limits, BooleanSupplier canceled) {
@@ -622,6 +713,14 @@ public final class WmoFormats {
                 throw invalid("WMO facts byte budget exceeded");
             }
             bytes += count;
+        }
+
+        boolean tryClaim(long count) {
+            if (count < 0 || bytes > maximum - count) {
+                return false;
+            }
+            bytes += count;
+            return true;
         }
     }
 

@@ -1,7 +1,9 @@
 package com.vimi.gui;
 
 import com.vibeminer.access.Cancellation;
+import com.vibeminer.concepts.world.WorldExteriorObjects;
 import com.vibeminer.concepts.world.WorldTerrainStreaming;
+import com.vibeminer.concepts.world.WorldWaterPreview;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.rendering.bgfx.WorldStreamTileWriter;
 import com.vibeminer.rendering.bgfx.WorldStreamTransport;
@@ -22,6 +24,45 @@ final class WorldStreamSourceBridge {
     static final class Prepared implements AutoCloseable {
         private final WorldTerrainStreaming.Facts facts;
         private WorldTerrainStreaming.WrittenTile<WorldStreamTileWriter.PacketFile> owned;
+        private volatile int waterCells, exteriorPlacements;
+        private volatile boolean exteriorFailed;
+
+        /** Descriptive: this tile's exterior objects failed on the parent side; terrain kept. */
+        boolean exteriorFailed() {
+            return exteriorFailed;
+        }
+
+        /** Records late objects attached to this tile's resident (descriptive only). */
+        void exteriorAttached(int placements) {
+            exteriorPlacements = placements;
+        }
+
+        /** Records a parent-side failure of this tile's late objects (descriptive only). */
+        void exteriorFailedLate() {
+            exteriorFailed = true;
+        }
+
+        private volatile WorldTileCreatures.Summary creatures = WorldTileCreatures.Summary.NONE;
+
+        /** Records this tile's creature outcome once its late objects ended (descriptive only). */
+        void creatures(WorldTileCreatures.Summary summary) {
+            creatures = Objects.requireNonNull(summary);
+        }
+
+        /** This tile's creature outcome; NONE until its late objects ended. */
+        WorldTileCreatures.Summary creatures() {
+            return creatures;
+        }
+
+        /** Descriptive count of static water cells carried by this tile's moved packet. */
+        int waterCells() {
+            return waterCells;
+        }
+
+        /** Descriptive count of exterior placements carried by this tile's objects file. */
+        int exteriorPlacements() {
+            return exteriorPlacements;
+        }
 
         private Prepared(WorldTerrainStreaming.WrittenTile<WorldStreamTileWriter.PacketFile> owned) {
             this.owned = owned;
@@ -72,22 +113,211 @@ final class WorldStreamSourceBridge {
         String site() { return site; }
     }
 
+    /**
+     * Outcome of one tile's BASIC_EXTERIOR preparation, detached from the source: a validated
+     * copy to deliver late, or none ({@code failed} distinguishes a building failure from an empty
+     * tile). {@code placements} counts buildings only; {@code creatures} is the tile's creature
+     * outcome, whose drawn placements share the same copy.
+     */
+    record ExteriorCopy(
+            WorldStreamTileWriter.Exterior exterior,
+            int placements,
+            boolean failed,
+            String note,
+            WorldTileCreatures.Summary creatures) {
+        ExteriorCopy {
+            Objects.requireNonNull(creatures);
+        }
+
+        ExteriorCopy(WorldStreamTileWriter.Exterior exterior, int placements, boolean failed, String note) {
+            this(exterior, placements, failed, note, WorldTileCreatures.Summary.NONE);
+        }
+    }
+
+    /**
+     * One tile's exterior object source operation. It runs only while the controller has no
+     * terrain work, and is canceled the moment terrain is wanted again.
+     */
+    @FunctionalInterface
+    interface ExteriorPreparer {
+        ExteriorCopy prepare(
+                WorldTerrainStreaming source,
+                WorldTerrainStreaming.Scope scope,
+                WorldFormats.Tile tile,
+                Cancellation cancellation);
+    }
+
+    /** Appends one tile's creatures after its buildings; only cancellation may propagate. */
+    @FunctionalInterface
+    interface CreatureAppender {
+        WorldTileCreatures.Summary append(
+                WorldStreamTileWriter.Exterior.Builder builder,
+                WorldFormats.Tile tile,
+                Cancellation cancellation);
+    }
+
+    /** The actual preparer without creatures. */
+    static ExteriorCopy prepareExterior(
+            WorldTerrainStreaming source,
+            WorldTerrainStreaming.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation cancellation) {
+        return prepareExterior(source, scope, tile, cancellation, null);
+    }
+
+    /**
+     * The actual preparer: one serialized BASIC_EXTERIOR source operation outside any terrain
+     * write, then (when given) the tile's creatures in the remaining objects budget. The neutral
+     * set is copied and closed here. Only cancellation propagates; every other runtime failure
+     * degrades this tile to terrain only, and a creature failure never costs its buildings.
+     */
+    static ExteriorCopy prepareExterior(
+            WorldTerrainStreaming source,
+            WorldTerrainStreaming.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation cancellation,
+            CreatureAppender creatures) {
+        WorldExteriorObjects.TileObjects set = null;
+        try {
+            boolean failed = false;
+            String note;
+            try {
+                set = source.prepareExteriorObjects(scope, tile, cancellation);
+                int drawn = set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN);
+                int omitted = set.count(WorldExteriorObjects.Count.PLACEMENT_UNSUPPORTED)
+                        + set.count(WorldExteriorObjects.Count.PLACEMENT_CONFLICTING)
+                        + set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED)
+                        + set.count(WorldExteriorObjects.Count.PLACEMENT_FAILED_ROOT)
+                        + set.count(WorldExteriorObjects.Count.PLACEMENT_EMPTY);
+                note = "exterior placements drawn=" + drawn + " omitted=" + omitted;
+            } catch (CancellationException canceled) {
+                throw canceled;
+            } catch (WorldTerrainStreaming.Refusal refused) {
+                cancellation.check();
+                failed = true;
+                note = "exterior objects refused: " + refused.site();
+            } catch (RuntimeException failure) {
+                cancellation.check();
+                failed = true;
+                note = "exterior objects failed: " + failure.getClass().getSimpleName();
+            }
+            if (creatures == null) {
+                if (failed || set.placements().isEmpty()) return new ExteriorCopy(null, 0, failed, note);
+                var copy = copy(set, cancellation);
+                return new ExteriorCopy(copy, copy.placements(), false, note);
+            }
+            var drawn = set;
+            return assemble(failed || set.placements().isEmpty() ? null
+                    : builder -> copyInto(builder, drawn, cancellation), failed, note, creatures, tile, cancellation);
+        } finally {
+            if (set != null) set.close();
+        }
+    }
+
+    /**
+     * Buildings first, then creatures, into one late objects copy. {@code buildings} copies the
+     * tile's buildings into a builder and may run twice. A creature problem of any kind (a thrown
+     * failure, a cancellation that is not this tile's, or a set that fails the file checks) never
+     * costs the buildings: they are rebuilt alone and the creatures are reported failed. Only this
+     * tile's own cancellation propagates.
+     */
+    static ExteriorCopy assemble(
+            Consumer<WorldStreamTileWriter.Exterior.Builder> buildings,
+            boolean failed,
+            String note,
+            CreatureAppender creatures,
+            WorldFormats.Tile tile,
+            Cancellation cancellation) {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        int count = 0;
+        if (buildings != null) {
+            try {
+                buildings.accept(builder);
+                count = builder.placementCount();
+            } catch (CancellationException canceled) {
+                if (cancellation.isCanceled()) throw canceled;
+                failed = true;
+                note = "exterior objects failed: canceled outside this tile";
+                buildings = null;
+                builder = WorldStreamTileWriter.Exterior.builder();
+            } catch (RuntimeException failure) {
+                cancellation.check();
+                failed = true;
+                note = "exterior objects failed: " + failure.getClass().getSimpleName();
+                buildings = null;
+                builder = WorldStreamTileWriter.Exterior.builder();
+            }
+        }
+        WorldTileCreatures.Summary summary;
+        try {
+            summary = creatures.append(builder, tile, cancellation);
+            if (builder.placementCount() == 0) return new ExteriorCopy(null, 0, failed, note, summary);
+            try {
+                return new ExteriorCopy(builder.build(), count, failed, note, summary);
+            } catch (RuntimeException invalid) {
+                cancellation.check();
+                summary = WorldTileCreatures.Summary.failed(
+                        "creature models invalid: " + invalid.getMessage());
+            }
+        } catch (CancellationException canceled) {
+            if (cancellation.isCanceled()) throw canceled;
+            summary = WorldTileCreatures.Summary.failed("creature models canceled outside this tile");
+        } catch (RuntimeException failure) {
+            cancellation.check();
+            summary = WorldTileCreatures.Summary.failed(
+                    "creature models failed: " + failure.getClass().getSimpleName());
+        }
+        // The builder may hold a partial or invalid creature model: rebuild buildings alone.
+        if (buildings == null) return new ExteriorCopy(null, 0, failed, note, summary);
+        try {
+            var alone = WorldStreamTileWriter.Exterior.builder();
+            buildings.accept(alone);
+            if (alone.placementCount() == 0) return new ExteriorCopy(null, 0, failed, note, summary);
+            return new ExteriorCopy(alone.build(), alone.placementCount(), failed, note, summary);
+        } catch (CancellationException canceled) {
+            if (cancellation.isCanceled()) throw canceled;
+            return new ExteriorCopy(null, 0, true, "exterior objects failed: canceled outside this tile", summary);
+        } catch (RuntimeException failure) {
+            cancellation.check();
+            return new ExteriorCopy(
+                    null, 0, true, "exterior objects failed: " + failure.getClass().getSimpleName(), summary);
+        }
+    }
+
     /** Single-use producer. Close retires an untaken base; take only after transport success. */
     static final class Producer implements WorldStreamTransport.PacketProducer, AutoCloseable {
         private final WorldTerrainStreaming source;
+        private final WorldWaterPreview water;
         private final WorldTerrainStreaming.Scope scope;
         private final WorldFormats.Tile tile;
         private final BooleanSupplier latest;
         private boolean started, closed;
         private Prepared prepared;
         private volatile RefusalMetadata sourceRefusal;
+        private volatile String waterNote = "";
 
         Producer(WorldTerrainStreaming source, WorldTerrainStreaming.Scope scope,
                 WorldFormats.Tile tile, BooleanSupplier latest) {
+            this(source, null, scope, tile, latest);
+        }
+
+        /**
+         * Optional water joins this tile's actual terrain owner before its packet MOVE. Exterior
+         * objects never join the terrain packet: the controller delivers them late, so terrain
+         * never waits for them.
+         */
+        Producer(WorldTerrainStreaming source, WorldWaterPreview water,
+                WorldTerrainStreaming.Scope scope, WorldFormats.Tile tile, BooleanSupplier latest) {
             this.source = Objects.requireNonNull(source);
+            this.water = water;
             this.scope = Objects.requireNonNull(scope);
             this.tile = Objects.requireNonNull(tile);
             this.latest = Objects.requireNonNull(latest);
+        }
+
+        /** Descriptive bounded water outcome for diagnostics; never source authority. */
+        String waterNote() {
+            return waterNote;
         }
 
         @Override
@@ -112,7 +342,21 @@ final class WorldStreamSourceBridge {
                                 () -> stopping.getAsBoolean() || token.isCanceled()));
                 local = new Prepared(written);
                 check(stopping, cancellation);
-                written.withWrittenResource(file -> moved[0] = file.move());
+                // Water reports its own cancellation; the MOVE below observes stopping too.
+                var waterCopy = water == null ? null : prepareWater(written, cancellation);
+                BooleanSupplier stop = () -> stopping.getAsBoolean() || cancellation.isCanceled();
+                var attached = new boolean[1];
+                written.withWrittenResource(file -> {
+                    moved[0] = file.move(waterCopy, stop);
+                    attached[0] = file.waterAttached();
+                });
+                if (waterCopy != null) {
+                    if (attached[0]) {
+                        local.waterCells = waterCopy.cells();
+                    } else {
+                        waterNote = "water packet append rolled back";
+                    }
+                }
                 check(stopping, cancellation);
                 // The actual source gate distinguishes known retirement from sticky cleanup faults.
                 // R is inert after MOVE; this callback only checks/pins the source lifetime.
@@ -166,6 +410,44 @@ final class WorldStreamSourceBridge {
             }
         }
 
+        /**
+         * Copies one actual Source water preparation for this exact terrain owner and retires the
+         * water owner immediately; no water Source credit outlives this call. Optional: clean
+         * refusals and unexpected water failures leave terrain intact. Cancellation propagates.
+         */
+        private WorldStreamTileWriter.Water prepareWater(
+                WorldTerrainStreaming.WrittenTile<WorldStreamTileWriter.PacketFile> written,
+                Cancellation cancellation) {
+            try (var prepared = water.prepareAndWrite(written, cancellation, WaterCopy::of)) {
+                var facts = prepared.facts();
+                if (!(prepared instanceof WorldWaterPreview.WrittenWater<WaterCopy> positive)) {
+                    waterNote = "no water surface: " + facts.state();
+                    return null;
+                }
+                var copy = new WorldStreamTileWriter.Water[1];
+                positive.withWrittenResource(r -> copy[0] = r.water());
+                waterNote = "water " + facts.state() + " cells=" + facts.cells();
+                return copy[0];
+            } catch (CancellationException canceled) {
+                throw canceled;
+            } catch (WorldTerrainStreaming.Refusal refused) {
+                if (refused.getCause() != null || refused.getSuppressed().length != 0) {
+                    throw refused;
+                }
+                waterNote = "water refused: " + refused.site();
+                return null;
+            } catch (IllegalArgumentException | IllegalStateException failed) {
+                // Only a clean leaf failure (e.g. this bridge's own copy validation) degrades to
+                // terrain-only. Source cleanup/health faults carry causes or suppressed failures
+                // and stay fatal.
+                if (failed.getCause() != null || failed.getSuppressed().length != 0) {
+                    throw failed;
+                }
+                waterNote = "water failed: " + failed.getClass().getSimpleName();
+                return null;
+            }
+        }
+
         private void check(BooleanSupplier stopping, Cancellation cancellation) {
             cancellation.check();
             if (stopping.getAsBoolean() || !latest.getAsBoolean()) {
@@ -196,6 +478,92 @@ final class WorldStreamSourceBridge {
                 value.close();
             }
         }
+    }
+
+    private static WorldStreamTileWriter.Exterior copy(
+            WorldExteriorObjects.TileObjects set, Cancellation cancellation) {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        copyInto(builder, set, cancellation);
+        return builder.build();
+    }
+
+    private static void copyInto(
+            WorldStreamTileWriter.Exterior.Builder builder,
+            WorldExteriorObjects.TileObjects set,
+            Cancellation cancellation) {
+        for (var image : set.images()) {
+            cancellation.check();
+            builder.image(image.width(), image.height(), image.rgba());
+        }
+        for (var model : set.models()) {
+            builder.model();
+            for (var mesh : model.meshes()) {
+                cancellation.check();
+                var ranges = new int[mesh.ranges().size() * 3];
+                for (int r = 0; r < mesh.ranges().size(); r++) {
+                    var range = mesh.ranges().get(r);
+                    ranges[r * 3] = range.firstIndex();
+                    ranges[r * 3 + 1] = range.indexCount();
+                    ranges[r * 3 + 2] = range.image();
+                }
+                builder.mesh(mesh.vertices(), mesh.indices(), ranges);
+            }
+        }
+        // Placements beyond the per-tile draw budget are capped in source order, never
+        // failing the whole tile's set.
+        var modelDraws = new int[set.models().size()];
+        for (int m = 0; m < modelDraws.length; m++) {
+            for (var mesh : set.models().get(m).meshes()) {
+                modelDraws[m] += mesh.ranges().size();
+            }
+        }
+        int draws = 0;
+        for (var placement : set.placements()) {
+            int cost = modelDraws[placement.model()];
+            if (draws + cost > WorldStreamTileWriter.Exterior.MAX_DRAWS) {
+                continue;
+            }
+            draws += cost;
+            builder.placement(placement.model(), placement.x(), placement.y(), placement.z(),
+                    placement.scale(), placement.cos(), placement.sin());
+        }
+    }
+
+    /** Inert writer result: a detached validated copy; closing it releases nothing. */
+    record WaterCopy(WorldStreamTileWriter.Water water) implements AutoCloseable {
+        static WaterCopy of(WorldWaterPreview.CheckedBorrow borrow, Cancellation token) {
+            int vertices = borrow.vertices(), indexCount = borrow.indices();
+            if (vertices < 4
+                    || vertices > WorldStreamTileWriter.Water.MAX_CELLS * 4
+                    || vertices % 4 != 0
+                    || indexCount != vertices / 4 * 6) {
+                throw new IllegalArgumentException("Water exceeds packet profile");
+            }
+            var positions = new float[vertices * 3];
+            var depths = new byte[vertices];
+            var indices = new int[indexCount];
+            for (int v = 0; v < vertices; v++) {
+                if ((v & 1023) == 0) {
+                    token.check();
+                }
+                positions[v * 3] = borrow.north(v);
+                positions[v * 3 + 1] = borrow.west(v);
+                positions[v * 3 + 2] = borrow.up(v);
+                int depth = borrow.depth(v);
+                if (depth < 0 || depth > 255) {
+                    throw new IllegalArgumentException("Water depth byte");
+                }
+                depths[v] = (byte) depth;
+            }
+            for (int i = 0; i < indexCount; i++) {
+                indices[i] = borrow.index(i);
+            }
+            return new WaterCopy(
+                    new WorldStreamTileWriter.Water(positions, depths, indices, borrow.layers()));
+        }
+
+        @Override
+        public void close() {}
     }
 
     private static WorldStreamTileWriter.PacketFile write(
@@ -233,7 +601,7 @@ final class WorldStreamSourceBridge {
                 material == null ? null : structural(material.textures()), diffuse);
         try {
             return WorldStreamTileWriter.writeUnadvertised(
-                    destination, data, borrow.geometry(), texture, stopping);
+                    destination, data, borrow.geometry(), texture, null, stopping);
         } catch (IOException failure) {
             throw new UncheckedIOException(failure);
         }

@@ -12,6 +12,7 @@ on:
       - 'rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/terrain-spike/**'
       - 'scripts/rendering/**'
       - '.github/workflows/bgfx-shaders.yml'
+      - 'rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/shaders/global-candidate/**'
   pull_request:
     paths:
       - 'rendering-bgfx/src/main/shaders/**'
@@ -22,6 +23,7 @@ on:
       - 'rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/terrain-spike/**'
       - 'scripts/rendering/**'
       - '.github/workflows/bgfx-shaders.yml'
+      - 'rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/shaders/global-candidate/**'
 
 permissions:
   contents: read
@@ -77,6 +79,19 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Compile and verify production persistent World shaders
+        shell: bash
+        run: |
+          python scripts/rendering/compile_bgfx_world_stream_shaders.py --profile dx11
+          python scripts/rendering/compile_bgfx_world_stream_shaders.py --verify
+      - name: Retain production persistent World shaders
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bgfx-world-stream-shaders
+          path: rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders/world-stream/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Compile and verify authored persistent World feasibility shaders
         shell: bash
         run: |
@@ -100,5 +115,18 @@ jobs:
         with:
           name: bgfx-world-wmo-shaders
           path: rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders/world-wmo/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Compile and verify isolated global candidate shaders
+        shell: bash
+        run: |
+          python scripts/rendering/compile_bgfx_world_global_candidate.py --include-dx11 --profile dx11
+          python scripts/rendering/compile_bgfx_world_global_candidate.py --include-dx11 --verify
+      - name: Retain isolated global candidate shaders
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bgfx-world-global-candidate-shaders
+          path: rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/shaders/global-candidate/
           if-no-files-found: error
           retention-days: 14

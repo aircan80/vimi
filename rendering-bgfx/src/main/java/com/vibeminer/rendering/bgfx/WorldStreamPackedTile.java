@@ -10,32 +10,55 @@ import org.lwjgl.system.MemoryUtil;
 
 /** Single-credit worker preparation. Consumes decoded heap ownership; performs no bgfx calls. */
 final class WorldStreamPackedTile implements AutoCloseable {
-    static final int INSTANCE_BYTES = 48, MAX_GEOMETRY_BYTES = 3 << 20;
+    static final int INSTANCE_BYTES = 48, MAX_WATER_TRIANGLES = 16384;
+    static final int MAX_GEOMETRY_BYTES = (65536 + MAX_WATER_TRIANGLES) * INSTANCE_BYTES;
+    // Untextured diagnostic teal (sRGB 20,115,148); not a claim of client liquid appearance.
+    static final float WATER_R = 20, WATER_G = 115, WATER_B = 148;
 
     /** Transferred native input owner. Never freed before all make_ref_release credits drain. */
     static final class Source implements AutoCloseable {
         final WorldStreamTileFile.Header header;
-        final int triangles;
+
+        /** Terrain instances first, then waterTriangles water instances in the same buffer. */
+        final int triangles, waterTriangles;
+
         ByteBuffer geometry, atlas;
+
+        /** Optional exterior objects to upload after terrain, or null. */
+        WorldStreamPackedObjects objects;
+
+        /** -1 outside the exterior profile; else 0 none, 1 decoded, 2 failed (terrain kept). */
+        final int objectsState;
 
         private Source(
                 WorldStreamTileFile.Header header,
                 int triangles,
+                int waterTriangles,
                 ByteBuffer geometry,
-                ByteBuffer atlas) {
+                ByteBuffer atlas,
+                WorldStreamPackedObjects objects,
+                int objectsState) {
             this.header = header;
+            this.objects = objects;
+            this.objectsState = objectsState;
             this.triangles = triangles;
+            this.waterTriangles = waterTriangles;
             this.geometry = geometry;
             this.atlas = atlas;
         }
 
         long payloadBytes() {
             return (geometry == null ? 0 : geometry.capacity())
-                    + (long) (atlas == null ? 0 : atlas.capacity());
+                    + (long) (atlas == null ? 0 : atlas.capacity())
+                    + (objects == null ? 0 : objects.payloadBytes());
         }
 
         @Override
         public void close() {
+            if (objects != null) {
+                objects.close();
+                objects = null;
+            }
             if (geometry != null) {
                 MemoryUtil.memFree(geometry);
                 geometry = null;
@@ -55,13 +78,49 @@ final class WorldStreamPackedTile implements AutoCloseable {
 
     static WorldStreamPackedTile prepare(
             WorldStreamTileFile.Payload input, BooleanSupplier canceled) {
-        Objects.requireNonNull(input);
-        Objects.requireNonNull(canceled);
+        return prepare(input, null, -1, canceled);
+    }
+
+    /**
+     * Takes ownership of optional packed objects (closed on any failure). objectsState follows
+     * {@link Source#objectsState}; state 1 requires objects.
+     */
+    static WorldStreamPackedTile prepare(
+            WorldStreamTileFile.Payload input,
+            WorldStreamPackedObjects objects,
+            int objectsState,
+            BooleanSupplier canceled) {
+        try {
+            Objects.requireNonNull(input);
+            Objects.requireNonNull(canceled);
+            if (objectsState < -1 || objectsState > 2 || (objectsState == 1) != (objects != null)) {
+                throw new IllegalArgumentException("Packed objects state");
+            }
+            var result = prepareTerrain(input, objects, objectsState, canceled);
+            objects = null;
+            return result;
+        } finally {
+            if (objects != null) {
+                objects.close();
+            }
+        }
+    }
+
+    private static WorldStreamPackedTile prepareTerrain(
+            WorldStreamTileFile.Payload input,
+            WorldStreamPackedObjects objects,
+            int objectsState,
+            BooleanSupplier canceled) {
         ByteBuffer geometry = null, atlas = null;
         try (input) {
             check(canceled);
             var tile = input.tile();
-            int bytes = Math.multiplyExact(tile.triangleCount(), INSTANCE_BYTES);
+            var water = input.water();
+            int waterTriangles = water == null ? 0 : water.indices().length / 3;
+            if (waterTriangles > MAX_WATER_TRIANGLES) {
+                throw new IllegalArgumentException("Packed water exceeds one-credit limit");
+            }
+            int bytes = Math.multiplyExact(tile.triangleCount() + waterTriangles, INSTANCE_BYTES);
             if (bytes > MAX_GEOMETRY_BYTES) {
                 throw new IllegalArgumentException("Packed tile exceeds one-credit geometry limit");
             }
@@ -99,6 +158,19 @@ final class WorldStreamPackedTile implements AutoCloseable {
                     corner(out, bx, by, bz, (116 + rock * 10) * light);
                     corner(out, cx, cy, cz, (68 + rock * 57) * light);
                 }
+                if (water != null) {
+                    // The stream shader takes the three corner w values as the triangle's RGB.
+                    var positions = water.positions();
+                    var cells = water.indices();
+                    for (int at = 0; at < cells.length; at += 3) {
+                        if ((at & 4095) == 0) {
+                            check(canceled);
+                        }
+                        waterCorner(out, positions, cells[at], WATER_R);
+                        waterCorner(out, positions, cells[at + 1], WATER_G);
+                        waterCorner(out, positions, cells[at + 2], WATER_B);
+                    }
+                }
             }
             var pixels = input.atlas();
             if (pixels != null) {
@@ -113,7 +185,14 @@ final class WorldStreamPackedTile implements AutoCloseable {
             check(canceled);
             var result =
                     new WorldStreamPackedTile(
-                            new Source(input.header(), tile.triangleCount(), geometry, atlas));
+                            new Source(
+                                    input.header(),
+                                    tile.triangleCount(),
+                                    waterTriangles,
+                                    geometry,
+                                    atlas,
+                                    objects,
+                                    objectsState));
             geometry = null;
             atlas = null;
             return result;
@@ -125,6 +204,20 @@ final class WorldStreamPackedTile implements AutoCloseable {
                 MemoryUtil.memFree(atlas);
             }
         }
+    }
+
+    synchronized WorldStreamTileFile.Header header() {
+        if (owned == null) {
+            throw new IllegalStateException("Packed input consumed or closed");
+        }
+        return owned.header;
+    }
+
+    synchronized int objectsState() {
+        if (owned == null) {
+            throw new IllegalStateException("Packed input consumed or closed");
+        }
+        return owned.objectsState;
     }
 
     synchronized Source take() {
@@ -142,6 +235,13 @@ final class WorldStreamPackedTile implements AutoCloseable {
             owned.close();
             owned = null;
         }
+    }
+
+    private static void waterCorner(FloatBuffer out, float[] positions, int vertex, float color) {
+        out.put(positions[vertex * 3])
+                .put(positions[vertex * 3 + 1])
+                .put(positions[vertex * 3 + 2])
+                .put(color);
     }
 
     private static void corner(FloatBuffer out, float x, float y, float z, double color) {

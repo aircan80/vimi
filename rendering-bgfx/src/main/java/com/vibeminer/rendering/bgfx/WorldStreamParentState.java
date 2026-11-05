@@ -22,6 +22,7 @@ final class WorldStreamParentState {
                 committed,
                 credited;
         int outcome, coverage;
+        boolean objectsOffered;
         Resident resident;
 
         private Ticket(Object owner, WorldStreamState.Lease lease, long transaction, int x, int y) {
@@ -36,11 +37,22 @@ final class WorldStreamParentState {
     static final class Resident {
         final Object owner;
         final WorldStreamState.Lease lease;
+        final long transaction;
         final int x, y, outcome, coverage;
 
-        private Resident(Ticket ticket) {
+        /** -1 outside the exterior profile; else 0 none, 1 drawn, 2 failed (terrain kept). */
+        final int objects;
+
+        // Late objects: admitted at most once, published at most once; the terminal outcome once
+        // known (the child's reply, or FAILED when the parent could not write the objects file).
+        boolean lateRequested, lateSent;
+        volatile WorldStreamStatus.LateOutcome late;
+
+        private Resident(Ticket ticket, int objects) {
+            this.objects = objects;
             owner = ticket.owner;
             lease = ticket.lease;
+            transaction = ticket.transaction;
             x = ticket.x;
             y = ticket.y;
             outcome = ticket.outcome;
@@ -74,6 +86,7 @@ final class WorldStreamParentState {
         REJECTED,
         CANCEL_REJECTED,
         CANCELED,
+        OBJECTS,
         CLOSED
     }
 
@@ -86,6 +99,7 @@ final class WorldStreamParentState {
     private Ticket ticket;
     private Commit commit;
     private List<Resident> active = List.of();
+    private Resident objectsTarget;
 
     WorldStreamParentState(WorldStreamEnvelope.Session session) {
         this.session = Objects.requireNonNull(session);
@@ -128,7 +142,13 @@ final class WorldStreamParentState {
 
     synchronized WorldStreamControl.Offer offer(
             Ticket value, int length, String sha, int outcome, int coverage) {
+        return offer(value, length, sha, outcome, coverage, false);
+    }
+
+    synchronized WorldStreamControl.Offer offer(
+            Ticket value, int length, String sha, int outcome, int coverage, boolean objects) {
         requireTicket(value);
+        require(!objects || session.exteriorObjects(), "Objects outside session profile");
         require(
                 value.producerDrained
                         && !value.cancelRequested
@@ -143,6 +163,7 @@ final class WorldStreamParentState {
                         session.nonce(), value.transaction, value.lease, length, sha);
         value.outcome = outcome;
         value.coverage = coverage;
+        value.objectsOffered = objects;
         value.offered = true;
         return command;
     }
@@ -239,6 +260,97 @@ final class WorldStreamParentState {
         return commit;
     }
 
+    /**
+     * Publishes the one late objects command for a resident admitted by {@link #admitLateObjects}.
+     * Returns null when the resident is no longer the active generation of its slot (the caller
+     * then reports it dropped without sending anything).
+     */
+    synchronized WorldStreamControl.LateObjects lateObjects(
+            Resident member, int length, String sha) {
+        require(session.exteriorObjects(), "Late objects outside session profile");
+        require(!closed && hello, "Late objects after session end");
+        require(member != null && member.owner == owner, "Foreign late objects resident");
+        require(objectsTarget == null, "Late objects credit");
+        require(
+                member.objects == 0
+                        && member.lateRequested
+                        && !member.lateSent
+                        && member.late == null,
+                "Unadmitted or duplicate resident objects");
+        member.lateSent = true;
+        if (generations[member.lease.slot()] != member.lease.generation()
+                || !active.contains(member)) {
+            member.late = WorldStreamStatus.LateOutcome.DROPPED;
+            return null;
+        }
+        var command =
+                new WorldStreamControl.LateObjects(
+                        session.nonce(), member.transaction, member.lease, length, sha);
+        objectsTarget = member;
+        return command;
+    }
+
+    /**
+     * Synchronous admission before any file is written. Misuse (a foreign resident, one with inline
+     * objects, or one already requested) is refused with IllegalArgumentException so the caller can
+     * fail only that request. Returns false when the resident is no longer the active generation of
+     * its slot. Any admission of a live session consumes the resident's one request, whatever the
+     * delivery then does.
+     */
+    synchronized boolean admitLateObjects(Resident member) {
+        if (member == null || member.owner != owner) {
+            throw new IllegalArgumentException("Foreign late objects resident");
+        }
+        if (member.objects != 0 || member.lateRequested) {
+            throw new IllegalArgumentException("Resident objects already requested or inline");
+        }
+        if (closed || !hello) {
+            return false;
+        }
+        if (generations[member.lease.slot()] != member.lease.generation()
+                || !active.contains(member)) {
+            member.lateRequested = true;
+            member.late = WorldStreamStatus.LateOutcome.DROPPED;
+            return false;
+        }
+        member.lateRequested = true;
+        return true;
+    }
+
+    /**
+     * Records the terminal outcome of an admitted resident whose objects file the parent could not
+     * write; nothing was sent for it. A resident retired since admission is DROPPED, like every
+     * other retired path; otherwise FAILED. Returns the recorded outcome.
+     */
+    synchronized WorldStreamStatus.LateOutcome lateObjectsFailed(Resident member) {
+        require(
+                member != null
+                        && member.owner == owner
+                        && member.lateRequested
+                        && !member.lateSent
+                        && member.late == null,
+                "Late objects failure without admission");
+        member.late =
+                generations[member.lease.slot()] != member.lease.generation()
+                                || !active.contains(member)
+                        ? WorldStreamStatus.LateOutcome.DROPPED
+                        : WorldStreamStatus.LateOutcome.FAILED;
+        return member.late;
+    }
+
+    /**
+     * Withdraws a published command that the transport refused to send because the session began
+     * stopping; no reply can arrive for it, so its credit is returned and nothing is recorded.
+     */
+    synchronized void lateObjectsUnsent(Resident member) {
+        require(member != null && objectsTarget == member, "Unsent late objects target");
+        objectsTarget = null;
+    }
+
+    synchronized boolean lateObjectsPending() {
+        return objectsTarget != null;
+    }
+
     synchronized void retireCommitFile(Commit value) {
         require(
                 value == commit && (value.inputConsumed || childGone) && !value.fileRetired,
@@ -252,8 +364,11 @@ final class WorldStreamParentState {
             return Change.IGNORED;
         }
         require(!closed, "Status after terminal");
-        if (message instanceof WorldStreamStatus.Session) {
+        if (message instanceof WorldStreamStatus.Session value) {
             require(!hello, "Duplicate session");
+            require(
+                    value.exteriorObjects() == session.exteriorObjects(),
+                    "Session profile differs");
             hello = true;
             return Change.SESSION;
         }
@@ -319,9 +434,14 @@ final class WorldStreamParentState {
                             && !ticket.rejected
                             && !ticket.canceled
                             && ticket.outcome == value.outcome()
-                            && ticket.coverage == value.coverage(),
+                            && ticket.coverage == value.coverage()
+                            && (session.exteriorObjects()
+                                    ? ticket.objectsOffered
+                                            ? value.objects() == 1 || value.objects() == 2
+                                            : value.objects() == 0
+                                    : value.objects() == -1),
                     "Unmatched staged payload");
-            ticket.resident = new Resident(ticket);
+            ticket.resident = new Resident(ticket, value.objects());
             return Change.STAGED;
         }
         if (message instanceof WorldStreamStatus.Committed value) {
@@ -390,6 +510,16 @@ final class WorldStreamParentState {
             ticket.canceled = true;
             ticket.cancelResolved = true;
             return Change.CANCELED;
+        }
+        if (message instanceof WorldStreamStatus.ObjectsDone value) {
+            require(
+                    objectsTarget != null
+                            && objectsTarget.transaction == value.transaction()
+                            && objectsTarget.lease.equals(value.lease()),
+                    "Unmatched late objects outcome");
+            objectsTarget.late = value.outcome();
+            objectsTarget = null;
+            return Change.OBJECTS;
         }
         require(message instanceof WorldStreamStatus.Closed, "Unknown status");
         closed = true;

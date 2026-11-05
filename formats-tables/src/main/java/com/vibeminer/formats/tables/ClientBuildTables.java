@@ -44,8 +44,9 @@ final class ClientBuildTables implements BuildTables {
     private final Map<Long, CompletableFuture<Void>> background = new HashMap<>();
     private final Object gate = new Object();
     private final java.util.Set<Cancellation> preloads = new java.util.HashSet<>();
-    private boolean closed;
-    private int active;
+    private boolean closed, closeStarted, closeCallbacks, filesClosing;
+    private Throwable closeFailure;
+    private int active, closeCaptureDrains;
     private final java.util.Set<CapturedRowsHandle> captures = new java.util.HashSet<>();
     private final java.util.Set<Cancellation> captureRequests = new java.util.HashSet<>();
     java.util.function.BiConsumer<CapturedRowsTypes.Capture, CompletableFuture<Void>>
@@ -381,6 +382,12 @@ final class ClientBuildTables implements BuildTables {
 
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
 
+    /** Test seam: false re-prepares READY known tables, so tests can compare both passes. */
+    volatile boolean reuseShallowReady = true;
+
+    /** Test seam: observes each table the preload pass prepares in full. */
+    volatile java.util.function.LongConsumer deepPrepared = id -> {};
+
     ClientBuildTables(
             com.vibeminer.files.Files fileSystem,
             BuildFiles files,
@@ -510,15 +517,52 @@ final class ClientBuildTables implements BuildTables {
     }
 
     private void finish() {
-        boolean done;
         synchronized (gate) {
             active--;
-            done = closed && active == 0;
         }
-        if (done) {
+        retireFilesIfReady();
+    }
+
+    private void recordCloseFailure(Throwable failure) {
+        synchronized (gate) {
+            if (closeFailure == null) {
+                closeFailure = failure;
+            } else if (closeFailure != failure) {
+                closeFailure.addSuppressed(failure);
+            }
+        }
+    }
+
+    private void retireFilesIfReady() {
+        synchronized (gate) {
+            if (!closed
+                    || closeCallbacks
+                    || active != 0
+                    || closeCaptureDrains != 0
+                    || filesClosing) {
+                return;
+            }
+            filesClosing = true;
+        }
+        try {
             files.close();
-            drained.complete(null);
+        } catch (RuntimeException | Error failure) {
+            recordCloseFailure(failure);
         }
+        Throwable failure;
+        synchronized (gate) {
+            failure = closeFailure;
+        }
+        if (failure == null) {
+            drained.complete(null);
+        } else {
+            drained.completeExceptionally(
+                    new IllegalStateException("Table close cleanup failed", failure));
+        }
+    }
+
+    CompletableFuture<Void> whenClosed() {
+        return drained.copy();
     }
 
     private TableTypes.Entry entry(
@@ -605,7 +649,8 @@ final class ClientBuildTables implements BuildTables {
             boolean nativeOnly,
             Cancellation token) {
         long id = id(ref);
-        var stat = id == 0 ? null : files.stat(FileRef.id(id), token).join();
+        // Preparation needs only lookup state, content key and storage: skip name and format.
+        var stat = id == 0 ? null : files.statContent(FileRef.id(id), token).join();
         String content = stat == null || stat.file() == null ? null : stat.file().contentKey();
         if (stat == null) {
             return failed(
@@ -1670,6 +1715,121 @@ final class ClientBuildTables implements BuildTables {
                 });
     }
 
+    record HotfixMetadata(
+            TableTypes.Entry entry,
+            Db2Types.Header header,
+            com.vibeminer.formats.definitions.TableSchema schema,
+            long rows,
+            String identity,
+            Db2Reader.HotfixHeaderFacts raw) {}
+
+    CompletableFuture<HotfixMetadata> hotfixMetadata(
+            TableTypes.Ref ref, TableTypes.Priority priority, Cancellation token) {
+        return hotfixMetadata(ref, priority, token, true);
+    }
+
+    CompletableFuture<HotfixMetadata> hotfixMetadata(
+            TableTypes.Ref ref,
+            TableTypes.Priority priority,
+            Cancellation token,
+            boolean readRawHeader) {
+        return operation(
+                token,
+                t -> {
+                    try (var prepared = prepare(ref, priority, false, false, t)) {
+                        if (!TableQueries.isReadable(prepared.entry().state())
+                                || prepared.definition() == null
+                                || prepared.definition().schema() == null) {
+                            return null;
+                        }
+                        var nativeHeader =
+                                prepared.stored() != null
+                                        ? prepared.stored().header()
+                                        : prepared.direct().header();
+                        if (!readRawHeader) {
+                            return new HotfixMetadata(
+                                    prepared.entry(),
+                                    nativeHeader,
+                                    prepared.definition().schema(),
+                                    prepared.count(),
+                                    prepared.identity(),
+                                    null);
+                        }
+                        long id = prepared.entry().fileDataId();
+                        var before = files.stat(FileRef.id(id), t).join();
+                        if (before.file() == null
+                                || !java.util.Objects.equals(
+                                        before.file().contentKey(),
+                                        prepared.entry().contentKey())) {
+                            throw new IllegalStateException("Hotfix base source changed");
+                        }
+                        var opened = files.openRead(FileRef.id(id), t).join();
+                        if (opened.stream() == null) {
+                            throw new IllegalStateException("Hotfix base header unavailable");
+                        }
+                        Db2Reader.HotfixHeaderFacts raw;
+                        long observedLength;
+                        try (var stream = opened.stream()) {
+                            long length = stream.length();
+                            observedLength = length;
+                            if (length < 72
+                                    || length > limits.maxDecodedBytes()
+                                    || before.file().size() != null
+                                            && before.file().size() != length) {
+                                throw new IllegalStateException(
+                                        "Hotfix base header length differs");
+                            }
+                            int size = (int) Math.min(204, length);
+                            var headerHoles = stream.holes();
+                            if (headerHoles.size() > limits.maxSections()) {
+                                throw new IllegalStateException("Hotfix header hole limit");
+                            }
+                            for (var hole : headerHoles) {
+                                t.check();
+                                if (hole.offset() < size && hole.length() > 0) {
+                                    throw new IllegalStateException(
+                                            "Hotfix base header is protected");
+                                }
+                            }
+                            var prefix = java.nio.ByteBuffer.allocate(size);
+                            while (prefix.hasRemaining()) {
+                                t.check();
+                                int prior = prefix.position();
+                                int count = stream.read(prefix, t).join();
+                                t.check();
+                                if (count <= 0
+                                        || prefix.limit() != size
+                                        || count != prefix.position() - prior) {
+                                    throw new IllegalStateException(
+                                            "Hotfix base header read differs");
+                                }
+                            }
+                            raw = Db2Reader.hotfixHeaderFacts(prefix.array());
+                        }
+                        t.check();
+                        var after = files.stat(FileRef.id(id), t).join();
+                        if (after.file() == null
+                                || !java.util.Objects.equals(
+                                        after.file().contentKey(), prepared.entry().contentKey())
+                                || after.file().size() != null
+                                        && after.file().size() != observedLength
+                                || !raw.format().equals(nativeHeader.format())
+                                || !raw.tableHash().equalsIgnoreCase(nativeHeader.tableHash())
+                                || !raw.layoutHash().equalsIgnoreCase(nativeHeader.layoutHash())) {
+                            throw new IllegalStateException(
+                                    "Hotfix base header/schema source differs");
+                        }
+                        return new HotfixMetadata(
+                                prepared.entry(),
+                                nativeHeader,
+                                prepared.definition().schema(),
+                                prepared.count(),
+                                prepared.identity(),
+                                raw);
+                    }
+                });
+    }
+
     @Override
     public CompletableFuture<TableTypes.Page> page(
             TableTypes.PageRequest request, TableTypes.Priority priority, Cancellation token) {
@@ -1934,26 +2094,56 @@ final class ClientBuildTables implements BuildTables {
 
     @Override
     public CompletableFuture<Void> closeAsync() {
-        boolean close;
         List<Cancellation> stopping;
         List<CapturedRowsHandle> stoppingCaptures;
         synchronized (gate) {
+            if (closeStarted) {
+                return drained.copy();
+            }
             closed = true;
+            closeStarted = true;
+            closeCallbacks = true;
             var stoppingAll = new ArrayList<>(preloads);
             stoppingAll.addAll(captureRequests);
             stopping = List.copyOf(stoppingAll);
             stoppingCaptures = List.copyOf(captures);
-            close = active == 0;
         }
-        for (var cancellation : stopping) {
-            cancellation.cancel();
-        }
-        for (var capture : stoppingCaptures) {
-            capture.closeAsync();
-        }
-        if (close) {
-            files.close();
-            drained.complete(null);
+        try {
+            for (var cancellation : stopping) {
+                try {
+                    cancellation.cancel();
+                } catch (RuntimeException | Error failure) {
+                    recordCloseFailure(failure);
+                }
+            }
+            for (var capture : stoppingCaptures) {
+                synchronized (gate) {
+                    closeCaptureDrains++;
+                }
+                try {
+                    capture.closeAsync()
+                            .whenComplete(
+                                    (ignored, failure) -> {
+                                        if (failure != null) {
+                                            recordCloseFailure(failure);
+                                        }
+                                        synchronized (gate) {
+                                            closeCaptureDrains--;
+                                        }
+                                        retireFilesIfReady();
+                                    });
+                } catch (RuntimeException | Error failure) {
+                    recordCloseFailure(failure);
+                    synchronized (gate) {
+                        closeCaptureDrains--;
+                    }
+                }
+            }
+        } finally {
+            synchronized (gate) {
+                closeCallbacks = false;
+            }
+            retireFilesIfReady();
         }
         return drained.copy();
     }
@@ -2260,7 +2450,16 @@ final class ClientBuildTables implements BuildTables {
                                     && file.state() == FileTypes.FileEnsureState.CANCELED) {
                                 throw new java.util.concurrent.CancellationException();
                             }
-                            if (file != null
+                            if (known
+                                    && reuseShallowReady
+                                    && options.localDefinitionsOnly()
+                                    && table.state() == TableTypes.State.READY) {
+                                // The shallow pass already opened this table's existing generated
+                                // graph with the same local-only definition lookup a full prepare
+                                // uses, so preparing it again yields the same entry. With fetching
+                                // enabled a full prepare may ask for a newer definition instead.
+                                checked = table;
+                            } else if (file != null
                                     && file.state() != FileTypes.FileEnsureState.STORED
                                     && file.state() != FileTypes.FileEnsureState.ALREADY_STORED
                                     && !(known && TableQueries.isReadable(table.state()))) {
@@ -2287,6 +2486,7 @@ final class ClientBuildTables implements BuildTables {
                                                 null,
                                                 table.contentKey());
                             } else {
+                                deepPrepared.accept(table.fileDataId());
                                 try (var p =
                                         prepare(
                                                 TableTypes.Ref.id(table.fileDataId()),

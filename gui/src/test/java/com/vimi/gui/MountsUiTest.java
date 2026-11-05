@@ -34,6 +34,7 @@ public final class MountsUiTest {
 
     private static final CompletableFuture<Void> loadingChecks = new CompletableFuture<>();
     private static final CompletableFuture<Void> retirementChecks = new CompletableFuture<>();
+    private static final CompletableFuture<Void> idleChecks = new CompletableFuture<>();
 
     public static void main(String[] args) throws Exception {
         var done = new CompletableFuture<Void>();
@@ -42,6 +43,7 @@ public final class MountsUiTest {
                     try {
                         loadingFeedback();
                         retirementFeedback();
+                        idleFeedback();
                         var runner =
                                 new MountTypes.Mount(
                                         6,
@@ -296,9 +298,10 @@ public final class MountsUiTest {
             done.get(20, TimeUnit.SECONDS);
             loadingChecks.get(5, TimeUnit.SECONDS);
             retirementChecks.get(5, TimeUnit.SECONDS);
+            idleChecks.get(20, TimeUnit.SECONDS);
             System.out.println(
                     "Mounts UI: partial records, lazy variants, source-spell search, resize, stale"
-                            + " selection and borrowed lifetime passed");
+                            + " selection, borrowed lifetime and qualified idle playback passed");
         } finally {
             Platform.exit();
         }
@@ -689,6 +692,171 @@ public final class MountsUiTest {
                         loadingChecks.completeExceptionally(error);
                     }
                 });
+    }
+
+    private static com.vibeminer.rendering.models.PreviewAnimation spin(MeshAppearance rest) {
+        float s = (float) Math.sqrt(.5);
+        var rotation =
+                new com.vibeminer.rendering.models.PreviewAnimation.Track(
+                        com.vibeminer.rendering.models.PreviewAnimation.Interpolation.LINEAR,
+                        -1,
+                        4,
+                        new int[] {0, 500, 1000},
+                        new float[] {0, 0, 0, 1, 0, 0, s, s, 0, 0, 1, 0});
+        int vertices = rest.mesh().vertexCount();
+        int[] bones = new int[vertices * 4], weights = new int[vertices * 4];
+        for (int v = 0; v < vertices; v++) weights[v * 4] = 255;
+        return new com.vibeminer.rendering.models.PreviewAnimation(
+                "Stand",
+                1000,
+                new long[0],
+                List.of(
+                        new com.vibeminer.rendering.models.PreviewAnimation.Bone(
+                                -1, 0, 0, 0, null, rotation, null, false)),
+                rest.mesh(),
+                rest.normals(),
+                bones,
+                weights);
+    }
+
+    private static long checksum(javafx.scene.Parent root) {
+        var image =
+                (javafx.scene.image.ImageView) root.lookup("#model-preview-image");
+        if (image == null || image.getImage() == null) return 0;
+        var source = image.getImage();
+        long sum = 17;
+        var reader = source.getPixelReader();
+        for (int y = 0; y < source.getHeight(); y += 3)
+            for (int x = 0; x < source.getWidth(); x += 3) sum = sum * 31 + reader.getArgb(x, y);
+        return sum;
+    }
+
+    /** Idle control appears only for a matching qualified animation and explains refusals. */
+    private static void idleFeedback() {
+        var mount = new MountTypes.Mount(9, "Authored idle mount", "", "", null, null, null, null, null);
+        var rest = appearance();
+        var animation = spin(rest);
+        BuildMounts handle =
+                new BuildMounts() {
+                    public CompletableFuture<MountTypes.Catalog> catalog(Cancellation token) {
+                        return CompletableFuture.completedFuture(
+                                new MountTypes.Catalog(
+                                        MountTypes.State.READY, List.of(mount), List.of(), null));
+                    }
+
+                    public CompletableFuture<MountTypes.Overview> overview(
+                            long id, Cancellation token) {
+                        return CompletableFuture.completedFuture(
+                                new MountTypes.Overview(
+                                        MountTypes.State.READY,
+                                        mount,
+                                        List.of(
+                                                new MountTypes.Variant(1, 20, 0L, "MountXDisplay"),
+                                                new MountTypes.Variant(2, 21, 0L, "MountXDisplay")),
+                                        List.of(),
+                                        null));
+                    }
+
+                    public CompletableFuture<DisplayModelTypes.Preview> preview(
+                            long id, long variant, Cancellation token) {
+                        return CompletableFuture.completedFuture(
+                                new DisplayModelTypes.Preview(
+                                        DisplayModelTypes.State.PARTIAL,
+                                        null,
+                                        variant == 1 ? rest : appearance(),
+                                        Set.of(0),
+                                        List.of(),
+                                        false,
+                                        null));
+                    }
+
+                    public CompletableFuture<DisplayModelTypes.Idle> idle(
+                            long id, long variant, Cancellation token) {
+                        return CompletableFuture.completedFuture(
+                                variant == 1
+                                        ? new DisplayModelTypes.Idle(
+                                                DisplayModelTypes.IdleState.AVAILABLE,
+                                                null,
+                                                animation,
+                                                "Authored Stand idle")
+                                        : new DisplayModelTypes.Idle(
+                                                DisplayModelTypes.IdleState.UNSUPPORTED,
+                                                null,
+                                                null,
+                                                "Authored external skeleton"));
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        var view = new MountsView(() -> handle, () -> 1, "Authored idle fixture");
+        var stage = new Stage();
+        stage.setScene(new Scene(view, 1200, 850));
+        stage.show();
+        view.ensureLoaded();
+        var frames = new java.util.ArrayList<Long>();
+        await(
+                () -> {
+                    var box = (javafx.scene.control.CheckBox) view.lookup("#model-idle-animation");
+                    return box != null && box.isVisible() && hasImage(view);
+                },
+                () -> {
+                    var box = (javafx.scene.control.CheckBox) view.lookup("#model-idle-animation");
+                    require(!box.isDisabled(), "Qualified idle control is enabled");
+                    require(
+                            labels(view).contains("Authored Stand idle"),
+                            "Idle qualification is described");
+                    box.fire();
+                    frames.add(checksum(view));
+                    await(
+                            () -> {
+                                long current = checksum(view);
+                                if (current != 0 && !frames.contains(current)) frames.add(current);
+                                return frames.size() >= 3
+                                        && labels(view).stream()
+                                                .anyMatch(t -> t.contains("Stand idle · software"));
+                            },
+                            () -> {
+                                @SuppressWarnings("unchecked")
+                                var variants =
+                                        (ComboBox<MountTypes.Variant>)
+                                                view.lookupAll(".combo-box").stream()
+                                                        .filter(
+                                                                n ->
+                                                                        "Recorded mount display variants"
+                                                                                .equals(n.getAccessibleText()))
+                                                        .findFirst()
+                                                        .orElseThrow();
+                                variants.getSelectionModel().select(1);
+                                await(
+                                        () ->
+                                                labels(view).contains(
+                                                        "Idle animation unavailable: Authored"
+                                                                + " external skeleton"),
+                                        () -> {
+                                            var hidden =
+                                                    (javafx.scene.control.CheckBox)
+                                                            view.lookup("#model-idle-animation");
+                                            require(
+                                                    !hidden.isVisible() && !hidden.isManaged(),
+                                                    "Unsupported idle hides the control");
+                                            require(
+                                                    labels(view).stream()
+                                                            .noneMatch(t -> t.contains("Stand idle · software")),
+                                                    "Static preview resumes for the unsupported variant");
+                                            view.close();
+                                            stage.close();
+                                            idleChecks.complete(null);
+                                        },
+                                        idleChecks,
+                                        0);
+                            },
+                            idleChecks,
+                            0);
+                },
+                idleChecks,
+                0);
     }
 
     private static void require(boolean value, String message) {

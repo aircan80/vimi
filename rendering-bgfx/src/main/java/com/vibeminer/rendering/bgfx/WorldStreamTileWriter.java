@@ -4,6 +4,7 @@ import com.vibeminer.rendering.world.TerrainScene;
 import com.vibeminer.rendering.world.TerrainTextureBinding;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.BooleanSupplier;
@@ -140,7 +141,8 @@ public final class WorldStreamTileWriter {
         private WorldStreamTileFile.Header header(
                 WorldStreamTransport.PacketDestination.Context context,
                 TerrainScene.Tile tile,
-                String materialDigest) {
+                String materialDigest,
+                WorldStreamObjectsFile.Reference objects) {
             return new WorldStreamTileFile.Header(
                     context.nonce(),
                     scope,
@@ -162,27 +164,428 @@ public final class WorldStreamTileWriter {
                     wdt,
                     root,
                     tex0,
-                    diffuse);
+                    diffuse,
+                    objects);
+        }
+    }
+
+    /**
+     * Detached validated BASIC_EXTERIOR_V1 object set for one tile: shared model meshes in local
+     * WMO space, RGBA8 images and per-placement double transforms in native terrain axes (x north,
+     * y west, z up). Construction is structural only; the application's closed bridge is its sole
+     * producer.
+     */
+    public static final class Exterior {
+        /** Per-tile draw budget: the sum over placements of their model's ranges. */
+        public static final int MAX_DRAWS = WorldStreamObjectsFile.MAX_DRAWS;
+
+        private final WorldStreamObjectsFile.Data data;
+
+        private Exterior(WorldStreamObjectsFile.Data data) {
+            this.data = data;
+        }
+
+        public static Builder builder() {
+            return new Builder();
+        }
+
+        public int placements() {
+            return data.placementCount();
+        }
+
+        public int draws() {
+            return data.draws;
+        }
+
+        public int bytes() {
+            return data.bytes();
+        }
+
+        WorldStreamObjectsFile.Data data() {
+            return data;
+        }
+
+        /** Bounded accumulation; every add is checked against the per-tile file profile. */
+        public static final class Builder {
+            private final java.util.ArrayList<int[]> models = new java.util.ArrayList<>();
+            private final java.util.ArrayList<int[]> meshes = new java.util.ArrayList<>();
+            private final java.util.ArrayList<int[]> ranges = new java.util.ArrayList<>();
+            private final java.util.ArrayList<double[]> placements = new java.util.ArrayList<>();
+            private final java.util.ArrayList<Integer> placementModels =
+                    new java.util.ArrayList<>();
+            private final java.util.ArrayList<int[]> images = new java.util.ArrayList<>();
+            private final java.util.ArrayList<float[]> vertexBlocks = new java.util.ArrayList<>();
+            private final java.util.ArrayList<short[]> indexBlocks = new java.util.ArrayList<>();
+            private final java.util.ArrayList<byte[]> pixelBlocks = new java.util.ArrayList<>();
+            private int vertices, indices, pixels, draws;
+            private boolean built;
+
+            private Builder() {}
+
+            /**
+             * Whether one more whole model with these totals still fits the per-tile file profile,
+             * so a caller can add a model completely or not at all. Image sides are checked by
+             * {@link #image}; this checks counts only.
+             */
+            public boolean fits(
+                    int imageCount,
+                    long pixelCount,
+                    int meshCount,
+                    int vertexCount,
+                    int indexCount,
+                    int rangeCount) {
+                open();
+                return imageCount >= 0
+                        && pixelCount >= 0
+                        && meshCount >= 1
+                        && vertexCount >= 0
+                        && indexCount >= 0
+                        && rangeCount >= meshCount
+                        && models.size() < WorldStreamObjectsFile.MAX_MODELS
+                        && imageCount <= WorldStreamObjectsFile.MAX_IMAGES - images.size()
+                        && pixelCount <= WorldStreamObjectsFile.MAX_PIXELS - pixels
+                        && meshCount <= WorldStreamObjectsFile.MAX_MESHES - meshes.size()
+                        && vertexCount <= WorldStreamObjectsFile.MAX_VERTICES - vertices
+                        && indexCount <= WorldStreamObjectsFile.MAX_INDICES - indices
+                        && rangeCount <= WorldStreamObjectsFile.MAX_RANGES - ranges.size();
+            }
+
+            /** Placements that can still be added. */
+            public int placementRoom() {
+                return WorldStreamObjectsFile.MAX_PLACEMENTS - placements.size();
+            }
+
+            /** Draw calls that placements can still add (the sum of their models' ranges). */
+            public int drawRoom() {
+                return MAX_DRAWS - draws;
+            }
+
+            /** Draw calls one placement of {@code model} costs: its ranges added so far. */
+            public int drawCost(int model) {
+                if (model < 0 || model >= models.size()) {
+                    throw new IllegalArgumentException("Exterior placement model");
+                }
+                int first = models.get(model)[0], count = models.get(model)[1], cost = 0;
+                for (int mesh = first; mesh < first + count; mesh++) {
+                    cost += meshes.get(mesh)[5];
+                }
+                return cost;
+            }
+
+            /** Placements added so far. */
+            public int placementCount() {
+                return placements.size();
+            }
+
+            /** Copies one RGBA8 image (power-of-two sides at most 256); returns its index. */
+            public int image(int width, int height, java.nio.ByteBuffer rgba) {
+                open();
+                Objects.requireNonNull(rgba);
+                long count = (long) width * height;
+                if (images.size() == WorldStreamObjectsFile.MAX_IMAGES
+                        || width < 1
+                        || height < 1
+                        || count > WorldStreamObjectsFile.MAX_PIXELS - pixels
+                        || rgba.remaining() != count * 4) {
+                    throw new IllegalArgumentException("Exterior image exceeds file profile");
+                }
+                var copy = new byte[(int) count * 4];
+                rgba.duplicate().get(copy);
+                images.add(new int[] {width, height});
+                pixelBlocks.add(copy);
+                pixels += (int) count;
+                return images.size() - 1;
+            }
+
+            /** Starts a new shared model; returns its index. Following meshes belong to it. */
+            public int model() {
+                open();
+                if (models.size() == WorldStreamObjectsFile.MAX_MODELS) {
+                    throw new IllegalArgumentException("Exterior models exceed file profile");
+                }
+                models.add(new int[] {meshes.size(), 0});
+                return models.size() - 1;
+            }
+
+            /**
+             * Copies one mesh of the current model: 8 floats per vertex (position, normal, uv),
+             * mesh-relative indices and (first index, index count, image) range triples.
+             */
+            public void mesh(
+                    java.nio.FloatBuffer vertexData,
+                    java.nio.IntBuffer indexData,
+                    int[] drawRanges) {
+                open();
+                Objects.requireNonNull(vertexData);
+                Objects.requireNonNull(indexData);
+                Objects.requireNonNull(drawRanges);
+                int vertexFloats = vertexData.remaining(), indexCount = indexData.remaining();
+                int count = vertexFloats / WorldStreamObjectsFile.VERTEX_FLOATS;
+                if (models.isEmpty()
+                        || meshes.size() == WorldStreamObjectsFile.MAX_MESHES
+                        || vertexFloats % WorldStreamObjectsFile.VERTEX_FLOATS != 0
+                        || count > WorldStreamObjectsFile.MAX_MESH_VERTICES
+                        || count > WorldStreamObjectsFile.MAX_VERTICES - vertices
+                        || indexCount > WorldStreamObjectsFile.MAX_INDICES - indices
+                        || drawRanges.length % 3 != 0
+                        || drawRanges.length / 3
+                                > WorldStreamObjectsFile.MAX_RANGES - ranges.size()) {
+                    throw new IllegalArgumentException("Exterior mesh exceeds file profile");
+                }
+                var floats = new float[vertexFloats];
+                vertexData.duplicate().get(floats);
+                var shorts = new short[indexCount];
+                var source = indexData.duplicate();
+                for (int i = 0; i < indexCount; i++) {
+                    int index = source.get();
+                    if (index < 0 || index >= count) {
+                        throw new IllegalArgumentException("Exterior mesh index");
+                    }
+                    shorts[i] = (short) index;
+                }
+                meshes.add(
+                        new int[] {
+                            vertices,
+                            count,
+                            indices,
+                            indexCount,
+                            ranges.size(),
+                            drawRanges.length / 3
+                        });
+                for (int r = 0; r < drawRanges.length; r += 3) {
+                    ranges.add(new int[] {drawRanges[r], drawRanges[r + 1], drawRanges[r + 2]});
+                }
+                vertexBlocks.add(floats);
+                indexBlocks.add(shorts);
+                vertices += count;
+                indices += indexCount;
+                models.get(models.size() - 1)[1]++;
+            }
+
+            /** One placement of a model; native terrain axes, heading cos/sin and scale. */
+            public void placement(
+                    int model, double x, double y, double z, double scale, double cos, double sin) {
+                open();
+                if (placements.size() == WorldStreamObjectsFile.MAX_PLACEMENTS) {
+                    throw new IllegalArgumentException("Exterior placements exceed file profile");
+                }
+                if (model >= 0 && model < models.size()) {
+                    draws += drawCost(model);
+                }
+                placementModels.add(model);
+                placements.add(new double[] {x, y, z, scale, cos, sin});
+            }
+
+            /** Validates the whole set against the reader's exact checks. */
+            public Exterior build() {
+                open();
+                built = true;
+                var modelTable = new int[models.size() * 2];
+                for (int i = 0; i < models.size(); i++) {
+                    modelTable[i * 2] = models.get(i)[0];
+                    modelTable[i * 2 + 1] = models.get(i)[1];
+                }
+                var meshTable = new int[meshes.size() * 6];
+                for (int i = 0; i < meshes.size(); i++) {
+                    System.arraycopy(meshes.get(i), 0, meshTable, i * 6, 6);
+                }
+                var rangeTable = new int[ranges.size() * 3];
+                for (int i = 0; i < ranges.size(); i++) {
+                    System.arraycopy(ranges.get(i), 0, rangeTable, i * 3, 3);
+                }
+                var models = new int[placementModels.size()];
+                var transforms = new double[placements.size() * 6];
+                for (int i = 0; i < models.length; i++) {
+                    models[i] = placementModels.get(i);
+                    System.arraycopy(placements.get(i), 0, transforms, i * 6, 6);
+                }
+                var imageTable = new int[images.size() * 2];
+                for (int i = 0; i < images.size(); i++) {
+                    System.arraycopy(images.get(i), 0, imageTable, i * 2, 2);
+                }
+                var vertexData = new float[vertices * WorldStreamObjectsFile.VERTEX_FLOATS];
+                int at = 0;
+                for (var block : vertexBlocks) {
+                    System.arraycopy(block, 0, vertexData, at, block.length);
+                    at += block.length;
+                }
+                var indexData = new short[indices];
+                at = 0;
+                for (var block : indexBlocks) {
+                    System.arraycopy(block, 0, indexData, at, block.length);
+                    at += block.length;
+                }
+                var pixelData = new byte[pixels * 4];
+                at = 0;
+                for (var block : pixelBlocks) {
+                    System.arraycopy(block, 0, pixelData, at, block.length);
+                    at += block.length;
+                }
+                return new Exterior(
+                        new WorldStreamObjectsFile.Data(
+                                modelTable,
+                                meshTable,
+                                rangeTable,
+                                models,
+                                transforms,
+                                imageTable,
+                                vertexData,
+                                indexData,
+                                pixelData));
+            }
+
+            private void open() {
+                if (built) {
+                    throw new IllegalStateException("Exterior builder already built");
+                }
+            }
+        }
+    }
+
+    /**
+     * Caller-owned published objects file for one destination. Close deletes it unless a terrain
+     * packet adopted it; after adoption the packet owner deletes both files together.
+     */
+    public static final class ObjectsFile implements AutoCloseable {
+        private final Path path;
+        private final WorldStreamObjectsFile.Reference reference;
+        private final WorldStreamTransport.PacketDestination destination;
+        private boolean adopted, closed;
+
+        private ObjectsFile(
+                Path path,
+                WorldStreamObjectsFile.Reference reference,
+                WorldStreamTransport.PacketDestination destination) {
+            this.path = path;
+            this.reference = reference;
+            this.destination = destination;
+        }
+
+        public int bytes() {
+            return reference.length();
+        }
+
+        private synchronized WorldStreamObjectsFile.Reference claim(
+                WorldStreamTransport.PacketDestination target) {
+            if (adopted || closed || target != destination) {
+                throw new IllegalStateException("Foreign, adopted or closed objects file");
+            }
+            return reference;
+        }
+
+        private synchronized void adopted() {
+            adopted = true;
+        }
+
+        @Override
+        public void close() {
+            synchronized (this) {
+                if (adopted || closed) {
+                    return;
+                }
+                closed = true;
+            }
+            try {
+                Files.deleteIfExists(path);
+            } catch (IOException failed) {
+                throw new java.io.UncheckedIOException(failed);
+            }
+        }
+    }
+
+    /**
+     * Off-FX structural IO: publishes this destination's {@code tile-<txn>.wso} before its terrain
+     * packet is written. Only sessions in the exterior profile admit it.
+     */
+    public static ObjectsFile writeObjectsUnadvertised(
+            WorldStreamTransport.PacketDestination destination,
+            Exterior exterior,
+            BooleanSupplier stopping)
+            throws IOException {
+        Objects.requireNonNull(destination);
+        Objects.requireNonNull(exterior);
+        Objects.requireNonNull(stopping);
+        if (!destination.exteriorObjects()) {
+            throw new IllegalStateException("Session profile has no exterior objects");
+        }
+        var context = destination.context();
+        var identity =
+                new WorldStreamObjectsFile.Identity(
+                        context.nonce(),
+                        context.scope(),
+                        context.transaction(),
+                        context.lease(),
+                        context.x(),
+                        context.y());
+        var directory = context.path().getParent();
+        var reference = WorldStreamObjectsFile.write(directory, identity, exterior.data, stopping);
+        return new ObjectsFile(
+                directory.resolve(WorldStreamObjectsFile.basename(context.transaction())),
+                reference,
+                destination);
+    }
+
+    /**
+     * Detached validated copy of one actual Source water preparation for a single terrain tile.
+     * Construction is structural only; the application's closed bridge is its sole producer.
+     */
+    public static final class Water {
+        public static final int MAX_CELLS = WorldStreamTileFile.MAX_WATER_CELLS;
+        private final WorldStreamTileFile.Water wire;
+
+        /** Copies every array. Native axes: x north, y west, z up; fixed per-cell indices. */
+        public Water(float[] positions, byte[] depths, int[] indices, int layers) {
+            wire =
+                    new WorldStreamTileFile.Water(
+                            positions.clone(), depths.clone(), indices.clone(), layers);
+        }
+
+        public int cells() {
+            return wire.cells();
         }
     }
 
     /** Source R owns this unadvertised file until its independently pinned one-shot MOVE. */
     public static final class PacketFile implements AutoCloseable {
         private final WorldStreamPacketFile file;
+        private final float[] footprint;
         private WorldStreamTransport.PacketDestination destination;
         private WorldStreamTileFile.Header writtenHeader;
+        private boolean waterAttached, waterDropped;
+
+        /** Descriptive: whether the moved packet carries a water trailer. */
+        public synchronized boolean waterAttached() {
+            return waterAttached;
+        }
+
+        /** Descriptive: a water append failed and was rolled back to terrain only. */
+        public synchronized boolean waterDropped() {
+            return waterDropped;
+        }
 
         private PacketFile(
                 WorldStreamPacketFile file,
                 WorldStreamTransport.PacketDestination destination,
-                WorldStreamTileFile.Header writtenHeader) {
+                WorldStreamTileFile.Header writtenHeader,
+                float[] footprint) {
             this.file = file;
+            this.footprint = footprint;
             this.destination = destination;
             this.writtenHeader = writtenHeader;
         }
 
         /** Off FX, after source final checks, inside the source's accepted resource callback. */
         public WorldStreamTransport.OwnedPacket move() {
+            return move(null, () -> false);
+        }
+
+        /**
+         * As {@link #move()}, first appending optional water to this still-unadvertised packet. A
+         * water IO failure that restores the terrain-only file degrades to terrain only; water is
+         * optional and never removes terrain. Cancellation still propagates.
+         */
+        public WorldStreamTransport.OwnedPacket move(Water water, BooleanSupplier stopping) {
+            Objects.requireNonNull(stopping);
             WorldStreamPacketFile.Moved moved;
             WorldStreamTransport.PacketDestination target;
             WorldStreamTileFile.Header header;
@@ -190,7 +593,39 @@ public final class WorldStreamTileWriter {
                 if (destination == null) {
                     throw new IllegalStateException("Packet file already moved or closed");
                 }
-                moved = file.move();
+                WorldStreamTileFile.Expected replacement = null;
+                if (water != null && !WorldStreamTileFile.onFootprint(water.wire, footprint)) {
+                    // Every reader check runs here first: off-tile water never costs terrain.
+                    waterDropped = true;
+                } else if (water != null) {
+                    var before = file.expected();
+                    var path = file.path();
+                    try {
+                        replacement =
+                                WorldStreamTileFile.appendWater(
+                                        path, before, writtenHeader, water.wire, stopping);
+                    } catch (WorldStreamTileFile.PacketChanged changed) {
+                        throw new java.io.UncheckedIOException(changed);
+                    } catch (IOException
+                            | IllegalArgumentException
+                            | java.nio.BufferOverflowException failed) {
+                        // Pre-write refusals leave the file untouched; IO failures were truncated
+                        // back by appendWater. Either way the terrain-only file is exact.
+                        if (stopping.getAsBoolean()) {
+                            var canceled = new java.util.concurrent.CancellationException();
+                            canceled.addSuppressed(failed);
+                            throw canceled;
+                        }
+                        replacement = null;
+                        waterDropped = true;
+                    }
+                }
+                try {
+                    moved = replacement == null ? file.move() : file.moveReplacing(replacement);
+                } catch (IOException failed) {
+                    throw new java.io.UncheckedIOException(failed);
+                }
+                waterAttached = replacement != null;
                 target = destination;
                 header = writtenHeader;
                 destination = null;
@@ -231,7 +666,23 @@ public final class WorldStreamTileWriter {
             TerrainTextureBinding texture,
             BooleanSupplier stopping)
             throws IOException {
+        return writeUnadvertised(destination, data, geometry, texture, null, stopping);
+    }
+
+    /**
+     * As above, naming an optional already published objects file in the tile header. On success
+     * the packet owner adopts it; on failure the caller still owns and closes it.
+     */
+    public static PacketFile writeUnadvertised(
+            WorldStreamTransport.PacketDestination destination,
+            Data data,
+            TerrainScene.Tile geometry,
+            TerrainTextureBinding texture,
+            ObjectsFile objects,
+            BooleanSupplier stopping)
+            throws IOException {
         Objects.requireNonNull(destination);
+        var reference = objects == null ? null : objects.claim(destination);
         Objects.requireNonNull(data);
         Objects.requireNonNull(geometry);
         Objects.requireNonNull(stopping);
@@ -273,16 +724,16 @@ public final class WorldStreamTileWriter {
             }
             // The template's opaque digest is never published; the actual payload identity is
             // computed incrementally from these exact descriptions and pinned pixels.
-            var template = data.header(context, geometry, "ff".repeat(32));
+            var template = data.header(context, geometry, "ff".repeat(32), reference);
             String digest =
                     WorldStreamMaterialDigest.compute(
                             template, texture.pixels(), data.profile, stopping);
-            header = data.header(context, geometry, digest);
+            header = data.header(context, geometry, digest, reference);
         } else {
             if (texture != null) {
                 throw new IllegalArgumentException("Height packet has an atlas");
             }
-            header = data.header(context, geometry, null);
+            header = data.header(context, geometry, null, reference);
         }
         WorldStreamTileFile.Expected expected = null;
         WorldStreamPacketFile owner = null;
@@ -294,8 +745,17 @@ public final class WorldStreamTileWriter {
                             geometry,
                             texture == null ? null : texture.pixels(),
                             stopping);
-            owner = WorldStreamPacketFile.finalized(expected, context.path(), context.identity());
-            return new PacketFile(owner, destination, header);
+            owner =
+                    WorldStreamPacketFile.finalized(
+                            expected,
+                            context.path(),
+                            context.identity(),
+                            objects == null ? null : objects.path);
+            if (objects != null) {
+                objects.adopted();
+            }
+            return new PacketFile(
+                    owner, destination, header, WorldStreamTileFile.footprint(geometry));
         } catch (IOException | RuntimeException | Error failure) {
             try {
                 if (owner != null) {

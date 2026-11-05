@@ -14,7 +14,12 @@ final class WorldStreamStatus {
         WorldStreamState.Nonce nonce();
     }
 
-    record Session(WorldStreamState.Nonce nonce) implements Message {}
+    /** {@code exteriorObjects} is the child's BASIC_EXTERIOR_V1 session profile. */
+    record Session(WorldStreamState.Nonce nonce, boolean exteriorObjects) implements Message {
+        Session(WorldStreamState.Nonce nonce) {
+            this(nonce, false);
+        }
+    }
 
     record Credit(WorldStreamState.Nonce nonce, WorldStreamState.Lease lease) implements Message {}
 
@@ -34,11 +39,44 @@ final class WorldStreamStatus {
             long transaction,
             WorldStreamState.Lease lease,
             int outcome,
-            int coverage)
-            implements Message {}
+            int coverage,
+            // -1 outside the exterior profile; else 0 none, 1 drawn, 2 failed (terrain kept).
+            int objects)
+            implements Message {
+        Staged(
+                WorldStreamState.Nonce nonce,
+                long transaction,
+                WorldStreamState.Lease lease,
+                int outcome,
+                int coverage) {
+            this(nonce, transaction, lease, outcome, coverage, -1);
+        }
+    }
 
     record Committed(WorldStreamState.Nonce nonce, long transaction, long expected, long next)
             implements Message {}
+
+    /** The one terminal reply to a late {@code OBJECTS} command. */
+    enum LateOutcome {
+        /** Uploaded and attached to the still active slot generation; drawn with its terrain. */
+        ATTACHED,
+        /** Read, validation or upload failed; the tile's terrain is untouched. */
+        FAILED,
+        /** The slot generation was no longer active (stale or retired); nothing was attached. */
+        DROPPED
+    }
+
+    record ObjectsDone(
+            WorldStreamState.Nonce nonce,
+            long transaction,
+            WorldStreamState.Lease lease,
+            LateOutcome outcome)
+            implements Message {
+        ObjectsDone {
+            java.util.Objects.requireNonNull(lease);
+            java.util.Objects.requireNonNull(outcome);
+        }
+    }
 
     enum Rejection {
         STALE_TRANSACTION,
@@ -109,8 +147,8 @@ final class WorldStreamStatus {
             return switch (p[2]) {
                 case "SESSION" -> {
                     arity(p, 4);
-                    require(p[3].equals("TERRAIN_BASIC_V1"));
-                    yield new Session(nonce);
+                    require(p[3].equals("TERRAIN_BASIC_V1") || p[3].equals("TERRAIN_EXTERIOR_V1"));
+                    yield new Session(nonce, p[3].equals("TERRAIN_EXTERIOR_V1"));
                 }
                 case "CREDIT" -> {
                     arity(p, 6);
@@ -128,14 +166,21 @@ final class WorldStreamStatus {
                     yield new InputConsumed(nonce, transaction(p[3]), InputKind.valueOf(p[4]));
                 }
                 case "STAGED" -> {
-                    arity(p, 9);
+                    require(p.length == 9 || p.length == 10);
                     long tx = transaction(p[3]);
                     var lease = lease(p, 4);
                     int outcome = integer(p[7]), coverage = integer(p[8]);
                     require(
                             outcome == 1 && coverage >= 1 && coverage <= 256
                                     || outcome == 2 && coverage == 0);
-                    yield new Staged(nonce, tx, lease, outcome, coverage);
+                    int objects = p.length == 9 ? -1 : integer(p[9]);
+                    require(objects >= -1 && objects <= 2 && (p.length == 9) == (objects == -1));
+                    yield new Staged(nonce, tx, lease, outcome, coverage, objects);
+                }
+                case "OBJECTS_DONE" -> {
+                    arity(p, 8);
+                    yield new ObjectsDone(
+                            nonce, transaction(p[3]), lease(p, 4), LateOutcome.valueOf(p[7]));
                 }
                 case "COMMITTED" -> {
                     arity(p, 6);

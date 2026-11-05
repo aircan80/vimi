@@ -15,7 +15,7 @@
       "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
       "platform": "windows",
       "profile": "s_5_0",
-      "sha256": "97a4582b50ffe3c2c2c736bf77f00d25d2fce3a9b502a3495850a98d4b4e8401",
+      "sha256": "dba51aac622c543cbbd15c0d8f7601490938eb94f1a9c8ea15f4753a6b3cdacd",
       "stage": "vertex"
     },
     "glsl/fs_model.bin": {
@@ -71,7 +71,7 @@
   "inputs": {
     "bgfx_shader.sh": "5ad79a2ff5d1b1fd1f22d986f2b0b5dc49f89ffd5ce18e57966b6ab894094508",
     "fs_model.sc": "3642211d64ece4706982d277bbf4011c320f631052c610169562bd03039e56cb",
-    "varying.def.sc": "9b41602ee8e8e5c282e1184762d08a172437dbd38c216d2d450c8aeea7c439a8",
+    "varying.def.sc": "606765e7664216a2000cb2e92e9b618d7e663722a76cd1f20da684896a61ac00",
     "vs_model.sc": "d224f22641b93bf58be80ed27913566475f6a640430bc1741b1e42367daab21e"
   },
   "lwjglVersion": "3.4.3",

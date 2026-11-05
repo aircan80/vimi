@@ -30,6 +30,20 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class GpuPreviewServiceTest {
     private GpuPreviewServiceTest() {}
 
+    private static void worldBackendOverrideIsExplicitAndBounded() {
+        var backend = com.vibeminer.rendering.bgfx.WorldStreamTransport.Backend.class;
+        require(WorldStreamGpuOwner.backend(null).name().equals("DEFAULT"), "Unset backend");
+        require(WorldStreamGpuOwner.backend(" ").name().equals("DEFAULT"), "Blank backend");
+        require(WorldStreamGpuOwner.backend("Vulkan").name().equals("VULKAN"), "Vulkan backend");
+        require(WorldStreamGpuOwner.backend("dx11").name().equals("D3D11"), "D3D11 alias");
+        require(backend.getEnumConstants().length == 4, "Backend override covers every backend");
+        try {
+            WorldStreamGpuOwner.backend("opengl");
+            throw new AssertionError("Unknown GPU backend override must be rejected");
+        } catch (IllegalArgumentException expected) {
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         Path root = Files.createTempDirectory("vimi-gpu-service-test-");
         try {
@@ -43,6 +57,7 @@ public final class GpuPreviewServiceTest {
                 throw new AssertionError("Unknown control flags must be rejected");
             } catch (IllegalArgumentException expected) {
             }
+            worldBackendOverrideIsExplicitAndBounded();
             latestFrameHandoffNeverRepublishesOlderWork();
             inlineFramesAndCoalescedControls(root);
             terrainAndModelsShareOwnerAndKeepControlsTyped(root);

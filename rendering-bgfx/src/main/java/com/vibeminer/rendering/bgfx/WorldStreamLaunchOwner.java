@@ -50,6 +50,9 @@ final class WorldStreamLaunchOwner {
         }
     }
 
+    /** Transport workers: commands, statuses, stderr, files, frames, cancellation, objects. */
+    static final int MAX_WORKERS = 7;
+
     private WorldStreamLaunchOwner() {}
 
     static Handle launch(
@@ -95,7 +98,7 @@ final class WorldStreamLaunchOwner {
         private final CompletableFuture<Void> childExited = new CompletableFuture<>();
         private final CompletableFuture<Drain> actualDrain = new CompletableFuture<>();
         private final CompletableFuture<Drain> boundedClose = new CompletableFuture<>();
-        private final List<AtomicBoolean> workers = new ArrayList<>(6);
+        private final List<AtomicBoolean> workers = new ArrayList<>(MAX_WORKERS);
         private volatile Process process;
         private volatile CompletableFuture<Process> processExit;
         private volatile boolean attachmentDone;
@@ -143,7 +146,7 @@ final class WorldStreamLaunchOwner {
             synchronized (lock) {
                 if (sealed
                         || stopping.get() && Thread.currentThread() != attachmentThread
-                        || workers.size() == 6) {
+                        || workers.size() == MAX_WORKERS) {
                     throw new IllegalStateException("World worker registration is closed/full");
                 }
                 workers.add(done);

@@ -10,7 +10,10 @@ final class WorldSourceRefusals {
     private WorldSourceRefusals() {}
 
     enum Site {
+        WATER_OUTPUT_CREDIT(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
+        WATER_ROOT_BINDING(WorldTerrainStreaming.Refusal.Reason.SOURCE_INVALIDATED),
         OUTPUT_CREDIT(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
+        GLOBAL_ASSET_CAPACITY(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         GEOMETRY_CREDIT(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         SOURCE_WORKER(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         MATERIAL_POOL(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
@@ -27,6 +30,8 @@ final class WorldSourceRefusals {
         NUMERIC_ROOT(WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE),
         TERRAIN_PROFILE(WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE),
         SOURCE_INPUT(WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE),
+        /** Missing, protected or over-limit source; only BASIC_EXTERIOR derived reads use it. */
+        SOURCE_UNAVAILABLE(WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE),
         OWNER_RETIRED(WorldTerrainStreaming.Refusal.Reason.SOURCE_INVALIDATED),
         SCOPE_RETIRED(WorldTerrainStreaming.Refusal.Reason.SOURCE_INVALIDATED),
         MAP_BINDING(WorldTerrainStreaming.Refusal.Reason.SOURCE_INVALIDATED),

@@ -13,8 +13,12 @@ import java.util.concurrent.Executor;
 
 /** A finalized unadvertised file, with one irreversible ownership move and no source references. */
 final class WorldStreamPacketFile implements AutoCloseable {
+    /** objects is the optional sibling {@code tile-<txn>.wso}, deleted together with path. */
     private record Data(
-            WorldStreamTileFile.Expected expected, Path path, Object destinationIdentity) {}
+            WorldStreamTileFile.Expected expected,
+            Path path,
+            Object destinationIdentity,
+            Path objects) {}
 
     private record Cleanup(Data data, CompletableFuture<Void> completion) {}
 
@@ -69,6 +73,11 @@ final class WorldStreamPacketFile implements AutoCloseable {
             return metadata.destinationIdentity();
         }
 
+        /** The owned sibling objects file, or null. */
+        Path objectsPath() {
+            return metadata.objects();
+        }
+
         CompletableFuture<Void> closeAsync(Executor existingFileLane) {
             Objects.requireNonNull(existingFileLane);
             return schedule(owner.closePlan(), existingFileLane);
@@ -97,6 +106,19 @@ final class WorldStreamPacketFile implements AutoCloseable {
             Path exactDestination,
             Object destinationIdentity)
             throws IOException {
+        return finalized(expected, exactDestination, destinationIdentity, null);
+    }
+
+    /**
+     * As above, also taking ownership of the caller's already published sibling objects file. On
+     * failure the caller still owns both files.
+     */
+    static WorldStreamPacketFile finalized(
+            WorldStreamTileFile.Expected expected,
+            Path exactDestination,
+            Object destinationIdentity,
+            Path objects)
+            throws IOException {
         Objects.requireNonNull(expected);
         Objects.requireNonNull(exactDestination);
         Objects.requireNonNull(destinationIdentity);
@@ -117,11 +139,76 @@ final class WorldStreamPacketFile implements AutoCloseable {
         if (!attributes.isRegularFile() || attributes.size() != expected.length()) {
             throw new IOException("Finalized packet metadata differs");
         }
-        return new WorldStreamPacketFile(new Data(expected, exactDestination, destinationIdentity));
+        if (objects != null) {
+            if (!objects.equals(
+                    exactDestination
+                            .getParent()
+                            .resolve(WorldStreamObjectsFile.basename(expected.transaction())))) {
+                throw new IllegalArgumentException("Exact objects destination required");
+            }
+            if (!Files.readAttributes(objects, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS)
+                    .isRegularFile()) {
+                throw new IOException("Finalized objects metadata differs");
+            }
+        }
+        return new WorldStreamPacketFile(
+                new Data(expected, exactDestination, destinationIdentity, objects));
     }
 
     Moved move() {
         return owner.move();
+    }
+
+    /**
+     * MOVE after the owner itself rewrote its still-unadvertised file in place; the replacement
+     * expectation describes the same exact path, which this owner continues to hold until MOVE.
+     */
+    Moved moveReplacing(WorldStreamTileFile.Expected replacement) throws IOException {
+        Objects.requireNonNull(replacement);
+        Data current;
+        synchronized (owner) {
+            current = owner.data;
+            if (current == null || owner.completion != null) {
+                throw new IllegalStateException("Packet file already moved or closing");
+            }
+            if (replacement.transaction() != current.expected().transaction()
+                    || !replacement.nonce().equals(current.expected().nonce())
+                    || !replacement.lease().equals(current.expected().lease())
+                    || !replacement.scope().equals(current.expected().scope())) {
+                throw new IllegalArgumentException("Replacement packet identity differs");
+            }
+            var attributes =
+                    Files.readAttributes(
+                            current.path(), BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (!attributes.isRegularFile() || attributes.size() != replacement.length()) {
+                throw new IOException("Replacement packet metadata differs");
+            }
+            owner.data =
+                    new Data(
+                            replacement,
+                            current.path(),
+                            current.destinationIdentity(),
+                            current.objects());
+        }
+        return owner.move();
+    }
+
+    Path path() {
+        synchronized (owner) {
+            if (owner.data == null) {
+                throw new IllegalStateException("Packet file already moved or closing");
+            }
+            return owner.data.path();
+        }
+    }
+
+    WorldStreamTileFile.Expected expected() {
+        synchronized (owner) {
+            if (owner.data == null) {
+                throw new IllegalStateException("Packet file already moved or closing");
+            }
+            return owner.data.expected();
+        }
     }
 
     /** Queues deletion on the existing bounded file lane; creates no thread or watcher. */
@@ -165,7 +252,18 @@ final class WorldStreamPacketFile implements AutoCloseable {
 
     private static void delete(Cleanup plan) {
         try {
+            IOException objectsFailure = null;
+            if (plan.data().objects() != null) {
+                try {
+                    Files.deleteIfExists(plan.data().objects());
+                } catch (IOException failed) {
+                    objectsFailure = failed;
+                }
+            }
             Files.deleteIfExists(plan.data().path());
+            if (objectsFailure != null) {
+                throw objectsFailure;
+            }
             plan.completion().complete(null);
         } catch (IOException | RuntimeException failed) {
             plan.completion().completeExceptionally(failure(failed));

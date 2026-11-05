@@ -66,6 +66,23 @@ class WorldCurrentAreaTest {
     }
 
     @Test
+    void retainedMetadataLookupMatchesLoadedTileLookup() {
+        var index = index(area(1, "Elwynn Forest", 0), area(10, "Goldshire", 1));
+        var tile = tile(chunk(0, 0, 10, 1000, 2000));
+        assertEquals(
+                WorldCurrentArea.locate(0, 990, 1990, List.of(tile), index),
+                WorldCurrentArea.locateIn(0, 990, 1990, List.of(tile.areas()), index));
+        var missing = new java.util.ArrayList<WorldFormats.AreaMetadata>();
+        missing.add(null);
+        assertEquals(
+                WorldCurrentArea.Reason.NO_LOADED_METADATA,
+                WorldCurrentArea.locateIn(0, 990, 1990, missing, index).reason());
+        assertEquals(
+                WorldCurrentArea.Reason.NO_COVERAGE,
+                WorldCurrentArea.locateIn(0, 5000, 5000, List.of(tile.areas()), index).reason());
+    }
+
+    @Test
     void hierarchyCyclesUnknownParentsAndMapMismatchNeverInventARootZone() {
         var tiles = List.of(tile(chunk(0, 0, 10, 1000, 2000)));
         assertEquals(

@@ -36,6 +36,65 @@ final class WorldStreamTileFile {
     private static final int SCRATCH = 64 << 10;
     private static final byte[] MAGIC =
             "VIMIWST2".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    private static final byte[] WATER_MAGIC =
+            "VIMIWTR1".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    static final int WATER_HEADER_BYTES = 128, MAX_WATER_CELLS = 8192, MAX_WATER_LAYERS = 128;
+    static final int MAX_WATER_BYTES = waterBytes(MAX_WATER_CELLS * 4, MAX_WATER_CELLS * 6);
+
+    static int waterBytes(int vertices, int indices) {
+        return WATER_HEADER_BYTES + vertices * 13 + indices * 4;
+    }
+
+    /**
+     * Optional static flat water trailer. Structural only: the closed application bridge is the
+     * sole producer from an actual Source water preparation joined to this exact terrain payload.
+     * Positions use native terrain axes (x north, y west, z up); every cell is four corners
+     * NW,NE,SW,SE with the fixed NE--SW diagonal indices base,base+2,base+1 / base+1,base+2,base+3.
+     */
+    record Water(float[] positions, byte[] depths, int[] indices, int layers) {
+        Water {
+            Objects.requireNonNull(positions);
+            Objects.requireNonNull(depths);
+            Objects.requireNonNull(indices);
+            int vertices = depths.length;
+            require(
+                    vertices % 4 == 0
+                            && vertices >= 4
+                            && vertices <= MAX_WATER_CELLS * 4
+                            && positions.length == vertices * 3
+                            && indices.length == vertices / 4 * 6
+                            && layers >= 1
+                            && layers <= MAX_WATER_LAYERS
+                            && layers <= vertices / 4,
+                    "Water counts");
+            for (float value : positions) {
+                require(Float.isFinite(value) && Math.abs(value) <= 1_000_000, "Water position");
+            }
+            for (int cell = 0; cell < vertices / 4; cell++) {
+                int base = cell * 4, at = cell * 6;
+                require(
+                        indices[at] == base
+                                && indices[at + 1] == base + 2
+                                && indices[at + 2] == base + 1
+                                && indices[at + 3] == base + 1
+                                && indices[at + 4] == base + 2
+                                && indices[at + 5] == base + 3,
+                        "Water cell indices");
+            }
+        }
+
+        int vertices() {
+            return depths.length;
+        }
+
+        int cells() {
+            return depths.length / 4;
+        }
+
+        int bytes() {
+            return waterBytes(depths.length, indices.length);
+        }
+    }
 
     enum Encoding {
         PALETTED,
@@ -141,7 +200,57 @@ final class WorldStreamTileFile {
             Source wdt,
             Source root,
             Source tex0,
-            List<Source> diffuse) {
+            List<Source> diffuse,
+            // Optional BASIC_EXTERIOR objects file named by exact length and SHA-256.
+            WorldStreamObjectsFile.Reference objects) {
+        /** Terrain-only header, without an objects file. */
+        Header(
+                WorldStreamState.Nonce nonce,
+                String scope,
+                long transaction,
+                WorldStreamState.Lease lease,
+                int x,
+                int y,
+                int chunks,
+                int vertices,
+                int indices,
+                String geometrySha256,
+                String materialDigest,
+                Outcome outcome,
+                Reason reason,
+                long[] coverage,
+                float maxX,
+                float maxY,
+                double uvError,
+                Source wdt,
+                Source root,
+                Source tex0,
+                List<Source> diffuse) {
+            this(
+                    nonce,
+                    scope,
+                    transaction,
+                    lease,
+                    x,
+                    y,
+                    chunks,
+                    vertices,
+                    indices,
+                    geometrySha256,
+                    materialDigest,
+                    outcome,
+                    reason,
+                    coverage,
+                    maxX,
+                    maxY,
+                    uvError,
+                    wdt,
+                    root,
+                    tex0,
+                    diffuse,
+                    null);
+        }
+
         Header {
             Objects.requireNonNull(nonce);
             Objects.requireNonNull(lease);
@@ -260,11 +369,19 @@ final class WorldStreamTileFile {
         private final Header header;
         private TerrainScene.Tile tile;
         private byte[] atlas;
+        private Water water;
 
-        private Payload(Header header, TerrainScene.Tile tile, byte[] atlas) {
+        private Payload(Header header, TerrainScene.Tile tile, byte[] atlas, Water water) {
             this.header = header;
             this.tile = tile;
             this.atlas = atlas;
+            this.water = water;
+        }
+
+        /** Validated optional water joined to this exact terrain payload, or null. */
+        Water water() {
+            tile();
+            return water;
         }
 
         Header header() {
@@ -287,6 +404,7 @@ final class WorldStreamTileFile {
         public void close() {
             tile = null;
             atlas = null;
+            water = null;
         }
     }
 
@@ -332,13 +450,18 @@ final class WorldStreamTileFile {
                 }
                 validateAtlas(header, tile, ByteBuffer.wrap(atlas).asReadOnlyBuffer(), canceled);
             }
+            long trailer = expected.length() - (long) header.totalBytes();
+            Water water = null;
+            if (trailer != 0) {
+                water = readWater(input, header, tile, trailer, canceled);
+            }
             check(canceled);
             if (input.read() != -1
                     || channel.size() != expected.length()
                     || !HexFormat.of().formatHex(digest.digest()).equals(expected.sha256())) {
                 throw new IOException("Packet bytes or full digest differ");
             }
-            return new Payload(header, tile, atlas);
+            return new Payload(header, tile, atlas, water);
         } catch (IllegalArgumentException invalid) {
             throw new IOException("Invalid World tile packet", invalid);
         }
@@ -461,6 +584,197 @@ final class WorldStreamTileFile {
         }
     }
 
+    private static Water readWater(
+            DataInputStream input,
+            Header header,
+            TerrainScene.Tile tile,
+            long length,
+            BooleanSupplier canceled)
+            throws IOException {
+        byte[] head = new byte[WATER_HEADER_BYTES];
+        input.readFully(head);
+        var in = ByteBuffer.wrap(head).order(ByteOrder.LITTLE_ENDIAN);
+        int cells = in.getInt(12), vertices = in.getInt(16), indexCount = in.getInt(20);
+        require(
+                Arrays.equals(WATER_MAGIC, Arrays.copyOf(head, 8))
+                        && in.getInt(8) == 1
+                        && cells >= 1
+                        && cells <= MAX_WATER_CELLS
+                        && vertices == cells * 4
+                        && indexCount == cells * 6
+                        && in.getInt(28) == 0
+                        && length == waterBytes(vertices, indexCount)
+                        && HexFormat.of().formatHex(head, 32, 64).equals(header.geometrySha256())
+                        && in.getLong(64) == header.root().id()
+                        && HexFormat.of()
+                                .formatHex(head, 72, 88)
+                                .equals(header.root().contentKey()),
+                "Water trailer identity");
+        zero(head, 88, WATER_HEADER_BYTES);
+        float[] positions = new float[vertices * 3];
+        byte[] depths = new byte[vertices];
+        int[] indices = new int[indexCount];
+        for (int i = 0; i < positions.length; i++) {
+            if ((i & 1023) == 0) {
+                check(canceled);
+            }
+            positions[i] = Float.intBitsToFloat(Integer.reverseBytes(input.readInt()));
+        }
+        input.readFully(depths);
+        for (int i = 0; i < indices.length; i++) {
+            if ((i & 1023) == 0) {
+                check(canceled);
+            }
+            indices[i] = Integer.reverseBytes(input.readInt());
+        }
+        var water = new Water(positions, depths, indices, in.getInt(24));
+        require(onFootprint(water, footprint(tile)), "Water outside terrain tile");
+        return water;
+    }
+
+    /** Terrain vertex XY bounds {minX, maxX, minY, maxY}; shared by writer and reader. */
+    static float[] footprint(TerrainScene.Tile tile) {
+        var terrain = tile.vertices();
+        float minX = Float.POSITIVE_INFINITY, minY = Float.POSITIVE_INFINITY;
+        float maxX = Float.NEGATIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY;
+        for (int at = 0; at + 2 < terrain.limit(); at += 3) {
+            minX = Math.min(minX, terrain.get(at));
+            maxX = Math.max(maxX, terrain.get(at));
+            minY = Math.min(minY, terrain.get(at + 1));
+            maxY = Math.max(maxY, terrain.get(at + 1));
+        }
+        return new float[] {minX, maxX, minY, maxY};
+    }
+
+    /** Water must lie on its terrain tile: the vertex footprint plus one liquid cell. */
+    static boolean onFootprint(Water water, float[] bounds) {
+        float slack = (float) (com.vibeminer.formats.world.WorldFormats.TILE_SIZE / 128);
+        var positions = water.positions();
+        for (int v = 0; v < water.vertices(); v++) {
+            float x = positions[v * 3], y = positions[v * 3 + 1];
+            if (!(x >= bounds[0] - slack
+                    && x <= bounds[1] + slack
+                    && y >= bounds[2] - slack
+                    && y <= bounds[3] + slack)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** The unadvertised packet no longer matches its own expectation: never advertise it. */
+    static final class PacketChanged extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        PacketChanged(String message) {
+            super(message);
+        }
+    }
+
+    private static byte[] encodeWater(Header header, Water water) {
+        var out = ByteBuffer.allocate(water.bytes()).order(ByteOrder.LITTLE_ENDIAN);
+        out.put(WATER_MAGIC).putInt(1).putInt(water.cells()).putInt(water.vertices());
+        out.putInt(water.indices().length).putInt(water.layers()).putInt(0);
+        out.put(HexFormat.of().parseHex(header.geometrySha256()));
+        out.putLong(header.root().id());
+        out.put(HexFormat.of().parseHex(header.root().contentKey()));
+        out.position(WATER_HEADER_BYTES);
+        for (float value : water.positions()) {
+            out.putFloat(value);
+        }
+        out.put(water.depths());
+        for (int value : water.indices()) {
+            out.putInt(value);
+        }
+        require(!out.hasRemaining(), "Water encoding length");
+        return out.array();
+    }
+
+    /**
+     * Appends one water trailer to this caller-owned, finalized and still UNADVERTISED terrain
+     * packet. Re-verifies the existing bytes against their expectation first. On any failure the
+     * file is truncated back to its terrain-only form before rethrowing; if that also fails the
+     * caller must discard the packet.
+     */
+    static Expected appendWater(
+            Path path, Expected expected, Header header, Water water, BooleanSupplier canceled)
+            throws IOException {
+        Objects.requireNonNull(expected);
+        Objects.requireNonNull(header);
+        Objects.requireNonNull(water);
+        Objects.requireNonNull(canceled);
+        basename(path, expected.transaction());
+        require(
+                header.totalBytes() == expected.length()
+                        && header.transaction() == expected.transaction()
+                        && header.nonce().equals(expected.nonce())
+                        && header.lease().equals(expected.lease()),
+                "Water append expectation");
+        byte[] trailer = encodeWater(header, water);
+        try (var channel =
+                FileChannel.open(
+                        path,
+                        StandardOpenOption.READ,
+                        StandardOpenOption.WRITE,
+                        LinkOption.NOFOLLOW_LINKS)) {
+            if (channel.size() != expected.length()) {
+                throw new PacketChanged("Packet size differs before water append");
+            }
+            var digest = digest();
+            var scratch = ByteBuffer.allocate(SCRATCH);
+            long at = 0;
+            while (at < expected.length()) {
+                check(canceled);
+                scratch.clear();
+                int read = channel.read(scratch, at);
+                if (read < 0) {
+                    throw new PacketChanged("Truncated packet before water append");
+                }
+                digest.update(scratch.array(), 0, read);
+                at += read;
+            }
+            MessageDigest prior;
+            try {
+                prior = (MessageDigest) digest.clone();
+            } catch (CloneNotSupportedException impossible) {
+                throw new AssertionError(impossible);
+            }
+            if (!HexFormat.of().formatHex(prior.digest()).equals(expected.sha256())) {
+                throw new PacketChanged("Packet bytes changed before water append");
+            }
+            try {
+                check(canceled);
+                var body = ByteBuffer.wrap(trailer);
+                long position = expected.length();
+                while (body.hasRemaining()) {
+                    position += channel.write(body, position);
+                }
+                channel.force(false);
+                check(canceled);
+            } catch (IOException | RuntimeException | Error primary) {
+                try {
+                    channel.truncate(expected.length());
+                    channel.force(false);
+                } catch (IOException | RuntimeException | Error cleanup) {
+                    // Restore unknown: the caller must discard this packet, never advertise it.
+                    var unknown = new PacketChanged("Water rollback failed");
+                    unknown.addSuppressed(primary);
+                    unknown.addSuppressed(cleanup);
+                    throw unknown;
+                }
+                throw primary;
+            }
+            digest.update(trailer);
+            return new Expected(
+                    expected.nonce(),
+                    expected.scope(),
+                    expected.transaction(),
+                    expected.lease(),
+                    Math.addExact(expected.length(), trailer.length),
+                    HexFormat.of().formatHex(digest.digest()));
+        }
+    }
+
     private static void validateAtlas(
             Header h, TerrainScene.Tile tile, ByteBuffer atlas, BooleanSupplier canceled) {
         require(
@@ -513,6 +827,10 @@ final class WorldStreamTileFile {
         putSource(out, 512, h.wdt());
         putSource(out, 560, h.root());
         putSource(out, 608, h.tex0());
+        if (h.objects() != null) {
+            out.position(656).putInt(h.objects().length()).putInt(0);
+            out.put(HexFormat.of().parseHex(h.objects().sha256()));
+        }
         for (int i = 0; i < h.diffuse().size(); i++) {
             putSource(out, 1024 + i * 48, h.diffuse().get(i));
         }
@@ -526,7 +844,7 @@ final class WorldStreamTileFile {
                     Arrays.equals(MAGIC, Arrays.copyOf(bytes, 8))
                             && in.getInt(8) == 2
                             && in.getInt(12) == HEADER_BYTES
-                            && in.getLong(16) == expected.length(),
+                            && in.getLong(16) <= expected.length(),
                     "Header magic/size");
             var nonce = new WorldStreamState.Nonce(in.getLong(24), in.getLong(32));
             String scope = HexFormat.of().formatHex(bytes, 40, 72);
@@ -538,7 +856,16 @@ final class WorldStreamTileFile {
                             && lease.equals(expected.lease()),
                     "Header expectation");
             zero(bytes, 260, 512);
-            zero(bytes, 656, 1024);
+            WorldStreamObjectsFile.Reference objects = null;
+            if (in.getInt(656) == 0) {
+                zero(bytes, 656, 1024);
+            } else {
+                zero(bytes, 660, 664);
+                zero(bytes, 696, 1024);
+                objects =
+                        new WorldStreamObjectsFile.Reference(
+                                in.getInt(656), HexFormat.of().formatHex(bytes, 664, 696));
+            }
             int count = in.getInt(256);
             require(count >= 0 && count <= 64, "Diffuse count");
             zero(bytes, 1024 + count * 48, HEADER_BYTES);
@@ -585,10 +912,15 @@ final class WorldStreamTileFile {
                             getSource(in, 512, true),
                             getSource(in, 560, true),
                             getSource(in, 608, true),
-                            diffuse);
+                            diffuse,
+                            objects);
             require(
                     in.getInt(120) == header.geometryBytes()
-                            && header.totalBytes() == expected.length()
+                            && header.totalBytes() == in.getLong(16)
+                            && (header.totalBytes() == expected.length()
+                                    || expected.length() - header.totalBytes() >= waterBytes(4, 6)
+                                            && expected.length() - header.totalBytes()
+                                                    <= MAX_WATER_BYTES)
                             && in.getInt(124) == (outcome == Outcome.TEXTURED ? ATLAS_BYTES : 0)
                             && in.getInt(192) == (outcome == Outcome.TEXTURED ? 1 : 0)
                             && in.getInt(196) == 1,

@@ -131,6 +131,98 @@ public final class BuildModels {
                 });
     }
 
+    /**
+     * Reads one bone file that the read model declares in its BFID chunk. Undeclared IDs are
+     * refused before any file access; the file's size is checked before it is opened.
+     */
+    public CompletableFuture<BuildModelTypes.BoneFileRead> readBoneFile(
+            ModelRead read, long fileDataId, Cancellation token) {
+        Objects.requireNonNull(read);
+        if (read.state() != ReadState.READ || read.model() == null) {
+            throw new IllegalArgumentException("Bone files require a model read with READ state");
+        }
+        if (fileDataId <= 0 || !read.model().boneFileDataIds().contains(fileDataId)) {
+            throw new IllegalArgumentException("The model does not declare this bone file");
+        }
+        int modelBones = read.model().bones().size();
+        return AssetTasks.run(
+                () -> {
+                    token.check();
+                    FileStat stat = files.stat(FileRef.id(fileDataId), token).join();
+                    BuildFile file = stat.file();
+                    if (stat.state() != FileLookupState.FOUND || file == null) {
+                        return new BuildModelTypes.BoneFileRead(
+                                stateOf(stat.state()),
+                                fileDataId,
+                                null,
+                                null,
+                                null,
+                                "The bone file is " + stat.state() + ".");
+                    }
+                    if (file.size() != null && file.size() > M2BoneFile.MAX_BYTES) {
+                        return new BuildModelTypes.BoneFileRead(
+                                ReadState.REJECTED,
+                                fileDataId,
+                                file.contentKey(),
+                                null,
+                                "MODEL_LIMIT",
+                                "The bone file is "
+                                        + number(file.size())
+                                        + " bytes; bone files read at most "
+                                        + number(M2BoneFile.MAX_BYTES)
+                                        + ".");
+                    }
+                    if (modelBones == 0) {
+                        return new BuildModelTypes.BoneFileRead(
+                                ReadState.REJECTED,
+                                fileDataId,
+                                file.contentKey(),
+                                null,
+                                "MODEL_UNSUPPORTED",
+                                "The model stores no bones for its bone file to name.");
+                    }
+                    FileOutcome<M2BoneFile.Bones> outcome =
+                            readFile(
+                                    fileDataId,
+                                    source -> M2BoneFile.read(source, modelBones, token).join(),
+                                    token);
+                    // A short or resized source says nothing about the file; it can be retried.
+                    boolean changed =
+                            outcome.state == ReadState.REJECTED
+                                    && "MODEL_SOURCE_CHANGED".equals(outcome.code);
+                    return new BuildModelTypes.BoneFileRead(
+                            changed ? ReadState.UNAVAILABLE : outcome.state,
+                            fileDataId,
+                            file.contentKey(),
+                            outcome.value,
+                            outcome.code,
+                            outcome.message);
+                });
+    }
+
+    /** Re-reads the model source for {@link M2IdleAnimation#assessStand} facts. */
+    public CompletableFuture<BuildModelTypes.StandRead> readStandFacts(
+            ModelRead read, Cancellation token) {
+        Objects.requireNonNull(read);
+        if (read.state() != ReadState.READ || read.model() == null || read.fileDataId() == null) {
+            throw new IllegalArgumentException("Stand facts require a model read with READ state");
+        }
+        Model model = read.model();
+        return AssetTasks.run(
+                () -> {
+                    token.check();
+                    FileOutcome<M2IdleAnimation.StandFacts> outcome =
+                            readFile(
+                                    read.fileDataId(),
+                                    source ->
+                                            M2IdleAnimation.assessStand(source, model, token)
+                                                    .join(),
+                                    token);
+                    return new BuildModelTypes.StandRead(
+                            outcome.state, outcome.value, outcome.code, outcome.message);
+                });
+    }
+
     public CompletableFuture<SkinRead<Skin>> readSkin(
             ModelRead model, int profile, Cancellation token) {
         return readSkinCore(

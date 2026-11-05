@@ -467,12 +467,12 @@ class WorldStreamLaunchOwnerTest {
                         arguments -> child,
                         (process, handle) -> {
                             try {
-                                for (int i = 0; i < 6; i++) {
+                                for (int i = 0; i < WorldStreamLaunchOwner.MAX_WORKERS; i++) {
                                     handle.runWorker("bounded-" + i, release::await);
                                 }
                                 assertThrows(
                                         IllegalStateException.class,
-                                        () -> handle.runWorker("seventh", () -> {}));
+                                        () -> handle.runWorker("one-too-many", () -> {}));
                                 checked.complete(null);
                             } catch (Throwable error) {
                                 checked.completeExceptionally(error);

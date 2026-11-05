@@ -52,6 +52,29 @@ final class TalentSourceDetails {
         };
     }
 
+    static String identity(com.vibeminer.concepts.talents.TalentTypes.Talent talent) {
+        String placement = talent.row() < 0
+                ? "not placed on the tree grid"
+                : "tier " + (talent.row() + 1) + " · column " + (talent.column() + 1);
+        var origin = talent.origin();
+        if (origin.model() != com.vibeminer.concepts.talents.TalentTypes.Model.TRAIT_TREE)
+            return "Source: legacy Talent table · Talent ID " + talent.id() + " · " + placement;
+        return "Source: TraitTree " + origin.traitTreeId() + " · TraitNode " + talent.id()
+                + " · TraitNodeEntry " + origin.traitNodeEntryId()
+                + " · TraitDefinition " + origin.traitDefinitionId() + " · " + placement
+                + "\nRecorded position: " + origin.rawPosX() + ", " + origin.rawPosY()
+                + (origin.overridesSpellId() == null ? "" : "\nOverrides spell ID " + origin.overridesSpellId())
+                + (origin.nameOverridden() ? "\nName from TraitDefinition override" : "")
+                + (origin.descriptionOverridden() ? "\nDescription from TraitDefinition override" : "");
+    }
+
+    static String spells(com.vibeminer.concepts.talents.TalentTypes.Talent talent) {
+        if (talent.origin().model() == com.vibeminer.concepts.talents.TalentTypes.Model.TRAIT_TREE)
+            return "Spell ID: " + talent.rankSpells().getFirst() + " · maximum rank " + talent.maxRanks()
+                    + " (one trait definition spell for all ranks)";
+        return "Rank spell IDs: " + talent.rankSpells();
+    }
+
     static String missingIconReference() {
         return "Icon: no usable file reference was resolved from SpellMisc for this rank. "
                 + "The cause is unconfirmed; this does not establish that an icon is absent or encrypted.";

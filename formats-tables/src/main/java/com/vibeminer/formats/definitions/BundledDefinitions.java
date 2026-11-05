@@ -6,6 +6,7 @@ import com.vibeminer.formats.internal.Json;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -36,30 +37,47 @@ public final class BundledDefinitions {
 
     public record Lookup(Definition definition, DefinitionException failure) {}
 
-    private record File(String name, String sha, int length, long offset) {}
+    record File(String name, String sha, int length, long offset) {}
+
+    private static final String DECODED_SHA256 =
+            "73d47b200e9ddc94c67c7f3e3b3c5832c8ab80b554ca06353348986eb6af7dbe";
+    private static final long MAX_CACHED_BYTES = 2L << 20, MAX_DECODED_BYTES = 64L << 20;
 
     private final List<DefinitionTable> tables;
     private final Map<String, File> files;
     private final Map<String, Definition> supplied;
+    // The verified decoded stream (about 22 MB for the pinned provider), retained so a lookup
+    // slices it instead of re-inflating the gzip resource up to the definition's offset.
+    private final byte[] decoded;
+    // Guarded by this; parsing happens outside the lock.
     private final LinkedHashMap<String, Lookup> cache = new LinkedHashMap<>(64, .75f, true);
     private final int maxEntries;
     private long cachedBytes;
 
-    private BundledDefinitions(
+    BundledDefinitions(
             List<DefinitionTable> tables,
             Map<String, File> files,
+            byte[] decoded,
             Map<String, Definition> supplied,
             int maxEntries) {
         this.tables = List.copyOf(tables);
         this.files = Map.copyOf(files);
+        this.decoded = decoded;
         this.supplied = Map.copyOf(supplied);
         this.maxEntries = maxEntries;
+        for (var file : this.files.values()) {
+            if (decoded == null
+                    || file.offset() < 0
+                    || file.offset() > decoded.length - (long) file.length()) {
+                throw invalid("Definition slice outside decoded stream");
+            }
+        }
     }
 
     /** A custom immutable provider for consumer tests or explicitly supplied definitions. */
     public static BundledDefinitions of(
             List<DefinitionTable> tables, Map<String, Definition> definitions) {
-        return new BundledDefinitions(tables, Map.of(), definitions, 64);
+        return new BundledDefinitions(tables, Map.of(), new byte[0], definitions, 64);
     }
 
     private static final class Shared {
@@ -97,59 +115,72 @@ public final class BundledDefinitions {
                 ORIGIN + "manifest.json");
     }
 
-    public synchronized Lookup tryGet(String tableId) {
+    public Lookup tryGet(String tableId) {
         if (supplied.containsKey(tableId)) {
             return new Lookup(supplied.get(tableId), null);
-        }
-        var hit = cache.get(tableId);
-        if (hit != null) {
-            return hit;
         }
         var file = files.get(tableId);
         if (file == null) {
             return new Lookup(null, null);
         }
-        Lookup result;
-        try (var input = new GZIPInputStream(resource("definitions.gz"))) {
-            input.skipNBytes(file.offset());
-            byte[] bytes = input.readNBytes(file.length());
-            if (bytes.length != file.length() || !Json.sha256(bytes).equals(file.sha())) {
-                throw new DefinitionException(
-                        "DEFINITION_CORRUPT", "Bundled file failed pinned hash");
+        synchronized (this) {
+            var hit = cache.get(tableId);
+            if (hit != null) {
+                return hit;
             }
-            try {
-                result =
-                        new Lookup(
-                                new Definition(
-                                        file.sha(),
-                                        ORIGIN + "definitions/" + file.name() + ".dbd",
-                                        DbdDefinitionReader.parse(bytes)),
-                                null);
-            } catch (Db2FormatException e) {
-                result =
-                        new Lookup(
-                                null,
-                                new DefinitionException(
-                                        "DEFINITION_UNSUPPORTED",
-                                        e.code() + ": " + e.getMessage()));
-            }
-        } catch (IOException | DefinitionException e) {
-            result =
-                    new Lookup(
-                            null,
-                            e instanceof DefinitionException d
-                                    ? d
-                                    : new DefinitionException(
-                                            "DEFINITION_CORRUPT", e.getMessage()));
         }
-        cache.put(tableId, result);
-        cachedBytes += file.length();
-        while (cache.size() > 1 && (cache.size() > maxEntries || cachedBytes > 2L << 20)) {
-            String oldest = cache.keySet().iterator().next();
-            cache.remove(oldest);
-            cachedBytes -= files.get(oldest).length();
+        Lookup result = read(file);
+        synchronized (this) {
+            // A concurrent miss may have parsed the same definition; keep the first result so
+            // callers observe one stable Lookup per cached table.
+            var raced = cache.putIfAbsent(tableId, result);
+            if (raced != null) {
+                return raced;
+            }
+            cachedBytes += file.length();
+            while (cache.size() > 1
+                    && (cache.size() > maxEntries || cachedBytes > MAX_CACHED_BYTES)) {
+                String oldest = cache.keySet().iterator().next();
+                cache.remove(oldest);
+                cachedBytes -= files.get(oldest).length();
+            }
         }
         return result;
+    }
+
+    private Lookup read(File file) {
+        byte[] bytes =
+                Arrays.copyOfRange(
+                        decoded, (int) file.offset(), (int) file.offset() + file.length());
+        if (!Json.sha256(bytes).equals(file.sha())) {
+            return new Lookup(
+                    null,
+                    new DefinitionException(
+                            "DEFINITION_CORRUPT", "Bundled file failed pinned hash"));
+        }
+        try {
+            return new Lookup(
+                    new Definition(
+                            file.sha(),
+                            ORIGIN + "definitions/" + file.name() + ".dbd",
+                            DbdDefinitionReader.parse(bytes)),
+                    null);
+        } catch (Db2FormatException e) {
+            return new Lookup(
+                    null,
+                    new DefinitionException(
+                            "DEFINITION_UNSUPPORTED", e.code() + ": " + e.getMessage()));
+        } catch (DefinitionException e) {
+            return new Lookup(null, e);
+        }
+    }
+
+    File file(String tableId) {
+        return files.get(tableId);
+    }
+
+    synchronized int cachedEntries() {
+        return cache.size();
     }
 
     public Definition require(String tableId) {
@@ -245,27 +276,13 @@ public final class BundledDefinitions {
                 }
                 offset += length;
             }
-            if (offset != Json.number(definitions.get("decodedLength")) || offset > 64L << 20) {
+            if (offset != Json.number(definitions.get("decodedLength"))
+                    || offset > MAX_DECODED_BYTES) {
                 throw invalid("Decoded length mismatch");
             }
-            try (var input = new GZIPInputStream(resource("definitions.gz"))) {
-                var digest = java.security.MessageDigest.getInstance("SHA-256");
-                byte[] buffer = new byte[65536];
-                long total = 0;
-                for (int n; (n = input.read(buffer)) != -1; ) {
-                    total += n;
-                    if (total > offset) {
-                        throw invalid("Oversized decoded stream");
-                    }
-                    digest.update(buffer, 0, n);
-                }
-                if (total != offset
-                        || !java.util.HexFormat.of()
-                                .formatHex(digest.digest())
-                                .equals(
-                                        "73d47b200e9ddc94c67c7f3e3b3c5832c8ab80b554ca06353348986eb6af7dbe")) {
-                    throw invalid("Repacked stream failed hash");
-                }
+            byte[] decoded;
+            try (var input = resource("definitions.gz")) {
+                decoded = inflateVerified(input, offset, DECODED_SHA256);
             }
             var complete =
                     entries.stream()
@@ -286,11 +303,33 @@ public final class BundledDefinitions {
             if (complete.size() != 1346 || files.size() != 1346) {
                 throw invalid("Pinned provider count mismatch");
             }
-            return new BundledDefinitions(complete, files, Map.of(), 64);
-        } catch (IOException
-                | java.security.NoSuchAlgorithmException
-                | IllegalArgumentException e) {
+            return new BundledDefinitions(complete, files, decoded, Map.of(), 64);
+        } catch (IOException | IllegalArgumentException e) {
             throw invalid(e.getMessage());
+        }
+    }
+
+    /**
+     * Inflates a gzip stream that must decode to exactly {@code length} bytes with the given
+     * SHA-256; the stream is never read past {@code length} decoded bytes plus one.
+     */
+    static byte[] inflateVerified(InputStream compressed, long length, String sha256)
+            throws IOException {
+        if (length < 0 || length > MAX_DECODED_BYTES) {
+            throw invalid("Decoded length outside bounds");
+        }
+        try (var input = new GZIPInputStream(compressed)) {
+            byte[] decoded = input.readNBytes((int) length);
+            if (decoded.length != length) {
+                throw invalid("Truncated decoded stream");
+            }
+            if (input.read() != -1) {
+                throw invalid("Oversized decoded stream");
+            }
+            if (!Json.sha256(decoded).equals(sha256)) {
+                throw invalid("Repacked stream failed hash");
+            }
+            return decoded;
         }
     }
 

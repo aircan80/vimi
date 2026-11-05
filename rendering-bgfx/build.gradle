@@ -110,7 +110,11 @@ checkstyle {
 
 // Shader binaries are checked-in resources. Normal builds verify them without downloading tools.
 def shaderHelper = rootProject.layout.projectDirectory.file('scripts/rendering/compile_bgfx_shaders.py')
-def pythonExecutable = providers.gradleProperty('python').orElse('python')
+// Override with -Ppython=<interpreter>. Windows installers provide `python`; macOS and many
+// Linux distributions provide only `python3` on PATH.
+def defaultPython = providers.systemProperty('os.name')
+        .map { it.toLowerCase(Locale.ROOT).startsWith('windows') ? 'python' : 'python3' }
+def pythonExecutable = providers.gradleProperty('python').orElse(defaultPython)
 tasks.register('verifyShaders', Exec) {
     group = 'verification'
     description = 'Verifies committed shader sources, manifest and offline bgfx binaries.'
@@ -364,4 +368,55 @@ tasks.register('nativeGpuWorldStreamTransportProof', JavaExec) {
     timeout = java.time.Duration.ofMinutes(1)
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-world-stream-public-lifecycle').get().asFile.absolutePath
+}
+
+// Isolated candidate recipe: eight test-resource blobs, hardware proof remains separate.
+tasks.register('verifyGlobalCandidateShaders', Exec) {
+    commandLine 'python3', rootProject.file('scripts/rendering/compile_bgfx_world_global_candidate.py'), '--include-dx11', '--verify'
+    inputs.dir('src/main/shaders/world-global')
+    inputs.dir('src/test/resources/com/vibeminer/rendering/bgfx/shaders/global-candidate')
+}
+tasks.register('nativeGpuGlobalWmoProof', JavaExec) {
+    group = 'verification'
+    description = 'Checks isolated standalone global candidate Vulkan pixels and upload ownership.'
+    dependsOn testClasses, tasks.named('verifyGlobalCandidateShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.GlobalWmoNativeProof'
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-global-wmo').get().asFile.absolutePath
+}
+tasks.named('check') { dependsOn tasks.named('verifyGlobalCandidateShaders') }
+
+tasks.register('nativeGpuGlobalFrameOwnerProof', JavaExec) {
+    group = 'verification'
+    description = 'Checks isolated fixed global frame ownership and actual resize pixels.'
+    dependsOn testClasses, tasks.named('verifyGlobalCandidateShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.GlobalWmoFrameOwnerProof'
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-global-frame-owner').get().asFile.absolutePath
+}
+
+// Actual GLOBAL child through the public parent transport; explicit hardware diagnostic.
+tasks.register('nativeGpuGlobalChildProof', JavaExec) {
+    group = 'verification'
+    description = 'Checks the actual GLOBAL child protocol, pixels, resize and drain on hardware.'
+    dependsOn testClasses, tasks.named('verifyGlobalCandidateShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.GlobalWmoChildProof'
+    timeout = java.time.Duration.ofMinutes(3)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-global-child').get().asFile.absolutePath
+}
+
+// The eight verified global candidate blobs (glsl/spirv/metal/dx11) ship with the application so
+// the explicit GLOBAL child can render. Sources stay in their reviewed test-resource location;
+// the runtime still checks each blob against its canonical digest sidecar before use. Offline
+// source/tool-manifest verification stays under `check`, so packaging never shells out to python.
+tasks.named('processResources', ProcessResources) {
+    from('src/test/resources/com/vibeminer/rendering/bgfx/shaders/global-candidate') {
+        into 'com/vibeminer/rendering/bgfx/shaders/global-candidate'
+    }
 }

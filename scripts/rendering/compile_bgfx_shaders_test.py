@@ -76,6 +76,25 @@ class ShaderBuildTests(unittest.TestCase):
                     shaders.fetch("https://example.invalid/shaderc", "0" * 64, destination)
             self.assertFalse(destination.exists())
 
+    def test_instance_data_uses_bgfx_d3d_instance_texcoords(self):
+        # D3D11 binds i_dataN to TEXCOORD(31-N); TEXCOORD7-N silently reads per-vertex data.
+        with tempfile.TemporaryDirectory() as scratch:
+            directory = Path(scratch)
+            varying = directory / "varying.def.sc"
+            varying.write_text("vec3 a_position : POSITION;\nvec4 i_data0 : TEXCOORD31;\n"
+                               "vec4 i_data1 : TEXCOORD30;\nvec4 i_data2 : TEXCOORD29;\n", encoding="utf-8")
+            shaders.check_instance_semantics(directory)
+            varying.write_text("vec4 i_data0 : TEXCOORD7;\nvec4 i_data1 : TEXCOORD6;\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "TEXCOORD31"):
+                shaders.check_instance_semantics(directory)
+
+    def test_every_repository_varying_definition_uses_bgfx_instance_texcoords(self):
+        checked = 0
+        for varying in sorted((shaders.ROOT / "rendering-bgfx/src").glob("*/shaders/**/varying.def.sc")):
+            shaders.check_instance_semantics(varying.parent)
+            checked += "i_data" in varying.read_text(encoding="utf-8")
+        self.assertGreaterEqual(checked, 4)
+
 
 if __name__ == "__main__":
     unittest.main()

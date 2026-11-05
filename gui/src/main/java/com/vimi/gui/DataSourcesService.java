@@ -293,6 +293,58 @@ public final class DataSourcesService {
         return List.copyOf(result);
     }
 
+    /**
+     * Declared world-yard NPC spawns for World placement: only Polestar records world yards on a
+     * client Map ID. Questie area percentages and EG interaction observations are not admitted.
+     * Local prepared snapshots only; never downloads or prepares.
+     */
+    public com.vibeminer.concepts.locations.WorldSpawns.Index worldSpawns(BuildInfo build,
+            com.vibeminer.access.Cancellation token) {
+        var unsupported = com.vibeminer.concepts.locations.LocationTypes.State.UNSUPPORTED;
+        if (!policy(Id.POLESTAR).enabled())
+            return com.vibeminer.concepts.locations.WorldSpawns.unavailable(unsupported,
+                    "Polestar is disabled; no other source records world-yard spawn points.");
+        if (!"Forever".equals(automaticFlavor(build.product(), build.version())))
+            return com.vibeminer.concepts.locations.WorldSpawns.unavailable(unsupported,
+                    "No reviewed world-yard spawn source applies to this build.");
+        var snapshot = worldSpawnSnapshot(build);
+        if (snapshot.isEmpty())
+            return com.vibeminer.concepts.locations.WorldSpawns.unavailable(
+                    com.vibeminer.concepts.locations.LocationTypes.State.UNKNOWN,
+                    "No prepared Polestar snapshot at or before this build; use Data Sources.");
+        return com.vibeminer.concepts.locations.WorldSpawns.polestar(polestar, snapshot.get(), token);
+    }
+
+    private java.util.Optional<com.vibeminer.polestar.PolestarTypes.Snapshot> worldSpawnSnapshot(BuildInfo build) {
+        return polestarState.snapshots().stream()
+                .filter(v -> v.preparedAt() != null && compatibleNpcBuild(v.catalog().clientBuild(), build.version()))
+                .max(java.util.Comparator.comparing(v -> v.catalog().clientBuild(), DataSourcesService::compareNpcBuild));
+    }
+
+    /** Changes only when the world-spawn source policy or selected snapshot changes. */
+    public Object worldSpawnsKey(BuildInfo build) {
+        return List.of(policy(Id.POLESTAR).enabled(),
+                worldSpawnSnapshot(build).map(com.vibeminer.polestar.PolestarTypes.Snapshot::id).orElse(""));
+    }
+
+    /**
+     * Service-NPC roles for Maps overlays from the build's mapped prepared Questie version only.
+     * Local reads; never downloads, prepares or substitutes another flavor.
+     */
+    public com.vibeminer.concepts.locations.MapRoles.Catalog mapRoles(BuildInfo build, String locale,
+            com.vibeminer.access.Cancellation token) {
+        var mapping = mapping(build);
+        if (mapping.versionId() == null) throw new IllegalStateException(mapping.message());
+        return com.vibeminer.concepts.locations.MapRoles.questie(questie, mapping.versionId(),
+                com.vibeminer.questie.QuestieTypes.Flavor.parse(mapping.flavor()), locale, token);
+    }
+
+    /** Changes only when the mapped Questie version for this build changes. */
+    public Object mapRolesKey(BuildInfo build) {
+        var mapping = mapping(build);
+        return java.util.Arrays.asList(mapping.flavor(), mapping.versionId(), mapping.message());
+    }
+
     static boolean compatibleNpcBuild(String source, String target) {
         if (source == null || target == null || !source.matches("\\d+\\.\\d+\\.\\d+\\.\\d+") || !target.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) return false;
         try {

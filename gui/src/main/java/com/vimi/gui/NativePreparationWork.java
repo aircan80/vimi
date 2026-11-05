@@ -55,6 +55,139 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     private boolean communityKeysAllowed;
     private DataSourcesService sourcePolicies;
     private boolean listfileAllowed = true, definitionsAllowed = true;
+    private ClientHotfixStore hotfixImports;
+    private CompletableFuture<ClientHotfixStore.Snapshot> hotfixLoad;
+    private Cancellation hotfixCancellation;
+    private volatile ClientHotfixStore.Snapshot hotfixSnapshot;
+    private volatile String hotfixStatus = "Base DB2 data · no imported client cache";
+    java.util.function.Consumer<ClientHotfixStore.Snapshot> hotfixAdoptionProbe = value -> {};
+
+    NativePreparationWork withHotfixImports(ClientHotfixStore value) {
+        hotfixImports = java.util.Objects.requireNonNull(value);
+        return this;
+    }
+
+    ClientHotfixStore.Scope hotfixScope() {
+        return new ClientHotfixStore.Scope(ref, locale, info.version());
+    }
+
+    private volatile String hotfixSha, refreshedHotfixSha;
+    private volatile boolean hotfixWatched;
+
+    String hotfixStatus() {
+        String status = hotfixStatus;
+        if (hotfixSha != null && hotfixWatched) status += " · checked on Refresh sources";
+        if (hotfixRefreshPending())
+            status += "\nRefresh sources imported a newer local cache for this build; reopen to apply it.";
+        return status;
+    }
+
+    /** Whether the loaded scope's original is checked by Refresh sources. */
+    boolean hotfixWatched() { return hotfixWatched; }
+
+    void hotfixWatched(boolean value) { hotfixWatched = value; }
+
+    /** A newer verified import is bound; this open workspace keeps its loaded snapshot. */
+    boolean hotfixRefreshPending() {
+        String loaded = hotfixSha, refreshed = refreshedHotfixSha;
+        return loaded != null && refreshed != null && !loaded.equals(refreshed);
+    }
+
+    /**
+     * Records a refresh-bound import. The comparison is made when read, so a snapshot whose
+     * adoption completes after this note is still compared; equal snapshots need no reopen.
+     */
+    void noteRefreshedHotfix(String sha256) {
+        refreshedHotfixSha = java.util.Objects.requireNonNull(sha256);
+    }
+
+    boolean canImportHotfix() {
+        try { hotfixScope(); return true; }
+        catch (IllegalArgumentException | NullPointerException unavailable) { return false; }
+    }
+
+    private void ensureHotfix(Cancellation token) {
+        if (hotfixImports == null) return;
+        if (!canImportHotfix()) {
+            hotfixStatus = "Client cache needs an exact build version; using base data";
+            return;
+        }
+        CompletableFuture<ClientHotfixStore.Snapshot> load;
+        Cancellation child;
+        boolean start;
+        synchronized (handlesGate) {
+            if (closed.get()) throw new java.util.concurrent.CancellationException();
+            start = hotfixLoad == null;
+            if (start) {
+                hotfixLoad = new CompletableFuture<>();
+                hotfixCancellation = new Cancellation();
+            }
+            load = hotfixLoad;
+            child = hotfixCancellation;
+        }
+        if (start) {
+            try {
+                var registration = token.onCancel(child::cancel);
+                hotfixImports.open(hotfixScope(), child).whenComplete((snapshot, error) -> {
+                    registration.close();
+                    if (error != null) {
+                        failHotfixLoad(load, error);
+                        return;
+                    }
+                    // Retain the returned owner before reading any fallible metadata. Close
+                    // can then account for it even if adoption fails or the store retires it.
+                    hotfixSnapshot = snapshot;
+                    try {
+                        if (snapshot != null) hotfixAdoptionProbe.accept(snapshot);
+                        if (closed.get()) {
+                            if (snapshot == null) load.complete(null);
+                            else snapshot.closeAsync().whenComplete((ignored, cleanup) -> {
+                                if (cleanup != null) failHotfixLoad(load, cleanup);
+                                else load.complete(null);
+                            });
+                            return;
+                        }
+                        if (snapshot != null) {
+                            var index = snapshot.index();
+                            hotfixSha = index.sha256();
+                            hotfixWatched = snapshot.watched();
+                            hotfixStatus = "Local hotfix cache · build " + index.build() + " · "
+                                    + locale + " · " + index.entries().size() + " cached operations · "
+                                    + index.sha256().substring(0, 16);
+                        }
+                        load.complete(snapshot);
+                    } catch (RuntimeException | Error failure) {
+                        if (snapshot == null) failHotfixLoad(load, failure);
+                        else {
+                            try {
+                                snapshot.closeAsync().whenComplete((ignored, cleanup) -> {
+                                    if (cleanup != null && cleanup != failure) failure.addSuppressed(cleanup);
+                                    failHotfixLoad(load, failure);
+                                });
+                            } catch (RuntimeException | Error cleanup) {
+                                if (cleanup != failure) failure.addSuppressed(cleanup);
+                                failHotfixLoad(load, failure);
+                            }
+                        }
+                    }
+                });
+            } catch (RuntimeException | Error error) {
+                failHotfixLoad(load, error);
+            }
+        }
+        load.join();
+        token.check();
+        if (closed.get()) throw new java.util.concurrent.CancellationException();
+    }
+
+    private void failHotfixLoad(CompletableFuture<ClientHotfixStore.Snapshot> load, Throwable error) {
+        hotfixStatus = "Imported client hotfix cache unavailable; reimport it";
+        synchronized (handlesGate) {
+            if (!closed.get() && hotfixLoad == load) hotfixLoad = null;
+        }
+        load.completeExceptionally(error);
+    }
+
     NativePreparationWork withSourcePolicy(boolean listfile, boolean definitions) {
         listfileAllowed = listfile; definitionsAllowed = definitions; return this;
     }
@@ -260,6 +393,11 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                                 names));
     }
 
+    /** The generated (derived artifact) store shared by this build's components; may be null. */
+    public GeneratedStore generatedHandle() {
+        return generated;
+    }
+
     public BuildFiles filesHandle() {
         return fileHandle;
     }
@@ -434,6 +572,11 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                                 defaults.maxReferenceSources(),
                                 defaults.maxReferenceScanRows())
                         .withLocalDefinitionsOnly();
+        var snapshot = hotfixSnapshot;
+        if (onlinePreparation && snapshot != null) {
+            options = options.withHotfix(new com.vibeminer.formats.tables.HotfixBinding(
+                    ref, locale, info.version(), snapshot.source(), snapshot.index()));
+        }
         // Keep decoder keys and generated-table fingerprints from the same immutable snapshot.
         var fileDefaults = FileSystemOptions.defaults();
         var retained =
@@ -481,6 +624,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     @Override
     public List<String> keys(Cancellation token) {
         var issues = new ArrayList<String>();
+        ensureHotfix(token);
         if (communityKeysAllowed && sourcePolicies != null) {
             communityKeys = sourcePolicies.tactKeysForBuild(token);
             rebuildEffectiveKeys();
@@ -544,6 +688,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     @Override
     public TableTypes.PreloadResult tables(
             Consumer<TableTypes.PreloadProgress> progress, Cancellation token) {
+        ensureHotfix(token);
         long started = System.nanoTime();
         abortPending();
         TableTypes.PreloadResult prepared = null;
@@ -597,7 +742,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     private String tableCacheIdentity() {
         var available = effectiveKeys();
         String keyFingerprint = available.fingerprint();
-        return String.join(
+        String identity = String.join(
                 "\n",
                 definitionsAllowed ? "native-table-policy-v1" : "native-table-policy-definitions-disabled-v1",
                 ref.product(),
@@ -614,6 +759,11 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                 definitionsAllowed ? com.vibeminer.formats.definitions.SupplementalDefinitions.IDENTITY : "supplemental-disabled",
                 new com.vibeminer.formats.db2.Db2Types.Limits().toString(),
                 keyFingerprint);
+        return hotfixSnapshot == null ? identity : identity + "\n"
+                + new com.vibeminer.formats.tables.HotfixBinding(ref, locale,
+                        info.version(), hotfixSnapshot.source(), hotfixSnapshot.index())
+                        .inputFingerprint() + "\n"
+                + com.vibeminer.formats.hotfix.HotfixRowDecoder.REVISION;
     }
 
     @Override
@@ -902,16 +1052,26 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     @Override
     public void close() {
         final List<CompletableFuture<Void>> waiting;
+        final Cancellation hotfixStop;
         synchronized (handlesGate) {
             if (!closed.compareAndSet(false, true)) return;
-            waiting = List.copyOf(retirementJobs);
+            waiting = new ArrayList<>(retirementJobs);
+            // A failed import result is not a workspace retirement failure: the store
+            // retains/quarantines unreturned owners. Returned snapshots are closed below.
+            if (hotfixLoad != null) waiting.add(hotfixLoad.handle((value, error) -> null));
+            hotfixStop = hotfixCancellation;
         }
         Throwable failure = null;
+        if (hotfixStop != null) {
+            try { hotfixStop.cancel(); }
+            catch (RuntimeException | Error error) { failure = error; }
+        }
         try {
             try {
                 if (usageAccounting != null) usageAccounting.close();
             } catch (Throwable error) {
-                failure = error;
+                if (failure == null) failure = error;
+                else if (failure != error) failure.addSuppressed(error);
             }
             try {
                 CompletableFuture.allOf(waiting.toArray(CompletableFuture[]::new)).join();
@@ -942,6 +1102,12 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             } catch (Throwable error) {
                 if (failure == null) failure = error;
                 else failure.addSuppressed(error);
+            }
+            try {
+                if (hotfixSnapshot != null) hotfixSnapshot.closeAsync().join();
+            } catch (Throwable error) {
+                if (failure == null) failure = error;
+                else if (failure != error) failure.addSuppressed(error);
             }
         } finally {
             try {
