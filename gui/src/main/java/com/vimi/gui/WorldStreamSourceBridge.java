@@ -354,13 +354,30 @@ final class WorldStreamSourceBridge {
             WorldFormats.Tile tile,
             Cancellation cancellation,
             CreatureAppender creatures) {
+        return prepareExterior(
+                source,
+                scope,
+                tile,
+                cancellation,
+                creatures,
+                WorldExteriorObjects.ImageDetail.STANDARD);
+    }
+
+    /** As above, with the object texture budget tier (#267). */
+    static ExteriorCopy prepareExterior(
+            WorldTerrainStreaming source,
+            WorldTerrainStreaming.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation cancellation,
+            CreatureAppender creatures,
+            WorldExteriorObjects.ImageDetail detail) {
         WorldExteriorObjects.TileObjects set = null;
         try {
             boolean failed = false;
             String note;
             var summary = ExteriorSummary.NONE;
             try {
-                set = source.prepareExteriorObjects(scope, tile, cancellation);
+                set = source.prepareExteriorObjects(scope, tile, cancellation, detail);
                 logModelFailure(set);
                 summary = ExteriorSummary.of(set);
                 note = note(summary);

@@ -31,6 +31,10 @@ public final class AuthoredGlobalSource implements AutoCloseable {
     private final Map<Long, AtomicInteger> opens = new ConcurrentHashMap<>(),
             stats = new ConcurrentHashMap<>();
     private final java.util.Set<Long> changed = ConcurrentHashMap.newKeySet();
+
+    /** Opens that fail with a state and code instead of returning a stream. */
+    final java.util.Map<Long, FileTypes.FileOpen> failedOpens = new ConcurrentHashMap<>();
+
     private final AtomicInteger closedStreams = new AtomicInteger(),
             borrowedClosed = new AtomicInteger();
     private final AtomicReference<PendingGate> requested = new AtomicReference<>();
@@ -55,6 +59,11 @@ public final class AuthoredGlobalSource implements AutoCloseable {
                         new WorldService.MapInfo(7, "Authored global", null, 0, 999L),
                         Cancellation.NONE);
         source.activate(scope);
+    }
+
+    /** Makes every later open of {@code id} fail with {@code state} and {@code code}. */
+    public void failOpen(long id, FileTypes.FileReadState state, String code) {
+        failedOpens.put(id, new FileTypes.FileOpen(state, null, code, null, null));
     }
 
     public WorldGlobalScenes source() {
@@ -302,6 +311,10 @@ public final class AuthoredGlobalSource implements AutoCloseable {
                                                             (Cancellation) args[1]));
                                     case "openRead" -> {
                                         long id = ((FileTypes.FileRef) args[0]).fileDataId();
+                                        var failed = failedOpens.get(id);
+                                        if (failed != null) {
+                                            yield CompletableFuture.completedFuture(failed);
+                                        }
                                         yield CompletableFuture.completedFuture(
                                                 new FileTypes.FileOpen(
                                                         FileTypes.FileReadState.COMPLETE,

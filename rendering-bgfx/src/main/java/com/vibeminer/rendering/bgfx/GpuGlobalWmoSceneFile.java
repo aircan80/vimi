@@ -178,7 +178,7 @@ public final class GpuGlobalWmoSceneFile {
                     if ((n & 1023) == 0) {
                         WorldGlobalFileAccess.stop(stopping);
                     }
-                    int value = cursor.unsignedShort();
+                    int value = cursor.integer();
                     WorldGlobalFileCodec.check(
                             value >= group.vertexFirst()
                                     && value < group.vertexFirst() + group.vertexCount());

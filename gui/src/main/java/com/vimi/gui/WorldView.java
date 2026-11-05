@@ -4,6 +4,8 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.world.BuildWorld;
 import com.vibeminer.concepts.world.WorldAreaNavigation;
 import com.vibeminer.concepts.world.WorldBookmarks;
+import com.vibeminer.concepts.world.WorldCurrentArea;
+import com.vibeminer.concepts.world.WorldInstanceLinks;
 import com.vibeminer.concepts.world.WorldService;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.rendering.world.ExplorerMotion;
@@ -19,6 +21,7 @@ import javafx.geometry.Pos;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
+import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListView;
 import javafx.scene.control.ProgressIndicator;
@@ -114,6 +117,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private int streamingWidth, streamingHeight;
     private CompletableFuture<Void> streamingRetirement = CompletableFuture.completedFuture(null);
     private final CheckBox gpuEnabled = new CheckBox("GPU terrain");
+    // Object texture budget tier (#267); a change re-prepares the streamed tiles' objects.
+    private final javafx.scene.control.ChoiceBox<
+                    com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail>
+            objectTextures = new javafx.scene.control.ChoiceBox<>();
     private final CheckBox walkMode = new CheckBox("Walk on terrain (F)");
     private final CheckBox smoothMotion = new CheckBox("Smooth motion");
     private final Label motionStatus = new Label("Free flight · no collision");
@@ -148,6 +155,34 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private TerrainRenderer.Scene presentedScene;
     private boolean gpuVisible;
     private final Button open = new Button("Open explorer"), back = new Button("Back to map");
+
+    /**
+     * A dungeon or raid to zone into: its map, its recorded link (null when the map has none) and
+     * its recorded instance area resolved on the area's own map (null when none is recorded).
+     */
+    private record InstanceTarget(
+            WorldService.MapInfo map,
+            WorldInstanceLinks.Link link,
+            WorldCurrentArea.Result area,
+            long areaMap,
+            String areaIssue) {}
+
+    private java.util.function.Supplier<com.vibeminer.concepts.locations.BuildLocationMaps>
+            locationMaps = () -> null;
+    private WorldInstanceLinks instanceLinks;
+    private Cancellation instanceLookup = new Cancellation();
+    private final ComboBox<WorldInstanceLinks.Link> entrances = new ComboBox<>();
+    private final Button enterInstance = new Button("Enter instance"),
+            leaveInstance = new Button("Leave instance");
+    private final Label instanceStatus = new Label("Reading recorded instance entrances…"),
+            instanceArea = new Label();
+    private double entranceX, entranceY;
+    private final WorldInstanceSwitch<InstanceTarget> instances =
+            new WorldInstanceSwitch<>(new InstanceHooks(), Platform::runLater);
+    // An ADT-based instance streams like any map; Leave returns to this saved open-world view.
+    private WorldBookmarks.Bookmark instanceReturn;
+    private long instanceMap = -1;
+    private boolean instanceOpenPending;
     private final ProgressIndicator catalogActivity = activity("world-catalog-activity", 18),
             localActivity = activity("world-local-activity", 18),
             firstFrameActivity = activity("world-first-frame-activity", 32);
@@ -432,6 +467,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 () -> job.work() instanceof NativePreparationWork w ? w.revision() : 0,
                 GpuPreviewService.application());
         buildLabel = job.build().version() + " · " + job.locale();
+        locationMaps =
+                () -> job.work() instanceof NativePreparationWork w ? w.locationMapsHandle() : null;
     }
 
     /** Uses the application's bookmark store; the view's own session store is replaced. */
@@ -480,6 +517,42 @@ final class WorldView extends BorderPane implements AutoCloseable {
             textureRequestedScene = null;
             maybeLoadTextures();
         });
+        objectTextures.setId("world-object-textures");
+        objectTextures.setFocusTraversable(false);
+        objectTextures.getItems().setAll(
+                com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.values());
+        objectTextures.setValue(WorldStreamGpuOwner.IMAGE_DETAIL);
+        objectTextures.setConverter(new javafx.util.StringConverter<>() {
+            @Override
+            public String toString(
+                    com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail) {
+                return detail == null ? ""
+                        : detail == com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH
+                                ? "Object textures: High" : "Object textures: Standard";
+            }
+
+            @Override
+            public com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail fromString(
+                    String text) {
+                return null;
+            }
+        });
+        objectTextures.setTooltip(new javafx.scene.control.Tooltip(
+                "Per-tile texture budget for buildings and doodads. Standard keeps 1 Mi building"
+                        + " pixels per tile; High doubles every pool, for GPUs with memory to spare."
+                        + " Larger buildings get full resolution first; when a tile is over budget,"
+                        + " textures use smaller mip levels instead of going missing. This session"
+                        + " only: start with -Dvimi.world.objectTextures=high to open on High."));
+        // Only the GPU stream prepares object textures.
+        objectTextures.setDisable(gpu == null || !gpuEnabled.isSelected());
+        gpuEnabled.selectedProperty().addListener(
+                (o, was, on) -> objectTextures.setDisable(gpu == null || !on));
+        objectTextures.valueProperty().addListener((o, previous, next) -> {
+            if (next == null || next == previous || !streamingMode || streaming == null) return;
+            // New budgets apply to newly prepared tiles: restart the stream to re-prepare them.
+            retireStreaming();
+            startStreaming();
+        });
         gpuEnabled.setSelected(gpu != null);
         gpuEnabled.setDisable(gpu == null);
         gpuEnabled.setId("world-gpu-enabled");
@@ -506,6 +579,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         + "lighting or animation."));
         retryGpu.setDisable(true);
         gpuEnabled.setOnAction(e -> {
+            if (instances.engaged()) return;
             if (streamingMode) {
                 switchStreamingRendering();
                 return;
@@ -532,6 +606,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             requestFrame();
         });
         retryGpu.setOnAction(e -> {
+            if (instances.engaged()) return;
             if (streamingMode) {
                 retireStreaming();
                 startStreaming();
@@ -554,6 +629,29 @@ final class WorldView extends BorderPane implements AutoCloseable {
         position.setId("world-position");
         open.setId("world-open");
         back.setId("world-back");
+        entrances.setId("world-instance-entrances");
+        entrances.setPromptText("Recorded instance entrances");
+        entrances.setFocusTraversable(false);
+        entrances.setOnShowing(e -> refreshEntrances());
+        entrances.setCellFactory(list -> entranceCell());
+        entrances.setButtonCell(entranceCell());
+        entrances.valueProperty().addListener((o, a, b) -> enterInstance.setDisable(b == null));
+        enterInstance.setId("world-instance-enter");
+        enterInstance.setFocusTraversable(false);
+        enterInstance.setDisable(true);
+        enterInstance.setOnAction(e -> enterInstance(entrances.getValue()));
+        leaveInstance.setId("world-instance-leave");
+        leaveInstance.setFocusTraversable(false);
+        leaveInstance.setOnAction(e -> leaveInstance());
+        instanceStatus.setId("world-instance-status");
+        instanceStatus.setWrapText(true);
+        instanceStatus.setMinWidth(0);
+        instanceArea.setId("world-instance-area");
+        instanceArea.setWrapText(true);
+        instanceStatus.setTooltip(new javafx.scene.control.Tooltip(
+                "Each dungeon or raid map records a corpse position on its parent map (Map.Corpse"
+                        + " and Map.CorpseMapID), which the client places at the instance entrance."
+                        + " Entering switches this view to the instance map; Leave returns here."));
         maps.setAccessibleText("World maps and continents");
         maps.setPlaceholder(new Label("No matching maps"));
         maps.setPrefWidth(240);
@@ -677,6 +775,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         open.setOnAction(e -> openExplorer());
         back.setOnAction(
                 e -> {
+                    clearInstanceReturn();
                     cancelRequests();
                     showInventory();
                 });
@@ -792,7 +891,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 new AnimationTimer() {
                     @Override
                     public void handle(long now) {
-                        if (!active || !explorer) return;
+                        if (!active || !explorer || instances.engaged()) return;
                         if (streamingMode) {
                             if (!viewportActive()) {
                                 streamingPaused = true;
@@ -1033,6 +1132,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 return;
                                             }
                                             catalog = data;
+                                            loadInstanceLinks();
                                             maps.setDisable(false);
                                             maps.setPlaceholder(new Label("No matching maps"));
                                             filter();
@@ -1044,6 +1144,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     void invalidate() {
+        instances.abandon();
+        clearInstanceReturn();
+        cancelInstanceLookups();
+        instanceLookup = new Cancellation();
+        instanceLinks = null;
         resumeCamera = null;
         pendingJump = null;
         pendingBookmark = null;
@@ -1141,6 +1246,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     void deactivate() {
         active = false;
+        // An entry still waiting for the open world to drain must not open the interior, take
+        // the GPU or play instance audio in a hidden tab: cancel it. An open interior stays.
+        // Before cancelRequests: a canceled entry resumes the world, and cancelRequests then
+        // suspends what that resume restarted (spawns, timer) for the hidden tab.
+        instances.cancelEntry();
         cancelRequests();
     }
 
@@ -1149,6 +1259,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (spawns != null && explorer) spawns.resume();
         ensureLoaded();
         areaButtons();
+        refreshEntrances();
+        if (instances.engaged()) {
+            // The interior keeps the view; deactivation stopped its audio, so restore it.
+            if (instances.phase() == WorldInstanceSwitch.Phase.INSIDE) {
+                instanceAudio(instances.target());
+            }
+            return;
+        }
         if (explorer && inventory != null) {
             if (streamingMode && streaming == null) {
                 if (gpuEnabled.isSelected()) {
@@ -1166,6 +1284,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void selectMap(WorldService.MapInfo map) {
+        // Choosing a map leaves any inline interior; it does not return to the open world.
+        instances.abandon();
+        if (map.id() != instanceMap) clearInstanceReturn();
         resumeCamera = null;
         pendingJump = null;
         if (pendingBookmark != null && pendingBookmark.mapId() != map.id()) pendingBookmark = null;
@@ -1248,17 +1369,40 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                                                             t.y()
                                                                                                     - 32)))
                                                             .orElse(null);
-                                            open.setDisable(selected == null);
+                                            open.setDisable(selected == null && !globalOnly(data));
                                             drawTiles();
-                                            status.setText(data.world().tiles().isEmpty()
+                                            if (instanceOpenPending && data.map().id() == instanceMap) {
+                                                instanceOpenPending = false;
+                                                if (selected != null) {
+                                                    Platform.runLater(() -> {
+                                                        if (!stale(request)) openExplorer();
+                                                    });
+                                                }
+                                            }
+                                            status.setText((globalOnly(data)
+                                                    ? "Global world-model map · Open explorer enters it inline on the GPU"
+                                                    : data.world().tiles().isEmpty()
                                                     ? inventoryMessage.getText()
                                                     : data.world().tiles().size()
                                                             + " terrain tiles · Select a tile and"
                                                             + " open the explorer"
                                                             + (data.world().globalModel()
                                                                     ? " · Global world-model map"
-                                                                    : ""));
+                                                                    : ""))
+                                                    + entranceNote(data.map()));
                                         }));
+    }
+
+    /** For a dungeon or raid map: where its recorded entrance is, or why there is none. */
+    private String entranceNote(WorldService.MapInfo map) {
+        var link = instanceLinks == null ? null : instanceLinks.link(map.id()).orElse(null);
+        if (link == null) return "";
+        if (link.entrance() == null) return " · Entrance: none, " + link.entranceIssue();
+        var parent = catalog == null ? null : catalog.maps().stream()
+                .filter(m -> m.id() == link.entrance().mapId()).findFirst().orElse(null);
+        return String.format(java.util.Locale.ROOT, " · Entrance: %s at %.0f %.0f",
+                parent == null ? "Map #" + link.entrance().mapId() : parent.toString(),
+                link.entrance().x(), link.entrance().y());
     }
 
     private String areaHint() {
@@ -1510,7 +1654,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private String emptyInventoryMessage() {
         return inventory.world().globalModel()
-                ? "This map records a global world model instead of terrain tiles. World-model previews are not available yet."
+                ? "This map records a global world model instead of terrain tiles. Select Open explorer to enter it in this view (GPU interior)."
                 : "No terrain tiles are recorded for this map. Select another map to explore terrain.";
     }
 
@@ -1545,7 +1689,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void openExplorer() {
-        if (stale(selection) || selected == null || inventory == null) return;
+        if (stale(selection) || inventory == null || instances.engaged()) return;
+        if (globalOnly(inventory)) {
+            enterGlobal(inventory.map(), false);
+            return;
+        }
+        if (selected == null) return;
         cancelRequests();
         explorer = true;
         origin = selected;
@@ -1559,7 +1708,32 @@ final class WorldView extends BorderPane implements AutoCloseable {
         sceneTiles = java.util.List.of();
         presentedScene = null;
         image.setImage(null);
+        showExplorerLayout();
+        resetInspection();
+        status.setText("Loading terrain tile " + selected.key() + "…");
+        if (spawns != null) spawns.resume();
+        show(firstFrameActivity, true);
+        timer.start();
+        streamingMode = gpuEnabled.isSelected() && gpuService != null
+                && handle instanceof WorldService && handle.terrainStreaming().isPresent();
+        if (streamingMode) {
+            pauseLegacy();
+            startStreaming();
+        }
+        else loadTile(selected, true);
+        viewport.requestFocus();
+    }
+
+    /** The explorer's viewport and controls; also restored when an inline instance is left. */
+    private void showExplorerLayout() {
         content.setCenter(viewport);
+        boolean adtInstance = instanceReturn != null && inventory != null
+                && inventory.map().id() == instanceMap;
+        // An entry abandoned while it showed "Cancel" (selectMap, invalidate, close) resets here.
+        leaveInstance.setText("Leave instance");
+        leaveInstance.setVisible(adtInstance);
+        leaveInstance.setManaged(adtInstance);
+        refreshEntrances();
         content.setBottom(
                 new VBox(
                         8,
@@ -1575,22 +1749,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         inspection,
                         audio.node(),
                         position,
-                        new HBox(8, gpuEnabled, gpuActivity, retryGpu, gpuStatus),
-                        new HBox(8, textureActivity, textureStatus, retryTextures)));
+                        new HBox(8, gpuEnabled, objectTextures, gpuActivity, retryGpu, gpuStatus),
+                        new HBox(8, textureActivity, textureStatus, retryTextures),
+                        new HBox(8, new Label("Instances"), entrances, enterInstance, leaveInstance,
+                                instanceStatus)));
         if (spawns != null) ((VBox) content.getBottom()).getChildren().add(spawns.controls());
-        resetInspection();
-        status.setText("Loading terrain tile " + selected.key() + "…");
-        if (spawns != null) spawns.resume();
-        show(firstFrameActivity, true);
-        timer.start();
-        streamingMode = gpuEnabled.isSelected() && gpuService != null
-                && handle instanceof WorldService && handle.terrainStreaming().isPresent();
-        if (streamingMode) {
-            pauseLegacy();
-            startStreaming();
-        }
-        else loadTile(selected, true);
-        viewport.requestFocus();
     }
 
     private void loadTile(WorldFormats.Tile tile, boolean initial) {
@@ -2146,6 +2309,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void updateCurrentArea() {
+        // The instance owns the area and its audio while it is entered.
+        if (instances.engaged()) return;
         if (camera==null || catalog==null || inventory==null) {
             currentArea.setText("Terrain area unavailable");
             audio.area(null, -1, null);
@@ -2218,6 +2383,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void switchStreamingRendering() {
+        if (instances.engaged()) return;
         timer.stop();
         retireStreaming();
         show(gpuActivity, true);
@@ -2246,17 +2412,20 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void startStreaming() {
         if (closed || !active || !explorer || !streamingMode || streaming != null
-                || !gpuEnabled.isSelected() || stale(selection)) return;
+                || !gpuEnabled.isSelected() || stale(selection) || instances.engaged()) return;
         if (!viewportActive()) {
             streamingPaused = true;
             return;
         }
-        if (!streamingRetirement.isDone() || !legacyRetirement.isDone()) {
+        // A left or abandoned interior must release its GPU request first (#259); its own
+        // failure is reported by the switch and never blocks the open world.
+        var interiorDrained = instances.drained().exceptionally(ignored -> null);
+        if (!streamingRetirement.isDone() || !legacyRetirement.isDone() || !interiorDrained.isDone()) {
             if (streamingStartWaiting) return;
             streamingStartWaiting = true;
             show(gpuActivity, true);
             gpuStatus.setText("Waiting for previous World resources to retire…");
-            CompletableFuture.allOf(streamingRetirement, legacyRetirement)
+            CompletableFuture.allOf(streamingRetirement, legacyRetirement, interiorDrained)
                     .whenComplete((ignored, failure) -> Platform.runLater(() -> {
                 streamingStartWaiting = false;
                 if (closed || !active || !streamingMode || !explorer || streaming != null) return;
@@ -2279,11 +2448,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         ? null : areaEntry.entryChunk().entryReference(), catalog.areaIndex());
         var creatureSource = WorldStreamGpuOwner.CREATURES ? creatures : null;
         long creatureMap = inventory.map().id();
+        var detail = objectTextures.getValue();
         WorldStreamSourceBridge.ExteriorPreparer preparer = creatureSource == null
-                ? WorldStreamSourceBridge::prepareExterior
+                ? (source, scope, tile, cancellation) -> WorldStreamSourceBridge.prepareExterior(
+                        source, scope, tile, cancellation, null, detail)
                 : (source, scope, tile, cancellation) -> WorldStreamSourceBridge.prepareExterior(
                         source, scope, tile, cancellation,
-                        (builder, owned, token) -> creatureSource.append(builder, creatureMap, owned, token));
+                        (builder, owned, token) -> creatureSource.append(builder, creatureMap, owned, token),
+                        detail);
         stallWatchdog.reset();
         streaming = new WorldStreamSourceController(request, scope -> {
             var owner = new WorldStreamGpuOwner(gpuService, scope);
@@ -2767,8 +2939,346 @@ final class WorldView extends BorderPane implements AutoCloseable {
         });
     }
 
+    // ---- Instances: recorded entrances and in-place zone-in (#259) ----------------------------
+
+    /** A map that records one global world model and no terrain tiles (an interior map). */
+    private static boolean globalOnly(WorldService.Inventory data) {
+        return data != null && data.world() != null && data.world().globalModel()
+                && data.world().tiles().isEmpty();
+    }
+
+    /** Reads the recorded instance links once per catalog, off the FX thread. */
+    private void loadInstanceLinks() {
+        instanceLinks = null;
+        var source = handle;
+        var cancel = instanceLookup;
+        if (source == null) return;
+        Thread.ofVirtual().name("world-instance-links").start(() -> {
+            CompletableFuture<WorldInstanceLinks> call;
+            try {
+                call = source.instanceLinks(cancel);
+            } catch (RuntimeException failed) {
+                call = CompletableFuture.failedFuture(failed);
+            }
+            call.whenComplete((links, failure) -> Platform.runLater(() -> {
+                if (closed || handle != source || cancel.isCanceled()) return;
+                if (failure != null) WorldDiagnostics.request("Instance links failed", failure);
+                var maps = catalog == null ? java.util.Set.<Long>of()
+                        : catalog.maps().stream().map(WorldService.MapInfo::id)
+                                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+                instanceLinks = failure != null || links == null
+                        ? WorldInstanceLinks.unavailable("Recorded instance links could not be read")
+                        : links.within(maps);
+                refreshEntrances();
+            }));
+        });
+    }
+
+    /** Lists this map's recorded instance entrances, nearest to the camera first. */
+    private void refreshEntrances() {
+        var links = instanceLinks;
+        var map = inventory == null ? null : inventory.map();
+        if (links == null || map == null) {
+            entrances.getItems().clear();
+            instanceStatus.setText(links == null ? "Reading recorded instance entrances…" : "");
+            return;
+        }
+        if (camera != null) {
+            entranceX = camera.x();
+            entranceY = camera.y();
+        }
+        var previous = entrances.getValue();
+        var found = links.entrancesOn(map.id(), entranceX, entranceY);
+        entrances.getItems().setAll(found);
+        if (previous != null) {
+            found.stream().filter(l -> l.mapId() == previous.mapId()).findFirst()
+                    .ifPresent(entrances::setValue);
+        }
+        enterInstance.setDisable(entrances.getValue() == null);
+        instanceStatus.setText(found.isEmpty()
+                ? (links.links().isEmpty() && !links.issues().isEmpty()
+                        ? links.issues().getFirst()
+                        : "No recorded instance entrance on this map")
+                : found.size() + (found.size() == 1 ? " recorded entrance" : " recorded entrances")
+                        + " on this map (Map corpse positions)");
+    }
+
+    private javafx.scene.control.ListCell<WorldInstanceLinks.Link> entranceCell() {
+        return new javafx.scene.control.ListCell<>() {
+            @Override
+            protected void updateItem(WorldInstanceLinks.Link link, boolean empty) {
+                super.updateItem(link, empty);
+                setText(empty || link == null ? null : link + String.format(java.util.Locale.ROOT,
+                        " · %.0f yd", WorldInstanceLinks.distance(link, entranceX, entranceY)));
+            }
+        };
+    }
+
+    /** Zone-in from the open world: reads the instance map's inventory, then picks the path. */
+    private void enterInstance(WorldInstanceLinks.Link link) {
+        if (link == null || closed || instances.engaged() || catalog == null) return;
+        var map = catalog.maps().stream().filter(m -> m.id() == link.mapId()).findFirst()
+                .orElse(null);
+        if (map == null) {
+            instanceStatus.setText(link.name() + " · Map #" + link.mapId()
+                    + " is not in the readable World catalog; not entered.");
+            return;
+        }
+        enterInstance.setDisable(true);
+        instanceStatus.setText("Reading " + link.name() + "…");
+        var source = handle;
+        var cancel = instanceLookup;
+        long request = selection;
+        Thread.ofVirtual().name("world-instance-inventory").start(() -> {
+            CompletableFuture<WorldService.Inventory> call;
+            try {
+                call = source.inventory(map, cancel);
+            } catch (RuntimeException failed) {
+                call = CompletableFuture.failedFuture(failed);
+            }
+            call.whenComplete((data, failure) -> Platform.runLater(() -> {
+                if (closed) return;
+                enterInstance.setDisable(entrances.getValue() == null);
+                if (handle != source || cancel.isCanceled() || request != selection
+                        || instances.engaged()) {
+                    // The view moved on (tab, map or build change): nothing is being read now.
+                    refreshEntrances();
+                    return;
+                }
+                enterResolved(link, map, data, failure);
+            }));
+        });
+    }
+
+    private void enterResolved(WorldInstanceLinks.Link link, WorldService.MapInfo map,
+            WorldService.Inventory data, Throwable failure) {
+        if (failure != null || data == null || data.world() == null) {
+            instanceStatus.setText(link.name() + ": its map inventory is unavailable"
+                    + (data != null && data.issue() != null ? " (" + data.issue() + ")" : "")
+                    + "; not entered.");
+            return;
+        }
+        if (globalOnly(data)) {
+            enterGlobal(map, explorer);
+            return;
+        }
+        if (data.world().tiles().isEmpty()) {
+            instanceStatus.setText(link.name()
+                    + " records neither terrain tiles nor a global world model; not entered.");
+            return;
+        }
+        // An ADT-based instance streams like any map, from its terrain tile nearest the grid
+        // centre: no in-instance entry point is recorded.
+        var back = currentBookmark();
+        if (back == null) {
+            instanceStatus.setText("This position cannot be returned to; not entered.");
+            return;
+        }
+        instanceReturn = back;
+        instanceMap = map.id();
+        instanceOpenPending = true;
+        if (!maps.getItems().contains(map)) {
+            allMaps.setSelected(true);
+            search.clear();
+            filter();
+        }
+        status.setText("Entering " + link.name() + " · it streams like any map; Leave instance"
+                + " returns to this view");
+        if (maps.getSelectionModel().getSelectedItem() == map) selectMap(map);
+        else maps.getSelectionModel().select(map);
+    }
+
+    /** Zone-in to a global-WMO map in place; Leave returns to the open world or the map page. */
+    private void enterGlobal(WorldService.MapInfo map, boolean worldOpen) {
+        if (instances.engaged()) return;
+        if (instanceLinks == null) {
+            instanceStatus.setText("Recorded instance links are still loading; try again in a"
+                    + " moment.");
+            status.setText(instanceStatus.getText());
+            return;
+        }
+        if (gpuService == null) {
+            instanceStatus.setText("Instance interiors render on the GPU, which is unavailable.");
+            status.setText(instanceStatus.getText());
+            return;
+        }
+        if (worldOpen && !streamingMode) {
+            instanceStatus.setText("Turn on GPU terrain to enter an instance from the open world.");
+            return;
+        }
+        instances.enter(target(map), worldOpen);
+    }
+
+    /** The instance's recorded link and area (Map.AreaTableID), resolved on the area's own map. */
+    private InstanceTarget target(WorldService.MapInfo map) {
+        var link = instanceLinks == null ? null : instanceLinks.link(map.id()).orElse(null);
+        if (link == null) {
+            return new InstanceTarget(map, null, null, -1,
+                    "this map has no recorded dungeon or raid link (Map.InstanceType)");
+        }
+        if (link.areaId() == null) {
+            return new InstanceTarget(map, link, null, -1, "Map.AreaTableID is unset");
+        }
+        var area = catalog == null ? null : catalog.areas().stream()
+                .filter(a -> a.id() == link.areaId()).findFirst().orElse(null);
+        if (area == null) {
+            return new InstanceTarget(map, link, null, -1, "Map.AreaTableID " + link.areaId()
+                    + " is not in the readable AreaTable records");
+        }
+        var resolved = WorldCurrentArea.resolve(area.mapId(), area.id(), catalog.areaIndex());
+        return new InstanceTarget(map, link, resolved, area.mapId(),
+                resolved.state() == WorldCurrentArea.State.KNOWN ? null
+                        : "area " + area.id() + " has no readable hierarchy ("
+                                + resolved.reason() + ")");
+    }
+
+    /** Plays the instance's recorded area audio; a target without one stops the tracks. */
+    private void instanceAudio(InstanceTarget target) {
+        if (target == null) {
+            audio.area(null, -1, null);
+            return;
+        }
+        boolean known = target.area() != null
+                && target.area().state() == WorldCurrentArea.State.KNOWN;
+        instanceArea.setText(known
+                ? "Instance area: " + target.area().chain().getFirst()
+                        + " (recorded Map.AreaTableID) · music and ambience from its recorded sound"
+                        + " links"
+                : "No instance area: " + target.areaIssue()
+                        + "; no instance music or ambience is played");
+        if (known) audio.area(handle, target.areaMap(), target.area());
+        else audio.area(null, -1, null);
+    }
+
+    /** Cancellation callbacks may reach lower services; never run them on FX. */
+    private void cancelInstanceLookups() {
+        var lookups = instanceLookup;
+        Thread.ofVirtual().name("world-instance-cancel").start(lookups::cancel);
+    }
+
+    private void clearInstanceReturn() {
+        instanceReturn = null;
+        instanceMap = -1;
+        instanceOpenPending = false;
+    }
+
+    /** The current explorer camera as a return point, or null outside the tile grid. */
+    private WorldBookmarks.Bookmark currentBookmark() {
+        if (camera == null || inventory == null) return null;
+        int tx = WorldBookmarks.tileIndex(camera.x()), ty = WorldBookmarks.tileIndex(camera.y());
+        if (tx < 0 || ty < 0) return null;
+        var map = inventory.map();
+        try {
+            return new WorldBookmarks.Bookmark("Instance return", map.id(),
+                    map.directory() == null ? "" : map.directory(),
+                    map.name() == null ? "" : map.name(), tx, ty, camera.x(), camera.y(),
+                    camera.z(), Math.IEEEremainder(camera.yaw(), 2 * Math.PI),
+                    Math.clamp(camera.pitch(), -1.5, 1.5), buildLabel);
+        } catch (IllegalArgumentException outside) {
+            return null;
+        }
+    }
+
+    private void leaveInstance() {
+        if (instances.engaged()) {
+            instances.leave();
+            return;
+        }
+        var back = instanceReturn;
+        if (back == null) return;
+        clearInstanceReturn();
+        goToBookmark(back);
+    }
+
+    /** The World view's side of an inline global interior switch. */
+    private final class InstanceHooks implements WorldInstanceSwitch.Hooks<InstanceTarget> {
+        @Override
+        public CompletableFuture<Void> retireWorld() {
+            // Only Cancel is live while the open world drains: no control can restart it under
+            // the instance or replace the instance audio.
+            leaveInstance.setText("Cancel");
+            leaveInstance.setVisible(true);
+            leaveInstance.setManaged(true);
+            content.setBottom(new VBox(8, new HBox(10, leaveInstance, instanceStatus),
+                    audio.node()));
+            timer.stop();
+            clearKeys();
+            minimap.hide();
+            resetInspection();
+            if (spawns != null) spawns.suspend();
+            show(firstFrameActivity, false);
+            retireStreaming();
+            return streamingRetirement;
+        }
+
+        @Override
+        public WorldInstanceSwitch.Interior openInterior(InstanceTarget target) {
+            var view = new GlobalInteriorView(gpuService, () -> handle, locationMaps,
+                    target.map().id(), target.map().toString());
+            return new WorldInstanceSwitch.Interior() {
+                @Override
+                public javafx.scene.Node node() {
+                    return view;
+                }
+
+                @Override
+                public CompletableFuture<Void> closeAsync() {
+                    return view.closeAsync();
+                }
+            };
+        }
+
+        @Override
+        public void showInterior(InstanceTarget target, WorldInstanceSwitch.Interior interior) {
+            leaveInstance.setText("Leave instance");
+            leaveInstance.setVisible(true);
+            leaveInstance.setManaged(true);
+            content.setCenter(interior.node());
+            content.setBottom(new VBox(8, new HBox(10, leaveInstance, instanceArea),
+                    audio.node()));
+            status.setText("Inside " + target.map() + " · Map #" + target.map().id()
+                    + " · Leave instance returns to "
+                    + (explorer && inventory != null ? inventory.map().toString() : "the map page"));
+            if (interior.node() instanceof GlobalInteriorView view) view.focusViewport();
+        }
+
+        @Override
+        public void audio(InstanceTarget target) {
+            instanceAudio(target);
+        }
+
+        @Override
+        public void resumeWorld(boolean worldOpen) {
+            if (closed) return;
+            leaveInstance.setText("Leave instance");
+            leaveInstance.setVisible(false);
+            leaveInstance.setManaged(false);
+            if (!worldOpen || !explorer || inventory == null || camera == null) {
+                showInventory();
+                return;
+            }
+            showExplorerLayout();
+            if (spawns != null) spawns.resume();
+            status.setText("Back in " + inventory.map() + " · the open world resumes where you entered");
+            lastTick = 0;
+            if (!active) return;
+            timer.start();
+            startStreaming();
+            viewport.requestFocus();
+        }
+
+        @Override
+        public void status(String message) {
+            status.setText(message);
+            instanceStatus.setText(message);
+        }
+    }
+
+
     @Override
     public void close() {
+        instances.abandon();
+        cancelInstanceLookups();
         closed = true;
         audio.close();
         resumeCamera = null;

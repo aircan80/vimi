@@ -181,7 +181,9 @@ final class WorldGlobalFileAccess {
                     }
 
                     public int index(int ordinal) {
-                        return cache.unsignedShort(counts.offsets().indices() + (long) ordinal * 2);
+                        return cache.integer(
+                                counts.offsets().indices()
+                                        + (long) ordinal * WorldGlobalLayout.INDEX_BYTES);
                     }
                 };
         try {
@@ -232,10 +234,6 @@ final class WorldGlobalFileAccess {
 
         int integer(long position) {
             return bytes.getInt(at(position, 4));
-        }
-
-        int unsignedShort(long position) {
-            return Short.toUnsignedInt(bytes.getShort(at(position, 2)));
         }
     }
 

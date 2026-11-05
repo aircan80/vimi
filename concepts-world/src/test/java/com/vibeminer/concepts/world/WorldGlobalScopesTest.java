@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.files.FileReadStream;
+import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.world.WdtSceneFacts;
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
@@ -196,6 +197,24 @@ class WorldGlobalScopesTest {
             assertEquals(
                     "GLOBAL_PROFILE",
                     assertThrows(WorldTerrainStreaming.Refusal.class, f::create).site());
+        }
+    }
+
+    @Test
+    void terrainMapRefusalSaysItIsATerrainMapNotAnInterior() throws Exception {
+        try (var f = new Fixture()) {
+            var raw = f.files.sources.get(1L);
+            // Terrain-only: no global WMO flag, one active MAIN tile, no MODF.
+            var terrain = java.util.Arrays.copyOf(raw, MODF - 8);
+            ByteBuffer.wrap(terrain).order(ByteOrder.LITTLE_ENDIAN).putInt(20, 0).putInt(MAIN, 1);
+            f.files.sources.put(1L, terrain);
+            var failure = assertThrows(WorldTerrainStreaming.Refusal.class, f::create);
+            assertEquals("GLOBAL_PROFILE", failure.site());
+            assertEquals(
+                    java.util.Optional.of(
+                            "this instance is a terrain (ADT) map, not a single interior WMO;"
+                                    + " it can only be explored as a map"),
+                    failure.detail());
         }
     }
 
@@ -416,12 +435,38 @@ class WorldGlobalScopesTest {
     }
 
     @Test
+    void wdtReadsUseTheSameNetworkAndEncryptionClassifier() throws Exception {
+        try (var f = new Fixture()) {
+            f.files.failedOpens.put(
+                    1L,
+                    new FileTypes.FileOpen(
+                            FileTypes.FileReadState.NEEDS_NETWORK, null, null, null, null));
+            var refused = assertThrows(WorldTerrainStreaming.Refusal.class, f::create);
+            assertEquals("GLOBAL_ASSET_PENDING", refused.site());
+            assertEquals(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER, refused.reason());
+        }
+        try (var f = new Fixture()) {
+            f.files.failedOpens.put(
+                    1L,
+                    new FileTypes.FileOpen(
+                            FileTypes.FileReadState.PROTECTED, null, null, null, null));
+            var refused = assertThrows(WorldTerrainStreaming.Refusal.class, f::create);
+            assertEquals("SOURCE_INPUT", refused.site());
+            assertEquals(
+                    java.util.Optional.of(
+                            "the map's WDT file is encrypted and its decryption key is not"
+                                    + " available"),
+                    refused.detail());
+        }
+    }
+
+    @Test
     void knownOversizedInputRefusesBeforeOpenAndAllocation() throws Exception {
         try (var f = new Fixture()) {
             f.files.sources.put(1L, new byte[(1 << 20) + 1]);
-            assertEquals(
-                    "SOURCE_INPUT",
-                    assertThrows(WorldTerrainStreaming.Refusal.class, f::create).site());
+            var refused = assertThrows(WorldTerrainStreaming.Refusal.class, f::create);
+            assertEquals("SOURCE_INPUT", refused.site());
+            assertTrue(refused.detail().orElseThrow().startsWith("the map's WDT file"));
             assertEquals(0, f.files.totalOpens());
         }
     }

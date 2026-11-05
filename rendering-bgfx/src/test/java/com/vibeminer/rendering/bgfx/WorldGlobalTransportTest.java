@@ -2,6 +2,7 @@ package com.vibeminer.rendering.bgfx;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -294,6 +295,88 @@ class WorldGlobalTransportTest {
                         s.child().exit(0);
                         expectFailure(s.session(), "UNEXPECTED_EXIT");
                         assertTrue(s.session().retired());
+                    } catch (Exception error) {
+                        throw new AssertionError(error);
+                    }
+                });
+    }
+
+    private static String unavailable(WorldGlobalSceneWriter.MovedInput input) {
+        return new WorldGlobalStatus.Unavailable(
+                        input.expected().identity(), WorldGlobalStatus.Code.CAPABILITY)
+                .protocolLine();
+    }
+
+    @Test
+    void capabilityUnavailableFailsReadyButRetiresHealthilyWithoutParentClose() throws Exception {
+        withStarted(
+                "unavailable",
+                s -> {
+                    try {
+                        s.child().emit(consumed(s.input()));
+                        s.session()
+                                .camera(320, 200, new WorldGlobalTransport.Camera(0, 0, 0, 0, 0));
+                        s.child().emit(unavailable(s.input()));
+                        var failed =
+                                assertThrows(
+                                        ExecutionException.class,
+                                        () -> s.session().ready().get(5, TimeUnit.SECONDS));
+                        var cause =
+                                assertInstanceOf(
+                                        WorldGlobalTransport.Unavailable.class, failed.getCause());
+                        assertEquals(WorldGlobalStatus.Code.CAPABILITY, cause.code());
+                        s.child().emit(closed(s.input()));
+                        s.child().exit(0);
+                        s.session().terminated().get(15, TimeUnit.SECONDS);
+                        assertTrue(s.session().retired() && s.session().exited());
+                    } catch (Exception error) {
+                        throw new AssertionError(error);
+                    }
+                });
+    }
+
+    @Test
+    void unavailableBeforeConsumedAfterReadyOrForAnotherIdentityIsProtocolFailure()
+            throws Exception {
+        withStarted(
+                "unavailable-early",
+                s -> {
+                    try {
+                        s.child().emit(unavailable(s.input()));
+                        expectFailure(s.session(), "PROTOCOL");
+                    } catch (Exception error) {
+                        throw new AssertionError(error);
+                    }
+                });
+        withStarted(
+                "unavailable-late",
+                s -> {
+                    try {
+                        s.child().emit(consumed(s.input()));
+                        s.child().emit(ready(s.input(), 0));
+                        s.session().ready().get(5, TimeUnit.SECONDS);
+                        s.child().emit(unavailable(s.input()));
+                        expectFailure(s.session(), "PROTOCOL");
+                    } catch (Exception error) {
+                        throw new AssertionError(error);
+                    }
+                });
+        withStarted(
+                "unavailable-foreign",
+                s -> {
+                    try {
+                        s.child().emit(consumed(s.input()));
+                        var id = s.input().expected().identity();
+                        s.child()
+                                .emit(
+                                        new WorldGlobalStatus.Unavailable(
+                                                        new WorldGlobalStatus.Identity(
+                                                                "f".repeat(32),
+                                                                id.scope(),
+                                                                id.fileSha256()),
+                                                        WorldGlobalStatus.Code.CAPABILITY)
+                                                .protocolLine());
+                        expectFailure(s.session(), "PROTOCOL");
                     } catch (Exception error) {
                         throw new AssertionError(error);
                     }

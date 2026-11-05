@@ -127,6 +127,141 @@ class WorldStreamTransportDiagnosticsTest {
         assertEquals("", session.diagnosticReport().get(5, TimeUnit.SECONDS));
     }
 
+    /** A session whose fake child writes {@code stdout(prefix)} and then exits. */
+    private WorldStreamTransport.Session session(java.util.function.Function<String, String> stdout)
+            throws Exception {
+        return session(stdout, StandardCharsets.US_ASCII);
+    }
+
+    private WorldStreamTransport.Session session(
+            java.util.function.Function<String, String> stdout, java.nio.charset.Charset charset)
+            throws Exception {
+        var child = new WorldStreamLaunchOwnerTest.Child();
+        return WorldStreamTransport.prepare(directory, spec)
+                .launch(
+                        arguments -> {
+                            child.input =
+                                    new ByteArrayInputStream(
+                                            stdout.apply(prefix(arguments)).getBytes(charset));
+                            return child;
+                        });
+    }
+
+    @Test
+    void jfrTextInterleavedWithRecordsIsIgnoredAndWarnedOnce() throws Exception {
+        var session =
+                session(
+                        prefix ->
+                                "[0.010s][info][jfr,startup] Started recording 1.\n"
+                                        + prefix
+                                        + "SESSION TERRAIN_BASIC_V1\n"
+                                        + "[0.011s][info][jfr,startup] Use jcmd JFR.dump"
+                                        + " filename=/home/tester/rec.jfr\r\n"
+                                        + "WS2X near miss\n"
+                                        + prefix
+                                        + "CLOSED\n");
+        session.initialized().get(5, TimeUnit.SECONDS);
+        session.completion().get(5, TimeUnit.SECONDS);
+        assertEquals("", session.diagnosticReport().get(5, TimeUnit.SECONDS));
+        String warning = session.stdoutDiagnostic().get(5, TimeUnit.SECONDS);
+        assertEquals(
+                "World helper wrote output unrelated to its protocol on stdout; ignoring it"
+                        + " (first line: [0.010s][info][jfr,startup] Started recording 1.)",
+                warning);
+    }
+
+    @Test
+    void malformedProtocolRecordAfterNoiseStillEndsTheSession() throws Exception {
+        var session =
+                session(
+                        prefix ->
+                                "Picked up JAVA_TOOL_OPTIONS: -Duser.home=/home/tester\n"
+                                        + prefix
+                                        + "SESSION TERRAIN_BASIC_V1\n"
+                                        + prefix
+                                        + "BOGUS\n");
+        assertThrows(ExecutionException.class, () -> session.completion().get(5, TimeUnit.SECONDS));
+        session.terminatedAndDrained().get(5, TimeUnit.SECONDS);
+        String report = session.diagnosticReport().get(5, TimeUnit.SECONDS);
+        assertTrue(report.contains("failure: Invalid World status"), report);
+        assertTrue(report.contains("; unrelated stdout ignored: 1 line, "), report);
+        assertTrue(report.contains("-Duser.home=<path>"), report);
+        assertFalse(report.contains("tester"), report);
+    }
+
+    @Test
+    void mangledRecordFailsFastWithARedactedTail() throws Exception {
+        var session =
+                session(
+                        prefix ->
+                                prefix
+                                        + "SESSION TERRAIN_BASIC_V1\n"
+                                        // A byte-order mark spliced before a real record.
+                                        + "ï»¿"
+                                        + prefix
+                                        + "CREDIT 1 0 1\n"
+                                        + prefix
+                                        + "CLOSED\n",
+                        StandardCharsets.ISO_8859_1);
+        var failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> session.completion().get(5, TimeUnit.SECONDS));
+        assertTrue(
+                failure.getCause().getMessage().startsWith("Mangled World status"),
+                failure.getCause().getMessage());
+        session.terminatedAndDrained().get(5, TimeUnit.SECONDS);
+        String report = session.diagnosticReport().get(5, TimeUnit.SECONDS);
+        assertTrue(report.contains("failure: Mangled World status"), report);
+        assertTrue(report.contains("; unrelated stdout ignored: 0 lines, "), report);
+        assertTrue(report.contains("CREDIT 1 0 1"), report);
+    }
+
+    @Test
+    void foreignNonceRecordStillEndsTheSession() throws Exception {
+        var session =
+                session(
+                        prefix ->
+                                prefix
+                                        + "SESSION TERRAIN_BASIC_V1\n"
+                                        + "WS2 "
+                                        + "0".repeat(32)
+                                        + " CLOSED\n");
+        assertThrows(ExecutionException.class, () -> session.completion().get(5, TimeUnit.SECONDS));
+        session.terminatedAndDrained().get(5, TimeUnit.SECONDS);
+        String report = session.diagnosticReport().get(5, TimeUnit.SECONDS);
+        assertTrue(report.startsWith("World helper ended abnormally"), report);
+        assertFalse(report.contains("unrelated stdout"), report);
+    }
+
+    @Test
+    void stdoutFloodEndsTheSessionWithAClearFailure() throws Exception {
+        var flood = new StringBuilder();
+        while (flood.length() <= WorldStreamStdout.MAX_NOISE_BYTES) {
+            flood.append("synthetic stdout flood line\n");
+        }
+        var session =
+                session(
+                        prefix ->
+                                prefix
+                                        + "SESSION TERRAIN_BASIC_V1\n"
+                                        + flood
+                                        + prefix
+                                        + "CLOSED\n");
+        var failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> session.completion().get(5, TimeUnit.SECONDS));
+        assertTrue(
+                failure.getCause().getMessage().startsWith("World renderer flooded stdout"),
+                failure.getCause().getMessage());
+        session.terminatedAndDrained().get(5, TimeUnit.SECONDS);
+        String report = session.diagnosticReport().get(5, TimeUnit.SECONDS);
+        assertTrue(report.contains("failure: World renderer flooded stdout"), report);
+        assertTrue(report.contains("earlier stdout lines omitted"), report);
+        assertTrue(report.length() < 2 * HelperStderrTail.MAX_LINES * 300, "bounded report");
+    }
+
     @Test
     void stallSummaryReportsPendingWorkAndARedactedStderrTail() throws Exception {
         var child = new WorldStreamLaunchOwnerTest.Child();
@@ -155,7 +290,8 @@ class WorldStreamTransportDiagnosticsTest {
                                 arguments -> {
                                     var first =
                                             new ByteArrayInputStream(
-                                                    (prefix(arguments)
+                                                    ("[jfr] started\n"
+                                                                    + prefix(arguments)
                                                                     + "SESSION TERRAIN_BASIC_V1\n")
                                                             .getBytes(StandardCharsets.US_ASCII));
                                     child.input = new java.io.SequenceInputStream(first, held);
@@ -173,7 +309,8 @@ class WorldStreamTransportDiagnosticsTest {
                     summary.startsWith(
                             "pid 919; tile upload idle; commit idle; late objects idle; queued"
                                     + " commands 0; outstanding reliable 0; frame awaiting viewer"
-                                    + " no; helper stderr tail:\n"),
+                                    + " no; unrelated stdout ignored 1 line, 14 bytes; helper"
+                                    + " stderr tail:\n"),
                     summary);
             assertTrue(summary.contains("Cannot open <path>"), summary);
             assertFalse(summary.contains("tester"), summary);

@@ -125,6 +125,7 @@ public final class WorldService implements BuildWorld {
     private CompletableFuture<Void> closing;
     private final WorldGeometryCache cache = new WorldGeometryCache();
     private Catalog catalog;
+    private WorldInstanceLinks instanceLinks;
     private WorldAreaNavigation areaNavigation;
     private WorldPlacementSource placements;
     private WorldAreaAudio areaAudio;
@@ -295,6 +296,80 @@ public final class WorldService implements BuildWorld {
                     catalog = new Catalog(maps, areas, issues);
                     return catalog;
                 });
+    }
+
+    /** Dungeon and raid Map rows with their recorded area and corpse (entrance) position. */
+    @Override
+    public CompletableFuture<WorldInstanceLinks> instanceLinks(Cancellation token) {
+        return submit(
+                token,
+                cancel -> {
+                    if (instanceLinks != null) {
+                        return instanceLinks;
+                    }
+                    var links = new ArrayList<WorldInstanceLinks.Link>();
+                    var issues = new ArrayList<String>();
+                    read(
+                            "Map",
+                            WorldInstanceLinks.MAX_LINKS,
+                            cancel,
+                            issues,
+                            (schema, row) -> {
+                                var link =
+                                        WorldInstanceLinks.qualify(
+                                                row.id(),
+                                                text(schema, row, "MapName_lang"),
+                                                number(schema, row, "InstanceType"),
+                                                number(schema, row, "AreaTableID"),
+                                                number(schema, row, "CorpseMapID"),
+                                                element(schema, row, "Corpse", 0),
+                                                element(schema, row, "Corpse", 1));
+                                if (link != null) {
+                                    links.add(link);
+                                }
+                            });
+                    instanceLinks =
+                            new WorldInstanceLinks(
+                                    links,
+                                    issues.subList(
+                                            0,
+                                            Math.min(
+                                                    issues.size(), WorldInstanceLinks.MAX_ISSUES)));
+                    return instanceLinks;
+                });
+    }
+
+    /**
+     * One element of a verified two-element float array column, read from its runtime column
+     * ({@code name[index]}); null when the schema does not record exactly that shape.
+     */
+    static Double element(
+            TableTypes.SchemaResult schema, Db2Types.Row row, String field, int index) {
+        if (schema.schema() == null
+                || schema.columns() == null
+                || schema.schema().columns().stream()
+                        .noneMatch(
+                                c ->
+                                        c.name().equals(field)
+                                                && c.verifiedName()
+                                                && c.arrayLength() == 2
+                                                && c.kind()
+                                                        == com.vibeminer.formats.definitions
+                                                                .TableSchema.ColumnKind.FLOAT)) {
+            return null;
+        }
+        String name = field + "[" + index + "]";
+        for (int i = 0; i < schema.columns().size() && i < row.values().size(); i++) {
+            if (schema.columns().get(i).name().equals(name)
+                    && schema.columns().get(i).interpretation() == null) {
+                try {
+                    return Double.valueOf(row.values().get(i));
+                } catch (NumberFormatException e) {
+                    return null;
+                }
+            }
+        }
+        return null;
     }
 
     public CompletableFuture<Inventory> inventory(MapInfo map, Cancellation token) {

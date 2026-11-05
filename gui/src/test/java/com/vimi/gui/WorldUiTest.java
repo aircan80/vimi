@@ -1009,7 +1009,9 @@ public final class WorldUiTest {
                     var open=(Button)view.lookup("#world-open");
                     if(at==0) require(!open.isDisabled(),"Readable tile enables explorer and removes overlay");
                     else {
-                        require(open.isDisabled(),"Empty or unavailable map disables explorer");
+                        // A global world-model map is entered inline as a GPU interior (#259).
+                        require(open.isDisabled() == (at != 1),
+                                "Empty or unavailable map disables explorer; a global model enables it");
                         @SuppressWarnings("unchecked")
                         var areas=(ListView<WorldService.Area>)view.lookup("#world-areas");
                         areas.getSelectionModel().selectFirst();

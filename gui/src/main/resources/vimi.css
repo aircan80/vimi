@@ -169,6 +169,7 @@
 .button.talent-node:hover { -fx-border-color: #d4c48a; }
 .button.talent-node:focused, .button.talent-node.talent-selected { -fx-border-color: #edcf79; -fx-border-width: 3; }
 .talent-placeholder { -fx-text-fill: #b9c0b1; -fx-font-size: 23px; }
+.talent-icon-missing { -fx-background-color: linear-gradient(to bottom right, #3a4a42, #1d2925); -fx-border-color: #55645a; -fx-border-width: 1; -fx-border-style: segments(3, 3); -fx-background-radius: 2; -fx-border-radius: 2; }
 .talent-rank { -fx-background-color: #15221f; -fx-text-fill: #ead993; -fx-font-size: 11px; -fx-min-height: 18px; -fx-padding: 1 4; -fx-background-radius: 2; }
 .talent-class-initial { -fx-text-fill: #175e57; -fx-background-color: #d8e7dd; -fx-background-radius: 4; -fx-padding: 3 7; -fx-font-weight: bold; }
 

@@ -25,6 +25,7 @@ import javafx.stage.Stage;
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
 /**
@@ -64,6 +65,7 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
     private long presentedSequence, lastTick;
     private double dragX, dragY;
     private boolean dirty, closed;
+    private CompletableFuture<Void> drained = CompletableFuture.completedFuture(null);
 
     GlobalInteriorView(
             GpuPreviewService service,
@@ -361,7 +363,9 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
             return;
         }
         switch (update.state()) {
-            case READY -> status.setText("GPU interior · inspection camera, not a client entrance");
+            case READY ->
+                    status.setText(
+                            update.message() + " · inspection camera, not a client entrance");
             case FAILED, CLOSED -> {
                 stopPolling();
                 // A jump would no longer reach the renderer and must not hide this message.
@@ -524,13 +528,27 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
 
     @Override
     public void close() {
+        closeAsync();
+    }
+
+    /**
+     * Closes the view and releases its GPU request; completes when that request has drained. Later
+     * calls return the same drain.
+     */
+    CompletableFuture<Void> closeAsync() {
         if (closed) {
-            return;
+            return drained.copy();
         }
         closed = true;
         stopPolling();
         // Cancellation callbacks may reach lower services; never run them on FX.
         Thread.ofVirtual().name("global-interior-floors-cancel").start(lookup::cancel);
-        service.closeOwner(owner);
+        drained = service.closeOwner(owner);
+        return drained.copy();
+    }
+
+    /** Gives keyboard focus to the interior viewport (inline use in the World view). */
+    void focusViewport() {
+        viewport.requestFocus();
     }
 }
