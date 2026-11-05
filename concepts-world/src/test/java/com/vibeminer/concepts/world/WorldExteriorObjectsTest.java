@@ -1849,6 +1849,62 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void mwdsEdgeRangesAreRefusedWholeAndListedSetsAreDeduplicated() {
+        // Four MODS sets, one definition each. MWDR entries: 0 = [1, 0] (begin > end),
+        // 1 = [0, 9] (end past MWDS), 2 = [0, 1] (lists set 7, past MODS), 3 = [2, 4] (lists
+        // sets 0, 2 and 2 again). MWDS = [3, 7, 0, 2, 2].
+        var defs = new ArrayList<Modd>();
+        for (int i = 0; i < 4; i++) {
+            defs.add(new Modd(0, i, 0, 0, new double[] {0, 0, 0, 1}, 1));
+        }
+        var chunks =
+                doodadChunks(
+                        new int[][] {{0, 1}, {1, 1}, {2, 1}, {3, 1}}, new long[] {MODEL}, defs);
+        var mwdr =
+                buffer(32)
+                        .putInt(1)
+                        .putInt(0)
+                        .putInt(0)
+                        .putInt(9)
+                        .putInt(0)
+                        .putInt(1)
+                        .putInt(2)
+                        .putInt(4)
+                        .array();
+        var mwds = buffer(10);
+        for (int id : new int[] {3, 7, 0, 2, 2}) {
+            mwds.putShort((short) id);
+        }
+        int[] entries = {0, 1, 2, 3};
+        var records = new ArrayList<Modf>();
+        for (int i = 0; i < entries.length; i++) {
+            records.add(new Modf(ROOT, 1 + i, 0x88, 100 + 10 * i, 20, 300, 0, 90, 0, 1024));
+        }
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), chunks));
+            byte[] objects =
+                    join(
+                            obj0(records, List.of(), entries),
+                            chunk("MWDR", mwdr),
+                            chunk("MWDS", mwds.array()));
+            try (var set = run(f, objects)) {
+                assertEquals(4, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                // The first three ranges are refused whole (all-or-nothing): set 0 only.
+                assertEquals(3, set.count(WorldExteriorObjects.Count.SET_UNSUPPORTED));
+                var sets =
+                        set.placements().stream()
+                                .filter(p -> p.kind() == WorldExteriorObjects.Kind.SET_DOODAD)
+                                .map(p -> p.uniqueId() + ":" + p.doodadSet())
+                                .toList();
+                // The fourth lists 0 (already drawn) and 2 twice: sets 0 and 2, each once.
+                assertEquals(List.of("1:0", "2:0", "3:0", "4:0", "4:2"), sets);
+            }
+        }
+    }
+
+    @Test
     void wmoDoodadSetsComposeTheBuildingTransform() {
         double h = Math.sqrt(0.5);
         var defs =
