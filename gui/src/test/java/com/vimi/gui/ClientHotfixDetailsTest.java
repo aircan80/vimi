@@ -23,6 +23,20 @@ public final class ClientHotfixDetailsTest {
                         var ref = (TableTypes.Ref) values[0];
                         var id = (Long) values[1];
                         if (id != null && id == 998) return CompletableFuture.completedFuture(Optional.empty());
+                        if (id != null && (id == 997 || id == 996)) {
+                            var unresolved = new HotfixViewInfo.RowSource(HotfixViewInfo.Origin.UNRESOLVED,
+                                    1, 70, 5, 1, id == 997 ? "INVALID" : "VALID", "UNKNOWN");
+                            return CompletableFuture.completedFuture(Optional.of(new HotfixViewInfo(
+                                    "private-input", "private-identity", "policy-v1", 10, 9, 0, 0, 0, 0, 1, 0,
+                                    unresolved)));
+                        }
+                        if (id != null && id == 995) {
+                            var base = new HotfixViewInfo.RowSource(HotfixViewInfo.Origin.BASE,
+                                    null, null, null, null, null, HotfixViewInfo.TABLE_BUDGET);
+                            return CompletableFuture.completedFuture(Optional.of(new HotfixViewInfo(
+                                    "private-input", null, "policy-v1", 10, 10, 0, 0, 0, 0, 0, 0,
+                                    base, HotfixViewInfo.TABLE_BUDGET)));
+                        }
                         var origin = ref.name().equals("SpellName") || ref.name().equals("SpellMisc")
                                 ? HotfixViewInfo.Origin.HOTFIX : HotfixViewInfo.Origin.BASE;
                         if (id != null && id == 999) origin = HotfixViewInfo.Origin.NOT_PUBLIC;
@@ -57,6 +71,13 @@ public final class ClientHotfixDetailsTest {
                 && traitLines.get(3).contains("local hotfix cache"), "Trait talents report their trait rows");
         check(ClientHotfixDetails.row(tables, "Spell", 999, "Description", "70707", Cancellation.NONE)
                 .join().contains("hidden"), "Not-public origin stays explicit");
+        check(ClientHotfixDetails.row(tables, "Item", 997, "Item", "70707", Cancellation.NONE)
+                .join().equals("Item: hidden by local hotfix cache (INVALID), build 70707"),
+                "INVALID cache records are explained as hidden by the cache");
+        check(ClientHotfixDetails.row(tables, "Item", 996, "Item", "70707", Cancellation.NONE)
+                .join().contains("unresolved"), "Other unresolved records stay unresolved");
+        check(ClientHotfixDetails.row(tables, "ItemSparse", 995, "Item", "70707", Cancellation.NONE)
+                .join().contains("not applied to this table"), "Oversized overlay is visible");
         check(ClientHotfixDetails.row(tables, "Spell", 998, "Description", "70707", Cancellation.NONE)
                 .join().contains("origin not retained"), "Evicted metadata does not imply base origin");
         var header = java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN)

@@ -10,8 +10,7 @@ There is no automatic build-refresh/new-cache check (queued separately in #168).
 Each NativePreparationWork loads one immutable snapshot on its own cancellation
 child before ordinary keys/tables. Bootstrap uses the same hotfix-aware table view
 and existing BuildTactKeys ID join; subsequent native/file services pin the rebuilt
-immutable cipher/key-status snapshot. Table inventory identity includes the hotfix
-input fingerprint only when configured; default base-only identity is preserved.
+immutable cipher/key-status snapshot. Default base-only identities are preserved.
 Local comparison/prepared-only bootstrap remains physical/base-only. Native capture
 and saved/prepared evidence methods are delegated by the table view unchanged.
 
@@ -20,7 +19,12 @@ reads (talents, items, source details) originally opened without the binding, so
 imported cache changed only key bootstrap and the table inventory. NativePreparationWork
 now names three table roles: PREPARATION and WORKSPACE apply the loaded snapshot,
 LOCAL_BASE (comparison, prepared-only keys) stays physical. Item grid/stat identities
-include the hotfix input when one is loaded; base-only identities are unchanged.
+include the hotfix input when one is loaded; base-only identities are unchanged. The
+known-table inventory no longer includes the hotfix input: its outcomes are base DB2
+facts, and hotfix-delivered keys already change its key fingerprint, so a new snapshot
+of the same keys reuses it (and local comparison finds it). Source details label
+records a cache marks INVALID as hidden by the cache (the client hides them too), and
+a table whose overlay exceeded its bounds as base data without the cache.
 
 Returned snapshots are retained before fallible metadata adoption. Metadata failure
 closes the owner and always settles the waiting future; work retirement waits the

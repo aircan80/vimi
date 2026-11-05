@@ -67,11 +67,16 @@ final class ClientHotfixDetails {
         if (info.isEmpty() || info.get().row() == null) return label + ": exact source origin not retained";
         var source = info.get().row();
         String origin = switch (source.origin()) {
-            case BASE -> "base DB2 source";
+            case BASE -> info.get().unavailable() == null
+                    ? "base DB2 source"
+                    : "base DB2 source; local hotfix cache not applied to this table (too large)";
             case HOTFIX -> "local hotfix cache, build " + version;
             case DELETED -> "removed by local hotfix cache, build " + version;
             case NOT_PUBLIC -> "hidden by local hotfix cache, build " + version;
-            case UNRESOLVED, UNKNOWN -> "client-cache source unresolved; no stale base substitution";
+            // The client hides records its cache marks INVALID; say so rather than "unknown".
+            case UNRESOLVED, UNKNOWN -> "INVALID".equals(source.state())
+                    ? "hidden by local hotfix cache (INVALID), build " + version
+                    : "client-cache source unresolved; no stale base substitution";
         };
         return label + ": " + origin;
     }
