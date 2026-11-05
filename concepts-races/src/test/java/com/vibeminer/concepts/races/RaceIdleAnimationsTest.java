@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.AssetSource;
 import com.vibeminer.formats.models.BuildModelTypes.BoneFileRead;
+import com.vibeminer.formats.models.BuildModelTypes.IdleRead;
 import com.vibeminer.formats.models.BuildModelTypes.ReadState;
 import com.vibeminer.formats.models.BuildModelTypes.StandRead;
 import com.vibeminer.formats.models.M2BoneFile;
@@ -148,15 +149,16 @@ final class RaceIdleAnimationsTest {
     }
 
     @Test
-    void localStandStillNamesTheMissingRacePlayback() {
+    void localStandHasNoBlockerSoItCanBeBound() {
         var result =
                 RaceIdleAnimations.explain(
                         0, true, List.of(), id -> null, () -> STAND_IN_MODEL, Cancellation.NONE);
+        assertTrue(result.reasons().isEmpty());
         assertEquals(
                 List.of(
-                        "The model stores its Stand keys itself, but Stand playback is not yet"
-                                + " implemented for race previews."),
-                result.reasons());
+                        "Stand (sequence 0, 2667 ms) is stored in the model: 120 step/linear keys"
+                                + " on 12 bones."),
+                result.facts());
         assertTrue(result.complete());
         var unreadable =
                 RaceIdleAnimations.explain(
@@ -204,14 +206,51 @@ final class RaceIdleAnimationsTest {
     }
 
     @Test
-    void idleResultsAreOnlyRefusalsOrUnavailable() {
+    void onlyReadyResultsCarryAnAnimation() {
         assertThrows(
                 IllegalArgumentException.class,
                 () ->
                         new RaceMediaTypes.Idle(
-                                RaceTypes.State.READY, null, List.of(), List.of(), "ready"));
+                                RaceTypes.State.READY, null, null, List.of(), List.of(), "ready"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new RaceMediaTypes.Idle(
+                                RaceTypes.State.PARTIAL,
+                                null,
+                                null,
+                                List.of(),
+                                List.of(),
+                                "partial"));
         var unavailable = RaceMediaTypes.Idle.unavailable(null, "Model file is MISSING.");
         assertEquals(RaceTypes.State.UNAVAILABLE, unavailable.state());
         assertTrue(unavailable.reasons().isEmpty());
+        assertEquals(null, unavailable.animation());
+    }
+
+    @Test
+    void evaluableReadRefusalsAreReportedLikeStandFacts() {
+        var refused =
+                RaceIdleAnimations.standOf(
+                        new IdleRead(
+                                ReadState.REJECTED,
+                                null,
+                                "MODEL_UNSUPPORTED",
+                                "A Stand bone track uses curve interpolation 2."));
+        assertEquals(ReadState.READ, refused.state());
+        assertEquals("A Stand bone track uses curve interpolation 2.", refused.stand().refusal());
+        var limit =
+                RaceIdleAnimations.standOf(
+                        new IdleRead(ReadState.REJECTED, null, "MODEL_LIMIT", "too many keys"));
+        assertEquals("too many keys", limit.stand().refusal());
+        var invalid =
+                RaceIdleAnimations.standOf(
+                        new IdleRead(ReadState.REJECTED, null, "MODEL_INVALID", "bad header"));
+        assertEquals(ReadState.REJECTED, invalid.state());
+        assertEquals("bad header", invalid.message());
+        var absent =
+                RaceIdleAnimations.standOf(
+                        new IdleRead(ReadState.NEEDS_NETWORK, null, null, "absent"));
+        assertEquals(ReadState.NEEDS_NETWORK, absent.state());
     }
 }

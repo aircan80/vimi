@@ -187,31 +187,7 @@ final class RaceMedia {
                                 ? "Model surface is " + skin.state()
                                 : skin.message());
             }
-            var geometry = skin.skin();
-            float[] points = new float[geometry.vertexLookup().size() * 3];
-            for (int i = 0; i < geometry.vertexLookup().size(); i++) {
-                if ((i & 2047) == 0) {
-                    token.check();
-                }
-                var vertex = read.model().vertices().get(geometry.vertexLookup().get(i)).position();
-                points[i * 3] = vertex.x();
-                points[i * 3 + 1] = vertex.y();
-                points[i * 3 + 2] = vertex.z();
-            }
-            mesh =
-                    new PreviewMesh(
-                            points,
-                            geometry.triangleLookup().stream()
-                                    .mapToInt(Integer::intValue)
-                                    .toArray(),
-                            geometry.sections().stream()
-                                    .map(
-                                            part ->
-                                                    new PreviewMesh.Part(
-                                                            part.id(),
-                                                            (int) part.triangleStart(),
-                                                            part.triangleCount()))
-                                    .toList());
+            mesh = RaceRestSurface.of(read.model(), skin.skin(), token).mesh();
             save(
                     key,
                     variant,

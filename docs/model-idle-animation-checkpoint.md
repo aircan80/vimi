@@ -20,7 +20,10 @@ M2 doodads or creatures yet, so there is nothing to animate there until that lan
   quaternions use the client format `(v < 0 ? v + 32768 : v - 32767) / 32767`.
 
 Budgets: at most 256 bones (vertex influences are 8-bit direct bone indices), 4,096
-sequences, 1,024 global clocks, 4,096 keys per track and 262,144 keys in total.
+sequences, 1,024 global clocks, 4,096 keys per track and 262,144 keys in total. The Stand
+itself must last at most 600,000 ms. A global clock loops on its own length and is bounded
+only by the `int` key-time range (`PreviewAnimation.MAX_GLOBAL_MILLIS`), because character
+faces loop on longer clocks (Undead male: 1,079,000 ms).
 
 Refused as `MODEL_UNSUPPORTED`, with the message shown in the preview: external skeleton
 (SKID) or bone files (BFID), missing Stand, alias Stand, Stand keys in an `.anim` file,
@@ -70,15 +73,14 @@ screen. Unsupported sources show a one-line reason instead of an inert control; 
 unavailable result shows nothing. Playback evaluates the pose off the FX thread and uses
 the existing software renderer at most every 40 ms, only while the viewport is visible
 and no frame is rendering. The GPU path is closed while playing and resumes when playback
-stops. Races previews never offer playback yet; they explain why (see "Races: bone files and
-refusal reporting" below).
+stops. Races previews offer Stand for models that store their own bones, and explain why
+for the others (see "Races" below).
 
 ## Actual source evidence
 
 Read-only Forever 1.60.1.70755 enUS, original library plus earlier private acquired
 stores, `CachingObjectSource.localOnly`, no network and a fresh private generated store.
-Private probes and images: `HOME/.cache/vimi-tmp/models-idle-proof/` (`audit-all.log`,
-`render.log`, `rest-*.png`, `idle-*.png`, `all-sheet-*.png`). No game asset is committed.
+Probe logs and images stayed outside the repository. No game asset is committed.
 
 All 141 readable Mount rows were walked through MountXDisplay → CreatureDisplayInfo →
 CreatureModelData. Of 36 distinct mount models, 24 are not stored locally and 3 are
@@ -108,10 +110,61 @@ All ten sampled playable-race body models (Human, Orc, Dwarf, Tauren, Night Elf)
 BFID bone files (10–30 each) and are refused. Character idle needs a reviewed meaning of
 those files before Races previews can animate.
 
+## Races: Stand for models with their own bones
+
+Tracks #104. A race model that names no external skeleton (SKID) and no bone files (BFID),
+and stores its Stand keys itself, now offers the same looping Stand as Mounts. Every link is
+recorded data: ChrRaceXChrModel → ChrModel → CreatureDisplayInfo → CreatureModelData → M2,
+the M2's own bones and Stand tracks, and LOD0 SKIN for the vertex lookup. Nothing is
+inferred from the race or model name.
+
+- `BuildModels.readIdle` re-reads the model through `M2IdleAnimation.read`, which still refuses
+  SKID and BFID. Its result also supplies the Stand facts, so the model is read once.
+- `RaceRestSurface` builds the rest surface (positions, normals, UVs) from a SKIN. The static
+  preview, the textured sample and the idle all use it, so the idle matches the surface on
+  screen. The static preview reads `readRestSkin` and the textured sample `readRestDrawSkin`;
+  on the Undead male source both give the same vertex lookup, triangles and sections.
+- `DisplayIdleAnimations` (concepts-models) is now public, and `concepts-races` depends on
+  `concepts-models`, so race and mount models pass the same bone-flag admission.
+- `RaceMediaTypes.Idle` gains `READY` with the prepared `PreviewAnimation`. A bone-flag or
+  evaluator refusal is `UNSUPPORTED` with its reason. A SKIN that cannot be read is
+  `UNAVAILABLE` (it names the SKIN FileDataID) and is assessed again on the next request. A
+  model that declares no LOD0 SKIN is `UNSUPPORTED` and cached, since that is a fact of the
+  model.
+- Cached results are now also checked against the SKIN's content key. At most four prepared
+  animations stay in the 32-entry cache; refusals are small and stay longer.
+- `RaceModelPanel` hands a READY result to `ModelPreviewView.setAnimation`, which shows the
+  **Idle animation** toggle only when the animation matches the static mesh or the textured
+  sample (positions and normals). The panel offers it again once the textured sample is
+  shown. An animation that does not fit the surface on screen keeps the toggle hidden and
+  shows "Idle animation unavailable: it was prepared for a different surface than the one
+  shown." The Stand facts appear under "Model source details".
+
+Actual Forever 1.60.1.70755 enUS, read-only and local only (no network, nothing downloaded).
+The library plus private stores from earlier probes were read. The probe, its logs and
+images stayed outside the repository, and no game asset is committed. 116 ChrRaceXChrModel variants were assessed:
+
+- Undead male (ChrModel 9, M2 959310, SKIN 959362) is READY: Stand is sequence 2, 2,667 ms,
+  17,111 keys on 170 bones, bound to 44,939 rest vertices with 226 bones evaluated. Its face
+  bones use a 1,079,000 ms global clock, which the old 600,000 ms global bound refused. The
+  animation matched both the freshly derived and the restored static mesh. A cold assessment
+  took 1.0 s, a repeated one 39 ms, and a pose 1.1–1.3 ms. CPU frames from the front and side
+  show the bind A-pose changing into the hunched Undead stance. Limbs, hands and head stay
+  attached and nothing explodes. The textured sample was not available locally, so its match
+  was checked only through the identical SKIN lookup.
+- Worgen (ChrModel 43/44) and 36 other ChrModels (Goblin female, Pandaren, Vulpera, Fel Orc,
+  Vrykul, Naga, the drake forms and others; 52 rows counting races that share a model) pass
+  every model check, but their LOD0 SKIN files are not stored locally. They report
+  `UNAVAILABLE`: "The model's rest surface (SKIN FileDataID …) could not be read: Object
+  is not stored". Their static preview is unavailable for the same reason. They were not
+  downloaded, so their binding and bone flags are unproven on actual data.
+- Algarian Stormrider (ChrModel 186) has 260 bones and stays `UNSUPPORTED` (at most 256
+  directly indexed bones).
+- BFID and SKID variants keep the refusals below, unchanged.
+
 ## Races: bone files and refusal reporting
 
-Tracks #104. Races previews now say exactly why Stand is not offered for the selected model,
-instead of showing nothing. Playback is still not offered for any race model.
+Races previews say exactly why Stand is not offered for a model that is not offered.
 
 `M2BoneFile` (formats-assets) reads one BFID-declared bone file exactly: `uint32` version 1,
 then `BIDA` (`uint16` model bone indices) and `BOMT` (one 64-byte 4x4 float matrix per index).
@@ -137,8 +190,8 @@ the relationship or the model could not be read. The reasons are:
   client applies for an appearance, and how its matrices combine with Stand keys, have not
   been reviewed;
 - a Stand that the mount reader would refuse (alias, `.anim`-resident, curve keys, and so on);
-- otherwise, a Stand that would pass is still refused because race previews do not play it
-  back yet.
+- otherwise the Stand is bound as described above, and a bone-flag or evaluator refusal is
+  reported.
 
 Results whose sources were all read are cached per model content key (32 entries) and checked
 against each bone file's content key on reuse. A model that changes during the assessment,
@@ -149,8 +202,7 @@ shows "Idle animation unavailable: …" in place of the toggle, and the Stand an
 facts appear under "Model source details".
 
 Actual Forever 1.60.1.70755 enUS, read-only. Missing bone files and models were fetched
-into a private store under `HOME/.cache/vimi-tmp/race-idle-proof/` (`race-idle-net.log`,
-`race-idle-net-v2.log`, `bonefile-net.log`). No game asset is committed. The probe assessed 75
+into a private store outside the repository. No game asset is committed. The probe assessed 75
 ChrRaceXChrModel variants before its time limit, and then every playable race again with the
 final code. Every variant was UNSUPPORTED; none was UNAVAILABLE.
 
@@ -162,8 +214,8 @@ final code. Every variant was UNSUPPORTED; none was UNAVAILABLE.
 - 19 variants name a SKID and store no bones of their own: Blood Elf, Draenei, Dracthyr,
   Goblin male and others.
 - 30 variants have neither and pass the Stand reader. Most are non-playable rows (Fel Orc,
-  Forest Troll, Vrykul and others), plus Undead male and Worgen. Only the missing race
-  playback refuses them.
+  Forest Troll, Vrykul and others), plus Undead male and Worgen. At the time only the missing
+  race playback refused them; see the section above for their current state.
 
 A cold assessment took 0.1–1.0 s from local files and up to 4.7 s when files had to be
 fetched. A repeated assessment took 33–56 ms (variant lookup and stat) and did not re-read
@@ -191,10 +243,23 @@ the model.
 - `RacesServiceTest`: through files, an unreadable bone file is assessed again, a complete
   result is cached without opening files, and new bone-file or model content invalidates it.
 - `RaceIdleAnimationsTest`: every blocker is reported together, a SKID-only model skips Stand,
-  unreadable sources are not cached, the bone-file budget is enforced, cancellation stops
-  the assessment, and results can only be refusals.
+  a model-resident Stand has no blocker, unreadable sources are not cached, the bone-file
+  budget is enforced, cancellation stops the assessment, only READY carries an animation, and
+  evaluable-read refusals map to Stand facts as `assessStand` reports them.
+- `RacesServiceTest`: an authored 274 model with one Stand bone and the authored SKIN is READY.
+  Its animation matches the mesh from `service.preview()`, fresh and restored, and the
+  textured sample's surface from `RaceAppearance.drawSurface` in positions and normals, and
+  moves vertices by the keyed amount. The result is cached and a new SKIN content key
+  reassesses it. A 0x1 bone is refused with its reason. A SKIN that is not stored is
+  UNAVAILABLE and reassessed; an undeclared LOD0 SKIN is UNSUPPORTED and cached. With five
+  READY models only the four most recently used animations stay cached.
+- `DisplayIdleAnimationsTest`: a mount track on a 1,079,000 ms global clock is read and
+  admitted end to end, held after its last key and wrapped on its clock.
+- `BuildModelsTest`: `readIdle` returns tracks for model-resident bones and refuses BFID.
+- `PreviewAnimationTest`: a global clock longer than 600,000 ms is sampled modulo its length.
 - `RacesUiTest` (display required): the refusal replaces the toggle and its facts reach the
-  details.
+  details; a READY result shows the toggle, its status and its facts; a READY animation for
+  another surface keeps the toggle hidden and says so.
 - `MountsUiTest` (display required, not part of hosted CI): the control appears only for
   a matching animation, playback produces changing frames with an idle status, and an
   unsupported variant hides the control and shows its reason.
@@ -205,11 +270,10 @@ the model.
    with bounded per-frame cost; required before many-model World use.
 2. World: animate placed M2 doodads/creatures once they render, sharing one evaluator per
    model and bounding per-frame evaluated vertices.
-3. Characters: first, offer Stand for race models without SKID/BFID (Undead male, Worgen and
-   the NPC race rows). This needs the race
-   surface's vertex lookup and normals bound to `PreviewAnimation` and the bone-flag
-   admission shared with `DisplayIdleAnimations`. Then review how the client selects and
-   applies BFID files (customization choice to bone file, and matrix composition with Stand)
-   before offering Stand for playable bodies. SKID skeleton reading comes after that.
+3. Characters: Stand is offered for race models without SKID/BFID. Confirm Worgen and the NPC
+   rows on actual data once their SKIN files are stored by normal use. Then review how the
+   client selects and applies BFID files (customization choice to bone file, and matrix
+   composition with Stand) before offering Stand for playable bodies. SKID skeleton reading
+   comes after that.
 4. Persist qualified idle data beside the static derivative if cold qualification time
    matters in practice.

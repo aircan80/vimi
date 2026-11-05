@@ -187,6 +187,48 @@ class PreviewAnimationTest {
                         rigid(0, 0, 0),
                         full(3));
         near(new float[] {2.5f, 0, 0}, animation.pose(rest, 750).mesh().positions(), 0);
+        // A global clock may be longer than the sequence bound; it is sampled modulo its length.
+        var faceClock =
+                new Bone(
+                        -1,
+                        0,
+                        0,
+                        0,
+                        new Track(
+                                Interpolation.LINEAR,
+                                0,
+                                3,
+                                new int[] {0, 1_079_000},
+                                new float[] {0, 0, 0, 1_079, 0, 0}),
+                        null,
+                        null,
+                        false);
+        var longClock =
+                new PreviewAnimation(
+                        "Stand",
+                        1000,
+                        new long[] {1_079_000},
+                        List.of(faceClock),
+                        rest,
+                        new float[0],
+                        rigid(0, 0, 0),
+                        full(3));
+        near(
+                new float[] {500, 0, 0},
+                longClock.pose(rest, 1_079_000L + 500_000).mesh().positions(),
+                0);
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new PreviewAnimation(
+                                "Stand",
+                                1000,
+                                new long[] {PreviewAnimation.MAX_GLOBAL_MILLIS + 1},
+                                List.of(bone),
+                                rest,
+                                new float[0],
+                                rigid(0, 0, 0),
+                                full(3)));
         assertThrows(
                 IllegalArgumentException.class,
                 () ->
