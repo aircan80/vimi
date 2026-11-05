@@ -166,7 +166,7 @@ public final class AuthoredWorldControllerChild {
                             state.tileY.getOrDefault(slot, -1) + " " + outcome + "\n",
                             java.nio.file.StandardOpenOption.CREATE,
                             java.nio.file.StandardOpenOption.APPEND);
-                    state.send(
+                    String reply =
                             "OBJECTS_DONE "
                                     + late.transaction()
                                     + " "
@@ -176,7 +176,26 @@ public final class AuthoredWorldControllerChild {
                                     + " "
                                     + late.lease().generation()
                                     + " "
-                                    + outcome);
+                                    + outcome;
+                    var holdObjects = directory.getParent().resolve("authored-hold-objects");
+                    if (Files.exists(holdObjects)) {
+                        // Decided now, replied later: commits keep flowing while it is held.
+                        Files.writeString(
+                                directory.getParent().resolve("authored-held-objects"), "held");
+                        Thread.ofPlatform()
+                                .daemon()
+                                .start(
+                                        () -> {
+                                            try {
+                                                while (Files.exists(holdObjects)) Thread.sleep(2);
+                                            } catch (InterruptedException error) {
+                                                return;
+                                            }
+                                            state.send(reply);
+                                        });
+                    } else {
+                        state.send(reply);
+                    }
                 } else if (command instanceof WorldStreamControl.Close) {
                     state.send("CLOSED");
                     return;
@@ -230,7 +249,7 @@ public final class AuthoredWorldControllerChild {
             this.prefix = prefix;
         }
 
-        void send(String text) {
+        synchronized void send(String text) {
             System.out.print(prefix + text + "\n");
             System.out.flush();
         }

@@ -836,7 +836,7 @@ final class WorldStreamSourceController {
             } catch (RuntimeException failed) {
                 exterior = null;
                 // Preempted by terrain (or retired): untried, so it restarts when terrain idles.
-                if (!work.cancellation.isCanceled()) {
+                if (!work.cancellation.isCanceled() && live(work.entry)) {
                     exteriorTried.add(work.entry);
                     work.entry.source().exteriorFailedLate();
                 }
@@ -845,6 +845,7 @@ final class WorldStreamSourceController {
             work.prepared = null;
             if (copy.exterior() == null || closing || !current.contains(work.entry)) {
                 exterior = null;
+                if (!live(work.entry)) return;
                 if (copy.failed()) work.entry.source().exteriorFailedLate();
                 if (copy.exterior() == null || copy.failed()) exteriorTried.add(work.entry);
                 return;
@@ -856,6 +857,11 @@ final class WorldStreamSourceController {
         }
         if (!work.attached.isDone()) return;
         exterior = null;
+        // Retired (and its source closed) while the attach was in flight: nothing to record.
+        if (!live(work.entry)) {
+            changed();
+            return;
+        }
         exteriorTried.add(work.entry);
         try {
             switch (work.attached.join()) {
@@ -868,6 +874,11 @@ final class WorldStreamSourceController {
             if (!closing && !cleanCancellation(failed)) work.entry.source().exteriorFailedLate();
         }
         changed();
+    }
+
+    /** Whether this entry still owns its resident, i.e. retireUnused has not closed it. */
+    private boolean live(Entry entry) {
+        return entries.get(entry.resident()) == entry;
     }
 
     private boolean waterReady() {

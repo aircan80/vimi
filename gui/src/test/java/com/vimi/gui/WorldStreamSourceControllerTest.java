@@ -54,6 +54,7 @@ public final class WorldStreamSourceControllerTest {
         terrainNeverWaitsForBlockedObjectPreparation();
         lateObjectsAttachAfterTerrainAndReportBuildings();
         lateObjectFailuresStayIsolatedFromTerrain();
+        lateObjectsCompletingAfterRetirementAreIgnored();
     }
 
     /** One authored building: a quad drawn by one range of one 2x2 image, placed once. */
@@ -177,6 +178,108 @@ public final class WorldStreamSourceControllerTest {
                     "Both terrain tiles stay current: " + fixture.controller.snapshot());
         } finally {
             fixture.close();
+        }
+    }
+
+    /**
+     * An attach still in flight when its tile retires completes late: the retired entry is not
+     * recorded as tried and its closed source is left untouched.
+     */
+    private static void lateObjectsCompletingAfterRetirementAreIgnored() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 10);
+        fixture.exteriors = true;
+        // Only the first tile has buildings, so the only delivery is the one that goes stale.
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) ->
+                tile.y() == 19
+                        ? new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored")
+                        : new WorldStreamSourceBridge.ExteriorCopy(null, 0, false, "none");
+        Path hold = fixture.directory.resolve("authored-hold-objects");
+        try {
+            Files.writeString(hold, "hold");
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            // The child has decided ATTACHED for the first tile and holds its reply.
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && Files.exists(fixture.directory.resolve("authored-held-objects")));
+            check(fixture.objectLines().equals(List.of("19 ATTACHED")),
+                    "First tile's objects decided: " + fixture.objectLines());
+            Object retired = quiet(() -> {
+                for (var entry : controllerEntries(fixture.controller).values()) {
+                    var accessor = entry.getClass().getDeclaredMethod("resident");
+                    accessor.setAccessible(true);
+                    var resident = (WorldStreamTransport.Resident) accessor.invoke(entry);
+                    if (resident.tileY() == 19) return entry;
+                }
+                throw new AssertionError("No resident for the first tile");
+            });
+            // Nine other wanted tiles fill every slot, so a commit retires the first tile while
+            // its attach is still in flight.
+            fixture.controller.neighborhood(fixture.tiles.subList(1, 10));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 9
+                    && quiet(() -> !controllerEntries(fixture.controller).containsValue(retired)));
+            Files.delete(hold);
+            // The late reply is consumed and every remaining tile is then tried (none has objects).
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && !fixture.controller.snapshot().detail().contains("loading buildings")
+                    && quiet(() -> {
+                        var field = WorldStreamSourceController.class.getDeclaredField("exteriorTried");
+                        field.setAccessible(true);
+                        return ((java.util.Set<?>) field.get(fixture.controller)).size() == 9;
+                    }));
+            check(fixture.objectLines().equals(List.of("19 ATTACHED")),
+                    "Only the stale delivery reached the child: " + fixture.objectLines());
+            check(!fixture.controller.snapshot().detail().contains("BASIC exterior buildings"),
+                    "No current tile reports buildings: " + fixture.controller.snapshot());
+            var tried = quiet(() -> {
+                var field = WorldStreamSourceController.class.getDeclaredField("exteriorTried");
+                field.setAccessible(true);
+                return new ArrayList<>((java.util.Set<?>) field.get(fixture.controller));
+            });
+            check(tried.stream().noneMatch(entry -> entry == retired),
+                    "Retired entry is not recorded as tried: " + tried);
+            var sourceAccessor = retired.getClass().getDeclaredMethod("source");
+            sourceAccessor.setAccessible(true);
+            var source = sourceAccessor.invoke(retired);
+            var placements = WorldStreamSourceBridge.Prepared.class
+                    .getDeclaredField("exteriorPlacements");
+            placements.setAccessible(true);
+            check(placements.getInt(source) == 0, "Closed source is left untouched");
+        } finally {
+            Files.deleteIfExists(hold);
+            fixture.close();
+        }
+    }
+
+    /** The controller's resident entries (worker-owned; read only while it is quiet). */
+    private static java.util.Map<?, ?> controllerEntries(WorldStreamSourceController controller)
+            throws ReflectiveOperationException {
+        var field = WorldStreamSourceController.class.getDeclaredField("entries");
+        field.setAccessible(true);
+        return new java.util.IdentityHashMap<>((java.util.Map<?, ?>) field.get(controller));
+    }
+
+    @FunctionalInterface
+    private interface Read<T> {
+        T get() throws Exception;
+    }
+
+    /** Retries a reflective read of worker-owned state that raced a worker update. */
+    private static <T> T quiet(Read<T> read) {
+        for (int attempt = 0; ; attempt++) {
+            try {
+                return read.get();
+            } catch (java.util.ConcurrentModificationException race) {
+                if (attempt == 100) throw race;
+            } catch (RuntimeException | Error failure) {
+                throw failure;
+            } catch (Exception failure) {
+                throw new AssertionError(failure);
+            }
         }
     }
 

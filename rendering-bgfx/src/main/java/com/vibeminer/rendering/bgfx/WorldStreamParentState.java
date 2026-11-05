@@ -43,8 +43,9 @@ final class WorldStreamParentState {
         /** -1 outside the exterior profile; else 0 none, 1 drawn, 2 failed (terrain kept). */
         final int objects;
 
-        // Late objects: requested at most once; the child's terminal outcome once known.
-        boolean lateRequested;
+        // Late objects: admitted at most once, published at most once; the terminal outcome once
+        // known (the child's reply, or FAILED when the parent could not write the objects file).
+        boolean lateRequested, lateSent;
         volatile WorldStreamStatus.LateOutcome late;
 
         private Resident(Ticket ticket, int objects) {
@@ -260,9 +261,9 @@ final class WorldStreamParentState {
     }
 
     /**
-     * Publishes one late objects command for an active resident of this session that carried no
-     * inline objects. Returns null when the resident is no longer the active generation of its slot
-     * (the caller then reports it dropped without sending anything).
+     * Publishes the one late objects command for a resident admitted by {@link #admitLateObjects}.
+     * Returns null when the resident is no longer the active generation of its slot (the caller
+     * then reports it dropped without sending anything).
      */
     synchronized WorldStreamControl.LateObjects lateObjects(
             Resident member, int length, String sha) {
@@ -270,10 +271,16 @@ final class WorldStreamParentState {
         require(!closed && hello, "Late objects after session end");
         require(member != null && member.owner == owner, "Foreign late objects resident");
         require(objectsTarget == null, "Late objects credit");
-        require(member.objects == 0 && !member.lateRequested, "Duplicate resident objects");
-        member.lateRequested = true;
+        require(
+                member.objects == 0
+                        && member.lateRequested
+                        && !member.lateSent
+                        && member.late == null,
+                "Unadmitted or duplicate resident objects");
+        member.lateSent = true;
         if (generations[member.lease.slot()] != member.lease.generation()
                 || !active.contains(member)) {
+            member.late = WorldStreamStatus.LateOutcome.DROPPED;
             return null;
         }
         var command =
@@ -287,7 +294,8 @@ final class WorldStreamParentState {
      * Synchronous admission before any file is written. Misuse (a foreign resident, one with inline
      * objects, or one already requested) is refused with IllegalArgumentException so the caller can
      * fail only that request. Returns false when the resident is no longer the active generation of
-     * its slot; that also consumes its one request.
+     * its slot. Any admission of a live session consumes the resident's one request, whatever the
+     * delivery then does.
      */
     synchronized boolean admitLateObjects(Resident member) {
         if (member == null || member.owner != owner) {
@@ -302,9 +310,35 @@ final class WorldStreamParentState {
         if (generations[member.lease.slot()] != member.lease.generation()
                 || !active.contains(member)) {
             member.lateRequested = true;
+            member.late = WorldStreamStatus.LateOutcome.DROPPED;
             return false;
         }
+        member.lateRequested = true;
         return true;
+    }
+
+    /**
+     * Records the terminal FAILED outcome of an admitted resident whose objects file the parent
+     * could not write; nothing was sent for it.
+     */
+    synchronized void lateObjectsFailed(Resident member) {
+        require(
+                member != null
+                        && member.owner == owner
+                        && member.lateRequested
+                        && !member.lateSent
+                        && member.late == null,
+                "Late objects failure without admission");
+        member.late = WorldStreamStatus.LateOutcome.FAILED;
+    }
+
+    /**
+     * Withdraws a published command that the transport refused to send because the session began
+     * stopping; no reply can arrive for it, so its credit is returned and nothing is recorded.
+     */
+    synchronized void lateObjectsUnsent(Resident member) {
+        require(member != null && objectsTarget == member, "Unsent late objects target");
+        objectsTarget = null;
     }
 
     synchronized boolean lateObjectsPending() {
