@@ -139,7 +139,7 @@ public final class RaceMediaTypes {
                             && state != RaceTypes.State.UNSUPPORTED
                             && state != RaceTypes.State.UNAVAILABLE
                     || (state == RaceTypes.State.READY) != (animation != null)
-                    || state == RaceTypes.State.READY && variant == null
+                    || state == RaceTypes.State.READY && (variant == null || !reasons.isEmpty())
                     || message == null) {
                 throw new IllegalArgumentException("Inconsistent race idle result");
             }

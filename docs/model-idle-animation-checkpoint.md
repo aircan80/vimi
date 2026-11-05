@@ -80,8 +80,7 @@ for the others (see "Races" below).
 
 Read-only Forever 1.60.1.70755 enUS, original library plus earlier private acquired
 stores, `CachingObjectSource.localOnly`, no network and a fresh private generated store.
-Private probes and images: `HOME/.cache/vimi-tmp/models-idle-proof/` (`audit-all.log`,
-`render.log`, `rest-*.png`, `idle-*.png`, `all-sheet-*.png`). No game asset is committed.
+Probe logs and images stayed outside the repository. No game asset is committed.
 
 All 141 readable Mount rows were walked through MountXDisplay → CreatureDisplayInfo →
 CreatureModelData. Of 36 distinct mount models, 24 are not stored locally and 3 are
@@ -129,17 +128,21 @@ inferred from the race or model name.
   `concepts-models`, so race and mount models pass the same bone-flag admission.
 - `RaceMediaTypes.Idle` gains `READY` with the prepared `PreviewAnimation`. A bone-flag or
   evaluator refusal is `UNSUPPORTED` with its reason. A SKIN that cannot be read is
-  `UNAVAILABLE` (it names the SKIN FileDataID) and is assessed again on the next request.
+  `UNAVAILABLE` (it names the SKIN FileDataID) and is assessed again on the next request. A
+  model that declares no LOD0 SKIN is `UNSUPPORTED` and cached, since that is a fact of the
+  model.
 - Cached results are now also checked against the SKIN's content key. At most four prepared
   animations stay in the 32-entry cache; refusals are small and stay longer.
 - `RaceModelPanel` hands a READY result to `ModelPreviewView.setAnimation`, which shows the
   **Idle animation** toggle only when the animation matches the static mesh or the textured
-  sample (positions and normals). The Stand facts appear under "Model source details".
+  sample (positions and normals). The panel offers it again once the textured sample is
+  shown. An animation that does not fit the surface on screen keeps the toggle hidden and
+  shows "Idle animation unavailable: it was prepared for a different surface than the one
+  shown." The Stand facts appear under "Model source details".
 
 Actual Forever 1.60.1.70755 enUS, read-only and local only (no network, nothing downloaded).
-The library plus the private stores from earlier probes were read; the probe and its images
-are in `HOME/.cache/vimi-tmp/race-stand-proof/` (`run2.log`, `run3.log`, `sheet-9.png`). No
-game asset is committed. 116 ChrRaceXChrModel variants were assessed:
+The library plus private stores from earlier probes were read. The probe, its logs and
+images stayed outside the repository, and no game asset is committed. 116 ChrRaceXChrModel variants were assessed:
 
 - Undead male (ChrModel 9, M2 959310, SKIN 959362) is READY: Stand is sequence 2, 2,667 ms,
   17,111 keys on 170 bones, bound to 44,939 rest vertices with 226 bones evaluated. Its face
@@ -199,8 +202,7 @@ shows "Idle animation unavailable: …" in place of the toggle, and the Stand an
 facts appear under "Model source details".
 
 Actual Forever 1.60.1.70755 enUS, read-only. Missing bone files and models were fetched
-into a private store under `HOME/.cache/vimi-tmp/race-idle-proof/` (`race-idle-net.log`,
-`race-idle-net-v2.log`, `bonefile-net.log`). No game asset is committed. The probe assessed 75
+into a private store outside the repository. No game asset is committed. The probe assessed 75
 ChrRaceXChrModel variants before its time limit, and then every playable race again with the
 final code. Every variant was UNSUPPORTED; none was UNAVAILABLE.
 
@@ -244,14 +246,20 @@ the model.
   a model-resident Stand has no blocker, unreadable sources are not cached, the bone-file
   budget is enforced, cancellation stops the assessment, only READY carries an animation, and
   evaluable-read refusals map to Stand facts as `assessStand` reports them.
-- `RacesServiceTest`: an authored 274 model with one Stand bone and the authored SKIN is READY;
-  its animation matches `RaceRestSurface` and moves vertices by the keyed amount; the result is
-  cached and a new SKIN content key reassesses it; a 0x1 bone is refused with its reason; a
-  SKIN that is not stored is UNAVAILABLE and reassessed.
+- `RacesServiceTest`: an authored 274 model with one Stand bone and the authored SKIN is READY.
+  Its animation matches the mesh from `service.preview()`, fresh and restored, and the
+  textured sample's surface from `RaceAppearance.drawSurface` in positions and normals, and
+  moves vertices by the keyed amount. The result is cached and a new SKIN content key
+  reassesses it. A 0x1 bone is refused with its reason. A SKIN that is not stored is
+  UNAVAILABLE and reassessed; an undeclared LOD0 SKIN is UNSUPPORTED and cached. With five
+  READY models only the four most recently used animations stay cached.
+- `DisplayIdleAnimationsTest`: a mount track on a 1,079,000 ms global clock is read and
+  admitted end to end, held after its last key and wrapped on its clock.
 - `BuildModelsTest`: `readIdle` returns tracks for model-resident bones and refuses BFID.
 - `PreviewAnimationTest`: a global clock longer than 600,000 ms is sampled modulo its length.
 - `RacesUiTest` (display required): the refusal replaces the toggle and its facts reach the
-  details; a READY result shows the toggle, its status and its facts.
+  details; a READY result shows the toggle, its status and its facts; a READY animation for
+  another surface keeps the toggle hidden and says so.
 - `MountsUiTest` (display required, not part of hosted CI): the control appears only for
   a matching animation, playback produces changing frames with an idle status, and an
   unsupported variant hides the control and shows its reason.

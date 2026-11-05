@@ -165,6 +165,11 @@ final class RaceIdleAnimations {
                             "Stand could not be bound to the rest surface: "
                                     + refused.getMessage());
                 }
+            } else if (skin.state() == BuildModelTypes.ReadState.NOT_DECLARED) {
+                // A declaration fact of the model, not a missing source: refuse and cache.
+                reasons.add(
+                        "The model declares no LOD0 SKIN, so there is no rest surface to animate"
+                                + (skin.message() == null ? "." : ": " + skin.message()));
             } else if (skin.state() == BuildModelTypes.ReadState.REJECTED) {
                 reasons.add(
                         "The model's rest surface"

@@ -34,6 +34,7 @@ public final class RacesUiTest {
     private static final CompletableFuture<Void> raceRetirementChecks = new CompletableFuture<>();
     private static final CompletableFuture<Void> modelRetirementChecks = new CompletableFuture<>();
     private static final CompletableFuture<Void> standChecks = new CompletableFuture<>();
+    private static final CompletableFuture<Void> standMismatchChecks = new CompletableFuture<>();
 
     public static void main(String[] args) throws Exception {
         var done = new CompletableFuture<Void>();
@@ -45,7 +46,8 @@ public final class RacesUiTest {
                         voiceRetirementFeedback();
                         raceRetirementFeedback();
                         modelRetirementFeedback();
-                        standOffered();
+                        standOffered(false, standChecks);
+                        standOffered(true, standMismatchChecks);
                         var human = new RaceTypes.Race(1, "Authored Human", 1, 2);
                         var internal = new RaceTypes.Race(99, "Internal record", 99, 0);
                         var pending = new CompletableFuture<RaceTypes.Overview>();
@@ -576,6 +578,7 @@ public final class RacesUiTest {
             raceRetirementChecks.get(5, TimeUnit.SECONDS);
             modelRetirementChecks.get(5, TimeUnit.SECONDS);
             standChecks.get(5, TimeUnit.SECONDS);
+            standMismatchChecks.get(5, TimeUnit.SECONDS);
             System.out.println(
                     "Races UI: partial data, icons, internal-record filter, stale selection and"
                             + " borrowed lifetime passed");
@@ -997,8 +1000,11 @@ public final class RacesUiTest {
         }, appearanceErrorDone);
     }
 
-    /** A READY race idle offers the toggle for the exact surface shown and states its facts. */
-    private static void standOffered() {
+    /**
+     * A READY race idle offers the toggle for the exact surface shown and states its facts; one
+     * prepared for another surface keeps the toggle hidden and says why.
+     */
+    private static void standOffered(boolean mismatched, CompletableFuture<Void> checks) {
         var variant = new com.vibeminer.concepts.races.RaceMediaTypes.Variant(1, 0, 1, 1, 1);
         var mesh =
                 new com.vibeminer.rendering.models.PreviewMesh(
@@ -1027,7 +1033,14 @@ public final class RacesUiTest {
                         1000,
                         new long[0],
                         List.of(bone),
-                        mesh,
+                        mismatched
+                                ? new com.vibeminer.rendering.models.PreviewMesh(
+                                        new float[] {0, 0, 0, 2, 0, 0, 0, 2, 0},
+                                        new int[] {0, 1, 2},
+                                        List.of(
+                                                new com.vibeminer.rendering.models.PreviewMesh
+                                                        .Part(0, 0, 3)))
+                                : mesh,
                         new float[0],
                         new int[12],
                         new int[] {255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0});
@@ -1090,6 +1103,19 @@ public final class RacesUiTest {
         new Scene(panel, 800, 600);
         panel.applyCss();
         panel.layout();
+        if (mismatched) {
+            afterFx(
+                    () -> labels(panel).contains(ModelPreviewView.MISMATCHED_SURFACE),
+                    () -> {
+                        require(
+                                !panel.lookup("#model-idle-animation").isVisible(),
+                                "A Stand for another surface keeps the toggle hidden");
+                        panel.close();
+                        checks.complete(null);
+                    },
+                    checks);
+            return;
+        }
         afterFx(
                 () -> panel.lookup("#model-idle-animation").isVisible(),
                 () -> {
@@ -1107,9 +1133,9 @@ public final class RacesUiTest {
                                                                             + " unavailable")),
                             "Race Stand is offered with its status and facts: " + labels(panel));
                     panel.close();
-                    standChecks.complete(null);
+                    checks.complete(null);
                 },
-                standChecks);
+                checks);
     }
 
     private static void voiceRetirementFeedback() {

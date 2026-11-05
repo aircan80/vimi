@@ -10,6 +10,7 @@ import com.vibeminer.formats.models.BuildModelTypes;
 import com.vibeminer.formats.models.BuildModels;
 import com.vibeminer.formats.models.M2Appearance;
 import com.vibeminer.formats.models.M2RestDrawSkinReader;
+import com.vibeminer.formats.models.M2Types;
 import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.generated.GeneratedKey;
 import com.vibeminer.generated.GeneratedStore;
@@ -58,6 +59,24 @@ final class RaceAppearance {
         Prepared {
             issues = List.copyOf(issues);
         }
+    }
+
+    /** The LOD0 draw SKIN and, when it was read, the textured sample's rest surface. */
+    record DrawSurface(
+            BuildModelTypes.SkinRead<M2Types.RestDrawSkin> skin, RaceRestSurface surface) {}
+
+    /**
+     * Derives the textured sample's surface. Package-visible so tests prove a race idle matches the
+     * surface this sample shows.
+     */
+    static DrawSurface drawSurface(
+            BuildModels models, BuildModelTypes.ModelRead model, Cancellation token) {
+        var skin = models.readRestDrawSkin(model, 0, token).join();
+        if (skin.state() != BuildModelTypes.ReadState.READ || skin.skin() == null) {
+            return new DrawSurface(skin, null);
+        }
+        return new DrawSurface(
+                skin, RaceRestSurface.of(model.model(), skin.skin().surface(), token));
     }
 
     Prepared prepare(long raceId, long classId, long modelId, Cancellation token) {
@@ -261,12 +280,13 @@ final class RaceAppearance {
             if (model.state() != BuildModelTypes.ReadState.READ || model.model() == null) {
                 return failed(issues, "The model could not be read for texture coordinates.");
             }
-            var skin = models.readRestDrawSkin(model, 0, token).join();
-            if (skin.state() != BuildModelTypes.ReadState.READ || skin.skin() == null) {
+            var drawn = drawSurface(models, model, token);
+            var skin = drawn.skin();
+            if (drawn.surface() == null) {
                 return failed(
                         issues, "The model draw declarations are unavailable: " + skin.message());
             }
-            var surface = RaceRestSurface.of(model.model(), skin.skin().surface(), token);
+            var surface = drawn.surface();
             var mesh = surface.mesh();
             float[] uv = surface.uv(), normals = surface.normals();
             M2Appearance.ModelFacts facts = null;

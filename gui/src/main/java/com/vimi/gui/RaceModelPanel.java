@@ -392,6 +392,16 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                                                 + " could not be"
                                                                                 + " rendered.");
                                                     });
+                                            // Re-offer a prepared Stand; it must fit the
+                                            // textured sample, or the viewer says it does not.
+                                            if (idleFacts != null
+                                                    && idleFacts.animation() != null
+                                                    && idleFacts.variant().chrModelId()
+                                                            == model.chrModelId()) {
+                                                viewer.setAnimation(
+                                                        idleFacts.animation(),
+                                                        idleFacts.message());
+                                            }
                                             evidence.getChildren()
                                                     .setAll(
                                                             new Label(

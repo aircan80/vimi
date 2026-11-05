@@ -675,6 +675,21 @@ final class RacesServiceTest {
 
     /** Race 1 → ChrModel 10 → display 20 → model data 30 → M2 FileDataID 1234. */
     private static com.vibeminer.formats.tables.BuildTables idleTables() {
+        return idleTables(1);
+    }
+
+    /** Race 1 → ChrModel 10+i → display 20+i → model data 30+i → M2 FileDataID 1234+i. */
+    private static com.vibeminer.formats.tables.BuildTables idleTables(int models) {
+        var joins = new ArrayList<Db2Types.Row>();
+        var chrModels = new ArrayList<Db2Types.Row>();
+        var displays = new ArrayList<Db2Types.Row>();
+        var assets = new ArrayList<Db2Types.Row>();
+        for (int i = 0; i < models; i++) {
+            joins.add(row(1 + i, "1", Integer.toString(10 + i)));
+            chrModels.add(row(10 + i, Integer.toString(20 + i), "0"));
+            displays.add(row(20 + i, Integer.toString(30 + i)));
+            assets.add(row(30 + i, Integer.toString(1234 + i)));
+        }
         return new MemoryTables()
                 .add(
                         BUILD,
@@ -686,24 +701,24 @@ final class RacesServiceTest {
                                         List.of(
                                                 reference("ChrRacesID", "ChrRaces"),
                                                 reference("ChrModelID", "ChrModel")),
-                                        List.of(row(1, "1", "10"))),
+                                        joins),
                                 table(
                                         102,
                                         "ChrModel",
                                         List.of(
                                                 reference("DisplayID", "CreatureDisplayInfo"),
                                                 number("Sex")),
-                                        List.of(row(10, "20", "0"))),
+                                        chrModels),
                                 table(
                                         103,
                                         "CreatureDisplayInfo",
                                         List.of(reference("ModelID", "CreatureModelData")),
-                                        List.of(row(20, "30"))),
+                                        displays),
                                 table(
                                         104,
                                         "CreatureModelData",
                                         List.of(number("FileDataID")),
-                                        List.of(row(30, "1234")))))
+                                        assets)))
                 .forBuild(BUILD, "enUS", Cancellation.NONE)
                 .join()
                 .tables();
@@ -813,7 +828,8 @@ final class RacesServiceTest {
                 new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
                         .add(1234, "1".repeat(32), modelWithStand(0x200))
                         .add(900, "2".repeat(32), skin);
-        var service = new RacesService(tables, files, null);
+        var service =
+                new RacesService(tables, files, new com.vibeminer.generated.MemoryGeneratedStore());
         try {
             var idle = service.idle(1, 10, Cancellation.NONE).join();
             assertEquals(RaceTypes.State.READY, idle.state(), idle.message());
@@ -831,21 +847,32 @@ final class RacesServiceTest {
                             "Stand is bound to 4 rest vertices of SKIN FileDataID 900; 1 bones are"
                                     + " evaluated in software."),
                     idle.facts());
-            // The animation matches the surface the static preview and textured sample build.
+            // The animation matches the static mesh the service previews.
+            var preview = service.preview(1, 0, 10, Cancellation.NONE).join();
+            assertTrue(preview.mesh() != null, preview.message());
+            assertTrue(animation.matches(preview.mesh()), "READY idle fits service.preview()");
+            float[] still = preview.mesh().positions();
+            float[] posed = animation.pose(preview.mesh(), 500).mesh().positions();
+            for (int i = 2; i < still.length; i += 3) {
+                assertEquals(still[i] + 2, posed[i], 1e-5);
+            }
+            // A restored preview (derived surface read back from the generated store) fits too.
+            var restored = service.preview(1, 0, 10, Cancellation.NONE).join();
+            assertTrue(restored.restored(), "The second preview is restored");
+            assertTrue(animation.matches(restored.mesh()));
+            // The textured sample's surface, derived by RaceAppearance from the draw SKIN, fits
+            // in positions and normals.
             var models = new com.vibeminer.formats.models.BuildModels(files);
             var read =
                     models.readModel(
                                     com.vibeminer.files.FileTypes.FileRef.id(1234),
                                     Cancellation.NONE)
                             .join();
-            var rest = models.readRestSkin(read, 0, Cancellation.NONE).join();
-            var surface = RaceRestSurface.of(read.model(), rest.skin(), Cancellation.NONE);
-            assertTrue(animation.matches(surface.mesh()));
-            var halfway = animation.pose(surface.mesh(), 500).mesh();
-            float[] still = surface.mesh().positions(), posed = halfway.positions();
-            for (int i = 2; i < still.length; i += 3) {
-                assertEquals(still[i] + 2, posed[i], 1e-5);
-            }
+            var drawn = RaceAppearance.drawSurface(models, read, Cancellation.NONE).surface();
+            var textured =
+                    new com.vibeminer.rendering.models.MeshAppearance(
+                            drawn.mesh(), drawn.uv(), drawn.normals(), List.of(), List.of());
+            assertTrue(animation.matches(textured), "READY idle fits the textured sample");
             // A complete result is reused without reopening; a new SKIN invalidates it.
             int opens = files.opens.get();
             var cached = service.idle(1, 10, Cancellation.NONE).join();
@@ -898,6 +925,63 @@ final class RacesServiceTest {
             int opens = noSkin.opens.get();
             service.idle(1, 10, Cancellation.NONE).join();
             assertTrue(noSkin.opens.get() > opens, "Unavailable results are reassessed");
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void atMostFourPreparedAnimationsStayCached() throws Exception {
+        var tables = idleTables(5);
+        var files = new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS");
+        byte[] model = modelWithStand(0);
+        for (int i = 0; i < 5; i++) {
+            files.add(1234 + i, Integer.toString(i + 1).repeat(32), model);
+        }
+        files.add(900, "a".repeat(32), golden("authored-274.skin"));
+        var service = new RacesService(tables, files, null);
+        try {
+            for (int i = 0; i < 5; i++) {
+                var idle = service.idle(1, 10 + i, Cancellation.NONE).join();
+                assertEquals(RaceTypes.State.READY, idle.state(), idle.message());
+            }
+            // The four most recent are reused without opening anything.
+            int opens = files.opens.get();
+            for (int i = 4; i >= 1; i--) {
+                service.idle(1, 10 + i, Cancellation.NONE).join();
+            }
+            assertEquals(opens, files.opens.get());
+            // The least recently used animation was evicted and is prepared again.
+            var again = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.READY, again.state());
+            assertTrue(files.opens.get() > opens, "The fifth animation is not kept");
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void aModelWithoutAnLod0SkinIsRefusedAndCached() throws Exception {
+        var tables = idleTables();
+        byte[] model = modelWithStand(0);
+        // The authored SFID chunk starts the file; its first entry names LOD0 SKIN 900.
+        var b = java.nio.ByteBuffer.wrap(model).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        assertEquals(900, b.getInt(8));
+        b.putInt(8, 0);
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), model);
+        var service = new RacesService(tables, files, null);
+        try {
+            var idle = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.UNSUPPORTED, idle.state(), idle.message());
+            assertTrue(
+                    idle.message().startsWith("The model declares no LOD0 SKIN"), idle.message());
+            int opens = files.opens.get();
+            service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(opens, files.opens.get());
         } finally {
             service.closeAsync().join();
             tables.closeAsync().join();
