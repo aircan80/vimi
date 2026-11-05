@@ -326,6 +326,7 @@ public final class VimiApp extends Application {
                             work.noteRefreshedHotfix(result.summary().sha256());
                 }
             });
+            offerBuildFollows(imports, results);
             for (var result : results)
                 if (result.failure() != null)
                     System.getLogger(VimiApp.class.getName()).log(System.Logger.Level.WARNING,
@@ -346,6 +347,68 @@ public final class VimiApp extends Application {
             throw new IllegalStateException("Client caches could not be checked: "
                     + ClientHotfixDetails.failure(cause));
         });
+    }
+
+    /** Prompts declined this session; the old import stays bound and is not offered again. */
+    private final java.util.Set<String> declinedBuildFollows =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * A watched cache whose client moved to a prepared build is offered to that build. The user
+     * decides; declining keeps the existing import. Nothing is switched silently.
+     */
+    private void offerBuildFollows(ClientHotfixStore imports, List<ClientHotfixStore.RefreshResult> results) {
+        if (results.stream().noneMatch(result ->
+                result.outcome() == ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED)) return;
+        service.listBuilds().thenAccept(builds -> {
+            var receipts = service.preparedReceipts();
+            var follows = new java.util.ArrayList<ClientHotfixDetails.BuildFollow>();
+            for (var result : results)
+                ClientHotfixDetails.buildFollow(result, builds, receipts)
+                        .filter(follow -> !declinedBuildFollows.contains(follow.key()))
+                        .ifPresent(follows::add);
+            if (!follows.isEmpty()) Platform.runLater(() -> {
+                for (var follow : follows) promptBuildFollow(imports, follow);
+            });
+        }).exceptionally(error -> {
+            System.getLogger(VimiApp.class.getName()).log(System.Logger.Level.WARNING,
+                    "Could not match a client cache to a newer build: {0}", ClientHotfixDetails.failure(error));
+            return null;
+        });
+    }
+
+    private void promptBuildFollow(ClientHotfixStore imports, ClientHotfixDetails.BuildFollow follow) {
+        if (closing || declinedBuildFollows.contains(follow.key())) return;
+        var apply = new javafx.scene.control.ButtonType("Apply to build " + follow.build(),
+                javafx.scene.control.ButtonBar.ButtonData.OK_DONE);
+        var keep = new javafx.scene.control.ButtonType("Keep current import",
+                javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
+        var alert = new javafx.scene.control.Alert(javafx.scene.control.Alert.AlertType.CONFIRMATION,
+                "The watched client cache now belongs to " + follow.to().version() + ". Applying imports it"
+                        + " for that build and checks it there on Refresh sources. Build "
+                        + follow.from().version() + " keeps its current import either way.", apply, keep);
+        alert.initOwner(root.getScene().getWindow());
+        alert.setTitle("Client hotfix cache");
+        alert.setHeaderText(follow.prompt());
+        alert.showAndWait().filter(apply::equals).ifPresentOrElse(ignored ->
+                imports.follow(follow.from(), follow.to(), new com.vibeminer.access.Cancellation())
+                        .whenComplete((summary, error) -> Platform.runLater(() -> {
+                            if (closing) return;
+                            if (error != null) {
+                                var failed = new javafx.scene.control.Alert(
+                                        javafx.scene.control.Alert.AlertType.INFORMATION,
+                                        ClientHotfixDetails.failure(error) + " The current import is unchanged.");
+                                failed.initOwner(root.getScene().getWindow());
+                                failed.setHeaderText("Cache not applied to build " + follow.build());
+                                failed.show();
+                                return;
+                            }
+                            for (var job : service.preparation().jobs())
+                                if (job.work() instanceof NativePreparationWork work && work.canImportHotfix()
+                                        && work.hotfixScope().equals(follow.to()))
+                                    work.noteRefreshedHotfix(summary.sha256());
+                        })),
+                () -> declinedBuildFollows.add(follow.key()));
     }
 
     private void refreshSources(boolean startupRefresh) {

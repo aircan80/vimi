@@ -47,6 +47,9 @@ public final class BackendBuildService implements BuildService {
     private PreparationHistory history;
     BackendBuildService withHistory(PreparationHistory value) {history=value;return this;}
     @Override public String historicalPreparation(BuildInfo build) {return history==null?null:history.summary(build);}
+    @Override public java.util.List<PreparationHistory.Receipt> preparedReceipts() {
+        return history == null ? java.util.List.of() : history.retainedReceipts();
+    }
     private BuildPreparation preparation;
     public BackendBuildService withPreparation(BuildPreparation value) { preparation = value; return this; }
     @Override public BuildPreparation preparation() { return preparation; }

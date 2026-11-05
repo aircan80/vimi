@@ -212,6 +212,38 @@ final class ClientHotfixStore implements AutoCloseable {
         return submit(token, cancel -> unchecked(() -> refreshActual(cancel)));
     }
 
+    /**
+     * After the user confirms, moves a watched original whose client now runs another build into
+     * that build's scope: the original is fully verified against {@code to}, imported, bound and
+     * watched there, and the watch leaves {@code from}. The binding of {@code from} stays as it
+     * was. Any failure leaves both scopes unchanged.
+     */
+    CompletableFuture<Summary> follow(Scope from, Scope to, Cancellation token) {
+        Objects.requireNonNull(from);
+        Objects.requireNonNull(to);
+        if (from.equals(to)
+                || !from.build().product().equals(to.build().product())
+                || !from.locale().equals(to.locale()))
+            throw new IllegalArgumentException("A client cache follows only its product and locale");
+        return submit(
+                token,
+                cancel ->
+                        unchecked(
+                                () -> {
+                                    ensureStorage();
+                                    Path file = watch(from);
+                                    if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS))
+                                        throw new IOException("This build has no watched client cache");
+                                    var original = readWatch(file).original();
+                                    // Verifies the declared build against the target scope before
+                                    // anything is bound; a mismatch changes nothing.
+                                    var imported = importActual(to, original, false, cancel);
+                                    writeWatch(to, imported.input(), imported.source(), cancel);
+                                    deleteWatch(from, cancel);
+                                    return imported.summary();
+                                }));
+    }
+
     CompletableFuture<Snapshot> open(Scope scope, Cancellation token) {
         return submit(
                 token,

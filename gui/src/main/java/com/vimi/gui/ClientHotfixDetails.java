@@ -53,6 +53,53 @@ final class ClientHotfixDetails {
         return String.join(" · ", parts);
     }
 
+    /** A confirmed move of a watched cache into the build its client now runs. */
+    record BuildFollow(
+            ClientHotfixStore.Scope from, ClientHotfixStore.Scope to, int build, String prompt) {
+        String key() {
+            return from.key() + ">" + to.key();
+        }
+    }
+
+    /**
+     * The prompt for a watched cache whose client moved to another build, when exactly one
+     * prepared build of the same product and locale has that build number (same region preferred).
+     * Empty when nothing matches or the choice would be a guess; the user is never switched silently.
+     */
+    static java.util.Optional<BuildFollow> buildFollow(ClientHotfixStore.RefreshResult result,
+            List<BuildInfo> builds, List<PreparationHistory.Receipt> receipts) {
+        if (result.outcome() != ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED
+                || result.scope() == null || result.clientBuild() <= 0) return java.util.Optional.empty();
+        var from = result.scope();
+        int build = result.clientBuild();
+        var candidates = new java.util.ArrayList<ClientHotfixStore.Scope>();
+        for (var receipt : receipts) {
+            if (receipt.milestone() != BuildPreparation.Ready.TABLES_READY
+                    || !receipt.product().equals(from.build().product())
+                    || !receipt.locale().equals(from.locale())
+                    || receipt.cdnConfig() == null || receipt.region() == null) continue;
+            for (var info : builds) {
+                if (!info.identity().equals(receipt.identity()) || !info.config().equals(receipt.config())
+                        || info.version() == null || !info.version().endsWith("." + build)) continue;
+                try {
+                    var to = new ClientHotfixStore.Scope(new com.vibeminer.builds.BuildTypes.BuildRef(
+                            receipt.product(), receipt.config(), receipt.cdnConfig(), receipt.region()),
+                            receipt.locale(), info.version());
+                    if (to.buildNumber() == build && !to.equals(from) && !candidates.contains(to))
+                        candidates.add(to);
+                } catch (IllegalArgumentException notExact) {
+                    // Only exact four-part versions can hold a client cache.
+                }
+            }
+        }
+        var sameRegion = candidates.stream()
+                .filter(to -> java.util.Objects.equals(to.build().region(), from.build().region())).toList();
+        var pick = sameRegion.size() == 1 ? sameRegion : candidates;
+        if (pick.size() != 1) return java.util.Optional.empty();
+        return java.util.Optional.of(new BuildFollow(from, pick.getFirst(), build,
+                "Client updated to build " + build + ". Apply this cache to build " + build + "?"));
+    }
+
     static boolean refreshFailed(List<ClientHotfixStore.RefreshResult> results) {
         return results.stream().anyMatch(result -> result.outcome() == ClientHotfixStore.RefreshOutcome.FAILED);
     }
