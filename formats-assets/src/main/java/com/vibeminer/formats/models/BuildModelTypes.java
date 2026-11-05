@@ -133,6 +133,19 @@ public final class BuildModelTypes {
         }
     }
 
+    /**
+     * The evaluable Stand tracks of a read model that stores its own bones; {@code idle} is
+     * non-null only when READ. Unsupported content is {@code REJECTED} with its code.
+     */
+    public record IdleRead(
+            ReadState state, M2IdleAnimation.Idle idle, String code, String message) {
+        public IdleRead {
+            if (state == null || (state == ReadState.READ) != (idle != null)) {
+                throw new IllegalArgumentException("Inconsistent idle read");
+            }
+        }
+    }
+
     /** Model-resident Stand facts of a read model; {@code stand} is non-null only when READ. */
     public record StandRead(
             ReadState state, M2IdleAnimation.StandFacts stand, String code, String message) {

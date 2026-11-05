@@ -160,7 +160,7 @@ final class WorldStreamObjectsFileTest {
         over.model();
         assertThrows(
                 IllegalArgumentException.class,
-                () -> over.image(1280, 1280, ByteBuffer.allocate(1280 * 1280 * 4)));
+                () -> over.image(1400, 1400, ByteBuffer.allocate(1400 * 1400 * 4)));
         var draws = WorldStreamTileWriter.Exterior.builder();
         draws.image(1, 1, ByteBuffer.allocate(4));
         draws.model();
@@ -178,6 +178,48 @@ final class WorldStreamObjectsFileTest {
         }
         var budget = assertThrows(IllegalArgumentException.class, draws::build);
         assertEquals("Object draw budget", budget.getMessage());
+    }
+
+    @Test
+    void builderReportsRemainingRoomBeforeAWholeModelIsAdded() {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        // Version 2 shares one profile among buildings, their cutout and blended surfaces,
+        // doodads and creatures.
+        assertTrue(
+                builder.fits(
+                        WorldStreamObjectsFile.MAX_IMAGES,
+                        WorldStreamObjectsFile.MAX_PIXELS,
+                        WorldStreamObjectsFile.MAX_MESHES,
+                        WorldStreamObjectsFile.MAX_VERTICES,
+                        WorldStreamObjectsFile.MAX_INDICES,
+                        WorldStreamObjectsFile.MAX_RANGES));
+        assertFalse(
+                builder.fits(WorldStreamObjectsFile.MAX_IMAGES + 1, 0, 1, 3, 3, 1),
+                "Image count cap");
+        assertFalse(
+                builder.fits(0, WorldStreamObjectsFile.MAX_PIXELS + 1L, 1, 3, 3, 1), "Pixel cap");
+        assertFalse(
+                builder.fits(0, 0, 1, WorldStreamObjectsFile.MAX_VERTICES + 1, 3, 1), "Vertex cap");
+        assertFalse(builder.fits(0, 0, 2, 3, 3, 1), "Every mesh needs a range");
+        assertEquals(WorldStreamObjectsFile.MAX_PLACEMENTS, builder.placementRoom());
+        assertEquals(WorldStreamTileWriter.Exterior.MAX_DRAWS, builder.drawRoom());
+        builder.image(2, 2, rgba(4, 1));
+        builder.model();
+        builder.mesh(
+                FloatBuffer.wrap(new float[24]),
+                IntBuffer.wrap(new int[] {0, 1, 2, 0, 2, 1}),
+                new int[] {0, 3, 0, 3, 3, 0});
+        assertEquals(2, builder.drawCost(0));
+        builder.placement(0, 1, 2, 3, 1, 1, 0);
+        builder.placement(0, 1, 2, 3, 1, 1, 0);
+        assertEquals(WorldStreamObjectsFile.MAX_PLACEMENTS - 2, builder.placementRoom());
+        assertEquals(2, builder.placementCount());
+        assertEquals(WorldStreamTileWriter.Exterior.MAX_DRAWS - 4, builder.drawRoom());
+        assertFalse(
+                builder.fits(WorldStreamObjectsFile.MAX_IMAGES, 0, 1, 3, 3, 1),
+                "Images already used count");
+        assertThrows(IllegalArgumentException.class, () -> builder.drawCost(1));
+        assertEquals(4, builder.build().draws());
     }
 
     @Test

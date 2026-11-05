@@ -393,6 +393,11 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                                 names));
     }
 
+    /** The generated (derived artifact) store shared by this build's components; may be null. */
+    public GeneratedStore generatedHandle() {
+        return generated;
+    }
+
     public BuildFiles filesHandle() {
         return fileHandle;
     }

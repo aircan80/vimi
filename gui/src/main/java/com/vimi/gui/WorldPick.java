@@ -205,7 +205,7 @@ final class WorldPick {
         return text.append(" · phase, patrols and live server state unknown").toString();
     }
 
-    /** One creature model outcome; models are not drawn yet. */
+    /** One creature model outcome; the terrain child draws only qualified static previews. */
     static String describeModel(WorldSpawnModels.Resolved model) {
         var choice = model.choice();
         var text = new StringBuilder("model ");
@@ -221,7 +221,9 @@ final class WorldPick {
             case UNKNOWN -> text.append("UNKNOWN (").append(reason(choice.reason())).append("): ")
                     .append(choice.detail());
         }
-        return text.append(" · source ").append(model.source()).append(" · not drawn yet").toString();
+        return text.append(" · source ").append(model.source()).append(choice.state() == com.vibeminer.concepts.creatures.CreatureModelPolicy.State.QUALIFIED
+                ? " · drawn as a static model only when its preview qualifies (see World status)"
+                : " · not drawn").toString();
     }
 
     /** Short refusal reason label for status counts. */

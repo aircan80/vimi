@@ -217,10 +217,65 @@ public final class WorldStreamTileWriter {
             private final java.util.ArrayList<float[]> vertexBlocks = new java.util.ArrayList<>();
             private final java.util.ArrayList<short[]> indexBlocks = new java.util.ArrayList<>();
             private final java.util.ArrayList<byte[]> pixelBlocks = new java.util.ArrayList<>();
-            private int vertices, indices, pixels;
+            private int vertices, indices, pixels, draws;
             private boolean built;
 
             private Builder() {}
+
+            /**
+             * Whether one more whole model with these totals still fits the per-tile file profile,
+             * so a caller can add a model completely or not at all. Image sides are checked by
+             * {@link #image}; this checks counts only.
+             */
+            public boolean fits(
+                    int imageCount,
+                    long pixelCount,
+                    int meshCount,
+                    int vertexCount,
+                    int indexCount,
+                    int rangeCount) {
+                open();
+                return imageCount >= 0
+                        && pixelCount >= 0
+                        && meshCount >= 1
+                        && vertexCount >= 0
+                        && indexCount >= 0
+                        && rangeCount >= meshCount
+                        && models.size() < WorldStreamObjectsFile.MAX_MODELS
+                        && imageCount <= WorldStreamObjectsFile.MAX_IMAGES - images.size()
+                        && pixelCount <= WorldStreamObjectsFile.MAX_PIXELS - pixels
+                        && meshCount <= WorldStreamObjectsFile.MAX_MESHES - meshes.size()
+                        && vertexCount <= WorldStreamObjectsFile.MAX_VERTICES - vertices
+                        && indexCount <= WorldStreamObjectsFile.MAX_INDICES - indices
+                        && rangeCount <= WorldStreamObjectsFile.MAX_RANGES - ranges.size();
+            }
+
+            /** Placements that can still be added. */
+            public int placementRoom() {
+                return WorldStreamObjectsFile.MAX_PLACEMENTS - placements.size();
+            }
+
+            /** Draw calls that placements can still add (the sum of their models' ranges). */
+            public int drawRoom() {
+                return MAX_DRAWS - draws;
+            }
+
+            /** Draw calls one placement of {@code model} costs: its ranges added so far. */
+            public int drawCost(int model) {
+                if (model < 0 || model >= models.size()) {
+                    throw new IllegalArgumentException("Exterior placement model");
+                }
+                int first = models.get(model)[0], count = models.get(model)[1], cost = 0;
+                for (int mesh = first; mesh < first + count; mesh++) {
+                    cost += meshes.get(mesh)[5];
+                }
+                return cost;
+            }
+
+            /** Placements added so far. */
+            public int placementCount() {
+                return placements.size();
+            }
 
             /** Copies one RGBA8 image (power-of-two sides at most 256); returns its index. */
             public int image(int width, int height, java.nio.ByteBuffer rgba) {
@@ -345,6 +400,9 @@ public final class WorldStreamTileWriter {
                 if (placements.size() == WorldStreamObjectsFile.MAX_PLACEMENTS
                         || rotation.length != 9) {
                     throw new IllegalArgumentException("Exterior placements exceed file profile");
+                }
+                if (model >= 0 && model < models.size()) {
+                    draws += drawCost(model);
                 }
                 placementModels.add(model);
                 var row = new double[WorldStreamObjectsFile.PLACEMENT_DOUBLES];

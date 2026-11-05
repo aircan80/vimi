@@ -43,6 +43,18 @@ final class WorldStreamSourceBridge {
             exteriorFailed = true;
         }
 
+        private volatile WorldTileCreatures.Summary creatures = WorldTileCreatures.Summary.NONE;
+
+        /** Records this tile's creature outcome once its late objects ended (descriptive only). */
+        void creatures(WorldTileCreatures.Summary summary) {
+            creatures = Objects.requireNonNull(summary);
+        }
+
+        /** This tile's creature outcome; NONE until its late objects ended. */
+        WorldTileCreatures.Summary creatures() {
+            return creatures;
+        }
+
         /** Descriptive count of static water cells carried by this tile's moved packet. */
         int waterCells() {
             return waterCells;
@@ -106,7 +118,9 @@ final class WorldStreamSourceBridge {
      * Descriptive drawn and omitted counts of one tile's BASIC_EXTERIOR set, as written. Omitted
      * buildings and doodads are records (MODF, MDDF and selected MODD entries) that are not
      * drawn for any reason; tilted doodads are the omitted doodads whose pitch or roll is nonzero.
-     * Omitted surfaces are unsupported or image-less batches of drawn or empty roots and models.
+     * Omitted surfaces are unsupported, image-less, capped or unreadable batches of drawn or
+     * empty roots and models; unreadable surfaces are the cutout and blended building batches
+     * whose image could not be read now (they never cost the building).
      */
     record ExteriorSummary(
             int buildings,
@@ -114,8 +128,9 @@ final class WorldStreamSourceBridge {
             int doodads,
             int doodadsOmitted,
             int tilted,
-            int surfacesOmitted) {
-        static final ExteriorSummary NONE = new ExteriorSummary(0, 0, 0, 0, 0, 0);
+            int surfacesOmitted,
+            int unreadable) {
+        static final ExteriorSummary NONE = new ExteriorSummary(0, 0, 0, 0, 0, 0, 0);
 
         ExteriorSummary plus(ExteriorSummary o) {
             return new ExteriorSummary(
@@ -124,7 +139,8 @@ final class WorldStreamSourceBridge {
                     doodads + o.doodads,
                     doodadsOmitted + o.doodadsOmitted,
                     tilted + o.tilted,
-                    surfacesOmitted + o.surfacesOmitted);
+                    surfacesOmitted + o.surfacesOmitted,
+                    unreadable + o.unreadable);
         }
 
         int omitted() {
@@ -139,7 +155,8 @@ final class WorldStreamSourceBridge {
                     doodads - doodadsCapped,
                     doodadsOmitted + doodadsCapped,
                     tilted,
-                    surfacesOmitted);
+                    surfacesOmitted,
+                    unreadable);
         }
 
         static ExteriorSummary of(WorldExteriorObjects.TileObjects set) {
@@ -176,10 +193,18 @@ final class WorldStreamSourceBridge {
                             set,
                             WorldExteriorObjects.Count.BATCH_UNSUPPORTED,
                             WorldExteriorObjects.Count.BATCH_MISSING_IMAGE,
+                            WorldExteriorObjects.Count.BATCH_CAPPED,
+                            WorldExteriorObjects.Count.BATCH_UNREADABLE,
                             WorldExteriorObjects.Count.MODEL_BATCH_UNSUPPORTED,
                             WorldExteriorObjects.Count.MODEL_BATCH_MISSING_IMAGE);
             return new ExteriorSummary(
-                    buildings, buildingsOmitted, doodads, doodadsOmitted, tilted, surfaces);
+                    buildings,
+                    buildingsOmitted,
+                    doodads,
+                    doodadsOmitted,
+                    tilted,
+                    surfaces,
+                    set.count(WorldExteriorObjects.Count.BATCH_UNREADABLE));
         }
 
         private static int sum(
@@ -194,25 +219,48 @@ final class WorldStreamSourceBridge {
 
     /**
      * Outcome of one tile's BASIC_EXTERIOR preparation, detached from the source: a validated
-     * copy to deliver late, or none ({@code failed} distinguishes a failure from an empty tile).
+     * copy to deliver late, or none ({@code failed} distinguishes a building failure from an empty
+     * tile). {@code placements} counts buildings only; {@code creatures} is the tile's creature
+     * outcome, whose drawn placements share the same copy.
      */
     record ExteriorCopy(
             WorldStreamTileWriter.Exterior exterior,
             int placements,
             boolean failed,
             String note,
+            WorldTileCreatures.Summary creatures,
             ExteriorSummary summary) {
+        ExteriorCopy {
+            Objects.requireNonNull(creatures);
+            Objects.requireNonNull(summary);
+        }
+
+        /** A buildings-only copy whose summary counts {@code placements} buildings. */
         ExteriorCopy(
                 WorldStreamTileWriter.Exterior exterior,
                 int placements,
                 boolean failed,
                 String note) {
+            this(exterior, placements, failed, note, WorldTileCreatures.Summary.NONE);
+        }
+
+        ExteriorCopy(
+                WorldStreamTileWriter.Exterior exterior,
+                int placements,
+                boolean failed,
+                String note,
+                WorldTileCreatures.Summary creatures) {
             this(
                     exterior,
                     placements,
                     failed,
                     note,
-                    new ExteriorSummary(placements, 0, 0, 0, 0, 0));
+                    creatures,
+                    new ExteriorSummary(placements, 0, 0, 0, 0, 0, 0));
+        }
+
+        ExteriorCopy withSummary(ExteriorSummary replacement) {
+            return new ExteriorCopy(exterior, placements, failed, note, creatures, replacement);
         }
     }
 
@@ -229,34 +277,144 @@ final class WorldStreamSourceBridge {
                 Cancellation cancellation);
     }
 
-    /**
-     * The actual preparer: one serialized BASIC_EXTERIOR source operation outside any terrain
-     * write. The neutral set is copied and closed here. Only cancellation propagates; every other
-     * runtime failure degrades this tile to terrain only.
-     */
+    /** Appends one tile's creatures after its buildings; only cancellation may propagate. */
+    @FunctionalInterface
+    interface CreatureAppender {
+        WorldTileCreatures.Summary append(
+                WorldStreamTileWriter.Exterior.Builder builder,
+                WorldFormats.Tile tile,
+                Cancellation cancellation);
+    }
+
+    /** The actual preparer without creatures. */
     static ExteriorCopy prepareExterior(
             WorldTerrainStreaming source,
             WorldTerrainStreaming.Scope scope,
             WorldFormats.Tile tile,
             Cancellation cancellation) {
-        try (var set = source.prepareExteriorObjects(scope, tile, cancellation)) {
-            var summary = ExteriorSummary.of(set);
-            if (set.placements().isEmpty()) {
-                return new ExteriorCopy(null, 0, false, note(summary), summary);
+        return prepareExterior(source, scope, tile, cancellation, null);
+    }
+
+    /**
+     * The actual preparer: one serialized BASIC_EXTERIOR source operation outside any terrain
+     * write, then (when given) the tile's creatures in the remaining objects budget. The neutral
+     * set is copied and closed here. Only cancellation propagates; every other runtime failure
+     * degrades this tile to terrain only, and a creature failure never costs its buildings.
+     */
+    static ExteriorCopy prepareExterior(
+            WorldTerrainStreaming source,
+            WorldTerrainStreaming.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation cancellation,
+            CreatureAppender creatures) {
+        WorldExteriorObjects.TileObjects set = null;
+        try {
+            boolean failed = false;
+            String note;
+            var summary = ExteriorSummary.NONE;
+            try {
+                set = source.prepareExteriorObjects(scope, tile, cancellation);
+                summary = ExteriorSummary.of(set);
+                note = note(summary);
+            } catch (CancellationException canceled) {
+                throw canceled;
+            } catch (WorldTerrainStreaming.Refusal refused) {
+                cancellation.check();
+                failed = true;
+                note = "exterior objects refused: " + refused.site();
+            } catch (RuntimeException failure) {
+                cancellation.check();
+                failed = true;
+                note = "exterior objects failed: " + failure.getClass().getSimpleName();
             }
+            // Buildings and doodads; capped receives the bridge's own draw-budget drops.
             var capped = new int[2];
-            var copy = copy(set, cancellation, capped);
-            summary = summary.capped(capped[0], capped[1]);
-            return new ExteriorCopy(copy, copy.placements(), false, note(summary), summary);
+            if (creatures == null) {
+                if (failed || set.placements().isEmpty())
+                    return new ExteriorCopy(null, 0, failed, note).withSummary(summary);
+                var copy = copy(set, cancellation, capped);
+                return new ExteriorCopy(copy, buildings(set), false, note)
+                        .withSummary(summary.capped(capped[0], capped[1]));
+            }
+            var drawn = set;
+            var result = assemble(failed || set.placements().isEmpty() ? null
+                    : builder -> copyInto(builder, drawn, cancellation, capped), failed, note, creatures, tile, cancellation);
+            // A building failure inside assemble leaves no buildings or doodads to describe.
+            if (result.failed() && !failed) return result.withSummary(ExteriorSummary.NONE);
+            return result.withSummary(result.exterior() == null && set != null && !set.placements().isEmpty()
+                    ? ExteriorSummary.NONE : summary.capped(capped[0], capped[1]));
+        } finally {
+            if (set != null) set.close();
+        }
+    }
+
+    /**
+     * Buildings first, then creatures, into one late objects copy. {@code buildings} copies the
+     * tile's buildings into a builder and may run twice. A creature problem of any kind (a thrown
+     * failure, a cancellation that is not this tile's, or a set that fails the file checks) never
+     * costs the buildings: they are rebuilt alone and the creatures are reported failed. Only this
+     * tile's own cancellation propagates.
+     */
+    static ExteriorCopy assemble(
+            Consumer<WorldStreamTileWriter.Exterior.Builder> buildings,
+            boolean failed,
+            String note,
+            CreatureAppender creatures,
+            WorldFormats.Tile tile,
+            Cancellation cancellation) {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        int count = 0;
+        if (buildings != null) {
+            try {
+                buildings.accept(builder);
+                count = builder.placementCount();
+            } catch (CancellationException canceled) {
+                if (cancellation.isCanceled()) throw canceled;
+                failed = true;
+                note = "exterior objects failed: canceled outside this tile";
+                buildings = null;
+                builder = WorldStreamTileWriter.Exterior.builder();
+            } catch (RuntimeException failure) {
+                cancellation.check();
+                failed = true;
+                note = "exterior objects failed: " + failure.getClass().getSimpleName();
+                buildings = null;
+                builder = WorldStreamTileWriter.Exterior.builder();
+            }
+        }
+        WorldTileCreatures.Summary summary;
+        try {
+            summary = creatures.append(builder, tile, cancellation);
+            if (builder.placementCount() == 0) return new ExteriorCopy(null, 0, failed, note, summary);
+            try {
+                return new ExteriorCopy(builder.build(), count, failed, note, summary);
+            } catch (RuntimeException invalid) {
+                cancellation.check();
+                summary = WorldTileCreatures.Summary.failed(
+                        "creature models invalid: " + invalid.getMessage());
+            }
         } catch (CancellationException canceled) {
-            throw canceled;
-        } catch (WorldTerrainStreaming.Refusal refused) {
+            if (cancellation.isCanceled()) throw canceled;
+            summary = WorldTileCreatures.Summary.failed("creature models canceled outside this tile");
+        } catch (RuntimeException failure) {
             cancellation.check();
-            return new ExteriorCopy(null, 0, true, "exterior objects refused: " + refused.site());
-        } catch (RuntimeException failed) {
+            summary = WorldTileCreatures.Summary.failed(
+                    "creature models failed: " + failure.getClass().getSimpleName());
+        }
+        // The builder may hold a partial or invalid creature model: rebuild buildings alone.
+        if (buildings == null) return new ExteriorCopy(null, 0, failed, note, summary);
+        try {
+            var alone = WorldStreamTileWriter.Exterior.builder();
+            buildings.accept(alone);
+            if (alone.placementCount() == 0) return new ExteriorCopy(null, 0, failed, note, summary);
+            return new ExteriorCopy(alone.build(), alone.placementCount(), failed, note, summary);
+        } catch (CancellationException canceled) {
+            if (cancellation.isCanceled()) throw canceled;
+            return new ExteriorCopy(null, 0, true, "exterior objects failed: canceled outside this tile", summary);
+        } catch (RuntimeException failure) {
             cancellation.check();
             return new ExteriorCopy(
-                    null, 0, true, "exterior objects failed: " + failed.getClass().getSimpleName());
+                    null, 0, true, "exterior objects failed: " + failure.getClass().getSimpleName(), summary);
         }
     }
 
@@ -459,13 +617,29 @@ final class WorldStreamSourceBridge {
     private static String note(ExteriorSummary s) {
         return "exterior buildings drawn=" + s.buildings() + " omitted=" + s.buildingsOmitted()
                 + " doodads drawn=" + s.doodads() + " omitted=" + s.doodadsOmitted()
-                + " (tilted " + s.tilted() + ") surfaces omitted=" + s.surfacesOmitted();
+                + " (tilted " + s.tilted() + ") surfaces omitted=" + s.surfacesOmitted()
+                + " (unreadable " + s.unreadable() + ")";
     }
 
     /** capped receives the buildings and doodads dropped by the bridge's draw-budget check. */
     private static WorldStreamTileWriter.Exterior copy(
             WorldExteriorObjects.TileObjects set, Cancellation cancellation, int[] capped) {
         var builder = WorldStreamTileWriter.Exterior.builder();
+        copyInto(builder, set, cancellation, capped);
+        return builder.build();
+    }
+
+    /** Buildings drawn in a set (its other placements are doodads). */
+    private static int buildings(WorldExteriorObjects.TileObjects set) {
+        return set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN);
+    }
+
+    private static void copyInto(
+            WorldStreamTileWriter.Exterior.Builder builder,
+            WorldExteriorObjects.TileObjects set,
+            Cancellation cancellation,
+            int[] capped) {
+        capped[0] = capped[1] = 0;
         for (var image : set.images()) {
             cancellation.check();
             builder.image(image.width(), image.height(), image.rgba());
@@ -505,7 +679,6 @@ final class WorldStreamSourceBridge {
             builder.placement(placement.model(), placement.x(), placement.y(), placement.z(),
                     placement.scale(), placement.rotation().rowMajor());
         }
-        return builder.build();
     }
 
     /** Inert writer result: a detached validated copy; closing it releases nothing. */

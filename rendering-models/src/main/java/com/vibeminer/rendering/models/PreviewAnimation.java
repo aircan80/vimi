@@ -18,6 +18,14 @@ public final class PreviewAnimation {
     public static final int MAX_BONES = 256;
     public static final int MAX_KEYS = 262_144;
     public static final long MAX_DURATION_MILLIS = 600_000;
+
+    /**
+     * Global clocks loop independently of the played sequence and are sampled modulo their own
+     * length, so they are bounded only by the {@code int} key-time range. Character faces, for
+     * example, loop over clocks longer than {@link #MAX_DURATION_MILLIS}.
+     */
+    public static final long MAX_GLOBAL_MILLIS = Integer.MAX_VALUE;
+
     private static final int FRAMING_SAMPLES = 96;
 
     public enum Interpolation {
@@ -222,7 +230,7 @@ public final class PreviewAnimation {
         this.durationMillis = durationMillis;
         globalMillis = globalSequenceMillis.clone();
         for (long value : globalMillis) {
-            if (value < 0 || value > MAX_DURATION_MILLIS) {
+            if (value < 0 || value > MAX_GLOBAL_MILLIS) {
                 throw new IllegalArgumentException("Invalid global sequence duration");
             }
         }

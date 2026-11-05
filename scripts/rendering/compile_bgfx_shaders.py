@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -32,6 +33,11 @@ PROFILES = {
 SOURCES = ROOT / "rendering-bgfx/src/main/shaders"
 RESOURCES = ROOT / "rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders"
 MAX_DOWNLOAD = 32 << 20
+# BGFX_CONFIG_INSTANCE_DATA_FIRST_TEXCOORD in src/config.h at BGFX_COMMIT. The D3D11/D3D12 runtimes
+# bind per-instance data i_dataN to TEXCOORD(31-N). The old TEXCOORD7-N convention compiles, but
+# D3D11 then feeds those inputs from the per-vertex stream, so instanced draws silently vanish.
+INSTANCE_DATA_FIRST_TEXCOORD = 31
+INSTANCE_SEMANTIC = re.compile(r"\bi_data(\d+)\s*:\s*(\w+)")
 
 
 def digest(data):
@@ -81,6 +87,15 @@ def inputs():
     return {name: digest((SOURCES / name).read_bytes()) for name in names} | INCLUDES
 
 
+def check_instance_semantics(source_directory=None):
+    varying = (source_directory or SOURCES) / "varying.def.sc"
+    for match in INSTANCE_SEMANTIC.finditer(varying.read_text(encoding="utf-8")):
+        expected = f"TEXCOORD{INSTANCE_DATA_FIRST_TEXCOORD - int(match[1])}"
+        if match[2] != expected:
+            raise ValueError(f"i_data{match[1]} must use {expected} to match bgfx instance binding "
+                             f"(found {match[2]}): {varying.name}")
+
+
 def metadata():
     return {"format": "vimi-bgfx-shaders-v1", "lwjglVersion": LWJGL_VERSION,
             "bgfxApi": BGFX_API, "bgfxCommit": BGFX_COMMIT, "shadercVersion": TOOL_VERSION,
@@ -88,6 +103,7 @@ def metadata():
 
 
 def verify(directory=RESOURCES):
+    check_instance_semantics()
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
     expected = metadata()
     if any(manifest.get(key) != value for key, value in expected.items()):
@@ -117,6 +133,7 @@ def verify(directory=RESOURCES):
 def compile_profiles(directory, target, profiles, output=RESOURCES):
     if "dx11" in profiles and target != "windows-x64":
         raise ValueError("Generate DX11 shaders on Windows with the pinned shaderc and system D3DCompiler; cross-compilation requires unbundled Wine/D3D4Linux")
+    check_instance_semantics()
     compiler, include = tools(directory, target)
     result = metadata()
     prior = output / "manifest.json"

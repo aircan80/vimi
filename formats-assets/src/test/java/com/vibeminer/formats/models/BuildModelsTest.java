@@ -426,4 +426,33 @@ final class BuildModelsTest {
         assertEquals("MODEL_LIMIT", refused.code());
         assertEquals(opens, files.opens.get());
     }
+
+    @Test
+    void idleReadsReturnTracksOnlyForModelResidentBones() {
+        byte[] local = M2IdleAnimationTest.authored(274, a -> {});
+        AssetFilesFixture files =
+                new AssetFilesFixture()
+                        .add(123, CONTENT, local)
+                        .add(124, "5".repeat(32), appendChunk(local, "BFID", 701));
+        BuildModels models = new BuildModels(files);
+        var read = models.readModel(FileRef.id(123), Cancellation.NONE).join();
+        var idle = models.readIdle(read, Cancellation.NONE).join();
+        assertEquals(ReadState.READ, idle.state());
+        assertEquals(1000, idle.idle().durationMillis());
+        assertEquals(read.model(), idle.idle().model());
+        var external = models.readModel(FileRef.id(124), Cancellation.NONE).join();
+        var refused = models.readIdle(external, Cancellation.NONE).join();
+        assertEquals(ReadState.REJECTED, refused.state());
+        assertEquals("MODEL_UNSUPPORTED", refused.code());
+        assertNull(refused.idle());
+        assertEquals(files.opens.get(), files.streamCloses.get());
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        models.readIdle(
+                                new BuildModels(new AssetFilesFixture())
+                                        .readModel(FileRef.id(9), Cancellation.NONE)
+                                        .join(),
+                                Cancellation.NONE));
+    }
 }

@@ -392,6 +392,16 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                                                 + " could not be"
                                                                                 + " rendered.");
                                                     });
+                                            // Re-offer a prepared Stand; it must fit the
+                                            // textured sample, or the viewer says it does not.
+                                            if (idleFacts != null
+                                                    && idleFacts.animation() != null
+                                                    && idleFacts.variant().chrModelId()
+                                                            == model.chrModelId()) {
+                                                viewer.setAnimation(
+                                                        idleFacts.animation(),
+                                                        idleFacts.message());
+                                            }
                                             evidence.getChildren()
                                                     .setAll(
                                                             new Label(
@@ -440,7 +450,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                         }));
     }
 
-    /** Assesses Stand idle for the shown model and states why it is not offered. */
+    /** Assesses Stand idle for the shown model: offers it, or states why it is not offered. */
     private void requestIdle(RaceMediaTypes.Variant model, long request) {
         idleFacts = null;
         request(() -> handle.idle(raceId, model.chrModelId(), token))
@@ -453,6 +463,13 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                     if (idle.variant() == null
                             || idle.variant().chrModelId() != model.chrModelId()) {
                         viewer.animationUnavailable(null);
+                        return;
+                    }
+                    if (idle.state() == RaceTypes.State.READY) {
+                        // The viewer offers it only for the exact surface on screen.
+                        viewer.setAnimation(idle.animation(), idle.message());
+                        idleFacts = idle;
+                        showIdleEvidence();
                         return;
                     }
                     if (idle.state() != RaceTypes.State.UNSUPPORTED) {
