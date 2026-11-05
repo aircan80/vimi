@@ -16,6 +16,11 @@ import java.util.function.Consumer;
  * however long, can begin a record. A session that writes more than {@link #MAX_NOISE_BYTES} of
  * noise is ended as a flood.
  *
+ * <p>A noise line that contains {@code "WS2 "} or this session's nonce anywhere is a mangled record
+ * (a lost prefix byte, a byte-order mark, a spliced write), not unrelated output: it ends the
+ * session at once, so a lost credit or camera record cannot stall it silently. JVM and JFR text
+ * never carries the per-session nonce.
+ *
  * <p>One reader per session, used by its single status reader thread; the counters and sample may
  * be read from any thread.
  */
@@ -26,14 +31,27 @@ final class WorldStreamStdout {
 
     private final HelperStderrTail sample = new HelperStderrTail("stdout");
     private final Consumer<String> firstNoise;
+    private final Scanner prefix, nonce;
     private volatile long noiseBytes, noiseLines;
 
     /**
+     * @param nonce this session's nonce as its 32 lowercase hex digits, as records carry it
      * @param firstNoise called once, on the reader thread, when the first noise line ends (or the
      *     stream ends inside it), with its redacted text; it must not throw or block for long
      */
-    WorldStreamStdout(Consumer<String> firstNoise) {
+    WorldStreamStdout(String nonce, Consumer<String> firstNoise) {
+        if (!Objects.requireNonNull(nonce).matches("[0-9a-f]{32}")) {
+            throw new IllegalArgumentException("World status nonce");
+        }
+        this.prefix = new Scanner(PREFIX);
+        this.nonce = new Scanner(nonce.getBytes(StandardCharsets.US_ASCII));
         this.firstNoise = Objects.requireNonNull(firstNoise);
+    }
+
+    /** As records carry it: the nonce's high and low halves as 32 lowercase hex digits. */
+    static String hex(WorldStreamState.Nonce nonce) {
+        return java.util.HexFormat.of().toHexDigits(nonce.high())
+                + java.util.HexFormat.of().toHexDigits(nonce.low());
     }
 
     /** The next protocol record, skipping noise; null on EOF at a line boundary. */
@@ -123,7 +141,19 @@ final class WorldStreamStdout {
         }
         noiseBytes = total;
         sample.accept(bytes, 0, length);
+        boolean mangled = false;
+        for (int i = 0; i < length; i++) {
+            // Both scanners always see every byte, so neither loses its place.
+            mangled |= prefix.feed(bytes[i]) | nonce.feed(bytes[i]);
+        }
+        if (mangled) {
+            // The line itself reaches the log only through the redacted sample.
+            throw new IOException(
+                    "Mangled World status: protocol text inside an unrelated stdout line");
+        }
         if (ends) {
+            prefix.reset();
+            nonce.reset();
             if (length == 0 || bytes[length - 1] != '\n') {
                 // A stream that ends inside a noise line: close it in the sample too.
                 sample.accept(new byte[] {'\n'}, 0, 1);
@@ -131,6 +161,45 @@ final class WorldStreamStdout {
             if (++noiseLines == 1) {
                 firstNoise.accept(sample.snapshot().strip());
             }
+        }
+    }
+
+    /** Streaming substring search (Knuth-Morris-Pratt), so a noise line is never buffered. */
+    private static final class Scanner {
+        private final byte[] pattern;
+        private final int[] fallback;
+        private int state;
+
+        Scanner(byte[] pattern) {
+            this.pattern = pattern;
+            fallback = new int[pattern.length];
+            for (int i = 1, k = 0; i < pattern.length; i++) {
+                while (k > 0 && pattern[i] != pattern[k]) {
+                    k = fallback[k - 1];
+                }
+                if (pattern[i] == pattern[k]) {
+                    k++;
+                }
+                fallback[i] = k;
+            }
+        }
+
+        boolean feed(byte value) {
+            while (state > 0 && pattern[state] != value) {
+                state = fallback[state - 1];
+            }
+            if (pattern[state] == value) {
+                state++;
+            }
+            if (state == pattern.length) {
+                state = fallback[state - 1];
+                return true;
+            }
+            return false;
+        }
+
+        void reset() {
+            state = 0;
         }
     }
 

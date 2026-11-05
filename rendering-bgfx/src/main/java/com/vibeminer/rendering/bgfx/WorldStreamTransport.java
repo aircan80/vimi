@@ -571,7 +571,7 @@ public final class WorldStreamTransport {
         private final CompletableFuture<String> objectsDiagnostic = new CompletableFuture<>();
         // Protocol records from helper stdout; unrelated lines are counted and sampled, never
         // decoded. Their sample joins the abnormal-end record.
-        private final WorldStreamStdout stdout = new WorldStreamStdout(this::unrelatedStdout);
+        private final WorldStreamStdout stdout;
         private final CompletableFuture<String> stdoutDiagnostic = new CompletableFuture<>();
 
         private ObjectsOperation objectsOperation;
@@ -618,6 +618,9 @@ public final class WorldStreamTransport {
 
         private Session(WorldStreamEnvelope.Session descriptor) {
             this.descriptor = descriptor;
+            stdout =
+                    new WorldStreamStdout(
+                            WorldStreamStdout.hex(descriptor.nonce()), this::unrelatedStdout);
             state = new WorldStreamParentState(descriptor);
             frames = new WorldStreamParentFrameGate(descriptor);
         }
@@ -678,6 +681,7 @@ public final class WorldStreamTransport {
                                             true);
                                 } else {
                                     diagnosticReport.complete("");
+                                    cleanNoiseCounts();
                                 }
                             });
         }
@@ -1850,6 +1854,26 @@ public final class WorldStreamTransport {
                         .log(System.Logger.Level.WARNING, record);
             } catch (RuntimeException | Error ignored) {
                 // Diagnostic delivery cannot interrupt status reading.
+            }
+        }
+
+        /** After a clean close: how much unrelated stdout was ignored, at debug level, no tail. */
+        private void cleanNoiseCounts() {
+            long lines = stdout.noiseLines(), bytes = stdout.noiseBytes();
+            if (lines == 0 && bytes == 0) {
+                return;
+            }
+            try {
+                System.getLogger(WorldStreamTransport.class.getName())
+                        .log(
+                                System.Logger.Level.DEBUG,
+                                "World helper closed cleanly; unrelated stdout ignored: "
+                                        + lines
+                                        + (lines == 1 ? " line, " : " lines, ")
+                                        + bytes
+                                        + (bytes == 1 ? " byte" : " bytes"));
+            } catch (RuntimeException | Error ignored) {
+                // Diagnostic delivery cannot interrupt lifetime ownership.
             }
         }
 

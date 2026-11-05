@@ -23,7 +23,7 @@ class WorldStreamStdoutTest {
     private static final String CREDIT = "WS2 " + NONCE + " CREDIT 1 0 1\n";
 
     private final List<String> warnings = new ArrayList<>();
-    private final WorldStreamStdout stdout = new WorldStreamStdout(warnings::add);
+    private final WorldStreamStdout stdout = new WorldStreamStdout(NONCE, warnings::add);
 
     private static InputStream stream(String text) {
         return new ByteArrayInputStream(text.getBytes(StandardCharsets.ISO_8859_1));
@@ -85,49 +85,91 @@ class WorldStreamStdoutTest {
                         "WS2 " + NONCE + " CLOSED\r\n",
                         "WS2 " + NONCE + " CLOSÉD\n",
                         "WS2 " + "x".repeat(300) + "\n")) {
-            var reader = new WorldStreamStdout(warnings::add);
+            var reader = new WorldStreamStdout(NONCE, warnings::add);
             assertThrows(IOException.class, () -> reader.read(stream("JFR noise\n" + line)), line);
         }
         assertThrows(EOFException.class, () -> stdout.read(stream("WS2 " + NONCE + " CLO")));
     }
 
     @Test
-    void nothingInsideANoiseLineCanForgeARecord() throws Exception {
-        String longNoise = "n".repeat(1000) + " " + CLOSED.strip();
+    void nearMissesWithoutProtocolTextStayNoise() throws Exception {
         var input =
                 stream(
-                        "JFR: "
-                                + CLOSED
-                                + "x\r"
-                                + CLOSED
-                                + longNoise
-                                + "\n"
-                                + "WS2"
-                                + CLOSED.substring(3).replace(' ', '_')
+                        "WS2X starting\n"
                                 + "WS2\n"
                                 + "WS\n"
-                                + "ws2 "
-                                + NONCE
-                                + " CLOSED\n"
-                                + " WS2 "
-                                + NONCE
-                                + " CLOSED\n"
-                                + "\u0000WS2 "
-                                + NONCE
-                                + " CLOSED\n"
+                                + "ws2 lower case\n"
+                                + "WS2_"
+                                + NONCE.substring(0, 31)
+                                + "_CLOSED\n"
+                                + "n".repeat(1000)
+                                + " WS2"
+                                + "\n"
                                 + CREDIT);
         var messages = readAll(input);
         // Only the final line, which starts with the exact prefix, is a record.
         assertEquals(1, messages.size(), messages.toString());
         assertInstanceOf(WorldStreamStatus.Credit.class, messages.get(0));
-        assertEquals(9, stdout.noiseLines());
+        assertEquals(6, stdout.noiseLines());
+    }
+
+    @Test
+    void mangledRecordsFailFastInsteadOfBecomingNoise() {
+        String mangled = "Mangled World status";
+        for (String line :
+                List.of(
+                        // A spliced byte inside the prefix, or before it.
+                        "W\u0001S2 " + NONCE + " CREDIT 1 0 1\n",
+                        "xWS2 " + NONCE + " CLOSED\n",
+                        // A byte-order mark (UTF-8 bytes) before the prefix.
+                        "ï»¿WS2 " + NONCE + " CLOSED\n",
+                        // Prefix text or the nonce anywhere in an unrelated line.
+                        "JFR: " + CLOSED,
+                        "x\r" + CLOSED,
+                        " WS2 " + NONCE + " CLOSED\n",
+                        "\u0000WS2 " + NONCE + " CLOSED\n",
+                        "ws2 " + NONCE + " CLOSED\n",
+                        "WS2_" + NONCE + "_CLOSED\n",
+                        "lost prefix " + NONCE + " CREDIT 1 0 1\n",
+                        // Past the record length, and split across scan chunks.
+                        "n".repeat(1000) + " " + CLOSED,
+                        "n".repeat(254) + "WS2 tail\n",
+                        "n".repeat(240) + NONCE + "\n")) {
+            var reader = new WorldStreamStdout(NONCE, warnings::add);
+            var failure =
+                    assertThrows(
+                            IOException.class,
+                            () -> readAll(reader, stream("[jfr] started\n" + line + CREDIT)),
+                            line);
+            assertTrue(failure.getMessage().startsWith(mangled), line + ": " + failure);
+            // The line reaches diagnostics only through the redacted sample.
+            assertFalse(failure.getMessage().contains(NONCE), failure.getMessage());
+        }
+    }
+
+    @Test
+    void anotherSessionsNonceInNoiseIsNotThisSessionsRecord() throws Exception {
+        String other = "fedcba9876543210fedcba9876543210";
+        var messages = readAll(stream("trace " + other + "\n" + CLOSED));
+        assertEquals(1, messages.size());
+        assertEquals(1, stdout.noiseLines());
+    }
+
+    private static List<WorldStreamStatus.Message> readAll(
+            WorldStreamStdout reader, InputStream input) throws IOException {
+        var messages = new ArrayList<WorldStreamStatus.Message>();
+        WorldStreamStatus.Message message;
+        while ((message = reader.read(input)) != null) {
+            messages.add(message);
+        }
+        return messages;
     }
 
     @Test
     void streamEndingInsideNoiseIsAnOrdinaryEnd() throws Exception {
         assertNull(stdout.read(stream("Picked up options without a newline")));
         assertEquals(1, stdout.noiseLines());
-        var partial = new WorldStreamStdout(warnings::add);
+        var partial = new WorldStreamStdout(NONCE, warnings::add);
         assertNull(partial.read(stream("WS2")));
         assertEquals(1, partial.noiseLines());
     }

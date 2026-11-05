@@ -130,14 +130,19 @@ class WorldStreamTransportDiagnosticsTest {
     /** A session whose fake child writes {@code stdout(prefix)} and then exits. */
     private WorldStreamTransport.Session session(java.util.function.Function<String, String> stdout)
             throws Exception {
+        return session(stdout, StandardCharsets.US_ASCII);
+    }
+
+    private WorldStreamTransport.Session session(
+            java.util.function.Function<String, String> stdout, java.nio.charset.Charset charset)
+            throws Exception {
         var child = new WorldStreamLaunchOwnerTest.Child();
         return WorldStreamTransport.prepare(directory, spec)
                 .launch(
                         arguments -> {
                             child.input =
                                     new ByteArrayInputStream(
-                                            stdout.apply(prefix(arguments))
-                                                    .getBytes(StandardCharsets.US_ASCII));
+                                            stdout.apply(prefix(arguments)).getBytes(charset));
                             return child;
                         });
     }
@@ -152,9 +157,7 @@ class WorldStreamTransportDiagnosticsTest {
                                         + "SESSION TERRAIN_BASIC_V1\n"
                                         + "[0.011s][info][jfr,startup] Use jcmd JFR.dump"
                                         + " filename=/home/tester/rec.jfr\r\n"
-                                        + "JFR: "
-                                        + prefix
-                                        + "BOGUS\n"
+                                        + "WS2X near miss\n"
                                         + prefix
                                         + "CLOSED\n");
         session.initialized().get(5, TimeUnit.SECONDS);
@@ -184,6 +187,34 @@ class WorldStreamTransportDiagnosticsTest {
         assertTrue(report.contains("; unrelated stdout ignored: 1 line, "), report);
         assertTrue(report.contains("-Duser.home=<path>"), report);
         assertFalse(report.contains("tester"), report);
+    }
+
+    @Test
+    void mangledRecordFailsFastWithARedactedTail() throws Exception {
+        var session =
+                session(
+                        prefix ->
+                                prefix
+                                        + "SESSION TERRAIN_BASIC_V1\n"
+                                        // A byte-order mark spliced before a real record.
+                                        + "ï»¿"
+                                        + prefix
+                                        + "CREDIT 1 0 1\n"
+                                        + prefix
+                                        + "CLOSED\n",
+                        StandardCharsets.ISO_8859_1);
+        var failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> session.completion().get(5, TimeUnit.SECONDS));
+        assertTrue(
+                failure.getCause().getMessage().startsWith("Mangled World status"),
+                failure.getCause().getMessage());
+        session.terminatedAndDrained().get(5, TimeUnit.SECONDS);
+        String report = session.diagnosticReport().get(5, TimeUnit.SECONDS);
+        assertTrue(report.contains("failure: Mangled World status"), report);
+        assertTrue(report.contains("; unrelated stdout ignored: 0 lines, "), report);
+        assertTrue(report.contains("CREDIT 1 0 1"), report);
     }
 
     @Test

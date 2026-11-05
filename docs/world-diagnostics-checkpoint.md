@@ -61,9 +61,14 @@ rendering.
   malformed record or a foreign nonce still ends the session. Any other line (for
   example JVM or JFR startup text) is ignored. It is never decoded, and it ends
   only at a newline, so nothing inside it can begin a record. The first such line
-  of a session is logged once, redacted. The abnormal-end record adds the count
-  and a bounded, redacted tail of these lines. More than 1 MiB of them ends the
-  session with "World renderer flooded stdout".
+  of a session is logged once, redacted; with JFR on, that WARNING appears once
+  per World session. A clean close logs the counts at debug level. The
+  abnormal-end record adds the count and a bounded, redacted tail of these
+  lines. More than 1 MiB of them ends the session with "World renderer flooded
+  stdout". A noise line that contains `WS2 ` or the session's nonce anywhere is a
+  mangled record (a lost prefix byte, a byte-order mark, a spliced write), not
+  noise: it ends the session at once with "Mangled World status", so a lost
+  record cannot stall it silently.
 - **Original cause survives.** `WorldStreamGpuOwner` keeps the cause instead of
   replacing it. A queued request that is blocked because the previous World
   resources did not retire now fails with `RetirementBlocked`, which carries the
@@ -117,9 +122,10 @@ path and not this machine's identity is not recognised.
     CLOSED with no record, a no-child start failure, JFR-like text interleaved
     with valid records, a malformed or foreign-nonce record after noise, and a
     stdout flood.
-  - `WorldStreamStdoutTest` covers noise that tries to forge a record (a prefix
-    mid-line, after a lone CR or after a long line), partial prefixes, a stream
-    ending inside noise, and the flood cap.
+  - `WorldStreamStdoutTest` covers near-misses that stay noise, mangled records
+    that fail fast (a spliced byte, a byte-order mark, the prefix or nonce
+    mid-line, after a lone CR or past 256 bytes), another session's nonce, a
+    stream ending inside noise, and the flood cap.
 - `:gui:worldDiagnosticsTest` covers cause-chain bounds, redaction (including
   Unicode line separators, file-system exception paths and the user name),
   pure versus mixed cancellation chains, per-part throttling of degraded-part
