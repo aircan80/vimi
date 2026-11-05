@@ -173,12 +173,16 @@ class WorldTerrainLiquidsTest {
                             new Class<?>[] {BuildFiles.class},
                             (proxy, method, args) -> {
                                 var stop = cancelAtTableStat;
-                                if (stop != null
-                                        && (method.getName().equals("stat")
-                                                || method.getName().equals("statContent"))
-                                        && (((FileTypes.FileRef) args[0]).fileDataId() == 1371380
-                                                || ((FileTypes.FileRef) args[0]).fileDataId()
-                                                        == 1132538)) {
+                                // Only liquid validation's statContent cancels, so the
+                                // test fails if that validation reverts to a names-loading stat.
+                                boolean table =
+                                        method.getName().equals("statContent")
+                                                && (((FileTypes.FileRef) args[0]).fileDataId()
+                                                                == 1371380
+                                                        || ((FileTypes.FileRef) args[0])
+                                                                        .fileDataId()
+                                                                == 1132538);
+                                if (stop != null && table) {
                                     cancelAtTableStat = null;
                                     stop.cancel();
                                     return WorldSourceRefusalsTest.canceledStat(tableStop);
@@ -1292,7 +1296,9 @@ class WorldTerrainLiquidsTest {
                                             f.tile,
                                             stop,
                                             (b, t) -> (AutoCloseable) closes::incrementAndGet));
-            assertTrue(f.authored.cancelAtTableStat == null, "Liquid table stat was reached");
+            assertTrue(
+                    f.authored.cancelAtTableStat == null,
+                    "Liquid validation reached its statContent");
             assertEquals(
                     java.util.concurrent.CancellationException.class,
                     failure.getClass(),

@@ -120,10 +120,12 @@ final class WorldSourceRefusals {
      * On current JDKs (25 here) {@code CompletableFuture.join()} and {@code get()} rethrow a stored
      * cancellation as a new {@code CancellationException} whose cause is the stored one, so each
      * nested join adds a link. Accepts only a bounded chain of exact {@code CancellationException}
-     * links, none with suppressed failures, that ends in a cause-free link, and returns that
-     * original stop. Such a chain carries nothing but cancellation, so it cannot hide an auxiliary
-     * failure. A subclass is rejected before any of its accessors run; any other cause, a
-     * suppressed failure, a cycle or an over-bound chain returns null.
+     * links, none with suppressed failures, that ends in a cause-free link. A lone cause-free stop
+     * is returned unchanged; a longer chain returns a fresh cause-free stop. Such a chain carries
+     * nothing but cancellation, so it cannot hide an auxiliary failure. A subclass is rejected
+     * before any of its accessors run; any other cause, a suppressed failure, a cycle or an
+     * over-bound chain returns null. The GUI applies the same rule in {@code
+     * com.vimi.gui.CleanCancellation}; keep the two in step.
      */
     private static CancellationException cancellationOrigin(CancellationException failure) {
         Throwable link = failure;
@@ -134,7 +136,9 @@ final class WorldSourceRefusals {
             }
             var cause = link.getCause();
             if (cause == null) {
-                return (CancellationException) link;
+                // A lone stop is returned as is. A chain's deepest link is the instance stored in
+                // a shared future, so return a fresh cause-free stop that no other joiner holds.
+                return depth == 0 ? failure : new CancellationException();
             }
             link = cause;
         }

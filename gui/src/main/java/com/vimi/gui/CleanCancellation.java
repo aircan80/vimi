@@ -8,7 +8,9 @@ import java.util.concurrent.ExecutionException;
  * Recognizes a failure that carries nothing but a standard cancellation. On current JDKs (25
  * here) {@code CompletableFuture.join()} and {@code get()} rethrow a stored cancellation as a new
  * {@code CancellationException} whose cause is the stored one, so nested joins build a chain of
- * cancellations. Such a chain is still routine cancellation.
+ * cancellations. Such a chain is still routine cancellation. The World source boundary applies
+ * the same rule in {@code com.vibeminer.concepts.world.WorldSourceRefusals#cancellationOrigin};
+ * keep the two in step.
  */
 final class CleanCancellation {
     private static final int LINKS = 8;

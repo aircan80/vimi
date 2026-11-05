@@ -668,8 +668,8 @@ class WorldSourceRefusalsTest {
         assertEquals("join", nameJoin.getMessage());
         assertSame(original, nameJoin.getCause());
 
-        assertSame(original, WorldSourceRefusals.boundary(failure));
-        assertSame(original, WorldSourceRefusals.boundary((RuntimeException) statJoin));
+        assertFreshStop(WorldSourceRefusals.boundary(failure), original);
+        assertFreshStop(WorldSourceRefusals.boundary((RuntimeException) statJoin), original);
         var plain = new CancellationException();
         assertSame(plain, WorldSourceRefusals.boundary(plain));
     }
@@ -747,11 +747,19 @@ class WorldSourceRefusalsTest {
         while (origin.getCause() != null) {
             origin = origin.getCause();
         }
-        assertSame(origin, WorldSourceRefusals.boundary(deepest));
+        assertFreshStop(WorldSourceRefusals.boundary(deepest), origin);
         var overBound = new CancellationException("join");
         overBound.initCause(deepest);
         assertFatal(overBound);
         assertFatal(cancellationChain(10_000));
+    }
+
+    /** A validated chain becomes a fresh cause-free stop, never the shared stored instance. */
+    private static void assertFreshStop(RuntimeException result, Throwable stored) {
+        assertEquals(CancellationException.class, result.getClass());
+        assertTrue(result.getCause() == null);
+        assertEquals(0, result.getSuppressed().length);
+        assertFalse(result == stored, "The stored stop is shared with every joiner");
     }
 
     private static void assertFatal(RuntimeException failure) {
