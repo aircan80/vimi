@@ -461,8 +461,7 @@ public final class SpellTexts implements AutoCloseable {
      * The spell's single DifficultyID 0 SpellAuraOptions row (layout 95F4D5E1, verified field
      * names): ProcChance for {@code $h} (1-100, not procs per minute), ProcCharges for {@code $n}
      * and CumulativeAura for {@code $u} (each 1-1000; a field missing from the layout stays
-     * unknown). When the lookup is partial, a second DifficultyID 0 row could be hidden, so {@code
-     * $n} and {@code $u} are refused; {@code $h} keeps its readable-records rule.
+     * unknown). A partial lookup uses the readable records for all three, with a notice.
      */
     private AuraOptions auraOptions(
             long spell, TableTypes.Priority priority, Cancellation token, List<String> issues) {
@@ -506,14 +505,13 @@ public final class SpellTexts implements AutoCloseable {
                             field,
                             options.value(selected, field)));
         }
-        String partial =
-                lookup.complete()
-                        ? null
-                        : "SpellAuraOptions is PARTIAL; another DifficultyID 0 row may be hidden";
+        // A PARTIAL table (70790 SpellAuraOptions always is: some sections are encrypted)
+        // could hide another DifficultyID 0 row, for $n and $u as for $h. Refusing would drop
+        // every such value, so all three use the readable records, with the notice above.
         return new AuraOptions(
                 chance(options, selected, identity),
-                count(options, selected, identity, "ProcCharges", "proc charges", partial),
-                count(options, selected, identity, "CumulativeAura", "maximum stacks", partial));
+                count(options, selected, identity, "ProcCharges", "proc charges"),
+                count(options, selected, identity, "CumulativeAura", "maximum stacks"));
     }
 
     private static AuraOptions failed(String issue) {
@@ -553,8 +551,7 @@ public final class SpellTexts implements AutoCloseable {
             Db2Types.Row selected,
             List<Source> identity,
             String field,
-            String what,
-            String partial) {
+            String what) {
         var sources = new ArrayList<>(identity);
         if (options.field(field, false) < 0) {
             return new SpellText.Value(
@@ -563,9 +560,6 @@ public final class SpellTexts implements AutoCloseable {
         sources.add(
                 new Source(
                         "SpellAuraOptions", selected.id(), field, options.value(selected, field)));
-        if (partial != null) {
-            return new SpellText.Value(null, sources, partial);
-        }
         var value = options.number(selected, field);
         if (value == null
                 || value.scale() > 0

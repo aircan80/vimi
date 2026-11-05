@@ -597,8 +597,9 @@ final class SpellTextsTest {
                         List.of(),
                         TableTypes.State.PARTIAL,
                         List.of());
-        assertEquals("A 30% chance for ? swings.", partial.display());
-        assertTrue(partial.substitutions().get(1).issue().contains("may be hidden"));
+        // Like $h, $n uses the readable records of a PARTIAL table, with a notice.
+        assertEquals("A 30% chance for 3 swings.", partial.display());
+        assertTrue(partial.issues().stream().anyMatch(i -> i.contains("PARTIAL")));
         var missing = procPreview("Next $n swings.", List.of(row(7, "7", "0", "30", "0", "16929")));
         assertEquals("Next ? swings.", missing.display());
         assertEquals(
