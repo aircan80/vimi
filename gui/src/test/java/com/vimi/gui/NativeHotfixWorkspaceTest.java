@@ -420,6 +420,12 @@ public final class NativeHotfixWorkspaceTest {
             check(fixture.work.tablesOptions(status, NativePreparationWork.TableRole.WORKSPACE).hotfix() == null,
                     "No hotfix binding before the snapshot loads");
             check(fixture.work.hotfixIdentity() == null, "No hotfix identity before the snapshot loads");
+            java.util.List<Object> base = java.util.List.of("authored-base-input");
+            String baseOnly =
+                    com.vibeminer.formats.internal.Json.sha256(
+                            com.vibeminer.formats.internal.Json.bytes(base));
+            check(fixture.work.itemCatalogInputs(base).equals(baseOnly),
+                    "Base-only item catalog identity is unchanged");
             ensure(fixture.work, Cancellation.NONE);
             var preparation =
                     fixture.work.tablesOptions(status, NativePreparationWork.TableRole.PREPARATION).hotfix();
@@ -435,6 +441,13 @@ public final class NativeHotfixWorkspaceTest {
             check(fixture.work.hotfixIdentity() != null
                             && fixture.work.hotfixIdentity().contains(workspace.inputFingerprint()),
                     "Derived workspace caches are keyed by the hotfix input");
+            var overlaid = new java.util.ArrayList<Object>(base);
+            overlaid.add(fixture.work.hotfixIdentity());
+            check(!fixture.work.itemCatalogInputs(base).equals(baseOnly)
+                            && fixture.work.itemCatalogInputs(base).equals(
+                                    com.vibeminer.formats.internal.Json.sha256(
+                                            com.vibeminer.formats.internal.Json.bytes(overlaid))),
+                    "Item catalog identity includes the loaded hotfix input");
         }
     }
 }

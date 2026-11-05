@@ -781,8 +781,10 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                 definitionsAllowed ? com.vibeminer.formats.definitions.SupplementalDefinitions.IDENTITY : "supplemental-disabled",
                 new com.vibeminer.formats.db2.Db2Types.Limits().toString(),
                 keyFingerprint);
-        String hotfix = hotfixIdentity();
-        return hotfix == null ? identity : identity + "\n" + hotfix;
+        // The known-table inventory holds base DB2 outcomes; the hotfix overlay is applied on
+        // top of it when the workspace opens. Keys delivered by a hotfix already change the
+        // key fingerprint above, so a new cache snapshot never forces a full re-assessment.
+        return identity;
     }
 
     /** Loaded hotfix input and decoder revision, or null while the workspace reads base data. */
@@ -1025,6 +1027,20 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     }
 
     private String itemCatalogInputs() {
+        return itemCatalogInputs(baseItemCatalogInputs());
+    }
+
+    /** Item grids and stats derive from the published effective tables. */
+    String itemCatalogInputs(List<Object> base) {
+        var inputs = new ArrayList<Object>(base);
+        // Each hotfix input needs its own entries; base-only identities stay unchanged.
+        String hotfix = hotfixIdentity();
+        if (hotfix != null) inputs.add(hotfix);
+        return com.vibeminer.formats.internal.Json.sha256(
+                com.vibeminer.formats.internal.Json.bytes(inputs));
+    }
+
+    private List<Object> baseItemCatalogInputs() {
         var available = effectiveKeys();
         var fingerprints = available.fingerprint();
         var inputs =
@@ -1038,12 +1054,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                                 opened.metadata().rootContentKey().hex(),
                                 opened.metadata().encodingContentKey().hex(),
                                 fingerprints));
-        // Item grids and stats derive from the published effective tables, so each hotfix
-        // input needs its own entries; base-only identities stay unchanged.
-        String hotfix = hotfixIdentity();
-        if (hotfix != null) inputs.add(hotfix);
-        return com.vibeminer.formats.internal.Json.sha256(
-                com.vibeminer.formats.internal.Json.bytes(inputs));
+        return inputs;
     }
 
     private static void appendWarm(
