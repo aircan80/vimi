@@ -12,6 +12,11 @@ import org.lwjgl.system.MemoryUtil;
 final class WorldStreamPackedTile implements AutoCloseable {
     static final int INSTANCE_BYTES = 48, MAX_WATER_TRIANGLES = 16384;
     static final int MAX_GEOMETRY_BYTES = (65536 + MAX_WATER_TRIANGLES) * INSTANCE_BYTES;
+
+    /** One credit's largest terrain input: geometry plus the atlas with its mip chain. */
+    static final long MAX_PAYLOAD_BYTES =
+            (long) MAX_GEOMETRY_BYTES + WorldStreamAtlasMips.CHAIN_BYTES;
+
     // Untextured diagnostic teal (sRGB 20,115,148); not a claim of client liquid appearance.
     static final float WATER_R = 20, WATER_G = 115, WATER_B = 148;
 
@@ -174,13 +179,19 @@ final class WorldStreamPackedTile implements AutoCloseable {
             }
             var pixels = input.atlas();
             if (pixels != null) {
-                atlas = MemoryUtil.memAlloc(WorldStreamTileFile.ATLAS_BYTES);
+                if (pixels.remaining() != WorldStreamTileFile.ATLAS_BYTES) {
+                    throw new IllegalArgumentException("Packed atlas size");
+                }
+                // Level 0 starts as the qualified atlas. The worker adds the filtered mip chain and
+                // fills the RGB of uncovered (alpha 0) texels, at every level, with nearby ground.
+                atlas = MemoryUtil.memAlloc(WorldStreamAtlasMips.CHAIN_BYTES);
                 for (int at = 0; at < pixels.remaining(); at += 64 << 10) {
                     check(canceled);
                     int count = Math.min(64 << 10, pixels.remaining() - at);
                     atlas.put(pixels.duplicate().position(at).limit(at + count));
                 }
-                atlas.flip();
+                atlas.clear();
+                WorldStreamAtlasMips.build(atlas, canceled);
             }
             check(canceled);
             var result =
