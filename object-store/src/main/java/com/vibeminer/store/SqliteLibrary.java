@@ -37,6 +37,7 @@ final class SqliteLibrary {
                                                     : "libsqlite3.so.0",
                                     Arena.global());
             requireSymbols(lookup);
+            SqliteRuntime.initialize(lookup);
             return new Result(lookup, null);
         } catch (RuntimeException | LinkageError error) {
             return new Result(
@@ -45,7 +46,8 @@ final class SqliteLibrary {
                             "OBJECT_STORE_NATIVE_LIBRARY",
                             "Cannot load SQLite. Install a SQLite shared library matching the JDK architecture "
                                     + "or set -Dvibeminer.sqlite.library to its absolute path "
-                                    + "(-PsqliteLibrary for Gradle tests). Restart the process after correcting it.",
+                                    + "(-PsqliteLibrary for Gradle tests). Restart the process after correcting it."
+                                    + SqliteRuntime.detail(error),
                             error));
         }
     }
@@ -77,8 +79,7 @@ final class SqliteLibrary {
                         "sqlite3_progress_handler",
                         "sqlite3_get_autocommit")) {
             if (lookup.find(symbol).isEmpty()) {
-                throw new IllegalArgumentException(
-                        "SQLite library lacks required symbol " + symbol);
+                throw new SqliteRuntime.Unusable("SQLite library lacks required symbol " + symbol);
             }
         }
     }

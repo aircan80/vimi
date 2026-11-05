@@ -94,12 +94,33 @@ $dotnetExecutable = (Resolve-Path ..\vibeminer\.local\toolchains\dotnet\dotnet.e
   "-PsqliteLibrary=$sqliteLibrary" "-Pdotnet=$dotnetExecutable"
 ```
 
-The first build downloads dependencies. Record counts and skips. POSIX permission
-cases intentionally skip on Windows; complete the read-only-media criteria using
-an isolated directory with native ACL/media enforcement, with permissions restored
-on every exit. Have the agent prepare that check; do not change profile-wide ACLs.
-Default-name SQLite lookup is not covered by CI's explicit-DLL setup and needs
-separate clean-machine evidence. See [native-sqlite.md](native-sqlite.md).
+C# compatibility is not required; the interoperability suite is optional evidence.
+Its C# harness finds the reference at `..\vibeminer` relative to the `vimi`
+checkout. A worktree in another folder needs a sibling directory junction to it
+(`New-Item -ItemType Junction`); otherwise `buildCsharpInterop` fails with CS0246.
+
+The first build downloads dependencies. Record counts and skips. Only the two
+Unix lock-file mode cases in `WriterLockTest` should skip on Windows.
+`ReadOnlyMediaTest` enforces read-only media with native ACLs: it prepends a deny
+entry for the current user (write, append, attribute, delete) to each file and
+directory of the test's own temporary store, checks that creating a file is
+refused, and restores the original ACLs on every exit. It never touches other
+directories. If a run is killed mid-test, its `junit-*` folder stays under
+`object-store\build\tmp\integrationTest` (Gradle points `java.io.tmpdir` there)
+with the deny entries in place. Its owner is the current user, or the
+Administrators group on an elevated account; either way the owner's implicit
+WRITE_DAC right allows recovery. Reset the folder's ACLs, then delete it:
+
+```powershell
+icacls <folder> /reset /T /C
+```
+
+`SqliteLibraryTest` checks default-name `sqlite3.dll` startup by putting the
+`-PsqliteLibrary` DLL's directory first on a child JVM's `PATH`. A companion case
+first starts a child with no `PATH` change and expects the actionable
+`OBJECT_STORE_NATIVE_LIBRARY` failure. If `sqlite3.dll` is already found in the
+JDK, System32, Windows or working directory, or on the inherited `PATH`, both
+cases skip. That is not a pristine-machine installation test. See [native-sqlite.md](native-sqlite.md).
 
 ## Start the agent
 
