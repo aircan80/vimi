@@ -2,7 +2,6 @@ package com.vimi.gui;
 
 import com.vibeminer.formats.audio.PcmClip;
 
-import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -81,17 +80,16 @@ final class VoicePlayback implements AutoCloseable {
                             String problem = null;
                             try {
                                 if (closed || work.cancelled) return;
+                                // clip.bytes() is a copy, so a downmix may rewrite it in place.
                                 byte[] bytes = clip.bytes();
+                                int length = bytes.length;
                                 // A stereo clip on a mono-only device plays downmixed to mono.
                                 int channels =
                                         clip.channels() == 2
                                                 ? AudioOutput.lineChannels(2, device.getAsInt())
                                                 : clip.channels();
                                 if (channels < clip.channels())
-                                    bytes =
-                                            Arrays.copyOf(
-                                                    bytes,
-                                                    AudioOutput.downmix(bytes, bytes.length));
+                                    length = AudioOutput.downmix(bytes, length);
                                 var format =
                                         new AudioFormat(
                                                 clip.sampleRate(), 16, channels, true, true);
@@ -108,12 +106,12 @@ final class VoicePlayback implements AutoCloseable {
                                     }
                                 }
                                 for (int offset = 0;
-                                        offset < bytes.length && !closed && !work.cancelled; ) {
+                                        offset < length && !closed && !work.cancelled; ) {
                                     int n =
                                             line.write(
                                                     bytes,
                                                     offset,
-                                                    Math.min(4096, bytes.length - offset));
+                                                    Math.min(4096, length - offset));
                                     if (n <= 0) break;
                                     offset += n;
                                 }

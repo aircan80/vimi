@@ -34,7 +34,11 @@ final class AudioOutput {
         return supported.test(MONO) ? 1 : 0;
     }
 
-    /** The default output device's channels; 0 when the sound system cannot be asked. */
+    /**
+     * The default output device's channels; 0 when the sound system cannot be asked. {@code
+     * isLineSupported} asks every installed mixer, which matches {@code getSourceDataLine}: it
+     * opens a line on whichever mixer supports the requested format.
+     */
     static int channels() {
         try {
             return channels(format -> AudioSystem.isLineSupported(
