@@ -569,6 +569,10 @@ public final class WorldStreamTransport {
         private final java.util.concurrent.atomic.AtomicLong rendererObjectsFailures =
                 new java.util.concurrent.atomic.AtomicLong();
         private final CompletableFuture<String> objectsDiagnostic = new CompletableFuture<>();
+        // Protocol records from helper stdout; unrelated lines are counted and sampled, never
+        // decoded. Their sample joins the abnormal-end record.
+        private final WorldStreamStdout stdout = new WorldStreamStdout(this::unrelatedStdout);
+        private final CompletableFuture<String> stdoutDiagnostic = new CompletableFuture<>();
 
         private ObjectsOperation objectsOperation;
 
@@ -1533,7 +1537,7 @@ public final class WorldStreamTransport {
                 throws Exception {
             try {
                 while (true) {
-                    var message = WorldStreamStatus.read(process.getInputStream());
+                    var message = stdout.read(process.getInputStream());
                     if (message == null) {
                         if (!closedStatus) {
                             throw new IOException("World status EOF before CLOSED");
@@ -1830,6 +1834,30 @@ public final class WorldStreamTransport {
             return objectsDiagnostic.copy();
         }
 
+        /**
+         * Once per session, on the status reader: the helper wrote a line that is not protocol (for
+         * example JVM or JFR startup text). It is ignored; this warning names it, redacted.
+         */
+        private void unrelatedStdout(String firstLine) {
+            try {
+                String record =
+                        "World helper wrote output unrelated to its protocol on stdout; ignoring"
+                                + " it (first line: "
+                                + firstLine
+                                + ")";
+                stdoutDiagnostic.complete(record);
+                System.getLogger(WorldStreamTransport.class.getName())
+                        .log(System.Logger.Level.WARNING, record);
+            } catch (RuntimeException | Error ignored) {
+                // Diagnostic delivery cannot interrupt status reading.
+            }
+        }
+
+        /** Test observation of the session's one unrelated stdout warning. */
+        CompletableFuture<String> stdoutDiagnostic() {
+            return stdoutDiagnostic.copy();
+        }
+
         private String stderrSuffix() {
             return !stderrAttached
                     ? "; helper stderr not captured"
@@ -1870,6 +1898,7 @@ public final class WorldStreamTransport {
                                         WorldStreamLaunchOwner.Handle.detached(cause)
                                                 .getMessage()));
             }
+            text.append(stdout.suffix());
             text.append(stderrSuffix());
             String record = text.toString();
             try {
