@@ -243,7 +243,7 @@ final class WorldStreamSourceController {
     private boolean historicalRaster;
     private WorldFormats.Tile creditTarget;
     private boolean retryCommit;
-    private long commitRetryAt, commitRetryCapacity, commitIssuedCapacity;
+    private long commitRetryAt, commitRetryCapacity;
 
     WorldStreamSourceController(
             Request request, GpuStarter starter, Events events, Consumer<Runnable> fxPost) {
@@ -313,13 +313,6 @@ final class WorldStreamSourceController {
             demandRevision++;
         }
         kick();
-    }
-
-    /** Records the capacity revision before the transport can refuse this commit. */
-    private java.util.concurrent.CompletableFuture<WorldStreamTransport.CommitReceipt> issueCommit(
-            long policy, WorldStreamTransport.Resident[] ordered) {
-        commitIssuedCapacity = session.capacityRevision();
-        return session.commit(policy, ordered);
     }
 
     void pulse() {
@@ -656,7 +649,7 @@ final class WorldStreamSourceController {
         }
         if(retryCommit) {
             if(session.capacityRevision()==commitRetryCapacity && clock.getAsLong()-commitRetryAt<RETRY_NANOS) return;
-            commit=issueCommit(camera.policy(),committing.stream().map(Entry::resident)
+            commit=session.commit(camera.policy(),committing.stream().map(Entry::resident)
                     .toArray(WorldStreamTransport.Resident[]::new));
             retryCommit=false;
             commit.whenComplete((ignored,failure)->kick());
@@ -678,10 +671,7 @@ final class WorldStreamSourceController {
                 commit=null;
                 retryCommit=true;
                 commitRetryAt=clock.getAsLong();
-                // Capacity observed when the refused commit was issued, not now: a retirement that
-                // landed between the refusal and this step must still count as a change, or a
-                // frozen clock (and in production, 500 ms) waits for a revision already seen.
-                commitRetryCapacity=commitIssuedCapacity;
+                commitRetryCapacity=session.capacityRevision();
                 publish(Phase.WAITING_CAPACITY,"Waiting for commit input retirement");
                 return;
             }
@@ -712,7 +702,7 @@ final class WorldStreamSourceController {
             staged = null;
             committing = List.copyOf(target);
             commit =
-                    issueCommit(
+                    session.commit(
                             latest.policy(),
                             target.stream()
                                     .map(Entry::resident)
@@ -761,7 +751,7 @@ final class WorldStreamSourceController {
                 creditTarget=wanted.stream().filter(tile->!unavailable.containsKey(key(tile))
                         && current.stream().noneMatch(entry->same(tile,entry.resident()))).findFirst().orElse(null);
                 committing=List.copyOf(subset);
-                commit=issueCommit(camera.policy(),subset.stream().map(Entry::resident)
+                commit=session.commit(camera.policy(),subset.stream().map(Entry::resident)
                         .toArray(WorldStreamTransport.Resident[]::new));
                 commit.whenComplete((ignored,failure)->kick());
                 publish(Phase.COMMITTING,"Making room for nearest terrain");
