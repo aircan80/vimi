@@ -410,7 +410,7 @@ final class WorldStreamTileFileTest {
     }
 
     @Test
-    void exactHandleReadSurvivesPathReplacementAndRejectsSymlinkOrLengthChanges() throws Exception {
+    void exactHandleReadSurvivesPathReplacementAndRejectsLengthChanges() throws Exception {
         var tile = triangle();
         var expected =
                 WorldStreamTileFile.write(directory, header(tile, false), tile, null, () -> false);
@@ -436,12 +436,6 @@ final class WorldStreamTileFileTest {
                         });
         assertNotNull(decoded);
         Files.delete(path());
-        Path original = directory.resolve("actual");
-        Files.write(original, new byte[expected.length()]);
-        Files.createSymbolicLink(path(), original);
-        assertThrows(
-                IOException.class, () -> WorldStreamTileFile.read(path(), expected, () -> false));
-        Files.delete(path());
         for (int length : new int[] {expected.length() - 1, expected.length() + 1}) {
             Files.write(path(), new byte[length]);
             assertThrows(
@@ -450,6 +444,21 @@ final class WorldStreamTileFileTest {
         }
         Files.delete(path());
         Files.createDirectory(path());
+        assertThrows(
+                IOException.class, () -> WorldStreamTileFile.read(path(), expected, () -> false));
+    }
+
+    @Test
+    void exactHandleReadRejectsSymbolicLinks() throws Exception {
+        SymbolicLinks.assumeAvailable(directory);
+        var tile = triangle();
+        var expected =
+                WorldStreamTileFile.write(directory, header(tile, false), tile, null, () -> false);
+        assertNotNull(WorldStreamTileFile.read(path(), expected, () -> false));
+        // The link targets the valid packet, so the link itself is the only reason to reject it.
+        Path original = directory.resolve("actual");
+        Files.move(path(), original);
+        Files.createSymbolicLink(path(), original);
         assertThrows(
                 IOException.class, () -> WorldStreamTileFile.read(path(), expected, () -> false));
     }
