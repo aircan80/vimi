@@ -26,7 +26,8 @@ public final class AuthoredWorldControllerChild {
         try (var frames =
                 WorldFrameFileV2.open(directory.resolve("frames.wsf"), nonce, descriptor.scope())) {
             var state = new State(prefix);
-            state.send("SESSION TERRAIN_BASIC_V1");
+            boolean exteriors = descriptor.exteriorObjects();
+            state.send(exteriors ? "SESSION TERRAIN_EXTERIOR_V1" : "SESSION TERRAIN_BASIC_V1");
             state.grant();
             WorldStreamControl.Camera camera = null;
             long content = 0, sequence = 0, policy = 0;
@@ -67,6 +68,9 @@ public final class AuthoredWorldControllerChild {
                                     () -> false)) {
                         var h = payload.header();
                         state.tileY.put(offer.lease().slot(),h.y());
+                        state.tileX.put(offer.lease().slot(),h.x());
+                        state.leases.put(offer.lease().slot(),offer.lease());
+                        state.transactions.put(offer.lease().slot(),offer.transaction());
                         int covered = 0;
                         for (long word : h.coverage()) covered += Long.bitCount(word);
                         state.send("INPUT_CONSUMED " + offer.transaction() + " TILE");
@@ -84,7 +88,8 @@ public final class AuthoredWorldControllerChild {
                                                 ? 1
                                                 : 2)
                                         + " "
-                                        + covered);
+                                        + covered
+                                        + (exteriors ? " 0" : ""));
                     }
                 } else if (command instanceof WorldStreamControl.Commit next) {
                     var commit =
@@ -127,6 +132,51 @@ public final class AuthoredWorldControllerChild {
                     state.canceled(cancel.transaction(), cancel.lease());
                 } else if (command instanceof WorldStreamControl.Cancel cancel) {
                     state.canceled(cancel.transaction(), state.lease);
+                } else if (command instanceof WorldStreamControl.LateObjects late) {
+                    // Reads the actual objects file for its resident tile; attaches only while
+                    // that exact lease is still committed. An authored control file fails it.
+                    String outcome;
+                    int slot = late.lease().slot();
+                    if (Files.exists(directory.getParent().resolve("authored-fail-objects"))) {
+                        outcome = "FAILED";
+                    } else if (!state.members.contains(slot)
+                            || !late.lease().equals(state.leases.get(slot))
+                            || state.transactions.getOrDefault(slot, 0L) != late.transaction()) {
+                        outcome = "DROPPED";
+                    } else {
+                        var data =
+                                WorldStreamObjectsFile.read(
+                                        directory.resolve(
+                                                WorldStreamObjectsFile.basename(late.transaction())),
+                                        new WorldStreamObjectsFile.Identity(
+                                                nonce,
+                                                descriptor.scope(),
+                                                late.transaction(),
+                                                late.lease(),
+                                                state.tileX.get(slot),
+                                                state.tileY.get(slot)),
+                                        new WorldStreamObjectsFile.Reference(
+                                                late.length(), late.sha256()),
+                                        () -> false);
+                        outcome = data.placementCount() > 0 ? "ATTACHED" : "FAILED";
+                        if (outcome.equals("ATTACHED")) state.objects.add(slot);
+                    }
+                    Files.writeString(
+                            directory.getParent().resolve("authored-objects.log"),
+                            state.tileY.getOrDefault(slot, -1) + " " + outcome + "\n",
+                            java.nio.file.StandardOpenOption.CREATE,
+                            java.nio.file.StandardOpenOption.APPEND);
+                    state.send(
+                            "OBJECTS_DONE "
+                                    + late.transaction()
+                                    + " "
+                                    + late.lease().serial()
+                                    + " "
+                                    + slot
+                                    + " "
+                                    + late.lease().generation()
+                                    + " "
+                                    + outcome);
                 } else if (command instanceof WorldStreamControl.Close) {
                     state.send("CLOSED");
                     return;
@@ -167,6 +217,10 @@ public final class AuthoredWorldControllerChild {
         final String prefix;
         final Set<Integer> members = new HashSet<>();
         final java.util.Map<Integer,Integer> tileY=new java.util.HashMap<>();
+        final java.util.Map<Integer,Integer> tileX=new java.util.HashMap<>();
+        final java.util.Map<Integer,WorldStreamState.Lease> leases=new java.util.HashMap<>();
+        final java.util.Map<Integer,Long> transactions=new java.util.HashMap<>();
+        final Set<Integer> objects = new HashSet<>();
         final long[] generations = new long[10];
         long serial;
         boolean available;

@@ -48,6 +48,11 @@ final class WorldStreamState {
     private final Nonce nonce;
     private final long[] generations = new long[SLOTS];
     private final int[] coordinates = new int[SLOTS];
+    // Late objects lane: the tile transaction of each slot's current generation, whether that
+    // generation already holds objects, and the one in-flight OBJECTS target.
+    private final long[] transactions = new long[SLOTS];
+    private final boolean[] objects = new boolean[SLOTS];
+    private Lease objectsLease;
     private List<Lease> active = List.of();
     private Lease incoming;
     private Phase phase;
@@ -116,6 +121,7 @@ final class WorldStreamState {
             return Result.INVALID_TABLE;
         }
         offerTransaction = tx;
+        transactions[lease.slot()] = tx;
         coordinates[lease.slot()] = known ? tileY * 64 + tileX : -1;
         decoderOwned = true;
         inputConsumed = false;
@@ -306,6 +312,70 @@ final class WorldStreamState {
         return Result.OK;
     }
 
+    /**
+     * Admits one late objects command. OK only for the exact active lease that tile transaction
+     * staged, once per generation; STALE means the parent's resident is no longer drawn here and
+     * the command is answered DROPPED without reading its file. BUSY is a credit violation.
+     */
+    Result objectsOffer(Nonce session, long tx, Lease lease) {
+        var result = session(session);
+        if (result != Result.OK) {
+            return result;
+        }
+        if (objectsLease != null) {
+            return Result.BUSY;
+        }
+        if (lease == null || !objectsTarget(tx, lease)) {
+            return Result.STALE;
+        }
+        objectsLease = lease;
+        return Result.OK;
+    }
+
+    /** Whether the in-flight objects may still attach: its generation is active and empty. */
+    boolean objectsLive(Lease lease) {
+        return !stopping
+                && Objects.equals(objectsLease, lease)
+                && active.contains(lease)
+                && !objects[lease.slot()];
+    }
+
+    /**
+     * Retires the in-flight objects command. {@code attached} records that the renderer actually
+     * attached them to this generation; a later generation of the slot starts empty again.
+     */
+    Result objectsDone(Lease lease, boolean attached) {
+        if (lease == null || !Objects.equals(objectsLease, lease)) {
+            return Result.BAD_LEASE;
+        }
+        if (attached && (!active.contains(lease) || objects[lease.slot()])) {
+            return Result.INVALID_TABLE;
+        }
+        objectsLease = null;
+        if (attached) {
+            objects[lease.slot()] = true;
+        }
+        return Result.OK;
+    }
+
+    Lease objectsInFlight() {
+        return objectsLease;
+    }
+
+    /** Recorded {@code y * 64 + x} of an active lease's tile, or -1. */
+    int coordinate(Lease lease) {
+        return lease != null && active.contains(lease) ? coordinates[lease.slot()] : -1;
+    }
+
+    private boolean objectsTarget(long tx, Lease lease) {
+        int slot = lease.slot();
+        return tx > 0
+                && transactions[slot] == tx
+                && generations[slot] == lease.generation()
+                && active.contains(lease)
+                && !objects[slot];
+    }
+
     void close() {
         stopping = true;
         phase = Phase.CANCEL_DRAIN;
@@ -366,6 +436,8 @@ final class WorldStreamState {
         }
         incoming = new Lease(free, ++generations[free], ++serial);
         coordinates[free] = -1;
+        transactions[free] = 0;
+        objects[free] = false;
         offerTransaction = 0;
         inputConsumed = false;
         phase = Phase.CREDIT;

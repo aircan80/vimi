@@ -148,14 +148,35 @@ final class WorldStreamSourceController {
             this.tile = tile;
             this.reservation = reservation;
             producer =
-                    new WorldStreamSourceBridge.Producer(
-                            source, water, true, scope, tile, () -> useful);
+                    new WorldStreamSourceBridge.Producer(source, water, scope, tile, () -> useful);
+        }
+    }
+
+    /**
+     * One current resident's late BASIC_EXTERIOR objects: a preemptible source preparation on
+     * the exterior worker, then the transport's own delivery. Never part of a terrain tile.
+     */
+    private static final class Exterior {
+        final Entry entry;
+        final Cancellation cancellation = new Cancellation();
+        CompletableFuture<WorldStreamSourceBridge.ExteriorCopy> prepared;
+        CompletableFuture<WorldStreamTransport.ObjectsOutcome> attached;
+        int placements;
+
+        Exterior(Entry entry) {
+            this.entry = entry;
         }
     }
 
     private final Object lock = new Object();
     private final Request request;
     private final GpuStarter starter;
+    private final WorldStreamSourceBridge.ExteriorPreparer exteriorPreparer;
+    // Worker-owned: at most one late exterior delivery, and the residents already tried.
+    private ExecutorService exteriorWorker;
+    private Exterior exterior;
+    private final java.util.Set<Entry> exteriorTried =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Events events;
     private final Consumer<Runnable> fxPost;
     private final LongSupplier clock;
@@ -229,6 +250,18 @@ final class WorldStreamSourceController {
             Events events,
             Consumer<Runnable> fxPost,
             LongSupplier clock) {
+        this(request, starter, events, fxPost, clock, WorldStreamSourceBridge::prepareExterior);
+    }
+
+    /** Tests replace the exterior source operation. */
+    WorldStreamSourceController(
+            Request request,
+            GpuStarter starter,
+            Events events,
+            Consumer<Runnable> fxPost,
+            LongSupplier clock,
+            WorldStreamSourceBridge.ExteriorPreparer exteriorPreparer) {
+        this.exteriorPreparer = Objects.requireNonNull(exteriorPreparer);
         this.clock = Objects.requireNonNull(clock);
         this.request = Objects.requireNonNull(request);
         this.starter = Objects.requireNonNull(starter);
@@ -510,6 +543,7 @@ final class WorldStreamSourceController {
         session.initialized().join();
         pollFrame();
         updateArea();
+        stepExterior();
         var wanted = demand();
         if(creditTarget!=null && !contains(wanted,creditTarget)) creditTarget=null;
         unavailable.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
@@ -714,6 +748,15 @@ final class WorldStreamSourceController {
             publish(Phase.PREPARING, "Preparing water tables");
             return;
         }
+        if (exterior != null && exterior.prepared != null
+                && admissionOrder.stream().anyMatch(tile -> !unavailable.containsKey(key(tile))
+                        && current.stream().noneMatch(entry -> same(tile, entry.resident())))) {
+            // The source admits one operation at a time: terrain preempts object preparation and
+            // starts as soon as the canceled preparation has drained (its completion kicks).
+            exterior.cancellation.cancel();
+            publish(Phase.PREPARING, "Preparing terrain, textures and upload");
+            return;
+        }
         for (var tile : admissionOrder) {
             if (unavailable.containsKey(key(tile))) continue;
             boolean found = false;
@@ -735,6 +778,9 @@ final class WorldStreamSourceController {
             publish(Phase.PREPARING, "Preparing terrain, textures and upload");
             return;
         }
+        // Terrain is idle: every wanted tile is current or unavailable, nothing is staged,
+        // committing or pending. Only now may object preparation take the source lane.
+        startExterior(wanted);
         publish(
                 wanted.isEmpty() || current.isEmpty() && !unavailable.isEmpty()
                         ? Phase.UNAVAILABLE
@@ -749,6 +795,79 @@ final class WorldStreamSourceController {
                                 : acceptedReceipt == currentReceipt && currentReceipt != null
                                         ? readyDetail()
                                         : "Waiting for accepted viewport pixels");
+    }
+
+    private void startExterior(List<WorldFormats.Tile> wanted) {
+        if (exterior != null || closing || session == null || !session.exteriorObjects()) return;
+        for (var tile : wanted) {
+            for (var entry : current) {
+                if (!same(tile, entry.resident())
+                        || exteriorTried.contains(entry)
+                        || entry.resident().exteriorObjects()
+                                != WorldStreamTransport.ExteriorObjects.NONE) continue;
+                var work = new Exterior(entry);
+                if (exteriorWorker == null)
+                    exteriorWorker = Executors.newSingleThreadExecutor(
+                            Thread.ofPlatform().daemon().name("world-exterior-objects").factory());
+                var lane = source;
+                var owner = scope;
+                work.prepared = CompletableFuture.supplyAsync(
+                        () -> exteriorPreparer.prepare(lane, owner, tile, work.cancellation),
+                        exteriorWorker);
+                exterior = work;
+                work.prepared.whenComplete((ignored, failure) -> kick());
+                return;
+            }
+        }
+    }
+
+    /** Advances the one late exterior delivery; its failures never reach terrain. */
+    private void stepExterior() {
+        var work = exterior;
+        if (work == null) return;
+        if (work.prepared != null) {
+            if (!work.prepared.isDone()) {
+                if (!current.contains(work.entry)) work.cancellation.cancel();
+                return;
+            }
+            WorldStreamSourceBridge.ExteriorCopy copy;
+            try {
+                copy = work.prepared.join();
+            } catch (RuntimeException failed) {
+                exterior = null;
+                // Preempted by terrain (or retired): untried, so it restarts when terrain idles.
+                if (!work.cancellation.isCanceled()) {
+                    exteriorTried.add(work.entry);
+                    work.entry.source().exteriorFailedLate();
+                }
+                return;
+            }
+            work.prepared = null;
+            if (copy.exterior() == null || closing || !current.contains(work.entry)) {
+                exterior = null;
+                if (copy.failed()) work.entry.source().exteriorFailedLate();
+                if (copy.exterior() == null || copy.failed()) exteriorTried.add(work.entry);
+                return;
+            }
+            work.placements = copy.placements();
+            work.attached = session.attachObjects(work.entry.resident(), copy.exterior());
+            work.attached.whenComplete((ignored, failure) -> kick());
+            return;
+        }
+        if (!work.attached.isDone()) return;
+        exterior = null;
+        exteriorTried.add(work.entry);
+        try {
+            switch (work.attached.join()) {
+                case ATTACHED -> work.entry.source().exteriorAttached(work.placements);
+                case FAILED -> work.entry.source().exteriorFailedLate();
+                case DROPPED -> {}
+            }
+        } catch (RuntimeException failed) {
+            // A stopping session cancels delivery; anything else fails only these objects.
+            if (!closing && !cleanCancellation(failed)) work.entry.source().exteriorFailedLate();
+        }
+        changed();
     }
 
     private boolean waterReady() {
@@ -800,6 +919,7 @@ final class WorldStreamSourceController {
                         ? ""
                         : "; " + buildings + " BASIC exterior buildings on " + buildingTiles)
                 + (buildingFailures == 0 ? "" : "; building objects failed on " + buildingFailures)
+                + (exterior == null ? "" : "; loading buildings")
                 + (water != null && waterTables != null && waterTables.isDone() && !waterReady()
                         ? "; water tables unavailable"
                         : "")
@@ -984,6 +1104,7 @@ final class WorldStreamSourceController {
             entry.source().close();
             sourceRetirementRevision++;
             entries.remove(entry.resident());
+            exteriorTried.remove(entry);
         }
     }
 
@@ -1051,6 +1172,7 @@ final class WorldStreamSourceController {
             pending.cancellation = pending.reservation.cancel();
             pending.useful = false;
         }
+        if (exterior != null) exterior.cancellation.cancel();
         if (physicalClosing == null) {
             try {
                 physicalClosing =
@@ -1063,6 +1185,8 @@ final class WorldStreamSourceController {
         var physical = physicalClosing;
         if (pending != null) pending.producer.close();
         if (!physical.isDone()) return;
+        // The canceled object preparation still holds the source lane until it drains.
+        if (exterior != null && exterior.prepared != null && !exterior.prepared.isDone()) return;
         Throwable failure = terminal;
         try {
             physical.join();
@@ -1086,6 +1210,9 @@ final class WorldStreamSourceController {
             }
         }
         entries.clear();
+        exteriorTried.clear();
+        exterior = null;
+        if (exteriorWorker != null) exteriorWorker.shutdown();
         source = null;
         water = null;
         waterTables = null;

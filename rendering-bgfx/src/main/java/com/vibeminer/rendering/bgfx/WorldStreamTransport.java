@@ -71,6 +71,16 @@ public final class WorldStreamTransport {
         FAILED
     }
 
+    /** Terminal outcome of {@link Session#attachObjects}; terrain never depends on it. */
+    public enum ObjectsOutcome {
+        /** Attached to the resident's still active slot generation; drawn with its terrain. */
+        ATTACHED,
+        /** Writing, reading or uploading the objects failed; the terrain tile is untouched. */
+        FAILED,
+        /** The resident was no longer active (retired or its slot reused); nothing attached. */
+        DROPPED
+    }
+
     public enum Refusal {
         RETRY_LATER,
         CAPABILITY_UNAVAILABLE,
@@ -150,9 +160,17 @@ public final class WorldStreamTransport {
             return metadata.coverage;
         }
 
+        /** Inline objects from STAGED, or late objects once {@link Session#attachObjects} ends. */
         public ExteriorObjects exteriorObjects() {
             return switch (metadata.objects) {
-                case 0 -> ExteriorObjects.NONE;
+                case 0 -> {
+                    var late = metadata.late;
+                    yield late == WorldStreamStatus.LateOutcome.ATTACHED
+                            ? ExteriorObjects.DRAWN
+                            : late == WorldStreamStatus.LateOutcome.FAILED
+                                    ? ExteriorObjects.FAILED
+                                    : ExteriorObjects.NONE;
+                }
                 case 1 -> ExteriorObjects.DRAWN;
                 case 2 -> ExteriorObjects.FAILED;
                 default -> ExteriorObjects.NOT_IN_PROFILE;
@@ -526,6 +544,21 @@ public final class WorldStreamTransport {
         private CommitOperation commitOperation;
         private CommitReceipt currentReceipt;
         private Frame latestFrame;
+        private ObjectsOperation objectsOperation;
+
+        /** The one late objects delivery in flight: file write, OBJECTS, reply, file delete. */
+        private static final class ObjectsOperation {
+            final Resident resident;
+            final WorldStreamObjectsFile.Data data;
+            final CompletableFuture<ObjectsOutcome> result = new CompletableFuture<>();
+            boolean advertised;
+            WorldStreamStatus.LateOutcome reply;
+
+            ObjectsOperation(Resident resident, WorldStreamObjectsFile.Data data) {
+                this.resident = resident;
+                this.data = data;
+            }
+        }
 
         private static final class CommitOperation {
             final CompletableFuture<CommitReceipt> result;
@@ -607,6 +640,7 @@ public final class WorldStreamTransport {
             handle.runWorker("stderr", () -> drainErrors(process));
             handle.runWorker("producer-files", () -> files(handle));
             handle.runWorker("frames", () -> pollFrames(handle));
+            handle.runWorker("objects", () -> objects(handle));
             handle.runWorker(
                     "cancellation",
                     () -> {
@@ -619,6 +653,11 @@ public final class WorldStreamTransport {
 
         public CompletableFuture<Void> initialized() {
             return initialized.copy();
+        }
+
+        /** Whether this session's profile admits BASIC_EXTERIOR objects. */
+        public boolean exteriorObjects() {
+            return descriptor.exteriorObjects();
         }
 
         /** Protocol success is separate from process/resource drain. */
@@ -771,6 +810,167 @@ public final class WorldStreamTransport {
                 return;
             }
             fail(failed);
+        }
+
+        /**
+         * Delivers BASIC_EXTERIOR objects for a resident that is already staged and committed,
+         * after its terrain. The file write, the OBJECTS command, the child's reply and the file
+         * delete all run on this session's own objects worker, independent of tile and commit
+         * credits, so terrain never waits for it. At most one delivery is in flight (a second one
+         * is refused RETRY_LATER). The child attaches the objects only while that exact slot
+         * generation is still active; otherwise the outcome is DROPPED. A resident that is already
+         * retired is DROPPED at once, before any file is written. Misuse (a foreign resident, one
+         * with inline objects, or one already requested) fails only the returned future with an
+         * IllegalArgumentException; it never ends the session. Failures of the objects themselves
+         * stay isolated to them. A clean close completes the future with a CancellationException
+         * after the file has been retired; if the session fails, the future fails at once and the
+         * file is retired by the objects worker as the session drains.
+         */
+        public CompletableFuture<ObjectsOutcome> attachObjects(
+                Resident resident, WorldStreamTileWriter.Exterior exterior) {
+            Objects.requireNonNull(resident);
+            Objects.requireNonNull(exterior);
+            if (!descriptor.exteriorObjects()) {
+                throw new IllegalStateException("Session profile has no exterior objects");
+            }
+            synchronized (lock) {
+                if (closing || owner.stopping()) {
+                    return CompletableFuture.failedFuture(
+                            new java.util.concurrent.CancellationException("World stopped"));
+                }
+                if (objectsOperation != null) {
+                    return CompletableFuture.failedFuture(
+                            new PreparationRefusal(
+                                    Refusal.RETRY_LATER,
+                                    "World objects delivery in flight",
+                                    new Object()));
+                }
+                boolean live;
+                try {
+                    live = state.admitLateObjects(resident.metadata);
+                } catch (IllegalArgumentException misuse) {
+                    return CompletableFuture.failedFuture(misuse);
+                }
+                if (!live) {
+                    return CompletableFuture.completedFuture(ObjectsOutcome.DROPPED);
+                }
+                var operation = new ObjectsOperation(resident, exterior.data());
+                objectsOperation = operation;
+                lock.notifyAll();
+                return operation.result.copy();
+            }
+        }
+
+        private void objects(WorldStreamLaunchOwner.Handle handle) throws Exception {
+            while (true) {
+                ObjectsOperation operation;
+                synchronized (lock) {
+                    operation = objectsOperation;
+                    if (operation == null) {
+                        if (handle.stopping()) {
+                            return;
+                        }
+                        lock.wait(20);
+                        continue;
+                    }
+                }
+                deliverObjects(operation, handle);
+            }
+        }
+
+        private void deliverObjects(
+                ObjectsOperation operation, WorldStreamLaunchOwner.Handle handle) throws Exception {
+            var metadata = operation.resident.metadata;
+            var directory = handle.files().directory();
+            java.util.function.BooleanSupplier stop = () -> closing || handle.stopping();
+            ObjectsOutcome outcome = null;
+            boolean written = false;
+            Throwable fatal = null;
+            try {
+                WorldStreamObjectsFile.Reference reference = null;
+                if (!stop.getAsBoolean()) {
+                    try {
+                        reference =
+                                WorldStreamObjectsFile.write(
+                                        directory,
+                                        new WorldStreamObjectsFile.Identity(
+                                                descriptor.nonce(),
+                                                descriptor.scope(),
+                                                metadata.transaction,
+                                                metadata.lease,
+                                                metadata.x,
+                                                metadata.y),
+                                        operation.data,
+                                        stop);
+                        written = true;
+                    } catch (IOException | RuntimeException failed) {
+                        // The writer removes its own partial file. Only these objects fail.
+                        if (!stop.getAsBoolean()) {
+                            outcome = ObjectsOutcome.FAILED;
+                        }
+                    }
+                }
+                if (reference != null) {
+                    synchronized (lock) {
+                        if (!stop.getAsBoolean()) {
+                            // Admitted synchronously; only retirement can have happened since.
+                            var command =
+                                    state.lateObjects(
+                                            metadata, reference.length(), reference.sha256());
+                            if (command == null) {
+                                outcome = ObjectsOutcome.DROPPED;
+                            } else {
+                                enqueueCommand(command);
+                                operation.advertised = true;
+                            }
+                        }
+                    }
+                }
+                if (operation.advertised) {
+                    // The child may read the file until its reply, or until it has actually
+                    // exited and its statuses drained.
+                    synchronized (lock) {
+                        while (operation.reply == null && !(actualExit && statusesDrained)) {
+                            lock.wait(20);
+                        }
+                        if (operation.reply != null) {
+                            outcome = ObjectsOutcome.valueOf(operation.reply.name());
+                        }
+                    }
+                }
+            } catch (Throwable failed) {
+                fatal = failed;
+            } finally {
+                if (written) {
+                    try {
+                        java.nio.file.Files.deleteIfExists(
+                                directory.resolve(
+                                        WorldStreamObjectsFile.basename(metadata.transaction)));
+                    } catch (Throwable cleanup) {
+                        if (fatal == null) {
+                            fatal = cleanup;
+                        } else {
+                            fatal.addSuppressed(cleanup);
+                        }
+                    }
+                }
+                synchronized (lock) {
+                    objectsOperation = null;
+                    lock.notifyAll();
+                }
+            }
+            if (fatal != null) {
+                operation.result.completeExceptionally(
+                        WorldStreamLaunchOwner.Handle.detached(fatal));
+                fail(fatal);
+                return;
+            }
+            if (outcome != null && !stop.getAsBoolean()) {
+                operation.result.complete(outcome);
+            } else {
+                operation.result.completeExceptionally(
+                        new java.util.concurrent.CancellationException("World stopped"));
+            }
         }
 
         /** Detached pixels only; no mapping IO or array allocation occurs on the caller. */
@@ -1440,6 +1640,21 @@ public final class WorldStreamTransport {
                             requestClose();
                             handle.closeAsync();
                         }
+                        case OBJECTS -> {
+                            synchronized (lock) {
+                                var operation = objectsOperation;
+                                if (operation == null
+                                        || !operation.advertised
+                                        || operation.reply != null) {
+                                    throw new IllegalStateException(
+                                            "Late objects outcome correlation");
+                                }
+                                operation.reply =
+                                        ((WorldStreamStatus.ObjectsDone) message).outcome();
+                                retireReliable();
+                                lock.notifyAll();
+                            }
+                        }
                         case CREDIT -> capacityChanged();
                         case IGNORED -> {}
                         default ->
@@ -1474,6 +1689,13 @@ public final class WorldStreamTransport {
             }
             if (pending != null) {
                 pending.result.completeExceptionally(failure);
+            }
+            ObjectsOperation objects;
+            synchronized (lock) {
+                objects = objectsOperation;
+            }
+            if (objects != null) {
+                objects.result.completeExceptionally(failure);
             }
             if (current != null) {
                 current.result.completeExceptionally(failure);

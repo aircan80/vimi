@@ -56,6 +56,28 @@ final class WorldStreamStatus {
     record Committed(WorldStreamState.Nonce nonce, long transaction, long expected, long next)
             implements Message {}
 
+    /** The one terminal reply to a late {@code OBJECTS} command. */
+    enum LateOutcome {
+        /** Uploaded and attached to the still active slot generation; drawn with its terrain. */
+        ATTACHED,
+        /** Read, validation or upload failed; the tile's terrain is untouched. */
+        FAILED,
+        /** The slot generation was no longer active (stale or retired); nothing was attached. */
+        DROPPED
+    }
+
+    record ObjectsDone(
+            WorldStreamState.Nonce nonce,
+            long transaction,
+            WorldStreamState.Lease lease,
+            LateOutcome outcome)
+            implements Message {
+        ObjectsDone {
+            java.util.Objects.requireNonNull(lease);
+            java.util.Objects.requireNonNull(outcome);
+        }
+    }
+
     enum Rejection {
         STALE_TRANSACTION,
         STALE_LEASE,
@@ -154,6 +176,11 @@ final class WorldStreamStatus {
                     int objects = p.length == 9 ? -1 : integer(p[9]);
                     require(objects >= -1 && objects <= 2 && (p.length == 9) == (objects == -1));
                     yield new Staged(nonce, tx, lease, outcome, coverage, objects);
+                }
+                case "OBJECTS_DONE" -> {
+                    arity(p, 8);
+                    yield new ObjectsDone(
+                            nonce, transaction(p[3]), lease(p, 4), LateOutcome.valueOf(p[7]));
                 }
                 case "COMMITTED" -> {
                     arity(p, 6);
