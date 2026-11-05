@@ -49,7 +49,8 @@ Admitted (everything else is counted as unsupported, never guessed):
   beyond 2200). No vertex colors, local lights, doodad sets, liquids or animated materials.
 
 Not in this slice: M2 doodads (WMO doodad sets and MDDF placements), cutout/blended
-materials, global WMO-only maps (dungeon lane, #170), larger view distance (#173).
+materials, global WMO-only maps (dungeon lane, #170), larger view distance (#173). Doodads and
+cutout/blended materials were added later (`world-outdoor-exterior-doodads-checkpoint.md`).
 
 ## Bounds
 
@@ -102,8 +103,11 @@ lags terrain. It runs after terrain on the same lane and stays cancelable betwee
    failure leaves the tile's terrain committed and is reported in status. The GUI now delivers the
    objects late (after the tile's terrain commits, preparing them only while terrain is idle), so
    terrain never waits for them; on by default, `-Dvimi.world.exteriors=false` turns them off.
-3. GUI: World Explorer status shows drawn and omitted building counts and the BASIC
-   disclosure.
+3. GUI (done: `world-outdoor-exterior-doodads-checkpoint.md`): World Explorer status shows
+   drawn and omitted building, doodad and surface counts and the BASIC disclosure.
+4. BASIC doodads and material classes (done, same checkpoint): static M2 doodads from MDDF
+   records and from drawn buildings' WMO doodad sets, and alpha-key (cutout) and alpha-blended
+   materials for buildings and doodads, in objects file version 2.
 
 ## Hot-path facts that shape delivery
 
