@@ -366,7 +366,7 @@ class HotfixBuildTablesTest {
     }
 
     @Test
-    void unreadableBaseRefusesTheOverlayForTheOperation() {
+    void unreadableBaseBacksOffWithoutDecodingAndRetriesLater() {
         long hash = 0x11223344L;
         try (var tables =
                 numbers(
@@ -375,7 +375,14 @@ class HotfixBuildTablesTest {
                         false,
                         new HotfixMemory(64L << 20, 256L << 20))) {
             var hot = (HotfixBuildTables) tables;
-            hot.ordinalsProbe = found -> null;
+            var now = new java.util.concurrent.atomic.AtomicLong();
+            var reads = new java.util.concurrent.atomic.AtomicInteger();
+            hot.clock = now::get;
+            hot.ordinalsProbe =
+                    found -> {
+                        reads.incrementAndGet();
+                        return null;
+                    };
             assertEquals(
                     TableTypes.RowOutcome.ABSENT,
                     tables.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE)
@@ -387,13 +394,115 @@ class HotfixBuildTablesTest {
                             .join()
                             .orElseThrow()
                             .unavailable());
+            assertEquals(1, reads.get());
+            assertEquals(0, hot.compiles, "an unreadable base costs no decode");
+            for (int i = 0; i < 5; i++) {
+                tables.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE).join();
+                tables.page(
+                                new TableTypes.PageRequest(TableTypes.Ref.id(100)),
+                                P,
+                                Cancellation.NONE)
+                        .join();
+            }
+            assertEquals(1, reads.get(), "no retry while backing off");
+            now.addAndGet(java.util.concurrent.TimeUnit.SECONDS.toNanos(6));
+            tables.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE).join();
+            assertEquals(2, reads.get(), "one retry after the first delay");
+            now.addAndGet(java.util.concurrent.TimeUnit.SECONDS.toNanos(6));
+            tables.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE).join();
+            assertEquals(2, reads.get(), "the delay doubles after a second failure");
+            now.addAndGet(java.util.concurrent.TimeUnit.SECONDS.toNanos(5));
             hot.ordinalsProbe = found -> found;
             assertEquals(
                     TableTypes.RowOutcome.FOUND,
                     tables.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE)
                             .join()
                             .outcome(),
-                    "the next operation retries");
+                    "a later retry applies the overlay");
+            assertEquals(1, hot.compiles);
+        }
+    }
+
+    @Test
+    void tableRefusedOnlyByItsOwnPinnedViewsRecoversOnTheNextOperation() throws Exception {
+        long[] hashes = {0x20000000L, 0x20000001L};
+        var changes = new byte[2_000][];
+        for (int i = 0; i < 1_000; i++) {
+            // Table 0 changes row 7 plus 999 added rows; table 1 points 1,000 rows at row 7.
+            changes[i] = entry(hashes[0], 1, i == 0 ? 7 : 10_000 + i, 1, number(i));
+            changes[1_000 + i] = entry(hashes[1], 1, 20_000 + i, 1, number(7));
+        }
+        // Each view charges about 0.9 MiB; the shared total holds one of them.
+        var memory = new HotfixMemory(1 << 20, 3 << 19);
+        try (var tables =
+                several(memory, new MemoryGeneratedStore(), true, cache(changes), hashes)) {
+            var hot = (HotfixBuildTables) tables;
+            // One operation pins table 0 and then needs table 1: refused by its own pins only.
+            tables.referencedBy(
+                            new TableTypes.ReferencesRequest(TableTypes.Ref.id(100), 7),
+                            P,
+                            Cancellation.NONE)
+                    .join();
+            assertEquals(
+                    HotfixViewInfo.RETAINED_BUDGET,
+                    tables.hotfixInfo(TableTypes.Ref.id(101), null, P, Cancellation.NONE)
+                            .join()
+                            .orElseThrow()
+                            .unavailable());
+            long generation = memory.generation();
+            // No other handle releases anything; the next operation unpins table 0 and retries.
+            assertEquals(
+                    TableTypes.RowOutcome.FOUND,
+                    tables.get(TableTypes.Ref.id(101), 20_000, P, Cancellation.NONE)
+                            .join()
+                            .outcome(),
+                    "recovers without an outside release");
+            assertTrue(hot.compiles >= 2);
+            assertTrue(memory.generation() > generation, "table 0 was evicted to make room");
+        }
+    }
+
+    @Test
+    void refusalHoldsForTheWholeOperationEvenWhenItsCauseClearsMidway() throws Exception {
+        long[] hashes = {0x30000000L, 0x30000001L};
+        var changes =
+                new byte[][] {
+                    entry(hashes[0], 1, 7, 1, number(70)), entry(hashes[1], 1, 50, 1, number(7))
+                };
+        try (var tables =
+                several(
+                        new HotfixMemory(64L << 20, 256L << 20),
+                        new MemoryGeneratedStore(),
+                        true,
+                        cache(changes),
+                        hashes)) {
+            var hot = (HotfixBuildTables) tables;
+            // Each clock read lands an hour later, so no back-off delay is ever still running.
+            var now = new java.util.concurrent.atomic.AtomicLong();
+            hot.clock = () -> now.addAndGet(java.util.concurrent.TimeUnit.HOURS.toNanos(1));
+            var reads = new java.util.concurrent.atomic.AtomicInteger();
+            hot.ordinalsProbe = found -> reads.getAndIncrement() == 0 ? null : found;
+            // referencedBy reads the target twice (get, then open) and then its sources. The first
+            // read of table 0 is refused; the base is readable again by the second read, but the
+            // operation must stay on base rows for table 0 and never decode it.
+            var refs =
+                    tables.referencedBy(
+                                    new TableTypes.ReferencesRequest(TableTypes.Ref.id(100), 7),
+                                    P,
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals("9", refs.row().row().row().values().get(1), "target row is the base row");
+            assertEquals(2, reads.get(), "table 0 once (refused), table 1 once");
+            assertEquals(1, hot.compiles, "only table 1 decoded in that operation");
+            // The next operation is fresh and applies table 0's overlay.
+            assertEquals(
+                    "70",
+                    tables.get(TableTypes.Ref.id(100), 7, P, Cancellation.NONE)
+                            .join()
+                            .row()
+                            .row()
+                            .values()
+                            .get(1));
         }
     }
 

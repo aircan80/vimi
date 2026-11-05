@@ -140,7 +140,24 @@ public final class HotfixBuildTables implements BuildTables {
 
     /** A table whose overlay exceeded a bound; it reads base rows with a visible reason. */
     private record Unavailable(
-            String identity, String name, long rows, String reason, long generation) {}
+            String identity,
+            String name,
+            long rows,
+            String reason,
+            long generation,
+            int failures,
+            long retryAfterNanos) {
+        Unavailable(String identity, String name, long rows, String reason, long generation) {
+            this(identity, name, rows, reason, generation, 0, 0);
+        }
+    }
+
+    /** Release generation that never matches, so the next operation retries. */
+    private static final long RETRY_NEXT_OPERATION = -1;
+
+    /** First wait before retrying an unreadable base; doubles per failure up to the maximum. */
+    private static final long BASE_RETRY_NANOS = TimeUnit.SECONDS.toNanos(5),
+            BASE_RETRY_MAX_NANOS = TimeUnit.MINUTES.toNanos(5);
 
     private static final class OverBudget extends RuntimeException {
         private static final long serialVersionUID = 1L;
@@ -179,8 +196,22 @@ public final class HotfixBuildTables implements BuildTables {
             throw new OverBudget(HotfixViewInfo.TABLE_BUDGET, generation);
         }
         if (bytes > memory.available() + ownUnpinnedBytes()) {
-            throw new OverBudget(HotfixViewInfo.RETAINED_BUDGET, generation);
+            // When this operation's own pinned views hold bytes, the next operation unpins them
+            // without any release elsewhere; retry then instead of waiting for another handle.
+            throw new OverBudget(
+                    HotfixViewInfo.RETAINED_BUDGET,
+                    ownPinnedBytes() > 0 ? RETRY_NEXT_OPERATION : generation);
         }
+    }
+
+    private long ownPinnedBytes() {
+        long bytes = 0;
+        for (var entry : views.entrySet()) {
+            if (pinned.contains(entry.getKey())) {
+                bytes += entry.getValue().bytes;
+            }
+        }
+        return bytes;
     }
 
     private void evictOldestUnpinned() {
@@ -216,6 +247,8 @@ public final class HotfixBuildTables implements BuildTables {
     int compiles;
     // Test seam over the bulk base-ordinal result; production keeps it as is.
     java.util.function.UnaryOperator<Map<Long, Long>> ordinalsProbe = found -> found;
+    // Monotonic clock for the unreadable-base back-off; replaced by tests only.
+    java.util.function.LongSupplier clock = System::nanoTime;
     private final Set<Job<?>> jobs = new HashSet<>();
     private final ThreadPoolExecutor worker =
             new ThreadPoolExecutor(
@@ -441,9 +474,12 @@ public final class HotfixBuildTables implements BuildTables {
                 unavailable.remove(id);
             } else if (skipped.reason().equals(HotfixViewInfo.TABLE_BUDGET)
                     || skipped.reason().equals(HotfixViewInfo.RETAINED_BUDGET)
-                            && skipped.generation() == memory.generation()) {
+                            && skipped.generation() == memory.generation()
+                    || skipped.reason().equals(HotfixViewInfo.BASE_UNAVAILABLE)
+                            && clock.getAsLong() - skipped.retryAfterNanos() < 0) {
                 // An oversized table stays skipped. A full shared budget is retried only after
-                // some handle released memory, never once per read.
+                // some handle released memory, never once per read. An unreadable base is
+                // retried with a growing delay, or as soon as the base changes.
                 return null;
             }
         }
@@ -454,6 +490,22 @@ public final class HotfixBuildTables implements BuildTables {
         } catch (OverBudget over) {
             // One table over its bounds must not fail the workspace. It reads base rows only, and
             // hotfixInfo names the reason so the missing overlay stays explainable.
+            int failures = 0;
+            long retryAfter = 0;
+            if (over.reason.equals(HotfixViewInfo.BASE_UNAVAILABLE)) {
+                var earlier = unavailable.get(id);
+                failures =
+                        earlier != null
+                                        && earlier.reason().equals(HotfixViewInfo.BASE_UNAVAILABLE)
+                                        && earlier.identity().equals(metadata.identity())
+                                ? Math.min(earlier.failures() + 1, 16)
+                                : 1;
+                long delay =
+                        Math.min(
+                                BASE_RETRY_MAX_NANOS,
+                                BASE_RETRY_NANOS << Math.min(failures - 1, 6));
+                retryAfter = clock.getAsLong() + delay;
+            }
             unavailable.put(
                     id,
                     new Unavailable(
@@ -461,7 +513,9 @@ public final class HotfixBuildTables implements BuildTables {
                             metadata.entry().name(),
                             metadata.rows(),
                             over.reason,
-                            over.generation));
+                            over.generation,
+                            failures,
+                            retryAfter));
             operationSkipped.add(id);
             return null;
         }
@@ -506,6 +560,20 @@ public final class HotfixBuildTables implements BuildTables {
         // Every non-ignored operation charges at least 384 bytes; check that floor before
         // decoding anything, so a full shared budget costs no decode work.
         requireRoom((256L << 10) + (special ? 0 : 384L * input.size()), memory.generation());
+        // Read the base ordinals of every changed ID before decoding anything: an unreadable base
+        // refuses the table without paying for a full decode.
+        var changedIds = new HashSet<Long>();
+        for (var entry : input) {
+            changedIds.add(entry.recordId());
+        }
+        var ordinals =
+                ordinalsProbe.apply(
+                        await(
+                                base.foundOrdinals(
+                                        TableTypes.Ref.id(id), changedIds, priority, token)));
+        if (ordinals == null) {
+            throw over(HotfixViewInfo.BASE_UNAVAILABLE);
+        }
         compiles++;
         HotfixRowDecoder.Layout layout = null;
         try {
@@ -604,16 +672,6 @@ public final class HotfixBuildTables implements BuildTables {
         var additions = new ArrayList<Db2Types.Row>();
         var additionIndex = new HashMap<Long, Integer>();
         int added = 0, replaced = 0, deleted = 0, protectedRows = 0, unknown = 0;
-        // One base preparation for every changed ID. When the base cannot be read, the table is
-        // refused for this operation rather than preparing the base once per changed ID.
-        var ordinals =
-                ordinalsProbe.apply(
-                        await(
-                                base.foundOrdinals(
-                                        TableTypes.Ref.id(id), changes.keySet(), priority, token)));
-        if (ordinals == null) {
-            throw over(HotfixViewInfo.BASE_UNAVAILABLE);
-        }
         for (var changed : new TreeMap<>(changes).entrySet()) {
             token.check();
             Long ordinal = ordinals.get(changed.getKey());
@@ -664,7 +722,7 @@ public final class HotfixBuildTables implements BuildTables {
         // Check, evict and reserve under the accountant's lock: no other handle can take the room
         // between the check and the reservation, so a refusal never evicts this handle's views
         // and an accepted view never fails after evicting them.
-        synchronized (memory) {
+        synchronized (memory.lock()) {
             requireRoom(bytes, memory.generation());
             while (views.size() >= CACHE_TABLES) {
                 evictOldestUnpinned();
