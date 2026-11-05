@@ -2842,6 +2842,49 @@ final class WorldStreamScopesTest {
     }
 
     @Test
+    void onlyPureCancellationChainsPreserveAHealthyScopeOnFailedRevalidation() {
+        var joined = new java.util.concurrent.CancellationException("join");
+        joined.initCause(new java.util.concurrent.CancellationException());
+        var withCause = new java.util.concurrent.CancellationException("stopped");
+        withCause.initCause(new IllegalStateException("cleanup failed"));
+        var withSuppressed = new java.util.concurrent.CancellationException();
+        withSuppressed.addSuppressed(new IllegalStateException("cleanup failed"));
+        var subclass = new java.util.concurrent.CancellationException() {};
+        var failures =
+                List.<Throwable>of(
+                        joined,
+                        new java.util.concurrent.CompletionException(joined),
+                        new java.util.concurrent.CompletionException(withCause),
+                        withSuppressed,
+                        new java.util.concurrent.CompletionException(subclass),
+                        new IllegalStateException("cleanup failed", joined));
+        for (var failure : failures) {
+            boolean pure = failures.indexOf(failure) < 2;
+            var files = new WorldTerrainTextureSourceTest.Files();
+            var tables = new Tables(files);
+            var source = new WorldStreamScopes(tables.handle(), files.files());
+            try {
+                var scope = source.create(REQUEST, Cancellation.NONE);
+                tables.pageFailure = failure;
+                assertThrows(
+                        RuntimeException.class,
+                        () -> source.recorded(scope, TILE, Cancellation.NONE));
+                assertEquals(
+                        pure ? 1 : 0,
+                        source.retainedProofs(),
+                        "A pure stop keeps the scope; a real failure invalidates it: " + failure);
+                if (pure) {
+                    tables.pageFailure = null;
+                    assertEquals(TILE, source.recorded(scope, TILE, Cancellation.NONE));
+                }
+            } finally {
+                source.closeAsync().join();
+                tables.close();
+            }
+        }
+    }
+
+    @Test
     void everyBoundedEofProvenanceAndCapabilityFailureRefusesAnEqualStamp() {
         for (int mode = 1; mode <= 12; mode++) {
             var files = new WorldTerrainTextureSourceTest.Files();
@@ -3181,6 +3224,10 @@ final class WorldStreamScopesTest {
         volatile TableTypes.State state = TableTypes.State.READY;
         volatile TableTypes.PageState pageState = TableTypes.PageState.OK;
         volatile CompletableFuture<CapturedRowsTypes.Page> held;
+
+        /** When set, every later page read fails with it. */
+        volatile Throwable pageFailure;
+
         CapturedRows last;
         final java.util.Map<String, AuthoredNativeMap> nativeMaps = new java.util.HashMap<>();
 
@@ -3404,6 +3451,9 @@ final class WorldStreamScopesTest {
                             if (held != null) {
                                 heldEntered.countDown();
                                 return held;
+                            }
+                            if (pageFailure != null) {
+                                return CompletableFuture.failedFuture(pageFailure);
                             }
                             return CompletableFuture.completedFuture(page(first));
                         }

@@ -838,8 +838,9 @@ final class WorldStreamScopes {
             if (profile != UseProfile.LIQUID_INSPECTION || reserved || input != null) {
                 throw new IllegalStateException("Liquid table phase differs");
             }
+            // Identity facts only: never load listfile names or sniff formats for a liquid table.
             var fresh =
-                    engine.stat(
+                    engine.statContent(
                             observed.sourceId(), token, WorldSourceRefusals.Site.SOURCE_BINDING);
             if (!observed.sourceKey().equals(fresh.contentKey())
                     || fresh.size() != null && fresh.size() != observed.sourceLength()) {
@@ -1190,20 +1191,8 @@ final class WorldStreamScopes {
     }
 
     private static boolean wrappedCancellation(Throwable failure) {
-        // Only standard async wrappers, at most eight links. Never walk arbitrary causes.
-        for (int depth = 0; depth < 8; depth++) {
-            if (failure instanceof java.util.concurrent.CancellationException) {
-                return true;
-            }
-            if (failure == null
-                    || failure.getClass() != java.util.concurrent.CompletionException.class
-                            && failure.getClass()
-                                    != java.util.concurrent.ExecutionException.class) {
-                return false;
-            }
-            failure = failure.getCause();
-        }
-        return failure instanceof java.util.concurrent.CancellationException;
+        // Standard wrappers around a pure cancellation chain only; never walk arbitrary causes.
+        return WorldSourceRefusals.cleanCancellation(failure) != null;
     }
 
     /** Metadata only: no capture, stat, source access or preparation. */
@@ -1435,7 +1424,29 @@ final class WorldStreamScopes {
     private FileTypes.BuildFile stat(
             long id, Cancellation token, WorldSourceRefusals.Site unbound) {
         token.check();
-        var result = WorldSourceFutures.await(files.stat(FileTypes.FileRef.id(id), token));
+        return bound(
+                id,
+                WorldSourceFutures.await(files.stat(FileTypes.FileRef.id(id), token)),
+                token,
+                unbound);
+    }
+
+    /** As {@link #stat} with index facts only: file id, size and content key, never names. */
+    private FileTypes.BuildFile statContent(
+            long id, Cancellation token, WorldSourceRefusals.Site unbound) {
+        token.check();
+        return bound(
+                id,
+                WorldSourceFutures.await(files.statContent(FileTypes.FileRef.id(id), token)),
+                token,
+                unbound);
+    }
+
+    private static FileTypes.BuildFile bound(
+            long id,
+            FileTypes.FileStat result,
+            Cancellation token,
+            WorldSourceRefusals.Site unbound) {
         token.check();
         if (result.state() != FileTypes.FileLookupState.FOUND
                 || result.file() == null
