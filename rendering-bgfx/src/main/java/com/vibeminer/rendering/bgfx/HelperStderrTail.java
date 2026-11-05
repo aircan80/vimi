@@ -39,6 +39,11 @@ public final class HelperStderrTail {
     // Greedy within the authority, so a password containing '@' is covered up to the last '@'.
     private static final Pattern USER_INFO = Pattern.compile("(?i)" + SCHEME + "[^\\s/?#]*@");
     private static final Pattern QUERY = Pattern.compile("(?i)" + SCHEME + "([^\\s?#]*+)[?#]\\S*+");
+    private static final Pattern URL = Pattern.compile("(?i)" + SCHEME + "\\S*+");
+    private static final Pattern ENCODED_SEPARATOR = Pattern.compile("(?i)%(3A|5C|2F)");
+    // Relative too: the WoW account folder, and the realm and character folders below it.
+    private static final Pattern ACCOUNT =
+            Pattern.compile("(?i)(WTF[\\\\/]++Account[\\\\/]++)(?=[^\\s\\\\/\"'`;,)\\]<>}])");
 
     /**
      * Names too common to replace everywhere: a user or host called "world" must not turn every
@@ -182,17 +187,22 @@ public final class HelperStderrTail {
      * Shareable diagnostics text: no game install path, account name or host name survives.
      *
      * <ol>
+     *   <li>Before anything else, {@code %3A}, {@code %5C} and {@code %2F} are decoded inside
+     *       non-{@code file:} URLs, so an encoded path meets the rules below.
      *   <li>Literal sensitive values are replaced in the original text, longest first, in both
      *       slash styles: the home and temporary directories and registered roots become {@code
      *       <path>}, and this machine's user and host names become {@code <redacted>}.
      *   <li>Control and line-separator characters become spaces.
      *   <li>URL user-info becomes {@code <redacted>@}, and URL query strings or fragments, which
      *       can be transient bearer capabilities, become {@code ?<redacted>}.
+     *   <li>Whatever follows {@code WTF/Account/} in either slash style, relative paths included,
+     *       becomes {@code <redacted>}: the account, realm and character folder names.
      *   <li>Every path-like span becomes {@code <path>}: {@code file:} URLs, drive-letter, UNC,
      *       {@code \\?\} and {@code \\.\} paths, POSIX and {@code ~/} paths, including paths right
-     *       after {@code :} or {@code =}. A span runs to the next double quote or backtick, an
-     *       unbalanced {@code )}, {@code ]} or {@code >}, a {@code ;} or {@code ,}, or the end of
-     *       the line, so spaces do not end it. This over-redacts rather than leak.
+     *       after {@code :}, {@code =}, <code>{</code>, {@code |}, {@code ->}, {@code +} or {@code
+     *       #}. A span runs to the next double quote or backtick, an unbalanced {@code )}, {@code
+     *       ]}, {@code >} or <code>}</code>, a {@code ;} or {@code ,}, or the end of the line, so
+     *       spaces do not end it. This over-redacts rather than leak.
      * </ol>
      */
     public static String redact(String text) {
@@ -205,7 +215,7 @@ public final class HelperStderrTail {
 
     /** As {@link #redact(String)} with explicit sensitive values; tests use this directly. */
     static String redact(String text, Sensitive values) {
-        String result = text;
+        String result = decodeUrls(text);
         for (var root : values.roots()) {
             result = root.matcher(result).replaceAll(Matcher.quoteReplacement(PATH));
         }
@@ -215,7 +225,83 @@ public final class HelperStderrTail {
         result = CONTROL.matcher(result).replaceAll(" ");
         result = USER_INFO.matcher(result).replaceAll("$1" + REDACTED + "@");
         result = QUERY.matcher(result).replaceAll("$1$2?" + REDACTED);
-        return paths(result);
+        return paths(accounts(result));
+    }
+
+    /**
+     * Decodes {@code %3A}, {@code %5C} and {@code %2F} inside non-{@code file:} URLs, so an encoded
+     * path such as {@code C%3A%5CUsers%5Cjsmith} meets the literal and path rules. A {@code file:}
+     * URL is a path span already.
+     */
+    private static String decodeUrls(String text) {
+        if (text.indexOf('%') < 0) {
+            return text;
+        }
+        var urls = URL.matcher(text);
+        var out = new StringBuilder(text.length());
+        int last = 0;
+        while (urls.find()) {
+            if (urls.group(1).regionMatches(true, 0, "file:", 0, 5)) {
+                continue;
+            }
+            out.append(text, last, urls.start());
+            String url = urls.group();
+            int segment = 0;
+            for (int i = 0; i <= url.length(); i++) {
+                if (i == url.length() || "/?#&=".indexOf(url.charAt(i)) >= 0) {
+                    out.append(decodeSegment(url.substring(segment, i)));
+                    if (i < url.length()) {
+                        out.append(url.charAt(i));
+                    }
+                    segment = i + 1;
+                }
+            }
+            last = urls.end();
+        }
+        return out.append(text, last, text.length()).toString();
+    }
+
+    /**
+     * One URL segment, decoded. A segment that held an encoded path is matched on its own, so a
+     * decoded {@code /home/...} or {@code C:\...} counts as starting a path although a URL
+     * character precedes it.
+     */
+    private static String decodeSegment(String segment) {
+        var escapes = ENCODED_SEPARATOR.matcher(segment);
+        if (!escapes.find()) {
+            return segment;
+        }
+        var decoded = new StringBuilder(segment.length());
+        do {
+            String hex = escapes.group(1).toUpperCase(Locale.ROOT);
+            String plain = hex.equals("3A") ? ":" : hex.equals("5C") ? "\\\\" : "/";
+            escapes.appendReplacement(decoded, plain);
+        } while (escapes.find());
+        escapes.appendTail(decoded);
+        return paths(accounts(decoded.toString()));
+    }
+
+    /**
+     * Replaces what follows {@code WTF/Account/} (the account, realm and character folders), in
+     * either slash style and in relative paths too, with {@code <redacted>}.
+     */
+    private static String accounts(String text) {
+        var accounts = ACCOUNT.matcher(text);
+        var out = new StringBuilder(text.length());
+        int last = 0;
+        while (accounts.find(last)) {
+            int end = spanEnd(text, accounts.end(), ' ');
+            int tail = end;
+            while (tail > accounts.end() && Character.isWhitespace(text.charAt(tail - 1))) {
+                tail--;
+            }
+            out.append(text, last, accounts.end()).append(REDACTED).append(text, tail, end);
+            last = end;
+            if (last >= text.length()) {
+                break;
+            }
+        }
+        return out.append(text, last, text.length()).toString();
     }
 
     /** Literal patterns to replace, longest first. */
@@ -363,7 +449,8 @@ public final class HelperStderrTail {
             boolean scheme = i + 3 < n && text.charAt(i + 2) == '/' && text.charAt(i + 3) == '/';
             return scheme ? -1 : 0;
         }
-        if (!boundary(prev)) {
+        boolean arrow = prev == '>' && i >= 2 && text.charAt(i - 2) == '-';
+        if (!boundary(prev) && !arrow) {
             return -1;
         }
         if (c == '~' && i + 1 < n && slash(text.charAt(i + 1))) {
@@ -392,9 +479,9 @@ public final class HelperStderrTail {
             if (c == '\'' && opener == '\'') {
                 break;
             }
-            if (c == '(' || c == '[' || c == '<') {
+            if (c == '(' || c == '[' || c == '<' || c == '{') {
                 depth++;
-            } else if (c == ')' || c == ']' || c == '>') {
+            } else if (c == ')' || c == ']' || c == '>' || c == '}') {
                 if (depth == 0) {
                     break;
                 }
@@ -420,11 +507,16 @@ public final class HelperStderrTail {
                 || c == '<'
                 || c == ','
                 || c == ';'
-                || c == '@';
+                || c == '@'
+                || c == '{'
+                || c == '|'
+                || c == '+'
+                || c == '#';
     }
 
     private static boolean stop(char c) {
-        return c == '"' || c == '\'' || c == ')' || c == ']' || c == '>' || c == ';' || c == ',';
+        return c == '"' || c == '\'' || c == ')' || c == ']' || c == '>' || c == '}' || c == ';'
+                || c == ',';
     }
 
     /** UTF-8 decode, redact, then keep only printable ASCII. */
