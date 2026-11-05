@@ -1,5 +1,6 @@
 package com.vibeminer.formats.audio;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -70,6 +71,53 @@ final class AudioStreamDecoderTest {
             assertTrue(seconds > 0.1 && seconds < 0.3, "duration " + seconds);
             assertTrue(audible(pcm));
             assertEquals(-1, stream.read(new byte[2], 0, 2, () -> false));
+        }
+    }
+
+    /**
+     * Game music carries an ID3v2 tag with UTF-16 text frames. Their byte-order mark {@code FF FE}
+     * looks like an MPEG Layer I frame header, so a decoder that scans the tag for frame sync
+     * decodes garbage. The worker must start at the first frame after the tag.
+     */
+    @Test
+    void skipsId3TagsWhoseTextLooksLikeFrameSync() throws IOException {
+        byte[] tagged = fixture("authored-tone.mp3");
+        int body = 10 + 10; // the fixture's own ID3 header and its 10 padding bytes
+        byte[] frame = {
+            'T',
+            'A',
+            'L',
+            'B',
+            0,
+            0,
+            0,
+            11,
+            0,
+            0, // UTF-16 album text, as in game files
+            1,
+            (byte) 0xff,
+            (byte) 0xfe,
+            'C',
+            0,
+            '6',
+            0,
+            '0',
+            0,
+            0,
+            0
+        };
+        var withText = new ByteArrayOutputStream();
+        withText.write(new byte[] {'I', 'D', '3', 3, 0, 0, 0, 0, 0, (byte) frame.length});
+        withText.write(frame);
+        withText.write(tagged, body, tagged.length - body);
+        byte[] expected;
+        try (var stream = AudioStreamDecoder.open(tagged, () -> false)) {
+            expected = drain(stream);
+        }
+        try (var stream = AudioStreamDecoder.open(withText.toByteArray(), () -> false)) {
+            assertEquals(44100, stream.sampleRate());
+            assertEquals(2, stream.channels());
+            assertArrayEquals(expected, drain(stream));
         }
     }
 

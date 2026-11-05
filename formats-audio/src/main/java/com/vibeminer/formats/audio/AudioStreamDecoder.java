@@ -33,17 +33,7 @@ public final class AudioStreamDecoder {
                 && encoded[3] == 'S') {
             return Codec.VORBIS;
         }
-        int offset = 0;
-        if (encoded.length >= 10 && encoded[0] == 'I' && encoded[1] == 'D' && encoded[2] == '3') {
-            int size = 0;
-            for (int i = 6; i < 10; i++) {
-                if ((encoded[i] & 0x80) != 0) {
-                    return Codec.UNSUPPORTED;
-                }
-                size = size << 7 | encoded[i];
-            }
-            offset = 10 + size + ((encoded[5] & 0x10) != 0 ? 10 : 0);
-        }
+        int offset = mpegStart(encoded);
         // MPEG-1 frame sync, a reserved-free layer, bitrate and sample rate.
         if (offset >= 0
                 && offset <= encoded.length - 4
@@ -55,6 +45,25 @@ public final class AudioStreamDecoder {
             return Codec.MPEG;
         }
         return Codec.UNSUPPORTED;
+    }
+
+    /**
+     * Offset of the first byte after a leading ID3v2 tag (0 without one), or -1 for a tag whose
+     * size is not syncsafe. The MPEG decoder does not skip ID3v2 itself: UTF-16 text frames start
+     * with {@code FF FE}, which it would take for a Layer I frame header.
+     */
+    static int mpegStart(byte[] encoded) {
+        if (encoded.length < 10 || encoded[0] != 'I' || encoded[1] != 'D' || encoded[2] != '3') {
+            return 0;
+        }
+        int size = 0;
+        for (int i = 6; i < 10; i++) {
+            if ((encoded[i] & 0x80) != 0) {
+                return -1;
+            }
+            size = size << 7 | encoded[i];
+        }
+        return 10 + size + ((encoded[5] & 0x10) != 0 ? 10 : 0);
     }
 
     /**

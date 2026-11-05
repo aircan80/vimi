@@ -72,7 +72,10 @@ public final class AudioStreamWorker {
     }
 
     private static void mpeg(byte[] encoded, DataOutputStream output) throws IOException {
-        try (var sound = new Sound(new ByteArrayInputStream(encoded))) {
+        // codec() already checked a frame header at this offset, after any ID3v2 tag.
+        int start = AudioStreamDecoder.mpegStart(encoded);
+        try (var sound =
+                new Sound(new ByteArrayInputStream(encoded, start, encoded.length - start))) {
             var limit = new Limit(sound.getSamplingFrequency(), sound.isStereo() ? 2 : 1, output);
             byte[] block = new byte[8192];
             while (true) {
