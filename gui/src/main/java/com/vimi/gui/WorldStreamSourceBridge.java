@@ -11,6 +11,7 @@ import com.vibeminer.rendering.world.TerrainTileAtlas;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
@@ -53,6 +54,18 @@ final class WorldStreamSourceBridge {
         /** This tile's creature outcome; NONE until its late objects ended. */
         WorldTileCreatures.Summary creatures() {
             return creatures;
+        }
+
+        private volatile WorldObjectPicks.Tile picks;
+
+        /** Records the pick geometry and sources of this tile's attached late objects. */
+        void picks(WorldObjectPicks.Tile tile) {
+            picks = tile;
+        }
+
+        /** Pick geometry of this tile's attached late objects, or null. */
+        WorldObjectPicks.Tile picks() {
+            return picks;
         }
 
         /** Descriptive count of static water cells carried by this tile's moved packet. */
@@ -232,10 +245,21 @@ final class WorldStreamSourceBridge {
             boolean failed,
             String note,
             WorldTileCreatures.Summary creatures,
-            ExteriorSummary summary) {
+            ExteriorSummary summary,
+            WorldObjectPicks.Tile picks) {
         ExteriorCopy {
             Objects.requireNonNull(creatures);
             Objects.requireNonNull(summary);
+        }
+
+        ExteriorCopy(
+                WorldStreamTileWriter.Exterior exterior,
+                int placements,
+                boolean failed,
+                String note,
+                WorldTileCreatures.Summary creatures,
+                ExteriorSummary summary) {
+            this(exterior, placements, failed, note, creatures, summary, null);
         }
 
         /** A buildings-only copy whose summary counts {@code placements} buildings. */
@@ -263,7 +287,27 @@ final class WorldStreamSourceBridge {
         }
 
         ExteriorCopy withSummary(ExteriorSummary replacement) {
-            return new ExteriorCopy(exterior, placements, failed, note, creatures, replacement);
+            return new ExteriorCopy(exterior, placements, failed, note, creatures, replacement, picks);
+        }
+
+        /**
+         * This copy with the pick geometry of its exterior and the recorded sources of its
+         * buildings and doodads ({@code buildings}, only when they are in the copy) followed by its
+         * drawn creatures. A pick failure only costs inspection, never the copy.
+         */
+        ExteriorCopy withPicks(WorldFormats.Tile tile, java.util.List<WorldObjectPicks.Source> buildings) {
+            if (exterior == null) return this;
+            var sources = new ArrayList<WorldObjectPicks.Source>();
+            if (!failed) sources.addAll(buildings);
+            sources.addAll(creatures.placed());
+            try {
+                var picked = WorldObjectPicks.Tile.of(tile.x(), tile.y(), exterior.pickTile(), sources);
+                return new ExteriorCopy(exterior, placements, failed, note, creatures, summary, picked);
+            } catch (RuntimeException invalid) {
+                WorldDiagnostics.degraded("object picking",
+                        "World object pick geometry failed; objects drawn but not inspectable", invalid);
+                return this;
+            }
         }
     }
 
@@ -334,20 +378,24 @@ final class WorldStreamSourceBridge {
             }
             // Buildings and doodads; capped receives the bridge's own draw-budget drops.
             var capped = new int[2];
+            var recorded = new WorldObjectPicks.Recorder();
             if (creatures == null) {
                 if (failed || set.placements().isEmpty())
                     return new ExteriorCopy(null, 0, failed, note).withSummary(summary);
-                var copy = copy(set, cancellation, capped);
+                var copy = copy(set, cancellation, capped, recorded);
                 return new ExteriorCopy(copy, buildings(set), false, note)
-                        .withSummary(summary.capped(capped[0], capped[1]));
+                        .withSummary(summary.capped(capped[0], capped[1]))
+                        .withPicks(tile, recorded.sources());
             }
             var drawn = set;
             var result = assemble(failed || set.placements().isEmpty() ? null
-                    : builder -> copyInto(builder, drawn, cancellation, capped), failed, note, creatures, tile, cancellation);
+                    : builder -> copyInto(builder, drawn, cancellation, capped, recorded), failed, note, creatures,
+                    tile, cancellation);
             // A building failure inside assemble leaves no buildings or doodads to describe.
-            if (result.failed() && !failed) return result.withSummary(ExteriorSummary.NONE);
+            if (result.failed() && !failed) return result.withSummary(ExteriorSummary.NONE).withPicks(tile, List.of());
             return result.withSummary(result.exterior() == null && set != null && !set.placements().isEmpty()
-                    ? ExteriorSummary.NONE : summary.capped(capped[0], capped[1]));
+                    ? ExteriorSummary.NONE : summary.capped(capped[0], capped[1]))
+                    .withPicks(tile, recorded.sources());
         } finally {
             if (set != null) set.close();
         }
@@ -636,9 +684,10 @@ final class WorldStreamSourceBridge {
 
     /** capped receives the buildings and doodads dropped by the bridge's draw-budget check. */
     private static WorldStreamTileWriter.Exterior copy(
-            WorldExteriorObjects.TileObjects set, Cancellation cancellation, int[] capped) {
+            WorldExteriorObjects.TileObjects set, Cancellation cancellation, int[] capped,
+            WorldObjectPicks.Recorder recorded) {
         var builder = WorldStreamTileWriter.Exterior.builder();
-        copyInto(builder, set, cancellation, capped);
+        copyInto(builder, set, cancellation, capped, recorded);
         return builder.build();
     }
 
@@ -651,8 +700,10 @@ final class WorldStreamSourceBridge {
             WorldStreamTileWriter.Exterior.Builder builder,
             WorldExteriorObjects.TileObjects set,
             Cancellation cancellation,
-            int[] capped) {
+            int[] capped,
+            WorldObjectPicks.Recorder recorded) {
         capped[0] = capped[1] = 0;
+        recorded.clear();
         for (var image : set.images()) {
             cancellation.check();
             builder.image(image.width(), image.height(), image.rgba());
@@ -691,6 +742,7 @@ final class WorldStreamSourceBridge {
             draws += cost;
             builder.placement(placement.model(), placement.x(), placement.y(), placement.z(),
                     placement.scale(), placement.rotation().rowMajor());
+            recorded.add(WorldObjectPicks.Recorder.exterior(set, placement));
         }
     }
 

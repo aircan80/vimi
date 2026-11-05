@@ -61,7 +61,8 @@ public final class WorldStreamObjectsMaterialProof {
             session.camera(new WorldStreamTransport.Camera(1, 1, WIDTH, HEIGHT, VIEW));
             var committed = session.commit(1, resident).get(5, TimeUnit.SECONDS);
             var before = frame(session, committed.contentRevision(), 1);
-            var outcome = session.attachObjects(resident, quads()).get(10, TimeUnit.SECONDS);
+            var objects = quads();
+            var outcome = session.attachObjects(resident, objects).get(10, TimeUnit.SECONDS);
             if (outcome != WorldStreamTransport.ObjectsOutcome.ATTACHED) {
                 throw new AssertionError("Authored objects did not attach: " + outcome);
             }
@@ -95,6 +96,32 @@ public final class WorldStreamObjectsMaterialProof {
                     "blended red");
             if ((after.pixels().get(row * WIDTH + 656) >>> 24) != 255) {
                 throw new AssertionError("Blending must keep the opaque output alpha");
+            }
+            // CPU picking of the same uploaded tables agrees with these pixels: the transparent
+            // cutout and the gap between quads (inside the model's bounds) pick nothing, and the
+            // gap pixel is the terrain pixel; the opaque and blended quads pick their ranges.
+            var picks = objects.pickTile();
+            int gap = 278;
+            for (int shift : new int[] {0, 8, 16}) {
+                near(
+                        channel(pixel(after, gap, row), shift),
+                        channel(pixel(before, gap, row), shift),
+                        1,
+                        "gap between quads draws terrain");
+            }
+            if (pickAt(picks, 144, row).isPresent() || pickAt(picks, gap, row).isPresent()) {
+                throw new AssertionError("A discarded or undrawn pixel must not pick an object");
+            }
+            var opaque = pickAt(picks, 400, row).orElseThrow();
+            var blended = pickAt(picks, 656, row).orElseThrow();
+            if (opaque.placement() != 0
+                    || opaque.range() != 1
+                    || opaque.material() != WorldStreamObjectsFile.OPAQUE
+                    || Math.abs(opaque.depth() - 5) > 1e-3
+                    || blended.placement() != 0
+                    || blended.range() != 2
+                    || blended.material() != WorldStreamObjectsFile.BLENDED) {
+                throw new AssertionError("Picked surfaces disagree: " + opaque + " " + blended);
             }
             var receipt = session.closeAsync().get(7, TimeUnit.SECONDS);
             session.completion().get(2, TimeUnit.SECONDS);
@@ -170,6 +197,21 @@ public final class WorldStreamObjectsMaterialProof {
                     new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1});
         }
         return builder.build();
+    }
+
+    /**
+     * Picks through the center of frame pixel (x, y) with the explorer's projection: eye right/up
+     * over a focal length of 0.8 frame widths, inverted through {@link TerrainCamera#eye}.
+     */
+    static java.util.Optional<com.vibeminer.rendering.world.WorldObjectPicking.Hit> pickAt(
+            com.vibeminer.rendering.world.WorldObjectPicking.Tile tile, int x, int y) {
+        double focal = WIDTH * .8;
+        double right = (x + .5 - WIDTH * .5) / focal, up = (HEIGHT * .5 - (y + .5)) / focal;
+        double cy = Math.cos(VIEW.yaw()), sy = Math.sin(VIEW.yaw());
+        double cp = Math.cos(VIEW.pitch()), sp = Math.sin(VIEW.pitch());
+        double forward = cp - sp * up, dz = sp + cp * up;
+        return com.vibeminer.rendering.world.WorldObjectPicking.pick(
+                tile, VIEW, cy * forward + sy * right, sy * forward - cy * right, dz, 2200);
     }
 
     private static ByteBuffer solid(int r, int g, int b, int a) {

@@ -258,6 +258,9 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             if (world == null) {
                 world = new WorldView(job);
                 world.bookmarks(worldBookmarks);
+                if (job.work() instanceof NativePreparationWork work)
+                    world.attachFileNames(id -> WorldSpawnModels.path(work.filesHandle(), id,
+                            com.vibeminer.access.Cancellation.NONE));
                 if (sources != null && job.work() instanceof NativePreparationWork work) {
                     var overlay = new WorldSpawnOverlay(token -> sources.worldSpawns(job.build(), token),
                             () -> java.util.List.of(sources.worldSpawnsKey(job.build()), work.revision()));

@@ -131,6 +131,13 @@ public final class WorldStreamSourceBridgeTest {
                             && withCreatures.placements() == 0 && !withCreatures.failed()
                             && withCreatures.creatures().drawn() == 1,
                     "Creature placements are delivered without buildings and are not counted as buildings");
+            var picks = withCreatures.picks();
+            check(picks != null && picks.tileX() == TILE.x() && picks.tileY() == TILE.y()
+                            && picks.geometry().placements() == 1
+                            && picks.sources().getFirst() instanceof WorldObjectPicks.Creature creature
+                            && creature.spawn().npcId() == 1,
+                    "The delivered copy carries pick geometry and the drawn creature's spawn record");
+            check(empty.picks() == null, "No objects, nothing to pick");
             var broken = WorldStreamSourceBridge.prepareExterior(fixture.source, scope, TILE,
                     new Cancellation(), (builder, tile, token) -> {
                         builder.model();

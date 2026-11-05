@@ -76,20 +76,22 @@ final class WorldTileCreatures implements AutoCloseable {
 
     /** One tile's creature outcome; immutable. */
     static final class Summary {
-        static final Summary NONE = new Summary(new int[Count.values().length], 0, null);
+        static final Summary NONE = new Summary(new int[Count.values().length], 0, null, List.of());
 
         private final int[] counts;
         private final int models;
         private final String note;
+        private final List<WorldObjectPicks.Creature> placed;
 
-        private Summary(int[] counts, int models, String note) {
+        private Summary(int[] counts, int models, String note, List<WorldObjectPicks.Creature> placed) {
             this.counts = counts.clone();
             this.models = models;
             this.note = note;
+            this.placed = List.copyOf(placed);
         }
 
         static Summary failed(String note) {
-            return new Summary(new int[Count.values().length], 0, Objects.requireNonNull(note));
+            return new Summary(new int[Count.values().length], 0, Objects.requireNonNull(note), List.of());
         }
 
         int count(Count count) {
@@ -114,6 +116,14 @@ final class WorldTileCreatures implements AutoCloseable {
             return models;
         }
 
+        /**
+         * One tile's drawn creatures in the order their placements were appended; empty for a sum
+         * or a failure.
+         */
+        List<WorldObjectPicks.Creature> placed() {
+            return placed;
+        }
+
         /** Why nothing could be considered (no source, lookup failure), or null. */
         String note() {
             return note;
@@ -122,7 +132,7 @@ final class WorldTileCreatures implements AutoCloseable {
         Summary plus(Summary other) {
             var sum = counts.clone();
             for (int i = 0; i < sum.length; i++) sum[i] += other.counts[i];
-            return new Summary(sum, models + other.models, note != null ? note : other.note);
+            return new Summary(sum, models + other.models, note != null ? note : other.note, List.of());
         }
     }
 
@@ -298,6 +308,7 @@ final class WorldTileCreatures implements AutoCloseable {
         var nearby = spawns.near(mapId, centerX, centerY, size * Math.sqrt(.5) + 1, WorldSpawns.MAX_NEARBY);
         var counts = new int[Count.values().length];
         var added = new HashMap<Long, Integer>();
+        var placed = new java.util.ArrayList<WorldObjectPicks.Creature>();
         int placements = 0, previewsTried = 0;
         for (var spawn : nearby.placed()) {
             token.check();
@@ -363,11 +374,13 @@ final class WorldTileCreatures implements AutoCloseable {
             var transform = transform(spawn, chosen);
             builder.placement(model, transform[0], transform[1], transform[2], transform[3], transform[4],
                     transform[5]);
+            placed.add(new WorldObjectPicks.Creature(spawn, spawns.npc(spawn.npcId()).orElse(null), choice,
+                    transform[3]));
             placements++;
             counts[Count.DRAWN.ordinal()]++;
         }
         return new Summary(counts, added.size(), nearby.omitted() == 0 ? null
-                : nearby.omitted() + " nearby points beyond the query limit were not considered");
+                : nearby.omitted() + " nearby points beyond the query limit were not considered", placed);
     }
 
     /**
