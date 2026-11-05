@@ -9,7 +9,16 @@ import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
-/** Bounded raw group views, without payload copies, source authority or rendering policy. */
+/**
+ * Bounded raw group views, without payload copies, source authority or rendering policy.
+ *
+ * <p>Each stream is a singleton, with two recorded exceptions. A second MOCV is admitted when MOGP
+ * declares flag 0x1000000, and a second and third MOTV when it declares 0x2000000 and 0x40000000;
+ * these extra sets are validated against the vertex count but not exposed: {@code uv()} and {@code
+ * colors()} are always the first recorded set. Triangle materials come from MOPY (2 bytes per
+ * triangle) or, in newer groups, MPY2 (4 bytes per triangle), never both; {@link
+ * Borrow#triangleBytes()} tells which.
+ */
 public final class WmoGroupSpans {
     public static final int MAX_BYTES = 1 << 20;
     public static final int MAX_VERTICES = 16384, MAX_TRIANGLES = 16384;
@@ -17,7 +26,10 @@ public final class WmoGroupSpans {
     private static final int MVER = 0x4d564552, MOGP = 0x4d4f4750;
     private static final int MOVT = 0x4d4f5654, MONR = 0x4d4f4e52, MOVI = 0x4d4f5649;
     private static final int MOTV = 0x4d4f5456, MOBA = 0x4d4f4241, MOPY = 0x4d4f5059;
-    private static final int MOCV = 0x4d4f4356, MLIQ = 0x4d4c4951;
+    private static final int MOCV = 0x4d4f4356, MLIQ = 0x4d4c4951, MPY2 = 0x4d505932;
+
+    /** MOGP flags declaring a second MOCV, a second MOTV and a third MOTV. */
+    private static final long COLORS2 = 0x1000000L, UV2 = 0x2000000L, UV3 = 0x40000000L;
 
     private WmoGroupSpans() {}
 
@@ -136,6 +148,7 @@ public final class WmoGroupSpans {
         private Floats positions, normals, uv;
         private Indices indices;
         private Bytes triangles, colors, liquid;
+        private final int triangleBytes;
         private final int metadataBytes;
 
         private Borrow(Parser p) {
@@ -150,6 +163,7 @@ public final class WmoGroupSpans {
             triangles = p.triangles;
             colors = p.colors;
             liquid = p.liquid;
+            triangleBytes = p.triangleBytes;
             metadataBytes = p.budget;
         }
 
@@ -195,9 +209,16 @@ public final class WmoGroupSpans {
             return indices;
         }
 
+        /** Per-triangle MOPY or MPY2 bytes; {@link #triangleBytes()} gives the stride. */
         public Bytes triangles() {
             check();
             return triangles;
+        }
+
+        /** 2 for MOPY triangle records, 4 for MPY2. */
+        public int triangleBytes() {
+            check();
+            return triangleBytes;
         }
 
         public Bytes colors() {
@@ -242,7 +263,12 @@ public final class WmoGroupSpans {
         private Floats positions, normals, uv;
         private Indices indices;
         private Bytes triangles, colors, liquid;
-        private int budget = 4096, seen;
+        private int budget = 4096, seen, triangleBytes;
+        private int extraUv, extraColors;
+
+        /** Vertex counts of the extra MOTV and MOCV sets, checked once MOVT is known. */
+        private final ArrayList<Integer> extraVertices = new ArrayList<>();
+
         private boolean version, group;
 
         Parser(byte[] raw, BooleanSupplier canceled) {
@@ -293,10 +319,13 @@ public final class WmoGroupSpans {
             }
             require(version && group && (seen & 63) == 63, "Group required streams");
             int vertices = positions.size() / 3;
+            for (int count : extraVertices) {
+                require(count == vertices, "Group extra set count");
+            }
             require(
                     normals.size() == positions.size()
                             && uv.size() == vertices * 2
-                            && triangles.size() == indices.size() / 3 * 2
+                            && triangles.size() == indices.size() / 3 * triangleBytes
                             && (colors == null || colors.size() == vertices * 4)
                             && (long) header.batchesA() + header.batchesB() + header.batchesC()
                                     == batches.size(),
@@ -330,6 +359,9 @@ public final class WmoGroupSpans {
 
         private void mesh(int tag, int bytes) {
             int bit = bit(tag);
+            if (bit != 0 && (seen & bit) != 0 && extra(tag, bytes)) {
+                return;
+            }
             if (bit != 0) {
                 require((seen & bit) == 0, "Duplicate group stream");
                 seen |= bit;
@@ -344,8 +376,9 @@ public final class WmoGroupSpans {
                     indices = new Indices(raw, canceled, input.position(), triangles * 3);
                     spans.add(indices);
                 }
-                case MOPY -> {
-                    count(bytes, 2, MAX_TRIANGLES);
+                case MOPY, MPY2 -> {
+                    triangleBytes = tag == MOPY ? 2 : 4;
+                    count(bytes, triangleBytes, MAX_TRIANGLES);
                     triangles = bytes(bytes);
                 }
                 case MOCV -> {
@@ -377,6 +410,26 @@ public final class WmoGroupSpans {
                     /* Unparsed source facts only. */
                 }
             }
+        }
+
+        /**
+         * Admits a repeated MOTV or MOCV that MOGP declares as an extra set: validated, recorded
+         * for the vertex-count check, and otherwise ignored. False leaves the duplicate to fail.
+         */
+        private boolean extra(int tag, int bytes) {
+            long flags = header.flags();
+            if (tag == MOTV
+                    && extraUv < ((flags & UV2) != 0 ? 1 : 0) + ((flags & UV3) != 0 ? 1 : 0)) {
+                extraUv++;
+                extraVertices.add(floats(bytes, 2, MAX_VERTICES).size() / 2);
+                return true;
+            }
+            if (tag == MOCV && extraColors < ((flags & COLORS2) != 0 ? 1 : 0)) {
+                extraColors++;
+                extraVertices.add(count(bytes, 4, MAX_VERTICES));
+                return true;
+            }
+            return false;
         }
 
         private Floats floats(int bytes, int width, int maximum) {
@@ -441,7 +494,7 @@ public final class WmoGroupSpans {
             case MONR -> 2;
             case MOTV -> 4;
             case MOVI -> 8;
-            case MOPY -> 16;
+            case MOPY, MPY2 -> 16;
             case MOBA -> 32;
             case MOCV -> 64;
             case MLIQ -> 128;
