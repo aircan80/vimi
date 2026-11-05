@@ -134,4 +134,68 @@ debug/windows-d3d11-terrain and continue."
 
 ## Results
 
-_(Windows: fill in GPU and driver version, tested commit, experiment results, and the cause.)_
+Windows 11 Pro, 2026-11-05. Tested commit `5b1c8315`.
+GPU: NVIDIA GeForce RTX 5090, driver 32.0.16.2114 (an Intel Graphics adapter, driver
+32.0.101.8860, is also present; which adapter bgfx picked was not confirmed).
+
+| Step | Result |
+| --- | --- |
+| 1. Offline checks | **Pass.** `Dx11InstanceInputSignatureTest` passed; `scripts/rendering` Python tests: 15 OK |
+| 2. Default D3D11 run | **Pass.** Zephras Isle (map 2991) renders terrain, river and cliffs with GPU terrain on, 9 / 9 tiles textured. The sky-only bug is fixed. The `Inline GPU renderer ready · Direct3D 11` status text was not visible anywhere in the World view, so the backend was not confirmed from the UI (no override was set, so D3D11 is the default). This run was short. |
+| 3. Vulkan A/B (`-PgpuBackend=vulkan`) | **Fail, but not a Vulkan bug.** Terrain renders, then after 23 s to about 2 min of walking the viewport freezes on its last frame: "World viewer failed", 0 / 9 tiles. Reproduced 4 times at different places (Shrine of Akir tile 26,31; Shen'dar Highlands tile 26,27). |
+| 4. Regression proof | Not run. |
+
+### New bug: a routine tile cancellation kills the World viewer
+
+The renderer child is not crashing. It exits cleanly (code 0) because the host closes it:
+the host's source side raises `IllegalStateException("Source outcome accompanied by an
+unexpected failure")` from `WorldSourceRefusals.fatalAuxiliary`. The wrapped original
+failure, captured with temporary local logging (not committed), was:
+
+```text
+thread=world-v2-parent-producer-files
+java.util.concurrent.CompletionException: World source await failed
+    at com.vibeminer.concepts.world.WorldSourceFutures.lambda$await$0(WorldSourceFutures.java:25)
+    at com.vibeminer.files.Io$Bounded.lambda$run$0(Io.java:59)
+Caused by: java.util.concurrent.CancellationException: join
+    at java.util.concurrent.CompletableFuture.join
+    at com.vibeminer.files.BuildFilesHandle.lambda$stat$0(BuildFilesHandle.java:310)
+Caused by: java.util.concurrent.CancellationException: join
+    at java.util.concurrent.CompletableFuture.join
+    at com.vibeminer.files.names.ListfileStore.lambda$nameOf$0(ListfileStore.java:275)
+Caused by: java.util.concurrent.CancellationException
+    at com.vibeminer.store.Cancellation.check(Cancellation.java:70)
+    at com.vibeminer.store.ObjectStore.readCore(ObjectStore.java:990)
+
+fatalAuxiliary called from:
+    WorldSourceRefusals.boundary(WorldSourceRefusals.java:108)
+    WorldTerrainLiquids.inspectAndWrite(WorldTerrainLiquids.java:534)
+    WorldWaterPreview.prepareAndWrite(WorldWaterPreview.java:391)
+    com.vimi.gui.WorldStreamSourceBridge$Producer.prepareWater(WorldStreamSourceBridge.java:212)
+    WorldStreamTransport$Session.produceFile(WorldStreamTransport.java:969)
+```
+
+Cause: water inspection for a tile is cancelled through `admission.cancellation()` as the
+camera moves on, which is expected. Each `CompletableFuture.join()` in the files layer
+(`ListfileStore.nameOf`, then `BuildFilesHandle.stat`) wraps it in a new
+`CancellationException("join")` whose cause is the previous one.
+`WorldSourceRefusals.boundary` accepts only a cause-free `CancellationException`, so it
+classifies this chain as fatal, the stream protocol fails, and `GpuPreviewService` closes
+the persistent renderer. This lives in the source/water path, not the GPU backend, so D3D11
+is very likely affected too; the D3D11 run was probably just too short to hit it.
+
+Supporting observation: `WorldStreamTransport.drainErrors` discards the renderer's stderr
+and the host failure is only shown as "World viewer failed", which hid this.
+
+### Next step (Linux)
+
+1. Decide the fix. Proposed: in `WorldSourceRefusals.boundary`, also accept a bounded chain
+   in which every link is exactly `CancellationException.class` (not a subclass) with no
+   suppressed exceptions, ending in a cause-free one. A chain made only of cancellations
+   cannot hide an auxiliary failure, so the existing
+   `cancellationSubclassCannotHideAuxiliaryFailure` and accessor tests still hold.
+   The alternative is to stop the files layer (`ListfileStore`, `BuildFilesHandle`) from
+   re-wrapping cancellation on `join()`.
+2. Add a regression test that reproduces the exact chain above through `boundary()`.
+3. Consider an opt-in way to surface the host failure and renderer stderr for debugging.
+4. Back on Windows: walk Zephras Isle for several minutes on both D3D11 and Vulkan.
