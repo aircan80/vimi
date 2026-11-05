@@ -115,4 +115,21 @@ public final class WalFrames {
             file.write(ByteBuffer.wrap(garbage), HEADER + index * frameBytes());
         }
     }
+
+    /**
+     * A torn write: frame {@code index} kept its header, so its salts still match, but its page
+     * reached the disk only partly. Only the cumulative checksum can reject it.
+     */
+    public void tear(int index) throws IOException {
+        byte[] page = new byte[pageSize];
+        long at = HEADER + index * frameBytes() + FRAME_HEADER;
+        try (FileChannel file =
+                FileChannel.open(wal, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+            file.read(ByteBuffer.wrap(page), at);
+            for (int i = pageSize / 2; i < pageSize; i++) {
+                page[i] = (byte) ~page[i];
+            }
+            file.write(ByteBuffer.wrap(page), at);
+        }
+    }
 }

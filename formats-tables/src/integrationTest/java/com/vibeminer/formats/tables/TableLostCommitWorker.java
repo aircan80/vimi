@@ -74,6 +74,8 @@ public final class TableLostCommitWorker {
                 });
         prepare(scenario);
         scenario.probe(null);
+        claim(scenario);
+        download(scenario);
         System.out.println("READY LOST");
         System.out.flush();
         System.in.read();
@@ -92,6 +94,82 @@ public final class TableLostCommitWorker {
         publishCatalog(scenario, NEXT, TableCommitScenario.IDS);
         receipt(scenario.library.databasePath(), "TABLES");
         return pass;
+    }
+
+    static final String CLAIMANT = "build-b";
+    static final byte[] DOWNLOAD = download();
+
+    private static byte[] download() {
+        byte[] bytes = new byte[70_001];
+        new java.util.Random(7).nextBytes(bytes);
+        System.arraycopy(new byte[] {'B', 'L', 'T', 'E', 0, 0, 0, 0, 'N'}, 0, bytes, 0, 9);
+        return bytes;
+    }
+
+    static ObjectKey downloadKey() {
+        try {
+            return new ObjectKey(
+                    ObjectKey.ENCODED, MessageDigest.getInstance("MD5").digest(DOWNLOAD));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** A second build claims table 100's stored node: an ownership attach, no payload write. */
+    static void claim(TableCommitScenario scenario) {
+        var node =
+                new ObjectKey(
+                        ObjectKey.GENERATED,
+                        GeneratedKey.parse(scenario.page(100).identity()).bytes());
+        byte[] bytes = scenario.library.read(node).join().bytes();
+        var outcome =
+                scenario.library
+                        .forOwner(
+                                CLAIMANT,
+                                LibraryCatalog.Scope.BUILD,
+                                "tables",
+                                LibraryCatalog.Role.DERIVED)
+                        .put(List.of(new com.vibeminer.store.StoreTypes.PutObject(node, bytes)))
+                        .join()
+                        .getFirst()
+                        .outcome();
+        if (outcome != com.vibeminer.store.StoreTypes.PutOutcome.ALREADY_PRESENT) {
+            throw new IllegalStateException("Claim stored a new object: " + outcome);
+        }
+    }
+
+    static boolean claimed(TableCommitScenario scenario) {
+        try {
+            return scenario.catalog
+                            .figures(CLAIMANT, com.vibeminer.store.Cancellation.NONE)
+                            .join()
+                            .derived()
+                            .storedObjects()
+                    > 0;
+        } catch (java.util.concurrent.CompletionException unknownOwner) {
+            return false;
+        }
+    }
+
+    /** A staged download: the staged file is copied into the pack, committed, then deleted. */
+    static void download(TableCommitScenario scenario) {
+        var stage =
+                scenario.original
+                        .stage(
+                                downloadKey(),
+                                DOWNLOAD.length,
+                                com.vibeminer.store.StoreTypes.Origin.CDN,
+                                com.vibeminer.store.Cancellation.NONE)
+                        .join();
+        stage.append(DOWNLOAD, com.vibeminer.store.Cancellation.NONE).join();
+        var outcome = stage.commit(com.vibeminer.store.Cancellation.NONE).join().outcome();
+        if (outcome != com.vibeminer.store.StoreTypes.PutOutcome.STORED) {
+            throw new IllegalStateException("Download not stored: " + outcome);
+        }
+    }
+
+    static boolean downloaded(TableCommitScenario scenario) {
+        return scenario.library.has(downloadKey()).join();
     }
 
     /**

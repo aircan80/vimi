@@ -70,7 +70,11 @@ final class TableLostCommitCrashTest {
         /** The catalog generation naming the new graphs. */
         CATALOG_PUBLISHED,
         /** The preparation receipt. */
-        RECEIPT_SAVED
+        RECEIPT_SAVED,
+        /** A second build's ownership claim on table 100's existing node. */
+        CLAIMED,
+        /** A staged download, committed and its staged file deleted. */
+        DOWNLOADED
     }
 
     @BeforeAll
@@ -125,8 +129,9 @@ final class TableLostCommitCrashTest {
         total = wal.frames();
         commits = wal.commits().stream().filter(c -> c > synced).toList();
         assertEquals(total, commits.getLast(), "the session ends on a commit frame");
-        // 2 tables, the inventory's delete and put, 3 catalog transactions and the receipt.
-        assertTrue(commits.size() >= 8, "unsynced session commits: " + commits);
+        // 2 tables, the inventory's delete and put, 3 catalog transactions, the receipt, the
+        // claim and the download.
+        assertTrue(commits.size() >= 10, "unsynced session commits: " + commits);
         assertTrue(Files.isDirectory(control.resolve("snapshot")), "pre-commit snapshot taken");
     }
 
@@ -153,7 +158,7 @@ final class TableLostCommitCrashTest {
                         () -> {
                             assertEquals(total - synced + 1, ranks.size(), "" + ranks);
                             assertEquals(Stage.PREVIOUS, ranks.get(synced), "" + ranks);
-                            assertEquals(Stage.RECEIPT_SAVED, ranks.get(total), "" + ranks);
+                            assertEquals(Stage.DOWNLOADED, ranks.get(total), "" + ranks);
                             Stage previous = Stage.PREVIOUS;
                             for (var rank : ranks.entrySet()) {
                                 assertTrue(
@@ -178,9 +183,13 @@ final class TableLostCommitCrashTest {
                     DynamicTest.dynamicTest(
                             "lose commit frame " + commit + " of " + total + ", keep the rest",
                             () -> {
-                                Stage reordered = recover(total, wal -> wal.lose(lost));
                                 Stage prefix = recover(start, wal -> wal.keep(start));
+                                Stage reordered = recover(total, wal -> wal.lose(lost));
                                 assertEquals(prefix, reordered, "only the earlier prefix survives");
+                                // A torn sector: the header (and salts) survived, the page did not,
+                                // so only the checksum chain can reject it.
+                                Stage torn = recover(total, wal -> wal.tear(lost));
+                                assertEquals(prefix, torn, "a torn page ends the valid prefix");
                             }));
             previous = commit;
         }
@@ -239,9 +248,17 @@ final class TableLostCommitCrashTest {
             scenario.assertRegenerates(reference, true);
             assertCatalogNames(scenario, TableCommitScenario.IDS);
             assertEquals("TABLES", TableLostCommitWorker.receipt(scenario.library.databasePath()));
+            // A lost claim is claimed again; a lost download is fetched again (its staged file is
+            // gone: the policy's allowed loss).
+            if (!TableLostCommitWorker.claimed(scenario)) {
+                TableLostCommitWorker.claim(scenario);
+            }
+            if (!TableLostCommitWorker.downloaded(scenario)) {
+                TableLostCommitWorker.download(scenario);
+            }
         }
         try (var scenario = TableCommitScenario.open(folder)) {
-            assertEquals(Stage.RECEIPT_SAVED, classify(scenario), "the rebuilt state persists");
+            assertEquals(Stage.DOWNLOADED, classify(scenario), "the rebuilt state persists");
             scenario.assertRegenerates(reference, true);
         }
         return stage;
@@ -292,7 +309,11 @@ final class TableLostCommitCrashTest {
                         + " catalog="
                         + (next ? "v2" : previous ? "v1" : "none")
                         + " receipt="
-                        + receipt;
+                        + receipt
+                        + " claimed="
+                        + TableLostCommitWorker.claimed(scenario)
+                        + " downloaded="
+                        + TableLostCommitWorker.downloaded(scenario);
         // A saved inventory names only graphs that exist, and they verify.
         if (restored != null) {
             var verified =
@@ -314,13 +335,24 @@ final class TableLostCommitCrashTest {
         }
         Map<Stage, String> allowed =
                 Map.of(
-                        Stage.PREVIOUS, "tables=0 inventory=2 catalog=v1 receipt=null",
-                        Stage.ONE_TABLE, "tables=1 inventory=2 catalog=v1 receipt=null",
-                        Stage.BOTH_TABLES, "tables=2 inventory=2 catalog=v1 receipt=null",
-                        Stage.INVENTORY_DELETED, "tables=2 inventory=0 catalog=v1 receipt=null",
-                        Stage.INVENTORY_SAVED, "tables=2 inventory=4 catalog=v1 receipt=null",
-                        Stage.CATALOG_PUBLISHED, "tables=2 inventory=4 catalog=v2 receipt=null",
-                        Stage.RECEIPT_SAVED, "tables=2 inventory=4 catalog=v2 receipt=TABLES");
+                        Stage.PREVIOUS,
+                                "tables=0 inventory=2 catalog=v1 receipt=null claimed=false downloaded=false",
+                        Stage.ONE_TABLE,
+                                "tables=1 inventory=2 catalog=v1 receipt=null claimed=false downloaded=false",
+                        Stage.BOTH_TABLES,
+                                "tables=2 inventory=2 catalog=v1 receipt=null claimed=false downloaded=false",
+                        Stage.INVENTORY_DELETED,
+                                "tables=2 inventory=0 catalog=v1 receipt=null claimed=false downloaded=false",
+                        Stage.INVENTORY_SAVED,
+                                "tables=2 inventory=4 catalog=v1 receipt=null claimed=false downloaded=false",
+                        Stage.CATALOG_PUBLISHED,
+                                "tables=2 inventory=4 catalog=v2 receipt=null claimed=false downloaded=false",
+                        Stage.RECEIPT_SAVED,
+                                "tables=2 inventory=4 catalog=v2 receipt=TABLES claimed=false downloaded=false",
+                        Stage.CLAIMED,
+                                "tables=2 inventory=4 catalog=v2 receipt=TABLES claimed=true downloaded=false",
+                        Stage.DOWNLOADED,
+                                "tables=2 inventory=4 catalog=v2 receipt=TABLES claimed=true downloaded=true");
         for (var entry : allowed.entrySet()) {
             if (entry.getValue().equals(state)) {
                 return entry.getKey();

@@ -55,7 +55,9 @@ durable.** Two kinds exist:
   before the application deletes a pack it supersedes, creates a file that only that commit lets
   recovery clean up, or truncates a tail that the commit accounts for.
 
-Each of these keeps its fsync or its FULL commit.
+Each of these keeps its fsync or its FULL commit. One file action follows a NORMAL commit on
+purpose, because losing it loses data but cannot corrupt anything: deleting a staged download
+after it is committed (#3a).
 
 ### What reopening does after lost commits
 
@@ -94,7 +96,8 @@ A crash can lose at most the commits since the last of these.
 |---|------|--------|----------|-----------|
 | 1 | `ObjectStore.commitPending`: the library's grouped index transaction for each generated table and each batch of objects | pack fsync, then FULL | **NORMAL.** The pack fsync stays. | The fsync orders the bytes before their rows. A lost commit drops a suffix: the pack tail is truncated on reopen and the table is regenerated. This is the hot path, one commit per cold table. |
 | 2 | `ObjectStore.append`: the library's ungrouped index transaction | pack fsync, then FULL | **NORMAL.** The pack fsync stays. | Same argument as #1. |
-| 3 | `ObjectStore.claimExisting`: an owner attaches to an object that is already stored | FULL | **NORMAL** | Same database as the object rows and every reader of the claim. Nothing outside the database acts on the claim. Payloads are removed only by compaction, which is FULL (#14) and syncs this claim first. A lost claim leaves the object unowned by this owner, and the next put or claim re-attaches it. |
+| 3 | `ObjectStore.claimExisting`: an owner attaches to an object that is already stored | FULL | **NORMAL** | Same database as the object rows and every reader of the claim. Nothing outside the database acts on the claim. Payload bytes are removed only by compaction, which is FULL (#14) and syncs this claim first. `ObjectStore.delete` drops index rows (tombstones) through the same NORMAL append without consulting other owners' claims, which predates this change. The tombstone, its row change and any claim are all in one WAL, so the suffix argument covers them too. A lost claim leaves the object unowned by this owner, and the next put or claim re-attaches it. |
+| 3a | `Staging.commit`: a staged download (up to 512 MiB) is copied into the pack, the pack is fsynced, the row commits through `append`, then `release(true)` deletes the staged `.part` file | pack fsync, then FULL | **NORMAL. An allowed loss.** | The one file action after a NORMAL commit. If the OS drops the commit but keeps the unlink, reopen truncates the pack tail, the staged file is gone too, and the object is downloaded again from the start. That is loss, not corruption: no row ever points at missing bytes. The policy allows losing a recent acknowledged write, and this is one. |
 | 4 | `LibraryCatalog` writes (`retainOwner`, `expect`, `replace` begin/append/publish, `forget`, `reclaim`) | FULL per transaction | **NORMAL** (the connection now sets it explicitly) | The catalog shares the library's WAL. It "never touches stored payloads", and `reclaim` deletes only reference rows. Lost commits are handled as described under Catalog above. |
 | 5 | `SqlPreparationReceipts` (receipts) | FULL | **NORMAL** | Written after preparation, in the same WAL as what it summarizes. A surviving receipt therefore implies its tables and inventory survived. A lost receipt means preparation runs again, which the inventory restore makes cheap. |
 | 6 | `BuildRegistry` | FULL | **NORMAL** | `LOADED` is written after `openMetadataBuild` returns, so after its objects committed in the same WAL. Its catalog counterpart `catalog.sqlite` is a separate, refetchable observation cache that is already NORMAL (#17). The registry stores its own `BuildRef` and needs nothing in that cache to be durable. |
@@ -111,7 +114,7 @@ A crash can lose at most the commits since the last of these.
 | 17 | `ObjectStore` open: `clean=0` (FULL), `LibraryOwnership.initialize` (FULL), index rebuild (checkpoint, replace, directory fsync), tail truncation and fsync | FULL + fsync | **Keep** | Once per open, so not worth weakening. The clean marker brackets the session's file actions (tail truncation, unlisted-pack deletion). |
 | 18 | `ObjectStore` close: `clean=1` (FULL) then `wal_checkpoint(TRUNCATE)` | FULL | **Keep** | Once per close. The checkpoint syncs everything anyway. |
 | 19 | `abortPending` / failed append: truncate and fsync the pack after a confirmed rollback | fsync | **Keep** | A file action that follows a rollback, not a commit. It removes uncommitted bytes. |
-| 20 | `CatalogStore` (`catalog.sqlite`, a separate file) | NORMAL | Unchanged | A refetchable CDN observation cache. Nothing in the library depends on its rows being durable. |
+| 20 | `CatalogStore` (`catalog.sqlite`, a separate file) | NORMAL | Unchanged | The direction that matters is `catalog.sqlite` depending on the library. Its `entries` rows are projections of library history rows and carry their `record` and `document` keys. It has its own WAL and checkpoints, so it can now durably outlive a lost history commit, which FULL library commits used to prevent. That is harmless: main code never dereferences `BuildRegion.lastRecord` or the document key, and `has()` only skips re-ingesting. The worst outcome is a listed build whose observation the library lost, which the next discovery observes again. |
 | 21 | `ItemGridStore` / `DerivedDatabase` (`derived/grids`, separate files) | default | Unchanged | Disposable grids keyed by build identity and computed deterministically from the tables. Regenerated tables give the same grid. |
 | 22 | `ClientHotfixStore` staged file `force` before rename | fsync | **Keep** | Data before the rename that publishes it. Independent of the library. |
 | 23 | Questie, EG link and Polestar repositories (`force` and their own SQLite files) | fsync | Unchanged | Independent source caches, durable before any preference names them (#9). |
@@ -134,17 +137,21 @@ before the next:
 1. a known-table pass (tables 100 and 200);
 2. the inventory replacement (a delete, then a put);
 3. catalog generation v2 (three transactions);
-4. a receipt written through its own NORMAL connection, like the application's stores.
+4. a receipt written through its own NORMAL connection, like the application's stores;
+5. a second build's claim on table 100's existing node (`claimExisting`);
+6. a staged download, committed with its staged file deleted (`Staging.commit`, #3a).
 
 The child is then SIGKILLed. The parent asserts that the WAL header and database are unchanged since
 the sync point, so no checkpoint happened and every frame after it is a valid candidate for loss.
 
 **The losses applied:**
 
-- **Every suffix.** Keep the first k frames, for every k from the sync point to the end. That is 33
+- **Every suffix.** Keep the first k frames, for every k from the sync point to the end. That is 49
   cases, including torn transactions.
 - **Reordered writeback.** Lose each commit frame but keep the frames after it. The state must equal
   the prefix before that transaction.
+- **Torn page.** For each commit frame, keep its header (valid salts) but corrupt half its page, so
+  only SQLite's checksum chain can reject it. The state must again equal the earlier prefix.
 - **Pre-commit snapshot.** The database and WAL as copied just before the second table's index
   commit, with every later fsynced pack byte kept.
 
@@ -159,9 +166,30 @@ test asserts:
 - the whole state is exactly one prefix of the session;
 - the survivors only grow with the frames kept, and the cases reach every stage.
 
-The test then rebuilds: with no receipt it prepares again. It asserts the reference ledger,
+The test then rebuilds: with no receipt it prepares again, a lost claim is claimed again, and a
+lost download is fetched again. It asserts the reference ledger,
 identities and rows, then reopens once more.
 
 **Mutation check:** with the library's tail truncation disabled, the reopened store replays the
 fsynced pack tails and resurrects commits whose index was lost. The prefix and snapshot assertions
 then fail.
+
+### Pinned modes
+
+A simulated crash cannot tell a durable FULL commit from a NORMAL one that happened to reach the
+disk, so `LibraryDurabilityModeTest` (object-store integrationTest) pins the mode instead. On a
+library store with small packs it records `PRAGMA synchronous` at every index `COMMIT`, together
+with the maintenance points, and asserts:
+
+- open's commits are all FULL (#17);
+- a first put is a FULL pack listing, then NORMAL rows (#13, #1);
+- a claim, a staged commit and a delete are NORMAL (#3, #3a, #2);
+- a pack rollover is FULL listing and seal, then NORMAL rows (#13);
+- compaction's commits are all FULL: the intent row commits before `COMPACT_TARGET_LISTED`, and the
+  switch commits FULL right after `COMPACT_SWITCHING` and before `COMPACT_OLD_DELETED` (#14);
+- scan's commits are all FULL (#16);
+- close ends with a FULL commit (#18).
+
+Each of these mutations fails it: making the compaction switch NORMAL, making the intent row
+NORMAL, and returning library data commits to FULL. `Maintenance.recover` (#15) runs only for a
+non-library tail at open and is not pinned here.
