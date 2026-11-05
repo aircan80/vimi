@@ -502,6 +502,33 @@ final class SpellTextsTest {
             List<Db2Types.Row> effects,
             List<Db2Types.Row> options,
             List<Db2Types.Row> radii) {
+        return auraPreview(raw, effects, options, radii, TableTypes.State.READY, List.of());
+    }
+
+    private static SpellTexts.Description auraPreview(
+            String raw,
+            List<Db2Types.Row> effects,
+            List<Db2Types.Row> options,
+            List<Db2Types.Row> radii,
+            TableTypes.State optionsState,
+            List<SpellTexts.EffectOverride> overrides) {
+        var optionsTable = fullAuraOptions(options);
+        var e = optionsTable.entry();
+        optionsTable =
+                new MemoryTables.FakeTable(
+                        new TableTypes.Entry(
+                                e.fileDataId(),
+                                e.name(),
+                                optionsState,
+                                true,
+                                null,
+                                e.counts(),
+                                e.contentKey()),
+                        optionsTable.columns(),
+                        optionsTable.rows(),
+                        optionsTable.schema(),
+                        Map.of(),
+                        true);
         var world =
                 new MemoryTables()
                         .add(
@@ -520,7 +547,7 @@ final class SpellTextsTest {
                                                 FIELDS,
                                                 effects,
                                                 TableTypes.State.READY),
-                                        fullAuraOptions(options),
+                                        optionsTable,
                                         layout(
                                                 table(
                                                         6,
@@ -536,7 +563,8 @@ final class SpellTextsTest {
                                                 "F9A913EE")));
         try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
                 var service = new SpellTexts(tables, "1.60.1.70790")) {
-            return service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+            return service.description(
+                            16929, overrides, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
                     .join();
         }
     }
@@ -547,6 +575,51 @@ final class SpellTextsTest {
         values.set(FIELDS.indexOf("EffectRadiusIndex[0]"), first);
         values.set(FIELDS.indexOf("EffectRadiusIndex[1]"), second);
         return new Db2Types.Row(id, false, null, values, List.of());
+    }
+
+    @Test
+    void countsOutOfRangeMissingFieldsPartialLookupsAndRankOverridesStayExact() {
+        var over =
+                auraPreview(
+                        "Next $n swings, up to $u stacks.",
+                        List.of(),
+                        List.of(row(7, "7", "0", "1001", "0", "5000", "0", "16929")),
+                        List.of());
+        assertEquals("Next ? swings, up to ? stacks.", over.display());
+        assertEquals(
+                "SpellAuraOptions records no proc charges (1-1000)",
+                over.substitutions().getFirst().issue());
+        var partial =
+                auraPreview(
+                        "A $h% chance for $n swings.",
+                        List.of(),
+                        List.of(row(7, "7", "0", "5", "30", "3", "0", "16929")),
+                        List.of(),
+                        TableTypes.State.PARTIAL,
+                        List.of());
+        assertEquals("A 30% chance for ? swings.", partial.display());
+        assertTrue(partial.substitutions().get(1).issue().contains("may be hidden"));
+        var missing = procPreview("Next $n swings.", List.of(row(7, "7", "0", "30", "0", "16929")));
+        assertEquals("Next ? swings.", missing.display());
+        assertEquals(
+                "SpellAuraOptions has no verified ProcCharges field",
+                missing.substitutions().getFirst().issue());
+        var none = procPreview("Next $n swings, $h%.", List.of());
+        assertEquals(
+                "SpellAuraOptions records no DifficultyID 0 row for this spell",
+                none.substitutions().getFirst().issue());
+        // A rank override replaces the amount but keeps the effect's radius.
+        var ranked =
+                auraPreview(
+                        "Grants $s1% within $a1 yds.",
+                        List.of(areaEffect(101, "0", "11", "11")),
+                        List.of(),
+                        List.of(row(11, "11", "45", "0", "0", "45")),
+                        TableTypes.State.READY,
+                        List.of(
+                                new SpellTexts.EffectOverride(
+                                        0, new BigDecimal("8"), null, List.of())));
+        assertEquals("Grants 8% within 45 yds.", ranked.display());
     }
 
     @Test

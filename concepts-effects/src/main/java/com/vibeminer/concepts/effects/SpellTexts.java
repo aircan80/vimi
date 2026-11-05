@@ -407,6 +407,11 @@ public final class SpellTexts implements AutoCloseable {
             var sources = new ArrayList<>(replacement.sources());
             String issue = replacement.issue();
             Long period = null;
+            SpellText.Value radius = null;
+            if (original != null) {
+                // The radius does not depend on the rank value.
+                radius = original.radius();
+            }
             if (original != null && replacement.value() != null) {
                 sources.addAll(original.sources());
                 period = original.periodMilliseconds();
@@ -418,7 +423,8 @@ public final class SpellTexts implements AutoCloseable {
             }
             result.put(
                     replacement.effectIndex(),
-                    new SpellText.Amount(replacement.value(), sources, issue, false, period));
+                    new SpellText.Amount(
+                            replacement.value(), sources, issue, false, period, radius));
         }
         return result;
     }
@@ -454,71 +460,24 @@ public final class SpellTexts implements AutoCloseable {
     /**
      * The spell's single DifficultyID 0 SpellAuraOptions row (layout 95F4D5E1, verified field
      * names): ProcChance for {@code $h} (1-100, not procs per minute), ProcCharges for {@code $n}
-     * and CumulativeAura for {@code $u} (each 1-1000). Anything else stays unknown.
+     * and CumulativeAura for {@code $u} (each 1-1000; a field missing from the layout stays
+     * unknown). When the lookup is partial, a second DifficultyID 0 row could be hidden, so {@code
+     * $n} and {@code $u} are refused; {@code $h} keeps its readable-records rule.
      */
     private AuraOptions auraOptions(
             long spell, TableTypes.Priority priority, Cancellation token, List<String> issues) {
-        var chance = procChance(spell, priority, token, issues);
-        if (chance.issue() != null && chance.sources().isEmpty()) {
-            return new AuraOptions(chance, chance, chance);
-        }
-        return new AuraOptions(
-                chance,
-                count(chance, "ProcCharges", "proc charges"),
-                count(chance, "CumulativeAura", "maximum stacks"));
-    }
-
-    /** A 1-1000 count from the same selected row, whose fields are listed in its sources. */
-    private static SpellText.Value count(SpellText.Value row, String field, String what) {
-        var sources = new ArrayList<Source>();
-        String raw = null;
-        for (var source : row.sources()) {
-            if (!source.column().equals("ProcChance")
-                    && !source.column().equals("SpellProcsPerMinuteID")
-                    && !source.column().equals("ProcCharges")
-                    && !source.column().equals("CumulativeAura")) {
-                sources.add(source);
-            }
-            if (source.column().equals(field)) {
-                raw = source.value();
-                sources.add(source);
-            }
-        }
-        BigDecimal value;
-        try {
-            value = raw == null ? null : new BigDecimal(raw);
-        } catch (NumberFormatException failure) {
-            value = null;
-        }
-        if (value == null
-                || value.scale() > 0
-                || value.signum() <= 0
-                || value.compareTo(BigDecimal.valueOf(1000)) > 0) {
-            return new SpellText.Value(
-                    null, sources, "SpellAuraOptions records no " + what + " (1-1000)");
-        }
-        return new SpellText.Value(value.toPlainString(), sources, null);
-    }
-
-    private SpellText.Value procChance(
-            long spell, TableTypes.Priority priority, Cancellation token, List<String> issues) {
-        var sources = new ArrayList<Source>();
         var schema =
                 tables.schema(TableTypes.Ref.forName("SpellAuraOptions"), priority, token).join();
         var options = new Columns(schema);
         if (!TableQueries.isReadable(schema.table().state()) || !options.auraOptionsProfile()) {
-            return new SpellText.Value(
-                    null,
-                    sources,
-                    "SpellAuraOptions profile is unavailable: " + schema.table().state());
+            return failed("SpellAuraOptions profile is unavailable: " + schema.table().state());
         }
         var lookup =
                 auraOptionsIndex
                         .lookup("SpellAuraOptions", "SpellID", spell, 64, priority, token)
                         .join();
         if (lookup.state() != RelationIndexes.State.OK || lookup.matches() > 64) {
-            return new SpellText.Value(
-                    null, sources, "SpellAuraOptions lookup is " + lookup.state());
+            return failed("SpellAuraOptions lookup is " + lookup.state());
         }
         if (!lookup.complete()) {
             issues.add("SpellAuraOptions is PARTIAL; proc chance uses readable records only.");
@@ -531,27 +490,41 @@ public final class SpellTexts implements AutoCloseable {
                 continue;
             }
             if (selected != null) {
-                return new SpellText.Value(
-                        null, sources, "Multiple readable SpellAuraOptions rows match");
+                return failed("Multiple readable SpellAuraOptions rows match");
             }
             selected = row;
         }
         if (selected == null) {
-            return new SpellText.Value(null, sources, "SpellAuraOptions records no proc chance");
+            return failed("SpellAuraOptions records no DifficultyID 0 row for this spell");
         }
-        for (String field :
-                List.of(
-                        "SpellID",
-                        "DifficultyID",
-                        "ProcChance",
-                        "SpellProcsPerMinuteID",
-                        "ProcCharges",
-                        "CumulativeAura")) {
-            // ProcCharges and CumulativeAura are optional: without a verified field they are
-            // not listed, and $n / $u stay unknown.
-            if (options.field(field, false) < 0) {
-                continue;
-            }
+        var identity = new ArrayList<Source>();
+        for (String field : List.of("SpellID", "DifficultyID")) {
+            identity.add(
+                    new Source(
+                            "SpellAuraOptions",
+                            selected.id(),
+                            field,
+                            options.value(selected, field)));
+        }
+        String partial =
+                lookup.complete()
+                        ? null
+                        : "SpellAuraOptions is PARTIAL; another DifficultyID 0 row may be hidden";
+        return new AuraOptions(
+                chance(options, selected, identity),
+                count(options, selected, identity, "ProcCharges", "proc charges", partial),
+                count(options, selected, identity, "CumulativeAura", "maximum stacks", partial));
+    }
+
+    private static AuraOptions failed(String issue) {
+        var value = new SpellText.Value(null, List.of(), issue);
+        return new AuraOptions(value, value, value);
+    }
+
+    private static SpellText.Value chance(
+            Columns options, Db2Types.Row selected, List<Source> identity) {
+        var sources = new ArrayList<>(identity);
+        for (String field : List.of("ProcChance", "SpellProcsPerMinuteID")) {
             sources.add(
                     new Source(
                             "SpellAuraOptions",
@@ -563,15 +536,45 @@ public final class SpellTexts implements AutoCloseable {
         var perMinute = options.number(selected, "SpellProcsPerMinuteID");
         if (perMinute == null || perMinute.signum() != 0) {
             return new SpellText.Value(
-                    "0", sources, "The proc rate is per minute and depends on weapon speed");
+                    null, sources, "The proc rate is per minute and depends on weapon speed");
         }
         if (chance == null
                 || chance.scale() > 0
                 || chance.signum() <= 0
                 || chance.compareTo(BigDecimal.valueOf(100)) > 0) {
-            return new SpellText.Value("0", sources, "Recorded proc chance is not 1-100");
+            return new SpellText.Value(null, sources, "Recorded proc chance is not 1-100");
         }
         return new SpellText.Value(chance.toPlainString(), sources, null);
+    }
+
+    /** A 1-1000 count from the selected row, or unknown with its own reason. */
+    private static SpellText.Value count(
+            Columns options,
+            Db2Types.Row selected,
+            List<Source> identity,
+            String field,
+            String what,
+            String partial) {
+        var sources = new ArrayList<>(identity);
+        if (options.field(field, false) < 0) {
+            return new SpellText.Value(
+                    null, sources, "SpellAuraOptions has no verified " + field + " field");
+        }
+        sources.add(
+                new Source(
+                        "SpellAuraOptions", selected.id(), field, options.value(selected, field)));
+        if (partial != null) {
+            return new SpellText.Value(null, sources, partial);
+        }
+        var value = options.number(selected, field);
+        if (value == null
+                || value.scale() > 0
+                || value.signum() <= 0
+                || value.compareTo(BigDecimal.valueOf(1000)) > 0) {
+            return new SpellText.Value(
+                    null, sources, "SpellAuraOptions records no " + what + " (1-1000)");
+        }
+        return new SpellText.Value(value.toPlainString(), sources, null);
     }
 
     /**
