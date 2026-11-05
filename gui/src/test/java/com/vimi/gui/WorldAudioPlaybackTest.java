@@ -405,7 +405,34 @@ public final class WorldAudioPlaybackTest {
             throw new AssertionError("Perceptual ramp " + first + " " + last);
     }
 
+    /**
+     * The device probe must match how real mixers advertise formats. Windows DirectSound lists
+     * concrete channel counts and frame sizes with only the rate unspecified; Linux mixers list
+     * unspecified channels. {@code AudioFormat.matches} wildcards only the advertised side, so a
+     * probe with unspecified channels or frame size matches nothing on Windows.
+     */
+    private static void probeMatchesWindowsAndLinuxMixerFormats() {
+        var signed = javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED;
+        float any = javax.sound.sampled.AudioSystem.NOT_SPECIFIED;
+        int unset = javax.sound.sampled.AudioSystem.NOT_SPECIFIED;
+        var directSound = new java.util.ArrayList<javax.sound.sampled.AudioFormat>();
+        for (int channels : new int[] {1, 2})
+            for (boolean bigEndian : new boolean[] {false, true})
+                directSound.add(new javax.sound.sampled.AudioFormat(signed, any, 16, channels,
+                        2 * channels, any, bigEndian));
+        var windows = new javax.sound.sampled.DataLine.Info(SourceDataLine.class,
+                directSound.toArray(javax.sound.sampled.AudioFormat[]::new), unset, unset);
+        if (!windows.isFormatSupported(WorldAudioPlayback.PROBE))
+            throw new AssertionError("Probe must match DirectSound's concrete mixer formats");
+        var linux = new javax.sound.sampled.DataLine.Info(SourceDataLine.class,
+                new javax.sound.sampled.AudioFormat[] {new javax.sound.sampled.AudioFormat(
+                        signed, any, 16, unset, unset, any, true)}, unset, unset);
+        if (!linux.isFormatSupported(WorldAudioPlayback.PROBE))
+            throw new AssertionError("Probe must match mixers that leave channels unspecified");
+    }
+
     public static void main(String[] args) throws Exception {
+        probeMatchesWindowsAndLinuxMixerFormats();
         gainRampsPerFrame();
         fadesKeepKitsAndCloseOwnedResources();
         ambienceLoopsFromMemoryAndMusicWaitsRecordedSilence();
