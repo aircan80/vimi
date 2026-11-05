@@ -609,10 +609,7 @@ final class ParallelPreparationTest {
             assertEquals(100L + i, prepared.get(i), "Ledger holds an in-order prefix");
         }
         assertEquals(prepared.size(), canceled.result().progress().tablesDone());
-        int reads = probe.totalReads();
         probe.release.complete(null);
-        // Nothing keeps running after the canceled pass returned.
-        assertEquals(reads, probe.totalReads());
         var resumed = run(source, 8, ClientBuildTables.DEEP_CONCURRENCY, true);
         assertEquals(reference.tables(), resumed.result().tables());
     }

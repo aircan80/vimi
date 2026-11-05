@@ -49,7 +49,13 @@ final class OrderedLookahead<K, T> implements AutoCloseable {
                                 try {
                                     result.complete(new Outcome<>(task.apply(scope), null));
                                 } catch (Throwable error) {
-                                    result.complete(new Outcome<>(null, error));
+                                    try {
+                                        result.complete(new Outcome<>(null, error));
+                                    } finally {
+                                        // Even if recording the outcome fails, close() must not
+                                        // wait forever.
+                                        result.completeExceptionally(error);
+                                    }
                                 }
                             });
         } catch (Throwable error) {
@@ -60,11 +66,18 @@ final class OrderedLookahead<K, T> implements AutoCloseable {
 
     /** Waits for the oldest started task, which must belong to {@code key}. */
     T take(K key) {
-        var next = started.pollFirst();
+        // Peek first: a mismatched task stays started, so close() still cancels and waits for it.
+        var next = started.peekFirst();
         if (next == null || !next.key().equals(key)) {
             throw new IllegalStateException("Lookahead out of order for " + key);
         }
-        var outcome = next.result().join();
+        started.pollFirst();
+        Outcome<T> outcome;
+        try {
+            outcome = next.result().join();
+        } catch (java.util.concurrent.CompletionException failed) {
+            outcome = new Outcome<>(null, failed.getCause());
+        }
         if (outcome.error() instanceof RuntimeException failure) {
             throw failure;
         }
@@ -83,7 +96,11 @@ final class OrderedLookahead<K, T> implements AutoCloseable {
             if (!started.isEmpty()) {
                 scope.cancel();
                 for (var pending : started) {
-                    pending.result().join();
+                    try {
+                        pending.result().join();
+                    } catch (RuntimeException ignored) {
+                        // The task still finished; only its outcome could not be recorded.
+                    }
                 }
                 started.clear();
             }

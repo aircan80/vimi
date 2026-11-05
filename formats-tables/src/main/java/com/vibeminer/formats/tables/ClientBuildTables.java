@@ -390,13 +390,21 @@ final class ClientBuildTables implements BuildTables {
 
     /**
      * Shallow preparations of the known pass that may run ahead of the in-order consumer. They take
-     * no scheduler slot: each is a content stat, a definition lookup and a generated-store open.
+     * no scheduler slot: each is a content stat, a definition lookup and a generated-store open
+     * (which may repair). That store I/O therefore runs outside interactive-first admission, up to
+     * this many at once instead of one.
      */
     static final int SHALLOW_CONCURRENCY = 8;
 
     /**
      * Full preparations of a preload pass that may run ahead of the in-order consumer. Reading and
      * building still take background scheduler slots, so this mainly overlaps store and slot waits.
+     *
+     * <p>Memory is bounded by count, not bytes: each in-flight prepare keeps its source and parsed
+     * reader live from {@code Db2Reader.open} until its build stores, so up to this many different
+     * tables' readers are held at once. Each parse is capped by {@code maxIndexBytes} plus {@code
+     * maxAuxiliaryBytes}, so the worst case, when the largest tables sit together in id order, is
+     * this many such caps (the sequential pass held two parses of one table).
      */
     static final int DEEP_CONCURRENCY = 4;
 
@@ -2550,17 +2558,24 @@ final class ClientBuildTables implements BuildTables {
                         // prepare may ask for a newer definition instead.
                         boolean reuseReady =
                                 known && reuseShallowReady && options.localDefinitionsOnly();
-                        java.util.function.Predicate<TableTypes.Entry> fullPrepare =
+                        // One decision serves both the lookahead and the loop below.
+                        java.util.function.Function<TableTypes.Entry, DeepStep> step =
                                 table -> {
                                     if (reuseReady && table.state() == TableTypes.State.READY) {
-                                        return false;
+                                        return DeepStep.REUSE;
                                     }
                                     var file = byId.get(table.fileDataId());
-                                    return file == null
-                                            || file.state() == FileTypes.FileEnsureState.STORED
-                                            || file.state()
-                                                    == FileTypes.FileEnsureState.ALREADY_STORED
-                                            || (known && TableQueries.isReadable(table.state()));
+                                    return file != null
+                                                    && file.state()
+                                                            != FileTypes.FileEnsureState.STORED
+                                                    && file.state()
+                                                            != FileTypes.FileEnsureState
+                                                                    .ALREADY_STORED
+                                                    && !(known
+                                                            && TableQueries.isReadable(
+                                                                    table.state()))
+                                            ? DeepStep.ENSURE_FAILED
+                                            : DeepStep.FULL;
                                 };
                         // A known pass stops at its first canceled file; nothing after it runs.
                         int stop = eligible.size();
@@ -2591,7 +2606,7 @@ final class ClientBuildTables implements BuildTables {
                             if (ahead != null) {
                                 while (issued < stop && ahead.hasRoom()) {
                                     var next = eligible.get(issued++);
-                                    if (!fullPrepare.test(next)) {
+                                    if (step.apply(next) != DeepStep.FULL) {
                                         continue;
                                     }
                                     token.check();
@@ -2612,12 +2627,10 @@ final class ClientBuildTables implements BuildTables {
                                     && file.state() == FileTypes.FileEnsureState.CANCELED) {
                                 throw new java.util.concurrent.CancellationException();
                             }
-                            if (reuseReady && table.state() == TableTypes.State.READY) {
+                            var decided = step.apply(table);
+                            if (decided == DeepStep.REUSE) {
                                 checked = table;
-                            } else if (file != null
-                                    && file.state() != FileTypes.FileEnsureState.STORED
-                                    && file.state() != FileTypes.FileEnsureState.ALREADY_STORED
-                                    && !(known && TableQueries.isReadable(table.state()))) {
+                            } else if (decided == DeepStep.ENSURE_FAILED) {
                                 checked =
                                         entry(
                                                 table.fileDataId(),
@@ -2754,6 +2767,16 @@ final class ClientBuildTables implements BuildTables {
             }
         }
         return List.copyOf(entries);
+    }
+
+    /** How the preload loop settles one eligible table. */
+    private enum DeepStep {
+        /** The shallow pass already found it READY. */
+        REUSE,
+        /** Its file ensure failed; record that outcome. */
+        ENSURE_FAILED,
+        /** Prepare it in full. */
+        FULL
     }
 
     private TableTypes.Entry deepEntry(long id, Cancellation token) {
