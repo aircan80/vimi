@@ -17,7 +17,7 @@ import java.util.Objects;
  * select cache entries, authenticate sources, apply overlays or mint native capture evidence.
  */
 public final class HotfixRowDecoder {
-    public static final String REVISION = "hotfix-flat-dbd-v1";
+    public static final String REVISION = "hotfix-flat-dbd-v2";
 
     public enum Reason {
         LIMIT,
@@ -29,7 +29,9 @@ public final class HotfixRowDecoder {
         TRUNCATED,
         TEXT,
         INLINE_ID,
-        TRAILING_BYTES
+        TRAILING_BYTES,
+        /** Non-finite single; base DB2 rows refuse these too. */
+        FLOAT
     }
 
     public static final class Invalid extends IllegalArgumentException {
@@ -161,7 +163,12 @@ public final class HotfixRowDecoder {
                     }
                 } else if (field.kind() == TableSchema.ColumnKind.FLOAT) {
                     need(input, 4);
-                    value = Float.toString(input.getFloat());
+                    float single = input.getFloat();
+                    if (!Float.isFinite(single)) {
+                        throw invalid(Reason.FLOAT);
+                    }
+                    // Same text as base DB2 rows; the effective view mixes both in one table.
+                    value = com.vibeminer.formats.db2.SingleText.format(single);
                 } else {
                     value = text(input, limits, token);
                 }

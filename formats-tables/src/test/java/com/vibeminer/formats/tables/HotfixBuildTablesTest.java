@@ -69,6 +69,12 @@ class HotfixBuildTablesTest {
     }
 
     private static BuildTables numbers(long hash, Db2ByteSource source, boolean relation) {
+        // Each test charges its own accountant, never the process-wide one.
+        return numbers(hash, source, relation, new HotfixMemory(64L << 20, 256L << 20));
+    }
+
+    private static BuildTables numbers(
+            long hash, Db2ByteSource source, boolean relation, HotfixMemory memory) {
         byte[] bytes = Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], true);
         ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(152, (int) hash);
         var files =
@@ -114,7 +120,8 @@ class HotfixBuildTablesTest {
                         .withLocalDefinitionsOnly()
                         .withHotfix(
                                 new HotfixBinding(
-                                        TablesContract.BUILD, "enUS", "1.2.3.4", source, index));
+                                        TablesContract.BUILD, "enUS", "1.2.3.4", source, index))
+                        .withHotfixMemory(memory);
         return new TablesService(
                         localInventory(files),
                         definitions,
@@ -123,6 +130,165 @@ class HotfixBuildTablesTest {
                 .forBuild(TablesContract.BUILD, "enUS", Cancellation.NONE)
                 .join()
                 .tables();
+    }
+
+    /** One handle over several authored numeric tables: file 100 + i has hash {@code hashes[i]}. */
+    private static BuildTables several(HotfixMemory memory, Db2ByteSource source, long... hashes) {
+        var files = new MemoryFiles();
+        var tables = new java.util.ArrayList<BundledDefinitions.DefinitionTable>();
+        var documents = new java.util.HashMap<String, BundledDefinitions.Definition>();
+        for (int i = 0; i < hashes.length; i++) {
+            byte[] bytes = Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], true);
+            ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(152, (int) hashes[i]);
+            files.add(
+                    TablesContract.BUILD,
+                    "enUS",
+                    new FileTypes.BuildFile(
+                            100 + i,
+                            "dbfilesclient/numbers" + i + ".db2",
+                            FileTypes.FilePathSource.LISTFILE,
+                            (long) bytes.length,
+                            Integer.toString(i + 1).repeat(32),
+                            FileTypes.FileFormat.DB2,
+                            FileTypes.FileFormatSource.EXTENSION,
+                            FileTypes.FileStorage.STORED,
+                            false),
+                    bytes,
+                    List.of());
+            String hex = String.format("%08X", hashes[i]);
+            tables.add(
+                    new BundledDefinitions.DefinitionTable(
+                            hex, "Numbers" + i, Integer.toString(100 + i), true));
+            documents.put(
+                    hex,
+                    new BundledDefinitions.Definition(
+                            Integer.toString(i).repeat(64).substring(0, 64),
+                            "authored",
+                            Db2Fixture.definition(
+                                    "int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>")));
+        }
+        var definitions =
+                new TableDefinitions(BundledDefinitions.of(tables, documents), null, null);
+        var index =
+                HotfixCacheReader.inspect(
+                                source, 4, new HotfixCacheReader.Limits(), Cancellation.NONE)
+                        .join();
+        var options =
+                new TablesOptions((b, t) -> CompletableFuture.completedFuture("1.2.3.4"))
+                        .withLocalDefinitionsOnly()
+                        .withHotfix(
+                                new HotfixBinding(
+                                        TablesContract.BUILD, "enUS", "1.2.3.4", source, index))
+                        .withHotfixMemory(memory);
+        return new TablesService(
+                        localInventory(files),
+                        definitions,
+                        new GeneratedTables(new MemoryGeneratedStore()),
+                        options)
+                .forBuild(TablesContract.BUILD, "enUS", Cancellation.NONE)
+                .join()
+                .tables();
+    }
+
+    private static Db2ByteSource rows(long hash, int first, int count) {
+        var changes = new byte[count][];
+        for (int i = 0; i < count; i++) {
+            changes[i] = entry(hash, 1, first + i, 1, number(i));
+        }
+        return cache(changes);
+    }
+
+    private static Db2ByteSource join(long smallHash, long largeHash, int largeRows) {
+        var changes = new byte[largeRows + 1][];
+        changes[0] = entry(smallHash, 1, 1_000, 1, number(1));
+        for (int i = 0; i < largeRows; i++) {
+            changes[i + 1] = entry(largeHash, 1, 1_000 + i, 1, number(i));
+        }
+        return cache(changes);
+    }
+
+    @Test
+    void fullSharedBudgetRefusesWithoutCollateralEvictionOrRepeatedCompiles() throws Exception {
+        long small = 0x11223344L, large = 0x55667788L;
+        // Each large view charges about 0.9 MiB; two do not fit 1.5 MiB together.
+        var memory = new HotfixMemory(1 << 20, 3 << 19);
+        var other = numbers(small, rows(small, 1_000, 1_000), false, memory);
+        try (var tables = several(memory, join(small, large, 1_000), small, large)) {
+            var hot = (HotfixBuildTables) tables;
+            assertEquals(
+                    TableTypes.RowOutcome.FOUND,
+                    other.get(TableTypes.Ref.id(100), 1_500, P, Cancellation.NONE)
+                            .join()
+                            .outcome());
+            // The small table fits beside the other handle's large view.
+            assertEquals(
+                    TableTypes.RowOutcome.FOUND,
+                    tables.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE)
+                            .join()
+                            .outcome());
+            assertEquals(1, hot.compiles);
+            // The large table cannot fit even after evicting the small view: refused without
+            // evicting it, and decoded no rows.
+            assertEquals(
+                    TableTypes.RowOutcome.ABSENT,
+                    tables.get(TableTypes.Ref.id(101), 1_500, P, Cancellation.NONE)
+                            .join()
+                            .outcome());
+            assertEquals(1, hot.compiles, "the floor check refuses before decoding");
+            assertTrue(
+                    tables.hotfixInfo(TableTypes.Ref.id(100), null, P, Cancellation.NONE)
+                                    .join()
+                                    .orElseThrow()
+                                    .unavailable()
+                            == null,
+                    "the small view was not evicted");
+            for (int i = 0; i < 5; i++) {
+                tables.get(TableTypes.Ref.id(101), 1_000 + i, P, Cancellation.NONE).join();
+                tables.page(
+                                new TableTypes.PageRequest(TableTypes.Ref.id(101)),
+                                P,
+                                Cancellation.NONE)
+                        .join();
+            }
+            assertEquals(1, hot.compiles, "no retry until some handle releases memory");
+            assertEquals(
+                    HotfixViewInfo.RETAINED_BUDGET,
+                    tables.hotfixInfo(TableTypes.Ref.id(101), null, P, Cancellation.NONE)
+                            .join()
+                            .orElseThrow()
+                            .unavailable());
+            other.close();
+            assertEquals(
+                    TableTypes.RowOutcome.FOUND,
+                    tables.get(TableTypes.Ref.id(101), 1_500, P, Cancellation.NONE)
+                            .join()
+                            .outcome());
+            assertEquals(2, hot.compiles, "one retry after the release");
+            tables.get(TableTypes.Ref.id(101), 1_501, P, Cancellation.NONE).join();
+            assertEquals(2, hot.compiles, "the retained view is reused");
+        } finally {
+            other.close();
+        }
+        assertEquals(0, memory.reserved());
+    }
+
+    @Test
+    void unreachableHandleReleasesItsSharedCharge() throws Exception {
+        var memory = new HotfixMemory(1 << 20, 1 << 20);
+        leak(memory);
+        for (int i = 0; i < 200 && memory.reserved() != 0; i++) {
+            System.gc();
+            Thread.sleep(20);
+        }
+        assertEquals(0, memory.reserved(), "a never-closed handle frees its charge");
+    }
+
+    private static void leak(HotfixMemory memory) {
+        var tables = numbers(0x11223344L, manyRows(100), false, memory);
+        assertEquals(
+                TableTypes.RowOutcome.FOUND,
+                tables.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE).join().outcome());
+        assertTrue(memory.reserved() > 0);
     }
 
     private static com.vibeminer.files.Files localInventory(MemoryFiles memory) {
@@ -341,6 +507,127 @@ class HotfixBuildTablesTest {
             assertEquals(1, keys.count());
             org.junit.jupiter.api.Assertions.assertArrayEquals(
                     hotfixKey, keys.find(0x0101010101010101L));
+        }
+    }
+
+    @Test
+    void tableWithManyHotfixedRowsFitsTheDecodedViewBudget() {
+        // A real client cache hotfixes thousands of wide item rows in one table, which charges
+        // tens of MiB of decoded values. This narrow table charges just over 10 MiB.
+        int count = 16_384;
+        var changes = new byte[count][];
+        for (int i = 0; i < count; i++) {
+            changes[i] = entry(0x11223344L, 1, 1_000 + i, 1, number(i));
+        }
+        try (var tables = numbers(0x11223344L, changes)) {
+            var row =
+                    tables.get(TableTypes.Ref.id(100), 1_000 + count - 1, P, Cancellation.NONE)
+                            .join();
+            assertEquals(TableTypes.RowOutcome.FOUND, row.outcome());
+            assertEquals(String.valueOf(count - 1), row.row().row().values().get(1));
+            var view =
+                    tables.hotfixInfo(TableTypes.Ref.id(100), null, P, Cancellation.NONE)
+                            .join()
+                            .orElseThrow();
+            assertEquals(count, view.added());
+            assertEquals(2 + count, view.effectiveRows());
+        }
+    }
+
+    private static Db2ByteSource manyRows(int count) {
+        var changes = new byte[count][];
+        for (int i = 0; i < count; i++) {
+            changes[i] = entry(0x11223344L, 1, 1_000 + i, 1, number(i));
+        }
+        return cache(changes);
+    }
+
+    @Test
+    void oversizedTableReadsBaseRowsWithAVisibleReasonInsteadOfFailing() {
+        var memory = new HotfixMemory(1 << 20, 1 << 20);
+        try (var tables = numbers(0x11223344L, manyRows(4_096), false, memory)) {
+            var base = tables.get(TableTypes.Ref.id(100), 7, P, Cancellation.NONE).join();
+            assertEquals(TableTypes.RowOutcome.FOUND, base.outcome());
+            assertEquals(
+                    TableTypes.RowOutcome.ABSENT,
+                    tables.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE)
+                            .join()
+                            .outcome());
+            var page =
+                    tables.page(
+                                    new TableTypes.PageRequest(TableTypes.Ref.id(100)),
+                                    P,
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals(TableTypes.PageState.OK, page.state());
+            assertEquals(2, page.rows().size());
+            var info =
+                    tables.hotfixInfo(TableTypes.Ref.id(100), 7L, P, Cancellation.NONE)
+                            .join()
+                            .orElseThrow();
+            assertEquals(HotfixViewInfo.TABLE_BUDGET, info.unavailable());
+            assertEquals(HotfixViewInfo.Origin.BASE, info.row().origin());
+            assertEquals(HotfixViewInfo.TABLE_BUDGET, info.row().reason());
+            assertEquals(0, memory.reserved());
+        }
+    }
+
+    @Test
+    void handlesShareOneOverlayBudgetAndRetryOnceItIsReleased() {
+        // Each view charges about 0.9 MiB; two do not fit a 1.5 MiB shared ceiling.
+        var memory = new HotfixMemory(1 << 20, 3 << 19);
+        var first = numbers(0x11223344L, manyRows(1_000), false, memory);
+        try (var second = numbers(0x11223344L, manyRows(1_000), false, memory)) {
+            assertEquals(
+                    TableTypes.RowOutcome.FOUND,
+                    first.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE)
+                            .join()
+                            .outcome());
+            assertTrue(memory.reserved() > 0);
+            assertEquals(
+                    TableTypes.RowOutcome.ABSENT,
+                    second.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE)
+                            .join()
+                            .outcome());
+            assertEquals(
+                    HotfixViewInfo.RETAINED_BUDGET,
+                    second.hotfixInfo(TableTypes.Ref.id(100), null, P, Cancellation.NONE)
+                            .join()
+                            .orElseThrow()
+                            .unavailable());
+            first.close();
+            assertEquals(0, memory.reserved());
+            assertEquals(
+                    TableTypes.RowOutcome.FOUND,
+                    second.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE)
+                            .join()
+                            .outcome());
+        } finally {
+            first.close();
+        }
+        assertEquals(0, memory.reserved());
+    }
+
+    @Test
+    void bulkBaseOrdinalsMatchOneByOneGets() throws Exception {
+        try (var tables = numbers(0x11223344L, entry(0x11223344L, 1, 7, 1, number(99)))) {
+            var field = HotfixBuildTables.class.getDeclaredField("base");
+            field.setAccessible(true);
+            var base = (ClientBuildTables) field.get(tables);
+            var ids = List.of(7L, 8L, 9L, 4_000_000_000L);
+            var bulk = base.foundOrdinals(TableTypes.Ref.id(100), ids, P, Cancellation.NONE).join();
+            int found = 0;
+            for (long id : ids) {
+                var row = base.get(TableTypes.Ref.id(100), id, P, Cancellation.NONE).join();
+                if (row.outcome() == TableTypes.RowOutcome.FOUND) {
+                    found++;
+                    assertEquals(row.row().ordinal(), bulk.get(id), "ordinal of " + id);
+                } else {
+                    assertFalse(bulk.containsKey(id), "not found " + id);
+                }
+            }
+            assertEquals(found, bulk.size());
+            assertTrue(found > 0, "fixture has base rows");
         }
     }
 

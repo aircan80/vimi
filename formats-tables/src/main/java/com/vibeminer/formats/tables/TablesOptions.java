@@ -18,7 +18,31 @@ public record TablesOptions(
         int maxReferenceSources,
         long maxReferenceScanRows,
         boolean localDefinitionsOnly,
-        HotfixBinding hotfix) {
+        HotfixBinding hotfix,
+        HotfixMemory hotfixMemory) {
+    public TablesOptions(
+            BiFunction<BuildRef, Cancellation, CompletableFuture<String>> buildVersion,
+            Db2Types.Limits limits,
+            Function<BuildRef, KeyStatus> keys,
+            TableWorkScheduler scheduler,
+            int maxScanRows,
+            int maxReferenceSources,
+            long maxReferenceScanRows,
+            boolean localDefinitionsOnly,
+            HotfixBinding hotfix) {
+        this(
+                buildVersion,
+                limits,
+                keys,
+                scheduler,
+                maxScanRows,
+                maxReferenceSources,
+                maxReferenceScanRows,
+                localDefinitionsOnly,
+                hotfix,
+                null);
+    }
+
     public TablesOptions(
             BiFunction<BuildRef, Cancellation, CompletableFuture<String>> buildVersion,
             Db2Types.Limits limits,
@@ -50,7 +74,23 @@ public record TablesOptions(
                 maxReferenceSources,
                 maxReferenceScanRows,
                 localDefinitionsOnly,
-                java.util.Objects.requireNonNull(binding));
+                java.util.Objects.requireNonNull(binding),
+                hotfixMemory);
+    }
+
+    /** Charges decoded overlay views to {@code memory} instead of the process default. */
+    public TablesOptions withHotfixMemory(HotfixMemory memory) {
+        return new TablesOptions(
+                buildVersion,
+                limits,
+                keys,
+                scheduler,
+                maxScanRows,
+                maxReferenceSources,
+                maxReferenceScanRows,
+                localDefinitionsOnly,
+                hotfix,
+                java.util.Objects.requireNonNull(memory));
     }
 
     public TablesOptions(
@@ -83,7 +123,8 @@ public record TablesOptions(
                 maxReferenceSources,
                 maxReferenceScanRows,
                 true,
-                hotfix);
+                hotfix,
+                hotfixMemory);
     }
 
     public TablesOptions(BiFunction<BuildRef, Cancellation, CompletableFuture<String>> version) {
@@ -106,6 +147,9 @@ public record TablesOptions(
         }
         if (scheduler == null) {
             scheduler = new TableWorkScheduler();
+        }
+        if (hotfixMemory == null) {
+            hotfixMemory = HotfixMemory.PROCESS;
         }
     }
 }

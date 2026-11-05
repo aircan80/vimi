@@ -107,10 +107,31 @@ class HotfixRowDecoderTest {
                         "4294967295",
                         "-9223372036854775808",
                         "18446744073709551615",
-                        "-0.0"),
+                        "-0"),
                 result.row().values());
         assertFalse(result.row().isCopy());
         assertEquals(List.of(), result.row().textIssues());
+    }
+
+    @Test
+    void floatsUseTheSameTextAsBaseDb2Rows() {
+        // Effective views mix hotfix and base rows in one table: filters, spell text and
+        // BigDecimal consumers must see one spelling for the same single value.
+        var layout = layout("int ID\nfloat V", "$id,noninline$ID<u32>\nV[5]");
+        float[] values = {20f, 1.0E-4f, 1.5f, -0f, 3.0E9f};
+        var body = ByteBuffer.allocate(4 * values.length).order(ByteOrder.LITTLE_ENDIAN);
+        for (float value : values) {
+            body.putFloat(value);
+        }
+        body.flip();
+        assertEquals(
+                List.of("9", "20", "0.0001", "1.5", "-0", "3E+09"),
+                decode(layout, 9, body).row().values());
+        for (float bad : new float[] {Float.NaN, Float.POSITIVE_INFINITY}) {
+            var nonfinite = ByteBuffer.allocate(20).order(ByteOrder.LITTLE_ENDIAN);
+            nonfinite.putFloat(bad).putFloat(0).putFloat(0).putFloat(0).putFloat(0).flip();
+            refused(HotfixRowDecoder.Reason.FLOAT, layout, 9, nonfinite);
+        }
     }
 
     @Test
