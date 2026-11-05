@@ -72,9 +72,13 @@ class SupplementalDefinitionsTest {
     void wrongBuildLayoutAndManifestBindingNeverSelectTheSupplement() {
         var bundled = BundledDefinitions.open(TOKEN).join();
         var enabled = new TableDefinitions(bundled, null, null).withSupplementalDefinitions();
-        assertEquals(
-                TableDefinitions.State.FETCHING_OFF,
-                resolve(enabled, "1.60.1.70754", "4FDF0951").state());
+        // Builds the pinned document or the build list does not name stay without a definition.
+        for (String unlisted : List.of("1.60.1.70754", "1.60.1.70800", "1.60.2.70790")) {
+            assertEquals(
+                    TableDefinitions.State.FETCHING_OFF,
+                    resolve(enabled, unlisted, "4FDF0951").state(),
+                    unlisted);
+        }
         assertEquals(
                 TableDefinitions.State.FETCHING_OFF,
                 resolve(enabled, "1.60.1.70755", "4FDF0952").state());

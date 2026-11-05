@@ -326,8 +326,8 @@ public final class SpellTexts implements AutoCloseable {
             var aura = effects.number(effect, "EffectAura");
             // Reviewed against Forever 1.60.1.70790 talent spells: an amount is fixed when no
             // random, level, resource, power or scaling input can change it. A spell power
-            // coefficient only matters for damage, healing and absorb effects; elsewhere the
-            // recorded default of 0 or 1 is inert.
+            // coefficient of exactly 0 is inert; exactly 1 is inert only for the aura types in
+            // INERT_COEFFICIENT_AURAS. Any other coefficient or effect type is not fixed.
             boolean fixed = effects.rawGuardZero(effect);
             boolean coefficientOne = false, coefficientInert = false;
             for (String field : CONTEXT_FLOATS) {
