@@ -77,8 +77,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     /**
      * Ten slots (nine active, one staged). Exterior objects add at most one validated objects file
      * per slot: up to {@link WorldStreamObjectsFile#MAX_BYTES} of GPU vertices, indices and RGBA8
-     * textures (the version 2 maximum profile is about 14.9 MB), so the object GPU budget is about
-     * 150 MB in the worst case, charged in Stats.objectBytes; real tiles stay far below it.
+     * textures (the version 2 maximum profile is about 22.2 MB with the HIGH texture tier), so the
+     * object GPU budget is about 222 MB in the worst case, charged in Stats.objectBytes; real tiles
+     * stay far below it (Zephras Isle: 5.2 MB mean, 8.7 MB max on STANDARD; 6.8 and 13.7 MB on
+     * HIGH).
      */
     static final int SLOT_COUNT = 10, INSTANCE_BYTES = 48;
 

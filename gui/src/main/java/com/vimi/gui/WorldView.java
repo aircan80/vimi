@@ -113,6 +113,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private int streamingWidth, streamingHeight;
     private CompletableFuture<Void> streamingRetirement = CompletableFuture.completedFuture(null);
     private final CheckBox gpuEnabled = new CheckBox("GPU terrain");
+    // Object texture budget tier (#267); a change re-prepares the streamed tiles' objects.
+    private final javafx.scene.control.ChoiceBox<
+                    com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail>
+            objectTextures = new javafx.scene.control.ChoiceBox<>();
     private final CheckBox walkMode = new CheckBox("Walk on terrain (F)");
     private final CheckBox smoothMotion = new CheckBox("Smooth motion");
     private final Label motionStatus = new Label("Free flight · no collision");
@@ -508,6 +512,42 @@ final class WorldView extends BorderPane implements AutoCloseable {
             textureLoading.hide();
             textureRequestedScene = null;
             maybeLoadTextures();
+        });
+        objectTextures.setId("world-object-textures");
+        objectTextures.setFocusTraversable(false);
+        objectTextures.getItems().setAll(
+                com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.values());
+        objectTextures.setValue(WorldStreamGpuOwner.IMAGE_DETAIL);
+        objectTextures.setConverter(new javafx.util.StringConverter<>() {
+            @Override
+            public String toString(
+                    com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail) {
+                return detail == null ? ""
+                        : detail == com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH
+                                ? "Object textures: High" : "Object textures: Standard";
+            }
+
+            @Override
+            public com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail fromString(
+                    String text) {
+                return null;
+            }
+        });
+        objectTextures.setTooltip(new javafx.scene.control.Tooltip(
+                "Per-tile texture budget for buildings and doodads. Standard keeps 1 Mi building"
+                        + " pixels per tile; High doubles every pool, for GPUs with memory to spare."
+                        + " Larger buildings get full resolution first; when a tile is over budget,"
+                        + " textures use smaller mip levels instead of going missing. This session"
+                        + " only: start with -Dvimi.world.objectTextures=high to open on High."));
+        // Only the GPU stream prepares object textures.
+        objectTextures.setDisable(gpu == null || !gpuEnabled.isSelected());
+        gpuEnabled.selectedProperty().addListener(
+                (o, was, on) -> objectTextures.setDisable(gpu == null || !on));
+        objectTextures.valueProperty().addListener((o, previous, next) -> {
+            if (next == null || next == previous || !streamingMode || streaming == null) return;
+            // New budgets apply to newly prepared tiles: restart the stream to re-prepare them.
+            retireStreaming();
+            startStreaming();
         });
         gpuEnabled.setSelected(gpu != null);
         gpuEnabled.setDisable(gpu == null);
@@ -1704,7 +1744,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         inspection,
                         audio.node(),
                         position,
-                        new HBox(8, gpuEnabled, gpuActivity, retryGpu, gpuStatus),
+                        new HBox(8, gpuEnabled, objectTextures, gpuActivity, retryGpu, gpuStatus),
                         new HBox(8, textureActivity, textureStatus, retryTextures),
                         new HBox(8, new Label("Instances"), entrances, enterInstance, leaveInstance,
                                 instanceStatus)));
@@ -2403,11 +2443,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         ? null : areaEntry.entryChunk().entryReference(), catalog.areaIndex());
         var creatureSource = WorldStreamGpuOwner.CREATURES ? creatures : null;
         long creatureMap = inventory.map().id();
+        var detail = objectTextures.getValue();
         WorldStreamSourceBridge.ExteriorPreparer preparer = creatureSource == null
-                ? WorldStreamSourceBridge::prepareExterior
+                ? (source, scope, tile, cancellation) -> WorldStreamSourceBridge.prepareExterior(
+                        source, scope, tile, cancellation, null, detail)
                 : (source, scope, tile, cancellation) -> WorldStreamSourceBridge.prepareExterior(
                         source, scope, tile, cancellation,
-                        (builder, owned, token) -> creatureSource.append(builder, creatureMap, owned, token));
+                        (builder, owned, token) -> creatureSource.append(builder, creatureMap, owned, token),
+                        detail);
         streaming = new WorldStreamSourceController(request, scope -> {
             var owner = new WorldStreamGpuOwner(gpuService, scope);
             return new WorldStreamSourceController.GpuOwner() {

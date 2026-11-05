@@ -68,6 +68,18 @@ public final class Blp2Decoder {
                 });
     }
 
+    /**
+     * The declared mip levels, from the same header validation as decoding but without decoding any
+     * pixels, on the calling thread. Call only from a worker: source reads may block.
+     */
+    public static List<Mip> readMipsSynchronous(
+            AssetSource source, Limits limits, Cancellation token, MipProfile profile) {
+        Objects.requireNonNull(profile);
+        List<Mip> declared = new ArrayList<>();
+        decodeCore(source, 0, 0, limits, token, profile, declared);
+        return List.copyOf(declared);
+    }
+
     public static CompletableFuture<Image> decodeLargestWithin(
             AssetSource source, int maxSide, Limits limits, Cancellation token) {
         return decodeLargestWithin(source, maxSide, limits, token, MipProfile.STRICT);

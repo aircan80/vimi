@@ -449,13 +449,14 @@ final class WorldStreamScopes {
                 1 << 20,
                 256,
                 1 << 20,
-                64 + 32,
+                // Each image may be read twice: once when admitted, once at its allotted level.
+                2 * (64 + 32),
                 1 << 20,
                 48,
                 2 << 20,
                 48,
                 1 << 20,
-                64,
+                2 * 64,
                 1 << 20);
         private final int bindings, roots, rootLimit, groups, groupLimit, images, imageLimit;
         private final int models, modelLimit, skins, skinLimit, modelImages, modelImageLimit;
