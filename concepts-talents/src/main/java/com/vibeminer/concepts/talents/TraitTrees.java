@@ -60,7 +60,6 @@ final class TraitTrees {
     private final List<String> issues = new ArrayList<>();
     private Map<Long, Set<Long>> legacyTabSpells;
     private Data legacyTabs;
-    private String legacyNamingFailure;
 
     TraitTrees(TalentsService owner) {
         this.owner = owner;
@@ -196,7 +195,9 @@ final class TraitTrees {
 
         var wanted = new HashSet<Long>();
         for (var made : built.values()) {
-            wanted.add(made.spell);
+            if (made.overrideIcon == null) {
+                wanted.add(made.spell);
+            }
         }
         owner.optionalMetadata(token, classIssues, wanted);
         var prerequisites = prerequisites(treeNodes, built.keySet(), classIssues);
@@ -222,7 +223,7 @@ final class TraitTrees {
                                 token,
                                 classIssues);
             }
-            Long icon = made.overrideIcon != null ? made.overrideIcon : owner.icons.get(made.spell);
+            Long icon = made.overrideIcon != null ? made.overrideIcon : owner.icon(made.spell);
             finished.put(
                     made.nodeId,
                     new TalentTypes.Talent(
@@ -244,7 +245,8 @@ final class TraitTrees {
                                     made.y,
                                     made.overridesSpell,
                                     made.overrideName != null,
-                                    made.overrideDescription != null)));
+                                    made.overrideDescription != null),
+                            icon == null ? owner.iconIssue(made.spell) : null));
         }
         var complete = new HashSet<Long>();
         for (var talent : finished.values()) {
@@ -365,7 +367,8 @@ final class TraitTrees {
                 talent.name(),
                 talent.description(),
                 talent.iconFileDataId(),
-                talent.origin());
+                talent.origin(),
+                talent.iconIssue());
     }
 
     /** Grid index for an offset within tolerance of a 600-unit cell, or null. */
@@ -639,12 +642,12 @@ final class TraitTrees {
         for (int i = 0; i < trees.size(); i++) {
             neutral.add(new TreeName("Talent tree " + (i + 1), ""));
         }
-        legacyNaming(token);
+        String namingFailure = legacyNaming(token);
         if (legacyTabs == null) {
             classIssues.add(
                     "Tree names are unavailable: "
-                            + legacyNamingFailure
-                            + " Neutral names are shown.");
+                            + namingFailure
+                            + " Neutral names are shown; Reload to retry.");
             return neutral;
         }
         var tabs = new ArrayList<Db2Types.Row>();
@@ -690,9 +693,13 @@ final class TraitTrees {
         return chosen;
     }
 
-    private void legacyNaming(Cancellation token) {
-        if (legacyTabs != null || legacyNamingFailure != null) {
-            return;
+    /**
+     * Reads the legacy tab names once. A failure is returned, not remembered, so the next request
+     * reads the tables again.
+     */
+    private String legacyNaming(Cancellation token) {
+        if (legacyTabs != null) {
+            return null;
         }
         var ignored = new ArrayList<String>();
         try {
@@ -720,8 +727,9 @@ final class TraitTrees {
                     });
             legacyTabSpells = spells;
             legacyTabs = tabs;
-        } catch (Projection failure) {
-            legacyNamingFailure = failure.getMessage() + ".";
+            return null;
+        } catch (RuntimeException failure) {
+            return TalentsService.cause(failure) + ".";
         } finally {
             // Legacy tables only name trees; their partial state does not qualify trait data.
             owner.partialTables.remove("TalentTab");

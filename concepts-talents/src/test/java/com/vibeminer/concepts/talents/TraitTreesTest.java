@@ -527,4 +527,55 @@ final class TraitTreesTest {
         assertNull(TraitTrees.cell(300, 4));
         assertNull(TraitTrees.cell(-600, 4));
     }
+
+    @Test
+    void liveAndUnshownNodesSharingAPrerequisiteKeepEveryRecordedRequirement() {
+        var tables =
+                replace(
+                        fixture(),
+                        "TraitEdge",
+                        t -> {
+                            var rows = new ArrayList<>(t.rows());
+                            rows.add(row(6, 1, 100, 202, 2));
+                            rows.add(row(7, 1, 202, 102, 2));
+                            return new MemoryTables.FakeTable(
+                                    t.entry(), t.columns(), rows, t.schema(), Map.of(), true);
+                        });
+        var result = warrior(tables);
+        var first = result.trees().getFirst();
+        assertEquals(
+                List.of(100L),
+                talent(first, 101).prerequisites().stream()
+                        .map(TalentTypes.Prerequisite::talentId)
+                        .toList());
+        // 202 is a choice node that is not shown; it is not proven stale, so 102 keeps it.
+        assertEquals(
+                List.of(202L),
+                talent(first, 102).prerequisites().stream()
+                        .map(TalentTypes.Prerequisite::talentId)
+                        .toList());
+        assertTrue(result.issues().stream().anyMatch(i -> i.contains("not shown")));
+    }
+
+    @Test
+    void treeNamesAreReadAgainAfterATransientLegacyFailure() {
+        var failing = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+        failing.add("TalentTab");
+        try (var real = handle(FOREVER, fixture());
+                var service =
+                        new TalentsService(
+                                TalentsServiceTest.flaky(real, failing), "1.60.1.70755")) {
+            var neutral = service.trees(1, Cancellation.NONE).join();
+            assertEquals(
+                    List.of("Talent tree 1", "Talent tree 2", "Talent tree 3"),
+                    neutral.trees().stream().map(TalentTypes.Tree::name).toList());
+            assertTrue(neutral.issues().stream().anyMatch(i -> i.contains("Reload to retry")));
+            failing.clear();
+            var named = service.trees(1, Cancellation.NONE).join();
+            assertFalse(
+                    named.trees().stream()
+                            .map(TalentTypes.Tree::name)
+                            .anyMatch(name -> name.startsWith("Talent tree")));
+        }
+    }
 }
