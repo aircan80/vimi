@@ -265,6 +265,18 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
                             WorldSpawnModels.build(work::creaturesHandle, work::filesHandle, job.build().version()),
                             work::revision, javafx.application.Platform::runLater));
                     world.attachSpawns(overlay);
+                    var generatedStore = work.generatedHandle();
+                    world.attachCreatures(new WorldTileCreatures(
+                            token -> sources.worldSpawns(job.build(), token),
+                            () -> java.util.List.of(sources.worldSpawnsKey(job.build()), work.revision()),
+                            WorldTileCreatures.chooser(work::creaturesHandle),
+                            new WorldTileCreatures.DisplayPreviews(() -> {
+                                var tables = work.tablesHandle();
+                                var files = work.filesHandle();
+                                return tables == null || files == null ? null
+                                        : new com.vibeminer.concepts.models.DisplayModelService(
+                                                tables, files, generatedStore);
+                            }, work::revision)));
                 }
             }
             setCenter(world); world.activate(); return;

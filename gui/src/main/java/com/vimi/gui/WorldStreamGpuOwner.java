@@ -16,6 +16,19 @@ final class WorldStreamGpuOwner {
      */
     static final boolean EXTERIORS = exteriorsEnabled(System.getProperty("vimi.world.exteriors"));
 
+    /**
+     * Static creature models at declared spawns ride in the same late tile objects, so they need
+     * exteriors on. Opt-in until measured on real data: only {@code -Dvimi.world.creatures=true}
+     * turns them on.
+     */
+    static final boolean CREATURES =
+            EXTERIORS && creaturesEnabled(System.getProperty("vimi.world.creatures"));
+
+    /** Only {@code true} (any letter case) turns creature models on. */
+    static boolean creaturesEnabled(String property) {
+        return "true".equalsIgnoreCase(property);
+    }
+
     /** Only {@code false} (any letter case) selects the terrain-only session profile. */
     static boolean exteriorsEnabled(String property) {
         return !"false".equalsIgnoreCase(property);

@@ -203,6 +203,75 @@ class CreatureModelPolicyTest {
         return new CreatureResult(state, null, null, null, null, null);
     }
 
+    @Test
+    void scaleMultipliesTheDisplayAndModelScales() {
+        var result = found(new int[] {5, 0, 0, 0}, scaled(5, "1.5", "2"));
+        assertEquals(3.0, CreatureModelPolicy.scale(result, 5), 1e-12);
+        assertNull(CreatureModelPolicy.scale(result, 6), "Another display has no scale");
+    }
+
+    @Test
+    void scaleIsUnknownUnlessBothValuesAreRecordedOnceAndPositive() {
+        assertNull(
+                CreatureModelPolicy.scale(found(new int[] {5, 0, 0, 0}, scaled(5, null, "1")), 5));
+        assertNull(
+                CreatureModelPolicy.scale(found(new int[] {5, 0, 0, 0}, scaled(5, "0", "1")), 5));
+        assertNull(
+                CreatureModelPolicy.scale(found(new int[] {5, 0, 0, 0}, scaled(5, "-1", "1")), 5));
+        assertNull(
+                CreatureModelPolicy.scale(found(new int[] {5, 0, 0, 0}, scaled(5, "NaN", "1")), 5));
+        assertNull(
+                CreatureModelPolicy.scale(found(new int[] {5, 0, 0, 0}, scaled(5, "x", "1")), 5));
+        assertNull(
+                CreatureModelPolicy.scale(found(new int[] {5, 0, 0, 0}, scaled(5, "40", "2")), 5),
+                "A product above the drawn ceiling is not claimed");
+        assertNull(
+                CreatureModelPolicy.scale(
+                        found(
+                                new int[] {5, 0, 0, 0},
+                                chain(5, CreatureDisplayChainState.METADATA_RESOLVED, 1L, 2L)),
+                        5),
+                "No facts recorded");
+        assertNull(CreatureModelPolicy.scale(null, 5));
+    }
+
+    private static CreatureDisplayChain scaled(int displayId, String display, String model) {
+        return new CreatureDisplayChain(
+                new CreatureDisplaySlot(0, displayId, 1, CreatureSlotState.DECLARED),
+                CreatureDisplayChainState.METADATA_RESOLVED,
+                null,
+                null,
+                1L,
+                null,
+                null,
+                2L,
+                null,
+                null,
+                null,
+                facts(display),
+                facts(model),
+                null,
+                null);
+    }
+
+    private static CreatureTypes.CreatureRecordFacts facts(String scale) {
+        var cells =
+                scale == null
+                        ? List.<CreatureTypes.CreatureFactCell>of()
+                        : List.of(new CreatureTypes.CreatureFactCell("Scale", 1, scale));
+        return new CreatureTypes.CreatureRecordFacts(
+                CreatureTypes.CreatureFactsState.READY,
+                List.of(
+                        new CreatureTypes.CreatureFact(
+                                "scale",
+                                cells.isEmpty()
+                                        ? CreatureTypes.CreatureFactState.UNSUPPORTED
+                                        : CreatureTypes.CreatureFactState.VALUE,
+                                cells)),
+                List.of(),
+                null);
+    }
+
     private static CreatureResult found(int[] displays, CreatureDisplayChain... chains) {
         var slots = new ArrayList<CreatureDisplaySlot>();
         for (int slot = 0; slot < displays.length; slot++) {

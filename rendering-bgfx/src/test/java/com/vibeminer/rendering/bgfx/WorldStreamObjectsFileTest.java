@@ -169,6 +169,33 @@ final class WorldStreamObjectsFileTest {
     }
 
     @Test
+    void builderReportsRemainingRoomBeforeAWholeModelIsAdded() {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        assertTrue(builder.fits(64, 1 << 20, 256, 98_304, 294_912, 1024));
+        assertFalse(builder.fits(65, 0, 1, 3, 3, 1), "Image count cap");
+        assertFalse(builder.fits(0, (1 << 20) + 1, 1, 3, 3, 1), "Pixel cap");
+        assertFalse(builder.fits(0, 0, 1, 98_305, 3, 1), "Vertex cap");
+        assertFalse(builder.fits(0, 0, 2, 3, 3, 1), "Every mesh needs a range");
+        assertEquals(64, builder.placementRoom());
+        assertEquals(WorldStreamTileWriter.Exterior.MAX_DRAWS, builder.drawRoom());
+        builder.image(2, 2, rgba(4, 1));
+        builder.model();
+        builder.mesh(
+                FloatBuffer.wrap(new float[24]),
+                IntBuffer.wrap(new int[] {0, 1, 2, 0, 2, 1}),
+                new int[] {0, 3, 0, 3, 3, 0});
+        assertEquals(2, builder.drawCost(0));
+        builder.placement(0, 1, 2, 3, 1, 1, 0);
+        builder.placement(0, 1, 2, 3, 1, 1, 0);
+        assertEquals(62, builder.placementRoom());
+        assertEquals(2, builder.placementCount());
+        assertEquals(WorldStreamTileWriter.Exterior.MAX_DRAWS - 4, builder.drawRoom());
+        assertFalse(builder.fits(64, 0, 1, 3, 3, 1), "Images already used count");
+        assertThrows(IllegalArgumentException.class, () -> builder.drawCost(1));
+        assertEquals(4, builder.build().draws());
+    }
+
+    @Test
     void anyChangedByteOrDigestIsRefused() throws Exception {
         var reference = write(small());
         try (var channel = FileChannel.open(objectsPath(), StandardOpenOption.WRITE)) {
