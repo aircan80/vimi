@@ -36,7 +36,7 @@ final class SqliteLibraryTest {
 
     @Test
     void defaultLibraryStartsInFreshProcess() throws Exception {
-        if (!System.getProperty("os.name").startsWith("Windows")) {
+        if (!windows()) {
             runChild(null, "success");
             return;
         }
@@ -48,7 +48,32 @@ final class SqliteLibraryTest {
         assumeTrue(
                 library.getFileName().toString().equalsIgnoreCase("sqlite3.dll"),
                 "Default-name lookup needs a library named sqlite3.dll");
+        assumeNoDefaultSqliteOnWindows();
         runChild(null, "success", library.getParent());
+    }
+
+    @Test
+    void windowsDefaultNameWithoutPathEntryIsActionable() throws Exception {
+        assumeTrue(windows(), "Unix systems provide SQLite under its default name");
+        assumeNoDefaultSqliteOnWindows();
+        runChild(null, "failure");
+    }
+
+    /**
+     * Windows searches the JDK, System32, the Windows directory and the working directory before
+     * PATH. If any of them already provides sqlite3.dll, the PATH case would pass for the wrong
+     * reason, so both default-name cases skip.
+     */
+    private void assumeNoDefaultSqliteOnWindows() throws Exception {
+        String probe = runChild(null, "probe");
+        assumeTrue(
+                !probe.contains("PROBE_LOADED"),
+                "sqlite3.dll is already on this machine's default DLL search path");
+        assertTrue(probe.contains("PROBE_MISSING"), probe);
+    }
+
+    private static boolean windows() {
+        return System.getProperty("os.name").startsWith("Windows");
     }
 
     @Test
@@ -74,11 +99,11 @@ final class SqliteLibraryTest {
         runChild(configured, "success");
     }
 
-    private void runChild(String library, String outcome) throws Exception {
-        runChild(library, outcome, null);
+    private String runChild(String library, String outcome) throws Exception {
+        return runChild(library, outcome, null);
     }
 
-    private void runChild(String library, String outcome, Path searchDirectory) throws Exception {
+    private String runChild(String library, String outcome, Path searchDirectory) throws Exception {
         Path output = folder.resolve("child-output.txt");
         List<String> command =
                 new ArrayList<>(
@@ -110,7 +135,9 @@ final class SqliteLibraryTest {
         Process child = builder.start();
         try {
             assertTrue(child.waitFor(30, TimeUnit.SECONDS), "Native dependency probe timed out");
-            assertEquals(0, child.exitValue(), Files.readString(output));
+            String text = Files.readString(output);
+            assertEquals(0, child.exitValue(), text);
+            return text;
         } finally {
             child.destroyForcibly();
             child.waitFor(5, TimeUnit.SECONDS);
@@ -120,6 +147,17 @@ final class SqliteLibraryTest {
     public static final class Child {
         public static void main(String[] args) {
             Path store = Path.of(args[0]);
+            if (args[1].equals("probe")) {
+                CompletableFuture<ObjectStore> open = ObjectStore.open(store);
+                if (open.handle((opened, error) -> error == null).join()) {
+                    open.join().closeAsync().join();
+                    System.out.println("PROBE_LOADED");
+                } else {
+                    expectFailure(open);
+                    System.out.println("PROBE_MISSING");
+                }
+                return;
+            }
             if (args[1].equals("success")) {
                 ObjectStore.open(store).join().closeAsync().join();
                 ObjectStore.openReadOnly(store, new StoreTypes.Options())
