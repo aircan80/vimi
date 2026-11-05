@@ -17,7 +17,7 @@ import java.util.Objects;
  * select cache entries, authenticate sources, apply overlays or mint native capture evidence.
  */
 public final class HotfixRowDecoder {
-    public static final String REVISION = "hotfix-flat-dbd-v3";
+    public static final String REVISION = "hotfix-flat-dbd-v4";
 
     public enum Reason {
         LIMIT,
@@ -52,18 +52,25 @@ public final class HotfixRowDecoder {
         }
     }
 
-    /** Fixed upper ceilings cannot be widened by a caller. */
+    /**
+     * Fixed upper ceilings cannot be widened by a caller. The column ceiling equals the base DB2
+     * reader's flattened-column bound ({@code Db2Types.Limits().maxColumns()}): a hotfix row never
+     * has more columns than a header the base reader accepts (PlayerCondition has 224).
+     */
     public record Limits(
             int maxPayloadBytes, int maxColumns, int maxStringBytes, int maxDecodedChars) {
+        /** Same bound as the base reader's flattened columns. */
+        public static final int MAX_COLUMNS = 512;
+
         public Limits() {
-            this(65536, 128, 16384, 131072);
+            this(65536, MAX_COLUMNS, 16384, 131072);
         }
 
         public Limits {
             if (maxPayloadBytes < 1
                     || maxPayloadBytes > 65536
                     || maxColumns < 1
-                    || maxColumns > 128
+                    || maxColumns > MAX_COLUMNS
                     || maxStringBytes < 1
                     || maxStringBytes > 16384
                     || maxDecodedChars < 1
