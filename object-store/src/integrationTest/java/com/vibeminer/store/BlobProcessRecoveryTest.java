@@ -3,6 +3,7 @@ package com.vibeminer.store;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -17,6 +18,9 @@ import org.junit.jupiter.api.io.TempDir;
 
 /** Process termination checks; these do not simulate physical power loss. */
 final class BlobProcessRecoveryTest {
+    /** Bounds only a hung child; never a guess at how fast a busy machine starts a JVM. */
+    private static final long HANG_GUARD_SECONDS = 120;
+
     @TempDir Path directory;
 
     @Test
@@ -54,22 +58,12 @@ final class BlobProcessRecoveryTest {
                         .redirectOutput(log.toFile())
                         .start();
         try {
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-            while (!Files.exists(marker) && process.isAlive() && System.nanoTime() < deadline) {
-                Thread.sleep(20);
-            }
-            assertTrue(
-                    Files.exists(marker),
-                    () -> {
-                        try {
-                            return Files.readString(log);
-                        } catch (IOException error) {
-                            return error.toString();
-                        }
-                    });
+            awaitReady(process, marker, log);
         } finally {
             process.destroyForcibly();
-            assertTrue(process.waitFor(5, TimeUnit.SECONDS));
+            assertTrue(
+                    process.waitFor(HANG_GUARD_SECONDS, TimeUnit.SECONDS),
+                    "Killed writer did not exit within " + HANG_GUARD_SECONDS + " s");
         }
         try (var reopened = new SqliteBlobPrototype(database)) {
             assertEquals(committed ? 1 : 0, reopened.buildBytes("build"));
@@ -89,12 +83,59 @@ final class BlobProcessRecoveryTest {
         }
     }
 
+    /**
+     * Waits for the writer to reach its kill point. Only two outcomes end the wait: the marker
+     * appears, or the child exits first (a real failure). A slow child is not a failure: a loaded
+     * Windows runner once took about 10 s to start it. The guard only stops a genuine hang.
+     */
+    private static void awaitReady(Process process, Path marker, Path log) throws Exception {
+        long started = System.nanoTime();
+        long deadline = started + TimeUnit.SECONDS.toNanos(HANG_GUARD_SECONDS);
+        while (!Files.exists(marker)) {
+            long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+            if (!process.isAlive()) {
+                // The marker is written before the child blocks; re-check after observing exit.
+                if (Files.exists(marker)) {
+                    return;
+                }
+                fail(
+                        "Writer exited with "
+                                + process.exitValue()
+                                + " before its kill point, after "
+                                + elapsed
+                                + " ms; child log:\n"
+                                + childLog(log));
+            }
+            if (System.nanoTime() - deadline > 0) {
+                fail(
+                        "Writer still alive but not at its kill point after "
+                                + elapsed
+                                + " ms; child log:\n"
+                                + childLog(log));
+            }
+            Thread.sleep(20);
+        }
+    }
+
+    private static String childLog(Path log) {
+        try {
+            return Files.readString(log);
+        } catch (IOException error) {
+            return error.toString();
+        }
+    }
+
     public static final class Child {
         public static void main(String[] args) throws Exception {
             Path database = Path.of(args[0]);
             Path marker = Path.of(args[1]);
             boolean committed = Boolean.parseBoolean(args[2]);
+            // Progress in the child log, so a slow or stuck child shows where it was.
+            System.out.println("child started");
+            System.out.flush();
             try (var store = new SqliteBlobPrototype(database)) {
+                System.out.println("store open");
+                System.out.flush();
                 if (committed) {
                     store.put(
                             "key",
