@@ -1484,6 +1484,37 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void texture1CoordinatesComeFromTheVertexShaderNotTheUnusedLookupTable() {
+        // Non-combiner IDs: Diffuse_T1 (0, 16), Diffuse_T1_T2 (0x4000 with two textures) use UV0;
+        // Diffuse_Env (0x80) and Diffuse_T2 (0x4000 with one texture) do not.
+        assertTrue(WorldExteriorObjects.firstTextureUsesUv0(0, 1));
+        assertTrue(WorldExteriorObjects.firstTextureUsesUv0(16, 1));
+        assertTrue(WorldExteriorObjects.firstTextureUsesUv0(0x4000, 2));
+        assertTrue(!WorldExteriorObjects.firstTextureUsesUv0(0x80, 1));
+        assertTrue(!WorldExteriorObjects.firstTextureUsesUv0(0x88, 2));
+        assertTrue(!WorldExteriorObjects.firstTextureUsesUv0(0x4000, 1));
+        // Combiners: 0 Diffuse_T1_Env, 18 Diffuse_T1, 19 Diffuse_EdgeFade_T1, 31 Color_T1_T2_T3,
+        // 35 the last entry (EdgeFade), 36 outside the table.
+        assertTrue(WorldExteriorObjects.firstTextureUsesUv0(0x8000, 2));
+        assertTrue(WorldExteriorObjects.firstTextureUsesUv0(0x8000 | 18, 1));
+        assertTrue(!WorldExteriorObjects.firstTextureUsesUv0(0x8000 | 19, 1));
+        assertTrue(!WorldExteriorObjects.firstTextureUsesUv0(0x8000 | 31, 3));
+        assertTrue(!WorldExteriorObjects.firstTextureUsesUv0(0x8000 | 35, 2));
+        assertTrue(!WorldExteriorObjects.firstTextureUsesUv0(0x8000 | 36, 1));
+        // Real models declare an empty texture-coordinate lookup (unused since Cataclysm); the
+        // authored model with its one-entry table cleared still draws.
+        var bytes = model();
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(40 + 136, 0);
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, bytes);
+            try (var set = run(f, obj0(List.of(), List.of(Mddf.of(MODEL, 1, 0x240))))) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.MODEL_BATCH_DRAWN));
+            }
+        }
+    }
+
+    @Test
     void mddfPitchRollAndHeadingFollowThePinnedPlacementMatrix() {
         var tilted =
                 new Mddf(MODEL, 1, 0x240, 1234.5f, 87.25f, 2345.75f, 17.5f, -121.25f, 33, 1536);
