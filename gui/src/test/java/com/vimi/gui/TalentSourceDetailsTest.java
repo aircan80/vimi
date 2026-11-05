@@ -93,6 +93,16 @@ public final class TalentSourceDetailsTest {
         require("Source build 1.60.1.70707".equals(TalentSourceDetails.buildLabel("1.60.1.70707"))
                 && TalentSourceDetails.buildLabel("").isEmpty(), "The source build is labelled");
         require(TalentSourceDetails.buildLabel(null).isEmpty(), "A missing build version is not an error");
+        var oneSpell = new com.vibeminer.concepts.talents.TalentTypes.Talent(9, 0, 0, List.of(5L), 3, List.of(),
+                "One spell", null, null, com.vibeminer.concepts.talents.TalentTypes.Origin.LEGACY);
+        var noDefinition = new com.vibeminer.concepts.talents.TalentTypes.Talent(10, 0, 0, List.of(5L), 3, List.of(),
+                "Trait", null, null, new com.vibeminer.concepts.talents.TalentTypes.Origin(
+                        com.vibeminer.concepts.talents.TalentTypes.Model.TRAIT_TREE, 1L, 2L, null,
+                        0L, 0L, null, false, false));
+        require(!TalentSourceDetails.distinctNextRank(oneSpell) && !TalentSourceDetails.distinctNextRank(noDefinition)
+                && TalentSourceDetails.distinctNextRank(frenzy) && TalentSourceDetails.distinctNextRank(trait)
+                && TalentSourceDetails.sameTextForAllRanks(oneSpell).contains("all 3 ranks"),
+                "Next rank appears only when rank 2 can differ; otherwise the same-text notice is shown");
         require(TalentSourceDetails.failure(new java.util.concurrent.CompletionException(
                         new IllegalStateException("SPELL_TEXT_OPERATION_LIMIT"))).contains("busy"),
                 "A busy spell text service is named, not hidden");

@@ -108,6 +108,22 @@ final class TalentSourceDetails {
                 + (message == null || message.isBlank() ? "" : ": " + shortText(message, 200));
     }
 
+    /**
+     * True when rank 2 has its own source: a second legacy rank spell, or a TraitTree definition
+     * whose rank values can differ. Otherwise "Next rank" would repeat rank 1.
+     */
+    static boolean distinctNextRank(TalentTypes.Talent talent) {
+        if (talent.maxRanks() < 2) return false;
+        if (talent.origin().model() == TalentTypes.Model.TRAIT_TREE)
+            return talent.origin().traitDefinitionId() != null;
+        return talent.rankSpells().size() > 1;
+    }
+
+    static String sameTextForAllRanks(TalentTypes.Talent talent) {
+        return "One spell is recorded for all " + talent.maxRanks()
+                + " ranks; values are shown as recorded, not per rank.";
+    }
+
     static String buildLabel(String version) {
         return version == null || version.isBlank() ? "" : "Source build " + version;
     }

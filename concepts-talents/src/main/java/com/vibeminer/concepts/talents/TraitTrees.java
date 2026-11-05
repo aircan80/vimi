@@ -586,9 +586,10 @@ final class TraitTrees {
     /**
      * Rank values for a trait definition's effects. A TraitDefinitionEffectPoints row with
      * OperationType 0 (set) names a Curve whose point at x = rank is the effect's base points at
-     * that rank. Only exact rank points of Type 0 curves are used; an effect whose value cannot be
-     * read this way is overridden by nothing and keeps the spell's own data, with the reason in the
-     * sources. Read once per handle; failures are retried on the next request.
+     * that rank. Only exact rank points of Type 0 curves are used. Once a definition records any
+     * rank value, every effect whose value cannot be read this way shows unknown, with the reason;
+     * a definition with no rows keeps the spell's own data. Read once per handle; failures are
+     * retried on the next request.
      */
     List<com.vibeminer.concepts.effects.SpellTexts.EffectOverride> rankPoints(
             long definition, int rank, Cancellation token) {
@@ -640,6 +641,25 @@ final class TraitTrees {
                                             curve,
                                             "Pos at rank " + rank,
                                             value.toPlainString()))));
+        }
+        if (!result.isEmpty()) {
+            // The definition records rank values for some effects. An effect without its own
+            // row cannot be told apart from one whose row is missing, so it shows unknown rather
+            // than the spell's base points, which may belong to another rank.
+            var covered = new HashSet<Integer>();
+            result.forEach(override -> covered.add(override.effectIndex()));
+            for (int effect = 0;
+                    effect < com.vibeminer.concepts.effects.SpellTexts.EFFECT_SLOTS;
+                    effect++) {
+                if (!covered.contains(effect)) {
+                    result.add(
+                            unknownRank(
+                                    definition,
+                                    effect,
+                                    "This talent records rank values for other effects but none"
+                                            + " for this one"));
+                }
+            }
         }
         return result;
     }
@@ -758,6 +778,8 @@ final class TraitTrees {
             byId.put(row.id(), row);
         }
         var result = new HashMap<Long, Integer>();
+        // A node with any unsupported condition shows no requirement, never an understated one.
+        var blocked = new HashSet<Long>();
         int unsupported = 0;
         for (var link : condLinks.rows) {
             var cond = byId.get(condLinks.number(link, "TraitCondID"));
@@ -774,6 +796,7 @@ final class TraitTrees {
             var countedNodes = members.getOrDefault(counted, Set.of());
             if (type != 0 || spend < 1 || spend > 1000 || countedNodes.isEmpty()) {
                 unsupported++;
+                blocked.addAll(gated);
                 continue;
             }
             for (long node : gated) {
@@ -783,16 +806,18 @@ final class TraitTrees {
                 }
                 if (!partition.get(tree).containsAll(countedNodes)) {
                     unsupported++;
+                    blocked.add(node);
                     continue;
                 }
                 result.merge(node, (int) spend, Math::max);
             }
         }
+        result.keySet().removeAll(blocked);
         if (unsupported > 0) {
             classIssues.add(
                     unsupported
-                            + " TraitCond tier requirement(s) have an unreviewed form and are not"
-                            + " shown.");
+                            + " TraitCond tier requirement(s) have an unreviewed form; talents"
+                            + " they apply to show no point requirement.");
         }
         return result;
     }

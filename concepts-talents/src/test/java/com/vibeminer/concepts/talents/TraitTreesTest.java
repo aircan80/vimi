@@ -642,6 +642,29 @@ final class TraitTreesTest {
     }
 
     @Test
+    void severalConditionsOnOneTalentShowTheLargestOrNoneWhenAnyIsUnsupported() {
+        var supported =
+                warrior(
+                        withConds(
+                                List.of(row(1, 0, 500, 4, 3820, 5), row(2, 0, 500, 4, 3820, 10)),
+                                List.of(row(10, 1, 5), row(11, 2, 5), row(12, 2, 5))));
+        assertEquals(10, talent(supported.trees().getFirst(), 101).requiredTreePoints());
+        var mixed =
+                warrior(
+                        withConds(
+                                List.of(row(1, 0, 500, 4, 3820, 5), row(2, 7, 500, 4, 3820, 10)),
+                                List.of(row(10, 1, 5), row(11, 2, 5))));
+        assertNull(talent(mixed.trees().getFirst(), 101).requiredTreePoints());
+        var crossTree =
+                warrior(
+                        withConds(
+                                List.of(row(1, 0, 500, 4, 3820, 5), row(2, 0, 500, 2, 3820, 10)),
+                                List.of(row(10, 1, 5), row(11, 2, 5))));
+        assertNull(talent(crossTree.trees().getFirst(), 101).requiredTreePoints());
+        assertTrue(mixed.issues().stream().anyMatch(i -> i.contains("show no point requirement")));
+    }
+
+    @Test
     void tierGatesCountingAnotherTreeOrAnUnknownTypeAreNotShown() {
         var result =
                 warrior(
@@ -804,6 +827,10 @@ final class TraitTreesTest {
             // unknown.
             assertNull(byEffect.get(1).value());
             assertNull(byEffect.get(2).value());
+            // Effects without their own row in a curve-backed definition show unknown too.
+            assertNull(byEffect.get(3).value());
+            assertNull(byEffect.get(4).value());
+            assertTrue(byEffect.get(3).issue().contains("none for this one"));
             assertEquals(
                     0,
                     new java.math.BigDecimal("-25")

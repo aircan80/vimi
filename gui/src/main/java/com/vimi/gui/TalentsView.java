@@ -620,10 +620,13 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         descriptionActivity.setManaged(false);
         selection.getChildren().add(new HBox(8, descriptionActivity, description));
         Label nextRank = null;
-        if (talent.maxRanks() > 1) {
+        if (TalentSourceDetails.distinctNextRank(talent)) {
             nextRank = text("Loading next rank…", "wow-level");
             nextRank.setId("talent-next-rank");
             selection.getChildren().addAll(text("Next rank:", "wow-line"), nextRank);
+        } else if (talent.maxRanks() > 1) {
+            selection.getChildren().add(text(TalentSourceDetails.sameTextForAllRanks(talent),
+                    "talent-tooltip-context"));
         }
         evidence.getChildren()
                 .setAll(
