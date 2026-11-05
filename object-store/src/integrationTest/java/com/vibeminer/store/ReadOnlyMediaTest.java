@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import com.sun.security.auth.module.NTSystem;
 import com.vibeminer.store.StoreTypes.Options;
 import com.vibeminer.store.StoreTypes.PutObject;
 import java.io.IOException;
@@ -183,10 +184,16 @@ final class ReadOnlyMediaTest {
                         }
                     }
                 }
-                assumeTrue(
-                        !Files.isWritable(root),
-                        "Requires an unprivileged permission-enforcing user");
-                if (!posix) {
+                if (posix) {
+                    assumeTrue(
+                            !Files.isWritable(root),
+                            "Requires an unprivileged permission-enforcing user");
+                } else {
+                    // A deny for the wrong account would silently disable every case, so the ACL
+                    // branch fails rather than skips when enforcement is missing.
+                    assertFalse(
+                            Files.isWritable(root),
+                            "Deny entry for " + deny.principal() + " left the store writable");
                     assertWriteDenied(root);
                 }
             } catch (IOException | RuntimeException | Error error) {
@@ -200,10 +207,13 @@ final class ReadOnlyMediaTest {
         }
 
         private static AclEntry denyWrites(Path root) throws IOException {
+            // Resolve the account from the process token, qualified by its domain. A bare user
+            // name can resolve to another account on domain-joined machines or on name clashes.
+            NTSystem token = new NTSystem();
             UserPrincipal user =
                     root.getFileSystem()
                             .getUserPrincipalLookupService()
-                            .lookupPrincipalByName(System.getProperty("user.name"));
+                            .lookupPrincipalByName(token.getDomain() + "\\" + token.getName());
             return AclEntry.newBuilder()
                     .setType(AclEntryType.DENY)
                     .setPrincipal(user)
