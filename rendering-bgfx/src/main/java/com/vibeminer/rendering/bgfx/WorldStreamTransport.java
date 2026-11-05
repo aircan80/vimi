@@ -1843,18 +1843,19 @@ public final class WorldStreamTransport {
          * pending upload, commit and late objects work, queued reliable commands, whether a frame
          * awaits the viewer, the ignored stdout noise count and the helper stderr tail. Never ends
          * or changes the session.
+         *
+         * <p>Runs on the FX thread during a stall, when a session thread may hold {@code lock}, so
+         * it never takes it: the fields are read racily as a best-effort snapshot. A stale or mixed
+         * view is acceptable for a diagnostic, and none of these reads can throw.
          */
         public String stallSummary() {
-            boolean upload, commit, objects, frame;
-            int commands, reliable;
-            synchronized (lock) {
-                upload = tile != null;
-                commit = commitOperation != null;
-                objects = objectsOperation != null;
-                frame = latestFrame != null;
-                commands = reliableCommands.size();
-                reliable = outstandingReliable;
-            }
+            boolean upload = tile != null;
+            boolean commit = commitOperation != null;
+            boolean objects = objectsOperation != null;
+            boolean frame = latestFrame != null;
+            int commands = reliableCommands.size();
+            int reliable = outstandingReliable;
+            long noiseLines = stdout.noiseLines(), noiseBytes = stdout.noiseBytes();
             long pid = childPid;
             return (pid == 0 ? "no child process" : "pid " + pid)
                     + (closing ? "; closing" : "")
@@ -1871,10 +1872,10 @@ public final class WorldStreamTransport {
                     + "; frame awaiting viewer "
                     + (frame ? "yes" : "no")
                     + "; unrelated stdout ignored "
-                    + stdout.noiseLines()
-                    + (stdout.noiseLines() == 1 ? " line, " : " lines, ")
-                    + stdout.noiseBytes()
-                    + (stdout.noiseBytes() == 1 ? " byte" : " bytes")
+                    + noiseLines
+                    + (noiseLines == 1 ? " line, " : " lines, ")
+                    + noiseBytes
+                    + (noiseBytes == 1 ? " byte" : " bytes")
                     + stderrSuffix();
         }
 

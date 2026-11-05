@@ -3,18 +3,22 @@ package com.vimi.gui;
 import java.time.Duration;
 
 /**
- * Detects a stalled visible World explorer: frames are expected, yet none is presented for a
- * threshold. Pure metadata and an injected monotonic clock; the explorer's animation pulse drives
- * it on the FX thread, and it never waits, dumps or kills anything.
+ * Detects a stalled visible World explorer: frames are owed, yet none that makes progress is
+ * presented for a threshold. Pure metadata and an injected monotonic clock; the explorer's
+ * animation pulse drives it on the FX thread, and it never waits, dumps or kills anything.
  *
- * <p>Frames are expected only while the caller reports the view eligible (explorer visible, window
- * shown and not minimized, GPU stream READY, no instance switch, retirement or reload in progress)
- * and a camera revision was requested that no presented frame covers yet. An idle camera requests
- * nothing, so it never alerts. Any ineligible poll, or a gap between polls longer than {@link
- * #POLL_GAP_NANOS} (the pulse stops while the explorer is inactive), restarts the clock instead of
- * counting the pause as a stall.
+ * <p>The caller reports each pulse whether the view is eligible (explorer visible, window shown
+ * and not minimized, stream READY or PRESENTING, no instance switch, retirement or reload in
+ * progress) and whether the stream is PRESENTING. A frame is owed when the stream is PRESENTING
+ * (new content waits for accepted pixels, which the helper draws on its own cadence; this covers
+ * the first frame and every frame after a commit), or when a camera revision was requested that no
+ * presented frame covers yet. An idle camera in READY owes nothing, so it never alerts. Any
+ * ineligible poll, or a gap between polls longer than {@link #POLL_GAP_NANOS} (the pulse stops
+ * while the explorer is inactive), restarts the clock instead of counting the pause as a stall.
  *
- * <p>A stall alerts once per episode. The next presented frame ends the episode and re-arms.
+ * <p>Only a presented frame for a newer camera revision is progress. A helper that keeps redrawing
+ * an old camera while requests advance is still stalled for the camera. A stall alerts once per
+ * episode; the episode ends, re-arming the alert, when progress is presented or nothing is owed.
  */
 final class WorldStallWatchdog {
     static final Duration DEFAULT_THRESHOLD = Duration.ofSeconds(5);
@@ -23,6 +27,7 @@ final class WorldStallWatchdog {
     /** What a stall alert reports about the frames, beside the caller's own evidence. */
     record Stall(
             long waitedNanos,
+            boolean presenting,
             long requestedRevision,
             long presentedRevision,
             long presentedSequence,
@@ -31,11 +36,10 @@ final class WorldStallWatchdog {
     private final long threshold;
     private boolean polled;
     private long lastPoll;
-    // Start of the current eligible stretch; frames are only owed within one.
-    private boolean eligible;
-    private long eligibleSince;
+    // Start of the current owed stretch: frames are owed since then without progress.
+    private boolean waiting;
+    private long waitingSince;
     private long requestedRevision, presentedRevision, presentedSequence;
-    private long requestedAt;
     private boolean presentedEver;
     private long presentedAt;
     private boolean alerted;
@@ -60,47 +64,55 @@ final class WorldStallWatchdog {
 
     /** A new stream (or none): forget every request, presentation and episode. */
     void reset() {
-        polled = eligible = presentedEver = alerted = false;
+        polled = waiting = presentedEver = alerted = false;
         requestedRevision = presentedRevision = presentedSequence = 0;
     }
 
     /** A camera revision was sent to the renderer, which owes a frame that covers it. */
-    void requested(long revision, long now) {
-        if (revision <= requestedRevision) return;
-        if (!pending()) requestedAt = now;
-        requestedRevision = revision;
+    void requested(long revision) {
+        if (revision > requestedRevision) requestedRevision = revision;
     }
 
-    /** A new frame for {@code cameraRevision} was presented: progress, ending any episode. */
-    void presented(long cameraRevision, long sequence, long now) {
-        presentedRevision = Math.max(presentedRevision, cameraRevision);
+    /**
+     * A new frame was presented. Only a newer camera revision is progress: it restarts the clock
+     * and ends any episode. Returns whether it ended an alerted episode.
+     */
+    boolean presented(long cameraRevision, long sequence, long now) {
         presentedSequence = Math.max(presentedSequence, sequence);
         presentedEver = true;
         presentedAt = now;
+        if (cameraRevision <= presentedRevision) return false;
+        presentedRevision = cameraRevision;
+        if (waiting) waitingSince = now;
+        boolean recovered = alerted;
         alerted = false;
-        if (pending()) requestedAt = now;
+        return recovered;
     }
 
     /** One pulse. Returns the stall to report when this poll begins an episode, else null. */
-    Stall poll(long now, boolean eligibleNow) {
+    Stall poll(long now, boolean eligible, boolean presenting) {
         boolean gap = !polled || now - lastPoll > POLL_GAP_NANOS;
         polled = true;
         lastPoll = now;
-        if (!eligibleNow) {
-            eligible = false;
+        if (!eligible) {
+            waiting = false;
             return null;
         }
-        if (!eligible || gap) {
-            eligible = true;
-            eligibleSince = now;
+        boolean owed = presenting || cameraPending();
+        if (!owed) {
+            waiting = false;
+            alerted = false;
+            return null;
         }
-        if (!pending() || alerted) return null;
-        // Subtraction, not ordering, so System.nanoTime's signed wrap is harmless.
-        long since = eligibleSince - requestedAt > 0 ? eligibleSince : requestedAt;
-        if (now - since < threshold) return null;
+        if (!waiting || gap) {
+            waiting = true;
+            waitingSince = now;
+        }
+        if (alerted || now - waitingSince < threshold) return null;
         alerted = true;
         return new Stall(
-                now - since,
+                now - waitingSince,
+                presenting,
                 requestedRevision,
                 presentedRevision,
                 presentedSequence,
@@ -111,9 +123,12 @@ final class WorldStallWatchdog {
     static String describe(Stall stall) {
         return String.format(
                 java.util.Locale.ROOT,
-                "World explorer stalled: no new frame for %.1f s while frames were expected;"
+                "World explorer stalled: no new frame for %.1f s while %s;"
                         + " camera revision requested %d, presented %d; last frame sequence %d, %s",
                 stall.waitedNanos() / 1e9,
+                stall.presenting()
+                        ? "new content awaited its first frame"
+                        : "a camera change awaited its frame",
                 stall.requestedRevision(),
                 stall.presentedRevision(),
                 stall.presentedSequence(),
@@ -129,7 +144,7 @@ final class WorldStallWatchdog {
         return alerted;
     }
 
-    private boolean pending() {
+    private boolean cameraPending() {
         return requestedRevision > presentedRevision;
     }
 }

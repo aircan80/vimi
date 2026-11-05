@@ -314,6 +314,35 @@ class WorldStreamTransportDiagnosticsTest {
                     summary);
             assertTrue(summary.contains("Cannot open <path>"), summary);
             assertFalse(summary.contains("tester"), summary);
+            // A session thread holding the session lock never blocks the summary.
+            var lockField = WorldStreamTransport.Session.class.getDeclaredField("lock");
+            lockField.setAccessible(true);
+            Object sessionLock = lockField.get(session);
+            var lockHeld = new java.util.concurrent.CountDownLatch(1);
+            var releaseLock = new java.util.concurrent.CountDownLatch(1);
+            var holder =
+                    Thread.ofPlatform()
+                            .start(
+                                    () -> {
+                                        synchronized (sessionLock) {
+                                            lockHeld.countDown();
+                                            try {
+                                                releaseLock.await();
+                                            } catch (InterruptedException interrupted) {
+                                                Thread.currentThread().interrupt();
+                                            }
+                                        }
+                                    });
+            try {
+                assertTrue(lockHeld.await(5, TimeUnit.SECONDS));
+                String whileHeld =
+                        org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(
+                                java.time.Duration.ofSeconds(2), session::stallSummary);
+                assertTrue(whileHeld.startsWith("pid 919; tile upload idle"), whileHeld);
+            } finally {
+                releaseLock.countDown();
+                holder.join(5000);
+            }
             // Observation only: the session is still running.
             assertFalse(session.completion().isDone());
         } finally {
