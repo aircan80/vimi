@@ -1998,12 +1998,14 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   file and directory of the test's own temporary store, proves file creation is refused,
   and restores the original ACLs on every exit. `SqliteLibraryTest` default-name startup
   now runs on Windows by placing the `-PsqliteLibrary` DLL's directory first on the child
-  JVM's `PATH`. A temporary negative control (not committed) confirmed that default-name
-  startup without that PATH entry fails with the actionable `OBJECT_STORE_NATIVE_LIBRARY`
-  error on this machine.
-- With the changes: full 452 cases, zero failures/errors, 2 skips (the Unix lock-mode
-  cases, which have no Windows meaning). All five read-only-media cases and all five
-  SQLite library probes ran. Formatting, Checkstyle, compiler lint and assembly passed.
+  JVM's `PATH`. A companion case starts the same child with no `PATH` change and
+  requires the actionable `OBJECT_STORE_NATIVE_LIBRARY` failure. Both skip if the default
+  DLL search path already provides `sqlite3.dll`. The ACL branch asserts, rather than
+  assumes, that the deny is enforced, and resolves the account from the process token.
+- With the changes: focused 22 cases, 2 skips; full 453 cases (72 unit, 281
+  integration, 59 crash, 41 interoperability), zero failures/errors, 2 skips (the Unix
+  lock-mode cases, which have no Windows meaning). All five read-only-media cases and
+  all six SQLite library probes ran. Formatting, Checkstyle, compiler lint and assembly passed.
 - Covered on Windows: bidirectional Java/C# writer exclusion (`InteropTest`), lock
   reacquisition, leased pack handles with concurrent writes and deletion
   (`PackReaderCacheTest`), process-kill crash recovery, clean read-only opens
