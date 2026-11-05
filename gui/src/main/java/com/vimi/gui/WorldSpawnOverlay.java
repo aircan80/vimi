@@ -1,6 +1,7 @@
 package com.vimi.gui;
 
 import com.vibeminer.access.Cancellation;
+import com.vibeminer.concepts.creatures.CreatureModelPolicy;
 import com.vibeminer.concepts.locations.LocationTypes;
 import com.vibeminer.concepts.locations.WorldSpawns;
 import com.vibeminer.rendering.world.TerrainCamera;
@@ -23,6 +24,7 @@ import javafx.scene.text.TextAlignment;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -59,8 +61,11 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
     /** One marker in viewport pixels. */
     record Marker(WorldSpawns.Spawn spawn, double x, double footY, double headY, double depth) {}
 
-    /** A clicked marker's declared point and its NPC record from the same snapshot, if any. */
-    record Picked(WorldSpawns.Spawn spawn, WorldSpawns.Npc npc) {
+    /**
+     * A clicked marker's declared point, its NPC record from the same snapshot and its cached
+     * creature model outcome, each null when not known (yet).
+     */
+    record Picked(WorldSpawns.Spawn spawn, WorldSpawns.Npc npc, WorldSpawnModels.Resolved model) {
         Picked {
             Objects.requireNonNull(spawn);
         }
@@ -90,6 +95,9 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
     private WorldSpawns.Index drawnIndex;
     private List<Marker> markers = List.of();
     private double lastWidth, lastHeight;
+    private WorldSpawns.Nearby lastNearby;
+    private int lastCapped;
+    private WorldSpawnModels models;
     private boolean closed, running, rerun, suspended;
 
     WorldSpawnOverlay(Loader loader, Supplier<Object> revision) {
@@ -156,7 +164,26 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
         if (closed || suspended || !enabled.isSelected() || current == null || drawn == null)
             return Optional.empty();
         return WorldPick.marker(markers, x, y)
-                .map(m -> new Picked(m.spawn(), current.npc(m.spawn().npcId()).orElse(null)));
+                .map(m -> new Picked(m.spawn(), current.npc(m.spawn().npcId()).orElse(null),
+                        models == null ? null : models.cached(m.spawn().npcId()).orElse(null)));
+    }
+
+    /**
+     * Resolves creature model outcomes for drawn markers and counts them in the status line. FX
+     * thread; the overlay closes it.
+     */
+    void attachModels(WorldSpawnModels resolver) {
+        if (models != null || closed) throw new IllegalStateException("Spawn models already attached");
+        models = Objects.requireNonNull(resolver);
+        resolver.listen(npcId -> {
+            if (drawn != null && index == drawnIndex && index != null && index.source().isPresent())
+                status.setText(summary(index, lastNearby, markers.size(), lastCapped) + modelSummary());
+        });
+    }
+
+    /** Model outcomes of the drawn markers, if a resolver is attached. */
+    Optional<WorldSpawnModels> models() {
+        return Optional.ofNullable(models);
     }
 
     /** Drawn head radius for a marker at an eye depth. */
@@ -210,6 +237,7 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
         loading = new Cancellation();
         indexRevision = current;
         index = null;
+        if (models != null) models.refresh();
         ++generation;
         clearCanvas();
         show(true);
@@ -272,8 +300,40 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
                 lastWidth, lastHeight);
         int capped = Math.max(0, visible.size() - LIMIT);
         markers = visible.subList(capped, visible.size());
+        lastNearby = nearby;
+        lastCapped = capped;
         paint(g, markers);
-        status.setText(summary(index, nearby, markers.size(), capped));
+        if (models != null) {
+            // Nearest markers are drawn last; resolve them first.
+            var ids = new java.util.LinkedHashSet<Long>();
+            for (int i = markers.size() - 1; i >= 0; i--) ids.add(markers.get(i).spawn().npcId());
+            models.request(ids);
+        }
+        status.setText(summary(index, nearby, markers.size(), capped) + modelSummary());
+    }
+
+    private String modelSummary() {
+        if (models == null || markers.isEmpty()) return "";
+        return modelSummary(models.count(markers.stream().map(m -> m.spawn().npcId()).toList()));
+    }
+
+    /** Status suffix: per-state counts of drawn markers, with refusal reasons, then pending. */
+    static String modelSummary(WorldSpawnModels.Counts counts) {
+        var text = new StringBuilder(" · models (not drawn yet):");
+        boolean first = true;
+        for (var state : CreatureModelPolicy.State.values()) {
+            int n = counts.count(state);
+            if (n == 0) continue;
+            text.append(first ? " " : ", ").append(n).append(' ').append(state.name().toLowerCase(java.util.Locale.ROOT));
+            first = false;
+            if (state == CreatureModelPolicy.State.QUALIFIED || state == CreatureModelPolicy.State.AMBIGUOUS) continue;
+            var reasons = new ArrayList<String>();
+            counts.outcomes().get(state).entrySet().stream().sorted(Map.Entry.comparingByKey())
+                    .forEach(entry -> reasons.add(entry.getValue() + " " + WorldPick.reason(entry.getKey())));
+            if (!reasons.isEmpty()) text.append(" (").append(String.join(", ", reasons)).append(')');
+        }
+        if (counts.pending() > 0) text.append(first ? " " : ", ").append(counts.pending()).append(" resolving");
+        return text.toString();
     }
 
     /**
@@ -407,6 +467,7 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
         loading = null;
         index = null;
         clearCanvas();
+        if (models != null) models.close();
         worker.shutdown();
     }
 }

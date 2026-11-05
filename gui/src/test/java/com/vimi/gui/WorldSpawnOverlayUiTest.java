@@ -58,6 +58,10 @@ public final class WorldSpawnOverlayUiTest {
                 return gates.get(calls.getAndIncrement()).get(10, TimeUnit.SECONDS);
             }, revision::get);
             created.bind(view::get);
+            created.attachModels(new WorldSpawnModels((npc, token) -> {
+                require(!Platform.isFxApplicationThread(), "Model lookups run off FX");
+                return WorldSpawnModelsTest.resolved(npc, WorldSpawnModelsTest.qualified(123456), "creature/authored.m2");
+            }, revision::get, Platform::runLater));
             overlay.set(created);
             var frame = new Rectangle(800, 500, Color.rgb(64, 92, 72));
             var viewport = new StackPane(frame, created);
@@ -93,6 +97,14 @@ public final class WorldSpawnOverlayUiTest {
             require(picked.spawn().equals(top.spawn()) && picked.npc() != null
                     && "Authored guard".equals(picked.npc().name()), "Clicking a drawn marker picks its record");
             require(overlay.get().pick(5, 5).isEmpty(), "Clicking away from markers picks none");
+        });
+        await(() -> fxValue(() -> overlay.get().status().getText().contains("models (not drawn yet): 2 qualified")),
+                "Drawn markers count their model outcomes");
+        fx(() -> {
+            var top = overlay.get().markers().getLast();
+            var model = overlay.get().pick(top.x(), top.headY()).orElseThrow().model();
+            require(model != null && model.choice().modelFileDataId() == 123456
+                    && "creature/authored.m2".equals(model.modelPath()), "A picked marker carries its model outcome");
         });
         snapshot(stage.get());
         fx(() -> view.set(null));

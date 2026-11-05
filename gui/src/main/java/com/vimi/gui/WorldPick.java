@@ -1,5 +1,6 @@
 package com.vimi.gui;
 
+import com.vibeminer.concepts.creatures.CreatureModelPolicy;
 import com.vibeminer.concepts.locations.LocationTypes;
 import com.vibeminer.concepts.locations.WorldSpawns;
 import com.vibeminer.concepts.world.WorldBookmarks;
@@ -168,8 +169,18 @@ final class WorldPick {
                 : "Nothing picked · terrain heights are not loaded yet";
     }
 
-    /** Declared spawn source record; NPC facts come only from the same snapshot's NPC table. */
+    /** Declared spawn source record without a model outcome (no creature model resolver). */
     static String describeSpawn(WorldSpawns.Spawn spawn, WorldSpawns.Npc npc, String mapName) {
+        return describeSpawn(spawn, npc, mapName, null, false);
+    }
+
+    /**
+     * Declared spawn source record; NPC facts come only from the same snapshot's NPC table. With a
+     * resolver, the creature model outcome follows: the qualified model file ID, its listfile name
+     * and the chain source, or why no single model is claimed. A pending outcome says so.
+     */
+    static String describeSpawn(WorldSpawns.Spawn spawn, WorldSpawns.Npc npc, String mapName,
+            WorldSpawnModels.Resolved model, boolean resolving) {
         Objects.requireNonNull(spawn);
         var text = new StringBuilder("NPC spawn · ");
         if (npc == null) {
@@ -189,7 +200,50 @@ final class WorldPick {
                 .append(" record ").append(evidence.record()).append(" (fields ").append(evidence.field())
                 .append(") · client ").append(known(source.build())).append(' ').append(known(source.locale()))
                 .append(" · snapshot ").append(shortSnapshot(source.snapshot()));
+        if (model != null) text.append(" · ").append(describeModel(model));
+        else if (resolving) text.append(" · model: resolving…");
         return text.append(" · phase, patrols and live server state unknown").toString();
+    }
+
+    /** One creature model outcome; models are not drawn yet. */
+    static String describeModel(WorldSpawnModels.Resolved model) {
+        var choice = model.choice();
+        var text = new StringBuilder("model ");
+        switch (choice.state()) {
+            case QUALIFIED -> text.append("QUALIFIED: FileDataID ").append(choice.modelFileDataId()).append(' ')
+                    .append(model.modelPath() == null ? "(name unknown)" : model.modelPath())
+                    .append(" · display ").append(choice.displayId()).append(" → CreatureModelData ")
+                    .append(choice.modelId());
+            case AMBIGUOUS -> text.append("AMBIGUOUS (").append(choice.displays()).append(" displays): ")
+                    .append(choice.detail());
+            case UNRESOLVED -> text.append("UNRESOLVED (").append(reason(choice.reason())).append("): ")
+                    .append(choice.detail());
+            case UNKNOWN -> text.append("UNKNOWN (").append(reason(choice.reason())).append("): ")
+                    .append(choice.detail());
+        }
+        return text.append(" · source ").append(model.source()).append(" · not drawn yet").toString();
+    }
+
+    /** Short refusal reason label for status counts. */
+    static String reason(CreatureModelPolicy.Reason reason) {
+        return switch (reason) {
+            case SINGLE_DISPLAY -> "single display";
+            case SEVERAL_DISPLAYS -> "several displays";
+            case NO_DISPLAY -> "no display";
+            case INVALID_DISPLAY -> "invalid display";
+            case DISPLAY_UNREADABLE -> "display unreadable";
+            case DISPLAY_ABSENT -> "display absent";
+            case DISPLAY_PROTECTED -> "display encrypted";
+            case NO_MODEL -> "no model";
+            case MODEL_UNREADABLE -> "model unreadable";
+            case MODEL_ABSENT -> "model absent";
+            case MODEL_PROTECTED -> "model encrypted";
+            case NO_MODEL_FILE -> "no model file";
+            case CREATURE_ABSENT -> "no creature record";
+            case CREATURE_PROTECTED -> "creature encrypted";
+            case CREATURE_UNREADABLE -> "creature unreadable";
+            case NO_CREATURE_DATA -> "no creature data";
+        };
     }
 
     static String tile(double x, double y) {
