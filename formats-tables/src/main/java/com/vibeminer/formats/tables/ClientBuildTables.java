@@ -388,6 +388,29 @@ final class ClientBuildTables implements BuildTables {
     /** Test seam: observes each table the preload pass prepares in full. */
     volatile java.util.function.LongConsumer deepPrepared = id -> {};
 
+    /**
+     * Shallow preparations of the known pass that may run ahead of the in-order consumer. They take
+     * no scheduler slot: each is a content stat, a definition lookup and a generated-store open.
+     */
+    static final int SHALLOW_CONCURRENCY = 8;
+
+    /**
+     * Full preparations of a preload pass that may run ahead of the in-order consumer. Reading and
+     * building still take background scheduler slots, so this mainly overlaps store and slot waits.
+     */
+    static final int DEEP_CONCURRENCY = 4;
+
+    /** Test seam: observes every progress report a preload pass emits, before throttling. */
+    volatile Consumer<TableTypes.PreloadProgress> emittedProgress = value -> {};
+
+    /** Test seam: 1 runs the shallow known pass sequentially on the calling thread. */
+    volatile int shallowConcurrency = SHALLOW_CONCURRENCY;
+
+    /**
+     * Test seam: 1 runs the preload pass's full preparations sequentially on the calling thread.
+     */
+    volatile int deepConcurrency = DEEP_CONCURRENCY;
+
     ClientBuildTables(
             com.vibeminer.files.Files fileSystem,
             BuildFiles files,
@@ -744,6 +767,7 @@ final class ClientBuildTables implements BuildTables {
             }
             var owner = opened.source();
             boolean keep = false;
+            java.util.concurrent.atomic.AtomicReference<Opened> handoff = null;
             try {
                 if (owner.length() > 0
                         && owner.holes().stream().mapToLong(Db2Types.Hole::length).sum()
@@ -842,6 +866,13 @@ final class ClientBuildTables implements BuildTables {
                 }
                 final var chosen = definition;
                 final var chosenSource = source;
+                // The first build reuses the reader opened above instead of opening and parsing
+                // the file again. Whoever takes the handoff owns the source. Its decoded stream may
+                // outlive this handle's files, so a shared build that outlives this call can still
+                // read it.
+                final var offered =
+                        new java.util.concurrent.atomic.AtomicReference<>(new Opened(owner, table));
+                handoff = offered;
                 slot.close();
                 var hit =
                         generated
@@ -850,13 +881,20 @@ final class ClientBuildTables implements BuildTables {
                                         keys,
                                         cancel ->
                                                 buildContent(
-                                                        id, chosen, chosenSource, priority, cancel),
+                                                        id,
+                                                        chosen,
+                                                        chosenSource,
+                                                        priority,
+                                                        cancel,
+                                                        offered),
                                         token)
                                 .join();
                 backgroundBuilds.stored(source);
                 return checked(id, content, definition, hit, null, null, hit.identity());
             } finally {
-                if (!keep) {
+                if (handoff != null) {
+                    releaseUntaken(handoff);
+                } else if (!keep) {
                     owner.close();
                 }
             }
@@ -954,15 +992,75 @@ final class ClientBuildTables implements BuildTables {
                 c.actualColumnsSha256());
     }
 
+    /** A DB2 source with the reader already opened over it, offered to one build. */
+    private record Opened(Db2FileSource owner, Db2Table table) {}
+
+    /** Closes an offered source that no build took. */
+    private static void releaseUntaken(
+            java.util.concurrent.atomic.AtomicReference<Opened> handoff) {
+        var left = handoff.getAndSet(null);
+        if (left != null) {
+            left.owner().close();
+        }
+    }
+
+    private GeneratedTableContent offeredContent(
+            Opened offered,
+            GeneratedTableSource generatedSource,
+            TableWorkScheduler.Slot workSlot) {
+        try {
+            var source = offered.owner();
+            var used = new java.util.TreeSet<String>(source.chunkKeys());
+            for (var section : offered.table().sections()) {
+                if (section.isEncrypted()) {
+                    used.add(section.key());
+                }
+            }
+            var holes =
+                    source.holes().stream().map(Db2Types.Hole::name).distinct().sorted().toList();
+            return GeneratedTableContent.nativeDb2(
+                    generatedSource,
+                    offered.table(),
+                    List.copyOf(used),
+                    () -> {
+                        try {
+                            offered.owner().close();
+                        } finally {
+                            workSlot.close();
+                        }
+                    },
+                    holes,
+                    source.chunkKeys());
+        } catch (Throwable error) {
+            try {
+                offered.owner().close();
+            } finally {
+                workSlot.close();
+            }
+            throw error;
+        }
+    }
+
     private CompletableFuture<GeneratedTableContent> buildContent(
             long id,
             TableDefinitions.Resolution definition,
             GeneratedTableSource generatedSource,
             TableTypes.Priority priority,
-            Cancellation token) {
+            Cancellation token,
+            java.util.concurrent.atomic.AtomicReference<Opened> handoff) {
         return CompletableFuture.supplyAsync(
                 () -> {
                     var workSlot = options.scheduler().enter(priority, token).join();
+                    Opened offered;
+                    try {
+                        offered = handoff.getAndSet(null);
+                    } catch (Throwable error) {
+                        workSlot.close();
+                        throw error;
+                    }
+                    if (offered != null) {
+                        return offeredContent(offered, generatedSource, workSlot);
+                    }
                     com.vibeminer.files.FileTypes.FilesOpenResult opened;
                     try {
                         opened = fileSystem.forBuild(build(), locale(), token).join();
@@ -2275,7 +2373,15 @@ final class ClientBuildTables implements BuildTables {
         var delivery = new ProgressOutbox(progress);
         CompletableFuture<TableTypes.PreloadResult> work;
         try {
-            work = preloadCore(delivery::publish, local, known);
+            var probe = emittedProgress;
+            work =
+                    preloadCore(
+                            value -> {
+                                probe.accept(value);
+                                delivery.publish(value);
+                            },
+                            local,
+                            known);
         } catch (RuntimeException error) {
             registration.close();
             synchronized (gate) {
@@ -2314,6 +2420,8 @@ final class ClientBuildTables implements BuildTables {
                                             0,
                                             0,
                                             0));
+                    // Full prepares still running ahead of this loop; closed on every exit.
+                    OrderedLookahead<Long, TableTypes.Entry> ahead = null;
                     try {
                         token.check();
                         var entries =
@@ -2436,11 +2544,65 @@ final class ClientBuildTables implements BuildTables {
                                                                                 .ALREADY_STORED)
                                         .count();
                         int done = 0;
+                        // The shallow pass already opened a READY table's existing generated graph
+                        // with the same local-only definition lookup a full prepare uses, so
+                        // preparing it again yields the same entry. With fetching enabled a full
+                        // prepare may ask for a newer definition instead.
+                        boolean reuseReady =
+                                known && reuseShallowReady && options.localDefinitionsOnly();
+                        java.util.function.Predicate<TableTypes.Entry> fullPrepare =
+                                table -> {
+                                    if (reuseReady && table.state() == TableTypes.State.READY) {
+                                        return false;
+                                    }
+                                    var file = byId.get(table.fileDataId());
+                                    return file == null
+                                            || file.state() == FileTypes.FileEnsureState.STORED
+                                            || file.state()
+                                                    == FileTypes.FileEnsureState.ALREADY_STORED
+                                            || (known && TableQueries.isReadable(table.state()));
+                                };
+                        // A known pass stops at its first canceled file; nothing after it runs.
+                        int stop = eligible.size();
+                        if (known) {
+                            for (int i = 0; i < eligible.size(); i++) {
+                                var file = byId.get(eligible.get(i).fileDataId());
+                                if (file != null
+                                        && file.state() == FileTypes.FileEnsureState.CANCELED) {
+                                    stop = i;
+                                    break;
+                                }
+                            }
+                        }
+                        int limit = deepConcurrency;
+                        // Full prepares are independent: run a bounded window of them ahead while
+                        // this loop still consumes, records and reports every table in list order.
+                        if (limit > 1) {
+                            ahead = new OrderedLookahead<>(limit, token);
+                        }
+                        int issued = 0;
                         for (var table : eligible) {
                             token.check();
                             synchronized (gate) {
                                 if (closed) {
                                     throw new java.util.concurrent.CancellationException();
+                                }
+                            }
+                            if (ahead != null) {
+                                while (issued < stop && ahead.hasRoom()) {
+                                    var next = eligible.get(issued++);
+                                    if (!fullPrepare.test(next)) {
+                                        continue;
+                                    }
+                                    token.check();
+                                    synchronized (gate) {
+                                        if (closed) {
+                                            throw new java.util.concurrent.CancellationException();
+                                        }
+                                    }
+                                    long nextId = next.fileDataId();
+                                    deepPrepared.accept(nextId);
+                                    ahead.start(nextId, scope -> deepEntry(nextId, scope));
                                 }
                             }
                             var file = byId.get(table.fileDataId());
@@ -2450,14 +2612,7 @@ final class ClientBuildTables implements BuildTables {
                                     && file.state() == FileTypes.FileEnsureState.CANCELED) {
                                 throw new java.util.concurrent.CancellationException();
                             }
-                            if (known
-                                    && reuseShallowReady
-                                    && options.localDefinitionsOnly()
-                                    && table.state() == TableTypes.State.READY) {
-                                // The shallow pass already opened this table's existing generated
-                                // graph with the same local-only definition lookup a full prepare
-                                // uses, so preparing it again yields the same entry. With fetching
-                                // enabled a full prepare may ask for a newer definition instead.
+                            if (reuseReady && table.state() == TableTypes.State.READY) {
                                 checked = table;
                             } else if (file != null
                                     && file.state() != FileTypes.FileEnsureState.STORED
@@ -2485,17 +2640,11 @@ final class ClientBuildTables implements BuildTables {
                                                 "File ensure failed",
                                                 null,
                                                 table.contentKey());
+                            } else if (ahead != null) {
+                                checked = ahead.take(table.fileDataId());
                             } else {
                                 deepPrepared.accept(table.fileDataId());
-                                try (var p =
-                                        prepare(
-                                                TableTypes.Ref.id(table.fileDataId()),
-                                                TableTypes.Priority.BACKGROUND,
-                                                false,
-                                                false,
-                                                token)) {
-                                    checked = p.entry();
-                                }
+                                checked = deepEntry(table.fileDataId(), token);
                             }
                             if (known) {
                                 ledger.add(checked);
@@ -2570,6 +2719,10 @@ final class ClientBuildTables implements BuildTables {
                                 null,
                                 canceled ? null : "TABLE_PRELOAD_FAILED",
                                 canceled ? null : cause.getMessage());
+                    } finally {
+                        if (ahead != null) {
+                            ahead.close();
+                        }
                     }
                 });
     }
@@ -2578,28 +2731,61 @@ final class ClientBuildTables implements BuildTables {
         var entries = new ArrayList<TableTypes.Entry>();
         // Manifest is copied from the definition provider at handle creation. Community filename
         // enrichment cannot expand or change the denominator during this pass.
-        for (long id : List.copyOf(manifest.keySet())) {
-            token.check();
-            try (var prepared =
-                    prepare(
-                            TableTypes.Ref.id(id),
-                            TableTypes.Priority.BACKGROUND,
-                            false,
-                            true,
-                            token)) {
-                var item = prepared.entry();
-                entries.add(
-                        new TableTypes.Entry(
-                                item.fileDataId(),
-                                item.name(),
-                                item.state(),
-                                true,
-                                item.reason(),
-                                item.counts(),
-                                item.contentKey()));
+        var ids = List.copyOf(manifest.keySet());
+        int limit = shallowConcurrency;
+        if (limit <= 1) {
+            for (long id : ids) {
+                token.check();
+                entries.add(shallowEntry(id, token));
+            }
+            return List.copyOf(entries);
+        }
+        // Each shallow prepare is independent; run a bounded window ahead and keep list order.
+        try (var ahead = new OrderedLookahead<Long, TableTypes.Entry>(limit, token)) {
+            int next = 0;
+            for (long id : ids) {
+                token.check();
+                while (next < ids.size() && ahead.hasRoom()) {
+                    token.check();
+                    long started = ids.get(next++);
+                    ahead.start(started, scope -> shallowEntry(started, scope));
+                }
+                entries.add(ahead.take(id));
             }
         }
         return List.copyOf(entries);
+    }
+
+    private TableTypes.Entry deepEntry(long id, Cancellation token) {
+        try (var p =
+                prepare(
+                        TableTypes.Ref.id(id),
+                        TableTypes.Priority.BACKGROUND,
+                        false,
+                        false,
+                        token)) {
+            return p.entry();
+        }
+    }
+
+    private TableTypes.Entry shallowEntry(long id, Cancellation token) {
+        try (var prepared =
+                prepare(
+                        TableTypes.Ref.id(id),
+                        TableTypes.Priority.BACKGROUND,
+                        false,
+                        true,
+                        token)) {
+            var item = prepared.entry();
+            return new TableTypes.Entry(
+                    item.fileDataId(),
+                    item.name(),
+                    item.state(),
+                    true,
+                    item.reason(),
+                    item.counts(),
+                    item.contentKey());
+        }
     }
 
     private static void emit(
