@@ -320,6 +320,11 @@ final class KnownPreparationTest {
     }
 
     private static Tables warmService(MemoryFiles files, MemoryGeneratedStore store) {
+        return warmService(files, store, true);
+    }
+
+    private static Tables warmService(
+            MemoryFiles files, MemoryGeneratedStore store, boolean localDefinitionsOnly) {
         var definition =
                 Db2Fixture.definition("int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>");
         var inventory = new ArrayList<BundledDefinitions.DefinitionTable>();
@@ -339,8 +344,13 @@ final class KnownPreparationTest {
                 files,
                 new TableDefinitions(provider, null, null),
                 new GeneratedTables(store),
-                new TablesOptions((build, token) -> CompletableFuture.completedFuture("1.2.3.4"))
-                        .withLocalDefinitionsOnly());
+                localDefinitionsOnly
+                        ? new TablesOptions(
+                                        (build, token) ->
+                                                CompletableFuture.completedFuture("1.2.3.4"))
+                                .withLocalDefinitionsOnly()
+                        : new TablesOptions(
+                                (build, token) -> CompletableFuture.completedFuture("1.2.3.4")));
     }
 
     private record Pass(TableTypes.PreloadResult result, List<Long> prepared, int reads) {}
@@ -460,5 +470,22 @@ final class KnownPreparationTest {
             client.reuseShallowReady = false;
             assertEquals(result, client.prepareKnown(null, Cancellation.NONE).join());
         }
+    }
+
+    @Test
+    void readyShallowOutcomesArePreparedInFullWhenDefinitionsMayBeFetched() {
+        byte[] bytes = Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], false);
+        var files = new MemoryFiles().add(BUILD, "enUS", file(100, bytes), bytes, List.of());
+        var store = new MemoryGeneratedStore();
+        var source = warmService(files, store, false);
+        pass(source, store, true);
+        var warm = pass(source, store, true);
+        var without = pass(source, store, false);
+        assertEquals(TableTypes.State.READY, warm.result().tables().getFirst().state());
+        assertEquals(
+                List.of(100L),
+                warm.prepared(),
+                "A full prepare may ask for a newer definition, so READY is not reused");
+        assertEquals(without.result(), warm.result());
     }
 }

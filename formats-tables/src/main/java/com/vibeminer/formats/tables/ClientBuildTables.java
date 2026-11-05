@@ -2452,9 +2452,12 @@ final class ClientBuildTables implements BuildTables {
                             }
                             if (known
                                     && reuseShallowReady
+                                    && options.localDefinitionsOnly()
                                     && table.state() == TableTypes.State.READY) {
-                                // The shallow pass already opened this table's existing, fresh
-                                // generated graph; preparing it again yields the same entry.
+                                // The shallow pass already opened this table's existing generated
+                                // graph with the same local-only definition lookup a full prepare
+                                // uses, so preparing it again yields the same entry. With fetching
+                                // enabled a full prepare may ask for a newer definition instead.
                                 checked = table;
                             } else if (file != null
                                     && file.state() != FileTypes.FileEnsureState.STORED
