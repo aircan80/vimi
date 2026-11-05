@@ -455,9 +455,12 @@ final class WorldStreamTileFileTest {
         var expected =
                 WorldStreamTileFile.write(directory, header(tile, false), tile, null, () -> false);
         assertNotNull(WorldStreamTileFile.read(path(), expected, () -> false));
-        // The link targets the valid packet, so the link itself is the only reason to reject it.
-        Path original = directory.resolve("actual");
+        // The link targets the valid packet, still readable under its own name, so the link itself
+        // is the only reason to reject it.
+        Path original =
+                Files.createDirectory(directory.resolve("actual")).resolve(path().getFileName());
         Files.move(path(), original);
+        assertNotNull(WorldStreamTileFile.read(original, expected, () -> false));
         Files.createSymbolicLink(path(), original);
         assertThrows(
                 IOException.class, () -> WorldStreamTileFile.read(path(), expected, () -> false));
