@@ -30,12 +30,13 @@ public final class ClientHotfixDetailsTest {
                                     "private-input", "private-identity", "policy-v1", 10, 9, 0, 0, 0, 0, 1, 0,
                                     unresolved)));
                         }
-                        if (id != null && id == 995) {
+                        if (id != null && (id == 995 || id == 994)) {
+                            String reason = id == 995 ? HotfixViewInfo.TABLE_BUDGET : HotfixViewInfo.RETAINED_BUDGET;
                             var base = new HotfixViewInfo.RowSource(HotfixViewInfo.Origin.BASE,
-                                    null, null, null, null, null, HotfixViewInfo.TABLE_BUDGET);
+                                    null, null, null, null, null, reason);
                             return CompletableFuture.completedFuture(Optional.of(new HotfixViewInfo(
                                     "private-input", null, "policy-v1", 10, 10, 0, 0, 0, 0, 0, 0,
-                                    base, HotfixViewInfo.TABLE_BUDGET)));
+                                    base, reason)));
                         }
                         var origin = ref.name().equals("SpellName") || ref.name().equals("SpellMisc")
                                 ? HotfixViewInfo.Origin.HOTFIX : HotfixViewInfo.Origin.BASE;
@@ -77,7 +78,9 @@ public final class ClientHotfixDetailsTest {
         check(ClientHotfixDetails.row(tables, "Item", 996, "Item", "70707", Cancellation.NONE)
                 .join().contains("unresolved"), "Other unresolved records stay unresolved");
         check(ClientHotfixDetails.row(tables, "ItemSparse", 995, "Item", "70707", Cancellation.NONE)
-                .join().contains("not applied to this table"), "Oversized overlay is visible");
+                .join().contains("not applied to this table (too large)"), "Oversized overlay is visible");
+        check(ClientHotfixDetails.row(tables, "ItemSparse", 994, "Item", "70707", Cancellation.NONE)
+                .join().contains("overlay memory busy, showing base rows"), "Busy overlay memory is not called too large");
         check(ClientHotfixDetails.row(tables, "Spell", 998, "Description", "70707", Cancellation.NONE)
                 .join().contains("origin not retained"), "Evicted metadata does not imply base origin");
         var header = java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN)
