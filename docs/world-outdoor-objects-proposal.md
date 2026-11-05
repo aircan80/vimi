@@ -99,7 +99,8 @@ lags terrain. It runs after terrain on the same lane and stays cancelable betwee
    named in the reserved tile-header range under a new session profile, so it shares the
    slot's OFFER/COMMIT/CANCEL/retirement lifetime. The child decodes it on the existing
    decoder worker, uploads in bounded steps and drops it with the slot generation. Object
-   failure leaves the tile's terrain committed and is reported in status.
+   failure leaves the tile's terrain committed and is reported in status. Off by default and opt-in
+   with `-Dvimi.world.exteriors=true` until terrain no longer waits for object preparation.
 3. GUI: World Explorer status shows drawn and omitted building counts and the BASIC
    disclosure.
 

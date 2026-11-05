@@ -30,6 +30,94 @@ public final class WorldStreamSourceBridgeTest {
         destinationStoppingCancelsActualSourceAdmission();
         cleanSourceRetirementMapsButProviderFailureStaysFatal();
         stickySourceCleanupHealthIsFatalBeforeFileMove();
+        exteriorsAreOptIn();
+        defaultProfileNeverStartsObjectPreparation();
+    }
+
+    private static void exteriorsAreOptIn() {
+        check(!WorldStreamGpuOwner.exteriorsEnabled(null), "Exteriors are off without the property");
+        check(!WorldStreamGpuOwner.exteriorsEnabled("false"), "false keeps exteriors off");
+        check(!WorldStreamGpuOwner.exteriorsEnabled(""), "An empty value keeps exteriors off");
+        check(WorldStreamGpuOwner.exteriorsEnabled("true"), "true opts in to exteriors");
+        check(WorldStreamGpuOwner.exteriorsEnabled("TRUE"), "The opt-in ignores letter case");
+        check(!WorldStreamGpuOwner.exteriorsEnabled("yes"), "Only true opts in");
+        var spec = WorldStreamGpuOwner.spec("0".repeat(64));
+        check(spec.exteriorObjects() == WorldStreamGpuOwner.EXTERIORS,
+                "The GUI session profile follows the property");
+        if (System.getProperty("vimi.world.exteriors") == null) {
+            check(!WorldStreamGpuOwner.EXTERIORS && !spec.exteriorObjects(),
+                    "The default GUI session is terrain only");
+        }
+    }
+
+    /**
+     * The controller always asks for exteriors; the session profile decides. Under the default
+     * terrain-only profile the producer never starts object preparation, so a preparer that would
+     * block is never entered and terrain is produced at once. Under the opt-in profile the same
+     * terrain waits for it (the known #217 cost).
+     */
+    @SuppressWarnings("try")
+    private static void defaultProfileNeverStartsObjectPreparation() throws Exception {
+        var fixture = new Fixture();
+        var entered = new java.util.concurrent.CompletableFuture<Void>();
+        var release = new java.util.concurrent.CompletableFuture<Void>();
+        WorldStreamSourceBridge.ExteriorPreparer blocked = cancellation -> {
+            entered.complete(null);
+            release.join();
+            return null;
+        };
+        var root = Files.createTempDirectory("bridge-exterior-");
+        var terrainOnly = root.resolve("a").resolve("tile-1.wst");
+        var optIn = root.resolve("b").resolve("tile-1.wst");
+        try {
+            var scope = fixture.scope();
+            try (var producer = new WorldStreamSourceBridge.Producer(
+                    fixture.source, null, true, scope, TILE, () -> true, blocked)) {
+                var destination = AuthoredPacketDestination.controlled(
+                        terrainOnly, scope.scopeSha256(), false).destination();
+                var work = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                    try { return producer.prepare(destination, () -> false); }
+                    catch (Exception error) { throw new java.util.concurrent.CompletionException(error); }
+                });
+                try (var packet = work.get(30, TimeUnit.SECONDS);
+                        var resident = producer.takePrepared()) {
+                    check(!entered.isDone(), "Default profile never starts object preparation");
+                    check(Files.exists(terrainOnly), "Terrain packet produced while objects block");
+                    check(resident.exteriorPlacements() == 0 && !resident.exteriorFailed(),
+                            "Terrain-only tile reports no buildings and no failure");
+                }
+                check(!Files.exists(terrainOnly), "Transport retirement deletes the packet");
+            }
+            try (var producer = new WorldStreamSourceBridge.Producer(
+                    fixture.source, null, true, scope, TILE, () -> true, blocked)) {
+                var destination = AuthoredPacketDestination.controlled(
+                        optIn, scope.scopeSha256(), true).destination();
+                var work = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                    try { return producer.prepare(destination, () -> false); }
+                    catch (Exception error) { throw new java.util.concurrent.CompletionException(error); }
+                });
+                entered.get(5, TimeUnit.SECONDS);
+                check(!work.isDone() && !Files.exists(optIn),
+                        "Opt-in terrain waits for object preparation");
+                release.complete(null);
+                try (var packet = work.get(30, TimeUnit.SECONDS);
+                        var resident = producer.takePrepared()) {
+                    check(Files.exists(optIn), "Opt-in terrain follows its object preparation");
+                    check(resident.exteriorPlacements() == 0 && !resident.exteriorFailed(),
+                            "No object set: opt-in tile reports no buildings and no failure");
+                }
+                check(!Files.exists(optIn), "Transport retirement deletes the opt-in packet");
+            }
+            check(fixture.pool.stats().leaseClaims() == 0, "No material lease leaked");
+        } finally {
+            release.complete(null);
+            fixture.close();
+            for (var path : java.util.List.of(terrainOnly, optIn)) {
+                Files.deleteIfExists(path);
+                Files.deleteIfExists(path.getParent());
+            }
+            Files.deleteIfExists(root);
+        }
     }
 
     private static void successfulMove(boolean height, boolean partial, boolean rejectedBinding) throws Exception {

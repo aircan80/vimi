@@ -8,8 +8,23 @@ import java.util.concurrent.CompletableFuture;
 
 /** Small application-arbiter adapter; readiness and actual ownership drain stay separate. */
 final class WorldStreamGpuOwner {
-    /** BASIC_EXTERIOR_V1 outdoor buildings; {@code -Dvimi.world.exteriors=false} disables them. */
-    static final boolean EXTERIORS = !"false".equals(System.getProperty("vimi.world.exteriors"));
+    /**
+     * BASIC_EXTERIOR_V1 outdoor buildings are opt-in with {@code -Dvimi.world.exteriors=true}.
+     * They stay off by default because a tile's terrain OFFER still waits for its object
+     * preparation (0.4 to 21 s per tile on a cold cache), which is not acceptable as a default.
+     */
+    static final boolean EXTERIORS = exteriorsEnabled(System.getProperty("vimi.world.exteriors"));
+
+    /** Only {@code true} (any letter case) selects the exterior session profile. */
+    static boolean exteriorsEnabled(String property) {
+        return Boolean.parseBoolean(property);
+    }
+
+    /** The streaming session this owner opens; its profile follows {@link #EXTERIORS}. */
+    static WorldStreamTransport.Spec spec(String scopeSha256) {
+        return new WorldStreamTransport.Spec(
+                scopeSha256, 1, WorldStreamTransport.Backend.DEFAULT, EXTERIORS);
+    }
 
     private final Object owner = new Object();
     private final GpuPreviewService service;
@@ -20,8 +35,7 @@ final class WorldStreamGpuOwner {
     WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256) {
         this.service = Objects.requireNonNull(service);
         lifetime = service.openStreaming(owner,
-                new WorldStreamTransport.Spec(scopeSha256, 1, WorldStreamTransport.Backend.DEFAULT,
-                        EXTERIORS),
+                spec(scopeSha256),
                 opened::complete,
                 status -> {
                     if (status.state() == GpuPreviewService.State.FAILED) {

@@ -6,6 +6,34 @@ uploaded by the hot streaming child, and drawn in the GUI World Explorer in the 
 camera and depth buffer as terrain. Lighting is BASIC: texture1 only with the fixed world-wmo
 light and fog, not client parity.
 
+## Status: opt-in
+
+Exteriors are **off by default** since the follow-up to #217. Pass
+`-Dvimi.world.exteriors=true` to the GUI to see outdoor buildings. The reason is the readiness
+lag below: under profile 2 a tile's terrain OFFER waits for that tile's object preparation, which
+took 0.4 to 21 s per tile on a cold cache. That is not acceptable as a default. Under the default
+profile the producer never starts object preparation, so terrain stages and commits exactly as
+before #217 (`WorldStreamSourceBridgeTest` injects an object preparer that would block, and the default
+profile never enters it while the terrain packet is produced).
+
+Measured on real data (private headless Vulkan run through `WorldStreamSourceController` with the
+real child, Azeroth 3x3 around 32,32, of which 7 tiles are available; local-only, warm private
+cache, no network; two runs each):
+
+| | First tile resident | All 7 tiles ready |
+| --- | --- | --- |
+| `-Dvimi.world.exteriors=true` (#217 default) | 2.1 / 2.2 s | 9.3 / 9.1 s |
+| default (exteriors off) | 1.4 / 1.0 s | 4.8 / 3.8 s |
+
+On a cold cache the opt-in cost is larger (0.4 to 21 s of object preparation per tile).
+
+Turning exteriors back on by default needs a decoupled delivery: terrain committed first, and
+the objects file delivered later for the same tile and slot generation, attached only if the
+generation still matches. That needs a new control message and child slot state, an upload into
+an already active slot, and scheduling on the single source lane, because `WorldStreamScopes`
+admits one source operation at a time and an object preparation would otherwise hold up the
+next tile's terrain. None of this exists yet.
+
 ## Session profile
 
 `WorldStreamEnvelope.Session` has a new `exteriorObjects` flag. The fourth profile word is `1`
@@ -18,7 +46,8 @@ for terrain only (unchanged bytes) and `2` for BASIC_EXTERIOR_V1. Under profile 
 
 A profile 1 session never accepts a header that names objects; the child rejects that packet.
 `WorldStreamTransport.Spec` gains the flag, and its old three-argument constructor keeps
-profile 1. The GUI enables profile 2 by default; `-Dvimi.world.exteriors=false` turns it off.
+profile 1. The GUI selects profile 2 only with `-Dvimi.world.exteriors=true`; by default it opens
+the terrain-only profile 1 (see "Status: opt-in" above).
 
 ## Objects file (`WorldStreamObjectsFile`, `tile-<txn>.wso`)
 
@@ -136,7 +165,8 @@ the refusal site. Detailed omission counts in the GUI remain delivery step 3.
     8,277 vertices.
   - Four headings show textured buildings (thatched houses, a chapel and its bell tower) seated
     on the terrain, occluded by and occluding terrain correctly.
-  - With `-Dvimi.world.exteriors=false`, the same camera shows bare terrain.
+  - With exteriors off (`-Dvimi.world.exteriors=false` then; now the default), the same camera
+    shows bare terrain.
   - All owners drained, with atlas claims at 0.
   - Frames and logs are under `$HOME/.cache/vimi-tmp/exterior-visible-proof/` and are not
     committed, because they derive from game assets.
@@ -145,7 +175,8 @@ the refusal site. Detailed omission counts in the GUI remain delivery step 3.
   - 3,478 to 18,582 vertices;
   - the 1,048,576-pixel budget is reached on most tiles, so later batches report
     `BATCH_MISSING_IMAGE` / `IMAGE_CAPPED`;
-  - source preparation took 0.4 to 21 s per tile on a cold network cache.
+  - exterior object preparation (`prepareExteriorObjects` timed alone) took 0.4 to 21 s per tile
+    on a cold network cache.
 
 ## Independent review
 
@@ -169,8 +200,9 @@ A fresh reviewer read the code at ba97007e. Its findings and the fixes:
 ## Not done
 
 - **Backends.** Metal and DX11 were not run; only Linux Vulkan was exercised.
-- **Readiness lag.** A tile's terrain now waits for its object preparation before its OFFER, so
-  the first terrain appears later on a cold cache.
+- **Readiness lag (opt-in only).** Under `-Dvimi.world.exteriors=true` a tile's terrain waits
+  for its object preparation before its OFFER, so the first terrain appears later on a cold
+  cache. This is why exteriors are off by default; see "Status: opt-in".
 - **Delivery step 3.** GUI omission counts and the BASIC disclosure text.
 - **Not in this slice.** Doodads, cutout and blended materials, cross-tile sharing of duplicate
   WMOs, and a larger view distance.
