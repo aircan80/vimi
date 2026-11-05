@@ -73,7 +73,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
             status = new Label("Choose a map"),
             position = new Label();
     private final Label currentArea = new Label("Terrain area unavailable");
-    private static final String INSPECT_HINT = "Click terrain or a shown NPC spawn marker to inspect it";
+    private static final String INSPECT_HINT =
+            "Click terrain, a drawn building, doodad or creature model, or a shown NPC spawn marker to inspect it";
     private final Label inspection = new Label(INSPECT_HINT);
     // Latest click wins: one CPU pick at a time over immutable height snapshots, never on FX.
     private final ThreadPoolExecutor picks = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
@@ -89,6 +90,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final StackPane viewport = new StackPane(image);
     private final WorldMinimap minimap = new WorldMinimap();
     private WorldSpawnOverlay spawns;
+    // Highlight of the picked object; FX overlay only, cleared by terrain, sky and marker clicks.
+    private final WorldSelectionOverlay objectSelection = new WorldSelectionOverlay();
+    // Metadata-only listfile names for picked objects; read on the pick worker, null when unknown.
+    private java.util.function.LongFunction<String> fileNames = id -> null;
     private WorldTileCreatures creatures;
     private WorldSpawnOverlay.Picked inspectedSpawn;
     private String inspectedMap;
@@ -565,7 +570,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         localLoading.setVisible(false);
         localLoading.setManaged(false);
         firstFrameActivity.setMouseTransparent(true);
-        viewport.getChildren().addAll(firstFrameActivity, minimap);
+        viewport.getChildren().addAll(selectionLayer(), firstFrameActivity, minimap);
         StackPane.setAlignment(minimap, Pos.TOP_RIGHT);
         StackPane.setMargin(minimap, new Insets(12));
         VBox.setVgrow(maps, Priority.ALWAYS);
@@ -576,8 +581,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         inspection.setMinWidth(0);
         inspection.setMaxWidth(Double.MAX_VALUE);
         inspection.setTooltip(new javafx.scene.control.Tooltip("Rendered ADT terrain under the pointer,"
-                + " or a declared NPC spawn marker with its source record. Buildings, doodads, water"
-                + " and live creatures are not picked; unknown facts are reported as unknown."));
+                + " the nearest drawn BASIC building, doodad or static creature model (exact triangles of"
+                + " the uploaded objects, with their recorded transforms and source records), or a declared"
+                + " NPC spawn marker. Water and live creatures are not picked; unknown facts are reported"
+                + " as unknown."));
         currentArea.setMinWidth(0);
         currentArea.setMaxWidth(Double.MAX_VALUE);
         currentArea.setTooltip(new javafx.scene.control.Tooltip("Recorded ADT terrain area; WMO interior volumes are not evaluated."));
@@ -2570,7 +2577,34 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void resetInspection() {
         pickGeneration++;
+        objectSelection.select(null);
         inspection.setText(INSPECT_HINT);
+    }
+
+    /** The selection highlight, bound to the presented view and the resident pick tiles. */
+    private WorldSelectionOverlay selectionLayer() {
+        objectSelection.bind(this::presentedView, this::residentObjects, () -> {
+            pickGeneration++;
+            inspection.setText("Selection cleared · the selected object's tile is no longer resident");
+        });
+        return objectSelection;
+    }
+
+    private WorldSpawnOverlay.View presentedView() {
+        if (closed || !active || !explorer || camera == null || inventory == null
+                || !(image.getImage() instanceof javafx.scene.image.Image frame)) return null;
+        return new WorldSpawnOverlay.View(camera, inventory.map().id(), frame.getWidth(), frame.getHeight());
+    }
+
+    /** Pick tiles of the objects the hot child draws now; none outside streaming. */
+    private java.util.List<WorldObjectPicks.Tile> residentObjects() {
+        var controller = streamingMode ? streaming : null;
+        return controller == null ? java.util.List.of() : controller.objects();
+    }
+
+    /** Metadata-only listfile names for picked objects. FX thread, before or after activation. */
+    void attachFileNames(java.util.function.LongFunction<String> names) {
+        fileNames = java.util.Objects.requireNonNull(names);
     }
 
     /**
@@ -2582,6 +2616,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         long request = ++pickGeneration;
         if (closed || !active || !explorer || camera == null || inventory == null
                 || !(image.getImage() instanceof javafx.scene.image.Image frame)) {
+            objectSelection.select(null);
             inspection.setText("Nothing to inspect until a terrain frame is shown");
             return;
         }
@@ -2592,6 +2627,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     : spawns.pick(local.getX(), local.getY());
             if (picked.isPresent()) {
                 var spawn = picked.get();
+                objectSelection.select(null);
                 var models = spawns.models();
                 boolean resolving = models.isPresent() && spawn.model() == null;
                 inspection.setText(WorldPick.describeSpawn(spawn.spawn(), spawn.npc(), map.name(), spawn.model(), resolving));
@@ -2609,9 +2645,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 : WorldPick.ray(camera, frame.getWidth(), frame.getHeight(), viewport.getWidth(),
                         viewport.getHeight(), local.getX(), local.getY());
         if (ray.isEmpty()) {
+            objectSelection.select(null);
             inspection.setText("Nothing picked · the pointer is outside the rendered frame");
             return;
         }
+        var objects = residentObjects();
+        var eye = com.vibeminer.rendering.world.TerrainCamera.from(camera);
+        var names = fileNames;
         var surface = currentGround();
         long mapId = map.id(), chosen = selection;
         String mapName = map.name();
@@ -2622,9 +2662,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
         try {
             picks.execute(() -> {
                 String text;
+                WorldObjectPicks.Selected object = null;
                 try {
                     var hit = WorldPick.terrain(ray.get(), surface);
-                    if (hit.isEmpty()) {
+                    // The nearer of terrain and drawn objects wins, as under the depth test. With
+                    // no terrain hit only the per-hit eye depth clips, as the shader's discard does.
+                    object = WorldObjectPicks.pick(objects, eye, ray.get(),
+                            hit.map(WorldPick.Hit::distance).orElse(Double.POSITIVE_INFINITY)).orElse(null);
+                    if (object != null) {
+                        text = WorldObjectPicks.describe(object, mapId, mapName, names);
+                    } else if (hit.isEmpty()) {
                         text = WorldPick.describeMiss(surface.tiles() > 0);
                     } else {
                         var at = hit.get();
@@ -2636,15 +2683,23 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 0, java.util.List.of())
                                         : com.vibeminer.concepts.world.WorldCurrentArea.locate(
                                                 mapId, at.x(), at.y(), tiles, areaIndex);
-                        text = WorldPick.describeTerrain(at, mapId, mapName, area);
+                        text = WorldPick.describeTerrain(at, mapId, mapName, area, objects.size());
                     }
                 } catch (Throwable failure) {
+                    object = null;
                     text = "Inspection failed: " + (failure.getMessage() == null
                             ? failure.getClass().getSimpleName() : failure.getMessage());
                 }
                 String result = text;
+                var selected = object;
                 Platform.runLater(() -> {
-                    if (!closed && request == pickGeneration && chosen == selection) inspection.setText(result);
+                    if (closed || request != pickGeneration || chosen != selection) return;
+                    // A tile retired since the click no longer draws its object: never highlight it.
+                    boolean resident = selected != null
+                            && residentObjects().stream().anyMatch(tile -> tile == selected.tile());
+                    inspection.setText(selected != null && !resident
+                            ? result + " · its tile is no longer resident" : result);
+                    objectSelection.select(resident ? selected : null);
                 });
             });
         } catch (java.util.concurrent.RejectedExecutionException shutDown) {
@@ -2695,6 +2750,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         pendingBookmark = null;
         travel.close();
         if (spawns != null) spawns.close();
+        objectSelection.close();
         if (creatures != null) creatures.close();
         picks.shutdownNow();
         streamingImages.clear();

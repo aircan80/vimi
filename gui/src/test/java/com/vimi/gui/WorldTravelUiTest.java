@@ -154,7 +154,7 @@ public final class WorldTravelUiTest {
             await(() -> inspection.getText().startsWith("Terrain ·"), () -> {
                 String text = inspection.getText();
                 require(text.startsWith("Terrain · map 0 Authored continent · tile 30,40 · x "), "Picked tile: " + text);
-                require(text.contains("Area unknown") && text.contains("buildings, doodads and water are not picked"),
+                require(text.contains("Area unknown") && text.contains("water is not picked"),
                         "Uncatalogued area stays unknown: " + text);
                 next.run();
             });

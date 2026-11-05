@@ -132,7 +132,9 @@ public final class WorldStreamSourceControllerTest {
         var prepared = new java.util.concurrent.ConcurrentLinkedQueue<Integer>();
         WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) -> {
             prepared.add(tile.y());
-            return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
+            return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored")
+                    .withPicks(tile, java.util.List.of(WorldObjectPicksTest.building(
+                            new WorldObjectPicks.Key(0, -100, -200, 12, 1))));
         };
         try {
             fixture.start(fixture.gpu::start, () -> {}, preparer);
@@ -147,6 +149,13 @@ public final class WorldStreamSourceControllerTest {
                     && fixture.objectLines().stream().allMatch(line -> line.endsWith(" ATTACHED")),
                     "Each committed tile received its objects once: " + fixture.objectLines());
             check(prepared.size() == 3, "Each tile was prepared once: " + prepared);
+            // Every drawn resident publishes its pick geometry with its recorded source.
+            fixture.until(() -> fixture.controller.objects().size() == 3);
+            var picked = fixture.controller.objects();
+            check(picked.stream().allMatch(t -> t.geometry().placements() == 1
+                            && t.sources().getFirst() instanceof WorldObjectPicks.Exterior)
+                            && picked.stream().map(t -> t.tileY()).distinct().count() == 3,
+                    "Pick tiles follow the drawn residents: " + picked.size());
             // Commits only ever carried terrain: none waited for an objects reply.
             check(fixture.commitLines().size() >= 3, "Terrain committed");
         } finally {
