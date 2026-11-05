@@ -40,6 +40,7 @@ public interface BuildRaces extends AutoCloseable {
                         "",
                         java.util.List.of(),
                         java.util.List.of(),
+                        java.util.List.of(),
                         "Voice data unavailable"));
     }
 
