@@ -375,7 +375,8 @@ final class WorldTileCreatures implements AutoCloseable {
             builder.placement(model, transform[0], transform[1], transform[2], transform[3], transform[4],
                     transform[5]);
             placed.add(new WorldObjectPicks.Creature(spawn, spawns.npc(spawn.npcId()).orElse(null), choice,
-                    transform[3]));
+                    transform[3], new WorldObjectPicks.Key(model, transform[0], transform[1], transform[2],
+                            transform[3])));
             placements++;
             counts[Count.DRAWN.ordinal()]++;
         }

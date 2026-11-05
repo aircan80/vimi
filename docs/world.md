@@ -93,7 +93,9 @@ the terrain hit and the object hit wins, as under the depth test.
   count because the pass does not cull. Cutout surfaces count where the bilinear,
   repeat-wrapped alpha of their uploaded image is at least the shader's 0.5
   reference, and blended surfaces where it is above zero. Eye depths beyond the
-  shader's 2,200-yard discard do not count.
+  shader's 2,200-yard discard do not count. When terrain misses, only that
+  per-hit eye depth clips, never the ray distance, so off-axis objects near the
+  frame corners stay pickable.
 - **Source records.** Each file placement has the source record it was built
   from, recorded in file order, so the bridge's own draw-budget drops stay
   aligned:
@@ -106,8 +108,10 @@ the terrain hit and the object hit wins, as under the depth test.
     FileDataID and spawn record.
 
   Listfile paths come from file metadata only. A missing path reads "(name
-  unknown)". If the recorded sources ever disagree with the uploaded placement
-  count, every placement of that tile is reported as "source record unknown".
+  unknown)". Each source carries its placement's uploaded key: the file model
+  index, position and scale. If the count or any key disagrees with the uploaded
+  placements, for example after a reorder, every placement of that tile is
+  reported as "source record unknown".
 - **Highlight.** The selected placement's drawn local bounds, through its
   transform, are drawn as a wireframe box on an FX overlay. No GPU pass or
   shader is involved, and the box is not occluded by terrain. Clicking terrain,
@@ -119,9 +123,11 @@ the terrain hit and the object hit wins, as under the depth test.
   lives only as long as its resident: the controller republishes the drawn
   residents' tiles. A tile keeps positions, UVs and indices (20 bytes per vertex
   and 2 per index) plus one alpha byte per pixel of its cutout and blended
-  images. For the version 2 maximum profile that is about 5.1 MB per tile, plus
-  at most 1.8 MB of alpha. The measured real tiles (3,478 to 18,582 vertices)
-  stay under 0.5 MB.
+  images. For the version 2 maximum profile that is at most about 6.9 MB per
+  tile (5.1 MB of geometry and 1.8 MB of alpha). With the hot child's 10 slots
+  plus transient presented and committing entries, the worst case is about 70
+  to 90 MB of heap. The measured real tiles (3,478 to 18,582 vertices) stay
+  under 0.5 MB each.
 
 ## First-stage scope
 

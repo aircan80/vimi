@@ -133,7 +133,8 @@ public final class WorldStreamSourceControllerTest {
         WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) -> {
             prepared.add(tile.y());
             return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored")
-                    .withPicks(tile, java.util.List.of(WorldObjectPicksTest.building()));
+                    .withPicks(tile, java.util.List.of(WorldObjectPicksTest.building(
+                            new WorldObjectPicks.Key(0, -100, -200, 12, 1))));
         };
         try {
             fixture.start(fixture.gpu::start, () -> {}, preparer);

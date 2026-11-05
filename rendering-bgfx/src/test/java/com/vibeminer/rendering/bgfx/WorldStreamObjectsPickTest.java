@@ -32,13 +32,27 @@ final class WorldStreamObjectsPickTest {
         double cos = Math.cos(.7), sin = Math.sin(.7);
         builder.placement(0, 1234.5, -567.25, 89, 1.5, cos, sin);
         builder.placement(0, 1300, -500, 95, .75, -cos, sin);
+        // A non-axis rotation, as set doodads compose: a 70 degree yaw, then a 30 degree roll.
+        double yc = Math.cos(1.2217304763960306), ys = Math.sin(1.2217304763960306);
+        double cr = Math.cos(Math.PI / 6), sr = Math.sin(Math.PI / 6);
+        double[] yaw = {yc, -ys, 0, ys, yc, 0, 0, 0, 1};
+        double[] roll = {1, 0, 0, 0, cr, -sr, 0, sr, cr};
+        var tilted = new double[9];
+        for (int r = 0; r < 3; r++) {
+            for (int c = 0; c < 3; c++) {
+                for (int k = 0; k < 3; k++) {
+                    tilted[r * 3 + c] += yaw[r * 3 + k] * roll[k * 3 + c];
+                }
+            }
+        }
+        builder.placement(0, 1250, -680, 110, 1.25, tilted);
         var exterior = builder.build();
         var tile = exterior.pickTile();
-        assertEquals(2, tile.placements());
+        assertEquals(3, tile.placements());
         var data = exterior.data();
         var origin = new TerrainScene.Origin(0, 0, 0);
         var camera = new TerrainCamera(1200, -620, 140, 0, 0);
-        for (int p = 0; p < 2; p++) {
+        for (int p = 0; p < 3; p++) {
             var model = FloatBuffer.allocate(16);
             var normal = FloatBuffer.allocate(16);
             BgfxWorldStreamRenderer.objectMatrices(data.placements, p, origin, model, normal);

@@ -2665,9 +2665,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 WorldObjectPicks.Selected object = null;
                 try {
                     var hit = WorldPick.terrain(ray.get(), surface);
-                    // The nearer of terrain and drawn objects wins, as under the depth test.
+                    // The nearer of terrain and drawn objects wins, as under the depth test. With
+                    // no terrain hit only the per-hit eye depth clips, as the shader's discard does.
                     object = WorldObjectPicks.pick(objects, eye, ray.get(),
-                            hit.map(WorldPick.Hit::distance).orElse(WorldPick.MAX_DISTANCE)).orElse(null);
+                            hit.map(WorldPick.Hit::distance).orElse(Double.POSITIVE_INFINITY)).orElse(null);
                     if (object != null) {
                         text = WorldObjectPicks.describe(object, mapId, mapName, names);
                     } else if (hit.isEmpty()) {

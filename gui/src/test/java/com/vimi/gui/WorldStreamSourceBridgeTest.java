@@ -31,6 +31,7 @@ public final class WorldStreamSourceBridgeTest {
         cleanSourceRetirementMapsButProviderFailureStaysFatal();
         stickySourceCleanupHealthIsFatalBeforeFileMove();
         exteriorsAreOnByDefault();
+        pickSourcesFollowCopiedPlacements();
         terrainProducerNeverWaitsForObjects();
         objectsStatusShowsDrawnAndOmittedCounts();
     }
@@ -160,6 +161,83 @@ public final class WorldStreamSourceBridgeTest {
             Files.deleteIfExists(path);
             Files.deleteIfExists(root);
         }
+    }
+
+    /** A synthetic building, doodad or broken placement of model {@code model} at x. */
+    private static WorldStreamSourceBridge.Placed placed(boolean building, int model, long uniqueId, double x) {
+        var kind = building ? com.vibeminer.concepts.world.WorldExteriorObjects.Kind.BUILDING
+                : com.vibeminer.concepts.world.WorldExteriorObjects.Kind.DOODAD;
+        var source = new WorldObjectPicks.Exterior(kind, (int) uniqueId, uniqueId, 1000 + uniqueId, 0, 0, 0, 1,
+                java.util.List.of(2000L), java.util.List.of(0), 0, new WorldObjectPicks.Key(model, x, 5, 6, 1));
+        return new WorldStreamSourceBridge.Placed(building, model, x, 5, 6, 1,
+                new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1}, source);
+    }
+
+    /** Two one-range models; model 1 declares the whole draw budget, so its placement is capped. */
+    private static WorldStreamSourceBridge.ObjectSet objects(WorldStreamSourceBridge.Placed... placements) {
+        return new WorldStreamSourceBridge.ObjectSet((builder, token) -> {
+            builder.image(1, 1, java.nio.ByteBuffer.wrap(new byte[] {1, 2, 3, (byte) 255}));
+            for (int m = 0; m < 2; m++) {
+                builder.model();
+                builder.mesh(java.nio.FloatBuffer.wrap(new float[] {
+                        0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1}),
+                        java.nio.IntBuffer.wrap(new int[] {0, 1, 2}), new int[] {0, 3, 0});
+            }
+        }, new int[] {1, com.vibeminer.rendering.bgfx.WorldStreamTileWriter.Exterior.MAX_DRAWS},
+                java.util.List.of(placements), 2);
+    }
+
+    /** Recorded unique IDs (or NPC IDs for creatures, negated) of a copy's pick sources. */
+    private static java.util.List<Long> ids(WorldStreamSourceBridge.ExteriorCopy copy) {
+        var picks = copy.picks();
+        check(picks != null && picks.geometry().placements() == copy.exterior().placements(),
+                "One pick placement per copied placement");
+        return picks.sources().stream().map(source -> switch (source) {
+            case WorldObjectPicks.Exterior e -> e.uniqueId();
+            case WorldObjectPicks.Creature c -> -c.spawn().npcId();
+            case WorldObjectPicks.Unknown u -> 0L;
+        }).toList();
+    }
+
+    /**
+     * Pick sources stay aligned with the copied placements in every bridge path: buildings with
+     * creatures, a placement dropped by the bridge's draw cap, the rebuild after a creature failure
+     * and buildings failing partway. Alignment is checked by the uploaded keys, not only counts.
+     */
+    private static void pickSourcesFollowCopiedPlacements() {
+        var creatures = new WorldTileCreatures(token -> WorldTileCreaturesTest.index(java.util.List.of(
+                WorldSpawnOverlayTest.spawn(1, 1, (32 - TILE.x() - .5) * WorldFormats.TILE_SIZE,
+                        (32 - TILE.y() - .5) * WorldFormats.TILE_SIZE, 5.0))), () -> "r1",
+                (npc, token) -> WorldTileCreaturesTest.qualified(7, null),
+                (display, token) -> WorldTileCreaturesTest.preview(display, 0L, 0L,
+                        WorldTileCreaturesTest.appearance(true)));
+        WorldStreamSourceBridge.CreatureAppender appender = (builder, tile, token) ->
+                creatures.append(builder, 0, tile, token);
+        // Building 11, building 12 over the draw budget (dropped), doodad 13.
+        var set = objects(placed(true, 0, 11, 100), placed(true, 1, 12, 200), placed(false, 0, 13, 300));
+        var none = WorldStreamSourceBridge.ExteriorSummary.NONE;
+
+        var alone = WorldStreamSourceBridge.finish(set, false, "b", none, TILE, new Cancellation(), null);
+        check(ids(alone).equals(java.util.List.of(11L, 13L)) && alone.summary().buildingsOmitted() == 1,
+                "The capped building leaves no source behind: " + ids(alone));
+
+        var mixed = WorldStreamSourceBridge.finish(set, false, "b", none, TILE, new Cancellation(), appender);
+        check(ids(mixed).equals(java.util.List.of(11L, 13L, -1L)),
+                "Buildings and doodads, then creatures, in file order: " + ids(mixed));
+
+        var rebuilt = WorldStreamSourceBridge.finish(set, false, "b", none, TILE, new Cancellation(),
+                (builder, tile, token) -> {
+                    creatures.append(builder, 0, tile, token);
+                    throw new IllegalStateException("authored creature failure after appending");
+                });
+        check(ids(rebuilt).equals(java.util.List.of(11L, 13L)) && rebuilt.creatures().placed().isEmpty(),
+                "The buildings-only rebuild records its own sources once: " + ids(rebuilt));
+
+        // Placement 2 names a model without a draw cost: the copy fails after recording building 11.
+        var broken = objects(placed(true, 0, 11, 100), placed(true, 5, 14, 400));
+        var partial = WorldStreamSourceBridge.finish(broken, false, "b", none, TILE, new Cancellation(), appender);
+        check(partial.failed() && ids(partial).equals(java.util.List.of(-1L)),
+                "A building copy failing partway leaves only the creatures' sources: " + ids(partial));
     }
 
     private static void successfulMove(boolean height, boolean partial, boolean rejectedBinding) throws Exception {

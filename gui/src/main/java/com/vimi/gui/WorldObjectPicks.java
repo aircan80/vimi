@@ -25,6 +25,17 @@ final class WorldObjectPicks {
     /** What one file placement was built from. */
     sealed interface Source permits Exterior, Creature, Unknown {}
 
+    /**
+     * The uploaded identity of one placement: its file model index, position and scale, exactly
+     * as handed to the objects builder. A recorded source must match its placement's key.
+     */
+    record Key(int model, double x, double y, double z, double scale) {
+        static Key of(WorldObjectPicking.Tile geometry, int placement) {
+            var t = geometry.transform(placement);
+            return new Key(geometry.model(placement), t[0], t[1], t[2], t[3]);
+        }
+    }
+
     /** One drawn building, MDDF doodad or WMO set doodad, with its model's mesh identities. */
     record Exterior(
             WorldExteriorObjects.Kind kind,
@@ -37,20 +48,23 @@ final class WorldObjectPicks {
             double scale,
             List<Long> meshIds,
             List<Integer> meshOrdinals,
-            long parentFileId) implements Source {
+            long parentFileId,
+            Key placed) implements Source {
         Exterior {
             Objects.requireNonNull(kind);
+            Objects.requireNonNull(placed);
             meshIds = List.copyOf(meshIds);
             meshOrdinals = List.copyOf(meshOrdinals);
         }
     }
 
     /** One drawn static creature model at a declared spawn; npc is null when not in the snapshot. */
-    record Creature(WorldSpawns.Spawn spawn, WorldSpawns.Npc npc, CreatureModelPolicy.Choice choice, double scale)
-            implements Source {
+    record Creature(WorldSpawns.Spawn spawn, WorldSpawns.Npc npc, CreatureModelPolicy.Choice choice, double scale,
+            Key placed) implements Source {
         Creature {
             Objects.requireNonNull(spawn);
             Objects.requireNonNull(choice);
+            Objects.requireNonNull(placed);
         }
     }
 
@@ -67,14 +81,28 @@ final class WorldObjectPicks {
         }
 
         /**
-         * Pairs an uploaded set with its recorded sources. When the counts differ every placement
-         * is reported as unknown rather than matched by position.
+         * Pairs an uploaded set with its recorded sources. Each source must carry its placement's
+         * uploaded {@link Key}; when the counts differ or any key disagrees (a reorder, a drop or an
+         * insertion), every placement is reported as unknown rather than matched by position.
          */
         static Tile of(int tileX, int tileY, WorldObjectPicking.Tile geometry, List<Source> sources) {
-            if (sources.size() == geometry.placements()) return new Tile(tileX, tileY, geometry, sources);
+            if (aligned(geometry, sources)) return new Tile(tileX, tileY, geometry, sources);
             var unknown = new ArrayList<Source>(geometry.placements());
             for (int i = 0; i < geometry.placements(); i++) unknown.add(new Unknown());
             return new Tile(tileX, tileY, geometry, unknown);
+        }
+
+        private static boolean aligned(WorldObjectPicking.Tile geometry, List<Source> sources) {
+            if (sources.size() != geometry.placements()) return false;
+            for (int i = 0; i < sources.size(); i++) {
+                var key = switch (sources.get(i)) {
+                    case Exterior e -> e.placed();
+                    case Creature c -> c.placed();
+                    case Unknown u -> null;
+                };
+                if (!Key.of(geometry, i).equals(key)) return false;
+            }
+            return true;
         }
     }
 
@@ -106,8 +134,17 @@ final class WorldObjectPicks {
             return List.copyOf(sources);
         }
 
-        /** The source of one drawn exterior placement of {@code set}. */
-        static Exterior exterior(WorldExteriorObjects.TileObjects set, WorldExteriorObjects.Placement p) {
+        /** Root FileDataIDs of the set's drawn buildings by unique ID (deduplicated by the source). */
+        static java.util.Map<Long, Long> buildings(WorldExteriorObjects.TileObjects set) {
+            var roots = new java.util.HashMap<Long, Long>();
+            for (var p : set.placements())
+                if (p.kind() == WorldExteriorObjects.Kind.BUILDING) roots.putIfAbsent(p.uniqueId(), p.rootId());
+            return roots;
+        }
+
+        /** The source of one drawn exterior placement of {@code set}; parents from {@link #buildings}. */
+        static Exterior exterior(WorldExteriorObjects.TileObjects set, WorldExteriorObjects.Placement p,
+                java.util.Map<Long, Long> parents) {
             var model = set.models().get(p.model());
             var ids = new ArrayList<Long>(model.meshes().size());
             var ordinals = new ArrayList<Integer>(model.meshes().size());
@@ -115,23 +152,18 @@ final class WorldObjectPicks {
                 ids.add(mesh.groupId());
                 ordinals.add(mesh.groupOrdinal());
             }
-            long parent = 0;
-            if (p.kind() == WorldExteriorObjects.Kind.SET_DOODAD) {
-                for (var other : set.placements()) {
-                    if (other.kind() == WorldExteriorObjects.Kind.BUILDING && other.uniqueId() == p.uniqueId()) {
-                        parent = other.rootId();
-                        break;
-                    }
-                }
-            }
+            long parent = p.kind() == WorldExteriorObjects.Kind.SET_DOODAD
+                    ? parents.getOrDefault(p.uniqueId(), 0L) : 0;
             return new Exterior(p.kind(), p.ordinal(), p.uniqueId(), p.rootId(), p.flags(), p.doodadSet(),
-                    p.nameSet(), p.scale(), ids, ordinals, parent);
+                    p.nameSet(), p.scale(), ids, ordinals, parent,
+                    new Key(p.model(), p.x(), p.y(), p.z(), p.scale()));
         }
     }
 
     /**
      * The nearest drawn object surface along a ray from the camera eye across the resident tiles,
-     * no farther than {@code maxDistance}.
+     * no farther than {@code maxDistance} along the ray (infinite: only the eye-depth discard
+     * clips).
      */
     static Optional<Selected> pick(List<Tile> tiles, TerrainCamera camera, WorldPick.Ray ray, double maxDistance) {
         Objects.requireNonNull(tiles);

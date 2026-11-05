@@ -115,6 +115,20 @@ class WorldObjectPickingTest {
     }
 
     @Test
+    void offAxisObjectsAreClippedByEyeDepthNotRayDistance() {
+        // The wall at x = 2100, y = 2100: eye depth 2100, but about 2970 yards along the ray.
+        var tile = tile(WorldObjectPicking.OPAQUE, 6, placement(2100, 2100, 0, 2, QUARTER));
+        var hit = aim(tile, 1, 1, 0, Double.POSITIVE_INFINITY).orElseThrow();
+        assertEquals(2100, hit.depth(), 1e-6);
+        assertEquals(2100 * Math.sqrt(2), hit.distance(), 1e-6);
+        assertTrue(aim(tile, 1, 1, 0, 2200).isEmpty(), "a ray-distance limit is stricter");
+        var beyond = tile(WorldObjectPicking.OPAQUE, 6, placement(2300, 100, 0, 2, QUARTER));
+        assertTrue(
+                aim(beyond, 23, 1, 0, Double.POSITIVE_INFINITY).isEmpty(),
+                "depth 2300 is discarded");
+    }
+
+    @Test
     void cutoutAndBlendedFollowTheSampledAlpha() {
         // World y = 4u - 2 on the wall, at z = 0 (v = 0.5).
         var cutout = tile(WorldObjectPicking.CUTOUT, 6, wall(100));
