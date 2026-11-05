@@ -181,6 +181,13 @@ public final class WorldExteriorObjects {
     /** MODF flags: 0x2 LOD-capable, 0x4 scale-enable, 0x8 direct FileDataID (required). */
     private static final int DIRECT_ID = 0x8, SCALED = 0x4, LOD_CAPABLE = 0x2;
 
+    /**
+     * MODF 0x80 (modf_use_sets_from_mwds, Shadowlands+, wowdev ADT/v18): doodadSet names an MWDR
+     * entry whose inclusive MWDS range lists the WMO MODS sets to load. It changes neither the
+     * model reference nor the transform.
+     */
+    private static final int SETS_FROM_MWDS = 0x80;
+
     /** MOGP exterior and interior flags; interior wins when both are present. */
     private static final long EXTERIOR = 0x8, INTERIOR = 0x2000;
 
@@ -755,6 +762,11 @@ public final class WorldExteriorObjects {
         private final Map<Long, RootState> doodadStates = new HashMap<>();
         private final Map<Long, Integer> doodadSlots = new HashMap<>();
 
+        /** obj0 MWDR ranges and MWDS set indexes, for MODF flag 0x80 placements. */
+        private List<WorldPlacements.SetRange> setRanges = List.of();
+
+        private List<Integer> setIds = List.of();
+
         /** Registered images by slot, in admission (priority) order; null for other slots. */
         private final List<Demand> demands = new ArrayList<>();
 
@@ -789,6 +801,8 @@ public final class WorldExteriorObjects {
                 try (var input = admission.readRecorded(WorldStreamScopes.RecordedInput.OBJ0)) {
                     metadata = WorldPlacements.readObj0(input.bytes(), token::isCanceled);
                 }
+                setRanges = metadata.setRanges();
+                setIds = metadata.setIds();
                 place(metadata.worldObjects());
                 fitMaterialDraws();
                 // Admission ran largest first; the set keeps obj0 source order.
@@ -1129,7 +1143,8 @@ public final class WorldExteriorObjects {
                                         transform.scale(),
                                         transform.cos(),
                                         transform.sin(),
-                                        Rotation.heading(transform.cos(), transform.sin())));
+                                        buildingRotation(
+                                                record, transform.cos(), transform.sin())));
                     }
                 }
             }
@@ -1241,21 +1256,18 @@ public final class WorldExteriorObjects {
                 }
                 var selected = new ArrayList<Integer>(2);
                 selected.add(0);
-                if (building.doodadSet() != 0) {
+                if ((building.flags() & SETS_FROM_MWDS) != 0) {
+                    // MODF doodadSet names an MWDR range of MWDS set indexes (set 0 is kept).
+                    if (!selectFromMwds(building.doodadSet(), declared, selected)) {
+                        count(Count.SET_UNSUPPORTED);
+                    }
+                } else if (building.doodadSet() != 0) {
                     if (building.doodadSet() >= declared.sets().size()) {
                         count(Count.SET_UNSUPPORTED);
                     } else {
                         selected.add(building.doodadSet());
                     }
                 }
-                var parent =
-                        new WorldBasicWmo.Transform(
-                                building.x(),
-                                building.y(),
-                                building.z(),
-                                building.scale(),
-                                building.cos(),
-                                building.sin());
                 for (int set : selected) {
                     var range = declared.sets().get(set);
                     long end = range.firstDefinition() + range.count();
@@ -1265,18 +1277,41 @@ public final class WorldExteriorObjects {
                             count(Count.SET_DOODAD_UNSUPPORTED);
                             continue;
                         }
-                        setDoodad(building, parent, declared, set, (int) d);
+                        setDoodad(building, declared, set, (int) d);
                     }
                 }
             }
         }
 
+        /**
+         * Adds the MWDS sets of MWDR entry {@code entry}; false (nothing added) when the entry or
+         * any set index it lists is outside the recorded MWDR, MWDS or MODS.
+         */
+        private boolean selectFromMwds(
+                int entry, WmoFormats.Doodads declared, List<Integer> selected) {
+            if (entry >= setRanges.size()) {
+                return false;
+            }
+            var range = setRanges.get(entry);
+            if (range.end() < range.begin() || range.end() >= setIds.size()) {
+                return false;
+            }
+            var listed = new ArrayList<Integer>();
+            for (long i = range.begin(); i <= range.end(); i++) {
+                int set = setIds.get((int) i);
+                if (set >= declared.sets().size()) {
+                    return false;
+                }
+                if (!selected.contains(set) && !listed.contains(set)) {
+                    listed.add(set);
+                }
+            }
+            selected.addAll(listed);
+            return true;
+        }
+
         private void setDoodad(
-                Placement building,
-                WorldBasicWmo.Transform parent,
-                WmoFormats.Doodads declared,
-                int set,
-                int ordinal) {
+                Placement building, WmoFormats.Doodads declared, int set, int ordinal) {
             var def = declared.definitions().get(ordinal);
             long id =
                     def.reference() < declared.fileIdCount() ? declared.fileId(def.reference()) : 0;
@@ -1294,8 +1329,13 @@ public final class WorldExteriorObjects {
                 count(Count.SET_DOODAD_UNSUPPORTED);
                 return;
             }
-            double x = parent.x(def.x(), def.y()), y = parent.y(def.x(), def.y());
-            double z = parent.z(def.z());
+            // The building's full rotation (heading, pitch, roll) and scale carry the MODD
+            // position; for an untilted building this is exactly the heading rule.
+            double[] m = building.rotation().rowMajor();
+            double s = building.scale(), a = def.x(), b = def.y(), c = def.z();
+            double x = building.x() + s * (m[0] * a + m[1] * b + m[2] * c);
+            double y = building.y() + s * (m[3] * a + m[4] * b + m[5] * c);
+            double z = building.z() + s * (m[6] * a + m[7] * b + m[8] * c);
             if (!finite(x, y, z)) {
                 count(Count.SET_DOODAD_UNSUPPORTED);
                 return;
@@ -2370,15 +2410,26 @@ public final class WorldExteriorObjects {
                 && a.scale() == b.scale();
     }
 
+    /**
+     * A MODF rotation: the same construction as MDDF ({@link Rotation#mddf}), heading from rotation
+     * y, pitch from rotation x and roll from rotation z. wowdev ADT/v18 builds MODF and MDDF
+     * placement matrices with the identical sequence (rotation[1] - 270, -rotation[0], rotation[2]
+     * - 90), and TrinityCore ec72c19 places WMO and M2 instances alike through {@code
+     * ModelInstance} with {@code fromEulerAnglesZYX}. Untilted placements stay bit-identical to the
+     * heading rule.
+     */
+    static Rotation buildingRotation(WorldPlacements.WorldObject p, double cos, double sin) {
+        return Rotation.mddf(cos, sin, p.rotation().x(), p.rotation().z());
+    }
+
     /** Placement policy; null means unsupported. The ADT heading rule is WorldBasicWmo's. */
     private static WorldBasicWmo.Transform qualify(WorldPlacements.WorldObject p) {
         int flags = p.flags();
         if ((flags & DIRECT_ID) == 0
-                || (flags & ~(DIRECT_ID | SCALED | LOD_CAPABLE)) != 0
+                || (flags & ~(DIRECT_ID | SCALED | LOD_CAPABLE | SETS_FROM_MWDS)) != 0
                 || p.reference().kind() != WorldPlacements.ReferenceKind.FILE_DATA_ID
                 || p.reference().value() <= 0
-                || p.rotation().x() != 0
-                || p.rotation().z() != 0) {
+                || !buildingRotation(p, 1, 0).finite()) {
             return null;
         }
         double scale = 1.0;
