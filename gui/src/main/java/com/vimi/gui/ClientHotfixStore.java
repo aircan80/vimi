@@ -73,6 +73,9 @@ final class ClientHotfixStore implements AutoCloseable {
 
         /** After a failed follow watch, before the new build's earlier binding is restored. */
         default void beforeFollowRestore() {}
+
+        /** Before Refresh sources removes a leftover watch. */
+        default void beforeDropLeftover() {}
     }
 
     /**
@@ -80,7 +83,12 @@ final class ClientHotfixStore implements AutoCloseable {
      * bytes; {@code oldWatchCleared} is false when the old build is still checked on Refresh
      * sources (a later apply of the same pair retries only that removal).
      */
-    record FollowResult(Summary summary, boolean bindingChanged, boolean oldWatchCleared) {}
+    record FollowResult(
+            Summary summary, boolean bindingChanged, boolean oldWatchCleared, boolean replacedOtherWatch) {
+        FollowResult(Summary summary, boolean bindingChanged, boolean oldWatchCleared) {
+            this(summary, bindingChanged, oldWatchCleared, false);
+        }
+    }
 
     /**
      * The new build was bound but its watch could not be written, and restoring its earlier
@@ -174,7 +182,13 @@ final class ClientHotfixStore implements AutoCloseable {
         /** The remembered original no longer exists; the existing binding is kept. */
         MISSING,
         /** The original could not be read or verified; the existing binding is kept. */
-        FAILED
+        FAILED,
+        /**
+         * A leftover watch: the same original is also watched for the build it now declares (a
+         * move whose old watch could not be removed). This watch was removed, or, when
+         * {@code failure} is set, will be removed on the next refresh; its import is kept.
+         */
+        SUPERSEDED
     }
 
     /** {@code scope} is null only for an unreadable watch record. Never carries the path. */
@@ -288,11 +302,12 @@ final class ClientHotfixStore implements AutoCloseable {
             // The new build already uses these bytes. Make sure it watches the followed file,
             // not another file with identical bytes; then only the old watch may be left.
             Path watchedByTo = readWatch(watch(to)).original();
-            if (!watchedByTo.equals(imported.input())) {
+            boolean replaced = !watchedByTo.equals(imported.input());
+            if (replaced) {
                 probe.beforeFollowWatch();
                 writeWatch(to, imported.input(), imported.source(), token);
             }
-            return new FollowResult(imported.summary(), false, clearOldWatch(from, token));
+            return new FollowResult(imported.summary(), false, clearOldWatch(from, token), replaced);
         }
         try {
             probe.beforeFollowWatch();
@@ -1118,11 +1133,11 @@ final class ClientHotfixStore implements AutoCloseable {
             }
         }
         files.sort(null);
-        dropSupersededWatches(files, token);
         var results = new java.util.ArrayList<RefreshResult>();
         // On cancellation, stop and return what was already checked: those bindings are
         // durable, and the caller still reports the run as canceled from its own token.
         try {
+            dropLeftoverWatches(files, results, token);
             for (Path file : files) {
                 token.check();
                 var result = refreshOne(file, token);
@@ -1135,37 +1150,58 @@ final class ClientHotfixStore implements AutoCloseable {
     }
 
     /**
-     * One original is checked for one build only. When a follow could not remove the old
-     * build's watch, the same file is watched twice; the newest build keeps it and the older
-     * watches are removed here (retried on every refresh), so each file reports and prompts once.
+     * When a move could not remove the old build's watch, the same original is watched for two
+     * builds. Only that case is cleaned up here: within one product, locale and original, a
+     * watch is a leftover when its build differs from the build the file declares now and
+     * another watch of that same declared build exists. Watches for the declared build are all
+     * kept (for example one per region), and nothing is removed while no watch matches the file.
+     * Every removal is reported as {@code SUPERSEDED}; a failed removal is reported too and
+     * retried on the next refresh. The leftover's import is never touched.
      */
-    private void dropSupersededWatches(List<Path> files, Cancellation token) {
-        var newest = new java.util.HashMap<String, Watch>();
+    private void dropLeftoverWatches(List<Path> files, List<RefreshResult> results, Cancellation token)
+            throws IOException {
+        var groups = new java.util.LinkedHashMap<String, java.util.List<Path>>();
         var read = new java.util.HashMap<Path, Watch>();
         for (Path file : files) {
             try {
                 var watch = readWatch(file);
                 read.put(file, watch);
-                String key = watch.scope().build().product() + "\n" + watch.scope().locale()
-                        + "\n" + watch.original();
-                var kept = newest.get(key);
-                if (kept == null || watch.scope().buildNumber() > kept.scope().buildNumber())
-                    newest.put(key, watch);
+                groups.computeIfAbsent(
+                                watch.scope().build().product() + "\n" + watch.scope().locale()
+                                        + "\n" + watch.original(),
+                                key -> new java.util.ArrayList<>())
+                        .add(file);
             } catch (IOException | RuntimeException unreadable) {
                 // refreshOne reports and removes unreadable records.
             }
         }
-        for (var entry : read.entrySet()) {
-            var watch = entry.getValue();
-            String key = watch.scope().build().product() + "\n" + watch.scope().locale()
-                    + "\n" + watch.original();
-            if (newest.get(key) == watch) continue;
-            files.remove(entry.getKey());
+        for (var group : groups.values()) {
+            token.check();
+            if (group.size() < 2) continue;
+            var original = read.get(group.getFirst()).original();
+            int declared;
             try {
-                deleteWatch(watch.scope(), token);
-            } catch (IOException | RuntimeException failure) {
-                if (token.isCanceled() || canceled(failure)) throw new CancellationException();
-                // Not checked this time either way; retried on the next refresh.
+                declared = declaredBuild(original);
+            } catch (IOException | RuntimeException unreadable) {
+                continue; // refreshOne reports the missing or unreadable original per watch
+            }
+            boolean matched = group.stream()
+                    .anyMatch(file -> read.get(file).scope().buildNumber() == declared);
+            if (declared <= 0 || !matched) continue;
+            for (Path file : group) {
+                var scope = read.get(file).scope();
+                if (scope.buildNumber() == declared) continue;
+                files.remove(file);
+                Throwable failure = null;
+                try {
+                    probe.beforeDropLeftover();
+                    deleteWatch(scope, token);
+                } catch (IOException | RuntimeException error) {
+                    if (token.isCanceled() || canceled(error)) throw error;
+                    failure = error;
+                }
+                results.add(new RefreshResult(scope, RefreshOutcome.SUPERSEDED, readManifest(scope),
+                        declared, failure));
             }
         }
     }
