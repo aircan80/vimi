@@ -30,9 +30,17 @@ public final class WmoFormats {
             MONR = 0x4d4f4e52,
             MOTV = 0x4d4f5456,
             MOBA = 0x4d4f4241,
-            MOPY = 0x4d4f5059;
+            MOPY = 0x4d4f5059,
+            MODS = 0x4d4f4453,
+            MODN = 0x4d4f444e,
+            MODI = 0x4d4f4449,
+            MODD = 0x4d4f4444;
 
-    private static final Set<Integer> ROOT_TAGS = Set.of(MVER, MOHD, MOMT, GFID, MOTX, MOGN);
+    /** Doodad declaration ceilings; larger or over-budget declarations are not retained. */
+    public static final int MAX_DOODAD_SETS = 256, MAX_DOODAD_DEFS = 32768;
+
+    private static final Set<Integer> ROOT_TAGS =
+            Set.of(MVER, MOHD, MOMT, GFID, MOTX, MOGN, MODS, MODN, MODI, MODD);
     private static final Set<Integer> GROUP_TAGS = Set.of(MVER, MOGP);
     private static final Set<Integer> MESH_TAGS = Set.of(MOVT, MONR, MOVI, MOTV, MOBA, MOPY);
 
@@ -165,6 +173,7 @@ public final class WmoFormats {
         private final List<Chunk> chunks;
         private final boolean gfidPresent, namesPresent;
         private final GroupNames groupNames;
+        private final Doodads doodads;
 
         private Root(
                 RootHeader h,
@@ -174,8 +183,10 @@ public final class WmoFormats {
                 List<Chunk> c,
                 boolean gp,
                 boolean np,
-                GroupNames gn) {
+                GroupNames gn,
+                Doodads d) {
             groupNames = gn;
+            doodads = d;
             header = h;
             materials = List.copyOf(m);
             gfids = g;
@@ -220,6 +231,100 @@ public final class WmoFormats {
         /** Recorded MOGN group-name block, or {@link GroupNames#absent()} when not retained. */
         public GroupNames groupNames() {
             return groupNames;
+        }
+
+        /** Recorded doodad sets, definitions and MODI FileDataIDs; see {@link Doodads}. */
+        public Doodads doodads() {
+            return doodads;
+        }
+    }
+
+    /** One MODS doodad set: a contiguous MODD range. The 20-byte name is not interpreted. */
+    public record DoodadSet(long firstDefinition, long count) {
+        public DoodadSet {
+            u32(firstDefinition);
+            u32(count);
+        }
+    }
+
+    /**
+     * One MODD definition in WMO-local axes, raw. {@code reference} is the low 24 bits (an index
+     * into MODI when present, a MODN offset otherwise) and {@code flags} the high 8 bits. The
+     * quaternion is stored x, y, z, w; nothing here checks finiteness, unit length or scale.
+     */
+    public record DoodadDefinition(
+            int reference,
+            int flags,
+            float x,
+            float y,
+            float z,
+            float qx,
+            float qy,
+            float qz,
+            float qw,
+            float scale) {}
+
+    /**
+     * Recorded doodad declarations. {@code retained} is false when MODS or MODD is absent,
+     * exceeds {@link #MAX_DOODAD_SETS}/{@link #MAX_DOODAD_DEFS}, or does not fit the root fact
+     * budget: a root that qualifies without its doodads is never declined because of them.
+     */
+    public static final class Doodads {
+        private final boolean declared, retained, namesPresent, fileIdsPresent;
+        private final List<DoodadSet> sets;
+        private final List<DoodadDefinition> definitions;
+        private final long[] fileIds;
+
+        private Doodads(
+                boolean declared,
+                boolean retained,
+                boolean namesPresent,
+                boolean fileIdsPresent,
+                List<DoodadSet> sets,
+                List<DoodadDefinition> definitions,
+                long[] fileIds) {
+            this.declared = declared;
+            this.retained = retained;
+            this.namesPresent = namesPresent;
+            this.fileIdsPresent = fileIdsPresent;
+            this.sets = List.copyOf(sets);
+            this.definitions = List.copyOf(definitions);
+            this.fileIds = fileIds;
+        }
+
+        /** Any doodad set or definition chunk (MODS, MODD) was declared. */
+        public boolean declared() {
+            return declared;
+        }
+
+        public boolean retained() {
+            return retained;
+        }
+
+        /** A MODN name block was declared (its offsets are names, not FileDataIDs). */
+        public boolean namesPresent() {
+            return namesPresent;
+        }
+
+        /** A MODI FileDataID table was declared. */
+        public boolean fileIdsPresent() {
+            return fileIdsPresent;
+        }
+
+        public List<DoodadSet> sets() {
+            return sets;
+        }
+
+        public List<DoodadDefinition> definitions() {
+            return definitions;
+        }
+
+        public int fileIdCount() {
+            return fileIds.length;
+        }
+
+        public long fileId(int ordinal) {
+            return fileIds[ordinal];
         }
     }
 
@@ -422,6 +527,8 @@ public final class WmoFormats {
         byte[] names = new byte[0];
         GroupNames groupNames = GroupNames.absent();
         int namesAt = -1, namesBytes = 0;
+        int setsAt = -1, setsBytes = 0, defsAt = -1, defsBytes = 0, idsAt = -1, idsBytes = 0;
+        boolean doodadNames = false;
         while (input.hasRemaining()) {
             check(canceled);
             var chunk = chunk(input, input.limit(), chunks, budget, ROOT_TAGS);
@@ -495,6 +602,25 @@ public final class WmoFormats {
                     namesAt = at;
                     namesBytes = chunk.bytes();
                 }
+                case MODS -> {
+                    unique(seen, MODS);
+                    setsAt = at;
+                    setsBytes = chunk.bytes();
+                }
+                case MODN -> {
+                    unique(seen, MODN);
+                    doodadNames = true;
+                }
+                case MODI -> {
+                    unique(seen, MODI);
+                    idsAt = at;
+                    idsBytes = chunk.bytes();
+                }
+                case MODD -> {
+                    unique(seen, MODD);
+                    defsAt = at;
+                    defsBytes = chunk.bytes();
+                }
                 default -> {
                     /* All unparsed declarations remain in chunks, never inferred empty. */
                 }
@@ -517,6 +643,18 @@ public final class WmoFormats {
             input.get(namesAt, block);
             groupNames = new GroupNames(block);
         }
+        var doodads =
+                doodads(
+                        input,
+                        budget,
+                        canceled,
+                        doodadNames,
+                        idsAt,
+                        idsBytes,
+                        setsAt,
+                        setsBytes,
+                        defsAt,
+                        defsBytes);
         return new Root(
                 header,
                 materials,
@@ -525,7 +663,76 @@ public final class WmoFormats {
                 chunks,
                 seen.contains(GFID),
                 seen.contains(MOTX),
-                groupNames);
+                groupNames,
+                doodads);
+    }
+
+    /**
+     * Doodad declarations, claimed after every required declaration. A malformed shape (a partial
+     * record) is invalid like any other root declaration; an oversized or over-budget one is only
+     * not retained.
+     */
+    private static Doodads doodads(
+            ByteBuffer input,
+            Budget budget,
+            BooleanSupplier canceled,
+            boolean names,
+            int idsAt,
+            int idsBytes,
+            int setsAt,
+            int setsBytes,
+            int defsAt,
+            int defsBytes) {
+        boolean ids = idsAt >= 0;
+        if ((ids && idsBytes % 4 != 0)
+                || (setsAt >= 0 && setsBytes % 32 != 0)
+                || (defsAt >= 0 && defsBytes % 40 != 0)) {
+            throw invalid("WMO doodad declaration shape");
+        }
+        int setCount = setsBytes / 32, defCount = defsBytes / 40, idCount = idsBytes / 4;
+        boolean declared = setsAt >= 0 || defsAt >= 0;
+        if (setsAt < 0
+                || defsAt < 0
+                || setCount > MAX_DOODAD_SETS
+                || defCount > MAX_DOODAD_DEFS
+                || idCount > MAX_DOODAD_DEFS
+                || !budget.tryClaim(
+                        192L + 32L * setCount + 64L * defCount + 8L * idCount)) {
+            return new Doodads(declared, false, names, ids, List.of(), List.of(), new long[0]);
+        }
+        var sets = new ArrayList<DoodadSet>(setCount);
+        for (int i = 0; i < setCount; i++) {
+            check(canceled);
+            int at = setsAt + i * 32 + 20;
+            sets.add(
+                    new DoodadSet(
+                            Integer.toUnsignedLong(input.getInt(at)),
+                            Integer.toUnsignedLong(input.getInt(at + 4))));
+        }
+        var definitions = new ArrayList<DoodadDefinition>(defCount);
+        for (int i = 0; i < defCount; i++) {
+            if ((i & 1023) == 0) {
+                check(canceled);
+            }
+            int at = defsAt + i * 40, word = input.getInt(at);
+            definitions.add(
+                    new DoodadDefinition(
+                            word & 0xffffff,
+                            word >>> 24,
+                            input.getFloat(at + 4),
+                            input.getFloat(at + 8),
+                            input.getFloat(at + 12),
+                            input.getFloat(at + 16),
+                            input.getFloat(at + 20),
+                            input.getFloat(at + 24),
+                            input.getFloat(at + 28),
+                            input.getFloat(at + 32)));
+        }
+        var fileIds = new long[idCount];
+        for (int i = 0; i < idCount; i++) {
+            fileIds[i] = Integer.toUnsignedLong(input.getInt(idsAt + i * 4));
+        }
+        return new Doodads(true, true, names, ids, sets, definitions, fileIds);
     }
 
     public static Group group(byte[] bytes, Limits limits, BooleanSupplier canceled) {
