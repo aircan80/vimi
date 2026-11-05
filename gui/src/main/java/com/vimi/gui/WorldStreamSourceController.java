@@ -769,7 +769,9 @@ final class WorldStreamSourceController {
                     buildings += entry.source().exteriorPlacements();
                 }
                 case FAILED -> buildingFailures++;
-                default -> {}
+                default -> {
+                    if (entry.source().exteriorFailed()) buildingFailures++;
+                }
             }
             var facts = entry.source().facts();
             if (facts.outcome() == WorldTerrainStreaming.Outcome.TEXTURED) {

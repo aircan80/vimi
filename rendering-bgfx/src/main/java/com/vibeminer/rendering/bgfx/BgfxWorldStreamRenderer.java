@@ -801,6 +801,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         var normal = stack.mallocFloat(16);
         for (int p = 0; p < objects.placementModels.length; p++) {
             objectMatrices(objects.placements, p, origin, model, normal);
+            // bgfx uniforms persist across submits, so they change once per placement.
+            bgfx_set_uniform(wmoEye, eyeMatrix, 1);
+            bgfx_set_uniform(wmoProjection, projectionMatrix, 1);
+            bgfx_set_uniform(wmoModel, model, 1);
+            bgfx_set_uniform(wmoNormal, normal, 1);
             int m = objects.placementModels[p];
             for (int mesh = objects.models[m * 2];
                     mesh < objects.models[m * 2] + objects.models[m * 2 + 1];
@@ -809,10 +814,6 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 for (int r = objects.meshes[at + 4];
                         r < objects.meshes[at + 4] + objects.meshes[at + 5];
                         r++) {
-                    bgfx_set_uniform(wmoEye, eyeMatrix, 1);
-                    bgfx_set_uniform(wmoProjection, projectionMatrix, 1);
-                    bgfx_set_uniform(wmoModel, model, 1);
-                    bgfx_set_uniform(wmoNormal, normal, 1);
                     bgfx_set_dynamic_vertex_buffer(
                             0, objects.vertices, objects.meshes[at], objects.meshes[at + 1]);
                     bgfx_set_dynamic_index_buffer(

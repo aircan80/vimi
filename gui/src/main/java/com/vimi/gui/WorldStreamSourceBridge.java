@@ -25,6 +25,12 @@ final class WorldStreamSourceBridge {
         private final WorldTerrainStreaming.Facts facts;
         private WorldTerrainStreaming.WrittenTile<WorldStreamTileWriter.PacketFile> owned;
         private volatile int waterCells, exteriorPlacements;
+        private volatile boolean exteriorFailed;
+
+        /** Descriptive: this tile's exterior objects failed on the parent side; terrain kept. */
+        boolean exteriorFailed() {
+            return exteriorFailed;
+        }
 
         /** Descriptive count of static water cells carried by this tile's moved packet. */
         int waterCells() {
@@ -96,6 +102,7 @@ final class WorldStreamSourceBridge {
         private Prepared prepared;
         private volatile RefusalMetadata sourceRefusal;
         private volatile String waterNote = "", exteriorNote = "";
+        private volatile boolean exteriorFailed;
         private final boolean exteriors;
 
         Producer(WorldTerrainStreaming source, WorldTerrainStreaming.Scope scope,
@@ -161,8 +168,12 @@ final class WorldStreamSourceBridge {
                             objects = WorldStreamTileWriter.writeObjectsUnadvertised(destination,
                                     exterior, () -> stopping.getAsBoolean() || cancellation.isCanceled());
                             placements = exterior.placements();
-                        } catch (IOException | IllegalArgumentException failed) {
+                        } catch (IOException | RuntimeException failed) {
                             check(stopping, cancellation);
+                            if (failed instanceof CancellationException canceled) {
+                                throw canceled;
+                            }
+                            exteriorFailed = true;
                             exteriorNote = "exterior objects write failed";
                         }
                     }
@@ -173,6 +184,7 @@ final class WorldStreamSourceBridge {
                                 () -> stopping.getAsBoolean() || token.isCanceled()));
                 local = new Prepared(written);
                 local.exteriorPlacements = placements;
+                local.exteriorFailed = exteriorFailed;
                 check(stopping, cancellation);
                 // Water reports its own cancellation; the MOVE below observes stopping too.
                 var waterCopy = water == null ? null : prepareWater(written, cancellation);
@@ -286,8 +298,9 @@ final class WorldStreamSourceBridge {
 
         /**
          * One serialized BASIC_EXTERIOR source operation outside any terrain write. The neutral set
-         * is copied and closed here. Clean refusals and clean leaf failures degrade to terrain
-         * only; cancellation and source faults with causes propagate.
+         * is copied and closed here. Only cancellation propagates: every other runtime failure
+         * degrades this tile to terrain only, because the terrain write that follows re-checks the
+         * source and fails by itself when the source is really broken.
          */
         private WorldStreamTileWriter.Exterior prepareExterior(Cancellation cancellation) {
             try (var set = source.prepareExteriorObjects(scope, tile, cancellation)) {
@@ -305,15 +318,13 @@ final class WorldStreamSourceBridge {
             } catch (CancellationException canceled) {
                 throw canceled;
             } catch (WorldTerrainStreaming.Refusal refused) {
-                if (refused.getCause() != null || refused.getSuppressed().length != 0) {
-                    throw refused;
-                }
+                cancellation.check();
+                exteriorFailed = true;
                 exteriorNote = "exterior objects refused: " + refused.site();
                 return null;
-            } catch (IllegalArgumentException | IllegalStateException failed) {
-                if (failed.getCause() != null || failed.getSuppressed().length != 0) {
-                    throw failed;
-                }
+            } catch (RuntimeException failed) {
+                cancellation.check();
+                exteriorFailed = true;
                 exteriorNote = "exterior objects failed: " + failed.getClass().getSimpleName();
                 return null;
             }
@@ -340,7 +351,21 @@ final class WorldStreamSourceBridge {
                     builder.mesh(mesh.vertices(), mesh.indices(), ranges);
                 }
             }
+            // Placements beyond the per-tile draw budget are capped in source order, never
+            // failing the whole tile's set.
+            var modelDraws = new int[set.models().size()];
+            for (int m = 0; m < modelDraws.length; m++) {
+                for (var mesh : set.models().get(m).meshes()) {
+                    modelDraws[m] += mesh.ranges().size();
+                }
+            }
+            int draws = 0;
             for (var placement : set.placements()) {
+                int cost = modelDraws[placement.model()];
+                if (draws + cost > WorldStreamTileWriter.Exterior.MAX_DRAWS) {
+                    continue;
+                }
+                draws += cost;
                 builder.placement(placement.model(), placement.x(), placement.y(), placement.z(),
                         placement.scale(), placement.cos(), placement.sin());
             }

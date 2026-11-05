@@ -147,6 +147,25 @@ the refusal site. Detailed omission counts in the GUI remain delivery step 3.
     `BATCH_MISSING_IMAGE` / `IMAGE_CAPPED`;
   - source preparation took 0.4 to 21 s per tile on a cold network cache.
 
+## Independent review
+
+A fresh reviewer read the code at ba97007e. Its findings and the fixes:
+
+- **MAJOR, fixed.** Parent-side exterior failures could still fail the tile. Examples were a parser
+  NPE, an `UncheckedIOException` and a refusal that carries a cause. Now only cancellation
+  propagates. Every other runtime failure degrades to terrain only, because the terrain write that
+  follows re-checks the source.
+- **Fixed.**
+  - The bridge caps placements in source order to the 4,096-draw budget, instead of failing the
+    whole set.
+  - Parent-side failures now count in "building objects failed on K".
+  - An `OutOfMemoryError` while reading or packing objects no longer rejects the terrain tile.
+  - Uniforms are set once per placement instead of once per draw.
+  - An objects-delete failure no longer masks the packet delete.
+  - `STAGED` refuses a tenth field outside the exterior profile.
+- **Accepted as nits.** The size check in `finalized`, the check-then-move race in a private
+  session directory, and charging `objectBytes` for a retired slot until reuse.
+
 ## Not done
 
 - **Backends.** Metal and DX11 were not run; only Linux Vulkan was exercised.

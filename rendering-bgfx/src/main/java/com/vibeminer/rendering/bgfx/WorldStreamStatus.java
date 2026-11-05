@@ -152,7 +152,7 @@ final class WorldStreamStatus {
                             outcome == 1 && coverage >= 1 && coverage <= 256
                                     || outcome == 2 && coverage == 0);
                     int objects = p.length == 9 ? -1 : integer(p[9]);
-                    require(objects >= -1 && objects <= 2);
+                    require(objects >= -1 && objects <= 2 && (p.length == 9) == (objects == -1));
                     yield new Staged(nonce, tx, lease, outcome, coverage, objects);
                 }
                 case "COMMITTED" -> {

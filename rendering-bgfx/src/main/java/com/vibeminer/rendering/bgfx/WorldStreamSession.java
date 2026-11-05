@@ -374,7 +374,8 @@ final class WorldStreamSession {
             } catch (java.util.concurrent.CancellationException stopped) {
                 payload.close();
                 throw stopped;
-            } catch (IOException | RuntimeException failed) {
+            } catch (IOException | RuntimeException | OutOfMemoryError failed) {
+                // Optional objects (including their native packing allocation) never cost terrain.
                 if (canceled.getAsBoolean()) {
                     payload.close();
                     throw new java.util.concurrent.CancellationException();

@@ -252,12 +252,17 @@ final class WorldStreamPacketFile implements AutoCloseable {
 
     private static void delete(Cleanup plan) {
         try {
-            try {
-                if (plan.data().objects() != null) {
+            IOException objectsFailure = null;
+            if (plan.data().objects() != null) {
+                try {
                     Files.deleteIfExists(plan.data().objects());
+                } catch (IOException failed) {
+                    objectsFailure = failed;
                 }
-            } finally {
-                Files.deleteIfExists(plan.data().path());
+            }
+            Files.deleteIfExists(plan.data().path());
+            if (objectsFailure != null) {
+                throw objectsFailure;
             }
             plan.completion().complete(null);
         } catch (IOException | RuntimeException failed) {

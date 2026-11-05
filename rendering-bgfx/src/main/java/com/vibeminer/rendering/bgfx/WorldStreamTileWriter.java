@@ -176,6 +176,9 @@ public final class WorldStreamTileWriter {
      * producer.
      */
     public static final class Exterior {
+        /** Per-tile draw budget: the sum over placements of their model's ranges. */
+        public static final int MAX_DRAWS = WorldStreamObjectsFile.MAX_DRAWS;
+
         private final WorldStreamObjectsFile.Data data;
 
         private Exterior(WorldStreamObjectsFile.Data data) {
