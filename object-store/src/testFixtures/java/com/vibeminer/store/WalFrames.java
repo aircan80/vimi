@@ -105,8 +105,8 @@ public final class WalFrames {
     }
 
     /**
-     * The OS lost frame {@code index} (0-based) but kept the frames written after it: the
-     * writeback reordered. The lost frame reads back as stale garbage.
+     * The OS lost frame {@code index} (0-based) but kept the frames written after it: the writeback
+     * reordered. The lost frame reads back as stale garbage.
      */
     public void lose(int index) throws IOException {
         byte[] garbage = new byte[Math.toIntExact(frameBytes())];

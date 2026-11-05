@@ -209,7 +209,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 atWrite(WritePoint.PACK_SYNCED, entry.header().key());
             }
             // NORMAL, never FULL: the pack fsync above orders the bytes before these rows, and a
-            // lost commit loses a WAL suffix that reopen truncates away (docs/durability-policy.md).
+            // lost commit loses a WAL suffix that reopen truncates away
+            // (docs/durability-policy.md).
             database.uncancelled(
                     () ->
                             database.transaction(

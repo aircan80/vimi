@@ -28,10 +28,10 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Lost commits, not just a killed process. The library and every application store in it run
- * with {@code synchronous=NORMAL}, so a power loss may drop any WAL frames written after the last
- * sync point while the packs keep every byte the store fsynced. A SIGKILL keeps the page cache, so
- * these tests take the killed session's files and remove what the OS could have lost:
+ * Lost commits, not just a killed process. The library and every application store in it run with
+ * {@code synchronous=NORMAL}, so a power loss may drop any WAL frames written after the last sync
+ * point while the packs keep every byte the store fsynced. A SIGKILL keeps the page cache, so these
+ * tests take the killed session's files and remove what the OS could have lost:
  *
  * <ul>
  *   <li>every suffix of the unsynced WAL frames, one frame at a time (torn transactions too);
@@ -119,7 +119,8 @@ final class TableLostCommitCrashTest {
         // database (NORMAL syncs the WAL first) and none restarted the WAL.
         assertArrayEquals(
                 HexFormat.of().parseHex(lines.get(1)), wal.header(), "no WAL restart since sync");
-        assertEquals(lines.get(2), TableLostCommitWorker.sha256(database), "no checkpoint since sync");
+        assertEquals(
+                lines.get(2), TableLostCommitWorker.sha256(database), "no checkpoint since sync");
         synced = wal.framesAt(Long.parseLong(lines.get(0)));
         total = wal.frames();
         commits = wal.commits().stream().filter(c -> c > synced).toList();
@@ -137,7 +138,12 @@ final class TableLostCommitCrashTest {
             int kept = k;
             tests.add(
                     DynamicTest.dynamicTest(
-                            "keep " + kept + " of " + total + " frames (lose " + (total - kept)
+                            "keep "
+                                    + kept
+                                    + " of "
+                                    + total
+                                    + " frames (lose "
+                                    + (total - kept)
                                     + ")",
                             () -> ranks.put(kept, recover(kept, wal -> wal.keep(kept)))));
         }
@@ -209,14 +215,18 @@ final class TableLostCommitCrashTest {
     private Stage recover(int label, Loss loss) throws Exception {
         Path folder =
                 temporary.resolve(
-                        "library-" + (label < 0 ? "snapshot" : label) + "-" + cases.incrementAndGet());
+                        "library-"
+                                + (label < 0 ? "snapshot" : label)
+                                + "-"
+                                + cases.incrementAndGet());
         copy(crashed, folder);
         loss.apply(WalFrames.of(folder.resolve("objects.sqlite3")));
         // Power loss: no process holds the shared-memory index, so SQLite rebuilds it from the WAL.
         Files.deleteIfExists(folder.resolve("objects.sqlite3-shm"));
         Stage stage;
         try (var scenario = TableCommitScenario.open(folder)) {
-            var report = scenario.library.verify(true, com.vibeminer.store.Cancellation.NONE).join();
+            var report =
+                    scenario.library.verify(true, com.vibeminer.store.Cancellation.NONE).join();
             assertEquals(0, report.corruptCount(), "" + report);
             assertEquals(0, report.lostCount(), "" + report);
             stage = classify(scenario);

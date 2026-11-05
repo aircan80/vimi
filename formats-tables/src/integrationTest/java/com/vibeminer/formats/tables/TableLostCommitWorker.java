@@ -16,9 +16,9 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Test-only child process for {@link TableLostCommitCrashTest}. It runs one preparation session
- * on a library with a saved previous state and, after a sync point, writes every kind of record
- * the application keeps in the library database, each step acknowledged before the next:
+ * Test-only child process for {@link TableLostCommitCrashTest}. It runs one preparation session on
+ * a library with a saved previous state and, after a sync point, writes every kind of record the
+ * application keeps in the library database, each step acknowledged before the next:
  *
  * <ol>
  *   <li>the known-table pass (tables 100 and 200 commit; the store fsyncs each pack first);
@@ -132,8 +132,7 @@ public final class TableLostCommitWorker {
                         OWNER,
                         SOURCE,
                         version,
-                        (limit, token) ->
-                                pages.getAndIncrement() == 0 ? references : List.of(),
+                        (limit, token) -> pages.getAndIncrement() == 0 ? references : List.of(),
                         com.vibeminer.store.Cancellation.NONE)
                 .join();
     }
