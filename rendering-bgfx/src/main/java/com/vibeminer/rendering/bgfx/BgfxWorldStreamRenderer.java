@@ -1015,9 +1015,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 }
             }
             var blended = wmoProgram == INVALID ? List.<SlotObjects>of() : blendedSlots();
-            // Static diagnostic water after ALL opaque terrain: nearest flat surface wins under
-            // strict reversed depth, so coincident duplicates cannot blend twice. RGB only keeps
-            // the opaque output alpha.
+            // Static diagnostic water after ALL opaque terrain: the nearest surface wins under
+            // strict reversed depth, so coincident duplicates (shared chunk edges, or two source
+            // layers at one height) cannot blend twice. RGB only keeps the opaque output alpha.
             for (var lease : active) {
                 var slot = slots[lease.slot()];
                 if (slot.water == 0) {

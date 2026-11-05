@@ -390,7 +390,7 @@ class WorldTerrainLiquidsTest {
                             assertEquals(1, v.layers());
                             assertEquals(42, v.secondary(0));
                             assertEquals(1250, v.liquidType(0));
-                            assertEquals(5, v.actualUsedHeight(0));
+                            assertEquals(5, v.actualUsedHeight(0, 0));
                             assertEquals(1, v.mask(0));
                             assertEquals(200, v.depth(0, 0));
                             return null;
@@ -401,7 +401,8 @@ class WorldTerrainLiquidsTest {
     }
 
     @Test
-    void allClearUnsupportedAndNonplanarAreNeverGuessedEmptyOrFlat() throws Exception {
+    void allClearAndUnsupportedAreNeverGuessedEmptyAndNonplanarKeepsActualHeights()
+            throws Exception {
         try (var f = new Fixture()) {
             f.payload(liquids(1, 0, 0, false));
             try (var owner = f.inspect()) {
@@ -413,11 +414,31 @@ class WorldTerrainLiquidsTest {
                 assertEquals(
                         WorldTerrainLiquids.Reason.UNRESOLVED_FOOTPRINT, owner.summary().reason());
             }
+            // Cell 0 uses grid samples 0, 1, 9 and 10; sample 1 is 6, the others 5.
             f.payload(liquids(1, 0, 1, true));
             try (var owner = f.inspect()) {
-                assertEquals(WorldTerrainLiquids.State.UNRESOLVED, owner.summary().state());
-                assertEquals(
-                        WorldTerrainLiquids.Reason.NONPLANAR_PROFILE, owner.summary().reason());
+                assertEquals(WorldTerrainLiquids.State.READY, owner.summary().state());
+                assertEquals(1, owner.summary().cells());
+                owner.withBorrow(
+                        v -> {
+                            assertFalse(v.planar(0));
+                            assertEquals(5, v.actualUsedHeight(0, 0));
+                            assertEquals(6, v.actualUsedHeight(0, 1));
+                            // NW, NE, SW, SE keep their own heights: NE is grid sample 1.
+                            assertEquals(5, v.vertexUp(0));
+                            assertEquals(6, v.vertexUp(1));
+                            assertEquals(5, v.vertexUp(2));
+                            assertEquals(5, v.vertexUp(3));
+                            return null;
+                        });
+            }
+            f.payload(liquids(1, 0, 1, false));
+            try (var owner = f.inspect()) {
+                owner.withBorrow(
+                        v -> {
+                            assertTrue(v.planar(0));
+                            return null;
+                        });
             }
             assertEquals(0, f.liquidCaptures);
         }
@@ -486,17 +507,20 @@ class WorldTerrainLiquidsTest {
     @Test
     void rootCapAndNoGeometryCacheOnlyAuthority() throws Exception {
         try (var f = new Fixture()) {
-            f.payload(liquids(129, 0, 1, false));
+            // 268 layers in 67 headers of 64 + 63 + 62 + 61 cells: 16750 cells pass the 16384
+            // cell cap, so the last layers are capped while far more than 128 are admitted.
+            f.payload(liquids(268, 0, -1L, false));
             try (var owner = f.inspect()) {
                 assertEquals(WorldTerrainLiquids.State.PARTIAL, owner.summary().state());
-                assertEquals(128, owner.summary().admitted());
                 assertEquals(WorldTerrainLiquids.Reason.CAPPED, owner.summary().reason());
+                assertTrue(owner.summary().cells() <= WorldTerrainLiquids.MAX_CELLS);
+                assertTrue(owner.summary().admitted() > 128);
+                assertEquals(268, owner.summary().admitted() + owner.summary().unresolved());
             }
             int before = f.base.opens.get(2L).get();
             f.payload(liquids(1, 0, 1, true));
             try (var owner = f.inspect()) {
-                assertEquals(
-                        WorldTerrainLiquids.Reason.NONPLANAR_PROFILE, owner.summary().reason());
+                assertEquals(WorldTerrainLiquids.State.READY, owner.summary().state());
             }
             assertEquals(before + 1, f.base.opens.get(2L).get());
         }
@@ -543,12 +567,14 @@ class WorldTerrainLiquidsTest {
                 assertEquals(-1, malformed.summary().declared());
                 assertEquals(256, WorldFormats.adt(f.base.sources.get(2L), () -> false).chunks());
             }
+            // Two instances of one chunk covering the same cell are both source surfaces.
             byte[] p = liquids(2, 0, 1, false);
             ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN).putLong(3072 + 48 + 8, 1);
             f.payload(p);
             try (var overlap = f.inspect()) {
-                assertEquals(WorldTerrainLiquids.Reason.MULTILAYER, overlap.summary().reason());
-                assertEquals(0, overlap.summary().admitted());
+                assertEquals(WorldTerrainLiquids.State.READY, overlap.summary().state());
+                assertEquals(2, overlap.summary().admitted());
+                assertEquals(2, overlap.summary().cells());
             }
             p = liquids(1, 0, 1, false);
             ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN).putInt(3072 + 20, 0);
@@ -716,7 +742,7 @@ class WorldTerrainLiquidsTest {
                                             v -> {
                                                 readEntered.complete(null);
                                                 readRelease.join();
-                                                assertEquals(5, v.actualUsedHeight(0));
+                                                assertEquals(5, v.actualUsedHeight(0, 0));
                                                 return null;
                                             });
                                     read.complete(null);
@@ -783,7 +809,7 @@ class WorldTerrainLiquidsTest {
                                             v -> {
                                                 entered.complete(null);
                                                 release.join();
-                                                assertEquals(5, v.actualUsedHeight(0));
+                                                assertEquals(5, v.actualUsedHeight(0, 0));
                                                 return null;
                                             });
                                     finished.complete(null);
@@ -845,24 +871,26 @@ class WorldTerrainLiquidsTest {
     void geometryPrecountAllocatesExactMaximumWithoutTrimAndEmptyAllocatesNothing()
             throws Exception {
         try (var f = new Fixture()) {
-            var p = liquids(128, 0, -1L, false);
+            // A whole tile of full chunks: every cell of all 256 chunks, the cell cap exactly.
+            var p = liquids(256, 0, -1L, false);
             var b = ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN);
             for (int header = 0; header < 256; header++) {
                 b.putInt(header * 12, 0).putInt(header * 12 + 4, 0);
             }
-            for (int i = 0; i < 128; i++) {
+            for (int i = 0; i < 256; i++) {
                 b.putInt(i * 12, 3072 + i * 24).putInt(i * 12 + 4, 1);
-                b.putLong(3072 + 128 * 24 + i * 8, -1L);
+                b.putLong(3072 + 256 * 24 + i * 8, -1L);
             }
             f.payload(p);
             try (var owner = f.inspect()) {
-                assertEquals(8192, owner.summary().cells());
+                assertEquals(WorldTerrainLiquids.State.READY, owner.summary().state());
+                assertEquals(WorldTerrainLiquids.MAX_CELLS, owner.summary().cells());
                 owner.withBorrow(
                         v -> {
-                            assertEquals(32768, v.vertexCount());
-                            assertEquals(49152, v.indexCount());
-                            assertEquals(32767, v.index(49151));
-                            assertEquals(5, v.vertexUp(32767));
+                            assertEquals(65536, v.vertexCount());
+                            assertEquals(98304, v.indexCount());
+                            assertEquals(65535, v.index(98303));
+                            assertEquals(5, v.vertexUp(65535));
                             return null;
                         });
             }

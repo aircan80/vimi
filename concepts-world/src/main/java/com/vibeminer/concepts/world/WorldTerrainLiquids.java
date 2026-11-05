@@ -11,9 +11,16 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
-/** Source-qualified flat single-root MH2O geometry. No scene or drawing. */
+/**
+ * Source-qualified single-root MH2O height+depth geometry. No scene or drawing. Every qualified
+ * layer keeps its actual used vertex heights, flat or not; overlapping instances of one chunk are
+ * all kept, as the source declares them.
+ */
 final class WorldTerrainLiquids {
-    static final String REVISION = "source-mh2o-local-root-inspection-v1";
+    static final String REVISION = "source-mh2o-local-root-inspection-v2";
+
+    /** One root: 256 chunk headers with at most four instances each, and every cell once. */
+    static final int MAX_LAYERS = 1024, MAX_CELLS = 16384, MAX_SAMPLES = MAX_LAYERS * 81;
 
     enum State {
         ABSENT,
@@ -34,8 +41,6 @@ final class WorldTerrainLiquids {
         VERTEX_ABSENT,
         UNSUPPORTED_LAYOUT,
         UNRESOLVED_FOOTPRINT,
-        NONPLANAR_PROFILE,
-        MULTILAYER,
         CAPPED,
         MALFORMED
     }
@@ -80,7 +85,8 @@ final class WorldTerrainLiquids {
             int width,
             int height,
             long mask,
-            float usedHeight,
+            boolean planar,
+            float[] heights,
             byte[] depth) {}
 
     @FunctionalInterface
@@ -312,8 +318,18 @@ final class WorldTerrainLiquids {
             return layer(ordinal).mask();
         }
 
-        float actualUsedHeight(int ordinal) {
-            return layer(ordinal).usedHeight();
+        /** True when every used height sample of the layer is the same value. */
+        boolean planar(int ordinal) {
+            return layer(ordinal).planar();
+        }
+
+        /**
+         * Actual height at one sample of the layer's (width + 1) x (height + 1) grid, signed zero
+         * canonicalized. Samples no present cell uses keep their finite source value.
+         */
+        float actualUsedHeight(int ordinal, int vertex) {
+            var l = layer(ordinal);
+            return l.heights()[Objects.checkIndex(vertex, l.heights().length)];
         }
 
         int depth(int ordinal, int vertex) {
@@ -781,23 +797,8 @@ final class WorldTerrainLiquids {
 
     private static void decode(Owner output, Root root, boolean[] supported, Cancellation token) {
         var result = new ArrayList<Layer>();
-        var occupancy = new long[256];
         int unresolved = 0, cells = 0, samples = 0;
         Reason reason = Reason.NONE;
-        // Decline every populated layer in a multiply-overlapping header, never pick a winner.
-        var overlap = new boolean[256];
-        for (var layer : root.raw().layers()) {
-            token.check();
-            if (!supported[layer.ordinal()] || layer.vertexOffset() == 0) {
-                continue;
-            }
-            var d = WorldLiquids.decodeHeightDepth0(root.raw(), layer.ordinal(), token::isCanceled);
-            long mask = headerMask(layer, d.presentCells());
-            if ((occupancy[layer.headerOrdinal()] & mask) != 0) {
-                overlap[layer.headerOrdinal()] = true;
-            }
-            occupancy[layer.headerOrdinal()] |= mask;
-        }
         for (var layer : root.raw().layers()) {
             token.check();
             if (!supported[layer.ordinal()] || layer.vertexOffset() == 0) {
@@ -809,41 +810,38 @@ final class WorldTerrainLiquids {
                 continue;
             }
             var d = WorldLiquids.decodeHeightDepth0(root.raw(), layer.ordinal(), token::isCanceled);
-            if (overlap[layer.headerOrdinal()]) {
-                unresolved++;
-                reason = Reason.MULTILAYER;
-                continue;
-            }
             long mask = d.presentCells();
             if (mask == 0) {
                 continue;
             }
-            Float constant = null;
-            boolean same = true;
-            var heights = d.heights();
+            int vertices = (layer.width() + 1) * (layer.height() + 1);
+            var heights = new float[vertices];
+            d.heights().get(heights);
+            Float first = null;
+            boolean planar = true;
+            for (int v = 0; v < vertices; v++) {
+                // Source signed-zero policy: -0 and +0 are one height.
+                heights[v] = heights[v] == 0 ? 0f : heights[v];
+            }
             for (int c = 0; c < layer.width() * layer.height(); c++) {
                 if ((mask & (1L << c)) != 0) {
                     int start = c / layer.width() * (layer.width() + 1) + c % layer.width();
                     for (int dy = 0; dy < 2; dy++) {
                         for (int dx = 0; dx < 2; dx++) {
-                            float h = heights.get(start + dy * (layer.width() + 1) + dx);
-                            h = h == 0 ? 0f : h;
-                            if (constant == null) {
-                                constant = h;
-                            } else if (constant.floatValue() != h) {
-                                same = false;
+                            float h = heights[start + dy * (layer.width() + 1) + dx];
+                            if (first == null) {
+                                first = h;
+                            } else if (first.floatValue() != h) {
+                                planar = false;
                             }
                         }
                     }
                 }
             }
-            if (!same) {
-                unresolved++;
-                reason = Reason.NONPLANAR_PROFILE;
-                continue;
-            }
-            int count = Long.bitCount(mask), vertices = (layer.width() + 1) * (layer.height() + 1);
-            if (result.size() == 128 || cells + count > 8192 || samples + vertices > 10368) {
+            int count = Long.bitCount(mask);
+            if (result.size() == MAX_LAYERS
+                    || cells + count > MAX_CELLS
+                    || samples + vertices > MAX_SAMPLES) {
                 unresolved++;
                 reason = Reason.CAPPED;
                 continue;
@@ -864,7 +862,8 @@ final class WorldTerrainLiquids {
                             layer.width(),
                             layer.height(),
                             mask,
-                            Objects.requireNonNull(constant),
+                            planar,
+                            heights,
                             depth));
         }
         State state =
@@ -872,18 +871,6 @@ final class WorldTerrainLiquids {
                         ? (unresolved == 0 ? State.EMPTY : State.UNRESOLVED)
                         : (unresolved == 0 ? State.READY : State.PARTIAL);
         set(output, root, state, reason, unresolved, result, cells);
-    }
-
-    private static long headerMask(WorldLiquids.RawLayer layer, long mask) {
-        long result = 0;
-        for (int row = 0; row < layer.height(); row++) {
-            for (int col = 0; col < layer.width(); col++) {
-                if ((mask & (1L << (row * layer.width() + col))) != 0) {
-                    result |= 1L << ((layer.y() + row) * 8 + layer.x() + col);
-                }
-            }
-        }
-        return result;
     }
 
     private static void set(
@@ -912,7 +899,7 @@ final class WorldTerrainLiquids {
     }
 
     private static void geometry(Owner owner, Root root, int cells) {
-        if (cells < 0 || cells > 8192 || owner.layers.size() > 128) {
+        if (cells < 0 || cells > MAX_CELLS || owner.layers.size() > MAX_LAYERS) {
             throw new IllegalStateException("Liquid geometry count profile");
         }
         if (cells == 0) {
@@ -950,11 +937,13 @@ final class WorldTerrainLiquids {
                                         (west
                                                 - (layer.x() + column)
                                                         * (WorldFormats.TILE_SIZE / 128));
-                        owner.positions[offset + 2] = layer.usedHeight();
+                        owner.positions[offset + 2] =
+                                layer.heights()[row * (layer.width() + 1) + column];
                         owner.depths[vertex] = layer.depth()[row * (layer.width() + 1) + column];
                         vertex++;
                     }
-                    // Explicit NE--SW diagonal; winding is +nativeZ for native north/west axes.
+                    // Explicit NE--SW diagonal; winding is +nativeZ for native north/west axes. For
+                    // a nonplanar cell this diagonal is a renderer convention, not a source fact.
                     owner.indices[index++] = base;
                     owner.indices[index++] = base + 2;
                     owner.indices[index++] = base + 1;

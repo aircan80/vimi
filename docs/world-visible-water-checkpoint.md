@@ -139,5 +139,50 @@ A fresh reviewer, given only the code, found no blocker in 1aa76b62. Fixed in fo
 - **No CPU fallback water.** The software renderer remains terrain-only.
 - **Tiles produced before the table wait finished** stay without water until they are produced
   again. A late table-ready event does not refresh them.
-- **Out of scope:** nonplanar layers (for example the seven in ROOT 778147) remain unresolved,
-  and liquid appearance, animation and type colours are a later slice.
+- **Out of scope here:** nonplanar layers (for example the seven in ROOT 778147) remained
+  unresolved, and liquid appearance, animation and type colours are a later slice. The section
+  below lifts the nonplanar, overlap and cap limits.
+
+## Sloped, overlapping and whole-tile water (#171)
+
+Measured on real data (`wowf` 1.60.1), most water the Source declined was not exotic: river and
+lake layers whose used heights differ (often by under 0.05 yards of float jitter, sometimes by
+metres on rivers and falls), two instances in one chunk, and coast or open-sea tiles over the
+old 128-layer / 8192-cell owner caps.
+
+- **Heights.** Every qualified height+depth (LVF 0) layer keeps its actual used vertex heights.
+  A flat layer produces exactly the geometry it did before. A sloped cell is still the two
+  triangles of the fixed NE–SW diagonal; for a nonplanar cell that diagonal is a renderer
+  convention, not a source fact: at the cell centre the two diagonals differ by half the cell's
+  twist, |NW + SE − NE − SW| / 2. `NONPLANAR_PROFILE` is gone; `planar(layer)` stays as a
+  fact.
+- **Overlap.** Several instances of one chunk covering the same cell are all kept: they are
+  separate source surfaces (for example a river layer above a lake). `MULTILAYER` is gone. Two
+  layers at one height cannot blend twice: the water pass uses strict reversed depth with depth
+  writes.
+- **Caps.** One owner now holds a whole root: 1024 layers (256 chunk headers x 4 instances),
+  16,384 cells and 82,944 height samples. A full-tile owner is about 1.3 MB of heap; two credits
+  remain the limit.
+- **Packet and GPU budget unchanged.** The bridge copies a full chunk (8 x 8 cells) whose used
+  heights are all equal as one quad over the chunk, which draws the same plane. Open sea then
+  costs 256 quads per tile instead of 16,384 cells. The trailer stays at 8192 quads and the
+  renderer at 16,384 water triangles per slot, so #276's 26-slot terrain budget does not grow.
+  Layers are copied whole in source order; a layer that would pass 8192 quads is left out and
+  the tile's water note says "capped". `MAX_WATER_LAYERS` (a count in the trailer header) grows
+  from 128 to 1024.
+- **Still declined.** Layers of another vertex format (LVF 1 and 3: every magma, slime, fel and
+  tar type in this build) stay unsupported. Because their vertex stream length is not
+  qualified yet, a tile with one of them still declines all its water (`UNRESOLVED_FOOTPRINT`).
+  Every LiquidType whose material qualifies (LVF 0, materials 1 and 130) is a water type
+  (SoundBank 0 or 1), so the teal diagnostic never paints lava as water.
+
+| real data, actual Source | before | after |
+| --- | --- | --- |
+| Zephras Isle (map 2991), 16 tiles with MH2O: layers drawn | 717 of 764 | 764 of 764 |
+| Zephras Isle: source cells / copied quads | 29,795 / 29,795 | 31,654 / 15,085 |
+| Elwynn and its coast (map 0, x 46–51, y 28–37), 47 tiles: tiles with water | 34 | 44 |
+| Elwynn: layers drawn | 1,580 of 3,668 | 3,556 of 3,668 |
+| Elwynn: source cells / copied quads | 83,798 / 83,798 | 176,780 / 56,450 |
+| Largest tile (cells before, quads after; bound 8192) | 8,192, capped | 4,711 |
+
+The three Elwynn tiles still without water carry Slow Magma (LiquidType 7, LVF 1).
