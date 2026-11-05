@@ -1,6 +1,6 @@
 # Handoff: continue development on Windows
 
-Written 2026-11-05 from the Linux session. Main is at `76d6a015` (after #239). The
+Written 2026-11-05 from the Linux session. Main is at `1f7e9faa` (after #239 and #237). The
 latest release is v0.1.0-alpha.26.
 
 ## Setup
@@ -42,7 +42,6 @@ Linux agents may still push to these until they merge. Pull main after they land
 | PR | Branch | State |
 | --- | --- | --- |
 | #236 | `feature/exterior-doodads-flag200-tilt` | Real-data doodads (0x200 flag, tilt, UV0 fix). Review passed; CI after main merge |
-| #237 | `perf/races-warm-switch` | Race switching 2.7 s → 0.1 s. Final review check |
 | #238 | `fix/javafx-natives-in-app-image` | JavaFX natives shipped in the app image. Fixing the `.deb` Depends regression on Debian 13 |
 | #241 | `fix/cn-region-cdn-fallback` | cn region CDN fallback (#240). Fixing the review findings |
 
@@ -84,7 +83,9 @@ Linux agents may still push to these until they merge. Pull main after they land
 - Real-data follow-ups:
   - creatures on by default, after measuring them;
   - Worgen idle;
-  - WMO set doodads crowded out by the 512 doodad cap.
+  - WMO set doodads crowded out by the 512 doodad cap;
+  - races: temporary table states in `RacesService.schema` should throw `Unreadable` so
+    partial clothing isn't cached (see the #237 follow-up review).
 
 ## Useful references
 
