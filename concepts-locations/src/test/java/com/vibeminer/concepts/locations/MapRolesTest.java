@@ -213,4 +213,17 @@ final class MapRolesTest {
         assertEquals(1, placement.unplaced());
         assertTrue(placement.issues().stream().anyMatch(i -> i.contains("outside the map frame")));
     }
+
+    @Test
+    void friendlyToFactionIgnoresCaseAndTreatsOtherValuesAsUnrecognised() {
+        assertEquals(MapRoles.Friendly.ALLIANCE, MapRoles.friendly("A"));
+        assertEquals(MapRoles.Friendly.ALLIANCE, MapRoles.friendly("a"));
+        assertEquals(MapRoles.Friendly.HORDE, MapRoles.friendly(" h "));
+        assertEquals(MapRoles.Friendly.BOTH, MapRoles.friendly("ah"));
+        assertEquals(MapRoles.Friendly.BOTH, MapRoles.friendly("HA"));
+        for (Object other : java.util.Arrays.asList("X", "", "AHX", "Alliance", 1L, null)) {
+            assertEquals(
+                    MapRoles.Friendly.UNKNOWN, MapRoles.friendly(other), String.valueOf(other));
+        }
+    }
 }

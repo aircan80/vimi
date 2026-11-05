@@ -167,16 +167,31 @@ public final class MapsBrowserUiTest {
                 // Hover over the marker lists its recorded facts; away from it shows nothing.
                 var hover = view.roles().hoverText(x, y);
                 require(hover != null && hover.startsWith("NPC 2\nNPC 2 · Vendor")
-                        && hover.contains("Faction: not recorded"), "hover details: " + hover);
+                        && hover.contains("Faction: not recorded or unrecognised"), "hover details: " + hover);
                 require(view.roles().hoverText(x + 40, y + 40) == null, "no hover away from markers");
                 // A faction filter redraws without reloading; NPCs with no recorded faction hide.
                 view.roles().faction().setValue(MapRoleOverlay.Faction.ALLIANCE);
                 require(view.roles().drawn().isEmpty(), "unrecorded faction hidden for Alliance");
                 var filtered = view.roles().status().getText();
-                require(filtered.contains("1 positions with no recorded faction hidden"), filtered);
+                require(filtered.contains("1 position with no recognised faction"), filtered);
                 require(view.roles().hoverText(x, y) == null, "hidden markers are not hovered");
                 view.roles().faction().setValue(MapRoleOverlay.Faction.ALL);
                 require(view.roles().drawn().size() == 1 && roleLoads.get() == 1, "filter never reloads");
+                // A shown tooltip follows the map: a faction change under a still pointer hides
+                // it, and the next paint shows it again for the same pointer.
+                var screen = canvas.localToScreen(x, y);
+                var scene = canvas.localToScene(x, y); // event x/y are scene coordinates
+                canvas.fireEvent(new javafx.scene.input.MouseEvent(
+                        javafx.scene.input.MouseEvent.MOUSE_MOVED, scene.getX(), scene.getY(),
+                        screen.getX(), screen.getY(),
+                        javafx.scene.input.MouseButton.NONE, 0, false, false, false, false,
+                        false, false, false, false, false, false, null));
+                var shownTip = view.roleTipText();
+                require(shownTip != null && shownTip.startsWith("NPC 2"), "tooltip shown: " + shownTip);
+                view.roles().faction().setValue(MapRoleOverlay.Faction.HORDE);
+                require(view.roleTipText() == null, "tooltip hidden when its NPC is filtered out");
+                view.roles().faction().setValue(MapRoleOverlay.Faction.ALL);
+                require(view.roleTipText() != null, "tooltip returns for the same pointer");
                 view.roles().toggle(com.vibeminer.concepts.locations.MapRoles.Layer.QUEST_GIVER).setSelected(true);
                 require(view.roles().drawn().size() == 2, "quest giver joins without reloading");
                 require(roleLoads.get() == 1, "one placement per source key");

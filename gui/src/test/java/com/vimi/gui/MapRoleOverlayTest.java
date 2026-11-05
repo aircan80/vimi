@@ -112,12 +112,19 @@ public final class MapRoleOverlayTest {
         var shown = placement.markers(1429, layers).stream()
                 .filter(m -> MapRoleOverlay.visible(m.npc().friendly(), MapRoleOverlay.Faction.ALLIANCE)).toList();
         require(shown.size() == 2, "Alliance and both");
-        var text = MapRoleOverlay.summary(placement, 1429L, layers, shown, MapRoleOverlay.Faction.ALLIANCE, 1);
-        require(text.contains("2 vendors"), text);
-        require(text.contains("Alliance-friendly NPCs (recorded Questie faction)"), text);
-        require(text.contains("1 positions with no recorded faction hidden"), text);
-        require(text.endsWith("phase and quest availability not evaluated"), text);
-        require(!text.contains("faction, phase"), text);
+        var text = MapRoleOverlay.summary(placement, 1429L, layers, shown, MapRoleOverlay.Faction.ALLIANCE, 1, 1);
+        require(text.contains("positions on this map (Alliance-friendly): 2 vendors"), text);
+        require(text.contains("hidden by the faction filter: 1 position of the other faction,"
+                + " 1 position with no recognised faction"), text);
+        require(text.contains("4 recorded positions (all factions)"), text);
+        require(text.endsWith("faction from Questie's record, not the player's reputation;"
+                + " phase and quest availability not evaluated"), text);
+        var plural = MapRoleOverlay.summary(placement, 1429L, layers, shown, MapRoleOverlay.Faction.ALLIANCE, 0, 2);
+        require(plural.contains("hidden by the faction filter: 2 positions with no recognised faction")
+                && !plural.contains("other faction"), plural);
+        var all = MapRoleOverlay.summary(placement, 1429L, layers, shown);
+        require(!all.contains("hidden by") && !all.contains("Alliance-friendly")
+                && !all.contains("(all factions)"), all);
     }
 
     static void hoverFindsTheNearestDrawnMarkersInNearbyCells() {
@@ -131,20 +138,25 @@ public final class MapRoleOverlayTest {
         hits.add(new MapRoleOverlay.Hit(markers.get(2), 200, 200));
         hits.add(new MapRoleOverlay.Hit(markers.get(1), 19.5, 15)); // same NPC listed once
         var grid = new MapRoleOverlay.HitGrid(hits);
-        var near = grid.near(18, 15);
+        var near = grid.near(18, 15).markers();
         require(near.size() == 2, "two NPCs within reach across cells: " + near.size());
         require(near.get(0).npc().id() == 3 && near.get(1).npc().id() == 2, "nearest first");
-        require(grid.near(100, 100).isEmpty(), "nothing in reach");
-        require(grid.near(200 + MapRoleOverlay.RADIUS + 0.5, 200).isEmpty(), "outside radius");
-        require(grid.near(200 + MapRoleOverlay.RADIUS, 200).size() == 1, "radius inclusive");
-        require(MapRoleOverlay.HitGrid.EMPTY.near(0, 0).isEmpty(), "empty grid");
+        require(grid.near(100, 100).markers().isEmpty(), "nothing in reach");
+        require(grid.near(200 + MapRoleOverlay.RADIUS + 0.5, 200).markers().isEmpty(), "outside radius");
+        require(grid.near(200 + MapRoleOverlay.RADIUS, 200).markers().size() == 1, "radius inclusive");
+        require(MapRoleOverlay.HitGrid.EMPTY.near(0, 0).markers().isEmpty(), "empty grid");
+        require(!grid.near(18, 15).more(), "two NPCs are not truncated");
         var crowd = new ArrayList<Map<String, Object>>();
         for (long id = 10; id < 20; id++) crowd.add(factionNpc(id, 4, null, 40, 40));
         var many = placement("v1.0.10", 1429, crowd).markers(1429, EnumSet.of(MapRoles.Layer.VENDOR));
         var stacked = new ArrayList<MapRoleOverlay.Hit>();
         for (var marker : many) stacked.add(new MapRoleOverlay.Hit(marker, 40, 40));
-        require(new MapRoleOverlay.HitGrid(stacked).near(40, 40).size() == MapRoleOverlay.HOVER_LIMIT,
-                "hover lists at most the limit");
+        var crowded = new MapRoleOverlay.HitGrid(stacked).near(40, 40);
+        require(crowded.markers().size() == MapRoleOverlay.HOVER_LIMIT && crowded.more(),
+                "hover lists at most the limit and says more are in reach");
+        var exact = new MapRoleOverlay.HitGrid(stacked.subList(0, MapRoleOverlay.HOVER_LIMIT)).near(40, 40);
+        require(exact.markers().size() == MapRoleOverlay.HOVER_LIMIT && !exact.more(),
+                "exactly the limit is not reported as more");
     }
 
     static void hoverDetailsListRecordedFactsOnly() {
@@ -152,11 +164,14 @@ public final class MapRoleOverlayTest {
         row.put("subName", "Weapon Merchant");
         var placement = placement("v1.0.10", 1429, List.of(row, factionNpc(3, 8, null, 10, 10)));
         var markers = placement.markers(1429, EnumSet.allOf(MapRoles.Layer.class));
-        var text = MapRoleOverlay.details(markers, placement.catalog());
+        var text = MapRoleOverlay.details(markers, false, placement.catalog());
+        require(!text.contains("More role NPCs"), text);
+        require(MapRoleOverlay.details(markers, true, placement.catalog()).contains("More role NPCs are in reach"),
+                "truncation is disclosed");
         require(text.startsWith("NPC 2 <Weapon Merchant>\nNPC 2 · Vendor, Trainer"), text);
         require(text.contains("Faction: Alliance and Horde"), text);
         require(text.contains("Recorded at AreaID 12, 42.5, 68.3 %"), text);
-        require(text.contains("NPC 3 · Flight master") && text.contains("Faction: not recorded"), text);
+        require(text.contains("NPC 3 · Flight master") && text.contains("Faction: not recorded or unrecognised"), text);
         require(text.endsWith("Source: QuestieDB v1.0.10 Forever"), text);
         require(!text.contains(":\\") && !text.contains("/Users/") && !text.contains("\\Users\\"),
                 "no local paths: " + text);

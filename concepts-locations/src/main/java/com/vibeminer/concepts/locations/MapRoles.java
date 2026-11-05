@@ -36,7 +36,10 @@ public final class MapRoles {
         FLIGHT_MASTER
     }
 
-    /** Questie {@code friendlyToFaction}: "A", "H", "AH"; anything else stays unknown. */
+    /**
+     * Questie {@code friendlyToFaction}: "A", "H", "AH" (any case); a missing or unrecognised value
+     * is UNKNOWN.
+     */
     public enum Friendly {
         ALLIANCE,
         HORDE,
@@ -385,11 +388,12 @@ public final class MapRoles {
         return new Placement(catalog, byUiMap, expected.size(), unplaced, ambiguous, issues);
     }
 
-    private static Friendly friendly(Object value) {
-        if (!(value instanceof String text)) {
+    /** Case and surrounding space are ignored; any other value is unrecognised (UNKNOWN). */
+    static Friendly friendly(Object value) {
+        if (!(value instanceof String raw) || raw.length() > 8) {
             return Friendly.UNKNOWN;
         }
-        return switch (text) {
+        return switch (raw.strip().toUpperCase(java.util.Locale.ROOT)) {
             case "A" -> Friendly.ALLIANCE;
             case "H" -> Friendly.HORDE;
             case "AH", "HA" -> Friendly.BOTH;

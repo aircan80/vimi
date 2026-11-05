@@ -124,14 +124,19 @@ availability and service inventories are not evaluated.
 
 A faction choice (All factions, Alliance, Horde) filters the placed markers by
 Questie `friendlyToFaction` without reloading: Alliance shows `A` and `AH` NPCs,
-Horde shows `H` and `AH`. NPCs with no recorded faction show only under All, and
-the status line counts the positions it hid. The faction is Questie's record,
-not an evaluation of the player's reputation.
+Horde shows `H` and `AH` (any case). NPCs with a missing or unrecognised faction
+show only under All. Under a faction, the per-map counts say which faction they
+are for, the status line counts the positions hidden as the other faction or as
+unrecognised, and the catalog totals are marked as covering all factions. The
+faction is Questie's record, not an evaluation of the player's reputation.
 
 Hovering a marker lists the drawn markers within 6 px (nearest first, one per
 NPC, at most five): name and subname, NPC ID, roles, recorded faction, the
-recorded Questie position (AreaID and percent) and the QuestieDB release. Drawn
-markers are bucketed in a 16 px grid, so a hover checks only nearby cells.
+recorded Questie position (AreaID and percent) and the QuestieDB release, and
+says when more NPCs are in reach than are listed. Drawn markers are bucketed in a
+16 px grid, so a hover checks only nearby cells. The tooltip is re-checked after
+every repaint (zoom, filter, layer or placement change) and hides when nothing
+drawn is under the pointer any more.
 
 ## Provider boundaries and selection
 
