@@ -313,21 +313,23 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                             classes.setDisable(false);
                                             classes.getItems().setAll(result.classes());
                                             treePanels.getChildren().clear();
-                                            if (!result.classes().isEmpty())
-                                                classes.getSelectionModel()
-                                                        .select(
-                                                                result.classes().stream()
-                                                                        .filter(
-                                                                                c ->
-                                                                                        selectedClass
-                                                                                                        != null
-                                                                                                && c
-                                                                                                                .id()
-                                                                                                        == selectedClass)
-                                                                        .findFirst()
-                                                                        .orElse(
-                                                                                result.classes()
-                                                                                        .getFirst()));
+                                            if (!result.classes().isEmpty()) {
+                                                var target =
+                                                        result.classes().stream()
+                                                                .filter(
+                                                                        c ->
+                                                                                selectedClass != null
+                                                                                        && c.id()
+                                                                                                == selectedClass)
+                                                                .findFirst()
+                                                                .orElse(result.classes().getFirst());
+                                                // Reload with unchanged data yields an equal class
+                                                // record: selecting it fires no change, so load it.
+                                                var model = classes.getSelectionModel();
+                                                if (target.equals(model.getSelectedItem()))
+                                                    loadClass(target);
+                                                else model.select(target);
+                                            }
                                         }));
     }
 

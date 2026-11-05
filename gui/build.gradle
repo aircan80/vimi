@@ -583,6 +583,13 @@ tasks.register('talentSourceDetailsTest', JavaExec) {
 check.dependsOn talentSourceDetailsTest
 
 // Authored missing-image/text explanation and disclosure UI; display required.
+// Reload with unchanged data and class switching; authored fixture, requires a display.
+tasks.register('talentsReloadUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.TalentsReloadUiTest'
+}
+
 tasks.register('talentSourceDetailsUiTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
