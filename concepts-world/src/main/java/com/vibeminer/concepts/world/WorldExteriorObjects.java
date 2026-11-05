@@ -275,7 +275,8 @@ public final class WorldExteriorObjects {
      * One drawn placement. Model matrices are built later from these doubles, never here. For
      * buildings and MDDF doodads cos/sin are the heading; for set doodads they are the parent
      * building's heading, and {@link #rotation()} is authoritative for every kind. Set doodads use
-     * {@code ordinal} for their MODD index and {@code uniqueId} for their building's.
+     * {@code ordinal} for their MODD index, {@code doodadSet} for the selected MODS set the entry
+     * came from and {@code uniqueId} for their building's.
      */
     public record Placement(
             Kind kind,
@@ -836,6 +837,7 @@ public final class WorldExteriorObjects {
                                 record.ordinal(),
                                 record.uniqueId(),
                                 flags,
+                                0,
                                 transform.originX(),
                                 transform.originY(),
                                 transform.originZ(),
@@ -898,7 +900,7 @@ public final class WorldExteriorObjects {
                             count(Count.SET_DOODAD_UNSUPPORTED);
                             continue;
                         }
-                        setDoodad(building, parent, declared, (int) d);
+                        setDoodad(building, parent, declared, set, (int) d);
                     }
                 }
             }
@@ -908,6 +910,7 @@ public final class WorldExteriorObjects {
                 Placement building,
                 WorldBasicWmo.Transform parent,
                 WmoFormats.Doodads declared,
+                int set,
                 int ordinal) {
             var def = declared.definitions().get(ordinal);
             long id =
@@ -945,6 +948,7 @@ public final class WorldExteriorObjects {
                             ordinal,
                             building.uniqueId(),
                             def.flags(),
+                            set,
                             x,
                             y,
                             z,
@@ -968,6 +972,7 @@ public final class WorldExteriorObjects {
                 int ordinal,
                 long uniqueId,
                 int flags,
+                int doodadSet,
                 double x,
                 double y,
                 double z,
@@ -997,8 +1002,8 @@ public final class WorldExteriorObjects {
             doodads++;
             placements.add(
                     new Placement(
-                            kind, ordinal, uniqueId, modelId, model, flags, 0, 0, x, y, z, scale,
-                            cos, sin, rotation));
+                            kind, ordinal, uniqueId, modelId, model, flags, doodadSet, 0, x, y, z,
+                            scale, cos, sin, rotation));
             return RootState.DRAWN;
         }
 

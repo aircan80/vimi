@@ -1354,6 +1354,33 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    @Test
+    void setDoodadsRecordTheSetTheyCameFrom() {
+        var defs =
+                List.of(
+                        new Modd(0, 1, 0, 0, new double[] {0, 0, 0, 1}, 1),
+                        new Modd(0, 2, 0, 0, new double[] {0, 0, 0, 1}, 1));
+        var chunks = doodadChunks(new int[][] {{0, 1}, {1, 1}}, new long[] {MODEL}, defs);
+        var building = new Modf(ROOT, 77, 0x8, 100, 20, 300, 0, 90, 0, 1024);
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), chunks));
+            try (var set = run(f, obj0(List.of(building), List.of(), 1))) {
+                var placements = set.placements();
+                assertEquals(3, placements.size());
+                assertEquals(WorldExteriorObjects.Kind.BUILDING, placements.get(0).kind());
+                assertEquals(1, placements.get(0).doodadSet());
+                // Set 0 is always drawn, then the building's MODF doodad set.
+                assertEquals(0, placements.get(1).ordinal());
+                assertEquals(0, placements.get(1).doodadSet());
+                assertEquals(1, placements.get(2).ordinal());
+                assertEquals(1, placements.get(2).doodadSet());
+                assertEquals(77, placements.get(2).uniqueId());
+            }
+        }
+    }
+
     /** Files whose reads of {@code shortId} end early (a found, unprotected short read). */
     private static WorldTerrainTextureSourceTest.Files shortRead(long shortId) {
         return new WorldTerrainTextureSourceTest.Files() {

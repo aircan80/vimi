@@ -116,6 +116,11 @@ public final class WorldTileCreaturesTest {
         require(summary.omitted() == 1, "Neighbour-tile and height-less points are not counted for this tile");
         require(summary.models() == 1 && previews.get() == 1, "One display shares one model and one preview");
         require(builder.placementCount() == 2, "Both placements reach the objects builder");
+        require(summary.placed().size() == 2
+                        && summary.placed().stream().allMatch(c -> c.spawn().npcId() == 1 && c.npc() != null
+                                && c.choice().displayId() == 7 && c.scale() == 1.5),
+                "Each drawn placement records its spawn, NPC record, display choice and scale in file order");
+        require(summary.plus(summary).placed().isEmpty(), "A summed outcome carries no per-tile records");
         var exterior = builder.build();
         require(exterior.placements() == 2 && exterior.draws() == 2, "One range per placement");
         var transform = WorldTileCreatures.transform(
