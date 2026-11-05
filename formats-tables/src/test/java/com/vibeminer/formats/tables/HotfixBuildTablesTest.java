@@ -1025,7 +1025,7 @@ class HotfixBuildTablesTest {
         try (var tables = rawByte(9, entry(0x11223344L, 1, 7, 1, u8(255)))) {
             var hot = (HotfixBuildTables) tables;
             var now = new java.util.concurrent.atomic.AtomicLong(1);
-            hot.fitClock = now::get;
+            hot.clock = now::get;
             hot.rawScanProbe =
                     page -> {
                         throw new IllegalStateException("authored damaged base");

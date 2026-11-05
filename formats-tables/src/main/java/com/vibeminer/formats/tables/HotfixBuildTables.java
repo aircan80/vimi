@@ -266,14 +266,12 @@ public final class HotfixBuildTables implements BuildTables {
     int compiles;
     // Test seam over the bulk base-ordinal result; production keeps it as is.
     java.util.function.UnaryOperator<Map<Long, Long>> ordinalsProbe = found -> found;
-    // Monotonic clock for the unreadable-base back-off; replaced by tests only.
+    // Monotonic clock for the unreadable-base and inconclusive-scan back-offs; tests replace it.
     java.util.function.LongSupplier clock = System::nanoTime;
     // Test seam over each base page of the raw-column fit scan; production keeps it as is.
     java.util.function.UnaryOperator<TableTypes.Page> rawScanProbe = page -> page;
     // Test seam over the base identity re-read after a fit scan; production keeps it as is.
     java.util.function.UnaryOperator<String> rawScanIdentityProbe = identity -> identity;
-    // Monotonic clock for the inconclusive-scan back-off; replaced by tests only.
-    java.util.function.LongSupplier fitClock = System::nanoTime;
     // Fit scans that ran to completion or failed; observed by tests only.
     int fitScans;
     // Set while compiling when the raw-column fit scan was inconclusive.
@@ -597,7 +595,7 @@ public final class HotfixBuildTables implements BuildTables {
                 && Objects.equals(cached.metadata.schema(), metadata.schema())
                 && !(cached.rescanAfterNanos != 0
                         && !pinned.contains(id)
-                        && fitClock.getAsLong() - cached.rescanAfterNanos >= 0)) {
+                        && clock.getAsLong() - cached.rescanAfterNanos >= 0)) {
             pinned.add(id);
             return cached;
         }
@@ -804,7 +802,7 @@ public final class HotfixBuildTables implements BuildTables {
         if (fitInconclusive) {
             int failures = fitFailures.merge(id, 1, Integer::sum);
             result.rescanAfterNanos =
-                    fitClock.getAsLong()
+                    clock.getAsLong()
                             + Math.min(
                                     FIT_RETRY_MAX_NANOS,
                                     FIT_RETRY_NANOS << Math.min(failures - 1, 6));
