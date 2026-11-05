@@ -178,18 +178,47 @@ dungeon rows use WMODoodadPlacementID.
   - **Location.** Helper, log and screenshots are in
     `/home/aircan/.cache/vimi-tmp/global-interior-actual-proof/`.
 
+## Instance coverage (#170, profile V2)
+
+The first profile admitted only Onyxia's Lair. A survey of every instance the Dungeons list
+offers on a classic-era build found 15 WMO-only maps; all of them now open:
+
+- **One bound set.** `rendering-world` `GlobalInteriorLimits` holds every bound, shared by the
+  Source factory, scene file, status protocol and GPU child: 256 groups and materials, 4096
+  batches, 128 images drawn at most 256 pixels on a side (larger sources use a smaller recorded
+  mip), 512Ki vertices and 1.5Mi 32-bit indices. The worst-case scene file is about 48 MiB; the
+  largest real interior (Sunken Temple, 122 groups) writes about 20 MiB.
+- **Scene file version 2.** Indices are 32-bit (`BGFX_BUFFER_INDEX32`), image records are 96
+  bytes and carry their own original-RGBA hash (the header no longer has room for them), and
+  the native group/mesh hash domains are `v2`.
+- **Material words are recorded, not applied.** Flags, shader and blend modes no longer refuse;
+  everything still draws unlit, opaque and textured. BC2 and one-bit-alpha BC1 are admitted.
+- **Texture coordinates up to ±4096.** Cave and dungeon groups tile far past the old ±16.
+- **Groups that cannot be drawn are skipped, not fatal.** A missing or oversized group file, a
+  layout the span reader refuses, or out-of-range values leave that group out; the facts record
+  the count by fixed reason and the window's status line says how many were left out. An
+  interior with no drawable group is refused with a stated reason.
+- **Refusals say why.** Profile refusals carry a fixed detail, for example that a map is a
+  terrain (ADT) map and can only be explored as a map.
+- **`GLOBAL_UNAVAILABLE CAPABILITY`** is emitted when the backend lacks a hardware context,
+  reversed D32F, RGBA8/BGRA8 targets, readback or 32-bit indices. The child retires and exits
+  cleanly, the parent reports the GPU as unable to draw interiors, and the service stays usable.
+  `INPUT` is still not emitted: a scene file the application wrote itself is not a user input.
+
+Unbatched triangles stay undrawn on purpose: in every surveyed interior each triangle no MOBA
+batch covers has the collision-only MOPY material (0xFF), so drawing them would add invisible
+collision walls.
+
 ## Limits
 
 - Hardware proof is Linux Vulkan only. The Metal and D3D11 blobs are compiled and
   digest-verified, but are not hardware-qualified here.
-- Only Onyxia is actually proven. Other instances depend on the existing Source profile and
-  otherwise report a refusal.
+- The original Onyxia proof is Linux Vulkan; the profile V2 instances were run through the real
+  child on Windows (default backend) only.
 - Raw MOCV and lighting are deliberately omitted, so interiors are lit uniformly. The renderer
-  has no face culling. Gaps seen from some interior angles are most likely the 3,039 Onyxia raw
-  triangles that no MOBA batch covers, which are preserved but deliberately not drawn (see the
-  instance source proposal). This has not been confirmed per pixel.
-- `GLOBAL_UNAVAILABLE INPUT/CAPABILITY` is not emitted. Every child failure is treated as fatal,
-  as partition 2 allows for a first integration.
+  has no face culling. The 3,039 Onyxia raw triangles that no MOBA batch covers are all
+  collision-only (MOPY material 0xFF), so they are not the cause of any visible gaps.
+- Alpha-tested and blended materials draw opaque.
 
 ## Independent review follow-up
 

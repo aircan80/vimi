@@ -204,6 +204,10 @@ class WorldTerrainTextureSourceTest {
                 opens = new ConcurrentHashMap<>();
         final AtomicInteger closed = new AtomicInteger(), borrowedClosed = new AtomicInteger();
         volatile long protectedId, changedId, wrongId;
+
+        /** Opens that fail with a state and code instead of returning a stream. */
+        final java.util.Map<Long, FileTypes.FileOpen> failedOpens = new ConcurrentHashMap<>();
+
         volatile boolean changeAfterRead;
 
         Files() {
@@ -310,6 +314,10 @@ class WorldTerrainTextureSourceTest {
                                                                 (Cancellation) args[1]));
                                         case "openRead" -> {
                                             long id = ((FileTypes.FileRef) args[0]).fileDataId();
+                                            var failed = failedOpens.get(id);
+                                            if (failed != null) {
+                                                yield CompletableFuture.completedFuture(failed);
+                                            }
                                             yield CompletableFuture.completedFuture(
                                                     new FileTypes.FileOpen(
                                                             FileTypes.FileReadState.COMPLETE,

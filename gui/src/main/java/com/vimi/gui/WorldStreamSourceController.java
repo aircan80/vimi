@@ -247,7 +247,12 @@ final class WorldStreamSourceController {
     private boolean historicalRaster;
     private WorldFormats.Tile creditTarget;
     private boolean retryCommit;
-    private long commitRetryAt, commitRetryCapacity;
+    private long commitRetryAt, commitRetryCapacity, commitIssuedCapacity;
+    // Test seam: runs on the worker after a RETRY_LATER commit refusal, before it is recorded.
+    volatile Runnable refusalSeam;
+    // Test seam: runs on the worker after a RETRY_LATER tile-preparation refusal, before it is
+    // recorded.
+    volatile Runnable tileRefusalSeam;
 
     WorldStreamSourceController(
             Request request, GpuStarter starter, Events events, Consumer<Runnable> fxPost) {
@@ -337,6 +342,13 @@ final class WorldStreamSourceController {
         kick();
     }
 
+    /** Records the capacity revision before the transport can refuse this commit. */
+    private java.util.concurrent.CompletableFuture<WorldStreamTransport.CommitReceipt> issueCommit(
+            long policy, WorldStreamTransport.Resident[] ordered) {
+        commitIssuedCapacity = session.capacityRevision();
+        return session.commit(policy, ordered);
+    }
+
     void pulse() {
         kick();
     }
@@ -367,6 +379,36 @@ final class WorldStreamSourceController {
     WorldCurrentArea.Result areaAt(double x, double y) {
         var known = closing ? List.<WorldFormats.AreaMetadata>of() : areas;
         return WorldCurrentArea.locateIn(request.map().id(), x, y, known, request.areaIndex());
+    }
+
+    /**
+     * Bounded evidence for a stalled-frame report: the phase, how many desired tiles are prepared,
+     * whether a presentation is queued or borrowed, and the transport's own summary. Never waits on
+     * the worker or the helper.
+     */
+    String stallSummary() {
+        Snapshot current;
+        boolean queuedFrame, borrowedFrame;
+        long accepted;
+        synchronized (lock) {
+            current = snapshot;
+            queuedFrame = queued != null;
+            borrowedFrame = borrowed != null;
+            accepted = acceptedSequence;
+        }
+        var transport = session;
+        String helper;
+        try {
+            helper = transport == null ? "no session" : transport.stallSummary();
+        } catch (RuntimeException unavailable) {
+            helper = "session summary unavailable";
+        }
+        return "phase " + current.phase()
+                + " (" + WorldDiagnostics.clean(current.detail()) + ")"
+                + "; tiles " + current.prepared() + "/" + current.desired()
+                + "; accepted frame sequence " + accepted
+                + "; presentation " + (borrowedFrame ? "borrowed" : queuedFrame ? "queued" : "none")
+                + "; " + helper;
     }
 
     Optional<Presentation> takePresentation() {
@@ -624,6 +666,8 @@ final class WorldStreamSourceController {
                             || refusal.getSuppressed().length != 0) throw failure;
                     var origin = pending.producer.sourceRefusal();
                     int failedTile = key(pending.tile);
+                    // Read while the refused reservation is still at hand (#283).
+                    long refusedCapacity = pending.reservation.capacityBaseline();
                     if(creditTarget!=null && same(creditTarget,pending.tile)
                             && refusal.reason()!=WorldStreamTransport.Refusal.RETRY_LATER) creditTarget=null;
                     pending.producer.close();
@@ -656,8 +700,17 @@ final class WorldStreamSourceController {
                     // This refusal's own unused-credit ACK is not a source-pool wakeup.
                     blockedOnMaterialPool = origin != null && origin.site().equals("MATERIAL_POOL");
                     blockedSourceRetirement = sourceRetirementRevision;
+                    var seam = tileRefusalSeam;
+                    if (seam != null) seam.run();
                     blockedAt = clock.getAsLong();
-                    blockedCapacity = session.capacityRevision();
+                    // The revision the refused reservation itself accounts for, not the current
+                    // one: a retirement or credit that landed after it was issued (even between
+                    // the refusal and this step) must still wake the retry (#283). The
+                    // reservation's own drain and retirement are excluded; its unused-credit
+                    // CREDIT arrives as an ordinary capacity change and deliberately wakes one
+                    // retry per refusal, as before (polling while the geometry lane is busy is
+                    // pre-existing and tracked separately).
+                    blockedCapacity = refusedCapacity;
                     synchronized (lock) {
                         blockedPresentation = presentationRevision;
                         blockedDemand = demandRevision;
@@ -671,7 +724,7 @@ final class WorldStreamSourceController {
         }
         if(retryCommit) {
             if(session.capacityRevision()==commitRetryCapacity && clock.getAsLong()-commitRetryAt<RETRY_NANOS) return;
-            commit=session.commit(camera.policy(),committing.stream().map(Entry::resident)
+            commit=issueCommit(camera.policy(),committing.stream().map(Entry::resident)
                     .toArray(WorldStreamTransport.Resident[]::new));
             retryCommit=false;
             commit.whenComplete((ignored,failure)->kick());
@@ -691,9 +744,14 @@ final class WorldStreamSourceController {
                         || refusal.reason()!=WorldStreamTransport.Refusal.RETRY_LATER
                         || refusal.getCause()!=null || refusal.getSuppressed().length!=0) throw failure;
                 commit=null;
+                var seam=refusalSeam;
+                if(seam!=null) seam.run();
                 retryCommit=true;
                 commitRetryAt=clock.getAsLong();
-                commitRetryCapacity=session.capacityRevision();
+                // Capacity observed when the refused commit was issued, not now: a retirement that
+                // landed between the refusal and this step must still count as a change, or a
+                // frozen clock (and in production, 500 ms) waits for a revision already seen.
+                commitRetryCapacity=commitIssuedCapacity;
                 publish(Phase.WAITING_CAPACITY,"Waiting for commit input retirement");
                 return;
             }
@@ -724,7 +782,7 @@ final class WorldStreamSourceController {
             staged = null;
             committing = List.copyOf(target);
             commit =
-                    session.commit(
+                    issueCommit(
                             latest.policy(),
                             target.stream()
                                     .map(Entry::resident)
@@ -773,7 +831,7 @@ final class WorldStreamSourceController {
                 creditTarget=wanted.stream().filter(tile->!unavailable.containsKey(key(tile))
                         && current.stream().noneMatch(entry->same(tile,entry.resident()))).findFirst().orElse(null);
                 committing=List.copyOf(subset);
-                commit=session.commit(camera.policy(),subset.stream().map(Entry::resident)
+                commit=issueCommit(camera.policy(),subset.stream().map(Entry::resident)
                         .toArray(WorldStreamTransport.Resident[]::new));
                 commit.whenComplete((ignored,failure)->kick());
                 publish(Phase.COMMITTING,"Making room for nearest terrain");

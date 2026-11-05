@@ -9,13 +9,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /** FULL index/ownership commit is the publication boundary; orphan pack tails stay unpublished. */
-@Timeout(30)
+@Timeout(KillPoint.TEST_TIMEOUT_SECONDS)
 final class PackLibraryRecoveryTest {
     @TempDir Path folder;
 
@@ -52,24 +51,7 @@ final class PackLibraryRecoveryTest {
                         .redirectErrorStream(true)
                         .redirectOutput(log.toFile())
                         .start();
-        try {
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
-            while (!Files.exists(marker) && child.isAlive() && System.nanoTime() < deadline) {
-                Thread.sleep(20);
-            }
-            assertTrue(
-                    Files.exists(marker),
-                    () -> {
-                        try {
-                            return Files.readString(log);
-                        } catch (java.io.IOException error) {
-                            return error.toString();
-                        }
-                    });
-        } finally {
-            child.destroyForcibly();
-            assertTrue(child.waitFor(5, TimeUnit.SECONDS));
-        }
+        KillPoint.kill(child, marker, log);
         byte[] bytes = new byte[] {1, 2, 3};
         ObjectKey key = new ObjectKey(ObjectKey.CONFIG, Format.hash("MD5", bytes));
         ObjectStore library = ObjectStore.openLibrary(folder).join();

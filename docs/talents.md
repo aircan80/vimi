@@ -22,13 +22,35 @@ the [TraitTree checkpoint](talents-traittree-checkpoint.md) for the evidence and
 limits. Other Classic products keep the legacy reader.
 
 Class names, trees, positions and ranks come from the selected build's verified
-client tables. Rank badges show recorded maximum ranks. The browser does not
-allocate points, load character builds or calculate level/point gates. It does
-not replace unavailable data with another game's or build's talents.
+client tables. Rank badges read "Max N": the recorded maximum rank, not points
+spent. The browser does not allocate points or load character builds. Talents
+show their tier gate as "Requires N points in <Tree> Talents": the Classic 5 per
+tier for legacy Talent rows, and the recorded `TraitCond` requirement for
+TraitTree nodes (a CondType 0 row whose counted node group is the gated talent's
+own tree; any other form is reported and not shown). Legacy prerequisites show
+the recorded points ("Requires N points in <Talent>"); trait edges record no
+rank, so they show "Requires <Talent>". A talent with several ranks also shows
+its next rank's description. TraitTree talents take each rank's values from
+`TraitDefinitionEffectPoints` (OperationType 0, a Type 0 `Curve`, the exact
+`CurvePoint` at that rank); the spell's own base points describe a different
+rank, so an effect without a readable rank point shows `?`; once a talent
+records any rank value, its other effects show `?` as well. When a local client
+hotfix cache changes trait rows that cannot be decoded, the class lists the count
+instead of treating the missing rows as removed. The hover tooltip
+carries the same facts as the detail rail. The header and Source details name the
+source build. It does not replace unavailable data with another game's or build's
+talents.
 
 Icons load on demand through the build's existing file/image services. Missing
-icons use neutral placeholders; unresolved background art uses a plain dark tree
-surface. Unsupported models (including Retail and Mists) explain that their
+icons use neutral artwork, never a glyph that reads as data; the reported cause
+(no SpellMisc icon, different icons for one spell, an unreadable or over-bound
+SpellMisc table, an image or file failure) is in the icon's tooltip and in Source
+details. Unresolved background art uses a plain dark tree surface.
+
+Optional spell names, descriptions, icon references and legacy tree names are
+read again on the next request after a failure, so Reload recovers from a
+transient read or schema failure. Reload with unchanged source data reloads the
+selected class. Unsupported models (including Retail and Mists) explain that their
 layout is not implemented, instead of showing fabricated Classic trees.
 
 Component contract and checks: [concepts-talents](../concepts-talents/README.md).
@@ -42,16 +64,35 @@ layout. It does not represent a real build's talent data or a character's points
 
 ## Spell value previews
 
-The selected first rank resolves reviewed `$s1`–`$s3` fixed percentage amounts
-through same-build SpellEffect rows. Unsupported values show `?`; complex client
-expressions show an unavailable message. Raw templates and exact substitution
-provenance remain in collapsed Source details, not the styled tooltip.
+The selected rank resolves `$s1`–`$s5` and `$m1`–`$m5` fixed amounts through
+same-build SpellEffect rows. An amount is fixed when no random, level, resource,
+attack/spell power, PvP or scaling input can change it. A spell power
+coefficient of zero is inert; a coefficient of one is inert only for a reviewed
+allow-list of stat, chance, speed, regeneration and spell-modifier auras, so any
+other effect with it shows `?`. `$o1` multiplies a fixed tick by the whole number
+of ticks in a fixed duration; spells that also tick on application
+(`SpellMisc` Attributes[5] 0x200), or whose attribute is unreadable, show `?`, and
+`$h` reads the single DifficultyID 0 `SpellAuraOptions.ProcChance` (1–100, not
+procs per minute). A tokenizer keeps all readable prose: each
+value it cannot resolve shows `?` in place, with its cause in Source details.
+Tokens are case-insensitive (`$S1`, `$D`). Colour, link and newline markup is
+rendered as text. `$lsingular:plural;` follows the preceding resolved amount and
+shows both forms otherwise; `$gmale:female;` always shows both. `$/N;s1` and
+`$*N;s1` scale a resolved amount (at most two decimals). `$<spell>s1` and
+`$<spell>d` read up to eight other spells' rows. Expressions (`${...}`),
+conditionals (`$?...[...]`), `$@` references and named variables are never
+evaluated and show `?`. Raw templates and exact substitution provenance remain
+in collapsed Source details, not the styled tooltip. SpellEffect and SpellMisc
+reverse indexes have separate budgets.
 
-The original numeric profile is deliberately limited to Forever 1.60, layout
-`5362E3D4`, APPLY_AURA effects with percentage modifier/critical chance aura IDs
-108/290. It uses integral `EffectBasePointsF` directly, with no legacy `+1`;
-random, level, resource and scaling coefficients must be zero, and the reviewed
-bonus/group/PvP defaults must equal one. The unverified field name at raw integer
+The numeric profile is limited to Forever 1.60 and SpellEffect layout `5362E3D4`.
+It was first reviewed for aura IDs 108/290 and widened after a review of the
+effect rows behind the talent descriptions of a Forever 1.60.1.70790 build. It
+uses integral `EffectBasePointsF` directly, with no legacy `+1`; random, level,
+resource and scaling coefficients and `EffectAttributes` must be zero, and the
+group/PvP defaults must equal one. In that build `$d` stays unknown: its
+`SpellDuration` layout is not covered by the pinned definitions
+(`NO_DEFINITION`). The unverified field name at raw integer
 column 24 has no assigned semantics; the reviewed layout conservatively requires
 its value to be zero. Other profiles and formulas remain unresolved.
 

@@ -75,7 +75,12 @@ public final class TalentTypes {
     /**
      * {@code id} is the Talent row ID for legacy rows and the TraitNode ID for trait nodes. {@code
      * rankSpells} are recorded spell IDs: one per rank for legacy rows and the single definition
-     * spell for trait nodes. {@code maxRanks} is the recorded maximum rank.
+     * spell for trait nodes. {@code maxRanks} is the recorded maximum rank. {@code iconIssue}
+     * explains a missing icon reference when the source reported a cause; null otherwise. {@code
+     * requiredTreePoints} is the number of points that must be spent in this talent's own tree
+     * before it can be learned: the legacy Classic rule (5 per tier) for Talent rows, or the
+     * recorded TraitCond spend requirement for TraitTree nodes; null when none applies or the
+     * requirement is not known.
      */
     public record Talent(
             long id,
@@ -87,7 +92,9 @@ public final class TalentTypes {
             String name,
             String description,
             Long iconFileDataId,
-            Origin origin) {
+            Origin origin,
+            String iconIssue,
+            Integer requiredTreePoints) {
         public Talent {
             rankSpells = List.copyOf(rankSpells);
             prerequisites = List.copyOf(prerequisites);
@@ -95,6 +102,64 @@ public final class TalentTypes {
             if (rankSpells.isEmpty() || maxRanks < 1) {
                 throw new IllegalArgumentException("A talent records at least one rank");
             }
+            if (iconFileDataId != null) {
+                iconIssue = null;
+            }
+            if (requiredTreePoints != null && requiredTreePoints < 1) {
+                throw new IllegalArgumentException("A tier requirement needs at least one point");
+            }
+        }
+
+        public Talent(
+                long id,
+                int row,
+                int column,
+                List<Long> rankSpells,
+                int maxRanks,
+                List<Prerequisite> prerequisites,
+                String name,
+                String description,
+                Long iconFileDataId,
+                Origin origin,
+                String iconIssue) {
+            this(
+                    id,
+                    row,
+                    column,
+                    rankSpells,
+                    maxRanks,
+                    prerequisites,
+                    name,
+                    description,
+                    iconFileDataId,
+                    origin,
+                    iconIssue,
+                    null);
+        }
+
+        public Talent(
+                long id,
+                int row,
+                int column,
+                List<Long> rankSpells,
+                int maxRanks,
+                List<Prerequisite> prerequisites,
+                String name,
+                String description,
+                Long iconFileDataId,
+                Origin origin) {
+            this(
+                    id,
+                    row,
+                    column,
+                    rankSpells,
+                    maxRanks,
+                    prerequisites,
+                    name,
+                    description,
+                    iconFileDataId,
+                    origin,
+                    null);
         }
 
         public Talent(

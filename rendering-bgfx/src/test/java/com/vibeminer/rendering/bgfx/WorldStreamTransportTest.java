@@ -18,7 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
-@Timeout(20)
+@Timeout(WorldStreamTestChildren.TEST_TIMEOUT_SECONDS)
 class WorldStreamTransportTest {
     @TempDir Path directory;
     private final WorldStreamTransport.Spec spec =
@@ -306,9 +306,12 @@ class WorldStreamTransportTest {
                                             .start();
                             child.set(process);
                             return process;
-                        });
+                        },
+                        WorldStreamTestChildren.STARTUP_GUARD_MILLIS,
+                        5000);
         try {
-            session.initialized().get(8, TimeUnit.SECONDS);
+            session.initialized()
+                    .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);
             prepared.close();
             assertTrue(Files.exists(privateDirectory.get().resolve("frames.wsf")));
             session.camera(

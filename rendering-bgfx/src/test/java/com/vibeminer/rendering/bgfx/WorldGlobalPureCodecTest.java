@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.vibeminer.rendering.world.GlobalInteriorLimits;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.security.MessageDigest;
@@ -102,18 +103,41 @@ class WorldGlobalPureCodecTest {
 
     @Test
     void exactLayoutMaximumAndPolicyMaskHaveIndependentByteTotals() {
-        var max = new WorldGlobalLayout.Counts(24, 8, 64, 18, 32768, 98304, 32768, 1179648);
-        assertEquals(5_577_600, max.offsets().actualBytes());
-        assertTrue(max.offsets().actualBytes() < 6 * 1024 * 1024);
+        var first = new WorldGlobalLayout.Counts(24, 8, 64, 18, 32768, 98304, 32768, 1179648);
+        // The first profile's maximum, now with 96-byte image records and 32-bit indices.
+        assertEquals(5_577_600 + 18 * 32 + 98304 * 2, first.offsets().actualBytes());
+        var max =
+                new WorldGlobalLayout.Counts(256, 256, 4096, 128, 524288, 1572864, 524288, 8388608);
+        int sources = 2 + 256 + 128;
+        assertEquals(
+                1024
+                        + sources * 64
+                        + 256 * 64
+                        + 256 * 64
+                        + 4096 * 16
+                        + 128 * 96
+                        + 524288 * 20
+                        + 1572864 * 4
+                        + 8388608 * 4,
+                max.offsets().actualBytes());
+        assertEquals(WorldGlobalLayout.MAX_ENCODED_BYTES, max.offsets().actualBytes());
+        // One group may exceed 16,384 vertices and triangles, up to the 16-bit MOVI domain (the
+        // largest real dungeon groups have about 17,300 vertices and 22,200 triangles).
+        new WorldGlobalHashes.Group(0, 20_000, 0, 66_600, 0, 1, 0x2805);
+        new WorldGlobalLayout.Counts(1, 1, 1, 1, 20_000, 66_600, 1, 1);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorldGlobalHashes.Group(0, 65_537, 0, 3, 0, 1, 0x2805));
+        assertTrue(max.offsets().actualBytes() < WorldGlobalLayout.MAX_FILE_BYTES);
         assertEquals(1024, COUNTS.offsets().source());
         assertEquals(1280, COUNTS.offsets().material());
         assertEquals(1344, COUNTS.offsets().group());
         assertEquals(1408, COUNTS.offsets().batch());
         assertEquals(1424, COUNTS.offsets().image());
-        assertEquals(1488, COUNTS.offsets().vertices());
-        assertEquals(1548, COUNTS.offsets().indices());
-        assertEquals(1560, COUNTS.offsets().rgba());
-        assertEquals(1564, COUNTS.offsets().actualBytes());
+        assertEquals(1520, COUNTS.offsets().vertices());
+        assertEquals(1580, COUNTS.offsets().indices());
+        assertEquals(1604, COUNTS.offsets().rgba());
+        assertEquals(1608, COUNTS.offsets().actualBytes());
         assertEquals(
                 511,
                 Arrays.stream(WorldGlobalLayout.Omission.values())
@@ -124,19 +148,28 @@ class WorldGlobalPureCodecTest {
                 () -> new WorldGlobalLayout.Counts(Integer.MAX_VALUE, 1, 1, 1, 3, 6, 1, 1));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 32769, 6, 1, 1));
+                () -> new WorldGlobalLayout.Counts(1, 9, 9, 1, 524289, 27, 9, 1));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 3, 7, 1, 1));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 3, 6, 1, 1179649));
+                () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 3, 6, 1, 65537));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 16385, 6, 1, 1));
+                () -> new WorldGlobalLayout.Counts(257, 1, 1, 1, 3, 6, 1, 1));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 3, 49155, 1, 1));
+                () -> new WorldGlobalLayout.Counts(1, 257, 257, 1, 257, 771, 257, 1));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorldGlobalLayout.Counts(1, 1, 4097, 1, 3, 6, 4097, 1));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 65537, 6, 1, 1));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 3, 196611, 1, 1));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 3, 6, 1, 65537));
@@ -232,7 +265,7 @@ class WorldGlobalPureCodecTest {
                 IllegalArgumentException.class,
                 () ->
                         new WorldGlobalHashes.Image(
-                                4, 1, 1, 1, 0, 0, 1, 0, 0, 1, "5".repeat(64), "6".repeat(64)));
+                                4, 1, 1, 4, 0, 0, 1, 0, 0, 1, "5".repeat(64), "6".repeat(64)));
     }
 
     private static class Mesh implements WorldGlobalHashes.Mesh {
@@ -268,10 +301,10 @@ class WorldGlobalPureCodecTest {
         var mesh = new Mesh();
         var hashes = WorldGlobalHashes.mesh(mesh, () -> false);
         assertEquals(
-                List.of("6113f5419a5000743d185658c7a44ba9d5fd217e8700ef545b85e726ee76f212"),
+                List.of("0216dfa7117c353a4da64c44e38e7b1be8975f08c1750a54c34b660b7e01d779"),
                 hashes.groups());
         assertEquals(
-                "9f102a8e40d20d2b85a3745ec071cda0882e80ebdb2ed40c8862ce512dfcfc6f",
+                "7ae598bd2bf095d09077bfcd2f224506d45bba34718a48799149203673028e37",
                 hashes.nativeWire());
         assertEquals(21, mesh.reads.get());
         assertNotEquals(RECIPE, hashes.nativeWire());
@@ -362,8 +395,9 @@ class WorldGlobalPureCodecTest {
     @Test
     void statusesHaveExactCanonicalBoundsAndDoNotClaimParentPixelAcceptance() {
         var id = new WorldGlobalStatus.Identity("a".repeat(32), "b".repeat(64), "c".repeat(64));
-        var ready = new WorldGlobalStatus.Ready(id, 32768, 32768, 32768, 8, 64, 18);
-        assertEquals(208, ready.protocolLine().length() + 1);
+        var ready = new WorldGlobalStatus.Ready(id, 524288, 524288, 524288, 256, 4096, 128);
+        assertEquals(WorldGlobalStatus.READY_BYTES, ready.protocolLine().length() + 1);
+        assertEquals(216, WorldGlobalStatus.READY_BYTES);
         assertEquals(ready, WorldGlobalStatus.parse(ready.protocolLine()));
         var consumed = new WorldGlobalStatus.InputConsumed(id.nonce(), id.fileSha256());
         assertEquals(120, consumed.protocolLine().length() + 1);
@@ -378,8 +412,11 @@ class WorldGlobalPureCodecTest {
                         ready.protocolLine() + "\n",
                         ready.protocolLine() + " ",
                         ready.protocolLine().replace(" 511", " 512"),
-                        ready.protocolLine().replace(" 32768", " 032768"),
-                        ready.protocolLine().replace(" 32768", " +32768"),
+                        ready.protocolLine().replace(" 524288", " 0524288"),
+                        ready.protocolLine().replace(" 524288", " +524288"),
+                        ready.protocolLine().replace(" 524288", " 524289"),
+                        ready.protocolLine().replace(" 256 ", " 257 "),
+                        ready.protocolLine().replace(" 4096 ", " 4097 "),
                         "GLOBAL_READY " + "a".repeat(10000),
                         "GLOBAL_OTHER",
                         consumed.protocolLine().replace('a', 'é'))) {
@@ -393,7 +430,7 @@ class WorldGlobalPureCodecTest {
                         COUNTS));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new WorldGlobalStatus.Ready(id, 1, 32769, 1, 1, 1, 1));
+                () -> new WorldGlobalStatus.Ready(id, 1, 65537, 1, 1, 1, 1));
     }
 
     @Test
@@ -459,7 +496,7 @@ class WorldGlobalPureCodecTest {
                                 1,
                                 WorldGlobalHashes.Role.ROOT,
                                 0,
-                                65537,
+                                GlobalInteriorLimits.ROOT_BYTES + 1,
                                 null,
                                 "a".repeat(32),
                                 "b".repeat(64)));

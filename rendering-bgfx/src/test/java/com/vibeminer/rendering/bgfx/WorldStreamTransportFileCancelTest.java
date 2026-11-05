@@ -16,7 +16,7 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * Controlled real child pipes hold parent input deletion after an authentic-shaped cancellation.
  */
-@Timeout(20)
+@Timeout(WorldStreamTestChildren.TEST_TIMEOUT_SECONDS)
 class WorldStreamTransportFileCancelTest {
     @TempDir Path directory;
 
@@ -76,11 +76,14 @@ class WorldStreamTransportFileCancelTest {
                                             seen.toString(),
                                             release.toString())
                                     .start();
-                        });
+                        },
+                        WorldStreamTestChildren.STARTUP_GUARD_MILLIS,
+                        5000);
         var fileEntered = new CountDownLatch(1);
         var releaseFile = new CountDownLatch(1);
         try {
-            session.initialized().get(8, TimeUnit.SECONDS);
+            session.initialized()
+                    .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);
             WorldStreamTransport.TileReservation ticket = null;
             long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
             while (ticket == null && System.nanoTime() < until) {

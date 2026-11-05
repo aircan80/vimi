@@ -96,6 +96,31 @@ class WorldPlacementsTest {
     }
 
     @Test
+    void mwdrRangesAndMwdsSetIndexesAreReadRaw() {
+        int mwdr = 0x4d574452, mwds = 0x4d574453;
+        var ranges = buffer(16).putInt(0).putInt(1).putInt(2).putInt(3).array();
+        var ids =
+                buffer(8)
+                        .putShort((short) 1)
+                        .putShort((short) 3)
+                        .putShort((short) 1)
+                        .putShort((short) 65535)
+                        .array();
+        var read =
+                WorldPlacements.readObj0(file(chunk(mwdr, ranges), chunk(mwds, ids)), () -> false);
+        assertEquals(
+                java.util.List.of(
+                        new WorldPlacements.SetRange(0, 1), new WorldPlacements.SetRange(2, 3)),
+                read.setRanges());
+        assertEquals(java.util.List.of(1, 3, 1, 65535), read.setIds());
+        assertTrue(WorldPlacements.readObj0(file(), () -> false).setRanges().isEmpty());
+        reject(file(chunk(mwdr, new byte[7])));
+        reject(file(chunk(mwds, new byte[3])));
+        reject(file(chunk(mwdr, new byte[0]), chunk(mwdr, new byte[0])));
+        reject(file(chunk(mwds, new byte[0]), chunk(mwds, new byte[0])));
+    }
+
+    @Test
     void everyVectorChannelRequiresFiniteSourceFloat() {
         for (int offset : new int[] {8, 12, 16, 20, 24, 28}) {
             var record = doodad(91, 1, 1024, 0x40);

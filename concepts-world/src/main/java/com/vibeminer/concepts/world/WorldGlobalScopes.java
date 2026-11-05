@@ -8,6 +8,7 @@ import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.formats.world.WdtReferenceFacts;
 import com.vibeminer.formats.world.WdtSceneFacts;
+import com.vibeminer.rendering.world.GlobalInteriorLimits;
 import java.io.DataOutputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
@@ -368,13 +369,13 @@ final class WorldGlobalScopes {
             if (id <= 0
                     || id > 0xffff_ffffL
                     || id == facts.wdtId()
-                    || consumed.size() >= 27
+                    || consumed.size() >= GlobalInteriorLimits.ASSETS
                     || consumed.stream().anyMatch(value -> value.id() == id)) {
                 throw new IllegalArgumentException("Global candidate identity/count");
             }
             if (kind == AssetKind.ROOT && ++roots > 1
-                    || kind == AssetKind.GROUP && ++groups > 8
-                    || kind == AssetKind.IMAGE && ++images > 18) {
+                    || kind == AssetKind.GROUP && ++groups > GlobalInteriorLimits.GROUPS
+                    || kind == AssetKind.IMAGE && ++images > GlobalInteriorLimits.IMAGES) {
                 throw new IllegalStateException("Global role credit exhausted");
             }
             if (kind != AssetKind.ROOT && roots != 1) {
@@ -395,7 +396,7 @@ final class WorldGlobalScopes {
     <R extends AutoCloseable> R withAssetInputs(
             GlobalScope scope, Selection comparison, Cancellation external, AssetUse<R> use) {
         Objects.requireNonNull(use);
-        var finalBindings = new java.util.ArrayList<AssetReceipt>(27);
+        var finalBindings = new java.util.ArrayList<AssetReceipt>(GlobalInteriorLimits.ASSETS);
         return withDeclaration(
                 scope,
                 comparison,
@@ -451,7 +452,12 @@ final class WorldGlobalScopes {
 
     private void readAsset(
             long id, AssetKind kind, Cancellation token, RawUse use, List<AssetReceipt> consumed) {
-        int limit = kind == AssetKind.GROUP ? INPUT_LIMIT : 64 << 10;
+        int limit =
+                switch (kind) {
+                    case ROOT -> GlobalInteriorLimits.ROOT_BYTES;
+                    case GROUP -> GlobalInteriorLimits.GROUP_BYTES;
+                    case IMAGE -> GlobalInteriorLimits.IMAGE_BYTES;
+                };
         synchronized (this) {
             if (inputReserved) {
                 throw new IllegalStateException("Global input owner already live");
@@ -464,7 +470,7 @@ final class WorldGlobalScopes {
         try {
             var before = stat(id, token, WorldSourceRefusals.Site.SOURCE_INPUT);
             if (before.size() != null && (before.size() < 12 || before.size() > limit)) {
-                throw unavailable();
+                throw oversize(kind, limit);
             }
             var opened = WorldSourceFutures.await(files.openRead(FileTypes.FileRef.id(id), token));
             stream = opened.stream();
@@ -472,14 +478,18 @@ final class WorldGlobalScopes {
                 if (opened.state() == FileTypes.FileReadState.COMPLETE) {
                     throw new IllegalStateException("Complete asset has no stream");
                 }
-                throw unavailable();
+                throw notRead(kind, opened);
             }
             long length = stream.length();
-            if (opened.state() != FileTypes.FileReadState.COMPLETE
-                    || !stream.holes().isEmpty()
-                    || length < 12
-                    || length > limit) {
-                throw unavailable();
+            if (opened.state() != FileTypes.FileReadState.COMPLETE) {
+                throw notRead(kind, opened);
+            }
+            if (!stream.holes().isEmpty()) {
+                // The files layer leaves holes only where an encryption key is unknown.
+                throw encrypted(kind.name().toLowerCase(java.util.Locale.ROOT));
+            }
+            if (length < 12 || length > limit) {
+                throw oversize(kind, limit);
             }
             if (before.size() != null && before.size() != length) {
                 throw assetChanged();
@@ -493,7 +503,7 @@ final class WorldGlobalScopes {
                     throw new IllegalStateException("Global source read progress differs");
                 }
                 if (count <= 0) {
-                    throw unavailable();
+                    throw pending(); // The stream stopped early: a fetch failed mid-read.
                 }
             }
             token.check();
@@ -907,9 +917,9 @@ final class WorldGlobalScopes {
         FileReadStream stream = null;
         Throwable primary = null;
         try {
-            var before = stat(map.wdtId(), token, WorldSourceRefusals.Site.SOURCE_INPUT);
+            var before = wdtStat(map.wdtId(), token);
             if (before.size() != null && (before.size() < 12 || before.size() > INPUT_LIMIT)) {
-                throw unavailable();
+                throw wdtUnavailable();
             }
             var opened =
                     WorldSourceFutures.await(
@@ -919,14 +929,17 @@ final class WorldGlobalScopes {
                 if (opened.state() == FileTypes.FileReadState.COMPLETE) {
                     throw new IllegalStateException("Complete global source has no stream");
                 }
-                throw unavailable();
+                throw wdtNotRead(opened);
             }
             long length = stream.length();
-            if (opened.state() != FileTypes.FileReadState.COMPLETE
-                    || !stream.holes().isEmpty()
-                    || length < 12
-                    || length > INPUT_LIMIT) {
-                throw unavailable();
+            if (opened.state() != FileTypes.FileReadState.COMPLETE) {
+                throw wdtNotRead(opened);
+            }
+            if (!stream.holes().isEmpty()) {
+                throw wdtEncrypted();
+            }
+            if (length < 12 || length > INPUT_LIMIT) {
+                throw wdtUnavailable();
             }
             if (before.size() != null && before.size() != length) {
                 throw changed();
@@ -940,7 +953,7 @@ final class WorldGlobalScopes {
                     throw new IllegalStateException("Global source read progress differs");
                 }
                 if (count <= 0) {
-                    throw unavailable();
+                    throw pending(); // The stream stopped early: a fetch failed mid-read.
                 }
             }
             token.check();
@@ -994,6 +1007,13 @@ final class WorldGlobalScopes {
             Cancellation token) {
         var refs = WdtReferenceFacts.scan(bytes, token::isCanceled);
         var scene = WdtSceneFacts.read(bytes, token::isCanceled);
+        if (scene.mode() != WdtSceneFacts.Mode.GLOBAL_WMO_ONLY) {
+            throw profile(
+                    scene.mode() == WdtSceneFacts.Mode.TERRAIN_ONLY
+                            ? "this instance is a terrain (ADT) map, not a single interior WMO;"
+                                    + " it can only be explored as a map"
+                            : "the map is neither terrain-only nor one interior WMO");
+        }
         if (!refs.mainPresent()
                 || !refs.maidPresent()
                 || !refs.modfPresent()
@@ -1004,7 +1024,7 @@ final class WorldGlobalScopes {
                 || scene.mode() != WdtSceneFacts.Mode.GLOBAL_WMO_ONLY
                 || scene.nameBlockPresent()
                 || scene.globalObjects().size() != 1) {
-            throw profile();
+            throw profile("the map declaration is not one plain WMO placement");
         }
         var environment = new ArrayList<Long>(7);
         var input = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
@@ -1024,7 +1044,7 @@ final class WorldGlobalScopes {
                         default -> -1;
                     };
             if (size != expected) {
-                throw profile();
+                throw profile("the map file has chunks a WMO-only map does not use");
             }
             if (tag == 0x4d504844) {
                 for (int i = 1; i < 8; i++) {
@@ -1052,7 +1072,7 @@ final class WorldGlobalScopes {
                 || object.rotation().x() != 0
                 || object.rotation().y() != 0
                 || object.rotation().z() != 0) {
-            throw profile();
+            throw profile("the interior WMO is placed with a transform, doodad set or name set");
         }
         String body = sha(bytes, 0, bytes.length);
         String digest = scopeDigest(map, key, body);
@@ -1231,12 +1251,114 @@ final class WorldGlobalScopes {
         }
     }
 
+    /** How an unsuccessful source open is reported. */
+    enum ReadOutcome {
+        /** Needs the network (offline, no CDN route, or the store failed): retrying can help. */
+        NETWORK,
+        /**
+         * Encrypted with a key this client does not have. The files layer reports PARTIAL and
+         * PROTECTED only for holes whose key is unknown; retrying does not help.
+         */
+        ENCRYPTED,
+        /** Missing, corrupt, unsupported or otherwise unreadable. */
+        UNAVAILABLE
+    }
+
+    /** Classifies an open that did not return a complete stream. */
+    static ReadOutcome classify(FileTypes.FileReadState state, String code) {
+        if (state == null) {
+            return ReadOutcome.UNAVAILABLE;
+        }
+        return switch (state) {
+            case NEEDS_NETWORK, STORE_FAILED -> ReadOutcome.NETWORK;
+            case UNAVAILABLE ->
+                    "CDN_OFFLINE".equals(code) || "OBJECT_ACCESS_NO_CDN_CONTEXT".equals(code)
+                            ? ReadOutcome.NETWORK
+                            : ReadOutcome.UNAVAILABLE;
+            case PARTIAL, PROTECTED, WRONG_KEY -> ReadOutcome.ENCRYPTED;
+            default -> ReadOutcome.UNAVAILABLE;
+        };
+    }
+
+    private static WorldTerrainStreaming.Refusal notRead(
+            AssetKind kind, FileTypes.FileOpen opened) {
+        return switch (classify(opened.state(), opened.code())) {
+            case NETWORK -> pending();
+            case ENCRYPTED -> encrypted(kind.name().toLowerCase(java.util.Locale.ROOT));
+            case UNAVAILABLE -> unavailable();
+        };
+    }
+
+    /** Retry later: user-safe fixed text, shown as is. */
+    private static WorldTerrainStreaming.Refusal pending() {
+        return WorldSourceRefusals.at(
+                WorldSourceRefusals.Site.GLOBAL_ASSET_PENDING,
+                "some of the interior's files need the network (offline or not downloaded yet);"
+                        + " try again when online");
+    }
+
+    /**
+     * A file this client cannot decrypt. A group with it is skipped under this reason; a root or
+     * image refuses the interior with it.
+     */
+    private static WorldTerrainStreaming.Refusal encrypted(String what) {
+        return WorldSourceRefusals.at(
+                WorldSourceRefusals.Site.SOURCE_INPUT,
+                "a WMO " + what + " file is encrypted and its decryption key is not available");
+    }
+
+    private static WorldTerrainStreaming.Refusal oversize(AssetKind kind, int limit) {
+        return WorldSourceRefusals.at(
+                WorldSourceRefusals.Site.SOURCE_INPUT,
+                "a WMO "
+                        + kind.name().toLowerCase(java.util.Locale.ROOT)
+                        + " file is empty or larger than "
+                        + (limit >> 10)
+                        + " KiB");
+    }
+
+    private static final String WDT_UNAVAILABLE =
+            "the map's WDT file is not readable from local client data (missing, encrypted or"
+                    + " too large)";
+
+    private FileTypes.BuildFile wdtStat(long id, Cancellation token) {
+        try {
+            return stat(id, token, WorldSourceRefusals.Site.SOURCE_INPUT);
+        } catch (WorldTerrainStreaming.Refusal missing) {
+            throw wdtUnavailable();
+        }
+    }
+
+    private static WorldTerrainStreaming.Refusal wdtNotRead(FileTypes.FileOpen opened) {
+        return switch (classify(opened.state(), opened.code())) {
+            case NETWORK -> pending();
+            case ENCRYPTED -> wdtEncrypted();
+            case UNAVAILABLE -> wdtUnavailable();
+        };
+    }
+
+    private static WorldTerrainStreaming.Refusal wdtEncrypted() {
+        return WorldSourceRefusals.at(
+                WorldSourceRefusals.Site.SOURCE_INPUT,
+                "the map's WDT file is encrypted and its decryption key is not available");
+    }
+
+    private static WorldTerrainStreaming.Refusal wdtUnavailable() {
+        return WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT, WDT_UNAVAILABLE);
+    }
+
     private static WorldTerrainStreaming.Refusal unavailable() {
         return WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
     }
 
     private static WorldTerrainStreaming.Refusal profile() {
         return WorldSourceRefusals.at(WorldSourceRefusals.Site.GLOBAL_PROFILE);
+    }
+
+    private static WorldTerrainStreaming.Refusal profile(String detail) {
+        return detail == null
+                ? profile()
+                : WorldSourceRefusals.at(WorldSourceRefusals.Site.GLOBAL_PROFILE, detail);
     }
 
     private static WorldTerrainStreaming.Refusal changed() {

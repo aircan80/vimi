@@ -8,10 +8,20 @@ import org.junit.jupiter.api.Test;
 class GlobalWmoNativeContractTest {
     @Test
     void standaloneLedgerIncludesQueuedCopiesAndActualFrameOwners() {
-        assertEquals(41_154_816, GlobalWmoNativeScene.TOTAL);
-        assertEquals(32768 * 20 + 98304 * 2, GlobalWmoNativeScene.GPU_MESH);
-        assertEquals(32768 * 20 + 98304 * 4, GlobalWmoNativeScene.CPU_MESH);
-        assertEquals(1179648 * 4, GlobalWmoNativeScene.GPU_RGBA);
+        // 512Ki vertices of 20 bytes plus 1.5Mi 32-bit indices; 8Mi RGBA8 pixels.
+        assertEquals(524288L * 20 + 1572864L * 4, GlobalWmoNativeScene.GPU_MESH);
+        assertEquals(GlobalWmoNativeScene.GPU_MESH, GlobalWmoNativeScene.CPU_MESH);
+        assertEquals(8388608L * 4, GlobalWmoNativeScene.GPU_RGBA);
+        assertEquals(256 * 256 * 4, GlobalWmoNativeScene.DIRECT_IMAGE);
+        assertEquals(
+                4 * (524288L * 20 + 1572864L * 4)
+                        + 3 * 8388608L * 4
+                        + 256 * 256 * 4
+                        + 3 * 262_144
+                        + 1_048_576
+                        + 2_097_152
+                        + GlobalWmoNativeScene.FRAME_OWNERS,
+                GlobalWmoNativeScene.TOTAL);
         assertEquals(
                 2 * 800 * 500 * 4
                         + 3 * 800 * 500 * 4

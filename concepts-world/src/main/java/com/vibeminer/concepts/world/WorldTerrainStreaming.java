@@ -48,13 +48,15 @@ public final class WorldTerrainStreaming {
         }
 
         private final Reason reason;
-        private final String site;
+        private final String site, detail;
 
-        private Refusal(WorldSourceRefusals.Site origin) {
+        private Refusal(WorldSourceRefusals.Site origin, String detail) {
             super("Terrain source: " + origin.name(), null);
             reason = origin.reason();
             site = origin.name();
-            if (getMessage().length() > 256) {
+            this.detail = detail;
+            if (getMessage().length() > 256
+                    || detail != null && (detail.isBlank() || detail.length() > 160)) {
                 throw new IllegalArgumentException("Source refusal scalar bound");
             }
         }
@@ -67,6 +69,14 @@ public final class WorldTerrainStreaming {
             return site;
         }
 
+        /**
+         * Which profile check refused, in plain words built only from fixed text and counts; empty
+         * when the site alone says it. Never a path, name or provider message.
+         */
+        public java.util.Optional<String> detail() {
+            return java.util.Optional.ofNullable(detail);
+        }
+
         @Override
         public synchronized Throwable fillInStackTrace() {
             return this;
@@ -74,7 +84,11 @@ public final class WorldTerrainStreaming {
     }
 
     static Refusal refusal(WorldSourceRefusals.Site site) {
-        return new Refusal(site);
+        return new Refusal(site, null);
+    }
+
+    static Refusal refusal(WorldSourceRefusals.Site site, String detail) {
+        return new Refusal(site, java.util.Objects.requireNonNull(detail));
     }
 
     /** Detached descriptive tuple; public construction confers no source authority. */
@@ -535,6 +549,17 @@ public final class WorldTerrainStreaming {
      */
     public WorldExteriorObjects.TileObjects prepareExteriorObjects(
             Scope scope, WorldFormats.Tile comparison, Cancellation cancel) {
+        return prepareExteriorObjects(
+                scope, comparison, cancel, WorldExteriorObjects.ImageDetail.STANDARD);
+    }
+
+    /** As above, with the object texture budget tier (#267). */
+    public WorldExteriorObjects.TileObjects prepareExteriorObjects(
+            Scope scope,
+            WorldFormats.Tile comparison,
+            Cancellation cancel,
+            WorldExteriorObjects.ImageDetail detail) {
+        Objects.requireNonNull(detail);
         Objects.requireNonNull(scope);
         Objects.requireNonNull(comparison);
         Objects.requireNonNull(cancel);
@@ -545,7 +570,7 @@ public final class WorldTerrainStreaming {
             throw new IllegalArgumentException("Tile coordinate profile");
         }
         try {
-            return source().exteriorObjects(scope.token, comparison, cancel);
+            return source().exteriorObjects(scope.token, comparison, cancel, detail);
         } catch (RuntimeException failure) {
             throw WorldSourceRefusals.boundary(failure);
         }

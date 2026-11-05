@@ -5,6 +5,7 @@ import com.vibeminer.concepts.world.WorldGlobalScenes;
 import com.vibeminer.rendering.bgfx.WorldGlobalHashes;
 import com.vibeminer.rendering.bgfx.WorldGlobalLayout;
 import com.vibeminer.rendering.bgfx.WorldGlobalSceneWriter;
+import com.vibeminer.rendering.world.GlobalInteriorLimits;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -247,10 +248,10 @@ final class WorldGlobalSourceBridge {
         }
     }
 
-    /** Bounded scalar scan (at most 32768 vertices) inside the live borrow; no arrays or IO. */
+    /** Bounded scalar scan of the profile's vertices inside the live borrow; no arrays or IO. */
     static void captureBounds(WorldGlobalScenes.CheckedBorrow borrow, float[] bounds) {
         int vertices = borrow.vertices();
-        if (vertices < 1 || vertices > 32768) {
+        if (vertices < 1 || vertices > GlobalInteriorLimits.VERTICES) {
             throw new IllegalStateException("Global vertex bound");
         }
         for (int axis = 0; axis < 3; axis++) {
@@ -316,6 +317,7 @@ final class WorldGlobalSourceBridge {
                                                     switch (i.encoding()) {
                                                         case BC1 -> 1;
                                                         case BC3 -> 2;
+                                                        case BC2 -> 3;
                                                         default ->
                                                                 throw new IllegalStateException(
                                                                         "Unqualified global image"
@@ -330,7 +332,8 @@ final class WorldGlobalSourceBridge {
                                                     i.sourceRgbaSha256(),
                                                     i.opaqueRgbaSha256()))
                             .toList();
-            var sources = new ArrayList<WorldGlobalHashes.Source>(28);
+            var sources = new ArrayList<WorldGlobalHashes.Source>(
+                            GlobalInteriorLimits.SOURCES);
             int groupOrdinal = 0, imageOrdinal = 0;
             for (var s : facts.sources()) {
                 var role = WorldGlobalHashes.Role.valueOf(s.kind());
@@ -383,7 +386,7 @@ final class WorldGlobalSourceBridge {
                                                     s.firstIndex(),
                                                     s.indexCount()))
                             .toList();
-            var groupList = new ArrayList<WorldGlobalHashes.Group>(8);
+            var groupList = new ArrayList<WorldGlobalHashes.Group>(facts.groups().size());
             int vertex = 0, index = 0, batch = 0, drawn = 0;
             for (var g : facts.groups()) {
                 int size = g.rawTriangles() * 3;

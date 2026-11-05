@@ -6,6 +6,7 @@ import com.vibeminer.formats.images.Blp2Decoder;
 import com.vibeminer.formats.images.Blp2Types;
 import com.vibeminer.formats.world.WmoFormats;
 import com.vibeminer.formats.world.WmoGroupSpans;
+import com.vibeminer.rendering.world.GlobalInteriorLimits;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.security.MessageDigest;
@@ -15,25 +16,33 @@ import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 
 /** G1 source/ancestry/material inspection only. No mesh, image payload, packet or public facade. */
 final class WorldGlobalAssetFactory {
-    static final String PROFILE = "GLOBAL_UNLIT_OPAQUE_RGB_V1";
+    static final String PROFILE = "GLOBAL_UNLIT_OPAQUE_RGB_V2";
     private static final WmoFormats.Limits ROOT_LIMITS =
-            new WmoFormats.Limits(64 << 10, 1 << 20, 8, 24, 8, 16384, 16384, 64, 1, 64 << 10);
+            new WmoFormats.Limits(
+                    GlobalInteriorLimits.ROOT_BYTES,
+                    GlobalInteriorLimits.GROUP_BYTES,
+                    GlobalInteriorLimits.GROUPS,
+                    GlobalInteriorLimits.MATERIALS,
+                    4096,
+                    GlobalInteriorLimits.GROUP_VERTICES,
+                    GlobalInteriorLimits.GROUP_TRIANGLES,
+                    GlobalInteriorLimits.GROUP_BATCHES,
+                    1,
+                    GlobalInteriorLimits.ROOT_BYTES);
+
+    /** Source images up to 1024 on a side; anything over 256 is drawn from a smaller mip. */
+    private static final int SOURCE_IMAGE_SIDE = 1024;
+
     private static final Blp2Types.Limits IMAGE_LIMITS =
-            new Blp2Types.Limits(64 << 10, 256, 65536, 64 << 10, 262144);
-    private static final Set<Integer> ROOT_TAGS =
-            tags(
-                    "MVER", "MOHD", "MOMT", "MOGN", "MOGI", "MOSB", "MOPV", "MOPT", "MOPR", "MOVV",
-                    "MOVB", "MOLT", "MODS", "MODD", "MFOG", "GFID", "MODI");
-    private static final Set<Integer> GROUP_TAGS =
-            tags(
-                    "MVER", "MOGP", "MOPY", "MOVI", "MOVT", "MONR", "MOTV", "MOBA", "MOCV", "MLIQ",
-                    "MOLR", "MODR", "MOBN", "MOBR");
-    private static final Set<Long> GROUP_FLAGS =
-            Set.of(0x0a09L, 0x3805L, 0x2a05L, 0x2005L, 0x2805L);
+            new Blp2Types.Limits(
+                    GlobalInteriorLimits.IMAGE_BYTES,
+                    SOURCE_IMAGE_SIDE,
+                    (long) SOURCE_IMAGE_SIDE * SOURCE_IMAGE_SIDE,
+                    GlobalInteriorLimits.IMAGE_BYTES,
+                    GlobalInteriorLimits.IMAGE_PIXELS * 4L);
 
     record Material(int ordinal, long texture, List<Long> rawWords) {
         Material {
@@ -68,7 +77,23 @@ final class WorldGlobalAssetFactory {
             int liquidBytes,
             String canonicalMeshSha256,
             WmoFormats.GroupHeader header,
-            String name) {}
+            String name,
+            List<Integer> materials,
+            List<Integer> drawnBatches,
+            int blendedBatches) {
+        GroupFacts {
+            materials = List.copyOf(materials);
+            drawnBatches = List.copyOf(drawnBatches);
+        }
+    }
+
+    /**
+     * MOMT blend modes from 2 up (alpha blend, additive, modulate and their variants) are glows,
+     * light shafts and fire or lava cards. This profile has no blending, so drawn opaque and
+     * depth-writing they would become solid sheets that block corridors; they are left out and
+     * counted instead. Modes 0 (opaque) and 1 (alpha key) draw.
+     */
+    static final long FIRST_BLENDED_MODE = 2;
 
     /**
      * The recorded MOGP bounds in the same native space as the copied mesh (x and y mirrored, z
@@ -115,15 +140,28 @@ final class WorldGlobalAssetFactory {
         private final List<GroupFacts> groups;
         private final List<ImageFacts> images;
         private final List<WorldGlobalScopes.AssetReceipt> receipts;
-        private final int vertices, rawTriangles, drawnTriangles, batches, pixels;
+        private final int vertices, rawTriangles, drawnTriangles, batches, pixels, skippedGroups;
+        private final java.util.SortedMap<String, Integer> skippedReasons;
 
         private Manifest(
                 WorldGlobalScopes.Facts declaration,
                 RootFacts root,
                 List<GroupFacts> groups,
                 List<ImageFacts> images,
-                List<WorldGlobalScopes.AssetReceipt> receipts) {
-            require(groups.size() <= 8 && images.size() <= 18 && receipts.size() <= 27);
+                List<WorldGlobalScopes.AssetReceipt> receipts,
+                java.util.SortedMap<String, Integer> skippedReasons) {
+            int skippedGroups = skippedReasons.values().stream().mapToInt(Integer::intValue).sum();
+            require(
+                    !groups.isEmpty()
+                            && groups.size() <= GlobalInteriorLimits.GROUPS
+                            && images.size() <= GlobalInteriorLimits.IMAGES
+                            && receipts.size() <= GlobalInteriorLimits.ASSETS
+                            && skippedGroups >= 0
+                            && groups.size() + skippedGroups == root.groups().size());
+            this.skippedGroups = skippedGroups;
+            this.skippedReasons =
+                    java.util.Collections.unmodifiableSortedMap(
+                            new java.util.TreeMap<>(skippedReasons));
             this.declaration = declaration;
             this.root = root;
             this.groups = List.copyOf(groups);
@@ -135,10 +173,25 @@ final class WorldGlobalAssetFactory {
             batches = groups.stream().mapToInt(GroupFacts::batches).sum();
             pixels = images.stream().mapToInt(value -> value.width() * value.height()).sum();
             require(
-                    vertices <= 32768
-                            && rawTriangles <= 32768
-                            && batches <= 64
-                            && pixels <= 1179648);
+                    vertices <= GlobalInteriorLimits.VERTICES
+                            && rawTriangles <= GlobalInteriorLimits.TRIANGLES
+                            && batches <= GlobalInteriorLimits.BATCHES
+                            && pixels <= GlobalInteriorLimits.PIXELS);
+        }
+
+        /** Root groups that could not be read or drawn and are left out of the interior. */
+        int skippedGroups() {
+            return skippedGroups;
+        }
+
+        /** Blended, additive or modulated batches of drawn groups that were left out. */
+        int skippedBlendedBatches() {
+            return groups.stream().mapToInt(GroupFacts::blendedBatches).sum();
+        }
+
+        /** Skipped groups by fixed reason text. */
+        java.util.SortedMap<String, Integer> skippedReasons() {
+            return skippedReasons;
         }
 
         WorldGlobalScopes.Facts declaration() {
@@ -274,8 +327,8 @@ final class WorldGlobalAssetFactory {
                 new java.util.concurrent.CompletableFuture<>();
         private float[] mesh;
         private int[] indices;
-        private final ArrayList<byte[]> images = new ArrayList<>(18);
-        private final ArrayList<DrawSpan> spans = new ArrayList<>(64);
+        private final ArrayList<byte[]> images = new ArrayList<>();
+        private final ArrayList<DrawSpan> spans = new ArrayList<>();
         private Manifest manifest;
         private int vertices, indexCount, pixels, pins = 1; // Actual construction pin.
         private boolean closing, qualified, retiring;
@@ -286,25 +339,47 @@ final class WorldGlobalAssetFactory {
         }
 
         private void allocateMesh() {
-            mesh = new float[32768 * 5];
-            indices = new int[98304];
+            // Starts at 16Ki vertices and grows by doubling up to the profile bounds; most
+            // interiors stay far below them.
+            mesh = new float[16384 * 5];
+            indices = new int[16384 * 3];
         }
 
         private void appendGroup(
                 int ordinal, WmoGroupSpans.Borrow raw, GroupFacts facts, Cancellation token) {
             int count = facts.vertices(), added = facts.rawTriangles() * 3;
-            require((long) vertices + count <= 32768 && (long) indexCount + added <= 98304);
+            require(
+                    (long) vertices + count <= GlobalInteriorLimits.VERTICES
+                            && (long) indexCount + added <= GlobalInteriorLimits.INDICES);
+            if ((vertices + count) * 5 > mesh.length) {
+                mesh =
+                        java.util.Arrays.copyOf(
+                                mesh,
+                                Math.min(
+                                        GlobalInteriorLimits.VERTICES * 5,
+                                        Math.max(mesh.length * 2, (vertices + count) * 5)));
+            }
+            if (indexCount + added > indices.length) {
+                indices =
+                        java.util.Arrays.copyOf(
+                                indices,
+                                Math.min(
+                                        GlobalInteriorLimits.INDICES,
+                                        Math.max(indices.length * 2, indexCount + added)));
+            }
             for (int v = 0; v < count; v++) {
                 token.check();
                 int target = (vertices + v) * 5;
                 for (int axis = 0; axis < 3; axis++) {
                     float value = raw.positions().get(v * 3 + axis);
-                    require(Float.isFinite(value) && Math.abs(value) <= 4096);
+                    require(
+                            Float.isFinite(value)
+                                    && Math.abs(value) <= GlobalInteriorLimits.POSITION);
                     mesh[target + axis] = nativeAxis(axis, value);
                 }
                 for (int axis = 0; axis < 2; axis++) {
                     float uv = raw.uv().get(v * 2 + axis);
-                    require(Float.isFinite(uv) && Math.abs(uv) <= 16);
+                    require(Float.isFinite(uv) && Math.abs(uv) <= GlobalInteriorLimits.UV);
                     mesh[target + 3 + axis] = uv;
                 }
             }
@@ -316,14 +391,15 @@ final class WorldGlobalAssetFactory {
                 require(local < count);
                 indices[indexCount + i] = Math.addExact(vertices, local);
             }
-            require(spans.size() + raw.batches().size() <= 64);
-            for (var batch : raw.batches()) {
+            require(spans.size() + facts.batches() <= GlobalInteriorLimits.BATCHES);
+            for (int drawn : facts.drawnBatches()) {
+                var batch = raw.batches().get(drawn);
                 spans.add(
                         new DrawSpan(
                                 ordinal,
                                 Math.addExact(indexCount, (int) batch.firstIndex()),
                                 batch.indexCount(),
-                                batch.materialByte()));
+                                batch.materialIndex()));
             }
             vertices += count;
             indexCount += added;
@@ -331,9 +407,9 @@ final class WorldGlobalAssetFactory {
 
         private void adoptImage(byte[] rgba) {
             require(
-                    images.size() < 18
+                    images.size() < GlobalInteriorLimits.IMAGES
                             && rgba.length % 4 == 0
-                            && (long) pixels + rgba.length / 4 <= 1179648);
+                            && (long) pixels + rgba.length / 4 <= GlobalInteriorLimits.PIXELS);
             images.add(rgba); // Exactly the synchronous decoder getter copy; no clone.
             pixels += rgba.length / 4;
         }
@@ -677,63 +753,127 @@ final class WorldGlobalAssetFactory {
                         payload.allocateMesh();
                     }
                     var groups = new ArrayList<GroupFacts>(root.groups().size());
-                    int[] totals = new int[3];
+                    long[] totals = new long[3];
+                    var skipped = new java.util.TreeMap<String, Integer>();
                     for (int ordinal = 0; ordinal < root.groups().size(); ordinal++) {
                         token.check();
-                        int index = ordinal;
                         long id = root.groups().get(ordinal);
-                        admission.groupCandidate(
-                                id,
-                                input ->
-                                        WmoGroupSpans.withGroup(
-                                                input.bytes(),
-                                                () ->
-                                                        token.isCanceled()
-                                                                || Thread.currentThread()
-                                                                        .isInterrupted(),
-                                                borrow -> {
-                                                    var facts =
-                                                            qualifyGroup(
-                                                                    index,
-                                                                    input.receipt().id(),
-                                                                    root,
-                                                                    borrow,
-                                                                    token);
-                                                    totals[0] += facts.vertices();
-                                                    totals[1] += facts.rawTriangles();
-                                                    totals[2] += facts.batches();
-                                                    require(
-                                                            totals[0] <= 32768
-                                                                    && totals[1] <= 32768
-                                                                    && totals[2] <= 64);
-                                                    if (payload != null) {
-                                                        payload.appendGroup(
-                                                                index, borrow, facts, token);
-                                                    }
-                                                    groups.add(facts);
-                                                }));
+                        if (id == 0) {
+                            skipped.merge("no group file is listed", 1, Integer::sum);
+                            continue;
+                        }
+                        int drawn = groups.size();
+                        try {
+                            admission.groupCandidate(
+                                    id,
+                                    input -> {
+                                        try {
+                                            WmoGroupSpans.withGroup(
+                                                    input.bytes(),
+                                                    () ->
+                                                            token.isCanceled()
+                                                                    || Thread.currentThread()
+                                                                            .isInterrupted(),
+                                                    borrow -> {
+                                                        var facts =
+                                                                qualifyGroup(
+                                                                        drawn,
+                                                                        input.receipt().id(),
+                                                                        root,
+                                                                        borrow,
+                                                                        token);
+                                                        totals[0] += facts.vertices();
+                                                        totals[1] += facts.rawTriangles();
+                                                        totals[2] += facts.batches();
+                                                        require(
+                                                                totals[0]
+                                                                        <= GlobalInteriorLimits
+                                                                                .VERTICES,
+                                                                "the interior has more than "
+                                                                        + GlobalInteriorLimits
+                                                                                .VERTICES
+                                                                        + " vertices");
+                                                        require(
+                                                                totals[1]
+                                                                        <= GlobalInteriorLimits
+                                                                                .TRIANGLES,
+                                                                "the interior has more than "
+                                                                        + GlobalInteriorLimits
+                                                                                .TRIANGLES
+                                                                        + " triangles");
+                                                        require(
+                                                                totals[2]
+                                                                        <= GlobalInteriorLimits
+                                                                                .BATCHES,
+                                                                "the interior has more than "
+                                                                        + GlobalInteriorLimits
+                                                                                .BATCHES
+                                                                        + " draw batches");
+                                                        if (payload != null) {
+                                                            payload.appendGroup(
+                                                                    drawn, borrow, facts, token);
+                                                        }
+                                                        groups.add(facts);
+                                                    });
+                                        } catch (IllegalArgumentException unreadable) {
+                                            // The group span reader refused this group's layout.
+                                            throw new SkippedGroup(
+                                                    "unsupported group layout"
+                                                            + parserReason(unreadable));
+                                        }
+                                    });
+                        } catch (SkippedGroup unusable) {
+                            skipped.merge(unusable.getMessage(), 1, Integer::sum);
+                        } catch (WorldTerrainStreaming.Refusal refusal) {
+                            if (!refusal.site()
+                                    .equals(WorldSourceRefusals.Site.SOURCE_INPUT.name())) {
+                                throw refusal;
+                            }
+                            // Missing, encrypted or oversized group file.
+                            skipped.merge(
+                                    refusal.detail().orElse("the group file is not readable"),
+                                    1,
+                                    Integer::sum);
+                        }
                     }
+                    require(!groups.isEmpty(), "none of the interior's WMO groups can be read");
                     var images = new ArrayList<ImageFacts>();
                     var seen = new HashSet<Long>();
                     int[] pixels = {0};
+                    var used = new HashSet<Integer>();
+                    for (var group : groups) {
+                        used.addAll(group.materials());
+                    }
                     for (var material : root.materials()) {
-                        if (!seen.add(material.texture())) {
+                        if (!used.contains(material.ordinal()) || !seen.add(material.texture())) {
                             continue;
                         }
-                        require(seen.size() <= 18);
+                        require(
+                                seen.size() <= GlobalInteriorLimits.IMAGES,
+                                "the interior uses more than "
+                                        + GlobalInteriorLimits.IMAGES
+                                        + " textures");
                         admission.imageCandidate(
                                 material.texture(),
                                 input -> {
                                     var facts =
                                             inspectImage(
-                                                    input, token, 1179648 - pixels[0], payload);
+                                                    input,
+                                                    token,
+                                                    GlobalInteriorLimits.PIXELS - pixels[0],
+                                                    payload);
                                     pixels[0] += facts.width() * facts.height();
                                     images.add(facts);
                                 });
                     }
                     var manifest =
                             new Manifest(
-                                    admission.facts(), root, groups, images, admission.receipts());
+                                    admission.facts(),
+                                    root,
+                                    groups,
+                                    images,
+                                    admission.receipts(),
+                                    skipped);
                     var borrow = new Borrow(manifest, token);
                     try {
                         return Objects.requireNonNull(use.use(borrow));
@@ -743,53 +883,82 @@ final class WorldGlobalAssetFactory {
                 });
     }
 
+    /**
+     * A group that cannot be drawn; it is left out and counted under its fixed reason, never a
+     * whole-interior refusal.
+     */
+    private static final class SkippedGroup extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        SkippedGroup(String reason) {
+            super(reason, null, false, false);
+        }
+    }
+
+    /** The span reader's own fixed reason text, kept only when it is short plain words. */
+    private static String parserReason(IllegalArgumentException failure) {
+        String message = failure.getMessage();
+        return message != null && message.matches("[A-Za-z ]{1,48}")
+                ? " (" + message.toLowerCase(java.util.Locale.ROOT) + ")"
+                : "";
+    }
+
     private static RootFacts qualifyRoot(
             WorldGlobalScopes.AssetInput input,
             WorldGlobalScopes.Facts declaration,
             Cancellation token) {
-        var root = WmoFormats.root(input.bytes(), ROOT_LIMITS, token::isCanceled);
+        WmoFormats.Root root;
+        try {
+            root = WmoFormats.root(input.bytes(), ROOT_LIMITS, token::isCanceled);
+        } catch (IllegalArgumentException unreadable) {
+            throw refused("the interior's WMO root has a layout this viewer cannot read");
+        }
         var h = root.header();
         require(
-                h.flags() == 5
-                        && h.lodCount() == 0
-                        && h.groupCount() > 0
-                        && h.groupCount() <= 8
-                        && h.materialCount() > 0
-                        && h.materialCount() <= 24
-                        && root.gfidPresent()
-                        && root.gfidCount() == h.groupCount()
-                        && !root.textureNameBlockPresent());
+                h.groupCount() > 0 && h.groupCount() <= GlobalInteriorLimits.GROUPS,
+                "the interior has "
+                        + h.groupCount()
+                        + " WMO groups; at most "
+                        + GlobalInteriorLimits.GROUPS
+                        + " are supported");
+        require(
+                h.materialCount() > 0 && h.materialCount() <= GlobalInteriorLimits.MATERIALS,
+                "the interior has "
+                        + h.materialCount()
+                        + " materials; at most "
+                        + GlobalInteriorLimits.MATERIALS
+                        + " are supported");
+        require(
+                root.gfidPresent()
+                        && root.gfidCount() >= h.groupCount()
+                        && !root.textureNameBlockPresent(),
+                "the interior's WMO root names its files instead of listing file IDs");
         var chunks = root.chunks();
-        require(chunks.size() <= 256);
-        var chunkIds = new HashSet<Integer>();
-        for (var chunk : chunks) {
-            require(ROOT_TAGS.contains(chunk.tag()) && chunkIds.add(chunk.tag()));
-        }
-        var groups = new ArrayList<Long>(root.gfidCount());
+        var groups = new ArrayList<Long>((int) h.groupCount());
         var references = new HashSet<Long>();
         references.add(input.receipt().id());
         references.add(declaration.wdtId());
-        for (int ordinal = 0; ordinal < root.gfidCount(); ordinal++) {
+        // GFID lists the full-detail groups first; later LOD entries are not drawn.
+        for (int ordinal = 0; ordinal < h.groupCount(); ordinal++) {
             long id = root.gfid(ordinal);
-            require(id > 0 && references.add(id));
+            require(id == 0 || references.add(id), "the WMO root lists a group file twice");
             groups.add(id);
         }
         var materials = new ArrayList<Material>(root.materials().size());
-        var imageIds = new HashSet<Long>();
         for (int ordinal = 0; ordinal < root.materials().size(); ordinal++) {
             token.check();
             var material = root.materials().get(ordinal);
-            for (int word : new int[] {0, 1, 2, 6, 9, 11, 12, 13, 14, 15}) {
-                require(material.word(word) == 0);
-            }
             long id = material.word(3);
-            require(id > 0 && !references.contains(id));
-            imageIds.add(id);
-            require(imageIds.size() <= 18);
+            // A texture that names the WDT, root or a group file is a cross-role reference.
+            require(
+                    id == 0 || !references.contains(id),
+                    "a material names a map or WMO file as its texture");
             var words = new ArrayList<Long>(16);
             for (int word = 0; word < 16; word++) {
                 words.add(material.word(word));
             }
+            // Flags, shader and blend words are recorded but not applied: everything draws as
+            // unlit opaque diffuse (the profile's omissions).
             materials.add(new Material(ordinal, id, words));
         }
         return new RootFacts(h, materials, groups, chunks, root.groupNames());
@@ -798,31 +967,20 @@ final class WorldGlobalAssetFactory {
     private static GroupFacts qualifyGroup(
             int ordinal, long id, RootFacts root, WmoGroupSpans.Borrow borrow, Cancellation token) {
         var h = borrow.header();
-        require(
-                GROUP_FLAGS.contains(h.flags())
-                        && h.rawBatchPadding() == 0
-                        && h.rawUnused() <= 1
-                        && h.tail0() == 0
-                        && h.tail1() == 0);
         int vertices = borrow.positions().size() / 3, triangles = borrow.indices().size() / 3;
-        require(
+        skipUnless(
                 vertices > 0
-                        && vertices <= 16384
+                        && vertices <= GlobalInteriorLimits.GROUP_VERTICES
                         && triangles > 0
-                        && triangles <= 16384
+                        && triangles <= GlobalInteriorLimits.GROUP_TRIANGLES
                         && borrow.positions().size() == vertices * 3
-                        && borrow.normals().size() == vertices * 3
-                        && borrow.uv().size() == vertices * 2
-                        && borrow.triangles().size() == triangles * 2
-                        && borrow.batches().size() > 0
-                        && borrow.batches().size() <= 64
-                        && h.batchesA() + h.batchesB() + h.batchesC() == borrow.batches().size());
-        require((borrow.colors() != null) == ((h.flags() & 4) != 0));
-        require((borrow.liquid() != null) == ((h.flags() & 0x1000) != 0));
-        var chunkIds = new HashSet<Integer>();
-        for (var chunk : borrow.chunks()) {
-            require(GROUP_TAGS.contains(chunk.tag()) && chunkIds.add(chunk.tag()));
-        }
+                        && borrow.indices().size() == triangles * 3
+                        && borrow.uv().size() == vertices * 2,
+                "empty or oversized group mesh");
+        skipUnless(
+                borrow.batches().size() > 0
+                        && borrow.batches().size() <= GlobalInteriorLimits.GROUP_BATCHES,
+                "no draw batches");
         var digest = new StreamHash();
         digest.integer(ordinal);
         digest.integer(vertices);
@@ -830,84 +988,63 @@ final class WorldGlobalAssetFactory {
         for (int v = 0; v < vertices; v++) {
             token.check();
             for (int axis = 0; axis < 3; axis++) {
-                float value = borrow.positions().get(v * 3 + axis),
-                        normal = borrow.normals().get(v * 3 + axis);
-                require(Float.isFinite(value) && Float.isFinite(normal));
-                float low = axis == 0 ? h.lower().x() : axis == 1 ? h.lower().y() : h.lower().z();
-                float high = axis == 0 ? h.upper().x() : axis == 1 ? h.upper().y() : h.upper().z();
-                float rootLow =
-                        axis == 0
-                                ? root.header().lower().x()
-                                : axis == 1 ? root.header().lower().y() : root.header().lower().z();
-                float rootHigh =
-                        axis == 0
-                                ? root.header().upper().x()
-                                : axis == 1 ? root.header().upper().y() : root.header().upper().z();
-                require(
-                        value >= low - .001
-                                && value <= high + .001
-                                && value >= rootLow - .001
-                                && value <= rootHigh + .001);
+                float value = borrow.positions().get(v * 3 + axis);
+                skipUnless(
+                        Float.isFinite(value) && Math.abs(value) <= GlobalInteriorLimits.POSITION,
+                        "positions beyond the supported range");
                 digest.integer(Float.floatToRawIntBits(value));
             }
             for (int axis = 0; axis < 2; axis++) {
                 float uv = borrow.uv().get(v * 2 + axis);
-                require(Float.isFinite(uv));
+                skipUnless(
+                        Float.isFinite(uv) && Math.abs(uv) <= GlobalInteriorLimits.UV,
+                        "texture coordinates beyond the supported range");
                 digest.integer(Float.floatToRawIntBits(uv));
             }
         }
         for (int i = 0; i < borrow.indices().size(); i++) {
             token.check();
             int index = borrow.indices().get(i);
-            require(index < vertices);
+            skipUnless(index < vertices, "indices outside the group's vertices");
             digest.integer(index);
         }
-        int drawn = 0;
-        for (var batch : borrow.batches()) {
-            require(
-                    batch.flags() == 0
-                            && batch.materialByte() < root.materials().size()
-                            && batch.firstIndex() % 3 == 0
+        int drawn = 0, blended = 0;
+        var materials = new java.util.TreeSet<Integer>();
+        var drawnBatches = new ArrayList<Integer>();
+        for (int b = 0; b < borrow.batches().size(); b++) {
+            var batch = borrow.batches().get(b);
+            int material = batch.materialIndex();
+            skipUnless(
+                    material >= 0 && material < root.materials().size(),
+                    "a batch without a textured material");
+            skipUnless(
+                    batch.firstIndex() % 3 == 0
                             && batch.indexCount() > 0
                             && batch.indexCount() % 3 == 0
-                            && batch.firstIndex() + batch.indexCount() <= borrow.indices().size()
-                            && batch.firstVertex() <= batch.lastVertex()
-                            && batch.lastVertex() < vertices);
-            for (int i = (int) batch.firstIndex();
-                    i < batch.firstIndex() + batch.indexCount();
-                    i++) {
-                int index = borrow.indices().get(i);
-                require(index >= batch.firstVertex() && index <= batch.lastVertex());
+                            && batch.firstIndex() + batch.indexCount() <= borrow.indices().size(),
+                    "a batch outside the group's indices");
+            if (root.materials().get(material).rawWords().get(2) >= FIRST_BLENDED_MODE) {
+                blended++; // Left out before its texture matters, so it never skips the group.
+                continue;
             }
+            skipUnless(
+                    root.materials().get(material).texture() > 0,
+                    "a batch without a textured material");
+            drawnBatches.add(b);
+            materials.add(material);
             drawn += batch.indexCount() / 3;
             digest.integer((int) batch.firstIndex());
             digest.integer(batch.indexCount());
-            digest.integer(batch.materialByte());
+            digest.integer(material);
         }
         var ordered = new ArrayList<>(borrow.batches());
         ordered.sort(Comparator.comparingLong(WmoFormats.Batch::firstIndex));
         long end = 0;
         for (var batch : ordered) {
-            require(batch.firstIndex() >= end);
+            skipUnless(batch.firstIndex() >= end, "overlapping batches");
             end = batch.firstIndex() + batch.indexCount();
         }
-        if (borrow.colors() != null) {
-            require(borrow.colors().size() == vertices * 4);
-            for (int i = 0; i < borrow.colors().size(); i++) {
-                if ((i & 4095) == 0) {
-                    token.check();
-                }
-                borrow.colors().get(i);
-            }
-        }
-        if (borrow.liquid() != null) {
-            for (int i = 0; i < borrow.liquid().size(); i++) {
-                if ((i & 4095) == 0) {
-                    token.check();
-                }
-                borrow.liquid().get(i);
-            }
-        }
+        skipUnless(!drawnBatches.isEmpty(), "only blended or additive surfaces");
         return new GroupFacts(
                 ordinal,
                 id,
@@ -915,13 +1052,22 @@ final class WorldGlobalAssetFactory {
                 vertices,
                 triangles,
                 drawn,
-                borrow.batches().size(),
+                drawnBatches.size(),
                 borrow.colors() != null,
                 borrow.liquid() != null,
                 borrow.liquid() == null ? 0 : borrow.liquid().size(),
                 digest.finish(),
                 h,
-                root.groupNames().name(h.nameOffset()).orElse(null));
+                root.groupNames().name(h.nameOffset()).orElse(null),
+                List.copyOf(materials),
+                drawnBatches,
+                blended);
+    }
+
+    private static void skipUnless(boolean drawable, String reason) {
+        if (!drawable) {
+            throw new SkippedGroup(reason);
+        }
     }
 
     private static ImageFacts inspectImage(
@@ -930,9 +1076,11 @@ final class WorldGlobalAssetFactory {
             int remainingPixels,
             OwnedAsset payload) {
         var raw = input.bytes();
-        require(raw.length >= 148);
+        require(raw.length >= 148, "a texture file is truncated");
         var header = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
-        require(header.getInt(0) == 0x32504c42 && header.getInt(4) == 1);
+        require(
+                header.getInt(0) == 0x32504c42 && header.getInt(4) == 1,
+                "a texture is not a BLP2 image");
         int encoding = raw[8] & 255,
                 depth = raw[9] & 255,
                 alpha = raw[10] & 255,
@@ -940,32 +1088,48 @@ final class WorldGlobalAssetFactory {
         int width = header.getInt(12), height = header.getInt(16);
         require(
                 encoding == 2
-                        && flags == 1
-                        && (depth == 0 && alpha == 0 || depth == 8 && alpha == 7)
+                        && (depth == 0 || depth == 1 || depth == 4 || depth == 8)
                         && width > 0
-                        && width <= 256
+                        && width <= SOURCE_IMAGE_SIDE
                         && height > 0
-                        && height <= 256
-                        && (long) width * height <= remainingPixels);
-        // Synchronous core + immediate owned memory only: no completed decoder worker remains.
-        var image =
-                Blp2Decoder.decodeSynchronous(
-                        AssetSource.bytes(raw),
-                        0,
-                        IMAGE_LIMITS,
-                        token,
-                        Blp2Types.MipProfile.STRICT);
+                        && height <= SOURCE_IMAGE_SIDE,
+                "a texture uses an encoding or size this viewer does not draw");
+        // Draw the first recorded mip no larger than the profile side.
+        int mip = 0, w = width, h = height;
+        while (w > GlobalInteriorLimits.IMAGE_SIDE || h > GlobalInteriorLimits.IMAGE_SIDE) {
+            mip++;
+            w = Math.max(1, w >> 1);
+            h = Math.max(1, h >> 1);
+        }
         require(
-                image.width() == width
-                        && image.height() == height
-                        && image.mipLevel() == 0
-                        && image.mipFlags() == 1
-                        && (image.encoding() == Blp2Types.Encoding.BC1 && depth == 0 && alpha == 0
-                                || image.encoding() == Blp2Types.Encoding.BC3
-                                        && depth == 8
-                                        && alpha == 7));
+                mip == 0 || flags != 0,
+                "a texture larger than "
+                        + GlobalInteriorLimits.IMAGE_SIDE
+                        + " pixels has no smaller mip");
+        require((long) w * h <= remainingPixels, "the interior's textures exceed the pixel budget");
+        // Synchronous core + immediate owned memory only: no completed decoder worker remains.
+        Blp2Types.Image image;
+        try {
+            image =
+                    Blp2Decoder.decodeSynchronous(
+                            AssetSource.bytes(raw),
+                            mip,
+                            IMAGE_LIMITS,
+                            token,
+                            Blp2Types.MipProfile.STRICT);
+        } catch (IllegalArgumentException undecodable) {
+            throw refused("a texture cannot be decoded");
+        }
+        require(
+                image.width() == w
+                        && image.height() == h
+                        && image.mipLevel() == mip
+                        && (image.encoding() == Blp2Types.Encoding.BC1
+                                || image.encoding() == Blp2Types.Encoding.BC2
+                                || image.encoding() == Blp2Types.Encoding.BC3),
+                "a texture decodes differently from its header");
         byte[] rgba = image.rgba(); // Adopt this one copy. Never retain Image/source/future.
-        require(rgba.length == (long) width * height * 4);
+        require(rgba.length == (long) w * h * 4);
         String sourceHash = hash(rgba);
         int min = 255, max = 0, nonopaque = 0;
         for (int i = 3; i < rgba.length; i += 4) {
@@ -980,19 +1144,18 @@ final class WorldGlobalAssetFactory {
             }
             rgba[i] = (byte) 255;
         }
-        require(image.encoding() != Blp2Types.Encoding.BC1 || nonopaque == 0);
         if (payload != null) {
             payload.adoptImage(rgba);
         }
         return new ImageFacts(
                 input.receipt().id(),
-                width,
-                height,
+                w,
+                h,
                 image.encoding(),
                 depth,
                 alpha,
                 flags,
-                image.mips().size(),
+                image.mips().size() - mip,
                 min,
                 max,
                 nonopaque,
@@ -1034,21 +1197,20 @@ final class WorldGlobalAssetFactory {
         }
     }
 
-    private static Set<Integer> tags(String... names) {
-        var result = new HashSet<Integer>();
-        for (String name : names) {
-            int tag = 0;
-            for (int i = 0; i < 4; i++) {
-                tag = tag << 8 | name.charAt(i);
-            }
-            result.add(tag);
-        }
-        return Set.copyOf(result);
-    }
-
     private static void require(boolean value) {
         if (!value) {
             throw WorldSourceRefusals.at(WorldSourceRefusals.Site.GLOBAL_ASSET_PROFILE);
         }
+    }
+
+    /** Refuses the whole interior and says which profile check failed. */
+    private static void require(boolean value, String detail) {
+        if (!value) {
+            throw refused(detail);
+        }
+    }
+
+    private static WorldTerrainStreaming.Refusal refused(String detail) {
+        return WorldSourceRefusals.at(WorldSourceRefusals.Site.GLOBAL_ASSET_PROFILE, detail);
     }
 }

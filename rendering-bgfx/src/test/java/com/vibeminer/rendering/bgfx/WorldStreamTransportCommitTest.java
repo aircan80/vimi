@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
-@Timeout(20)
+@Timeout(WorldStreamTestChildren.TEST_TIMEOUT_SECONDS)
 class WorldStreamTransportCommitTest {
     @TempDir Path directory;
 
@@ -73,12 +73,15 @@ class WorldStreamTransportCommitTest {
                                             nonce,
                                             arguments.get(1))
                                     .start();
-                        });
+                        },
+                        WorldStreamTestChildren.STARTUP_GUARD_MILLIS,
+                        5000);
         var held = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var file = new AtomicReference<Path>();
         try {
-            session.initialized().get(8, TimeUnit.SECONDS);
+            session.initialized()
+                    .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);
             assertThrows(
                     IllegalArgumentException.class,
                     () ->

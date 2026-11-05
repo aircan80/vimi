@@ -3,6 +3,7 @@ package com.vibeminer.formats.hotfix;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.db2.Db2ByteSource;
@@ -107,10 +108,153 @@ class HotfixRowDecoderTest {
                         "4294967295",
                         "-9223372036854775808",
                         "18446744073709551615",
-                        "-0.0"),
+                        "-0"),
                 result.row().values());
         assertFalse(result.row().isCopy());
         assertEquals(List.of(), result.row().textIssues());
+    }
+
+    @Test
+    void floatsUseTheSameTextAsBaseDb2Rows() {
+        // Effective views mix hotfix and base rows in one table: filters, spell text and
+        // BigDecimal consumers must see one spelling for the same single value.
+        var layout = layout("int ID\nfloat V", "$id,noninline$ID<u32>\nV[5]");
+        float[] values = {20f, 1.0E-4f, 1.5f, -0f, 3.0E9f};
+        var body = ByteBuffer.allocate(4 * values.length).order(ByteOrder.LITTLE_ENDIAN);
+        for (float value : values) {
+            body.putFloat(value);
+        }
+        body.flip();
+        assertEquals(
+                List.of("9", "20", "0.0001", "1.5", "-0", "3E+09"),
+                decode(layout, 9, body).row().values());
+        for (float bad : new float[] {Float.NaN, Float.POSITIVE_INFINITY}) {
+            var nonfinite = ByteBuffer.allocate(20).order(ByteOrder.LITTLE_ENDIAN);
+            nonfinite.putFloat(bad).putFloat(0).putFloat(0).putFloat(0).putFloat(0).flip();
+            refused(HotfixRowDecoder.Reason.FLOAT, layout, 9, nonfinite);
+        }
+    }
+
+    private static HotfixRowDecoder.Layout raw(
+            HotfixRowDecoder.Layout layout, String warning, java.util.Set<Integer> fitted) {
+        var columns = new ArrayList<>(layout.header().columns());
+        for (int i = 1; i < columns.size(); i++) {
+            var plain = columns.get(i);
+            var field = layout.schema().columns().get(i);
+            columns.set(
+                    i,
+                    new Db2Types.Column(
+                            plain.name(),
+                            plain.kind(),
+                            plain.isId(),
+                            new Db2Types.Interpretation(
+                                    Db2Types.RAW_PHYSICAL_POLICY,
+                                    32,
+                                    false,
+                                    field.bits(),
+                                    Boolean.TRUE.equals(field.unsigned()),
+                                    warning),
+                            null));
+        }
+        var h = layout.header();
+        return new HotfixRowDecoder.Layout(
+                layout.schema(),
+                new Db2Types.Header(
+                        h.schemaVersion(),
+                        h.tableHash(),
+                        h.layoutHash(),
+                        h.declaredRecords(),
+                        h.declaredCopyRecords(),
+                        h.recordSize(),
+                        columns,
+                        h.format()),
+                layout.nativeFlags(),
+                layout.nativeIdFieldIndex(),
+                fitted);
+    }
+
+    @Test
+    void fittedRawColumnsDecodeAtTheirDeclaredWidth() {
+        var plain = layout("int ID\nint A\nint B", "$id,noninline$ID<u32>\nA<u8>\nB<8>");
+        var fitted = raw(plain, Db2Types.UNVERIFIED_RAW_WARNING, java.util.Set.of(1, 2));
+        assertEquals(
+                List.of("9", "0", "127"),
+                decode(fitted, 9, ByteBuffer.allocate(2).put((byte) 0).put((byte) 127).flip())
+                        .row()
+                        .values());
+        assertEquals(
+                List.of("9", "255", "5"),
+                decode(fitted, 9, ByteBuffer.allocate(2).put((byte) 255).put((byte) 5).flip())
+                        .row()
+                        .values());
+        // A negative declared value has no single physical spelling in the base row.
+        refused(
+                HotfixRowDecoder.Reason.RAW_INTEGER,
+                fitted,
+                9,
+                ByteBuffer.allocate(2).put((byte) 1).put((byte) -1).flip());
+        // Not shown to fit the base values: refused as before.
+        refused(
+                HotfixRowDecoder.Reason.COLUMNS,
+                raw(plain, Db2Types.UNVERIFIED_RAW_WARNING, java.util.Set.of(1)),
+                9,
+                ByteBuffer.allocate(2).put((byte) 1).put((byte) 1).flip());
+        // Raw for another reason (explicit evidence or low-bit collisions): always refused.
+        refused(
+                HotfixRowDecoder.Reason.COLUMNS,
+                raw(
+                        plain,
+                        "Candidate integer width is narrower than the physical value width.",
+                        java.util.Set.of(1, 2)),
+                9,
+                ByteBuffer.allocate(2).put((byte) 1).put((byte) 1).flip());
+    }
+
+    @Test
+    void baseTextFitsTheDeclaredWidthOnlyWhenItIsANonNegativeInRangeValue() {
+        var u8 =
+                new Db2Types.Interpretation(
+                        Db2Types.RAW_PHYSICAL_POLICY,
+                        32,
+                        false,
+                        8,
+                        true,
+                        Db2Types.UNVERIFIED_RAW_WARNING);
+        var s8 =
+                new Db2Types.Interpretation(
+                        Db2Types.RAW_PHYSICAL_POLICY,
+                        32,
+                        false,
+                        8,
+                        false,
+                        Db2Types.UNVERIFIED_RAW_WARNING);
+        assertTrue(HotfixRowDecoder.fitsDeclared("0", u8));
+        assertTrue(HotfixRowDecoder.fitsDeclared("255", u8));
+        assertFalse(HotfixRowDecoder.fitsDeclared("256", u8));
+        assertFalse(HotfixRowDecoder.fitsDeclared("4294967295", u8));
+        assertFalse(HotfixRowDecoder.fitsDeclared("-1", u8));
+        assertFalse(HotfixRowDecoder.fitsDeclared("x", u8));
+        assertTrue(HotfixRowDecoder.fitsDeclared("127", s8));
+        assertFalse(HotfixRowDecoder.fitsDeclared("128", s8));
+    }
+
+    @Test
+    void relationColumnsNeverQualifyAsFittedRaw() {
+        var layout = layout("int ID\nint Parent", "$id$ID<u32>\n$relation,noninline$Parent<u16>");
+        var column =
+                new Db2Types.Column(
+                        "Parent",
+                        "integer",
+                        false,
+                        new Db2Types.Interpretation(
+                                Db2Types.RAW_PHYSICAL_POLICY,
+                                32,
+                                false,
+                                16,
+                                true,
+                                Db2Types.UNVERIFIED_RAW_WARNING),
+                        null);
+        assertFalse(HotfixRowDecoder.rawCandidate(column, layout.schema().columns().get(1)));
     }
 
     @Test
@@ -249,6 +393,46 @@ class HotfixRowDecoderTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new HotfixRowDecoder.Limits(65537, 128, 16384, 131072));
+    }
+
+    private static HotfixRowDecoder.Layout wide(int fields) {
+        var columns = new StringBuilder("int ID");
+        var layout = new StringBuilder("$id,noninline$ID<u32>");
+        for (int i = 0; i < fields; i++) {
+            columns.append("\nint C").append(i);
+            layout.append("\nC").append(i).append("<u8>");
+        }
+        return layout(columns.toString(), layout.toString());
+    }
+
+    @Test
+    void wideTablesDecodeUpToTheBaseReadersColumnBound() {
+        assertEquals(
+                new Db2Types.Limits().maxColumns(),
+                HotfixRowDecoder.Limits.MAX_COLUMNS,
+                "the hotfix ceiling is the base reader's flattened-column bound");
+        // PlayerCondition has 224 columns; 223 fields plus the noninline ID.
+        var layout = wide(223);
+        var body = ByteBuffer.allocate(223);
+        for (int i = 0; i < 223; i++) {
+            body.put((byte) (i % 100));
+        }
+        var values = decode(layout, 9, body.flip()).row().values();
+        assertEquals(224, values.size());
+        assertEquals("9", values.get(0));
+        assertEquals("22", values.get(223));
+        // Past the bound (one array flattened to 513 columns plus the ID) is still refused.
+        int over = HotfixRowDecoder.Limits.MAX_COLUMNS + 1;
+        refused(
+                HotfixRowDecoder.Reason.LIMIT,
+                layout("int ID\nint C", "$id,noninline$ID<u32>\nC<u8>[" + over + "]"),
+                9,
+                ByteBuffer.allocate(over));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new HotfixRowDecoder.Limits(
+                                65536, HotfixRowDecoder.Limits.MAX_COLUMNS + 1, 16384, 131072));
     }
 
     @Test

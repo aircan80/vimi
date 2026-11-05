@@ -1,5 +1,6 @@
 package com.vimi.gui;
 
+import com.vibeminer.concepts.talents.TalentTypes;
 import com.vibeminer.formats.images.BlpImageTypes;
 
 /** User-facing explanations from reported evidence; never infers absence or encryption from null. */
@@ -78,6 +79,93 @@ final class TalentSourceDetails {
     static String missingIconReference() {
         return "Icon: no usable file reference was resolved from SpellMisc for this rank. "
                 + "The cause is unconfirmed; this does not establish that an icon is absent or encrypted.";
+    }
+
+    /** The reported reason a talent has no icon reference, or the unconfirmed-cause text. */
+    static String missingIconReference(TalentTypes.Talent talent) {
+        return talent.iconIssue() == null ? missingIconReference()
+                : "Icon: no usable file reference. " + talent.iconIssue()
+                        + " This does not establish that an icon is absent or encrypted.";
+    }
+
+    static String missingIconText(TalentTypes.Talent talent) {
+        if (talent.iconFileDataId() != null) return "Talent icon pending";
+        return talent.iconIssue() == null ? "Talent icon unavailable"
+                : "Talent icon unavailable: " + shortText(talent.iconIssue(), 240);
+    }
+
+    /** A bounded, readable cause for a failed request; null means no cause was returned. */
+    static String failure(Throwable error) {
+        Throwable actual = error;
+        while (actual instanceof java.util.concurrent.CompletionException && actual.getCause() != null)
+            actual = actual.getCause();
+        if (actual == null) return "no cause was returned";
+        String message = actual.getMessage();
+        if ("SPELL_TEXT_OPERATION_LIMIT".equals(message))
+            return "spell text previews are busy (SPELL_TEXT_OPERATION_LIMIT); select the talent again";
+        if (actual instanceof java.util.concurrent.CancellationException) return "the request was canceled";
+        return actual.getClass().getSimpleName()
+                + (message == null || message.isBlank() ? "" : ": " + shortText(message, 200));
+    }
+
+    /**
+     * True when rank 2 has its own source: a second legacy rank spell, or a TraitTree definition
+     * whose rank values can differ. Otherwise "Next rank" would repeat rank 1.
+     */
+    static boolean distinctNextRank(TalentTypes.Talent talent) {
+        if (talent.maxRanks() < 2) return false;
+        if (talent.origin().model() == TalentTypes.Model.TRAIT_TREE)
+            return talent.origin().traitDefinitionId() != null;
+        return talent.rankSpells().size() > 1;
+    }
+
+    static String sameTextForAllRanks(TalentTypes.Talent talent) {
+        return "One spell is recorded for all " + talent.maxRanks()
+                + " ranks; values are shown as recorded, not per rank.";
+    }
+
+    static String buildLabel(String version) {
+        return version == null || version.isBlank() ? "" : "Source build " + version;
+    }
+
+    /**
+     * The tier gate in game wording ("Requires 30 points in Balance Talents"). The reader records
+     * it: the Classic 5-per-tier rule for legacy rows, TraitCond spend requirements for TraitTree
+     * nodes. Trees without a recorded name say "this tree".
+     */
+    static String pointRequirement(TalentTypes.Tree tree, TalentTypes.Talent talent) {
+        Integer points = talent.requiredTreePoints();
+        if (points == null) return null;
+        String name = tree.name() == null || tree.name().isBlank() || tree.name().matches("Talent tree [0-9]+")
+                ? "this tree" : tree.name() + " Talents";
+        return "Requires " + points + (points == 1 ? " point in " : " points in ") + name;
+    }
+
+    /** Game wording: legacy edges name the points needed; trait edges record no rank. */
+    static String prerequisite(TalentTypes.Prerequisite edge, java.util.Map<Long, TalentTypes.Talent> byId) {
+        var target = byId.get(edge.talentId());
+        String name = target != null ? target.name() : "unavailable talent #" + edge.talentId();
+        if (edge.rankIndex() == null) return "Requires " + name;
+        int points = edge.rankIndex() + 1;
+        return "Requires " + points + (points == 1 ? " point in " : " points in ") + name;
+    }
+
+    /** The hover tooltip: the same facts as the detail rail, without loading anything. */
+    static String hoverText(TalentTypes.Tree tree, TalentTypes.Talent talent,
+            java.util.Map<Long, TalentTypes.Talent> byId) {
+        var text = new StringBuilder(talent.name()).append("\nMaximum rank ").append(talent.maxRanks());
+        String points = pointRequirement(tree, talent);
+        if (points != null) text.append('\n').append(points);
+        for (var edge : talent.prerequisites()) text.append('\n').append(prerequisite(edge, byId));
+        String description = talent.description();
+        if (description == null || description.isBlank())
+            text.append("\nDescription unavailable in the readable data.");
+        else if (description.contains("$") || description.contains("|"))
+            text.append("\nSelect to show the description with its values.");
+        else text.append('\n').append(shortText(description, 600));
+        if (talent.iconFileDataId() == null && talent.iconIssue() != null)
+            text.append("\nIcon: ").append(shortText(talent.iconIssue(), 240));
+        return text.append("\nSelect for details and source").toString();
     }
 
     static String missingDescription() {

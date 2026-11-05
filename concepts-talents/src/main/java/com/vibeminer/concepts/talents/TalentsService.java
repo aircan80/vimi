@@ -23,7 +23,7 @@ public final class TalentsService implements BuildTalents {
     public static final int MAX_CLASSES = 64,
             MAX_TABS = 512,
             MAX_TALENTS = 20000,
-            MAX_SPELL_MISC = 200000,
+            MAX_SPELL_MISC = 2_000_000,
             MAX_CLASS_TALENTS = 512;
     private final BuildTables tables;
     private final String version;
@@ -42,13 +42,33 @@ public final class TalentsService implements BuildTalents {
     private CompletableFuture<Void> closing;
     private Data classes, tabs, talents;
     Data spellNames, spellDescriptions;
-    final Map<Long, Long> icons = new HashMap<>();
     private final TraitTrees traits = new TraitTrees(this);
-    private final java.util.Set<Long> checkedIcons = new HashSet<>();
     final java.util.Set<String> partialTables = new HashSet<>();
     private final List<String> coreIssues = new ArrayList<>();
+
+    /** Partial-table notices of metadata tables that were read successfully. */
     private final List<String> metadataIssues = new ArrayList<>();
-    private boolean metadataSchemasLoaded;
+
+    /** Row bound for one SpellMisc icon scan; package-private so tests can lower it. */
+    int spellMiscLimit = MAX_SPELL_MISC;
+
+    /** Built once from a complete SpellMisc scan; null until a scan succeeds. */
+    private SpellIcons spellIcons;
+
+    /** Set only for a deterministic failure (the table exceeds the row bound). */
+    private String spellIconsFailure;
+
+    /** Transient failures, remembered until the next catalog request (Reload). */
+    private String spellIconsUnavailable, spellNamesFailure, spellDescriptionsFailure;
+
+    /** Reload: forget transient optional-table failures so they are read once more. */
+    private void retryFailedMetadata() {
+        spellIconsUnavailable = null;
+        spellNamesFailure = null;
+        spellDescriptionsFailure = null;
+        traits.retryFailedNaming();
+        spellTexts.forgetCached();
+    }
 
     public TalentsService(BuildTables tables, String buildVersion) {
         this.tables = Objects.requireNonNull(tables);
@@ -77,11 +97,47 @@ public final class TalentsService implements BuildTalents {
                                 .join());
     }
 
+    /**
+     * TraitTree talents take their rank values from TraitDefinitionEffectPoints curves; the spell's
+     * own base points describe another rank or none. Without a readable curve for an effect, that
+     * effect's value is shown as unknown rather than as the base points.
+     */
+    @Override
+    public CompletableFuture<com.vibeminer.concepts.effects.SpellTexts.Description> description(
+            TalentTypes.Talent talent, int rank, Cancellation token) {
+        if (talent.origin().model() != TalentTypes.Model.TRAIT_TREE
+                || talent.origin().traitDefinitionId() == null) {
+            return BuildTalents.super.description(talent, rank, token);
+        }
+        if (rank < 1 || rank > talent.maxRanks()) {
+            throw new IllegalArgumentException("Rank is outside the talent's recorded ranks");
+        }
+        long definition = talent.origin().traitDefinitionId();
+        long spell = talent.rankSpells().getFirst();
+        return submit(
+                token,
+                request ->
+                        spellTexts
+                                .description(
+                                        spell,
+                                        traits.rankPoints(definition, rank, request),
+                                        TableTypes.Priority.INTERACTIVE,
+                                        request)
+                                .join());
+    }
+
+    /** Rank values of a trait definition on the caller's thread; for tests. */
+    List<com.vibeminer.concepts.effects.SpellTexts.EffectOverride> rankPoints(
+            long definition, int rank, Cancellation token) {
+        return traits.rankPoints(definition, rank, token);
+    }
+
     @Override
     public CompletableFuture<TalentTypes.Catalog> catalog(Cancellation externalToken) {
         return submit(
                 externalToken,
                 token -> {
+                    retryFailedMetadata();
                     if (!classicModel(tables.build().product(), version)) {
                         return new TalentTypes.Catalog(
                                 TalentTypes.State.UNSUPPORTED,
@@ -192,16 +248,15 @@ public final class TalentsService implements BuildTalents {
                                 selected.stream()
                                         .map(Db2Types.Row::id)
                                         .collect(java.util.stream.Collectors.toSet());
-                        var wantedSpells =
-                                talents.rows.stream()
-                                        .filter(
-                                                row ->
-                                                        tabIds.contains(
-                                                                talents.number(row, "TabID")))
-                                        .map(row -> talents.array(row, "SpellRank", 9))
-                                        .filter(ranks -> ranks.getFirst() != 0)
-                                        .map(List::getFirst)
-                                        .collect(java.util.stream.Collectors.toSet());
+                        var wantedSpells = new HashSet<Long>();
+                        for (var row : talents.rows) {
+                            if (tabIds.contains(talents.number(row, "TabID"))) {
+                                long first = talents.array(row, "SpellRank", 9).getFirst();
+                                if (first != 0) {
+                                    wantedSpells.add(first);
+                                }
+                            }
+                        }
                         optionalMetadata(token, issues, wantedSpells);
                         var result = new ArrayList<TalentTypes.Tree>();
                         int total = 0;
@@ -280,10 +335,15 @@ public final class TalentsService implements BuildTalents {
                                                 tier,
                                                 column,
                                                 spells,
+                                                spells.size(),
                                                 prerequisites,
                                                 name,
                                                 description,
-                                                icons.get(spell)));
+                                                icon(spell),
+                                                TalentTypes.Origin.LEGACY,
+                                                iconIssue(spell),
+                                                // Classic rule for legacy rows: 5 points per tier.
+                                                tier == 0 ? null : tier * 5));
                                 if (++total > MAX_CLASS_TALENTS) {
                                     throw invalid("Class talent count exceeds the supported bound");
                                 }
@@ -392,65 +452,241 @@ public final class TalentsService implements BuildTalents {
                 row.id(), name.isEmpty() ? "Class #" + row.id() : name, icon, color);
     }
 
+    /**
+     * Reads spell names, descriptions and icon references. A failed table is remembered until the
+     * next catalog request (Reload), so switching classes never repeats a failing scan. A SpellMisc
+     * table larger than the row bound stays an explained failure.
+     */
     void optionalMetadata(Cancellation token, List<String> issues, java.util.Set<Long> wanted) {
-        if (!metadataSchemasLoaded) {
+        var failures = new ArrayList<String>();
+        if (spellNames == null && spellNamesFailure == null) {
             try {
-                spellNames = schema("SpellName", token, metadataIssues);
-                spellNames.textField("Name_lang");
-            } catch (Projection failure) {
-                spellNames = null;
-                metadataIssues.add(
-                        "Localized spell names are unavailable: " + failure.getMessage());
+                var names = schema("SpellName", token, metadataIssues);
+                names.textField("Name_lang");
+                spellNames = names;
+            } catch (RuntimeException failure) {
+                spellNamesFailure =
+                        "Localized spell names are unavailable: "
+                                + cause(failure)
+                                + ". Reload to retry.";
             }
+        }
+        if (spellNamesFailure != null) {
+            failures.add(spellNamesFailure);
+        }
+        if (spellDescriptions == null && spellDescriptionsFailure == null) {
             try {
-                spellDescriptions = schema("Spell", token, metadataIssues);
-                spellDescriptions.textField("Description_lang");
-            } catch (Projection failure) {
-                spellDescriptions = null;
-                metadataIssues.add("Spell descriptions are unavailable: " + failure.getMessage());
+                var descriptions = schema("Spell", token, metadataIssues);
+                descriptions.textField("Description_lang");
+                spellDescriptions = descriptions;
+            } catch (RuntimeException failure) {
+                spellDescriptionsFailure =
+                        "Spell descriptions are unavailable: "
+                                + cause(failure)
+                                + ". Reload to retry.";
             }
-            metadataSchemasLoaded = true;
         }
-        issues.addAll(metadataIssues);
-        var requested = new HashSet<>(wanted);
-        requested.removeAll(checkedIcons);
-        if (requested.isEmpty()) {
-            return;
+        if (spellDescriptionsFailure != null) {
+            failures.add(spellDescriptionsFailure);
         }
-        var found = new HashMap<Long, Long>();
-        try {
-            Data misc = schema("SpellMisc", token, issues);
-            misc.integerField("SpellID", 1);
-            misc.integerField("DifficultyID", 1);
-            misc.integerField("SpellIconFileDataID", 1);
-            var ambiguous = new HashSet<Long>();
-            stream(
-                    misc,
-                    MAX_SPELL_MISC,
-                    token,
-                    row -> {
-                        long spell = misc.number(row, "SpellID");
-                        if (!requested.contains(spell) || misc.number(row, "DifficultyID") != 0) {
-                            return;
-                        }
-                        long icon = misc.number(row, "SpellIconFileDataID");
-                        if (icon <= 0 || icon > 0xffffffffL) {
-                            return;
-                        }
-                        if (found.putIfAbsent(spell, icon) != null) {
-                            ambiguous.add(spell);
-                        }
-                    });
-            for (long spell : ambiguous) {
-                found.remove(spell);
+        if (spellIcons == null && spellIconsFailure == null && spellIconsUnavailable == null) {
+            try {
+                spellIcons = scanIcons(token);
+            } catch (RuntimeException failure) {
+                if (failure instanceof Projection projection
+                        && "TALENTS_TABLE_LIMIT".equals(projection.code)) {
+                    spellIconsFailure =
+                            "Spell icon references are unavailable: "
+                                    + failure.getMessage()
+                                    + ", the supported scan bound.";
+                } else {
+                    spellIconsUnavailable =
+                            "Spell icon references are unavailable: "
+                                    + cause(failure)
+                                    + ". Reload to retry.";
+                }
             }
-            if (!ambiguous.isEmpty()) {
-                issues.add("Ambiguous spell icons are omitted.");
+        }
+        if (spellIconsFailure != null) {
+            failures.add(spellIconsFailure);
+        } else if (spellIcons == null && spellIconsUnavailable != null) {
+            failures.add(spellIconsUnavailable);
+        }
+        for (String issue : metadataIssues) {
+            if (!issues.contains(issue)) {
+                issues.add(issue);
             }
-            icons.putAll(found);
-            checkedIcons.addAll(requested);
-        } catch (Projection failure) {
-            issues.add("Spell icon references are unavailable: " + failure.getMessage());
+        }
+        if (spellIcons != null) {
+            long ambiguous = wanted.stream().filter(spellIcons::ambiguous).count();
+            if (ambiguous > 0) {
+                issues.add(
+                        "Ambiguous spell icons are omitted: "
+                                + ambiguous
+                                + " talent spell(s) record different SpellMisc icons.");
+            }
+        }
+        issues.addAll(failures);
+    }
+
+    /**
+     * A readable cause for an optional-table failure. Cancellation is never optional: it is
+     * rethrown so the request ends.
+     */
+    static String cause(RuntimeException failure) {
+        Throwable actual = failure;
+        while (actual instanceof java.util.concurrent.CompletionException
+                && actual.getCause() != null) {
+            actual = actual.getCause();
+        }
+        if (actual instanceof java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        }
+        if (failure instanceof Projection) {
+            return failure.getMessage();
+        }
+        String message = actual.getMessage();
+        return "the table read failed ("
+                + actual.getClass().getSimpleName()
+                + (message == null || message.isBlank()
+                        ? ")"
+                        : ": "
+                                + (message.length() > 200
+                                        ? message.substring(0, 200) + "…"
+                                        : message)
+                                + ")");
+    }
+
+    private SpellIcons scanIcons(Cancellation token) {
+        Data misc = schema("SpellMisc", token, metadataIssues);
+        misc.integerField("SpellID", 1);
+        misc.integerField("DifficultyID", 1);
+        misc.integerField("SpellIconFileDataID", 1);
+        var pairs = new SpellIcons.Builder();
+        stream(
+                misc,
+                spellMiscLimit,
+                token,
+                row -> {
+                    long spell = misc.number(row, "SpellID");
+                    if (spell <= 0
+                            || spell > 0xffffffffL
+                            || misc.number(row, "DifficultyID") != 0) {
+                        return;
+                    }
+                    long icon = misc.number(row, "SpellIconFileDataID");
+                    if (icon <= 0 || icon > 0xffffffffL) {
+                        return;
+                    }
+                    pairs.add(spell, icon);
+                });
+        return pairs.build(partialTables.contains("SpellMisc"));
+    }
+
+    /** The single recorded icon of a spell, or null. */
+    Long icon(long spell) {
+        return spellIcons == null ? null : spellIcons.icon(spell);
+    }
+
+    /** Why a spell has no icon, or null when it has one. */
+    String iconIssue(long spell) {
+        if (spellIcons == null) {
+            return spellIconsFailure != null
+                    ? spellIconsFailure
+                    : spellIconsUnavailable != null
+                            ? spellIconsUnavailable
+                            : "Spell icon references were not read.";
+        }
+        return spellIcons.issue(spell);
+    }
+
+    /**
+     * Distinct (spell, icon) pairs from DifficultyID 0 SpellMisc rows, sorted by spell. One scan
+     * serves every class; identical duplicate rows collapse to one pair.
+     */
+    static final class SpellIcons {
+        private final long[] pairs;
+        private final boolean partial;
+
+        private SpellIcons(long[] pairs, boolean partial) {
+            this.pairs = pairs;
+            this.partial = partial;
+        }
+
+        boolean ambiguous(long spell) {
+            return count(spell, first(spell)) > 1;
+        }
+
+        private int first(long spell) {
+            int lo = 0, hi = pairs.length;
+            while (lo < hi) {
+                int mid = (lo + hi) >>> 1;
+                if (pairs[mid] >>> 32 < spell) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            return lo;
+        }
+
+        private int count(long spell, int at) {
+            int end = at;
+            while (end < pairs.length && pairs[end] >>> 32 == spell) {
+                end++;
+            }
+            return end - at;
+        }
+
+        Long icon(long spell) {
+            int at = first(spell);
+            return count(spell, at) == 1 ? pairs[at] & 0xffffffffL : null;
+        }
+
+        String issue(long spell) {
+            int at = first(spell);
+            int count = count(spell, at);
+            if (count == 0) {
+                return "SpellMisc records no DifficultyID 0 icon for spell "
+                        + spell
+                        + (partial ? " in its readable rows; protected rows may hold one." : ".");
+            }
+            return count > 1
+                    ? "SpellMisc records "
+                            + count
+                            + " different DifficultyID 0 icons for spell "
+                            + spell
+                            + "; none is chosen."
+                    : null;
+        }
+
+        static final class Builder {
+            private long[] values = new long[1024];
+            private int count;
+
+            void add(long spell, long icon) {
+                if (count == values.length) {
+                    values = java.util.Arrays.copyOf(values, Math.multiplyExact(count, 2));
+                }
+                values[count++] = spell << 32 | icon;
+            }
+
+            SpellIcons build(boolean partial) {
+                // Spell IDs of 2^31 and above make negative longs; sort as unsigned values.
+                long[] sorted = java.util.Arrays.copyOf(values, count);
+                for (int i = 0; i < sorted.length; i++) {
+                    sorted[i] ^= Long.MIN_VALUE;
+                }
+                java.util.Arrays.sort(sorted);
+                int kept = 0;
+                for (int i = 0; i < sorted.length; i++) {
+                    long value = sorted[i] ^ Long.MIN_VALUE;
+                    if (kept == 0 || sorted[kept - 1] != value) {
+                        sorted[kept++] = value;
+                    }
+                }
+                return new SpellIcons(java.util.Arrays.copyOf(sorted, kept), partial);
+            }
         }
     }
 
@@ -458,9 +694,14 @@ public final class TalentsService implements BuildTalents {
         try {
             var row = optionalRow(data, id, token, issues);
             return row == null ? null : data.text(row, field);
-        } catch (Projection failure) {
+        } catch (RuntimeException failure) {
             String issue =
-                    data.name + ": some optional spell text is unreadable (" + failure.code + ").";
+                    data.name
+                            + ": some optional spell text is unreadable ("
+                            + (failure instanceof Projection projection
+                                    ? projection.code
+                                    : cause(failure))
+                            + "). Reload to retry.";
             if (!issues.contains(issue)) {
                 issues.add(issue);
             }
@@ -549,6 +790,27 @@ public final class TalentsService implements BuildTalents {
         token.check();
         return tables.schema(TableTypes.Ref.forName(name), TableTypes.Priority.INTERACTIVE, token)
                 .join();
+    }
+
+    /**
+     * Records of a table that the local client hotfix cache changes but the overlay could not
+     * decode (shown as UNKNOWN). Zero when no cache applies or the count is unavailable.
+     */
+    int hotfixUnknownRows(String name, Cancellation token) {
+        token.check();
+        try {
+            return tables.hotfixInfo(
+                            TableTypes.Ref.forName(name),
+                            null,
+                            TableTypes.Priority.INTERACTIVE,
+                            token)
+                    .join()
+                    .map(info -> info.unavailable() == null ? info.unknownRows() : 0)
+                    .orElse(0);
+        } catch (RuntimeException failure) {
+            cause(failure); // rethrows cancellation
+            return 0;
+        }
     }
 
     TableTypes.RowResult get(String name, long id, Cancellation token) {
@@ -787,6 +1049,36 @@ public final class TalentsService implements BuildTalents {
 
         void textField(String name) {
             field(name, 1, false);
+        }
+
+        /** A verified or reviewed FLOAT field read as decimal text. */
+        void floatField(String name, int count) {
+            var fields = schema.columns().stream().filter(f -> f.name().equals(name)).toList();
+            if (fields.size() != 1) {
+                throw unsupported(name + " is not one verified field");
+            }
+            var field = fields.getFirst();
+            if (!field.verifiedName() && !reviewedLayout
+                    || field.arrayLength() != count
+                    || field.kind() != TableSchema.ColumnKind.FLOAT) {
+                throw unsupported(name + " has an unsupported type or cardinality");
+            }
+            for (int i = 0; i < count; i++) {
+                var column = columns.get(index(count == 1 ? name : name + "[" + i + "]"));
+                if (!column.kind().equals("float")
+                        || column.interpretation() != null
+                        || column.isId()) {
+                    throw unsupported(name + " is not a plain matching column");
+                }
+            }
+        }
+
+        java.math.BigDecimal decimal(Db2Types.Row row, String field) {
+            try {
+                return new java.math.BigDecimal(text(row, field));
+            } catch (NumberFormatException e) {
+                throw invalid("Invalid decimal " + field);
+            }
         }
 
         int index(String field) {

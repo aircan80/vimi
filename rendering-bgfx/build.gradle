@@ -73,6 +73,8 @@ dependencies {
 // Fast unit and in-memory contract tests are the normal development command.
 tasks.withType(Test).configureEach {
     useJUnitPlatform()
+    // SymbolicLinks fails instead of skipping under CI, so a cached local result must not be reused.
+    inputs.property('ci', providers.environmentVariable('CI').orElse(''))
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     maxParallelForks = 1
     def sqliteLibrary = providers.gradleProperty('sqliteLibrary')

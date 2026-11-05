@@ -428,8 +428,8 @@ public final class TalentsUiTest {
                                                                         + " readable data.")
                                                 || !tooltipText(scene)
                                                         .contains(
-                                                                "Requires unavailable talent #999 ·"
-                                                                        + " rank 1"))
+                                                                "Requires 1 point in unavailable"
+                                                                        + " talent #999"))
                                             throw new AssertionError(
                                                     "Missing description/prerequisite must remain"
                                                             + " explicit");

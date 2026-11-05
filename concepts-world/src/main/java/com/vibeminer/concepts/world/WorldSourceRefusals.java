@@ -17,6 +17,11 @@ final class WorldSourceRefusals {
         WATER_ROOT_BINDING(WorldTerrainStreaming.Refusal.Reason.SOURCE_INVALIDATED),
         OUTPUT_CREDIT(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         GLOBAL_ASSET_CAPACITY(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
+        /**
+         * A global map, root, group or image read needs the network (offline, no CDN route, a
+         * failed store or a fetch that stopped mid-read); its detail is user-safe fixed text.
+         */
+        GLOBAL_ASSET_PENDING(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         GEOMETRY_CREDIT(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         SOURCE_WORKER(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         MATERIAL_POOL(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
@@ -54,6 +59,14 @@ final class WorldSourceRefusals {
 
     static WorldTerrainStreaming.Refusal at(Site site) {
         return WorldTerrainStreaming.refusal(site);
+    }
+
+    /**
+     * A refusal that also says which check failed; see {@link
+     * WorldTerrainStreaming.Refusal#detail}.
+     */
+    static WorldTerrainStreaming.Refusal at(Site site, String detail) {
+        return WorldTerrainStreaming.refusal(site, detail);
     }
 
     private record Leaf(Throwable value, boolean clean, boolean bounded) {}
