@@ -35,23 +35,19 @@ Turn outdoor buildings off with `-Dvimi.world.exteriors=false`.
 - Keep machine load bounded. The Linux box froze once from too many parallel agents
   and Gradle daemons. Run at most about 4 or 5 heavy jobs at once.
 
-## Still being finished on Linux: do not edit these branches
+## State when Linux handed over
 
-The Linux session is finishing these two PRs and will merge them once their reviews and CI pass. After that it will publish **v0.1.0-alpha.27** from main. Neither PR touches audio, World rendering or the object pass. Pull main once they land.
+Every PR from the Linux session is merged, including #238 (JavaFX natives in the
+app image, pinned deb `Depends`) and #241 (cn region CDN fallback). The Linux
+session publishes **v0.1.0-alpha.27** from main. After that, nothing is in flight
+on Linux. Pull main and continue here.
 
-| PR | Branch | What |
-| --- | --- | --- |
-| #238 | `fix/javafx-natives-in-app-image` | JavaFX natives ship inside the app image instead of `~/.openjfx/cache`. It also pins the deb `Depends` so the deb installs on Debian 12/13 and Ubuntu 22.04/24.04. The released alpha.26 debs don't install on some of these. |
-| #241 | `fix/cn-region-cdn-fallback` | cn-region builds borrow an accepted CDN route that serves the same CDN config (#240) |
-
-Merged since alpha.26 and going into alpha.27:
-- #231: one commit per generated table
-- #239: WAL + NORMAL durability policy
-- #234: click to inspect objects
-- #236: real-data doodads
-- #237: fast race switching
-- #233: review follow-ups
-- #235: Windows CI flake fixes
+Packaging follow-ups from the #238 review (low priority):
+- Add `libharfbuzz0b` to `DEB_DEPENDS`. On arm64, the glass and font natives link it directly.
+- Consider `Recommends: libvulkan1`. bgfx `dlopen`s it, so `readelf` can't see it.
+- Make the packager compute NEEDED sonames from every image ELF and the native JARs,
+  and fail on unmapped ones.
+- On macOS, `--image-only` skips `codesign --verify`.
 
 ## Windows issues to work on
 
@@ -75,7 +71,7 @@ Merged since alpha.26 and going into alpha.27:
 4. **The object pass fails silently at startup.** `BgfxWorldStreamRenderer.objectPass`
    swallows any shader or texture-check failure, and then every tile reports
    "building objects failed". Make it log and show the reason.
-5. **Packaging (#238).** Once merged, install the Windows MSI from a prerelease and
+5. **Packaging (#238, merged).** Install the Windows MSI from a prerelease and
    check that JavaFX natives load from the app folder, not `%USERPROFILE%\.openjfx\cache`.
    Run with `-Djavafx.verbose=true`.
 6. **Windows CI flakes still seen after #235:** `gpuPreviewServiceTest` (orbit controls),
