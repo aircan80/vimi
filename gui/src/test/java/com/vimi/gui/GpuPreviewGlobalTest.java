@@ -1,5 +1,8 @@
 package com.vimi.gui;
 
+import com.vibeminer.concepts.world.AuthoredGlobalSource;
+import com.vibeminer.rendering.bgfx.WorldGlobalStatus;
+import com.vibeminer.rendering.bgfx.WorldGlobalTransport;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -22,6 +25,9 @@ public final class GpuPreviewGlobalTest {
             replacementWaitsForHeldGlobalPreparation(root);
             messagesNeverExposeRawCauses();
             onlyPureCancellationChainsEndAStoppedPreparationClosed(root);
+            capabilityUnavailableChildFailsWithItsMessageAndKeepsTheOwner(root);
+            readyMessagesSayWhatWasLeftOut();
+            aNetworkReadFailsWithTheRetryMessage(root);
         } finally {
             try (var files = Files.walk(root)) {
                 for (var file : files.sorted(java.util.Comparator.reverseOrder()).toList()) {
@@ -252,6 +258,10 @@ public final class GpuPreviewGlobalTest {
     }
 
     private static void messagesNeverExposeRawCauses() {
+        require(
+                GpuPreviewService.globalMessage(new GpuPreviewService.GlobalUnavailable("x"))
+                        .equals("x"),
+                "explicit unavailable text");
         String raw =
                 GpuPreviewService.globalMessage(
                         new IllegalStateException("/home/user/secret/path provider failure"));
@@ -262,6 +272,200 @@ public final class GpuPreviewGlobalTest {
                                         new java.util.concurrent.CancellationException()))
                         .equals("Interior preparation canceled"),
                 "cancellation message");
+    }
+
+    /** Scripted child: consumed, GLOBAL_UNAVAILABLE CAPABILITY, closed, clean exit. */
+    private static final class UnavailableChild extends Process {
+        private final java.io.ByteArrayInputStream stdout;
+        private final CompletableFuture<Integer> exit = new CompletableFuture<>();
+
+        UnavailableChild(java.util.List<String> argv) {
+            var id =
+                    new WorldGlobalStatus.Identity(
+                            argv.get(argv.indexOf("--global-nonce") + 1),
+                            argv.get(argv.indexOf("--global-scope") + 1),
+                            argv.get(argv.indexOf("--global-sha256") + 1));
+            String lines =
+                    new WorldGlobalStatus.InputConsumed(id.nonce(), id.fileSha256()).protocolLine()
+                            + "\n"
+                            + new WorldGlobalStatus.Unavailable(
+                                            id, WorldGlobalStatus.Code.CAPABILITY)
+                                    .protocolLine()
+                            + "\n"
+                            + new WorldGlobalStatus.Closed(id).protocolLine()
+                            + "\n";
+            stdout =
+                    new java.io.ByteArrayInputStream(
+                            lines.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            // Exit once the scripted records are out, as a real child would.
+            CompletableFuture.delayedExecutor(300, TimeUnit.MILLISECONDS)
+                    .execute(() -> exit.complete(0));
+        }
+
+        @Override
+        public java.io.OutputStream getOutputStream() {
+            return java.io.OutputStream.nullOutputStream();
+        }
+
+        @Override
+        public java.io.InputStream getInputStream() {
+            return stdout;
+        }
+
+        @Override
+        public java.io.InputStream getErrorStream() {
+            return java.io.InputStream.nullInputStream();
+        }
+
+        @Override
+        public int waitFor() {
+            return exit.join();
+        }
+
+        @Override
+        public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException {
+            try {
+                exit.get(timeout, unit);
+                return true;
+            } catch (java.util.concurrent.TimeoutException e) {
+                return false;
+            } catch (java.util.concurrent.ExecutionException e) {
+                throw new AssertionError(e);
+            }
+        }
+
+        @Override
+        public int exitValue() {
+            if (!exit.isDone()) {
+                throw new IllegalThreadStateException();
+            }
+            return exit.join();
+        }
+
+        @Override
+        public boolean isAlive() {
+            return !exit.isDone();
+        }
+
+        @Override
+        public void destroy() {
+            exit.complete(1);
+        }
+
+        @Override
+        public Process destroyForcibly() {
+            exit.complete(1);
+            return this;
+        }
+    }
+
+    private static void capabilityUnavailableChildFailsWithItsMessageAndKeepsTheOwner(Path root)
+            throws Exception {
+        var launches = new AtomicInteger();
+        var service = service(root, launches);
+        service.globalStarter(
+                argv -> {
+                    launches.incrementAndGet();
+                    return new UnavailableChild(argv);
+                });
+        var states = new ConcurrentLinkedQueue<GpuPreviewService.Status>();
+        var opened = new AtomicInteger();
+        try (var fixture = new AuthoredGlobalSource()) {
+            var done =
+                    service.openGlobal(
+                            new Object(),
+                            (parent, cancel) ->
+                                    WorldGlobalSourceBridge.prepare(
+                                            fixture.source(), fixture.scope(), parent, cancel),
+                            session -> opened.incrementAndGet(),
+                            states::add);
+            try {
+                done.get(15, TimeUnit.SECONDS);
+                throw new AssertionError("An unavailable GPU must not end as a clean stop");
+            } catch (java.util.concurrent.ExecutionException expected) {
+                require(
+                        expected.getCause() instanceof WorldGlobalTransport.Unavailable,
+                        "classified cause " + expected.getCause());
+            }
+        }
+        require(launches.get() == 1 && opened.get() == 1, "one child launched and opened");
+        var last = states.stream().reduce((a, b) -> b).orElseThrow();
+        require(
+                last.state() == GpuPreviewService.State.FAILED
+                        && last.message().equals(GpuPreviewService.GPU_UNAVAILABLE),
+                "final unavailable state " + last);
+        try (var left = Files.list(root)) {
+            require(
+                    left.noneMatch(
+                            p ->
+                                    p.getFileName().toString().startsWith("global-frames-")
+                                            || p.getFileName()
+                                                    .toString()
+                                                    .startsWith("global-source-")),
+                    "request directories drained");
+        }
+        // Not fail-closed: the same service still runs a successor request.
+        var successor =
+                service.openGlobal(
+                        new Object(),
+                        (parent, cancel) -> {
+                            throw new GpuPreviewService.GlobalUnavailable("successor ran");
+                        },
+                        session -> {},
+                        s -> {});
+        try {
+            successor.get(5, TimeUnit.SECONDS);
+            throw new AssertionError("successor must fail with its own message");
+        } catch (java.util.concurrent.ExecutionException expected) {
+            require(expected.getCause().getMessage().equals("successor ran"), "successor ran");
+        }
+        service.closeAsync().get(5, TimeUnit.SECONDS);
+    }
+
+    private static void aNetworkReadFailsWithTheRetryMessage(Path root) throws Exception {
+        var launches = new AtomicInteger();
+        var service = service(root, launches);
+        var states = new ConcurrentLinkedQueue<GpuPreviewService.Status>();
+        try (var fixture = new AuthoredGlobalSource()) {
+            fixture.failOpen(AuthoredGlobalSource.GROUP,
+                    com.vibeminer.files.FileTypes.FileReadState.NEEDS_NETWORK, null);
+            var done = service.openGlobal(new Object(),
+                    (parent, cancel) -> WorldGlobalSourceBridge.prepare(
+                            fixture.source(), fixture.scope(), parent, cancel),
+                    session -> {}, states::add);
+            try {
+                done.get(15, TimeUnit.SECONDS);
+                throw new AssertionError("A network read must not open the interior");
+            } catch (java.util.concurrent.ExecutionException expected) {
+                require(GpuPreviewService.globalMessage(expected.getCause()).equals(
+                        "Can't show this interior yet: some of the interior's files need the"
+                                + " network (offline or not downloaded yet); try again when online"),
+                        GpuPreviewService.globalMessage(expected.getCause()));
+            }
+        }
+        var last = states.stream().reduce((a, b) -> b).orElseThrow();
+        require(last.state() == GpuPreviewService.State.FAILED
+                && last.message().startsWith("Can't show this interior yet:"), "state " + last);
+        require(launches.get() == 0, "no child for a refused source");
+        service.closeAsync().get(5, TimeUnit.SECONDS);
+    }
+
+    private static void readyMessagesSayWhatWasLeftOut() {
+        require(GpuPreviewService.readyMessage(8, java.util.Map.of(), 0).equals("GPU interior"),
+                "complete interior");
+        var few = new java.util.TreeMap<String, Integer>(java.util.Map.of(
+                "unsupported group layout", 3, "the group file is not readable", 1));
+        require(GpuPreviewService.readyMessage(44, few, 0).equals(
+                "GPU interior · 4 of 48 WMO groups not drawn (unsupported group layout, …)"),
+                GpuPreviewService.readyMessage(44, few, 0));
+        require(GpuPreviewService.readyMessage(3, java.util.Map.of("no group file is listed", 5), 2)
+                .equals("GPU interior · incomplete: only 3 of 8 WMO groups drawn"
+                        + " (no group file is listed) · 2 glow or blended surfaces not drawn"),
+                "more than half missing warns, blended surfaces counted");
+        require(GpuPreviewService.readyMessage(4, java.util.Map.of("x", 4), 1)
+                        .equals("GPU interior · 4 of 8 WMO groups not drawn (x)"
+                                + " · 1 glow or blended surface not drawn"),
+                "exactly half is not yet the strong warning");
     }
 
     private static void require(boolean condition, String message) {

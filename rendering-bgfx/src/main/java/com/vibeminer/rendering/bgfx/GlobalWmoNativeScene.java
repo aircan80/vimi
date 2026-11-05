@@ -1,5 +1,7 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.GlobalInteriorLimits;
+
 /**
  * Immutable standalone draw resources on the creating native thread. This interface allocates no
  * context, target, mapping or readback ring and grants no Source authority. The enclosing owner
@@ -7,9 +9,15 @@ package com.vibeminer.rendering.bgfx;
  */
 interface GlobalWmoNativeScene extends AutoCloseable {
     int WIDTH = 800, HEIGHT = 500;
-    long CPU_MESH = 1_048_576, GPU_MESH = 851_968, QUEUED_MESH = 851_968;
-    long DIRECT_MESH = 851_968, CPU_RGBA = 4_718_592, GPU_RGBA = 4_718_592;
-    long QUEUED_RGBA = 4_718_592, DIRECT_IMAGE = 262_144;
+
+    /** Mesh bytes: 20-byte vertices plus 32-bit indices at the profile bounds. */
+    long GPU_MESH =
+            (long) GlobalInteriorLimits.VERTICES * 20
+                    + (long) GlobalInteriorLimits.INDICES * WorldGlobalLayout.INDEX_BYTES;
+
+    long CPU_MESH = GPU_MESH, QUEUED_MESH = GPU_MESH, DIRECT_MESH = GPU_MESH;
+    long CPU_RGBA = (long) GlobalInteriorLimits.PIXELS * 4, GPU_RGBA = CPU_RGBA;
+    long QUEUED_RGBA = CPU_RGBA, DIRECT_IMAGE = GlobalInteriorLimits.IMAGE_PIXELS * 4L;
     long FILE_BUFFER = 262_144, CONSTRUCTOR_COPY = 262_144, CODEC_COPY = 262_144;
     long GEOMETRY_SCRATCH = 1_048_576, RESOURCE_RESERVE = 2_097_152;
     long FRAME_OWNERS = 19_200_256;

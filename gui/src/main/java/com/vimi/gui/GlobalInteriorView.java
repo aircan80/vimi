@@ -363,7 +363,9 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
             return;
         }
         switch (update.state()) {
-            case READY -> status.setText("GPU interior · inspection camera, not a client entrance");
+            case READY ->
+                    status.setText(
+                            update.message() + " · inspection camera, not a client entrance");
             case FAILED, CLOSED -> {
                 stopPolling();
                 // A jump would no longer reach the renderer and must not hide this message.

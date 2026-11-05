@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.GlobalInteriorLimits;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -49,7 +50,7 @@ final class WorldGlobalFileCodec {
         var b = ByteBuffer.allocate(1024).order(ByteOrder.LITTLE_ENDIAN);
         var o = c.offsets();
         b.put(MAGIC)
-                .putInt(1)
+                .putInt(WorldGlobalLayout.PROFILE)
                 .putInt(1024)
                 .putLong(o.actualBytes())
                 .putInt(1)
@@ -104,10 +105,6 @@ final class WorldGlobalFileCodec {
                 .putInt(0)
                 .putInt((int) uid)
                 .put(raw);
-        b.position(448);
-        for (var image : d.images()) {
-            b.put(HEX.parseHex(image.originalRgbaSha256()));
-        }
         return b.array();
     }
 
@@ -174,7 +171,8 @@ final class WorldGlobalFileCodec {
                     .put((byte) im.alphaMin())
                     .put((byte) im.alphaMax())
                     .putInt(im.nonopaque())
-                    .put(HEX.parseHex(im.opaqueRgbaSha256()));
+                    .put(HEX.parseHex(im.opaqueRgbaSha256()))
+                    .put(HEX.parseHex(im.originalRgbaSha256()));
             rgba += length;
         }
         WorldGlobalLayout.require(rgba == c.offsets().actualBytes() && !b.hasRemaining());
@@ -189,7 +187,7 @@ final class WorldGlobalFileCodec {
             check(raw[n] == MAGIC[n]);
         }
         check(
-                b.getInt(8) == 1
+                b.getInt(8) == WorldGlobalLayout.PROFILE
                         && b.getInt(12) == 1024
                         && b.getLong(16) == expected.length()
                         && b.getInt(24) == 1
@@ -207,20 +205,26 @@ final class WorldGlobalFileCodec {
         check(identity.equals(expected.identity()));
         long map = b.getLong(40);
         check(map >= 0 && map <= 0xffff_ffffL);
-        int images = number(b.getInt(240), 18), rgba = number(b.getInt(340), expected.length());
+        int images = number(b.getInt(240), GlobalInteriorLimits.IMAGES),
+                rgba = number(b.getInt(340), expected.length());
         int imageBytes = expected.length() - rgba;
         check(imageBytes >= 0 && imageBytes % 4 == 0);
         var counts =
                 checked(
                         () ->
                                 new WorldGlobalLayout.Counts(
-                                        numberUnchecked(b.getInt(228), 24),
-                                        numberUnchecked(b.getInt(232), 8),
-                                        numberUnchecked(b.getInt(236), 64),
+                                        numberUnchecked(
+                                                b.getInt(228), GlobalInteriorLimits.MATERIALS),
+                                        numberUnchecked(b.getInt(232), GlobalInteriorLimits.GROUPS),
+                                        numberUnchecked(
+                                                b.getInt(236), GlobalInteriorLimits.BATCHES),
                                         images,
-                                        numberUnchecked(b.getInt(244), 32768),
-                                        numberUnchecked(b.getInt(248), 98304),
-                                        numberUnchecked(b.getInt(256), 32768),
+                                        numberUnchecked(
+                                                b.getInt(244), GlobalInteriorLimits.VERTICES),
+                                        numberUnchecked(
+                                                b.getInt(248), GlobalInteriorLimits.INDICES),
+                                        numberUnchecked(
+                                                b.getInt(256), GlobalInteriorLimits.TRIANGLES),
                                         imageBytes / 4));
         check(
                 b.getInt(224) == counts.sources()
@@ -263,7 +267,7 @@ final class WorldGlobalFileCodec {
         for (int at = 432; at < 448; at++) {
             check(raw[at] == 0);
         }
-        for (int at = 448 + images * 32; at < 1024; at++) {
+        for (int at = 448; at < 1024; at++) {
             check(raw[at] == 0);
         }
         return new Header(
@@ -330,12 +334,12 @@ final class WorldGlobalFileCodec {
         var groups = new ArrayList<WorldGlobalHashes.Group>(c.groups());
         var hashes = new ArrayList<String>(c.groups());
         for (int n = 0; n < c.groups(); n++) {
-            int vertex = number(b.getInt(), 32768),
-                    vertices = number(b.getInt(), 16384),
-                    index = number(b.getInt(), 98304),
-                    indices = number(b.getInt(), 49152),
-                    batch = number(b.getInt(), 64),
-                    batches = number(b.getInt(), 64);
+            int vertex = number(b.getInt(), GlobalInteriorLimits.VERTICES),
+                    vertices = number(b.getInt(), GlobalInteriorLimits.GROUP_VERTICES),
+                    index = number(b.getInt(), GlobalInteriorLimits.INDICES),
+                    indices = number(b.getInt(), GlobalInteriorLimits.GROUP_INDICES),
+                    batch = number(b.getInt(), GlobalInteriorLimits.BATCHES),
+                    batches = number(b.getInt(), GlobalInteriorLimits.GROUP_BATCHES);
             check(
                     Short.toUnsignedInt(b.getShort()) == n
                             && Short.toUnsignedInt(b.getShort()) == 2 + n);
@@ -352,7 +356,8 @@ final class WorldGlobalFileCodec {
         for (int n = 0; n < c.batches(); n++) {
             int group = Byte.toUnsignedInt(b.get()), material = Byte.toUnsignedInt(b.get());
             check(b.getShort() == 0);
-            int first = number(b.getInt(), 98304), count = number(b.getInt(), 98304);
+            int first = number(b.getInt(), GlobalInteriorLimits.INDICES),
+                    count = number(b.getInt(), GlobalInteriorLimits.INDICES);
             check(b.getInt() == 0);
             batches.add(checked(() -> new WorldGlobalHashes.Batch(group, material, first, count)));
         }
@@ -371,20 +376,19 @@ final class WorldGlobalFileCodec {
             check(b.get() == 1 && b.get() == 0);
             int mips = Byte.toUnsignedInt(b.get()),
                     at = number(b.getInt(), WorldGlobalLayout.MAX_ENCODED_BYTES),
-                    length = number(b.getInt(), 262144);
+                    length = number(b.getInt(), GlobalInteriorLimits.IMAGE_PIXELS * 4);
             check(
                     at == offset
                             && width >= 1
-                            && width <= 256
+                            && width <= GlobalInteriorLimits.IMAGE_SIDE
                             && height >= 1
-                            && height <= 256
+                            && height <= GlobalInteriorLimits.IMAGE_SIDE
                             && length == width * height * 4
                             && Short.toUnsignedInt(b.getShort()) == 2 + c.groups() + n);
             int min = Byte.toUnsignedInt(b.get()),
                     max = Byte.toUnsignedInt(b.get()),
-                    nonopaque = number(b.getInt(), 65536);
-            String original = HEX.formatHex(h.bytes(), 448 + n * 32, 480 + n * 32),
-                    opaque = hex(b, 32);
+                    nonopaque = number(b.getInt(), GlobalInteriorLimits.IMAGE_PIXELS);
+            String opaque = hex(b, 32), original = hex(b, 32);
             images.add(
                     checked(
                             () ->
@@ -454,12 +458,12 @@ final class WorldGlobalFileCodec {
 
     static boolean position(float value) {
         return Float.isFinite(value)
-                && Math.abs(value) <= 4096
+                && Math.abs(value) <= GlobalInteriorLimits.POSITION
                 && (value != 0 || Float.floatToRawIntBits(value) == 0);
     }
 
     static boolean uv(float value) {
-        return Float.isFinite(value) && Math.abs(value) <= 16;
+        return Float.isFinite(value) && Math.abs(value) <= GlobalInteriorLimits.UV;
     }
 
     private static String hex(ByteBuffer b, int count) {
