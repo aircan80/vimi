@@ -1,6 +1,6 @@
 # Handoff: continue development on Windows
 
-Written 2026-11-05 from the Linux session. Main is at `bc5eb911` (after #239, #237 and #236). The
+Written 2026-11-05 from the Linux session. Main includes everything through #236. The
 latest release is v0.1.0-alpha.26.
 
 ## Setup
@@ -35,14 +35,23 @@ Turn outdoor buildings off with `-Dvimi.world.exteriors=false`.
 - Keep machine load bounded. The Linux box froze once from too many parallel agents
   and Gradle daemons. Run at most about 4 or 5 heavy jobs at once.
 
-## PRs still in flight from Linux: do not edit these branches
+## Still being finished on Linux: do not edit these branches
 
-Linux agents may still push to these until they merge. Pull main after they land.
+The Linux session is finishing these two PRs and will merge them once their reviews and CI pass. After that it will publish **v0.1.0-alpha.27** from main. Neither PR touches audio, World rendering or the object pass. Pull main once they land.
 
-| PR | Branch | State |
+| PR | Branch | What |
 | --- | --- | --- |
-| #238 | `fix/javafx-natives-in-app-image` | JavaFX natives shipped in the app image. Fixing the `.deb` Depends regression on Debian 13 |
-| #241 | `fix/cn-region-cdn-fallback` | cn region CDN fallback (#240). Fixing the review findings |
+| #238 | `fix/javafx-natives-in-app-image` | JavaFX natives ship inside the app image instead of `~/.openjfx/cache`. It also pins the deb `Depends` so the deb installs on Debian 12/13 and Ubuntu 22.04/24.04. The released alpha.26 debs don't install on some of these. |
+| #241 | `fix/cn-region-cdn-fallback` | cn-region builds borrow an accepted CDN route that serves the same CDN config (#240) |
+
+Merged since alpha.26 and going into alpha.27:
+- #231: one commit per generated table
+- #239: WAL + NORMAL durability policy
+- #234: click to inspect objects
+- #236: real-data doodads
+- #237: fast race switching
+- #233: review follow-ups
+- #235: Windows CI flake fixes
 
 ## Windows issues to work on
 
