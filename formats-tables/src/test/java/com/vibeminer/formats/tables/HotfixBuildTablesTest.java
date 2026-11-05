@@ -345,6 +345,30 @@ class HotfixBuildTablesTest {
     }
 
     @Test
+    void tableWithManyHotfixedRowsFitsTheDecodedViewBudget() {
+        // A real client cache hotfixes thousands of wide item rows in one table, which charges
+        // tens of MiB of decoded values. This narrow table charges just over 10 MiB.
+        int count = 16_384;
+        var changes = new byte[count][];
+        for (int i = 0; i < count; i++) {
+            changes[i] = entry(0x11223344L, 1, 1_000 + i, 1, number(i));
+        }
+        try (var tables = numbers(0x11223344L, changes)) {
+            var row =
+                    tables.get(TableTypes.Ref.id(100), 1_000 + count - 1, P, Cancellation.NONE)
+                            .join();
+            assertEquals(TableTypes.RowOutcome.FOUND, row.outcome());
+            assertEquals(String.valueOf(count - 1), row.row().row().values().get(1));
+            var view =
+                    tables.hotfixInfo(TableTypes.Ref.id(100), null, P, Cancellation.NONE)
+                            .join()
+                            .orElseThrow();
+            assertEquals(count, view.added());
+            assertEquals(2 + count, view.effectiveRows());
+        }
+    }
+
+    @Test
     void replacementFilteringGetAndDenseCursorAgreeWithoutStaleBaseRows() {
         try (var tables =
                 numbers(

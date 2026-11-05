@@ -30,7 +30,9 @@ import java.util.function.Function;
 
 /** Bounded ordinary view only. Raw captures and native preparation remain the actual base DB2. */
 public final class HotfixBuildTables implements BuildTables {
-    private static final long TABLE_BYTES = 8L << 20, CACHE_BYTES = 32L << 20;
+    // A real client cache can hotfix thousands of wide rows in one table: one Forever cache
+    // charges about 27 MiB for ItemSparse alone. Item warmup pins several such tables at once.
+    private static final long TABLE_BYTES = 64L << 20, CACHE_BYTES = 128L << 20;
     private static final int CACHE_TABLES = 8;
 
     private enum Kind {
