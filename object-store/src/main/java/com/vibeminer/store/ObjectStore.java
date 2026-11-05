@@ -84,6 +84,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     // Package-private, instance-scoped test seam. No property, public option or global hook.
     java.util.function.BiConsumer<WritePoint, ObjectKey> writeProbe;
     java.util.function.Consumer<MaintenancePoint> maintenanceProbe;
+    // Test-only: observes the index connection as soon as open creates it. Unset in production.
+    static volatile java.util.function.Consumer<NativeSqlite> indexOpened;
     java.util.function.Consumer<Maintenance.Resources> maintenanceResourcesProbe;
     java.util.function.BiConsumer<ReadPoint, ObjectKey> readProbe;
     java.util.function.Consumer<ObjectKey> wholeShaProbe;
@@ -574,6 +576,9 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             }
         }
         database = new NativeSqlite(indexPath, false);
+        if (indexOpened != null) {
+            indexOpened.accept(database);
+        }
         database.exec("PRAGMA journal_mode=WAL");
         database.exec("PRAGMA synchronous=NORMAL");
         index = new StoreIndex(database);
