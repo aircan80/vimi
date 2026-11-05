@@ -75,20 +75,23 @@ import org.lwjgl.system.MemoryUtil;
 /** Fixed-resource context-owned persistent terrain. All bgfx methods run on its native owner. */
 final class BgfxWorldStreamRenderer implements AutoCloseable {
     /**
-     * Twenty-six slots (25 active, one staged). Each holds a fixed MAX_TRIANGLES instance buffer
-     * (3.93 MB) and one 512 x 512 RGBA8 atlas. Exterior objects add at most one validated objects
-     * file per slot: up to {@link WorldStreamObjectsFile#MAX_BYTES} of GPU vertices, indices and
-     * RGBA8 textures (the version 2 maximum profile is about 14.9 MB). Real tiles stay far below
-     * that, so instead of a per-slot worst case the objects share {@link #OBJECT_BUDGET_BYTES},
-     * charged in Stats.objectBytes.
+     * At most twenty-six slots (FAR: 25 active, one staged); a NEAR session allocates ten. Each
+     * holds a fixed MAX_TRIANGLES instance buffer (3.93 MB) and one mipmapped 512 x 512 RGBA8 atlas
+     * (1.40 MB). Exterior objects add at most one validated objects file per slot: up to {@link
+     * WorldStreamObjectsFile#MAX_BYTES} of GPU vertices, indices and RGBA8 textures (the version 2
+     * maximum profile is about 14.9 MB). Real tiles stay far below that, so instead of a per-slot
+     * worst case the objects share {@link #OBJECT_BUDGET_BYTES}, charged in Stats.objectBytes.
      */
     static final int SLOT_COUNT = WorldStreamState.SLOTS, INSTANCE_BYTES = 48;
 
     /**
-     * GPU bytes all resident and building exterior object sets may reserve together: the former
-     * ten-slot worst case. A set that does not fit fails alone and its terrain is kept.
+     * STANDARD-tier GPU bytes all resident and building exterior object sets may reserve together:
+     * main's former ten-slot worst case, pinned as a literal. The session's object texture tier
+     * selects the budget actually enforced (HIGH: 256 MiB). A set that does not fit fails alone and
+     * its terrain is kept; late objects load nearest-first, so on FAR + HIGH the outer ring is what
+     * may report FAILED.
      */
-    static final long OBJECT_BUDGET_BYTES = 160L << 20;
+    static final long OBJECT_BUDGET_BYTES = WorldStreamEnvelope.Session.STANDARD_OBJECT_BUDGET;
 
     /** Terrain 65536 plus optional static water 16384 instances in one per-slot buffer. */
     static final int MAX_TRIANGLES = 65536 + WorldStreamPackedTile.MAX_WATER_TRIANGLES;
@@ -604,7 +607,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         try {
             if (build.building == null) {
                 long need = source.payloadBytes();
-                if (!objectsFit(reservedObjectBytes(), need)) {
+                if (!objectsFit(session.objectBudgetBytes(), reservedObjectBytes(), need)) {
                     build.fail();
                     return 0;
                 }
@@ -1286,7 +1289,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /** Whether an objects set of {@code need} GPU bytes fits beside {@code reserved} bytes. */
     static boolean objectsFit(long reserved, long need) {
-        return need >= 0 && reserved >= 0 && need <= OBJECT_BUDGET_BYTES - reserved;
+        return objectsFit(OBJECT_BUDGET_BYTES, reserved, need);
+    }
+
+    /** Whether {@code need} more GPU bytes fit beside {@code reserved} under {@code budget}. */
+    static boolean objectsFit(long budget, long reserved, long need) {
+        return need >= 0 && reserved >= 0 && need <= budget - reserved;
     }
 
     private long reservedObjectBytes() {

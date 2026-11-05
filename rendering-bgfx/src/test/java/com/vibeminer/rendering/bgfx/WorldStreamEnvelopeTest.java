@@ -33,15 +33,16 @@ final class WorldStreamEnvelopeTest {
         assertEquals(10, values.getInt(96));
         assertEquals(9, values.getInt(100));
         assertEquals(2_907_264, values.getInt(104));
+        assertEquals(1, values.getInt(108), "STANDARD object textures by default");
         assertEquals(
                 session,
                 WorldStreamEnvelope.decodeSession(bytes, WorldStreamEnvelope.sha256(bytes)));
-        for (int offset = 108; offset < 512; offset++) {
+        for (int offset = 112; offset < 512; offset++) {
             byte[] corrupt = bytes.clone();
             corrupt[offset] = 1;
             assertThrows(WorldStreamEnvelope.Invalid.class, () -> decodeSession(corrupt));
         }
-        for (int offset : new int[] {8, 12, 64, 68, 72, 76, 88, 92, 96, 100, 104}) {
+        for (int offset : new int[] {8, 12, 64, 68, 72, 76, 88, 92, 96, 100, 104, 109}) {
             byte[] corrupt = bytes.clone();
             corrupt[offset] ^= 1;
             assertThrows(WorldStreamEnvelope.Invalid.class, () -> decodeSession(corrupt));
@@ -57,6 +58,20 @@ final class WorldStreamEnvelopeTest {
         assertEquals(25, values.getInt(100));
         assertEquals(far, decodeSession(bytes));
         assertEquals(26, far.slots());
+        var high = new WorldStreamEnvelope.Session(NONCE, SCOPE, 7, true, 25, 2);
+        byte[] highBytes = WorldStreamEnvelope.encode(high);
+        assertEquals(2, ByteBuffer.wrap(highBytes).order(ByteOrder.LITTLE_ENDIAN).getInt(108));
+        assertEquals(high, decodeSession(highBytes));
+        assertEquals(256L << 20, high.objectBudgetBytes());
+        assertEquals(160L << 20, far.objectBudgetBytes());
+        for (int tier : new int[] {0, 3, -1}) {
+            byte[] corrupt = highBytes.clone();
+            ByteBuffer.wrap(corrupt).order(ByteOrder.LITTLE_ENDIAN).putInt(108, tier);
+            assertThrows(WorldStreamEnvelope.Invalid.class, () -> decodeSession(corrupt));
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> new WorldStreamEnvelope.Session(NONCE, SCOPE, 7, true, 25, tier));
+        }
         for (int[] caps : new int[][] {{26, 9}, {10, 25}, {25, 24}, {11, 10}, {27, 26}, {0, 0}}) {
             byte[] corrupt = bytes.clone();
             ByteBuffer.wrap(corrupt)

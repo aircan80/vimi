@@ -31,9 +31,16 @@ final class WorldStreamEnvelope {
             String scope,
             long policy,
             boolean exteriorObjects,
-            int maxActive) {
+            int maxActive,
+            int objectTextures) {
         /** Active-table bound of the near 3 x 3 view distance. */
         static final int NEAR_ACTIVE = 9;
+
+        /** Object texture tiers: 1 STANDARD, 2 HIGH (more image pixels per object set). */
+        static final int STANDARD_TEXTURES = 1, HIGH_TEXTURES = 2;
+
+        /** GPU bytes all exterior object sets of a session may reserve together, per tier. */
+        static final long STANDARD_OBJECT_BUDGET = 160L << 20, HIGH_OBJECT_BUDGET = 256L << 20;
 
         Session(WorldStreamState.Nonce nonce, String scope, long policy) {
             this(nonce, scope, policy, false);
@@ -43,12 +50,22 @@ final class WorldStreamEnvelope {
             this(nonce, scope, policy, exteriorObjects, NEAR_ACTIVE);
         }
 
+        Session(
+                WorldStreamState.Nonce nonce,
+                String scope,
+                long policy,
+                boolean exteriorObjects,
+                int maxActive) {
+            this(nonce, scope, policy, exteriorObjects, maxActive, STANDARD_TEXTURES);
+        }
+
         Session {
             Objects.requireNonNull(nonce);
             if (scope == null
                     || !scope.matches("[0-9a-f]{64}")
                     || policy <= 0
-                    || maxActive != NEAR_ACTIVE && maxActive != WorldStreamState.MAX_ACTIVE) {
+                    || maxActive != NEAR_ACTIVE && maxActive != WorldStreamState.MAX_ACTIVE
+                    || objectTextures != STANDARD_TEXTURES && objectTextures != HIGH_TEXTURES) {
                 throw new IllegalArgumentException("Invalid session metadata");
             }
         }
@@ -56,6 +73,11 @@ final class WorldStreamEnvelope {
         /** Renderer slots of this session: every active one plus one staged. */
         int slots() {
             return maxActive + 1;
+        }
+
+        /** Shared exterior objects GPU budget of this session's texture tier. */
+        long objectBudgetBytes() {
+            return objectTextures == HIGH_TEXTURES ? HIGH_OBJECT_BUDGET : STANDARD_OBJECT_BUDGET;
         }
     }
 
@@ -114,7 +136,7 @@ final class WorldStreamEnvelope {
         out.putInt(1).putInt(1).putInt(1).putInt(session.exteriorObjects() ? 2 : 1);
         out.putLong(session.policy()).putInt(800).putInt(500);
         out.putInt(session.slots()).putInt(session.maxActive());
-        out.putInt(MAX_PACKET_BYTES);
+        out.putInt(MAX_PACKET_BYTES).putInt(session.objectTextures());
         return out.array();
     }
 
@@ -137,9 +159,13 @@ final class WorldStreamEnvelope {
                             && slots == active + 1
                             && in.getInt() == MAX_PACKET_BYTES,
                     "Invalid session caps");
+            int textures = in.getInt();
+            require(
+                    textures == Session.STANDARD_TEXTURES || textures == Session.HIGH_TEXTURES,
+                    "Invalid object texture tier");
             zero(in, BYTES);
             return new Session(
-                    nonce, HexFormat.of().formatHex(scope), policy, objects == 2, active);
+                    nonce, HexFormat.of().formatHex(scope), policy, objects == 2, active, textures);
         } catch (IllegalArgumentException error) {
             throw new Invalid("Invalid session fields");
         }
