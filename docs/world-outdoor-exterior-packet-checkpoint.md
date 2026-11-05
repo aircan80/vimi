@@ -13,8 +13,8 @@ Exteriors are **off by default** since the follow-up to #217. Pass
 lag below: under profile 2 a tile's terrain OFFER waits for that tile's object preparation, which
 took 0.4 to 21 s per tile on a cold cache. That is not acceptable as a default. Under the default
 profile the producer never starts object preparation, so terrain stages and commits exactly as
-before #217 (`WorldStreamSourceBridgeTest` holds an injected object preparer blocked and still
-gets the terrain packet).
+before #217 (`WorldStreamSourceBridgeTest` injects an object preparer that would block, and the default
+profile never enters it while the terrain packet is produced).
 
 Measured on real data (private headless Vulkan run through `WorldStreamSourceController` with the
 real child, Azeroth 3x3 around 32,32, of which 7 tiles are available; local-only, warm private
@@ -165,7 +165,8 @@ the refusal site. Detailed omission counts in the GUI remain delivery step 3.
     8,277 vertices.
   - Four headings show textured buildings (thatched houses, a chapel and its bell tower) seated
     on the terrain, occluded by and occluding terrain correctly.
-  - With `-Dvimi.world.exteriors=false`, the same camera shows bare terrain.
+  - With exteriors off (`-Dvimi.world.exteriors=false` then; now the default), the same camera
+    shows bare terrain.
   - All owners drained, with atlas claims at 0.
   - Frames and logs are under `$HOME/.cache/vimi-tmp/exterior-visible-proof/` and are not
     committed, because they derive from game assets.
@@ -174,7 +175,8 @@ the refusal site. Detailed omission counts in the GUI remain delivery step 3.
   - 3,478 to 18,582 vertices;
   - the 1,048,576-pixel budget is reached on most tiles, so later batches report
     `BATCH_MISSING_IMAGE` / `IMAGE_CAPPED`;
-  - source preparation took 0.4 to 21 s per tile on a cold network cache.
+  - exterior object preparation (`prepareExteriorObjects` timed alone) took 0.4 to 21 s per tile
+    on a cold network cache.
 
 ## Independent review
 

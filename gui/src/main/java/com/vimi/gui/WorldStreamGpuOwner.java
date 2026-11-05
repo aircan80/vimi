@@ -15,9 +15,15 @@ final class WorldStreamGpuOwner {
      */
     static final boolean EXTERIORS = exteriorsEnabled(System.getProperty("vimi.world.exteriors"));
 
-    /** Only an explicit {@code true} selects the exterior session profile. */
+    /** Only {@code true} (any letter case) selects the exterior session profile. */
     static boolean exteriorsEnabled(String property) {
         return Boolean.parseBoolean(property);
+    }
+
+    /** The streaming session this owner opens; its profile follows {@link #EXTERIORS}. */
+    static WorldStreamTransport.Spec spec(String scopeSha256) {
+        return new WorldStreamTransport.Spec(
+                scopeSha256, 1, WorldStreamTransport.Backend.DEFAULT, EXTERIORS);
     }
 
     private final Object owner = new Object();
@@ -29,8 +35,7 @@ final class WorldStreamGpuOwner {
     WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256) {
         this.service = Objects.requireNonNull(service);
         lifetime = service.openStreaming(owner,
-                new WorldStreamTransport.Spec(scopeSha256, 1, WorldStreamTransport.Backend.DEFAULT,
-                        EXTERIORS),
+                spec(scopeSha256),
                 opened::complete,
                 status -> {
                     if (status.state() == GpuPreviewService.State.FAILED) {

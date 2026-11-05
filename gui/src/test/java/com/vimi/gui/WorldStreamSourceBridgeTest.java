@@ -31,7 +31,7 @@ public final class WorldStreamSourceBridgeTest {
         cleanSourceRetirementMapsButProviderFailureStaysFatal();
         stickySourceCleanupHealthIsFatalBeforeFileMove();
         exteriorsAreOptIn();
-        defaultTerrainNeverWaitsForBlockedObjectPreparation();
+        defaultProfileNeverStartsObjectPreparation();
     }
 
     private static void exteriorsAreOptIn() {
@@ -39,18 +39,25 @@ public final class WorldStreamSourceBridgeTest {
         check(!WorldStreamGpuOwner.exteriorsEnabled("false"), "false keeps exteriors off");
         check(!WorldStreamGpuOwner.exteriorsEnabled(""), "An empty value keeps exteriors off");
         check(WorldStreamGpuOwner.exteriorsEnabled("true"), "true opts in to exteriors");
+        check(WorldStreamGpuOwner.exteriorsEnabled("TRUE"), "The opt-in ignores letter case");
+        check(!WorldStreamGpuOwner.exteriorsEnabled("yes"), "Only true opts in");
+        var spec = WorldStreamGpuOwner.spec("0".repeat(64));
+        check(spec.exteriorObjects() == WorldStreamGpuOwner.EXTERIORS,
+                "The GUI session profile follows the property");
         if (System.getProperty("vimi.world.exteriors") == null) {
-            check(!WorldStreamGpuOwner.EXTERIORS, "The default GUI session is terrain only");
+            check(!WorldStreamGpuOwner.EXTERIORS && !spec.exteriorObjects(),
+                    "The default GUI session is terrain only");
         }
     }
 
     /**
      * The controller always asks for exteriors; the session profile decides. Under the default
-     * terrain-only profile a blocked object preparer is never entered and terrain is produced at
-     * once. Under the opt-in profile the same terrain waits for it (the known #217 cost).
+     * terrain-only profile the producer never starts object preparation, so a preparer that would
+     * block is never entered and terrain is produced at once. Under the opt-in profile the same
+     * terrain waits for it (the known #217 cost).
      */
     @SuppressWarnings("try")
-    private static void defaultTerrainNeverWaitsForBlockedObjectPreparation() throws Exception {
+    private static void defaultProfileNeverStartsObjectPreparation() throws Exception {
         var fixture = new Fixture();
         var entered = new java.util.concurrent.CompletableFuture<Void>();
         var release = new java.util.concurrent.CompletableFuture<Void>();
@@ -79,6 +86,7 @@ public final class WorldStreamSourceBridgeTest {
                     check(resident.exteriorPlacements() == 0 && !resident.exteriorFailed(),
                             "Terrain-only tile reports no buildings and no failure");
                 }
+                check(!Files.exists(terrainOnly), "Transport retirement deletes the packet");
             }
             try (var producer = new WorldStreamSourceBridge.Producer(
                     fixture.source, null, true, scope, TILE, () -> true, blocked)) {
@@ -95,7 +103,10 @@ public final class WorldStreamSourceBridgeTest {
                 try (var packet = work.get(30, TimeUnit.SECONDS);
                         var resident = producer.takePrepared()) {
                     check(Files.exists(optIn), "Opt-in terrain follows its object preparation");
+                    check(resident.exteriorPlacements() == 0 && !resident.exteriorFailed(),
+                            "No object set: opt-in tile reports no buildings and no failure");
                 }
+                check(!Files.exists(optIn), "Transport retirement deletes the opt-in packet");
             }
             check(fixture.pool.stats().leaseClaims() == 0, "No material lease leaked");
         } finally {
