@@ -168,6 +168,9 @@ public final class LibraryCatalog implements AutoCloseable {
         database = new NativeSqlite(path, false);
         database.exec("PRAGMA foreign_keys=ON");
         database.exec("PRAGMA journal_mode=WAL");
+        // The catalog shares the library's WAL; it never deletes payloads, so a lost commit only
+        // loses a suffix that ordering keeps consistent (docs/durability-policy.md).
+        database.exec("PRAGMA synchronous=NORMAL");
         // A separate catalog process lock makes crash recovery safe against another importer.
         transaction(
                 Cancellation.NONE,
@@ -755,7 +758,7 @@ public final class LibraryCatalog implements AutoCloseable {
                 token,
                 () -> {
                     database.transaction(
-                            true,
+                            false,
                             () -> {
                                 try {
                                     result.set(work.run());

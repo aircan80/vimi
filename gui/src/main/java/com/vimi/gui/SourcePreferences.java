@@ -48,13 +48,6 @@ final class SourcePreferences {
                     });
         }
         try (var connection = new DerivedSqliteConnection(database)) {
-            connection.run(
-                    Cancellation.NONE,
-                    false,
-                    sql -> {
-                        sql.execute("PRAGMA synchronous=FULL");
-                        return null;
-                    });
             values =
                     connection.run(
                             Cancellation.NONE,
@@ -105,13 +98,6 @@ final class SourcePreferences {
         if (!values.containsKey(key) && values.size() >= 4096)
             throw new IllegalStateException("Too many source preferences");
         try (var connection = new DerivedSqliteConnection(database)) {
-            connection.run(
-                    Cancellation.NONE,
-                    false,
-                    sql -> {
-                        sql.execute("PRAGMA synchronous=FULL");
-                        return null;
-                    });
             connection.run(
                     Cancellation.NONE,
                     true,

@@ -192,13 +192,6 @@ final class SqlPreparationReceipts {
         try (var connection = new DerivedSqliteConnection(database)) {
             connection.run(
                     Cancellation.NONE,
-                    false,
-                    session -> {
-                        session.execute("PRAGMA synchronous=FULL");
-                        return null;
-                    });
-            connection.run(
-                    Cancellation.NONE,
                     true,
                     session -> {
                         work.accept(session);

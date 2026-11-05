@@ -118,10 +118,6 @@ final class WorldBookmarkStore implements AutoCloseable {
     private void write(Write change) throws Exception {
         prepare();
         try (var connection = new DerivedSqliteConnection(database)) {
-            connection.run(Cancellation.NONE, false, sql -> {
-                sql.execute("PRAGMA synchronous=FULL");
-                return null;
-            });
             connection.run(Cancellation.NONE, true, sql -> {
                 change.apply(sql);
                 return null;
@@ -176,10 +172,6 @@ final class WorldBookmarkStore implements AutoCloseable {
             });
         }
         try (var connection = new DerivedSqliteConnection(database)) {
-            connection.run(Cancellation.NONE, false, sql -> {
-                sql.execute("PRAGMA synchronous=FULL");
-                return null;
-            });
             connection.run(Cancellation.NONE, true, sql -> {
                 sql.execute("CREATE TABLE IF NOT EXISTS world_bookmarks_metadata(version INTEGER NOT NULL)");
                 if (sql.query("SELECT version FROM world_bookmarks_metadata").isEmpty())

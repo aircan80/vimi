@@ -188,20 +188,8 @@ final class SettingsPreferences {
         }
     }
 
+    /** NORMAL like every store in the shared library WAL; see docs/durability-policy.md. */
     private DerivedSqliteConnection writable() throws Exception {
-        var connection = new DerivedSqliteConnection(database);
-        try {
-            connection.run(
-                    Cancellation.NONE,
-                    false,
-                    sql -> {
-                        sql.execute("PRAGMA synchronous=FULL");
-                        return null;
-                    });
-            return connection;
-        } catch (Throwable failure) {
-            connection.close();
-            throw failure;
-        }
+        return new DerivedSqliteConnection(database);
     }
 }
