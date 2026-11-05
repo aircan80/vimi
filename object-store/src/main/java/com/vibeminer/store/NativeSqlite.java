@@ -320,9 +320,11 @@ final class NativeSqlite implements AutoCloseable {
                 close();
                 throw new Failure(rc, error);
             }
-            check((int) call(TIMEOUT, db, 5000));
+            check((int) call(TIMEOUT, db, BUSY_TIMEOUT_MILLIS));
         }
     }
+
+    static final int BUSY_TIMEOUT_MILLIS = 5000;
 
     static final class Failure extends RuntimeException {
         @Serial private static final long serialVersionUID = 1L;
@@ -474,6 +476,33 @@ final class NativeSqlite implements AutoCloseable {
         }
     }
 
+    /**
+     * Diagnostic for SQLITE_BUSY: says how long this connection waited for the write lock, so a
+     * stalled holder (over the busy timeout) can be told apart from an immediate busy return.
+     */
+    private void beginImmediate() {
+        long started = System.nanoTime();
+        try {
+            exec("BEGIN IMMEDIATE");
+        } catch (Failure failure) {
+            if ((failure.result & 255) != 5) {
+                throw failure;
+            }
+            long waited = (System.nanoTime() - started) / 1_000_000;
+            var busy =
+                    new Failure(
+                            failure.result,
+                            failure.getMessage()
+                                    + " (write lock unavailable after "
+                                    + waited
+                                    + " ms; busy timeout "
+                                    + BUSY_TIMEOUT_MILLIS
+                                    + " ms)");
+            busy.setStackTrace(failure.getStackTrace());
+            throw busy;
+        }
+    }
+
     private void transactionBody(boolean full, Runnable action) {
         if (full) {
             exec("PRAGMA synchronous=FULL");
@@ -482,7 +511,7 @@ final class NativeSqlite implements AutoCloseable {
         Throwable failure = null;
         boolean commitAttempted = false;
         try {
-            exec("BEGIN IMMEDIATE");
+            beginImmediate();
             action.run();
             commitAttempted = true;
             uncancelled(() -> exec("COMMIT"));
