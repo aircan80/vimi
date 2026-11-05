@@ -1,10 +1,13 @@
 package com.vibeminer.concepts.races;
 
 import com.vibeminer.access.Cancellation;
+import com.vibeminer.concepts.models.DisplayIdleAnimations;
 import com.vibeminer.files.BuildFiles;
 import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.models.BuildModelTypes;
 import com.vibeminer.formats.models.BuildModels;
+import com.vibeminer.formats.models.M2IdleAnimation;
+import com.vibeminer.rendering.models.PreviewAnimation;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.LinkedHashMap;
@@ -15,25 +18,31 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
- * Explains, per race model, why its Stand idle is not offered. Runs on the race component worker.
+ * Offers, or explains why it cannot offer, the selected race model's Stand idle. Runs on the race
+ * component worker.
  *
- * <p>Every reason is collected rather than only the first: an external skeleton (SKID), the BFID
- * bone files (each read and validated through {@link com.vibeminer.formats.models.M2BoneFile}), and
- * the model-resident Stand with every check of the mount idle reader except its external-file gate.
- * Bone files hold per-bone matrices, but which file the client applies for an appearance and how
- * those matrices combine with Stand keys are not reviewed, so a model declaring any is refused
- * rather than approximated. Results whose sources were all read are cached per model content key
- * and revalidated against each bone file's content key; a source that could not be read, or that
- * changed during the assessment, is reassessed.
+ * <p>A model that names no external skeleton (SKID) and no bone files (BFID), and stores its Stand
+ * keys itself, reads them through {@link com.vibeminer.formats.models.M2IdleAnimation#read} and
+ * binds them to the static rest surface through the same bone-flag admission as Mounts ({@link
+ * DisplayIdleAnimations}). Otherwise every reason is collected rather than only the first: the
+ * SKID, the BFID bone files (each read and validated through {@link
+ * com.vibeminer.formats.models.M2BoneFile}), and the model-resident Stand with every check of the
+ * mount idle reader except its external-file gate. Bone files hold per-bone matrices, but which
+ * file the client applies for an appearance and how those matrices combine with Stand keys are not
+ * reviewed, so a model declaring any is refused rather than approximated. Results whose sources
+ * were all read are cached per model content key and revalidated against each bone file's and the
+ * SKIN's content key; a source that could not be read, or that changed during the assessment, is
+ * reassessed. At most {@value #MAX_CACHED_ANIMATIONS} prepared animations are kept.
  */
 final class RaceIdleAnimations {
     static final int MAX_BONE_FILES = 64;
     private static final int MAX_CACHED = 32;
+    static final int MAX_CACHED_ANIMATIONS = 4;
     private final RaceMedia media;
     private final BuildFiles files;
 
     /** A complete result and the content keys of the bone files it was built from. */
-    private record Cached(RaceMediaTypes.Idle result, Map<Long, String> boneKeys) {}
+    private record Cached(RaceMediaTypes.Idle result, Map<Long, String> sourceKeys) {}
 
     private final Map<String, Cached> cached =
             new LinkedHashMap<>(16, 0.75f, true) {
@@ -69,10 +78,15 @@ final class RaceIdleAnimations {
         }
         String key = variant.modelFileDataId() + "\n" + stat.file().contentKey();
         var hit = cached.get(key);
-        if (hit != null && unchanged(hit.boneKeys(), token)) {
+        if (hit != null && unchanged(hit.sourceKeys(), token)) {
             var known = hit.result();
             return new RaceMediaTypes.Idle(
-                    known.state(), variant, known.reasons(), known.facts(), known.message());
+                    known.state(),
+                    variant,
+                    known.animation(),
+                    known.reasons(),
+                    known.facts(),
+                    known.message());
         }
         cached.remove(key);
         var models = new BuildModels(files);
@@ -87,7 +101,11 @@ final class RaceIdleAnimations {
                     variant, "The model file changed while it was assessed.");
         }
         var model = read.model();
-        var boneKeys = new TreeMap<Long, String>();
+        var sourceKeys = new TreeMap<Long, String>();
+        boolean local =
+                model.skeletonFileDataId() == 0
+                        && model.boneFileDataIds().stream().allMatch(id -> id == 0);
+        M2IdleAnimation.Idle[] tracks = {null};
         var assessed =
                 explain(
                         model.skeletonFileDataId(),
@@ -96,37 +114,162 @@ final class RaceIdleAnimations {
                         id -> {
                             var bone = models.readBoneFile(read, id, token).join();
                             if (bone.contentKey() != null) {
-                                boneKeys.put(id, bone.contentKey());
+                                sourceKeys.put(id, bone.contentKey());
                             }
                             return bone;
                         },
-                        () -> models.readStandFacts(read, token).join(),
+                        local
+                                ? () -> {
+                                    var idle = models.readIdle(read, token).join();
+                                    tracks[0] = idle.idle();
+                                    return standOf(idle);
+                                }
+                                : () -> models.readStandFacts(read, token).join(),
                         token);
-        // The Stand and bone reads reopen files; a model replaced meanwhile is not reported.
+        var reasons = new ArrayList<>(assessed.reasons());
+        var facts = new ArrayList<>(assessed.facts());
+        boolean complete = assessed.complete();
+        PreviewAnimation animation = null;
+        String unread = null;
+        if (reasons.isEmpty()) {
+            if (tracks[0] == null) {
+                throw new IllegalStateException("An admitted Stand carries no tracks");
+            }
+            var skin = models.readRestSkin(read, 0, token).join();
+            if (skin.fileDataId() != null && skin.file() != null) {
+                sourceKeys.put(skin.fileDataId(), skin.file().contentKey());
+            }
+            if (skin.state() == BuildModelTypes.ReadState.READ && skin.skin() != null) {
+                var surface = RaceRestSurface.of(model, skin.skin(), token);
+                try {
+                    animation =
+                            DisplayIdleAnimations.admit(
+                                    model,
+                                    skin.skin().vertexLookup(),
+                                    tracks[0],
+                                    surface.mesh(),
+                                    surface.normals(),
+                                    token);
+                    facts.add(
+                            "Stand is bound to "
+                                    + animation.vertexCount()
+                                    + " rest vertices of SKIN FileDataID "
+                                    + skin.fileDataId()
+                                    + "; "
+                                    + animation.boneCount()
+                                    + " bones are evaluated in software.");
+                } catch (DisplayIdleAnimations.Unsupported refused) {
+                    reasons.add(refused.getMessage());
+                } catch (IllegalArgumentException refused) {
+                    reasons.add(
+                            "Stand could not be bound to the rest surface: "
+                                    + refused.getMessage());
+                }
+            } else if (skin.state() == BuildModelTypes.ReadState.REJECTED) {
+                reasons.add(
+                        "The model's rest surface"
+                                + skinName(skin.fileDataId())
+                                + " could not be admitted: "
+                                + (skin.message() == null ? skin.state() : skin.message()));
+            } else {
+                unread =
+                        "The model's rest surface"
+                                + skinName(skin.fileDataId())
+                                + " could not be read: "
+                                + (skin.message() == null ? skin.state() : skin.message());
+            }
+        }
+        // The Stand, bone and SKIN reads reopen files; a model replaced meanwhile is not reported.
         var after = files.stat(FileTypes.FileRef.id(variant.modelFileDataId()), token).join();
         if (after.file() == null || !key.endsWith("\n" + after.file().contentKey())) {
             return RaceMediaTypes.Idle.unavailable(
                     variant, "The model file changed while it was assessed.");
         }
-        var reasons = assessed.reasons();
-        var facts = assessed.facts();
-        boolean complete = assessed.complete();
+        if (unread != null) {
+            return RaceMediaTypes.Idle.unavailable(variant, unread);
+        }
         var result =
-                new RaceMediaTypes.Idle(
-                        RaceTypes.State.UNSUPPORTED,
-                        variant,
-                        reasons,
-                        facts,
-                        String.join(" ", reasons));
-        if (complete && unchanged(boneKeys, token)) {
-            cached.put(key, new Cached(result, Map.copyOf(boneKeys)));
+                animation != null
+                        ? new RaceMediaTypes.Idle(
+                                RaceTypes.State.READY,
+                                variant,
+                                animation,
+                                List.of(),
+                                facts,
+                                "Stand idle · "
+                                        + animation.durationMillis()
+                                        + " ms loop · "
+                                        + animation.boneCount()
+                                        + " bones evaluated in software.")
+                        : new RaceMediaTypes.Idle(
+                                RaceTypes.State.UNSUPPORTED,
+                                variant,
+                                null,
+                                reasons,
+                                facts,
+                                String.join(" ", reasons));
+        if (complete && unchanged(sourceKeys, token)) {
+            cache(key, new Cached(result, Map.copyOf(sourceKeys)));
         }
         return result;
     }
 
-    /** Whether every recorded bone file still has the content it was assessed with. */
-    private boolean unchanged(Map<Long, String> boneKeys, Cancellation token) {
-        for (var entry : boneKeys.entrySet()) {
+    private static String skinName(Long fileDataId) {
+        return fileDataId == null ? "" : " (SKIN FileDataID " + fileDataId + ")";
+    }
+
+    /** Caches a complete result, keeping only the most recently used prepared animations. */
+    private void cache(String key, Cached entry) {
+        cached.put(key, entry);
+        int animations = 0;
+        for (var value : cached.values()) {
+            if (value.result().animation() != null) {
+                animations++;
+            }
+        }
+        var eldest = cached.entrySet().iterator();
+        while (animations > MAX_CACHED_ANIMATIONS && eldest.hasNext()) {
+            if (eldest.next().getValue().result().animation() != null) {
+                eldest.remove();
+                animations--;
+            }
+        }
+    }
+
+    /** Stand facts of an evaluable read, with refusals reported as {@code assessStand} does. */
+    static BuildModelTypes.StandRead standOf(BuildModelTypes.IdleRead read) {
+        if (read.state() == BuildModelTypes.ReadState.READ) {
+            var idle = read.idle();
+            int animated =
+                    (int)
+                            idle.bones().stream()
+                                    .filter(M2IdleAnimation.BoneTracks::animated)
+                                    .count();
+            return new BuildModelTypes.StandRead(
+                    BuildModelTypes.ReadState.READ,
+                    new M2IdleAnimation.StandFacts(
+                            idle.sequenceIndex(),
+                            idle.durationMillis(),
+                            idle.keyCount(),
+                            animated,
+                            null),
+                    null,
+                    null);
+        }
+        if (read.state() == BuildModelTypes.ReadState.REJECTED
+                && ("MODEL_UNSUPPORTED".equals(read.code()) || "MODEL_LIMIT".equals(read.code()))) {
+            return new BuildModelTypes.StandRead(
+                    BuildModelTypes.ReadState.READ,
+                    new M2IdleAnimation.StandFacts(-1, 0, 0, 0, read.message()),
+                    null,
+                    null);
+        }
+        return new BuildModelTypes.StandRead(read.state(), null, read.code(), read.message());
+    }
+
+    /** Whether every recorded bone file and SKIN still has the content it was assessed with. */
+    private boolean unchanged(Map<Long, String> sourceKeys, Cancellation token) {
+        for (var entry : sourceKeys.entrySet()) {
             var stat = files.stat(FileTypes.FileRef.id(entry.getKey()), token).join();
             if (stat.file() == null || !entry.getValue().equals(stat.file().contentKey())) {
                 return false;
@@ -135,7 +278,10 @@ final class RaceIdleAnimations {
         return true;
     }
 
-    /** Every blocking reason and supporting fact; {@code complete} when all sources were read. */
+    /**
+     * Every blocking reason and supporting fact; {@code complete} when all sources were read. No
+     * reasons means the model-resident Stand may be bound to the rest surface.
+     */
     record Assessment(List<String> reasons, List<String> facts, boolean complete) {}
 
     /** Pure assessment over the model's declarations and the supplied source reads. */
@@ -171,11 +317,6 @@ final class RaceIdleAnimations {
         } else {
             token.check();
             complete &= stand(standRead.get(), reasons, facts);
-        }
-        if (reasons.isEmpty()) {
-            reasons.add(
-                    "The model stores its Stand keys itself, but Stand playback is not yet"
-                            + " implemented for race previews.");
         }
         return new Assessment(List.copyOf(reasons), List.copyOf(facts), complete);
     }

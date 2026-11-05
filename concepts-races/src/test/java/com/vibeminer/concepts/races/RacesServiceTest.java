@@ -673,42 +673,45 @@ final class RacesServiceTest {
         return b.array();
     }
 
+    /** Race 1 → ChrModel 10 → display 20 → model data 30 → M2 FileDataID 1234. */
+    private static com.vibeminer.formats.tables.BuildTables idleTables() {
+        return new MemoryTables()
+                .add(
+                        BUILD,
+                        "enUS",
+                        List.of(
+                                table(
+                                        101,
+                                        "ChrRaceXChrModel",
+                                        List.of(
+                                                reference("ChrRacesID", "ChrRaces"),
+                                                reference("ChrModelID", "ChrModel")),
+                                        List.of(row(1, "1", "10"))),
+                                table(
+                                        102,
+                                        "ChrModel",
+                                        List.of(
+                                                reference("DisplayID", "CreatureDisplayInfo"),
+                                                number("Sex")),
+                                        List.of(row(10, "20", "0"))),
+                                table(
+                                        103,
+                                        "CreatureDisplayInfo",
+                                        List.of(reference("ModelID", "CreatureModelData")),
+                                        List.of(row(20, "30"))),
+                                table(
+                                        104,
+                                        "CreatureModelData",
+                                        List.of(number("FileDataID")),
+                                        List.of(row(30, "1234")))))
+                .forBuild(BUILD, "enUS", Cancellation.NONE)
+                .join()
+                .tables();
+    }
+
     @Test
     void idleAssessmentCachesOnlyCompleteResultsAndFollowsContentKeys() throws Exception {
-        var tables =
-                new MemoryTables()
-                        .add(
-                                BUILD,
-                                "enUS",
-                                List.of(
-                                        table(
-                                                101,
-                                                "ChrRaceXChrModel",
-                                                List.of(
-                                                        reference("ChrRacesID", "ChrRaces"),
-                                                        reference("ChrModelID", "ChrModel")),
-                                                List.of(row(1, "1", "10"))),
-                                        table(
-                                                102,
-                                                "ChrModel",
-                                                List.of(
-                                                        reference(
-                                                                "DisplayID", "CreatureDisplayInfo"),
-                                                        number("Sex")),
-                                                List.of(row(10, "20", "0"))),
-                                        table(
-                                                103,
-                                                "CreatureDisplayInfo",
-                                                List.of(reference("ModelID", "CreatureModelData")),
-                                                List.of(row(20, "30"))),
-                                        table(
-                                                104,
-                                                "CreatureModelData",
-                                                List.of(number("FileDataID")),
-                                                List.of(row(30, "1234")))))
-                        .forBuild(BUILD, "enUS", Cancellation.NONE)
-                        .join()
-                        .tables();
+        var tables = idleTables();
         byte[] model = modelWithBoneFiles(701, 702);
         var files =
                 new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
@@ -744,6 +747,157 @@ final class RacesServiceTest {
             files.add(1234, "5".repeat(32), model);
             service.idle(1, 10, Cancellation.NONE).join();
             assertTrue(files.opens.get() > opens, "Changed model is reassessed");
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    private static byte[] golden(String name) throws Exception {
+        try (var in = RacesServiceTest.class.getResourceAsStream("/golden/" + name)) {
+            return in.readAllBytes();
+        }
+    }
+
+    /**
+     * The authored 274 model with one Stand sequence (1,000 ms, keys in the model) and one bone
+     * with {@code boneFlags} whose translation moves linearly from (0, 0, 0) to (0, 0, 4); every
+     * vertex is rigidly bound to that bone. No game data.
+     */
+    private static byte[] modelWithStand(int boneFlags) throws Exception {
+        byte[] original = golden("authored-274.m2");
+        var parsed =
+                com.vibeminer.formats.models.M2ModelReader.read(
+                                com.vibeminer.formats.AssetSource.bytes(original))
+                        .join();
+        int base = Math.toIntExact(parsed.baseOffset());
+        int body = Math.toIntExact(parsed.baseBytes());
+        if (base + body != original.length) {
+            throw new AssertionError("The authored body must end the file");
+        }
+        int sequences = body, bones = sequences + 64, track = bones + 88, extra = 64 + 88 + 48;
+        var b =
+                java.nio.ByteBuffer.wrap(java.util.Arrays.copyOf(original, original.length + extra))
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(base - 4, body + extra);
+        b.putInt(base + 28, 1).putInt(base + 32, sequences);
+        b.putInt(base + 44, 1).putInt(base + 48, bones);
+        int sequence = base + sequences;
+        b.putShort(sequence, (short) 0).putInt(sequence + 4, 1000).putInt(sequence + 12, 0x20);
+        int bone = base + bones;
+        b.putInt(bone, -1).putInt(bone + 4, boneFlags).putShort(bone + 8, (short) -1);
+        for (int offset : new int[] {16, 36, 56}) {
+            b.putShort(bone + offset + 2, (short) -1);
+        }
+        int outerTimes = track, outerValues = track + 8, times = track + 16, values = track + 24;
+        b.putShort(bone + 16, (short) 1);
+        b.putInt(bone + 20, 1).putInt(bone + 24, outerTimes);
+        b.putInt(bone + 28, 1).putInt(bone + 32, outerValues);
+        b.putInt(base + outerTimes, 2).putInt(base + outerTimes + 4, times);
+        b.putInt(base + outerValues, 2).putInt(base + outerValues + 4, values);
+        b.putInt(base + times, 0).putInt(base + times + 4, 1000);
+        b.position(base + values);
+        b.putFloat(0).putFloat(0).putFloat(0).putFloat(0).putFloat(0).putFloat(4);
+        int vertices = base + Math.toIntExact(b.getInt(base + 64));
+        for (int v = 0; v < b.getInt(base + 60); v++) {
+            b.putInt(vertices + v * 48 + 12, 255).putInt(vertices + v * 48 + 16, 0);
+        }
+        return b.array();
+    }
+
+    @Test
+    void localStandIsPreparedForTheStaticRestSurfaceAndCached() throws Exception {
+        var tables = idleTables();
+        byte[] skin = golden("authored-274.skin");
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), modelWithStand(0x200))
+                        .add(900, "2".repeat(32), skin);
+        var service = new RacesService(tables, files, null);
+        try {
+            var idle = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.READY, idle.state(), idle.message());
+            assertTrue(idle.reasons().isEmpty());
+            assertEquals(10, idle.variant().chrModelId());
+            var animation = idle.animation();
+            assertEquals(1000, animation.durationMillis());
+            assertEquals(1, animation.boneCount());
+            assertEquals(
+                    "Stand idle · 1000 ms loop · 1 bones evaluated in software.", idle.message());
+            assertEquals(
+                    List.of(
+                            "Stand (sequence 0, 1000 ms) is stored in the model: 2 step/linear keys"
+                                    + " on 1 bones.",
+                            "Stand is bound to 4 rest vertices of SKIN FileDataID 900; 1 bones are"
+                                    + " evaluated in software."),
+                    idle.facts());
+            // The animation matches the surface the static preview and textured sample build.
+            var models = new com.vibeminer.formats.models.BuildModels(files);
+            var read =
+                    models.readModel(
+                                    com.vibeminer.files.FileTypes.FileRef.id(1234),
+                                    Cancellation.NONE)
+                            .join();
+            var rest = models.readRestSkin(read, 0, Cancellation.NONE).join();
+            var surface = RaceRestSurface.of(read.model(), rest.skin(), Cancellation.NONE);
+            assertTrue(animation.matches(surface.mesh()));
+            var halfway = animation.pose(surface.mesh(), 500).mesh();
+            float[] still = surface.mesh().positions(), posed = halfway.positions();
+            for (int i = 2; i < still.length; i += 3) {
+                assertEquals(still[i] + 2, posed[i], 1e-5);
+            }
+            // A complete result is reused without reopening; a new SKIN invalidates it.
+            int opens = files.opens.get();
+            var cached = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(opens, files.opens.get());
+            assertTrue(cached.animation() == animation);
+            files.add(900, "3".repeat(32), skin);
+            var renewed = service.idle(1, 10, Cancellation.NONE).join();
+            assertTrue(files.opens.get() > opens, "Changed SKIN is reassessed");
+            assertEquals(RaceTypes.State.READY, renewed.state());
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void localStandOutsideTheBoneFlagProfileKeepsItsReason() throws Exception {
+        var tables = idleTables();
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), modelWithStand(0x1))
+                        .add(900, "2".repeat(32), golden("authored-274.skin"));
+        var service = new RacesService(tables, files, null);
+        try {
+            var idle = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.UNSUPPORTED, idle.state());
+            assertEquals(null, idle.animation());
+            assertEquals(
+                    List.of(
+                            "Bone 0 moves rendered vertices with billboard or parent-inheritance"
+                                    + " flags 0x1 that idle evaluation does not implement."),
+                    idle.reasons());
+            assertEquals(idle.reasons().getFirst(), idle.message());
+        } finally {
+            service.closeAsync().join();
+        }
+        // A SKIN that is not stored is unavailable, so the next request reads it again.
+        var noSkin =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), modelWithStand(0));
+        service = new RacesService(tables, noSkin, null);
+        try {
+            var missing = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.UNAVAILABLE, missing.state(), missing.message());
+            assertTrue(
+                    missing.message()
+                            .startsWith(
+                                    "The model's rest surface (SKIN FileDataID 900) could not be read"),
+                    missing.message());
+            int opens = noSkin.opens.get();
+            service.idle(1, 10, Cancellation.NONE).join();
+            assertTrue(noSkin.opens.get() > opens, "Unavailable results are reassessed");
         } finally {
             service.closeAsync().join();
             tables.closeAsync().join();

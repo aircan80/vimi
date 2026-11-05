@@ -16,7 +16,6 @@ import com.vibeminer.generated.GeneratedStore;
 import com.vibeminer.generated.GeneratedTypes;
 import com.vibeminer.rendering.models.MeshAppearance;
 import com.vibeminer.rendering.models.MeshAppearanceCodec;
-import com.vibeminer.rendering.models.PreviewMesh;
 import com.vibeminer.rendering.models.TextureComposer;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -267,38 +266,9 @@ final class RaceAppearance {
                 return failed(
                         issues, "The model draw declarations are unavailable: " + skin.message());
             }
-            var geometry = skin.skin().surface();
-            float[] points = new float[geometry.vertexLookup().size() * 3],
-                    uv = new float[geometry.vertexLookup().size() * 2],
-                    normals = new float[geometry.vertexLookup().size() * 3];
-            for (int i = 0; i < geometry.vertexLookup().size(); i++) {
-                if ((i & 2047) == 0) {
-                    token.check();
-                }
-                var vertex = model.model().vertices().get(geometry.vertexLookup().get(i));
-                points[i * 3] = vertex.position().x();
-                points[i * 3 + 1] = vertex.position().y();
-                points[i * 3 + 2] = vertex.position().z();
-                normals[i * 3] = vertex.normal().x();
-                normals[i * 3 + 1] = vertex.normal().y();
-                normals[i * 3 + 2] = vertex.normal().z();
-                uv[i * 2] = vertex.uv0().x();
-                uv[i * 2 + 1] = vertex.uv0().y();
-            }
-            var mesh =
-                    new PreviewMesh(
-                            points,
-                            geometry.triangleLookup().stream()
-                                    .mapToInt(Integer::intValue)
-                                    .toArray(),
-                            geometry.sections().stream()
-                                    .map(
-                                            part ->
-                                                    new PreviewMesh.Part(
-                                                            part.id(),
-                                                            (int) part.triangleStart(),
-                                                            part.triangleCount()))
-                                    .toList());
+            var surface = RaceRestSurface.of(model.model(), skin.skin().surface(), token);
+            var mesh = surface.mesh();
+            float[] uv = surface.uv(), normals = surface.normals();
             M2Appearance.ModelFacts facts = null;
             var open =
                     files.openRead(FileTypes.FileRef.id(base.variant().modelFileDataId()), token)

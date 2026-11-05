@@ -38,6 +38,7 @@ dependencies {
     api project(':formats-assets')
     api project(':rendering-models')
     api project(':formats-audio')
+    implementation project(':concepts-models')
     testImplementation testFixtures(project(':formats-tables'))
     testImplementation testFixtures(project(':files'))
     testImplementation testFixtures(project(':formats-assets'))

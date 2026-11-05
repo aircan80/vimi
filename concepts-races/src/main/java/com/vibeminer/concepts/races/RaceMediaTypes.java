@@ -1,5 +1,6 @@
 package com.vibeminer.concepts.races;
 
+import com.vibeminer.rendering.models.PreviewAnimation;
 import com.vibeminer.rendering.models.PreviewMesh;
 import java.util.List;
 import java.util.Set;
@@ -120,18 +121,25 @@ public final class RaceMediaTypes {
     }
 
     /**
-     * Whether the selected race model's Stand idle can be offered. This slice never offers it: a
-     * readable model is {@code UNSUPPORTED} with every blocking reason, and {@code UNAVAILABLE}
-     * means the relationship or a source could not be read, so a retry can reassess it.
+     * Whether the selected race model's Stand idle can be offered. {@code READY} carries a Stand
+     * animation prepared for the model's static rest surface, for a model that stores its own bones
+     * and Stand keys and passes the same bone-flag admission as Mounts. A readable model outside
+     * that profile is {@code UNSUPPORTED} with every blocking reason, and {@code UNAVAILABLE} means
+     * the relationship or a source could not be read, so a retry can reassess it.
      */
     public record Idle(
             RaceTypes.State state,
             Variant variant,
+            PreviewAnimation animation,
             List<String> reasons,
             List<String> facts,
             String message) {
         public Idle {
-            if (state != RaceTypes.State.UNSUPPORTED && state != RaceTypes.State.UNAVAILABLE
+            if (state != RaceTypes.State.READY
+                            && state != RaceTypes.State.UNSUPPORTED
+                            && state != RaceTypes.State.UNAVAILABLE
+                    || (state == RaceTypes.State.READY) != (animation != null)
+                    || state == RaceTypes.State.READY && variant == null
                     || message == null) {
                 throw new IllegalArgumentException("Inconsistent race idle result");
             }
@@ -140,7 +148,8 @@ public final class RaceMediaTypes {
         }
 
         public static Idle unavailable(Variant variant, String message) {
-            return new Idle(RaceTypes.State.UNAVAILABLE, variant, List.of(), List.of(), message);
+            return new Idle(
+                    RaceTypes.State.UNAVAILABLE, variant, null, List.of(), List.of(), message);
         }
     }
 }
