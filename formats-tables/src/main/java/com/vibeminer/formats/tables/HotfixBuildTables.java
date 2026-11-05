@@ -146,14 +146,13 @@ public final class HotfixBuildTables implements BuildTables {
             String reason,
             long generation,
             int failures,
-            long retryAfterNanos) {
+            long retryAfterNanos,
+            long bytes,
+            boolean ownPins) {
         Unavailable(String identity, String name, long rows, String reason, long generation) {
-            this(identity, name, rows, reason, generation, 0, 0);
+            this(identity, name, rows, reason, generation, 0, 0, 0, false);
         }
     }
-
-    /** Release generation that never matches, so the next operation retries. */
-    private static final long RETRY_NEXT_OPERATION = -1;
 
     /** First wait before retrying an unreadable base; doubles per failure up to the maximum. */
     private static final long BASE_RETRY_NANOS = TimeUnit.SECONDS.toNanos(5),
@@ -163,11 +162,21 @@ public final class HotfixBuildTables implements BuildTables {
         private static final long serialVersionUID = 1L;
         final String reason;
         final long generation;
+        // Measured (or floor) charge that did not fit, and whether releasing this operation's
+        // own pinned views alone would have made room for it.
+        final long bytes;
+        final boolean ownPins;
 
         OverBudget(String reason, long generation) {
+            this(reason, generation, 0, false);
+        }
+
+        OverBudget(String reason, long generation, long bytes, boolean ownPins) {
             super("Hotfix " + reason, null, false, false);
             this.reason = reason;
             this.generation = generation;
+            this.bytes = bytes;
+            this.ownPins = ownPins;
         }
     }
 
@@ -195,12 +204,16 @@ public final class HotfixBuildTables implements BuildTables {
         if (bytes > memory.tableBytes()) {
             throw new OverBudget(HotfixViewInfo.TABLE_BUDGET, generation);
         }
-        if (bytes > memory.available() + ownUnpinnedBytes()) {
-            // When this operation's own pinned views hold bytes, the next operation unpins them
-            // without any release elsewhere; retry then instead of waiting for another handle.
+        long free = memory.available() + ownUnpinnedBytes();
+        if (bytes > free) {
+            // Only when releasing this operation's own pinned views would make room can the next
+            // operation (which unpins them) succeed without a release elsewhere.
+            long pinnedBytes = ownPinnedBytes();
             throw new OverBudget(
                     HotfixViewInfo.RETAINED_BUDGET,
-                    ownPinnedBytes() > 0 ? RETRY_NEXT_OPERATION : generation);
+                    generation,
+                    bytes,
+                    pinnedBytes > 0 && bytes <= free + pinnedBytes);
         }
     }
 
@@ -472,6 +485,26 @@ public final class HotfixBuildTables implements BuildTables {
             if (!skipped.identity().equals(metadata.identity())) {
                 // The base changed; an earlier refusal no longer describes this table.
                 unavailable.remove(id);
+            } else if (skipped.reason().equals(HotfixViewInfo.RETAINED_BUDGET)
+                    && skipped.ownPins()) {
+                // Refused because the last operation's own views were pinned. Retry only if the
+                // measured charge fits now; otherwise wait for a release, without decoding.
+                if (skipped.bytes() > memory.available() + ownUnpinnedBytes()) {
+                    unavailable.put(
+                            id,
+                            new Unavailable(
+                                    skipped.identity(),
+                                    skipped.name(),
+                                    skipped.rows(),
+                                    skipped.reason(),
+                                    skipped.generation(),
+                                    0,
+                                    0,
+                                    skipped.bytes(),
+                                    false));
+                    operationSkipped.add(id);
+                    return null;
+                }
             } else if (skipped.reason().equals(HotfixViewInfo.TABLE_BUDGET)
                     || skipped.reason().equals(HotfixViewInfo.RETAINED_BUDGET)
                             && skipped.generation() == memory.generation()
@@ -493,12 +526,12 @@ public final class HotfixBuildTables implements BuildTables {
             int failures = 0;
             long retryAfter = 0;
             if (over.reason.equals(HotfixViewInfo.BASE_UNAVAILABLE)) {
-                var earlier = unavailable.get(id);
+                var previous = unavailable.get(id);
                 failures =
-                        earlier != null
-                                        && earlier.reason().equals(HotfixViewInfo.BASE_UNAVAILABLE)
-                                        && earlier.identity().equals(metadata.identity())
-                                ? Math.min(earlier.failures() + 1, 16)
+                        previous != null
+                                        && previous.reason().equals(HotfixViewInfo.BASE_UNAVAILABLE)
+                                        && previous.identity().equals(metadata.identity())
+                                ? Math.min(previous.failures() + 1, 16)
                                 : 1;
                 long delay =
                         Math.min(
@@ -506,6 +539,13 @@ public final class HotfixBuildTables implements BuildTables {
                                 BASE_RETRY_NANOS << Math.min(failures - 1, 6));
                 retryAfter = clock.getAsLong() + delay;
             }
+            var earlier = unavailable.get(id);
+            // An own-pins retry that was refused again falls back to waiting for a release.
+            boolean ownPins =
+                    over.ownPins
+                            && !(earlier != null
+                                    && earlier.ownPins()
+                                    && earlier.identity().equals(metadata.identity()));
             unavailable.put(
                     id,
                     new Unavailable(
@@ -515,7 +555,9 @@ public final class HotfixBuildTables implements BuildTables {
                             over.reason,
                             over.generation,
                             failures,
-                            retryAfter));
+                            retryAfter,
+                            over.bytes,
+                            ownPins));
             operationSkipped.add(id);
             return null;
         }

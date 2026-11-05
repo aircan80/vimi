@@ -463,6 +463,36 @@ class HotfixBuildTablesTest {
     }
 
     @Test
+    void repeatingAnOperationThatCannotFitBothTablesDoesNotDecodeAgain() throws Exception {
+        long[] hashes = {0x40000000L, 0x40000001L};
+        var changes = new byte[2_000][];
+        for (int i = 0; i < 1_000; i++) {
+            changes[i] = entry(hashes[0], 1, i == 0 ? 7 : 10_000 + i, 1, number(i));
+            changes[1_000 + i] = entry(hashes[1], 1, 20_000 + i, 1, number(7));
+        }
+        // Each view charges about 0.9 MiB; the same operation needs both, which never fit. The
+        // second table's minimum charge fits beside the first, so only a full decode finds out.
+        var memory = new HotfixMemory(1 << 20, 1_782_579);
+        try (var tables =
+                several(memory, new MemoryGeneratedStore(), true, cache(changes), hashes)) {
+            var hot = (HotfixBuildTables) tables;
+            var request = new TableTypes.ReferencesRequest(TableTypes.Ref.id(100), 7);
+            tables.referencedBy(request, P, Cancellation.NONE).join();
+            int afterFirst = hot.compiles;
+            for (int i = 0; i < 5; i++) {
+                tables.referencedBy(request, P, Cancellation.NONE).join();
+            }
+            assertEquals(afterFirst, hot.compiles, "the own-pins retry does not decode every time");
+            assertEquals(
+                    HotfixViewInfo.RETAINED_BUDGET,
+                    tables.hotfixInfo(TableTypes.Ref.id(101), null, P, Cancellation.NONE)
+                            .join()
+                            .orElseThrow()
+                            .unavailable());
+        }
+    }
+
+    @Test
     void refusalHoldsForTheWholeOperationEvenWhenItsCauseClearsMidway() throws Exception {
         long[] hashes = {0x30000000L, 0x30000001L};
         var changes =
