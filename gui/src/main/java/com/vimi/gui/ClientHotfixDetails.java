@@ -69,9 +69,7 @@ final class ClientHotfixDetails {
         String origin = switch (source.origin()) {
             case BASE -> info.get().unavailable() == null
                     ? "base DB2 source"
-                    : HotfixViewInfo.TABLE_BUDGET.equals(info.get().unavailable())
-                            ? "base DB2 source; local hotfix cache not applied to this table (too large)"
-                            : "base DB2 source; hotfix overlay memory busy, showing base rows";
+                    : "base DB2 source; " + unavailable(info.get().unavailable());
             case HOTFIX -> "local hotfix cache, build " + version;
             case DELETED -> "removed by local hotfix cache, build " + version;
             case NOT_PUBLIC -> "hidden by local hotfix cache, build " + version;
@@ -81,6 +79,19 @@ final class ClientHotfixDetails {
                     : "client-cache source unresolved; no stale base substitution";
         };
         return label + ": " + origin;
+    }
+
+    /** Fixed text for why a table reads base rows although a local hotfix cache is loaded. */
+    static String unavailable(String reason) {
+        return switch (reason) {
+            case HotfixViewInfo.TABLE_BUDGET -> "local hotfix cache not applied to this table (too large)";
+            case HotfixViewInfo.RETAINED_BUDGET -> "hotfix overlay memory busy, showing base rows";
+            case HotfixViewInfo.OPERATION_TABLES ->
+                    "hotfix overlay skipped for this request (more than 8 tables), showing base rows";
+            case HotfixViewInfo.BASE_UNAVAILABLE ->
+                    "hotfix overlay not applied; the base table could not be read";
+            default -> "hotfix overlay not applied to this table";
+        };
     }
 
     static CompletableFuture<List<String>> talent(BuildTables tables,

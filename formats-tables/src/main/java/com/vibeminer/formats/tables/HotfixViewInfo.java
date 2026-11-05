@@ -21,7 +21,8 @@ public record HotfixViewInfo(
      */
     public static final String TABLE_BUDGET = "TABLE_BUDGET",
             RETAINED_BUDGET = "RETAINED_BUDGET",
-            OPERATION_TABLES = "OPERATION_TABLES";
+            OPERATION_TABLES = "OPERATION_TABLES",
+            BASE_UNAVAILABLE = "BASE_UNAVAILABLE";
 
     public HotfixViewInfo(
             String inputFingerprint,
