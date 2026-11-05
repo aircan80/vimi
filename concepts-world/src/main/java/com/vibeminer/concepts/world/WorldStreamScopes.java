@@ -448,7 +448,7 @@ final class WorldStreamScopes {
                 24,
                 1 << 20,
                 256,
-                1 << 20,
+                com.vibeminer.formats.world.WmoGroupSpans.MAX_BYTES,
                 // Each image may be read twice: once when admitted, once at its allotted level.
                 2 * (64 + 32),
                 1 << 20,
