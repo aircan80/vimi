@@ -19,6 +19,7 @@ public final class WorldInstanceSwitchTest {
         abandonInsideDropsTheInteriorWithoutResuming();
         failuresRefuseWithAReasonAndResume();
         aSecondEntryIsRefusedWhileOneIsUnderWay();
+        hidingTheViewCancelsAnEntryButKeepsAnOpenInterior();
         System.out.println(
                 "World instance switch: switch-in, switch-out, cancel, abandon, refusal and audio"
                         + " handover passed");
@@ -204,6 +205,29 @@ public final class WorldInstanceSwitchTest {
         hooks.retirement.complete(null);
         check(!instances.enter("Chasm", true), "Refused while inside");
         check(hooks.opened == 1 && "Lair".equals(instances.target()), "Only the first opened");
+    }
+
+    private static void hidingTheViewCancelsAnEntryButKeepsAnOpenInterior() {
+        var hooks = new Recorder();
+        var instances = new WorldInstanceSwitch<>(hooks, Runnable::run);
+        instances.enter("Lair", true);
+        instances.cancelEntry(); // the World tab was left while the open world drained
+        check(instances.phase() == WorldInstanceSwitch.Phase.OPEN_WORLD, "Entry canceled");
+        hooks.retirement.complete(null);
+        check(hooks.opened == 0, "A hidden view never opens the interior or takes the GPU");
+        check(hooks.actions().stream().noneMatch(e -> e.startsWith("audio")),
+                "No instance audio in a hidden view: " + hooks.events);
+
+        var inside = new Recorder();
+        var open = new WorldInstanceSwitch<>(inside, Runnable::run);
+        open.enter("Lair", true);
+        inside.retirement.complete(null);
+        open.cancelEntry();
+        check(open.phase() == WorldInstanceSwitch.Phase.INSIDE, "An open interior is kept");
+        open.cancelEntry();
+        var idle = new WorldInstanceSwitch<>(new Recorder(), Runnable::run);
+        idle.cancelEntry();
+        check(idle.phase() == WorldInstanceSwitch.Phase.OPEN_WORLD, "No-op in the open world");
     }
 
     private static void check(boolean condition, String message) {

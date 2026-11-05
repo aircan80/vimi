@@ -156,7 +156,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
             WorldService.MapInfo map,
             WorldInstanceLinks.Link link,
             WorldCurrentArea.Result area,
-            long areaMap) {}
+            long areaMap,
+            String areaIssue) {}
 
     private java.util.function.Supplier<com.vibeminer.concepts.locations.BuildLocationMaps>
             locationMaps = () -> null;
@@ -534,6 +535,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         + "lighting or animation."));
         retryGpu.setDisable(true);
         gpuEnabled.setOnAction(e -> {
+            if (instances.engaged()) return;
             if (streamingMode) {
                 switchStreamingRendering();
                 return;
@@ -560,6 +562,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             requestFrame();
         });
         retryGpu.setOnAction(e -> {
+            if (instances.engaged()) return;
             if (streamingMode) {
                 retireStreaming();
                 startStreaming();
@@ -1198,6 +1201,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     void deactivate() {
         active = false;
+        // An entry still waiting for the open world to drain must not open the interior, take
+        // the GPU or play instance audio in a hidden tab: cancel it. An open interior stays.
+        instances.cancelEntry();
         cancelRequests();
     }
 
@@ -1206,6 +1212,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (spawns != null && explorer) spawns.resume();
         ensureLoaded();
         areaButtons();
+        refreshEntrances();
         if (instances.engaged()) {
             // The interior keeps the view; deactivation stopped its audio, so restore it.
             if (instances.phase() == WorldInstanceSwitch.Phase.INSIDE) {
@@ -1325,7 +1332,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                     });
                                                 }
                                             }
-                                            status.setText(globalOnly(data)
+                                            status.setText((globalOnly(data)
                                                     ? "Global world-model map · Open explorer enters it inline on the GPU"
                                                     : data.world().tiles().isEmpty()
                                                     ? inventoryMessage.getText()
@@ -1334,8 +1341,21 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                             + " open the explorer"
                                                             + (data.world().globalModel()
                                                                     ? " · Global world-model map"
-                                                                    : ""));
+                                                                    : ""))
+                                                    + entranceNote(data.map()));
                                         }));
+    }
+
+    /** For a dungeon or raid map: where its recorded entrance is, or why there is none. */
+    private String entranceNote(WorldService.MapInfo map) {
+        var link = instanceLinks == null ? null : instanceLinks.link(map.id()).orElse(null);
+        if (link == null) return "";
+        if (link.entrance() == null) return " · Entrance: none, " + link.entranceIssue();
+        var parent = catalog == null ? null : catalog.maps().stream()
+                .filter(m -> m.id() == link.entrance().mapId()).findFirst().orElse(null);
+        return String.format(java.util.Locale.ROOT, " · Entrance: %s at %.0f %.0f",
+                parent == null ? "Map #" + link.entrance().mapId() : parent.toString(),
+                link.entrance().x(), link.entrance().y());
     }
 
     private String areaHint() {
@@ -1622,7 +1642,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void openExplorer() {
-        if (stale(selection) || inventory == null) return;
+        if (stale(selection) || inventory == null || instances.engaged()) return;
         if (globalOnly(inventory)) {
             enterGlobal(inventory.map(), false);
             return;
@@ -2240,6 +2260,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void updateCurrentArea() {
+        // The instance owns the area and its audio while it is entered.
+        if (instances.engaged()) return;
         if (camera==null || catalog==null || inventory==null) {
             currentArea.setText("Terrain area unavailable");
             audio.area(null, -1, null);
@@ -2312,6 +2334,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void switchStreamingRendering() {
+        if (instances.engaged()) return;
         timer.stop();
         retireStreaming();
         show(gpuActivity, true);
@@ -2345,12 +2368,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
             streamingPaused = true;
             return;
         }
-        if (!streamingRetirement.isDone() || !legacyRetirement.isDone()) {
+        // A left or abandoned interior must release its GPU request first (#259); its own
+        // failure is reported by the switch and never blocks the open world.
+        var interiorDrained = instances.drained().exceptionally(ignored -> null);
+        if (!streamingRetirement.isDone() || !legacyRetirement.isDone() || !interiorDrained.isDone()) {
             if (streamingStartWaiting) return;
             streamingStartWaiting = true;
             show(gpuActivity, true);
             gpuStatus.setText("Waiting for previous World resources to retire…");
-            CompletableFuture.allOf(streamingRetirement, legacyRetirement)
+            CompletableFuture.allOf(streamingRetirement, legacyRetirement, interiorDrained)
                     .whenComplete((ignored, failure) -> Platform.runLater(() -> {
                 streamingStartWaiting = false;
                 if (closed || !active || !streamingMode || !explorer || streaming != null) return;
@@ -2864,9 +2890,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
             call.whenComplete((links, failure) -> Platform.runLater(() -> {
                 if (closed || handle != source || cancel.isCanceled()) return;
                 if (failure != null) WorldDiagnostics.request("Instance links failed", failure);
+                var maps = catalog == null ? java.util.Set.<Long>of()
+                        : catalog.maps().stream().map(WorldService.MapInfo::id)
+                                .collect(java.util.stream.Collectors.toUnmodifiableSet());
                 instanceLinks = failure != null || links == null
                         ? WorldInstanceLinks.unavailable("Recorded instance links could not be read")
-                        : links;
+                        : links.within(maps);
                 refreshEntrances();
             }));
         });
@@ -2935,9 +2964,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 call = CompletableFuture.failedFuture(failed);
             }
             call.whenComplete((data, failure) -> Platform.runLater(() -> {
-                if (closed || handle != source || cancel.isCanceled() || request != selection
-                        || instances.engaged()) return;
+                if (closed) return;
                 enterInstance.setDisable(entrances.getValue() == null);
+                if (handle != source || cancel.isCanceled() || request != selection
+                        || instances.engaged()) {
+                    // The view moved on (tab, map or build change): nothing is being read now.
+                    refreshEntrances();
+                    return;
+                }
                 enterResolved(link, map, data, failure);
             }));
         });
@@ -2984,6 +3018,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
     /** Zone-in to a global-WMO map in place; Leave returns to the open world or the map page. */
     private void enterGlobal(WorldService.MapInfo map, boolean worldOpen) {
         if (instances.engaged()) return;
+        if (instanceLinks == null) {
+            instanceStatus.setText("Recorded instance links are still loading; try again in a"
+                    + " moment.");
+            status.setText(instanceStatus.getText());
+            return;
+        }
         if (gpuService == null) {
             instanceStatus.setText("Instance interiors render on the GPU, which is unavailable.");
             status.setText(instanceStatus.getText());
@@ -2999,14 +3039,24 @@ final class WorldView extends BorderPane implements AutoCloseable {
     /** The instance's recorded link and area (Map.AreaTableID), resolved on the area's own map. */
     private InstanceTarget target(WorldService.MapInfo map) {
         var link = instanceLinks == null ? null : instanceLinks.link(map.id()).orElse(null);
-        if (link == null || link.areaId() == null || catalog == null) {
-            return new InstanceTarget(map, link, null, -1);
+        if (link == null) {
+            return new InstanceTarget(map, null, null, -1,
+                    "this map has no recorded dungeon or raid link (Map.InstanceType)");
         }
-        var area = catalog.areas().stream().filter(a -> a.id() == link.areaId()).findFirst()
-                .orElse(null);
-        if (area == null) return new InstanceTarget(map, link, null, -1);
-        return new InstanceTarget(map, link,
-                WorldCurrentArea.resolve(area.mapId(), area.id(), catalog.areaIndex()), area.mapId());
+        if (link.areaId() == null) {
+            return new InstanceTarget(map, link, null, -1, "Map.AreaTableID is unset");
+        }
+        var area = catalog == null ? null : catalog.areas().stream()
+                .filter(a -> a.id() == link.areaId()).findFirst().orElse(null);
+        if (area == null) {
+            return new InstanceTarget(map, link, null, -1, "Map.AreaTableID " + link.areaId()
+                    + " is not in the readable AreaTable records");
+        }
+        var resolved = WorldCurrentArea.resolve(area.mapId(), area.id(), catalog.areaIndex());
+        return new InstanceTarget(map, link, resolved, area.mapId(),
+                resolved.state() == WorldCurrentArea.State.KNOWN ? null
+                        : "area " + area.id() + " has no readable hierarchy ("
+                                + resolved.reason() + ")");
     }
 
     /** Plays the instance's recorded area audio; a target without one stops the tracks. */
@@ -3021,8 +3071,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 ? "Instance area: " + target.area().chain().getFirst()
                         + " (recorded Map.AreaTableID) · music and ambience from its recorded sound"
                         + " links"
-                : "No recorded instance area (Map.AreaTableID is unset or unreadable); no"
-                        + " instance music or ambience is played");
+                : "No instance area: " + target.areaIssue()
+                        + "; no instance music or ambience is played");
         if (known) audio.area(handle, target.areaMap(), target.area());
         else audio.area(null, -1, null);
     }
@@ -3071,6 +3121,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final class InstanceHooks implements WorldInstanceSwitch.Hooks<InstanceTarget> {
         @Override
         public CompletableFuture<Void> retireWorld() {
+            // Only Cancel is live while the open world drains: no control can restart it under
+            // the instance or replace the instance audio.
+            leaveInstance.setText("Cancel");
+            leaveInstance.setVisible(true);
+            leaveInstance.setManaged(true);
+            content.setBottom(new VBox(8, new HBox(10, leaveInstance, instanceStatus),
+                    audio.node()));
             timer.stop();
             clearKeys();
             minimap.hide();
@@ -3100,6 +3157,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
         @Override
         public void showInterior(InstanceTarget target, WorldInstanceSwitch.Interior interior) {
+            leaveInstance.setText("Leave instance");
             leaveInstance.setVisible(true);
             leaveInstance.setManaged(true);
             content.setCenter(interior.node());
@@ -3119,6 +3177,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         @Override
         public void resumeWorld(boolean worldOpen) {
             if (closed) return;
+            leaveInstance.setText("Leave instance");
             leaveInstance.setVisible(false);
             leaveInstance.setManaged(false);
             if (!worldOpen || !explorer || inventory == null || camera == null) {

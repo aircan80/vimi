@@ -157,10 +157,70 @@ public final class WorldInstanceUiTest {
                     require(camera.x() == saved.x() && camera.y() == saved.y(),
                             "Leave returns to the open-world position of entry: " + camera);
                     require(!leave.isVisible(), "No leave after returning");
-                    mapPage(view);
+                    enteringBar(view);
                 });
             });
         });
+    }
+
+    /**
+     * Holds an entry while the open world drains (an incomplete retirement): only Cancel is live,
+     * explorer controls cannot restart the world or change its area, and hiding the view cancels
+     * the entry without opening anything.
+     */
+    private static void enteringBar(WorldView view) {
+        var leave = (Button) view.lookup("#world-instance-leave");
+        var content = (javafx.scene.layout.BorderPane) get(view, "content");
+        var viewport = get(view, "viewport");
+        var pending = new CompletableFuture<Void>();
+        set(view, "streamingRetirement", pending);
+        enterHeld(view);
+        require(phase(view) == WorldInstanceSwitch.Phase.ENTERING, "Entering");
+        require(leave.isVisible() && leave.getText().equals("Cancel"), "Cancel is offered");
+        require(view.lookup("#world-gpu-enabled") == null && view.lookup("#world-instance-enter") == null,
+                "Explorer controls are not reachable while entering");
+        var area = (Label) get(view, "currentArea");
+        area.setText("marker");
+        invoke(view, "switchStreamingRendering");
+        invoke(view, "openExplorer");
+        invoke(view, "updateCurrentArea");
+        require(area.getText().equals("marker"), "The open world's area is not re-resolved");
+        require(content.getCenter() == viewport && (boolean) get(view, "explorer"),
+                "Nothing restarted under the entry");
+        leave.fire();
+        require(phase(view) == WorldInstanceSwitch.Phase.OPEN_WORLD, "Cancel returns");
+        require(view.lookup("#world-gpu-enabled") != null, "Explorer controls are back");
+        require(leave.getText().equals("Leave instance") && !leave.isVisible(), "Cancel hidden again");
+
+        // Leaving the tab while the open world drains cancels the entry; nothing opens later.
+        enterHeld(view);
+        view.deactivate();
+        require(phase(view) == WorldInstanceSwitch.Phase.OPEN_WORLD, "Hidden view cancels the entry");
+        pending.complete(null);
+        await(() -> true, () -> {
+            require(content.getCenter() == viewport, "No interior opened in the hidden view");
+            view.activate();
+            mapPage(view);
+        });
+    }
+
+    private static void enterHeld(WorldView view) {
+        try {
+            Class<?> type = Class.forName("com.vimi.gui.WorldView$InstanceTarget");
+            var make = type.getDeclaredConstructors()[0];
+            make.setAccessible(true);
+            Object target = make.newInstance(RAID, null, null, -1L, "authored");
+            var instances = get(view, "instances");
+            var enter = WorldInstanceSwitch.class.getDeclaredMethod("enter", Object.class, boolean.class);
+            enter.setAccessible(true);
+            require((boolean) enter.invoke(instances, target, true), "Entry starts");
+        } catch (ReflectiveOperationException error) {
+            throw new AssertionError(error);
+        }
+    }
+
+    private static WorldInstanceSwitch.Phase phase(WorldView view) {
+        return (WorldInstanceSwitch.Phase) get(view, "instances", WorldInstanceSwitch.class, "phase");
     }
 
     private static void mapPage(WorldView view) {
@@ -171,6 +231,9 @@ public final class WorldInstanceUiTest {
             require(!open.isDisabled(), "A global world-model map can be entered from the map page");
             var message = (Label) view.lookup("#world-inventory-message");
             require(message.getText().contains("enter it in this view"), message.getText());
+            var page = (Label) get(view, "status");
+            require(page.getText().contains("Entrance: Authored continent at"),
+                    "The recorded entrance is stated: " + page.getText());
             open.fire();
             var status = (Label) get(view, "status");
             require(status.getText().contains("GPU"), "Refused without a GPU: " + status.getText());

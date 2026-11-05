@@ -136,6 +136,16 @@ final class WorldInstanceSwitch<T> {
         hooks.audio(target);
     }
 
+    /**
+     * Cancels an entry that is still waiting for the open world to drain (the view was hidden);
+     * an open interior is kept. The open world resumes when the view is shown again.
+     */
+    void cancelEntry() {
+        if (phase == Phase.ENTERING) {
+            leave();
+        }
+    }
+
     /** Leaves the instance and resumes the open world once the interior has drained. */
     void leave() {
         switch (phase) {
