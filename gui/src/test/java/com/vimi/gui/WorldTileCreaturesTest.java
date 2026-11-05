@@ -141,16 +141,17 @@ public final class WorldTileCreaturesTest {
         require(summary.drawn() == WorldTileCreatures.TILE_PLACEMENTS
                 && summary.count(WorldTileCreatures.Count.CAPPED) == 40 - WorldTileCreatures.TILE_PLACEMENTS,
                 "Creature placements stop at the per-tile creature cap");
-        // A tile whose buildings already hold 60 placements leaves room for four creatures.
+        // A tile whose buildings and doodads leave room for four placements gets four creatures.
         var builder = WorldStreamTileWriter.Exterior.builder();
+        int room = builder.placementRoom();
         builder.image(1, 1, ByteBuffer.allocate(4));
         builder.model();
         builder.mesh(FloatBuffer.wrap(new float[24]), IntBuffer.wrap(new int[] {0, 1, 2}), new int[] {0, 3, 0});
-        for (int p = 0; p < 60; p++) builder.placement(0, 0, 0, 0, 1, 1, 0);
+        for (int p = 0; p < room - 4; p++) builder.placement(0, 0, 0, 0, 1, 1, 0);
         var shared = creatures.append(builder, 0, TILE, Cancellation.NONE);
         require(shared.drawn() == 4 && shared.count(WorldTileCreatures.Count.CAPPED) == 36,
                 "Buildings keep their placements; creatures fill only what remains");
-        require(builder.build().placements() == 64, "The shared file stays within its profile");
+        require(builder.build().placements() == room, "The shared file stays within its profile");
     }
 
     private static void cachesPerRevisionAndRetriesFailures() {

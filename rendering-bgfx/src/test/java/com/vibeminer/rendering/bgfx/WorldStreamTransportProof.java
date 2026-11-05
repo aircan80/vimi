@@ -170,8 +170,9 @@ public final class WorldStreamTransportProof {
         }
     }
 
+    /** One authored textured terrain tile 7,19 (also used by the objects material proof). */
     @SuppressWarnings("try")
-    private static java.util.concurrent.CompletableFuture<WorldStreamTransport.Resident> produce(
+    static java.util.concurrent.CompletableFuture<WorldStreamTransport.Resident> produce(
             WorldStreamTransport.TileReservation reservation) {
         return reservation.produce(
                 (destination, stopping) -> {

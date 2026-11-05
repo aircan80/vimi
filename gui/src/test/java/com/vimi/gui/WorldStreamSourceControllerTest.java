@@ -245,10 +245,11 @@ public final class WorldStreamSourceControllerTest {
             var sourceAccessor = retired.getClass().getDeclaredMethod("source");
             sourceAccessor.setAccessible(true);
             var source = sourceAccessor.invoke(retired);
-            var placements = WorldStreamSourceBridge.Prepared.class
-                    .getDeclaredField("exteriorPlacements");
-            placements.setAccessible(true);
-            check(placements.getInt(source) == 0, "Closed source is left untouched");
+            var summary = WorldStreamSourceBridge.Prepared.class
+                    .getDeclaredField("exteriorSummary");
+            summary.setAccessible(true);
+            check(summary.get(source) == WorldStreamSourceBridge.ExteriorSummary.NONE,
+                    "Closed source is left untouched");
         } finally {
             Files.deleteIfExists(hold);
             fixture.close();

@@ -17,6 +17,7 @@ import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_NONE;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_RT;
 import static org.lwjgl.bgfx.BGFX.BGFX_UNIFORM_TYPE_MAT4;
 import static org.lwjgl.bgfx.BGFX.BGFX_UNIFORM_TYPE_SAMPLER;
+import static org.lwjgl.bgfx.BGFX.BGFX_UNIFORM_TYPE_VEC4;
 import static org.lwjgl.bgfx.BGFX.bgfx_copy;
 import static org.lwjgl.bgfx.BGFX.bgfx_create_index_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_create_program;
@@ -89,7 +90,8 @@ final class BgfxWorldWmoPass implements AutoCloseable {
             projection = INVALID,
             model = INVALID,
             normal = INVALID,
-            sampler = INVALID;
+            sampler = INVALID,
+            material = INVALID;
     private long meshBytes, textureBytes;
     private int liveStaging, peakMeshStaging, peakTextureStaging;
     private boolean closed;
@@ -144,6 +146,8 @@ final class BgfxWorldWmoPass implements AutoCloseable {
             model = valid(bgfx_create_uniform("u_wmoModel", BGFX_UNIFORM_TYPE_MAT4, 1));
             normal = valid(bgfx_create_uniform("u_wmoNormal", BGFX_UNIFORM_TYPE_MAT4, 1));
             sampler = valid(bgfx_create_uniform("s_wmoDiffuse", BGFX_UNIFORM_TYPE_SAMPLER, 1));
+            // Opaque only: no alpha test, output alpha 1 (the shader's opaque material class).
+            material = valid(bgfx_create_uniform("u_wmoMaterial", BGFX_UNIFORM_TYPE_VEC4, 1));
             uploadMesh(canceled);
             uploadTextures(canceled, textureAccepted);
             batches = decoded.batches();
@@ -284,7 +288,9 @@ final class BgfxWorldWmoPass implements AutoCloseable {
                             .flip();
             var m = stack.mallocFloat(16).put(modelTransform.asReadOnlyBuffer()).flip();
             var n = stack.mallocFloat(16).put(normalTransform.asReadOnlyBuffer()).flip();
+            var opaque = stack.floats(0, 0, 0, 0);
             for (var batch : batches) {
+                bgfx_set_uniform(material, opaque, 1);
                 bgfx_set_uniform(eye, e, 1);
                 bgfx_set_uniform(projection, p, 1);
                 bgfx_set_uniform(model, m, 1);
@@ -366,12 +372,12 @@ final class BgfxWorldWmoPass implements AutoCloseable {
             bgfx_destroy_program(program);
             program = INVALID;
         }
-        for (short u : new short[] {eye, projection, model, normal, sampler}) {
+        for (short u : new short[] {eye, projection, model, normal, sampler, material}) {
             if (u != INVALID) {
                 bgfx_destroy_uniform(u);
             }
         }
-        eye = projection = model = normal = sampler = INVALID;
+        eye = projection = model = normal = sampler = material = INVALID;
         data = null;
         batches = List.of();
         materialImages = new int[0];

@@ -110,14 +110,14 @@ final class WorldStreamObjectsFileTest {
     }
 
     @Test
-    void maximumProfileFitsUnderTheEightMebibyteCeiling() throws Exception {
+    void maximumProfileFitsUnderTheSixteenMebibyteCeiling() throws Exception {
         var builder = WorldStreamTileWriter.Exterior.builder();
-        for (int i = 0; i < 16; i++) {
+        for (int i = 0; i < 24; i++) {
             builder.image(256, 256, ByteBuffer.allocate(256 * 256 * 4));
         }
         builder.model();
-        // Six meshes of 16,384 vertices and 49,152 indices reach the vertex and index caps.
-        for (int mesh = 0; mesh < 6; mesh++) {
+        // Ten meshes of 16,384 vertices and 49,152 indices reach the vertex and index caps.
+        for (int mesh = 0; mesh < 10; mesh++) {
             float[] vertices = new float[16384 * 8];
             int[] indices = new int[49152];
             for (int i = 0; i < indices.length; i++) {
@@ -130,13 +130,25 @@ final class WorldStreamObjectsFileTest {
         var maximum = builder.build();
         assertTrue(maximum.bytes() <= WorldStreamObjectsFile.MAX_BYTES);
         assertEquals(
-                WorldStreamObjectsFile.length(1, 6, 6, 1, 16, 98_304, 294_912, 1 << 20),
+                WorldStreamObjectsFile.length(1, 10, 10, 1, 24, 163_840, 491_520, 3 << 19),
                 maximum.bytes());
+        // Every table at its cap still fits the ceiling.
+        assertTrue(
+                WorldStreamObjectsFile.length(
+                                WorldStreamObjectsFile.MAX_MODELS,
+                                WorldStreamObjectsFile.MAX_MESHES,
+                                WorldStreamObjectsFile.MAX_RANGES,
+                                WorldStreamObjectsFile.MAX_PLACEMENTS,
+                                WorldStreamObjectsFile.MAX_IMAGES,
+                                WorldStreamObjectsFile.MAX_VERTICES,
+                                WorldStreamObjectsFile.MAX_INDICES,
+                                WorldStreamObjectsFile.MAX_PIXELS)
+                        <= WorldStreamObjectsFile.MAX_BYTES);
         var reference = write(maximum);
         var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
-        assertEquals(98_304, read.vertexCount());
-        assertEquals(294_912, read.indexCount());
-        assertEquals(1 << 20, read.pixelCount());
+        assertEquals(163_840, read.vertexCount());
+        assertEquals(491_520, read.indexCount());
+        assertEquals(3 << 19, read.pixelCount());
         // The ceiling itself is enforced by the reference and by the tile header.
         assertThrows(
                 IllegalArgumentException.class,
@@ -148,7 +160,7 @@ final class WorldStreamObjectsFileTest {
         over.model();
         assertThrows(
                 IllegalArgumentException.class,
-                () -> over.image(1024, 1025, ByteBuffer.allocate(1024 * 1025 * 4)));
+                () -> over.image(1400, 1400, ByteBuffer.allocate(1400 * 1400 * 4)));
         var draws = WorldStreamTileWriter.Exterior.builder();
         draws.image(1, 1, ByteBuffer.allocate(4));
         draws.model();
@@ -171,12 +183,25 @@ final class WorldStreamObjectsFileTest {
     @Test
     void builderReportsRemainingRoomBeforeAWholeModelIsAdded() {
         var builder = WorldStreamTileWriter.Exterior.builder();
-        assertTrue(builder.fits(64, 1 << 20, 256, 98_304, 294_912, 1024));
-        assertFalse(builder.fits(65, 0, 1, 3, 3, 1), "Image count cap");
-        assertFalse(builder.fits(0, (1 << 20) + 1, 1, 3, 3, 1), "Pixel cap");
-        assertFalse(builder.fits(0, 0, 1, 98_305, 3, 1), "Vertex cap");
+        // Version 2 shares one profile among buildings, their cutout and blended surfaces,
+        // doodads and creatures.
+        assertTrue(
+                builder.fits(
+                        WorldStreamObjectsFile.MAX_IMAGES,
+                        WorldStreamObjectsFile.MAX_PIXELS,
+                        WorldStreamObjectsFile.MAX_MESHES,
+                        WorldStreamObjectsFile.MAX_VERTICES,
+                        WorldStreamObjectsFile.MAX_INDICES,
+                        WorldStreamObjectsFile.MAX_RANGES));
+        assertFalse(
+                builder.fits(WorldStreamObjectsFile.MAX_IMAGES + 1, 0, 1, 3, 3, 1),
+                "Image count cap");
+        assertFalse(
+                builder.fits(0, WorldStreamObjectsFile.MAX_PIXELS + 1L, 1, 3, 3, 1), "Pixel cap");
+        assertFalse(
+                builder.fits(0, 0, 1, WorldStreamObjectsFile.MAX_VERTICES + 1, 3, 1), "Vertex cap");
         assertFalse(builder.fits(0, 0, 2, 3, 3, 1), "Every mesh needs a range");
-        assertEquals(64, builder.placementRoom());
+        assertEquals(WorldStreamObjectsFile.MAX_PLACEMENTS, builder.placementRoom());
         assertEquals(WorldStreamTileWriter.Exterior.MAX_DRAWS, builder.drawRoom());
         builder.image(2, 2, rgba(4, 1));
         builder.model();
@@ -187,10 +212,12 @@ final class WorldStreamObjectsFileTest {
         assertEquals(2, builder.drawCost(0));
         builder.placement(0, 1, 2, 3, 1, 1, 0);
         builder.placement(0, 1, 2, 3, 1, 1, 0);
-        assertEquals(62, builder.placementRoom());
+        assertEquals(WorldStreamObjectsFile.MAX_PLACEMENTS - 2, builder.placementRoom());
         assertEquals(2, builder.placementCount());
         assertEquals(WorldStreamTileWriter.Exterior.MAX_DRAWS - 4, builder.drawRoom());
-        assertFalse(builder.fits(64, 0, 1, 3, 3, 1), "Images already used count");
+        assertFalse(
+                builder.fits(WorldStreamObjectsFile.MAX_IMAGES, 0, 1, 3, 3, 1),
+                "Images already used count");
         assertThrows(IllegalArgumentException.class, () -> builder.drawCost(1));
         assertEquals(4, builder.build().draws());
     }
@@ -503,7 +530,8 @@ final class WorldStreamObjectsFileTest {
     @Test
     void modelMatrixRebasesTheDoublePlacementOnceToFloat() {
         // A far placement whose float position alone would lose the 0.0625 offset.
-        double[] placements = {17066.6875, -3412.3125, 55.5, 2, Math.cos(0.7), Math.sin(0.7)};
+        double c = Math.cos(0.7), s = Math.sin(0.7);
+        double[] placements = {17066.6875, -3412.3125, 55.5, 2, -c, s, 0, -s, -c, 0, 0, 0, 1};
         var origin = new TerrainScene.Origin(17066.625f, -3412.25f, 50f);
         var model = FloatBuffer.allocate(16);
         var normal = FloatBuffer.allocate(16);
@@ -520,5 +548,112 @@ final class WorldStreamObjectsFileTest {
         assertEquals(1f, model.get(15));
         assertEquals((float) -Math.cos(0.7), normal.get(0));
         assertEquals(1f, normal.get(10));
+        // A general row-major rotation (a quarter turn about x) lands column-major.
+        double[] tilted = {0, 0, 0, 3, 1, 0, 0, 0, 0, -1, 0, 1, 0};
+        BgfxWorldStreamRenderer.objectMatrices(
+                tilted, 0, new TerrainScene.Origin(0, 0, 0), model, normal);
+        assertEquals(3f, model.get(0));
+        assertEquals(3f, model.get(6)); // local y maps to z
+        assertEquals(-3f, model.get(9)); // local z maps to -y
+        assertEquals(0f, model.get(5));
+        assertEquals(1f, normal.get(6));
+        assertEquals(-1f, normal.get(9));
+    }
+
+    @Test
+    void rangeClassesAndRotationsAreValidated() throws Exception {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        builder.image(1, 1, ByteBuffer.allocate(4));
+        builder.model();
+        builder.mesh(
+                FloatBuffer.wrap(new float[24]),
+                IntBuffer.wrap(new int[] {0, 1, 2, 0, 2, 1}),
+                new int[] {0, 3, 0, 3, 3, 0},
+                new int[] {WorldStreamObjectsFile.CUTOUT, WorldStreamObjectsFile.BLENDED});
+        double h = Math.sqrt(0.5);
+        builder.placement(0, 1, 2, 3, 1.5, new double[] {1, 0, 0, 0, h, -h, 0, h, h});
+        var exterior = builder.build();
+        var reference = write(exterior);
+        var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
+        assertEquals(WorldStreamObjectsFile.CUTOUT, read.ranges[3]);
+        assertEquals(WorldStreamObjectsFile.BLENDED, read.ranges[7]);
+        assertEquals(h, read.placements[8], 0);
+        // An unknown class, a scaled matrix or a reflection is refused.
+        var badClass = WorldStreamTileWriter.Exterior.builder();
+        badClass.image(1, 1, ByteBuffer.allocate(4));
+        badClass.model();
+        badClass.mesh(
+                FloatBuffer.wrap(new float[24]),
+                IntBuffer.wrap(new int[] {0, 1, 2}),
+                new int[] {0, 3, 0},
+                new int[] {3});
+        badClass.placement(0, 0, 0, 0, 1, 1, 0);
+        assertEquals(
+                "Draw range",
+                assertThrows(IllegalArgumentException.class, badClass::build).getMessage());
+        for (double[] rotation :
+                new double[][] {
+                    {2, 0, 0, 0, 2, 0, 0, 0, 2}, {-1, 0, 0, 0, 1, 0, 0, 0, 1}, new double[9]
+                }) {
+            var bad = WorldStreamTileWriter.Exterior.builder();
+            bad.image(1, 1, ByteBuffer.allocate(4));
+            bad.model();
+            bad.mesh(
+                    FloatBuffer.wrap(new float[24]),
+                    IntBuffer.wrap(new int[] {0, 1, 2}),
+                    new int[] {0, 3, 0});
+            bad.placement(0, 0, 0, 0, 1, rotation);
+            assertEquals(
+                    "Placement transform",
+                    assertThrows(IllegalArgumentException.class, bad::build).getMessage());
+        }
+    }
+
+    @Test
+    void aFrameOfMaximumPlacementsAllocatesNothingPerPlacementOnTheStack() {
+        // Every slot at the placement cap, drawn twice (opaque/cutout and the blended pass).
+        int placements = BgfxWorldStreamRenderer.SLOT_COUNT * WorldStreamObjectsFile.MAX_PLACEMENTS;
+        assertTrue(placements > 5_760 - 1);
+        double c = Math.cos(0.3), s = Math.sin(0.3);
+        double[] table = new double[placements * WorldStreamObjectsFile.PLACEMENT_DOUBLES];
+        for (int p = 0; p < placements; p++) {
+            System.arraycopy(
+                    new double[] {p, -p, 3, 1, -c, s, 0, -s, -c, 0, 0, 0, 1},
+                    0,
+                    table,
+                    p * WorldStreamObjectsFile.PLACEMENT_DOUBLES,
+                    WorldStreamObjectsFile.PLACEMENT_DOUBLES);
+        }
+        var origin = new TerrainScene.Origin(0, 0, 0);
+        try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            var frame = BgfxWorldStreamRenderer.ObjectFrame.on(stack);
+            long pointer = stack.getPointer();
+            for (int pass = 0; pass < 2; pass++) {
+                for (int p = 0; p < placements; p++) {
+                    frame.placement(table, p, origin);
+                    frame.material(p % 3);
+                    assertEquals(pointer, stack.getPointer(), "placement " + p);
+                }
+            }
+            assertEquals((float) p(table, placements - 1), frame.model.get(12));
+            assertEquals(0.5f, frame.material(WorldStreamObjectsFile.CUTOUT).get(0));
+            assertEquals(1f, frame.material(WorldStreamObjectsFile.BLENDED).get(1));
+        }
+        // Negative control: three vec4s per placement, the old pattern, exhaust the default stack.
+        assertThrows(
+                OutOfMemoryError.class,
+                () -> {
+                    try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
+                        for (int p = 0; p < placements; p++) {
+                            stack.floats(0, 0, 0, 0);
+                            stack.floats(0.5f, 0, 0, 0);
+                            stack.floats(0, 1, 0, 0);
+                        }
+                    }
+                });
+    }
+
+    private static double p(double[] table, int p) {
+        return table[p * WorldStreamObjectsFile.PLACEMENT_DOUBLES];
     }
 }

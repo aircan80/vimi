@@ -536,4 +536,90 @@ class WmoFormatsTest {
         assertTrue(root.getMessage().contains("source byte limit"));
         assertTrue(group.getMessage().contains("source byte limit"));
     }
+
+    @Test
+    void doodadDeclarationsAreRawAndOversizedOrOverBudgetOnesAreNotRetained() {
+        var absent = WmoFormats.root(root(), () -> false).doodads();
+        assertFalse(absent.declared());
+        assertFalse(absent.retained());
+        var sets = buffer(64);
+        sets.put("Set_$DefaultGlobal".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        sets.putInt(20, 0).putInt(24, 1).putInt(52, 1).putInt(56, 1);
+        var def = buffer(80);
+        def.putInt(0x05000002).put(floats(1, 2, 3, 0, 0, 0.5f, 0.75f)).putFloat(1.5f);
+        def.putInt(-1).putInt(1).put(floats(Float.NaN, 0, 0, 0, 0, 0, 1)).putFloat(1).putInt(0);
+        var ids = buffer(12).putInt(10).putInt(0).putInt(-1);
+        var bytes =
+                join(
+                        root(),
+                        chunk("MODS", sets.array()),
+                        chunk("MODI", ids.array()),
+                        chunk("MODD", def.array()));
+        var doodads = WmoFormats.root(bytes, () -> false).doodads();
+        assertTrue(doodads.declared() && doodads.retained() && doodads.fileIdsPresent());
+        assertFalse(doodads.namesPresent());
+        assertEquals(
+                java.util.List.of(new WmoFormats.DoodadSet(0, 1), new WmoFormats.DoodadSet(1, 1)),
+                doodads.sets());
+        var first = doodads.definitions().getFirst();
+        assertEquals(2, first.reference());
+        assertEquals(5, first.flags());
+        assertEquals(3, first.z(), 0);
+        assertEquals(0.75f, first.qw(), 0);
+        assertEquals(1.5f, first.scale(), 0);
+        // Raw: a non-finite definition is retained for the consumer to refuse.
+        assertTrue(Float.isNaN(doodads.definitions().get(1).x()));
+        assertEquals(3, doodads.fileIdCount());
+        assertEquals(0xffffffffL, doodads.fileId(2));
+        // A partial record or a duplicate declaration leaves the doodads not retained, and the
+        // root still parses as it did before doodads were read.
+        for (var broken :
+                new byte[][] {
+                    join(root(), chunk("MODS", sets.array()), chunk("MODD", new byte[39])),
+                    join(root(), chunk("MODS", new byte[33]), chunk("MODD", def.array())),
+                    join(
+                            root(),
+                            chunk("MODS", sets.array()),
+                            chunk("MODI", new byte[5]),
+                            chunk("MODD", def.array())),
+                    join(
+                            root(),
+                            chunk("MODS", sets.array()),
+                            chunk("MODD", def.array()),
+                            chunk("MODD", def.array())),
+                    join(
+                            root(),
+                            chunk("MODS", sets.array()),
+                            chunk("MODN", new byte[4]),
+                            chunk("MODN", new byte[4]),
+                            chunk("MODD", def.array()))
+                }) {
+            var parsed = WmoFormats.root(broken, () -> false);
+            assertEquals(1, parsed.materials().size());
+            assertTrue(parsed.doodads().declared());
+            assertFalse(parsed.doodads().retained());
+        }
+        // Names without MODI are retained but flagged.
+        var named =
+                WmoFormats.root(
+                                join(
+                                        root(),
+                                        chunk("MODS", sets.array()),
+                                        chunk("MODN", new byte[8]),
+                                        chunk("MODD", def.array())),
+                                () -> false)
+                        .doodads();
+        assertTrue(named.retained() && named.namesPresent() && !named.fileIdsPresent());
+        // Over the fact budget: declared but not retained, and the root still parses.
+        var tight = new WmoFormats.Limits(1 << 20, 1 << 20, 8, 24, 8, 16384, 16384, 64, 1, 4096);
+        var many = new byte[40 * 64];
+        var big =
+                WmoFormats.root(
+                        join(root(), chunk("MODS", sets.array()), chunk("MODD", many)),
+                        tight,
+                        () -> false);
+        assertTrue(big.doodads().declared());
+        assertFalse(big.doodads().retained());
+        assertEquals(1, big.materials().size());
+    }
 }
