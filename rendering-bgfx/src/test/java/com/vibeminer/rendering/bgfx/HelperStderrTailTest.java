@@ -56,6 +56,37 @@ class HelperStderrTailTest {
     }
 
     @Test
+    void redactsInstallPathsAccountsAndHostnames() {
+        String home = System.getProperty("user.home");
+        String user = System.getProperty("user.name");
+        String redacted =
+                HelperStderrTail.redact(
+                        "open /Users/tester/Games/World/Data/data.000 failed;"
+                                + " C:\\Program Files\\World\\Wow.exe and C:/Users/tester/x;"
+                                + " share \\\\fileserver\\games\\wow;"
+                                + " jar:file:/opt/tester/vimi.jar!/a; home="
+                                + home
+                                + "/cache; https://tester:secret@cdn.invalid/a/b.idx; by "
+                                + user);
+        assertFalse(redacted.contains("tester"), redacted);
+        assertFalse(redacted.contains("fileserver"), redacted);
+        assertFalse(redacted.contains("secret"), redacted);
+        assertFalse(redacted.contains(home), redacted);
+        assertFalse(redacted.contains("Program"), redacted);
+        if (user.length() >= 3) {
+            assertFalse(redacted.contains(user), redacted);
+        }
+        assertTrue(redacted.startsWith("open <path> failed; <path> Files"), redacted);
+        assertTrue(redacted.contains("share <path>;"), redacted);
+        assertTrue(redacted.contains("jar:file:<path>"), redacted);
+        assertTrue(redacted.contains("https://<redacted>@cdn.invalid/a/b.idx"), redacted);
+        // Relative names, ratios and ordinary words are not paths.
+        assertEquals(
+                "World/maps/Azeroth 1/2 read/write",
+                HelperStderrTail.redact("World/maps/Azeroth 1/2 read/write"));
+    }
+
+    @Test
     void emptyTailReportsEmpty() {
         var tail = new HelperStderrTail();
         assertTrue(tail.isEmpty());

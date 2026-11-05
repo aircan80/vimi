@@ -10,12 +10,14 @@ public final class WorldDiagnosticsTest {
     public static void main(String[] args) {
         summaryKeepsTheOriginalCauseChainBounded();
         redactsUrlQueriesAndControlCharacters();
+        redactsInstallPathsAccountsAndHostnames();
+        degradedPartsAreThrottledPerPart();
         cancellationIsLifecycleNotAFault();
         cyclicCausesTerminate();
         retirementBlockedCarriesTheOriginalReason();
         untrustedExceptionAccessorsAreNeverInvoked();
         System.out.println("World diagnostics: cause chains, bounds, redaction, cancellation,"
-                + " untrusted accessors and retirement reasons passed");
+                + " degraded-part throttling, untrusted accessors and retirement reasons passed");
     }
 
     private static void assertTrue(boolean value, String... message) {
@@ -61,6 +63,64 @@ public final class WorldDiagnosticsTest {
         assertFalse(WorldDiagnostics.brief(failure).contains("secret"));
     }
 
+    private static void redactsInstallPathsAccountsAndHostnames() {
+        String home = System.getProperty("user.home");
+        var missing = new java.nio.file.NoSuchFileException(
+                home + "/Games/World of Warcraft/_classic_/Data/data.000");
+        var failure = new IOException("World source failed", new IOException(
+                "read C:\\Users\\tester\\Games\\Wow.exe via \\\\nas-tester\\wow", missing));
+        String summary = WorldDiagnostics.summary(failure);
+        assertFalse(summary.contains(home), summary);
+        assertFalse(summary.contains("tester"), summary);
+        assertFalse(summary.contains("Games"), summary);
+        assertTrue(summary.contains("java.nio.file.NoSuchFileException: <path>"), summary);
+        String user = System.getProperty("user.name");
+        if (user.length() >= 3) {
+            String named = WorldDiagnostics.summary(new IOException("owner " + user + " denied"));
+            assertFalse(named.contains(user), named);
+        }
+        assertFalse(WorldDiagnostics.brief(missing).contains(home), WorldDiagnostics.brief(missing));
+    }
+
+    private static void degradedPartsAreThrottledPerPart() {
+        var logger = java.util.logging.Logger.getLogger("com.vimi.gui.World");
+        var records = new java.util.ArrayList<String>();
+        var handler = new java.util.logging.Handler() {
+            @Override
+            public void publish(java.util.logging.LogRecord record) {
+                synchronized (records) {
+                    records.add(record.getMessage());
+                }
+            }
+
+            @Override
+            public void flush() {}
+
+            @Override
+            public void close() {}
+        };
+        logger.addHandler(handler);
+        try {
+            String home = System.getProperty("user.home");
+            for (int i = 0; i < 25; i++)
+                WorldDiagnostics.degraded("test water", "World water failed",
+                        new IllegalStateException("bad liquid at " + home + "/Data/x.adt"));
+            WorldDiagnostics.degraded("test creatures", "World creature models failed",
+                    new IllegalStateException("bad model"));
+            WorldDiagnostics.degraded("test creatures", "World creature models failed",
+                    new CancellationException());
+            synchronized (records) {
+                assertEquals(2, records.size());
+                assertTrue(records.get(0).startsWith("World water failed: java.lang.IllegalStateException:"
+                        + " bad liquid at <path>"), records.get(0));
+                assertFalse(records.get(0).contains(home), records.get(0));
+                assertTrue(records.get(1).contains("bad model"), records.get(1));
+            }
+        } finally {
+            logger.removeHandler(handler);
+        }
+    }
+
     private static void untrustedExceptionAccessorsAreNeverInvoked() {
         final class Hostile extends RuntimeException {
             private static final long serialVersionUID = 1L;
@@ -96,6 +156,24 @@ public final class WorldDiagnosticsTest {
                 new CompletionException(new CancellationException("closed"))));
         assertFalse(WorldDiagnostics.cancellation(new IOException("broken")));
         assertFalse(WorldDiagnostics.cancellation(null));
+        // Nested JDK joins add a CancellationException("join") link per join: still lifecycle.
+        var stored = new CompletableFuture<Void>();
+        stored.completeExceptionally(new CancellationException());
+        Throwable joined = null;
+        try {
+            stored.join();
+        } catch (CancellationException thrown) {
+            joined = thrown;
+        }
+        assertTrue(WorldDiagnostics.cancellation(new CompletionException(joined)));
+        // A real failure inside the chain, or a suppressed one, is logged.
+        var dirty = new CancellationException("join");
+        dirty.initCause(new IllegalStateException("cleanup failed", new CancellationException()));
+        assertFalse(WorldDiagnostics.cancellation(dirty));
+        var suppressed = new CancellationException("closed");
+        suppressed.addSuppressed(new IOException("close failed"));
+        assertFalse(WorldDiagnostics.cancellation(new CompletionException(suppressed)));
+        assertFalse(WorldDiagnostics.cancellation(new CancellationException() {}));
     }
 
     private static void cyclicCausesTerminate() {

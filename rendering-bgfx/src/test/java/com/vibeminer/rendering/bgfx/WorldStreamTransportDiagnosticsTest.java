@@ -42,6 +42,9 @@ class WorldStreamTransportDiagnosticsTest {
         }
         noise.append("x".repeat(10_000)).append('\n');
         noise.append("Exception in thread \"main\" synthetic helper crash\n");
+        noise.append("Cannot open /home/tester/Games/WoW/Data/data.000 or ")
+                .append(System.getProperty("user.home"))
+                .append("/x\n");
         child.error =
                 new ByteArrayInputStream(noise.toString().getBytes(StandardCharsets.US_ASCII));
         var session =
@@ -75,6 +78,9 @@ class WorldStreamTransportDiagnosticsTest {
         assertTrue(report.contains("closed status not received"), report);
         assertTrue(report.contains("; failure: World"), report);
         assertTrue(report.contains("synthetic helper crash"), report);
+        assertTrue(report.contains("Cannot open <path> or <path>"), report);
+        assertFalse(report.contains("tester"), report);
+        assertFalse(report.contains(System.getProperty("user.home")), report);
         assertTrue(report.contains("earlier stderr lines omitted"), report);
         assertFalse(report.contains("synthetic startup noise 0\n"), report);
         assertTrue(

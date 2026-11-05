@@ -497,7 +497,11 @@ final class WorldStreamSourceController {
                 if(water!=null) {
                     waterTablesStarted=clock.getAsLong();
                     waterTables=request.world().prepareWaterTables(qualificationCancellation);
-                    waterTables.whenComplete((ignored, failure) -> kick());
+                    waterTables.whenComplete((ignored, failure) -> {
+                        if (failure != null)
+                            WorldDiagnostics.warn("World water tables unavailable; terrain continues without water", failure);
+                        kick();
+                    });
                 }
             }
             try {
@@ -844,6 +848,8 @@ final class WorldStreamSourceController {
                 exterior = null;
                 // Preempted by terrain (or retired): untried, so it restarts when terrain idles.
                 if (!work.cancellation.isCanceled() && live(work.entry)) {
+                    WorldDiagnostics.degraded("exterior objects",
+                            "World exterior objects preparation failed; tile kept as terrain only", failed);
                     exteriorTried.add(work.entry);
                     work.entry.source().exteriorFailedLate();
                 }
@@ -880,12 +886,19 @@ final class WorldStreamSourceController {
                     work.entry.source().creatures(work.creatures);
                     if (work.buildingsFailed) work.entry.source().exteriorFailedLate();
                 }
-                case FAILED -> work.entry.source().exteriorFailedLate();
+                case FAILED -> {
+                    // Write, read or upload failed; the helper reports no detail of its own.
+                    WorldDiagnostics.degraded("exterior objects",
+                            "World exterior objects delivery failed; tile kept as terrain only", null);
+                    work.entry.source().exteriorFailedLate();
+                }
                 case DROPPED -> {}
             }
         } catch (RuntimeException failed) {
             // A stopping session cancels delivery; anything else fails only these objects.
             if (!closing && !cleanCancellation(failed)) work.entry.source().exteriorFailedLate();
+            if (!closing) WorldDiagnostics.degraded("exterior objects",
+                    "World exterior objects delivery failed; tile kept as terrain only", failed);
         }
         changed();
     }

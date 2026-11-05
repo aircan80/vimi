@@ -289,6 +289,7 @@ final class WorldTileCreatures implements AutoCloseable {
             return Summary.failed("creature source closed or retired");
         } catch (RuntimeException failed) {
             token.check();
+            WorldDiagnostics.degraded("creature spawns", "World creature spawn source failed", failed);
             return Summary.failed("spawn source failed: " + failed.getClass().getSimpleName());
         }
         if (spawns.spawns() == 0) return Summary.failed("no prepared spawn source");
@@ -316,6 +317,7 @@ final class WorldTileCreatures implements AutoCloseable {
                 continue;
             } catch (Exception failed) {
                 token.check();
+                WorldDiagnostics.degraded("creature lookups", "World creature model lookup failed", failed);
                 counts[Count.FAILED.ordinal()]++;
                 continue;
             }
@@ -399,6 +401,7 @@ final class WorldTileCreatures implements AutoCloseable {
         } catch (Exception failed) {
             // Only this tile's cancellation propagates; a closed or retired component is a failure.
             token.check();
+            WorldDiagnostics.degraded("creature models", "World creature model read failed", failed);
             // Not cached: a failed read may succeed on the next tile.
             return Converted.refused(Count.FAILED, failed.getClass().getSimpleName());
         }

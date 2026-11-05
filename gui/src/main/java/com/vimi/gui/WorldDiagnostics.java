@@ -6,12 +6,12 @@ import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
-import java.util.regex.Pattern;
 
 /**
  * Bounded, redacted World failure summaries for the application log and short UI status text.
  * Records carry exception types, bounded messages and code locations only: never stack-local data,
- * payload bytes or URL query strings (which can be transient bearer capabilities).
+ * payload bytes, URL query strings (which can be transient bearer capabilities), absolute local
+ * paths such as the game install, or this machine's user and host names.
  */
 final class WorldDiagnostics {
     static final int MAX_CAUSES = 6;
@@ -20,13 +20,13 @@ final class WorldDiagnostics {
     static final int MAX_BRIEF_CHARS = 120;
     private static final int MAX_FRAMES = 4;
     private static final int RECORDS_PER_MINUTE = 30;
-    private static final Pattern QUERY = Pattern.compile("(?i)(\\b[a-z][a-z0-9+.-]*://[^\\s?#]*)[?#]\\S*");
-    private static final Pattern CONTROL = Pattern.compile("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");
+    private static final long DEGRADED_INTERVAL_NANOS = 60_000_000_000L;
     private static final System.Logger LOG = System.getLogger("com.vimi.gui.World");
     private static final Object RATE = new Object();
     private static long windowStart;
     private static int windowRecords;
     private static long suppressed;
+    private static final java.util.Map<String, long[]> DEGRADED = new java.util.HashMap<>();
 
     private WorldDiagnostics() {}
 
@@ -64,14 +64,22 @@ final class WorldDiagnostics {
         return trusted(failure) ? failure.getCause() : null;
     }
 
-    /** Cancellation is lifecycle, not a fault: unwrap completion wrappers to decide. */
+    /**
+     * Cancellation is lifecycle, not a fault. Only a pure chain counts: completion wrappers and
+     * exact {@code CancellationException} links (nested JDK joins add one per join), with no
+     * suppressed failure anywhere, ending in a cause-free cancellation. Any real failure inside
+     * the chain, a subclass, a cycle or an over-bound chain is logged.
+     */
     static boolean cancellation(Throwable failure) {
         try {
-            for (int i = 0; failure != null && i < MAX_CAUSES; i++) {
-                if (failure instanceof CancellationException) return true;
-                if (!(failure instanceof CompletionException || failure instanceof ExecutionException))
-                    return false;
-                failure = cause(failure);
+            for (int i = 0; failure != null && i < MAX_CAUSES + 2; i++) {
+                Class<?> type = failure.getClass();
+                if (type != CancellationException.class && type != CompletionException.class
+                        && type != ExecutionException.class) return false;
+                if (failure.getSuppressed().length != 0) return false;
+                Throwable next = failure.getCause();
+                if (next == null) return type == CancellationException.class;
+                failure = next;
             }
         } catch (Throwable unreadable) {
             return false;
@@ -155,6 +163,33 @@ final class WorldDiagnostics {
         return null;
     }
 
+    /**
+     * A failure that degrades one optional World part (exterior objects, creatures, water) while
+     * terrain continues. These can repeat on every tile, so each {@code part} logs at most one
+     * record a minute, carrying how many were skipped, and cannot crowd out terminal records.
+     */
+    static void degraded(String part, String context, Throwable failure) {
+        try {
+            if (cancellation(failure)) return;
+            long skipped;
+            synchronized (RATE) {
+                long now = System.nanoTime();
+                long[] state = DEGRADED.computeIfAbsent(part, ignored -> new long[] {now, -1});
+                if (state[1] >= 0 && now - state[0] < DEGRADED_INTERVAL_NANOS) {
+                    state[1]++;
+                    return;
+                }
+                skipped = Math.max(0, state[1]);
+                state[0] = now;
+                state[1] = 0;
+            }
+            warn(context + (skipped == 0 ? "" : " (" + skipped + " similar " + part
+                    + " failures since the last record)"), failure);
+        } catch (Throwable ignored) {
+            // Diagnostics cannot interrupt World lifecycle or JavaFX delivery.
+        }
+    }
+
     /** Rate-limited WARNING record; cancellations are not logged. Never throws. */
     static void warn(String context, Throwable failure) {
         warn(context, failure, null);
@@ -197,7 +232,9 @@ final class WorldDiagnostics {
     static String clean(String message) {
         // Pre-truncate so a huge message cannot make regex work expensive on the FX thread.
         if (message.length() > 4 * MAX_SUMMARY_CHARS) message = message.substring(0, 4 * MAX_SUMMARY_CHARS);
-        return QUERY.matcher(CONTROL.matcher(message).replaceAll(" ")).replaceAll("$1?<redacted>");
+        // One redaction for GUI records and helper stderr: control characters, URL queries and
+        // user-info, absolute local paths and this machine's user and host names.
+        return com.vibeminer.rendering.bgfx.HelperStderrTail.redact(message);
     }
 
     private static String cap(String text, int max) {

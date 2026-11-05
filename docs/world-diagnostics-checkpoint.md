@@ -30,8 +30,25 @@ rendering.
   follows the existing detached-failure rule in the World lifecycle. Many request
   failures are already detached to a class name upstream, so their records stay
   brief. The helpers never throw into lifecycle or FX code. Cancellation is not
-  logged. Logging is limited to 30 records a minute,
-  and the next record that gets through says how many were dropped.
+  logged, but only a pure chain counts as cancellation: completion wrappers and
+  exact `CancellationException` links (one per nested JDK join), no suppressed
+  failure, ending in a cause-free cancellation. A real failure inside such a chain
+  is logged. Logging is limited to 30 records a minute, and the next record that
+  gets through says how many were dropped.
+- **Optional World parts.** Exterior objects, creatures and water degrade a tile
+  to terrain only instead of failing World, so their failures used to leave only a
+  class name in the status line. They now log through
+  `WorldDiagnostics.degraded`: at most one record a minute per part (exterior
+  objects, creatures, creature spawns, creature lookups, creature models, water),
+  with a count of the similar failures skipped, so a part that fails on every tile
+  cannot crowd out terminal records. Covered paths: exterior objects preparation,
+  copy, rebuild and late delivery (including a delivery the helper reports
+  FAILED); creature spawn index, model lookup, model read and objects-file checks,
+  plus the NPC spawn overlay and model inspector; water preparation and the water
+  tables. In the transport, a late objects file that cannot be written logs its
+  first failure and every 64th after, per session. Clean refusals
+  (`Source unavailable`, `water refused`) are expected outcomes and are not
+  logged.
 - **Original cause survives.** `WorldStreamGpuOwner` keeps the cause instead of
   replacing it. A queued request that is blocked because the previous World
   resources did not retire now fails with `RetirementBlocked`, which carries the
@@ -44,23 +61,37 @@ rendering.
 
 Records contain exception types, bounded messages, code locations, pid/exit status
 and sanitized helper stderr. They never contain payload bytes, table rows or keys.
-In both the GUI records and the helper stderr tail, URL query strings and fragments
-are replaced by `?<redacted>`, because signed query strings can be bearer
-capabilities. Control and line-separator characters are replaced too. Helper stderr can still contain local
-paths, for example from a JVM crash notice. That matches the existing guidance in
-[data-flow-inventory.md](data-flow-inventory.md): review diagnostics before
-sharing them.
+GUI records, status text and the helper stderr tail share one redaction
+(`HelperStderrTail.redact`):
+
+- URL query strings and fragments become `?<redacted>`, because signed query
+  strings can be bearer capabilities. URL user-info becomes `<redacted>@`.
+- `file:` URLs and absolute paths (POSIX, `~/`, drive-letter and UNC) are
+  replaced whole by `<path>`, so no game install, home or scratch directory, and
+  no UNC server name, is recorded. Relative names such as `World/maps/...` stay.
+- This machine's home directory, user name and host name (from the JVM, the
+  environment and a background lookup of the local host name) are replaced by
+  `<redacted>` wherever they appear.
+- Control and line-separator characters are replaced too.
+
+Review diagnostics before sharing them anyway, as
+[data-flow-inventory.md](data-flow-inventory.md) advises: a name that is not a
+path and not this machine's identity is not recognised.
 
 ## Tests
 
 - `:rendering-bgfx:test`:
   - `HelperStderrTailTest` covers line and length bounds, the omitted-line count,
-    the partial last line and control-byte neutralization.
+    the partial last line, control-byte neutralization, and redaction of install
+    paths, account names, UNC hosts and URL user-info.
   - `WorldStreamTransportDiagnosticsTest` covers a helper crash with about 600 KB
-    of stderr (exit code, failure, bounded tail), a clean CLOSED with no record,
+    of stderr (exit code, failure, bounded and path-redacted tail), a clean
+    CLOSED with no record,
     and a no-child start failure.
 - `:gui:worldDiagnosticsTest` covers cause-chain bounds, redaction (including
-  Unicode line separators), cancellation, cyclic causes, never calling accessors
+  Unicode line separators, file-system exception paths and the user name),
+  pure versus mixed cancellation chains, per-part throttling of degraded-part
+  records, cyclic causes, never calling accessors
   on untrusted exceptions, and `RetirementBlocked` carrying the original exit
   reason into the UI text. The `WorldView` inventory wiring itself is covered only
   by the hosted UI tasks.

@@ -553,6 +553,8 @@ public final class WorldStreamTransport {
         private final CompletableFuture<String> diagnosticReport = new CompletableFuture<>();
         private volatile long childPid;
         private volatile boolean stderrAttached;
+        private final java.util.concurrent.atomic.AtomicLong objectsWriteFailures =
+                new java.util.concurrent.atomic.AtomicLong();
 
         private ObjectsOperation objectsOperation;
 
@@ -952,6 +954,9 @@ public final class WorldStreamTransport {
                     } catch (IOException | RuntimeException failed) {
                         // The writer removes its own partial file. Only these objects fail, and
                         // the resident records it like a child FAILED, or DROPPED once retired.
+                        if (!stop.getAsBoolean()) {
+                            objectsWriteFailed(failed);
+                        }
                         synchronized (lock) {
                             if (!stop.getAsBoolean()) {
                                 outcome =
@@ -1739,6 +1744,31 @@ public final class WorldStreamTransport {
             int read;
             while ((read = errors.read(scratch)) != -1) {
                 stderrTail.accept(scratch, 0, read);
+            }
+        }
+
+        /**
+         * The first late objects write failure of a session, and then every 64th with a count, is
+         * logged: terrain continues, so a failing writer would otherwise leave no evidence.
+         */
+        private void objectsWriteFailed(Throwable failed) {
+            long count = objectsWriteFailures.incrementAndGet();
+            if (count != 1 && count % 64 != 0) {
+                return;
+            }
+            try {
+                System.getLogger(WorldStreamTransport.class.getName())
+                        .log(
+                                System.Logger.Level.WARNING,
+                                "World exterior objects file could not be written ("
+                                        + count
+                                        + (count == 1 ? " failure" : " failures")
+                                        + " this session); tile kept as terrain only: "
+                                        + HelperStderrTail.redact(
+                                                WorldStreamLaunchOwner.Handle.detached(failed)
+                                                        .getMessage()));
+            } catch (RuntimeException | Error ignored) {
+                // Diagnostic delivery cannot interrupt objects delivery.
             }
         }
 
