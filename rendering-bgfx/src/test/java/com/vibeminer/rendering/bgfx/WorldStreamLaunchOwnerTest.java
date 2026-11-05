@@ -399,11 +399,6 @@ class WorldStreamLaunchOwnerTest {
 
     @Test
     void realOwnedJavaChildExitsThroughHandleBeforeMappingAndWorkerCleanup() throws Exception {
-        Path source = directory.resolve("Wait.java");
-        Files.writeString(
-                source,
-                "class Wait { public static void main(String[] args) throws Exception { "
-                        + "System.out.println(\"READY\"); System.out.flush(); while (System.in.read()!=-1) {} } }");
         var actual = new java.util.concurrent.atomic.AtomicReference<Process>();
         var ready = new CountDownLatch(1);
         var prepared = WorldStreamPreparedFiles.create(directory, SESSION, null);
@@ -413,12 +408,8 @@ class WorldStreamLaunchOwnerTest {
                         arguments -> {
                             var child =
                                     new ProcessBuilder(
-                                                    Path.of(
-                                                                    System.getProperty("java.home"),
-                                                                    "bin",
-                                                                    "java")
-                                                            .toString(),
-                                                    source.toString())
+                                                    WorldStreamTestChildren.command(
+                                                            WorldStreamTestChildren.Wait.class))
                                             .start();
                             actual.set(child);
                             return child;

@@ -454,6 +454,8 @@ public final class WorldStreamTransport {
     }
 
     public static final class PreparedSession implements AutoCloseable {
+        static final long CLOSE_GRACE_MILLIS = 250;
+
         private final WorldStreamEnvelope.Session descriptor;
         private final WorldStreamPreparedFiles files;
 
@@ -469,6 +471,14 @@ public final class WorldStreamTransport {
         }
 
         Session launch(Starter starter, long startupMillis, long closeMillis) {
+            return launch(starter, startupMillis, closeMillis, CLOSE_GRACE_MILLIS);
+        }
+
+        /**
+         * {@code graceMillis} is how long close waits for the child to exit on its own after CLOSE
+         * before it is signalled; tests with JVM children on loaded hosts need more than a helper.
+         */
+        Session launch(Starter starter, long startupMillis, long closeMillis, long graceMillis) {
             Objects.requireNonNull(starter);
             var session = new Session(descriptor);
             var owner =
@@ -476,7 +486,7 @@ public final class WorldStreamTransport {
                             files,
                             starter::start,
                             session::attach,
-                            250,
+                            graceMillis,
                             closeMillis,
                             startupMillis);
             session.launched(owner);

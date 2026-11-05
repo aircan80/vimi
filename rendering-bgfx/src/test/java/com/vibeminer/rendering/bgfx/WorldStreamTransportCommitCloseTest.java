@@ -59,29 +59,15 @@ class WorldStreamTransportCommitCloseTest {
     }
 
     private WorldStreamTransport.Session launch() throws Exception {
-        Path child = directory.resolve("Closing.java");
-        Files.writeString(
-                child,
-                """
-                class Closing {
-                  public static void main(String[] a) throws Exception {
-                    String n="WS2 "+a[0]+" ";
-                    System.out.print(n+"SESSION TERRAIN_BASIC_V1\\n"+n+"CREDIT 1 0 1\\n");System.out.flush();
-                    var input=new java.io.BufferedReader(new java.io.InputStreamReader(System.in));
-                    String line;
-                    while((line=input.readLine())!=null){
-                      String[] p=line.split(" ");
-                      if(p[2].equals("CLOSE")){System.out.print(n+"CLOSED\\n");System.out.flush();return;}
-                      if(p[2].equals("COMMIT"))throw new AssertionError("Closing commit was advertised");
-                    }
-                  }
-                }
-                """);
         var prepared =
                 WorldStreamTransport.prepare(
                         directory,
                         new WorldStreamTransport.Spec(
                                 "ab".repeat(32), 1, WorldStreamTransport.Backend.VULKAN));
+        // These cases assert how a clean CLOSE/CLOSED drain is normalized. The production grace
+        // (250 ms from close request to signal) is a helper budget; a loaded Windows runner can
+        // exceed it for a JVM child round trip, which kills the child before CLOSED and turns the
+        // clean drain into "EOF before CLOSED". The kill path is covered by its own tests.
         return prepared.launch(
                 arguments -> {
                     sessionDirectory = Path.of(arguments.get(1));
@@ -94,12 +80,13 @@ class WorldStreamTransportCommitCloseTest {
                             HexFormat.of().toHexDigits(descriptor.nonce().high())
                                     + HexFormat.of().toHexDigits(descriptor.nonce().low());
                     return new ProcessBuilder(
-                                    Path.of(System.getProperty("java.home"), "bin", "java")
-                                            .toString(),
-                                    child.toString(),
-                                    nonce)
+                                    WorldStreamTestChildren.command(
+                                            WorldStreamTestChildren.Closing.class, nonce))
                             .start();
-                });
+                },
+                10000,
+                8000,
+                2000);
     }
 
     @Test

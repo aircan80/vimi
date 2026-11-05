@@ -33,12 +33,14 @@ public final class FullPreparationLibraryIntegrationTest {
 
     public static void main(String[] args) throws Exception {
         Path directory = Files.createTempDirectory("vimi-full-library-preparation-");
+        Throwable primary = null;
         try {
             Fixture fixture = seed(directory);
             String identity = null;
             long generatedAfterFirst = 0;
             for (int round = 0; round < 2; round++) {
                 var service = BuildApplication.open(directory, OfflineSourceFixtures::publicKeys).get(20, TimeUnit.SECONDS);
+                Throwable roundFailure = null;
                 try {
                     require(
                             service.preparation() != null,
@@ -274,8 +276,12 @@ public final class FullPreparationLibraryIntegrationTest {
                                                         issue.contains("definitions are disabled")),
                                 "Disabled definitions are reported explicitly");
                     }
+                } catch (Throwable failure) {
+                    roundFailure = failure;
+                    throw failure;
                 } finally {
-                    service.closeAsync().get(20, TimeUnit.SECONDS);
+                    TestCleanup.after(
+                            roundFailure, () -> service.closeAsync().get(20, TimeUnit.SECONDS));
                 }
             }
             require(
@@ -289,11 +295,11 @@ public final class FullPreparationLibraryIntegrationTest {
             System.out.println(
                     "FullPreparationLibraryIntegration: default files/tables/research services,"
                             + " unified ownership/accounting and reopen passed");
+        } catch (Throwable failure) {
+            primary = failure;
+            throw failure;
         } finally {
-            try (var paths = Files.walk(directory)) {
-                for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList())
-                    Files.delete(path);
-            }
+            TestCleanup.deleteTree(primary, directory);
         }
     }
 
