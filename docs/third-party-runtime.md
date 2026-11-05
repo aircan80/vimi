@@ -12,8 +12,12 @@ GPL-3.0-or-later artwork from VibeMiner; hashes/provenance are in
 - OpenJFX25.0.1: GPLv2 with the Classpath Exception and third-party notices.
   Source: https://github.com/openjdk/jfx . The matching, checksum-verified SDK legal files for base, graphics and controls
   are copied beside the application notices on every platform, including all
-  component notices. Maven JARs do not supply these legal files; SDK_SOURCE.txt
-  records the exact SDK URL and SHA-256 used.
+  component notices. The packaged JavaFX class JARs and the `javafx.graphics` native
+  libraries in `native/javafx` come from that same SDK; SDK_SOURCE.txt records the
+  exact SDK URL and SHA-256 used. On Windows, `native/javafx` also holds the
+  Microsoft Universal C Runtime and Visual C++ runtime DLLs that OpenJFX redistributes
+  (`api-ms-win-*.dll`, `ucrtbase.dll`, `vcruntime140*.dll`, `msvcp140*.dll`), the same
+  files the Maven `javafx-graphics` Windows JAR embeds.
 - SQLite: public-domain SQLite library. Version/hash is recorded per package.
   Source and license: https://github.com/sqlite/sqlite and https://sqlite.org/copyright.html .
 - OkHttp4.12.0, Okio3.6.0, Kotlin1.9.10: Apache-2.0 notices retained in their JARs.
