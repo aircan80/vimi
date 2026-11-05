@@ -350,6 +350,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private short wmoProgram = INVALID, wmoEye = INVALID, wmoProjection = INVALID;
     private short wmoModel = INVALID, wmoNormal = INVALID, wmoSampler = INVALID;
     private short wmoMaterial = INVALID;
+    // Relative shader family and profile of the objects pass, named in its stderr diagnostics.
+    private String wmoFamily = "world-wmo/";
+    private final ObjectsFailureLog objectsFailures = new ObjectsFailureLog();
     private List<WorldStreamState.Lease> active = List.of();
     private WorldStreamState.Lease staged;
     private LateUpload late;
@@ -413,16 +416,20 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /**
      * Optional: on failure every tile's objects report failed while terrain stays intact. The
-     * reason goes to stderr only, never the protocol; the parent logs the redacted stderr tail with
-     * the first objects failure of the session.
+     * reason, naming the shader family, profile and step, goes to stderr only, never the protocol;
+     * the parent logs the redacted stderr tail with the first objects failure of the session.
      */
     private void objectPass(String profile) {
+        wmoFamily = "world-wmo/" + profile;
+        String step = "RGBA8 textures";
         try {
             if (!org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
                     0, false, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
                 throw new IOException("Exterior objects need RGBA8 textures");
             }
+            step = "program";
             wmoProgram = program(profile, "world-wmo/");
+            step = "uniforms";
             wmoEye = valid(bgfx_create_uniform("u_wmoEye", BGFX_UNIFORM_TYPE_MAT4, 1));
             wmoProjection =
                     valid(bgfx_create_uniform("u_wmoProjection", BGFX_UNIFORM_TYPE_MAT4, 1));
@@ -432,7 +439,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             wmoMaterial = valid(bgfx_create_uniform("u_wmoMaterial", BGFX_UNIFORM_TYPE_VEC4, 1));
         } catch (IOException | RuntimeException failed) {
             destroyObjectPass();
-            System.err.println("World exterior objects pass unavailable: " + failed);
+            System.err.println(objectsReason("pass unavailable", wmoFamily, step, failed));
             System.err.flush();
         }
     }
@@ -575,6 +582,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      */
     private int stepObjects(ObjectsBuild build) {
         var source = build.source;
+        String step = "buffers";
         try {
             if (build.building == null) {
                 var built = new SlotObjects(source);
@@ -596,6 +604,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 return 0;
             }
             var built = build.building;
+            step = "vertices";
             if (build.vertexAt < source.vertices.capacity()) {
                 int count = Math.min(OBJECT_CHUNK, source.vertices.capacity() - build.vertexAt);
                 bgfx_update_dynamic_vertex_buffer(
@@ -605,6 +614,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 build.vertexAt += count;
                 return count;
             }
+            step = "indices";
             if (build.indexAt < source.indices.capacity()) {
                 int count = Math.min(OBJECT_CHUNK, source.indices.capacity() - build.indexAt);
                 bgfx_update_dynamic_index_buffer(
@@ -614,6 +624,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 build.indexAt += count;
                 return count;
             }
+            step = "textures";
             if (build.image < source.imageCount()) {
                 int image = build.image;
                 int width = source.images[image * 2], height = source.images[image * 2 + 1];
@@ -640,6 +651,16 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             return 0;
         } catch (IOException | RuntimeException failed) {
             build.fail();
+            long count = objectsFailures.admit(step, failed);
+            if (count > 0) {
+                System.err.println(
+                        objectsReason("build failed", wmoFamily, step, failed)
+                                + " ("
+                                + count
+                                + (count == 1 ? " tile" : " tiles")
+                                + " this session)");
+                System.err.flush();
+            }
             return 0;
         }
     }
@@ -1369,6 +1390,33 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             return valid(bgfx_create_vertex_buffer(bgfx_copy(data), layout, BGFX_BUFFER_NONE));
         } finally {
             MemoryUtil.memFree(data);
+        }
+    }
+
+    /**
+     * One stderr diagnostic line for the objects pass. It names only the relative shader family and
+     * profile, the step and the exception (this class's own messages are fixed text); the parent
+     * redacts the stderr tail before logging it.
+     */
+    static String objectsReason(String what, String family, String step, Throwable failed) {
+        return "World exterior objects " + what + " (" + family + ", " + step + "): " + failed;
+    }
+
+    /**
+     * Rate limit for per-tile objects build failures on stderr: each distinct reason is written
+     * once (up to {@link #DISTINCT} of them), then any failure only every 64th. Owner thread only.
+     */
+    static final class ObjectsFailureLog {
+        static final int DISTINCT = 8;
+        private final java.util.Set<String> seen = new java.util.HashSet<>();
+        private long count;
+
+        /** The session's failure count when this one should be written, else 0. */
+        long admit(String step, Throwable failed) {
+            count++;
+            String reason = step + ": " + failed.getClass().getName() + ": " + failed.getMessage();
+            boolean fresh = seen.size() < DISTINCT && seen.add(reason);
+            return fresh || count % 64 == 0 ? count : 0;
         }
     }
 
