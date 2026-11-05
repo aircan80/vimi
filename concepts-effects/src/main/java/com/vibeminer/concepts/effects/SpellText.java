@@ -69,10 +69,6 @@ final class SpellText {
             this(text, sources, issue, null, null);
         }
 
-        Value(String text, List<SpellTexts.Source> sources, String issue, Long milliseconds) {
-            this(text, sources, issue, milliseconds, Boolean.FALSE);
-        }
-
         Value {
             sources = List.copyOf(sources);
         }
