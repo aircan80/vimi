@@ -99,6 +99,16 @@ tasks.named('test') {
 // Native calls belong to backend adapters; the design preview performs no native I/O.
 tasks.withType(JavaExec).configureEach {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
+    // JavaFX extracts its natives into ~/.openjfx/cache by default. Parallel test JVMs racing on
+    // that shared folder delete and rewrite DLLs another JVM is checking or loading.
+    systemProperty 'javafx.cachedir',
+            layout.buildDirectory.dir("tmp/${name}/javafx-cache").get().asFile.absolutePath
+    // Keep the JVM crash log if a native fault ends the process, so CI can retain it.
+    def crashLog = layout.buildDirectory.file("reports/jvm-crash/${name}-hs_err_pid%p.log")
+    jvmArgs "-XX:ErrorFile=${crashLog.get().asFile.absolutePath}"
+    def crashDirectory = crashLog.get().asFile.parentFile
+    // The JVM does not create the ErrorFile directory; without it hs_err falls back to the cwd.
+    doFirst { crashDirectory.mkdirs() }
     def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
     if (sqliteLibrary.isPresent()) {
         systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
