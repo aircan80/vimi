@@ -2,6 +2,7 @@ package com.vibeminer.concepts.effects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -144,14 +145,81 @@ final class SpellTextTest {
         var result = SpellText.project(100, "$s1% and $s2%", Map.of(0, contextual), List.of());
         assertEquals("?% and ?%", result.display());
         assertEquals("Character context required", result.substitutions().getFirst().issue());
-        assertEquals(
-                SpellTexts.State.UNAVAILABLE,
-                SpellText.project(100, "x".repeat(16385), Map.of(), List.of()).state());
-        assertEquals(
-                null,
-                SpellText.project(100, "$s1 ".repeat(257), Map.of(0, amount("5")), List.of())
-                        .display());
+        var oversized = SpellText.project(100, "x".repeat(16385), Map.of(), List.of());
+        assertEquals(SpellTexts.State.UNRESOLVED, oversized.state());
+        assertEquals("x".repeat(16384) + "…", oversized.display());
+        var many =
+                SpellText.project(
+                        100, "Hit $s1 ".repeat(257) + "end.", Map.of(0, amount("5")), List.of());
+        assertTrue(many.display().startsWith("Hit 5 Hit 5 "));
+        assertTrue(many.display().endsWith("Hit ? end."));
+        assertEquals(SpellTexts.State.UNRESOLVED, many.state());
+        assertFalse(many.display().contains("$"));
         assertEquals(
                 "Plain text", SpellText.project(100, "Plain text", Map.of(), List.of()).display());
+    }
+
+    @Test
+    void multiDigitIndexesAreNeverReadAsTheirFirstDigit() {
+        var amounts = Map.of(0, amount("50"), 1, amount("7"));
+        for (String raw :
+                List.of("Deals $s10 damage.", "Deals $123s10 damage.", "Deals $S19 damage.")) {
+            var result = SpellText.project(100, raw, amounts, List.of());
+            assertEquals("Deals ? damage.", result.display(), raw);
+            assertEquals("Effect index is unsupported", result.substitutions().getFirst().issue());
+        }
+        assertEquals(
+                "Deals 7 damage.",
+                SpellText.project(100, "Deals $s02 damage.", amounts, List.of()).display());
+        var longId = SpellText.project(100, "Uses $123456789012s1 now.", amounts, List.of());
+        assertEquals("Uses ? now.", longId.display());
+        assertEquals("Referenced spell ID is invalid", longId.substitutions().getFirst().issue());
+    }
+
+    @Test
+    void onlyPlainUnsignedScaleFactorsAreApplied() {
+        var amounts = Map.of(0, amount("5"));
+        for (String raw :
+                List.of(
+                        "A $/1E-1000000;s1 b",
+                        "A $/1E-10000000;s1 b",
+                        "A $/1E+99999999;s1 b",
+                        "A $/1E-999999999;s1 b",
+                        "A $*-2;s1 b",
+                        "A $*+2;s1 b",
+                        "A $/0x10;s1 b",
+                        "A $*1234567890;s1 b")) {
+            long started = System.nanoTime();
+            var result = SpellText.project(100, raw, amounts, List.of());
+            assertTrue(System.nanoTime() - started < 1_000_000_000L, raw);
+            assertEquals("A ? b", result.display(), raw);
+        }
+        assertEquals("A 10 b", SpellText.project(100, "A $*2;s1 b", amounts, List.of()).display());
+        assertEquals(
+                "A 2.5 b", SpellText.project(100, "A $/2.0;s1 b", amounts, List.of()).display());
+        assertEquals(
+                "A ? b",
+                SpellText.project(100, "A $*999999999;s1 b", amounts, List.of()).display());
+    }
+
+    @Test
+    void incompleteSyntaxNeverLeaksRawMarkers() {
+        var amounts = Map.of(0, amount("5"));
+        var cases =
+                Map.of(
+                        "Open ${ expression", "Open ? expression",
+                        "Open $?a[ branch", "Open ?a[ branch",
+                        "Open $<name tail", "Open ?name tail",
+                        "Open $/10 tail", "Open ?10 tail",
+                        "Icon |Tpath tail", "Icon path tail",
+                        "Link |Hspell tail", "Link spell tail",
+                        "Forms $lfoo:bar:baz; tail", "Forms ? tail");
+        cases.forEach(
+                (raw, expected) -> {
+                    var result = SpellText.project(100, raw, amounts, List.of());
+                    assertEquals(expected, result.display(), raw);
+                    assertFalse(result.display().contains("$"), raw);
+                    assertFalse(result.display().contains("|"), raw);
+                });
     }
 }

@@ -17,6 +17,8 @@ import java.util.Set;
  */
 final class SpellText {
     private static final int LIMIT = 16384, TOKENS = 256, CONDITION = 128;
+    private static final java.util.regex.Pattern FACTOR =
+            java.util.regex.Pattern.compile("[0-9]{1,9}(?:\\.[0-9]{1,6})?");
 
     /** At most this many other spells may be referenced by one description. */
     static final int CROSS_SPELLS = 8;
@@ -96,7 +98,7 @@ final class SpellText {
 
     /** Source rows the template could use; {@code self} stands for the described spell. */
     static Needs needs(long self, String raw) {
-        var parts = raw == null || raw.length() > LIMIT ? null : parse(raw);
+        var parts = raw == null || raw.length() > LIMIT ? null : parse(raw, new ArrayList<>());
         var amounts = new LinkedHashSet<Long>();
         var durations = new LinkedHashSet<Long>();
         if (parts == null) {
@@ -142,7 +144,7 @@ final class SpellText {
 
     static SpellTexts.Description project(
             long spell, String raw, Values values, List<String> issues) {
-        if (raw == null || raw.length() > LIMIT || !ItemEffectProfiles.wellFormed(raw)) {
+        if (raw == null || !ItemEffectProfiles.wellFormed(raw)) {
             return new SpellTexts.Description(
                     spell,
                     raw != null && raw.length() <= LIMIT ? raw : null,
@@ -151,21 +153,29 @@ final class SpellText {
                     List.of(),
                     issues);
         }
-        if (!raw.contains("$") && !raw.contains("|")) {
-            return new SpellTexts.Description(
-                    spell, raw, raw, SpellTexts.State.READY, List.of(), issues);
+        var allIssues = new ArrayList<>(issues);
+        String template = raw;
+        boolean truncated = false;
+        if (raw.length() > LIMIT) {
+            // Keep the readable prose; only the part past the bound is cut.
+            int cut = LIMIT;
+            if (Character.isHighSurrogate(raw.charAt(cut - 1))) {
+                cut--;
+            }
+            template = raw.substring(0, cut);
+            truncated = true;
+            allIssues.add("Spell text exceeds the supported bound; the preview is truncated.");
         }
-        var parts = parse(raw);
-        if (parts == null) {
+        if (!template.contains("$") && !template.contains("|")) {
             return new SpellTexts.Description(
                     spell,
-                    raw,
-                    null,
-                    SpellTexts.State.UNRESOLVED,
+                    truncated ? null : raw,
+                    truncated ? template + "…" : template,
+                    truncated ? SpellTexts.State.UNRESOLVED : SpellTexts.State.READY,
                     List.of(),
-                    List.of("Spell substitution count exceeds the supported bound."));
+                    allIssues);
         }
-        var allIssues = new ArrayList<>(issues);
+        var parts = parse(template, allIssues);
         var substitutions = new ArrayList<SpellTexts.Substitution>();
         var display = new StringBuilder();
         boolean resolved = true;
@@ -247,8 +257,8 @@ final class SpellText {
                             sources = amount.sources();
                             issue = amount.issue();
                             if (amount.percentageOnly()
-                                    && (token.end() == raw.length()
-                                            || raw.charAt(token.end()) != '%')) {
+                                    && (token.end() == template.length()
+                                            || template.charAt(token.end()) != '%')) {
                                 issue =
                                         "This fixed scalar profile requires a literal percent"
                                                 + " suffix";
@@ -287,19 +297,22 @@ final class SpellText {
             }
         }
         if (display.length() > LIMIT) {
-            return new SpellTexts.Description(
-                    spell,
-                    raw,
-                    null,
-                    SpellTexts.State.UNRESOLVED,
-                    substitutions,
-                    List.of("Rendered spell text exceeds the supported bound."));
+            int cut = LIMIT;
+            if (Character.isHighSurrogate(display.charAt(cut - 1))) {
+                cut--;
+            }
+            display.setLength(cut);
+            truncated = true;
+            allIssues.add("Rendered spell text exceeds the supported bound; it is truncated.");
+        }
+        if (truncated) {
+            display.append('…');
         }
         return new SpellTexts.Description(
                 spell,
-                raw,
+                raw.length() <= LIMIT ? raw : null,
                 display.toString(),
-                resolved ? SpellTexts.State.RESOLVED : SpellTexts.State.UNRESOLVED,
+                resolved && !truncated ? SpellTexts.State.RESOLVED : SpellTexts.State.UNRESOLVED,
                 substitutions,
                 allIssues);
     }
@@ -328,8 +341,8 @@ final class SpellText {
         return value.scale() < 0 ? value.setScale(0) : value;
     }
 
-    /** Splits a template into parts, or null when it exceeds the token bound. */
-    private static List<Part> parse(String raw) {
+    /** Splits a template into parts. Tokens past the bound show ? and are not evaluated. */
+    private static List<Part> parse(String raw, List<String> issues) {
         var parts = new ArrayList<Part>();
         var literal = new StringBuilder();
         int tokens = 0;
@@ -362,7 +375,11 @@ final class SpellText {
                     literal.append(text.text());
                 } else {
                     if (!(part instanceof Markup) && ++tokens > TOKENS) {
-                        return null;
+                        String issue = "Spell substitution count exceeds the supported bound.";
+                        if (!issues.contains(issue)) {
+                            issues.add(issue);
+                        }
+                        part = new Unknown(raw.substring(at, next), issue);
                     }
                     parts.add(part);
                 }
@@ -377,7 +394,21 @@ final class SpellText {
 
     private record Found(Part part, int end) {}
 
+    /** Client syntax after {@code $}; incomplete syntax becomes an unknown, never raw text. */
     private static Found dollar(String raw, int at) {
+        var found = dollarSyntax(raw, at);
+        if (found != null) {
+            return found;
+        }
+        char c = raw.charAt(at + 1);
+        if ("{?@</*".indexOf(c) >= 0 || isLetter(c) || Character.isDigit(c)) {
+            return new Found(
+                    new Unknown(raw.substring(at, at + 2), "Incomplete client syntax"), at + 2);
+        }
+        return null;
+    }
+
+    private static Found dollarSyntax(String raw, int at) {
         int i = at + 1;
         char c = raw.charAt(i);
         if (c == '{') {
@@ -430,15 +461,18 @@ final class SpellText {
             if (semicolon < 0 || semicolon - i > 24) {
                 return null;
             }
-            BigDecimal factor;
-            try {
-                factor = new BigDecimal(raw.substring(i + 1, semicolon));
-            } catch (NumberFormatException invalid) {
-                return null;
-            }
             var value = value(raw, at, semicolon + 1);
+            int end = value == null ? semicolon + 1 : value.end();
+            String text = raw.substring(i + 1, semicolon);
+            // Only a plain unsigned decimal: exponents and signs are never scaled.
+            if (!FACTOR.matcher(text).matches()) {
+                return new Found(
+                        new Unknown(raw.substring(at, end), "Scale factor is unsupported"), end);
+            }
+            var factor = new BigDecimal(text);
             if (value == null || !(value.part() instanceof Token token)) {
-                return null;
+                return new Found(
+                        new Unknown(raw.substring(at, end), "Scaled value is unsupported"), end);
             }
             return new Found(
                     new Token(
@@ -456,7 +490,14 @@ final class SpellText {
             if (semicolon > 0 && semicolon - i <= 64) {
                 String body = raw.substring(i + 1, semicolon);
                 int colon = body.indexOf(':');
-                if (colon >= 0 && body.indexOf(':', colon + 1) < 0 && body.indexOf('$') < 0) {
+                if (colon >= 0 && body.indexOf('$') < 0) {
+                    if (body.indexOf(':', colon + 1) >= 0) {
+                        return new Found(
+                                new Unknown(
+                                        raw.substring(at, semicolon + 1),
+                                        "Plural or gender form is malformed"),
+                                semicolon + 1);
+                    }
                     return new Found(
                             new Forms(
                                     raw.substring(at, semicolon + 1),
@@ -474,18 +515,20 @@ final class SpellText {
     private static Found value(String raw, int at, int from) {
         int i = from;
         int digits = i;
-        while (i < raw.length() && Character.isDigit(raw.charAt(i)) && i - digits < 10) {
+        while (i < raw.length() && Character.isDigit(raw.charAt(i))) {
             i++;
-        }
-        Long spell = null;
-        if (i > digits) {
-            spell = Long.parseLong(raw.substring(digits, i));
-            if (spell < 1 || spell > 0xffffffffL) {
-                return null;
-            }
         }
         if (i >= raw.length() || !isLetter(raw.charAt(i))) {
             return null;
+        }
+        Long spell = null;
+        if (i > digits) {
+            spell = i - digits > 10 ? null : Long.parseLong(raw.substring(digits, i));
+            if (spell == null || spell < 1 || spell > 0xffffffffL) {
+                int end = skipIndex(raw, i + 1);
+                return new Found(
+                        new Unknown(raw.substring(at, end), "Referenced spell ID is invalid"), end);
+            }
         }
         char kind = Character.toLowerCase(raw.charAt(i));
         int end = i + 1;
@@ -500,12 +543,15 @@ final class SpellText {
             return new Found(new Unknown(raw.substring(at, end), "Unsupported spell token"), end);
         }
         Integer index = null;
-        if (end < raw.length() && Character.isDigit(raw.charAt(end))) {
-            int digit = raw.charAt(end) - '0';
-            end++;
-            if (digit >= 1 && digit <= EFFECT_SLOTS) {
-                index = digit - 1;
-            } else if (kind == 's') {
+        int indexEnd = skipIndex(raw, end);
+        if (indexEnd > end) {
+            // Read every digit: $s10 is index 10, never $s1 followed by "0".
+            String digitsText = raw.substring(end, indexEnd);
+            int number = digitsText.length() > 2 ? -1 : Integer.parseInt(digitsText);
+            end = indexEnd;
+            if (number >= 1 && number <= EFFECT_SLOTS) {
+                index = number - 1;
+            } else {
                 return new Found(
                         new Unknown(raw.substring(at, end), "Effect index is unsupported"), end);
             }
@@ -515,6 +561,14 @@ final class SpellText {
         }
         return new Found(
                 new Token(raw.substring(at, end), end, spell, kind, index, null, null), end);
+    }
+
+    private static int skipIndex(String raw, int from) {
+        int end = from;
+        while (end < raw.length() && Character.isDigit(raw.charAt(end))) {
+            end++;
+        }
+        return end;
     }
 
     /** {@code condition[...]} branches after {@code $?}, with else and else-if; end or -1. */
@@ -590,7 +644,8 @@ final class SpellText {
             case 'T' -> {
                 int end = raw.indexOf("|t", at + 2);
                 if (end < 0) {
-                    return null;
+                    return new Found(
+                            new Markup("|T", "", "Incomplete texture markup is omitted."), at + 2);
                 }
                 return new Found(
                         new Markup(
@@ -602,7 +657,8 @@ final class SpellText {
             case 'H' -> {
                 int end = raw.indexOf("|h", at + 2);
                 if (end < 0) {
-                    return null;
+                    return new Found(
+                            new Markup("|H", "", "Incomplete link markup is omitted."), at + 2);
                 }
                 return new Found(new Markup(raw.substring(at, end + 2), "", null), end + 2);
             }
