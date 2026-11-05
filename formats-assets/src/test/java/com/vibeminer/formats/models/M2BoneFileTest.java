@@ -202,4 +202,42 @@ class M2BoneFileTest {
                 IllegalArgumentException.class,
                 () -> M2BoneFile.read(AssetSource.bytes(valid()), 0, Cancellation.NONE));
     }
+
+    @Test
+    void shortOrResizedSourcesAreNotContentRefusals() {
+        byte[] bytes = valid();
+        var shortReads =
+                new AssetSource() {
+                    public long length() {
+                        return bytes.length;
+                    }
+
+                    public java.util.concurrent.CompletableFuture<byte[]> readAt(
+                            long offset, int count, Cancellation token) {
+                        return java.util.concurrent.CompletableFuture.completedFuture(
+                                new byte[Math.max(0, count - 1)]);
+                    }
+                };
+        M2ReadersTest.failure(
+                "MODEL_SOURCE_CHANGED",
+                () -> M2BoneFile.read(shortReads, 4, Cancellation.NONE).join());
+        var growing =
+                new AssetSource() {
+                    int calls;
+
+                    public long length() {
+                        return calls++ == 0 ? bytes.length : bytes.length + 1;
+                    }
+
+                    public java.util.concurrent.CompletableFuture<byte[]> readAt(
+                            long offset, int count, Cancellation token) {
+                        return java.util.concurrent.CompletableFuture.completedFuture(
+                                java.util.Arrays.copyOfRange(
+                                        bytes, (int) offset, (int) offset + count));
+                    }
+                };
+        M2ReadersTest.failure(
+                "MODEL_SOURCE_CHANGED",
+                () -> M2BoneFile.read(growing, 4, Cancellation.NONE).join());
+    }
 }

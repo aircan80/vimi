@@ -115,9 +115,17 @@ public final class BuildModelTypes {
         }
     }
 
-    /** One BFID-declared bone file of a read model; {@code bones} is non-null only when READ. */
+    /**
+     * One BFID-declared bone file of a read model; {@code bones} is non-null only when READ, and
+     * {@code contentKey} is the stat-time content key when the file was found.
+     */
     public record BoneFileRead(
-            ReadState state, long fileDataId, M2BoneFile.Bones bones, String code, String message) {
+            ReadState state,
+            long fileDataId,
+            String contentKey,
+            M2BoneFile.Bones bones,
+            String code,
+            String message) {
         public BoneFileRead {
             if (state == null || (state == ReadState.READ) != (bones != null)) {
                 throw new IllegalArgumentException("Inconsistent bone file read");

@@ -46,7 +46,7 @@ final class RaceIdleAnimationsTest {
     }
 
     private static BoneFileRead valid(long id, int... bones) {
-        return new BoneFileRead(ReadState.READ, id, bones(bones), null, null);
+        return new BoneFileRead(ReadState.READ, id, "k" + id, bones(bones), null, null);
     }
 
     @Test
@@ -58,10 +58,15 @@ final class RaceIdleAnimationsTest {
                         12L,
                         valid(12, 50, 60),
                         13L,
-                        new BoneFileRead(ReadState.NEEDS_NETWORK, 13, null, null, "absent"),
+                        new BoneFileRead(ReadState.NEEDS_NETWORK, 13, null, null, null, "absent"),
                         14L,
                         new BoneFileRead(
-                                ReadState.REJECTED, 14, null, "MODEL_INVALID", "names bone 99"));
+                                ReadState.REJECTED,
+                                14,
+                                "k14",
+                                null,
+                                "MODEL_INVALID",
+                                "names bone 99"));
         var asked = new ArrayList<Long>();
         var result =
                 RaceIdleAnimations.explain(

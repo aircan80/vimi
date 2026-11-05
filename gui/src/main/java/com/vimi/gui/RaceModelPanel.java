@@ -446,11 +446,19 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         request(() -> handle.idle(raceId, model.chrModelId(), token))
                 .whenComplete((idle, failure) -> Platform.runLater(() -> {
                     if (stale(request)) return;
-                    if (failure != null || idle == null
-                            || idle.state() != RaceTypes.State.UNSUPPORTED
-                            || idle.variant() == null
+                    if (failure != null || idle == null) {
+                        viewer.animationUnavailable("Idle animation could not be assessed.");
+                        return;
+                    }
+                    if (idle.variant() == null
                             || idle.variant().chrModelId() != model.chrModelId()) {
                         viewer.animationUnavailable(null);
+                        return;
+                    }
+                    if (idle.state() != RaceTypes.State.UNSUPPORTED) {
+                        // Unreadable sources: say why; the next selection asks again.
+                        viewer.animationUnavailable(
+                                "Idle animation could not be assessed: " + idle.message());
                         return;
                     }
                     viewer.animationUnavailable("Idle animation unavailable: " + idle.message());

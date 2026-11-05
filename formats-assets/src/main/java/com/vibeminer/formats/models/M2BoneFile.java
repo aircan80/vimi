@@ -19,7 +19,9 @@ import java.util.concurrent.CompletableFuture;
  * chunks, each once and in any order: {@code BIDA} (one {@code uint16} model bone index per entry)
  * and {@code BOMT} (one 4x4 {@code float} matrix of 64 bytes per entry, in file order). The chunks
  * must consume the file exactly. Unknown chunks, other versions and matrices whose fourth column is
- * not {@code (0, 0, 0, 1)} are refused as unsupported; structural disagreement is invalid.
+ * not {@code (0, 0, 0, 1)} are refused as unsupported; structural disagreement is invalid. A source
+ * that ends early or changes length while it is read fails with {@code MODEL_SOURCE_CHANGED}, which
+ * says nothing about the file's content.
  *
  * <p>This reads the file's facts only. Which bone file the client applies for a given appearance,
  * and how its matrices combine with animated bone transforms, are not interpreted here.
@@ -215,17 +217,17 @@ public final class M2BoneFile {
                 part = source.readAt(at, count, token).join();
             } catch (RuntimeException e) {
                 if (AssetTasks.unwrap(e) instanceof java.io.EOFException) {
-                    throw error("INVALID", "The bone file ended unexpectedly.");
+                    throw error("SOURCE_CHANGED", "The bone file ended unexpectedly.");
                 }
                 throw e;
             }
             if (part.length != count) {
-                throw error("INVALID", "The bone file ended unexpectedly.");
+                throw error("SOURCE_CHANGED", "The bone file ended unexpectedly.");
             }
             System.arraycopy(part, 0, data, at, count);
         }
         if (source.length() != length) {
-            throw error("INVALID", "The bone file length changed while it was read.");
+            throw error("SOURCE_CHANGED", "The bone file length changed while it was read.");
         }
         return data;
     }

@@ -140,7 +140,10 @@ the relationship or the model could not be read. The reasons are:
 - otherwise, a Stand that would pass is still refused because race previews do not play it
   back yet.
 
-Results whose sources were all read are cached per model content key (32 entries).
+Results whose sources were all read are cached per model content key (32 entries) and checked
+against each bone file's content key on reuse. A model that changes during the assessment,
+or a bone file that ends early or changes length (`MODEL_SOURCE_CHANGED`), is reported as
+unreadable and not cached. An UNAVAILABLE result shows its reason in place of the toggle.
 `RaceModelPanel` asks for the assessment after the static surface is shown. The preview then
 shows "Idle animation unavailable: …" in place of the toggle, and the Stand and bone-file
 facts appear under "Model source details".
@@ -180,11 +183,13 @@ the model.
 - `M2BoneFileTest`: valid files in either chunk order and across several bounded reads;
   refusal of versions, unknown chunks and non-affine matrices; missing, repeated, partial,
   mismatched, out-of-range, duplicate, non-finite, truncated, trailing and overrunning data;
-  size and entry limits; cancellation.
+  size and entry limits; short or resized sources (`MODEL_SOURCE_CHANGED`); cancellation.
 - `M2IdleAnimationTest`: BFID refuses playback while `assessStand` still reports the Stand,
   carries curve and `.anim` refusals, and keeps structural errors fatal.
 - `BuildModelsTest`: declared bone files read, refused and missing through files; an
   undeclared ID is rejected before any access; oversized files are refused before opening.
+- `RacesServiceTest`: through files, an unreadable bone file is assessed again, a complete
+  result is cached without opening files, and new bone-file or model content invalidates it.
 - `RaceIdleAnimationsTest`: every blocker is reported together, a SKID-only model skips Stand,
   unreadable sources are not cached, the bone-file budget is enforced, cancellation stops
   the assessment, and results can only be refusals.

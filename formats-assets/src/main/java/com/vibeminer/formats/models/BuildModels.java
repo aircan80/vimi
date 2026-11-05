@@ -156,12 +156,14 @@ public final class BuildModels {
                                 fileDataId,
                                 null,
                                 null,
+                                null,
                                 "The bone file is " + stat.state() + ".");
                     }
                     if (file.size() != null && file.size() > M2BoneFile.MAX_BYTES) {
                         return new BuildModelTypes.BoneFileRead(
                                 ReadState.REJECTED,
                                 fileDataId,
+                                file.contentKey(),
                                 null,
                                 "MODEL_LIMIT",
                                 "The bone file is "
@@ -174,6 +176,7 @@ public final class BuildModels {
                         return new BuildModelTypes.BoneFileRead(
                                 ReadState.REJECTED,
                                 fileDataId,
+                                file.contentKey(),
                                 null,
                                 "MODEL_UNSUPPORTED",
                                 "The model stores no bones for its bone file to name.");
@@ -183,9 +186,14 @@ public final class BuildModels {
                                     fileDataId,
                                     source -> M2BoneFile.read(source, modelBones, token).join(),
                                     token);
+                    // A short or resized source says nothing about the file; it can be retried.
+                    boolean changed =
+                            outcome.state == ReadState.REJECTED
+                                    && "MODEL_SOURCE_CHANGED".equals(outcome.code);
                     return new BuildModelTypes.BoneFileRead(
-                            outcome.state,
+                            changed ? ReadState.UNAVAILABLE : outcome.state,
                             fileDataId,
+                            file.contentKey(),
                             outcome.value,
                             outcome.code,
                             outcome.message);

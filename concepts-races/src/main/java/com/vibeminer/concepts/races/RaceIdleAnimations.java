@@ -22,20 +22,25 @@ import java.util.function.Supplier;
  * the model-resident Stand with every check of the mount idle reader except its external-file gate.
  * Bone files hold per-bone matrices, but which file the client applies for an appearance and how
  * those matrices combine with Stand keys are not reviewed, so a model declaring any is refused
- * rather than approximated. Results whose sources were all read are cached per model content; a
- * source that could not be read is reassessed.
+ * rather than approximated. Results whose sources were all read are cached per model content key
+ * and revalidated against each bone file's content key; a source that could not be read, or that
+ * changed during the assessment, is reassessed.
  */
 final class RaceIdleAnimations {
     static final int MAX_BONE_FILES = 64;
     private static final int MAX_CACHED = 32;
     private final RaceMedia media;
     private final BuildFiles files;
-    private final Map<String, RaceMediaTypes.Idle> cached =
+
+    /** A complete result and the content keys of the bone files it was built from. */
+    private record Cached(RaceMediaTypes.Idle result, Map<Long, String> boneKeys) {}
+
+    private final Map<String, Cached> cached =
             new LinkedHashMap<>(16, 0.75f, true) {
                 @java.io.Serial private static final long serialVersionUID = 1L;
 
                 @Override
-                protected boolean removeEldestEntry(Map.Entry<String, RaceMediaTypes.Idle> eldest) {
+                protected boolean removeEldestEntry(Map.Entry<String, Cached> eldest) {
                     return size() > MAX_CACHED;
                 }
             };
@@ -63,11 +68,13 @@ final class RaceIdleAnimations {
             return RaceMediaTypes.Idle.unavailable(variant, "Model file is " + stat.state() + ".");
         }
         String key = variant.modelFileDataId() + "\n" + stat.file().contentKey();
-        var known = cached.get(key);
-        if (known != null) {
+        var hit = cached.get(key);
+        if (hit != null && unchanged(hit.boneKeys(), token)) {
+            var known = hit.result();
             return new RaceMediaTypes.Idle(
                     known.state(), variant, known.reasons(), known.facts(), known.message());
         }
+        cached.remove(key);
         var models = new BuildModels(files);
         var read = models.readModel(FileTypes.FileRef.id(variant.modelFileDataId()), token).join();
         if (read.state() != BuildModelTypes.ReadState.READ || read.model() == null) {
@@ -80,14 +87,27 @@ final class RaceIdleAnimations {
                     variant, "The model file changed while it was assessed.");
         }
         var model = read.model();
+        var boneKeys = new TreeMap<Long, String>();
         var assessed =
                 explain(
                         model.skeletonFileDataId(),
                         !model.bones().isEmpty(),
                         model.boneFileDataIds(),
-                        id -> models.readBoneFile(read, id, token).join(),
+                        id -> {
+                            var bone = models.readBoneFile(read, id, token).join();
+                            if (bone.contentKey() != null) {
+                                boneKeys.put(id, bone.contentKey());
+                            }
+                            return bone;
+                        },
                         () -> models.readStandFacts(read, token).join(),
                         token);
+        // The Stand and bone reads reopen files; a model replaced meanwhile is not reported.
+        var after = files.stat(FileTypes.FileRef.id(variant.modelFileDataId()), token).join();
+        if (after.file() == null || !key.endsWith("\n" + after.file().contentKey())) {
+            return RaceMediaTypes.Idle.unavailable(
+                    variant, "The model file changed while it was assessed.");
+        }
         var reasons = assessed.reasons();
         var facts = assessed.facts();
         boolean complete = assessed.complete();
@@ -98,10 +118,21 @@ final class RaceIdleAnimations {
                         reasons,
                         facts,
                         String.join(" ", reasons));
-        if (complete) {
-            cached.put(key, result);
+        if (complete && unchanged(boneKeys, token)) {
+            cached.put(key, new Cached(result, Map.copyOf(boneKeys)));
         }
         return result;
+    }
+
+    /** Whether every recorded bone file still has the content it was assessed with. */
+    private boolean unchanged(Map<Long, String> boneKeys, Cancellation token) {
+        for (var entry : boneKeys.entrySet()) {
+            var stat = files.stat(FileTypes.FileRef.id(entry.getKey()), token).join();
+            if (stat.file() == null || !entry.getValue().equals(stat.file().contentKey())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** Every blocking reason and supporting fact; {@code complete} when all sources were read. */

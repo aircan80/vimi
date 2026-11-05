@@ -644,4 +644,109 @@ final class RacesServiceTest {
                             .state());
         }
     }
+
+    /** Authored chunked 274 model with a BFID chunk naming {@code ids}; no game data. */
+    private static byte[] modelWithBoneFiles(long... ids) throws Exception {
+        byte[] model;
+        try (var in = RacesServiceTest.class.getResourceAsStream("/golden/authored-274.m2")) {
+            model = in.readAllBytes();
+        }
+        var b =
+                java.nio.ByteBuffer.allocate(model.length + 8 + ids.length * 4)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.put(model).put("BFID".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        b.putInt(ids.length * 4);
+        for (long id : ids) {
+            b.putInt((int) id);
+        }
+        return b.array();
+    }
+
+    private static byte[] boneFile() {
+        var b = java.nio.ByteBuffer.allocate(4 + 10 + 72).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(1).put("BIDA".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).putInt(2);
+        b.putShort((short) 0);
+        b.put("BOMT".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).putInt(64);
+        for (int i = 0; i < 16; i++) {
+            b.putFloat(i % 5 == 0 ? 1 : 0);
+        }
+        return b.array();
+    }
+
+    @Test
+    void idleAssessmentCachesOnlyCompleteResultsAndFollowsContentKeys() throws Exception {
+        var tables =
+                new MemoryTables()
+                        .add(
+                                BUILD,
+                                "enUS",
+                                List.of(
+                                        table(
+                                                101,
+                                                "ChrRaceXChrModel",
+                                                List.of(
+                                                        reference("ChrRacesID", "ChrRaces"),
+                                                        reference("ChrModelID", "ChrModel")),
+                                                List.of(row(1, "1", "10"))),
+                                        table(
+                                                102,
+                                                "ChrModel",
+                                                List.of(
+                                                        reference(
+                                                                "DisplayID", "CreatureDisplayInfo"),
+                                                        number("Sex")),
+                                                List.of(row(10, "20", "0"))),
+                                        table(
+                                                103,
+                                                "CreatureDisplayInfo",
+                                                List.of(reference("ModelID", "CreatureModelData")),
+                                                List.of(row(20, "30"))),
+                                        table(
+                                                104,
+                                                "CreatureModelData",
+                                                List.of(number("FileDataID")),
+                                                List.of(row(30, "1234")))))
+                        .forBuild(BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .tables();
+        byte[] model = modelWithBoneFiles(701, 702);
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), model)
+                        .add(701, "2".repeat(32), boneFile());
+        var service = new RacesService(tables, files, null);
+        try {
+            // Bone file 702 is not stored: the refusal names it and is not cached.
+            var first = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.UNSUPPORTED, first.state());
+            assertEquals(10, first.variant().chrModelId());
+            assertTrue(first.message().contains("2 external bone files (BFID)"), first.message());
+            assertTrue(first.message().contains("1 not readable (UNKNOWN_FILE)"), first.message());
+            int opens = files.opens.get();
+            service.idle(1, 10, Cancellation.NONE).join();
+            assertTrue(files.opens.get() > opens, "Incomplete results are reassessed");
+            // Once every source is read, the result is cached and opens nothing.
+            files.add(702, "3".repeat(32), boneFile());
+            var complete = service.idle(1, 10, Cancellation.NONE).join();
+            assertFalse(complete.message().contains("not readable"), complete.message());
+            opens = files.opens.get();
+            var cached = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(complete.message(), cached.message());
+            assertEquals(opens, files.opens.get());
+            // A bone file with new content invalidates the cached result.
+            files.add(702, "4".repeat(32), boneFile());
+            service.idle(1, 10, Cancellation.NONE).join();
+            assertTrue(files.opens.get() > opens, "Changed bone file is reassessed");
+            // So does a model with new content.
+            opens = files.opens.get();
+            service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(opens, files.opens.get());
+            files.add(1234, "5".repeat(32), model);
+            service.idle(1, 10, Cancellation.NONE).join();
+            assertTrue(files.opens.get() > opens, "Changed model is reassessed");
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
 }
