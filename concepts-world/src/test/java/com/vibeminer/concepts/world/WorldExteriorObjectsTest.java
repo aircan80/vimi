@@ -1666,6 +1666,27 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void moddFlagsThatNeverChangeReferenceOrTransformAreAdmitted() {
+        // Zephras Isle records 0x10, 0x12, 0x16 and 0x1e; 0x1 to 0x10 are admitted uninterpreted,
+        // unseen higher bits stay refused.
+        int[] flags = {0x01, 0x02, 0x04, 0x08, 0x10, 0x12, 0x16, 0x1e, 0x20, 0x40, 0x80};
+        var defs = new ArrayList<Modd>();
+        for (int flag : flags) {
+            defs.add(new Modd(flag << 24, 0, 0, 0, new double[] {0, 0, 0, 1}, 1));
+        }
+        var chunks = doodadChunks(new int[][] {{0, flags.length}}, new long[] {MODEL}, defs);
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), chunks));
+            try (var set = run(f, obj0(List.of(Modf.of(ROOT, 1, 0x8)), List.of(), 0))) {
+                assertEquals(8, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(3, set.count(WorldExteriorObjects.Count.SET_DOODAD_UNSUPPORTED));
+            }
+        }
+    }
+
+    @Test
     void wmoDoodadSetsComposeTheBuildingTransform() {
         double h = Math.sqrt(0.5);
         var defs =
@@ -1676,7 +1697,7 @@ class WorldExteriorObjectsTest {
                         new Modd(5, 0, 0, 0, new double[] {0, 0, 0, 1}, 1), // outside MODI
                         new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 2}, 1), // not unit
                         new Modd(0, 0, 0, 0, new double[] {h, 0, 0, h}, 1), // pitched: drawn
-                        new Modd(0x02000000, 0, 0, 0, new double[] {0, 0, 0, 1}, 1)); // flag 0x2
+                        new Modd(0x20000000, 0, 0, 0, new double[] {0, 0, 0, 1}, 1)); // flag 0x20
         var chunks =
                 doodadChunks(new int[][] {{0, 2}, {2, 5}, {4, 1}}, new long[] {MODEL, 0}, defs);
         var building = new Modf(ROOT, 77, 0xc, 100, 20, 300, 0, 90, 0, 2048);

@@ -444,7 +444,7 @@ final class WorldStreamScopes {
          * and their images).
          */
         BASIC_EXTERIOR(
-                2 + 24 + 256 + 64 + 32 + 48 + 48 + 64,
+                2 + 24 + 256 + 64 + 32 + 96 + 96 + 96,
                 24,
                 1 << 20,
                 256,
@@ -452,11 +452,11 @@ final class WorldStreamScopes {
                 // Each image may be read twice: once when admitted, once at its allotted level.
                 2 * (64 + 32),
                 1 << 20,
-                48,
+                96,
                 2 << 20,
-                48,
+                96,
                 1 << 20,
-                2 * 64,
+                2 * 96,
                 1 << 20);
         private final int bindings, roots, rootLimit, groups, groupLimit, images, imageLimit;
         private final int models, modelLimit, skins, skinLimit, modelImages, modelImageLimit;
