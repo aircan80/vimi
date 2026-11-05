@@ -353,6 +353,55 @@ final class SpellTextsTest {
     }
 
     @Test
+    void effectAndDurationIndexesDoNotShareOneRelationBudget() {
+        var world =
+                new MemoryTables()
+                        .add(
+                                BUILD,
+                                "enUS",
+                                List.of(
+                                        table(
+                                                1,
+                                                "Spell",
+                                                List.of("Description_lang"),
+                                                List.of(row(16929, "Slow by $s1% for $d.")),
+                                                TableTypes.State.READY),
+                                        table(
+                                                2,
+                                                "SpellEffect",
+                                                FIELDS,
+                                                List.of(
+                                                        scalar(101, 0, null),
+                                                        scalar(102, 1, null),
+                                                        scalar(103, 2, null)),
+                                                TableTypes.State.READY),
+                                        miscTable(
+                                                List.of(
+                                                        row(90, "16929", "0", "1", "0", "0"),
+                                                        row(91, "5", "0", "1", "0", "0"),
+                                                        row(92, "6", "0", "1", "0", "0"))),
+                                        layout(
+                                                table(
+                                                        4,
+                                                        "SpellDuration",
+                                                        List.of(
+                                                                "Duration",
+                                                                "DurationPerLevel",
+                                                                "MaxDuration",
+                                                                "DurationPerResource"),
+                                                        List.of(row(1, "10000", "0", "10000", "0")),
+                                                        TableTypes.State.READY),
+                                                "4FDF0951")));
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70755", 4)) {
+            var result =
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join();
+            assertEquals("Slow by 50% for 10 sec.", result.display());
+        }
+    }
+
+    @Test
     void newScalarFormsRequirePercentUnitsAndEveryReviewedContextGuard() {
         for (String guard :
                 List.of(

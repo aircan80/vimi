@@ -61,7 +61,13 @@ public final class SpellTexts implements AutoCloseable {
             List.of("EffectBonusCoefficient", "GroupSizeBasePointsCoefficient", "PvpMultiplier");
     private final BuildTables tables;
     private final String version;
-    private final RelationIndexes indexes;
+
+    /** Default reverse-index budget for each relation table. */
+    static final int RELATION_ENTRIES = 1_000_000;
+
+    // One budget per relation: a large SpellEffect index must not leave SpellMisc durations
+    // permanently over a shared budget.
+    private final RelationIndexes effectIndex, miscIndex;
     private final Cancellation lifetime = new Cancellation();
     private final Object gate = new Object();
     private final java.util.Set<CompletableFuture<Description>> active = new HashSet<>();
@@ -71,9 +77,14 @@ public final class SpellTexts implements AutoCloseable {
     private boolean cancellationComplete;
 
     public SpellTexts(BuildTables tables, String version) {
+        this(tables, version, RELATION_ENTRIES);
+    }
+
+    SpellTexts(BuildTables tables, String version, int relationEntries) {
         this.tables = Objects.requireNonNull(tables);
         this.version = version;
-        this.indexes = new RelationIndexes(tables, 200000);
+        this.effectIndex = new RelationIndexes(tables, relationEntries);
+        this.miscIndex = new RelationIndexes(tables, relationEntries);
     }
 
     public BuildRef build() {
@@ -204,7 +215,8 @@ public final class SpellTexts implements AutoCloseable {
             issues.add("SpellEffect profile is unavailable: " + effectSchema.table().state());
             return Map.of();
         }
-        var lookup = indexes.lookup("SpellEffect", "SpellID", spell, 64, priority, token).join();
+        var lookup =
+                effectIndex.lookup("SpellEffect", "SpellID", spell, 64, priority, token).join();
         if (lookup.state() != RelationIndexes.State.OK || lookup.matches() > 64) {
             issues.add("SpellEffect lookup is " + lookup.state());
             return Map.of();
@@ -320,7 +332,7 @@ public final class SpellTexts implements AutoCloseable {
         if (!TableQueries.isReadable(miscSchema.table().state()) || !misc.miscProfile()) {
             return new SpellText.Value(null, sources, "SpellMisc duration profile is unavailable");
         }
-        var lookup = indexes.lookup("SpellMisc", "SpellID", spell, 64, priority, token).join();
+        var lookup = miscIndex.lookup("SpellMisc", "SpellID", spell, 64, priority, token).join();
         if (lookup.state() != RelationIndexes.State.OK || lookup.matches() > 64) {
             return new SpellText.Value(null, sources, "SpellMisc duration lookup is unavailable");
         }
