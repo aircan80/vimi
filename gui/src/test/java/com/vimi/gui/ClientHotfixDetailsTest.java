@@ -98,6 +98,20 @@ public final class ClientHotfixDetailsTest {
             check(ClientHotfixDetails.failure(mismatch).contains("different client build"),
                     "Build mismatch remains useful");
         }
+        var three = java.nio.ByteBuffer.allocate(44 + 3 * 32).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        three.putInt(0x48544658).putInt(9).putInt(70707).put(new byte[32]);
+        for (int i = 0; i < 3; i++)
+            three.putInt(0x48544658).putInt(70).putInt(1).putInt(1).putInt(0x12345678).putInt(i).putInt(0)
+                    .put((byte) 2).put(new byte[3]);
+        try {
+            HotfixCacheReader.inspect(com.vibeminer.formats.db2.Db2ByteSource.memory(three.array()), 70707,
+                    new HotfixCacheReader.Limits(64L << 20, 2, 1 << 20), Cancellation.NONE).join();
+            throw new AssertionError("Over-bound cache accepted");
+        } catch (java.util.concurrent.CompletionException tooMany) {
+            check(ClientHotfixDetails.failure(tooMany)
+                            .equals("The cache holds 3 records; vimi reads at most 2. Its hotfixes are not applied."),
+                    "Record bound refusal names the count and the bound: " + ClientHotfixDetails.failure(tooMany));
+        }
         var pathFailure = new java.io.UncheckedIOException("storage failed", new java.io.IOException("/private/client/path"));
         check(!ClientHotfixDetails.failure(pathFailure).contains("/private"), "No original path in failure label");
         var trap = new Error() {
