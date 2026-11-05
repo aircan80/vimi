@@ -32,10 +32,7 @@ final class WorldStreamGpuOwner {
     static final com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail IMAGE_DETAIL =
             imageDetail(System.getProperty("vimi.world.objectTextures"));
 
-    /**
-     * Only {@code high} (any letter case, surrounding whitespace ignored) selects the HIGH object
-     * texture tier, matching how {@code vimi.world.viewDistance} is read (#276).
-     */
+    /** Only {@code high} (any letter case, surrounding whitespace ignored) selects HIGH. */
     static com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail imageDetail(
             String property) {
         return property != null && "high".equalsIgnoreCase(property.strip())

@@ -536,8 +536,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
         objectTextures.setTooltip(new javafx.scene.control.Tooltip(
                 "Per-tile texture budget for buildings and doodads. Standard keeps 1 Mi building"
                         + " pixels per tile; High doubles every pool, for GPUs with memory to spare."
-                        + " Larger and nearer buildings get full resolution first; when a tile is"
-                        + " over budget, textures use smaller mip levels instead of going missing."));
+                        + " Larger buildings get full resolution first; when a tile is over budget,"
+                        + " textures use smaller mip levels instead of going missing. This session"
+                        + " only: start with -Dvimi.world.objectTextures=high to open on High."));
+        // Only the GPU stream prepares object textures.
+        objectTextures.setDisable(gpu == null || !gpuEnabled.isSelected());
+        gpuEnabled.selectedProperty().addListener(
+                (o, was, on) -> objectTextures.setDisable(gpu == null || !on));
         objectTextures.valueProperty().addListener((o, previous, next) -> {
             if (next == null || next == previous || !streamingMode || streaming == null) return;
             // New budgets apply to newly prepared tiles: restart the stream to re-prepare them.
