@@ -255,7 +255,10 @@ A fresh reviewer read the code at ba97007e. Its findings and the fixes:
 
 - **Backends.** Metal and DX11 were not run; only Linux Vulkan was exercised.
 - **Cold-cache late delivery.** Only the warm-cache comparison above was measured. On a cold cache
-  buildings arrive later, but terrain does not wait for them.
+  buildings arrive later. Terrain never waits for a whole object preparation, but a preempted
+  preparation must reach its next cancellation check before terrain can take the source lane.
+  The preparation checks between source reads and inside its parsers; a single slow cold fetch
+  can delay terrain by up to that fetch's time. This is not measured.
 - **Delivery step 3.** GUI omission counts and the BASIC disclosure text.
 - **Not in this slice.** Doodads, cutout and blended materials, cross-tile sharing of duplicate
   WMOs, and a larger view distance.

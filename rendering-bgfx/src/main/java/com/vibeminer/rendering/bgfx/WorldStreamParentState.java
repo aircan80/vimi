@@ -283,6 +283,30 @@ final class WorldStreamParentState {
         return command;
     }
 
+    /**
+     * Synchronous admission before any file is written. Misuse (a foreign resident, one with inline
+     * objects, or one already requested) is refused with IllegalArgumentException so the caller can
+     * fail only that request. Returns false when the resident is no longer the active generation of
+     * its slot; that also consumes its one request.
+     */
+    synchronized boolean admitLateObjects(Resident member) {
+        if (member == null || member.owner != owner) {
+            throw new IllegalArgumentException("Foreign late objects resident");
+        }
+        if (member.objects != 0 || member.lateRequested) {
+            throw new IllegalArgumentException("Resident objects already requested or inline");
+        }
+        if (closed || !hello) {
+            return false;
+        }
+        if (generations[member.lease.slot()] != member.lease.generation()
+                || !active.contains(member)) {
+            member.lateRequested = true;
+            return false;
+        }
+        return true;
+    }
+
     synchronized boolean lateObjectsPending() {
         return objectsTarget != null;
     }

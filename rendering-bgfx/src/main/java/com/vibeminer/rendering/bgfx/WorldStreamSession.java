@@ -441,6 +441,9 @@ final class WorldStreamSession {
             return;
         }
         int coordinate = state.coordinate(command.lease());
+        if (coordinate < 0) {
+            throw new IllegalStateException("Admitted late objects without tile coordinates");
+        }
         objectsCommand = command;
         objectsCanceled.set(false);
         objectsDecoding =

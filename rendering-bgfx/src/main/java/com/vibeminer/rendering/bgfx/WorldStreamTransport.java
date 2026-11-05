@@ -818,9 +818,13 @@ public final class WorldStreamTransport {
          * delete all run on this session's own objects worker, independent of tile and commit
          * credits, so terrain never waits for it. At most one delivery is in flight (a second one
          * is refused RETRY_LATER). The child attaches the objects only while that exact slot
-         * generation is still active; otherwise the outcome is DROPPED. Failures stay isolated to
-         * the objects. Close completes the future with a CancellationException after the file has
-         * been retired.
+         * generation is still active; otherwise the outcome is DROPPED. A resident that is already
+         * retired is DROPPED at once, before any file is written. Misuse (a foreign resident, one
+         * with inline objects, or one already requested) fails only the returned future with an
+         * IllegalArgumentException; it never ends the session. Failures of the objects themselves
+         * stay isolated to them. A clean close completes the future with a CancellationException
+         * after the file has been retired; if the session fails, the future fails at once and the
+         * file is retired by the objects worker as the session drains.
          */
         public CompletableFuture<ObjectsOutcome> attachObjects(
                 Resident resident, WorldStreamTileWriter.Exterior exterior) {
@@ -840,6 +844,15 @@ public final class WorldStreamTransport {
                                     Refusal.RETRY_LATER,
                                     "World objects delivery in flight",
                                     new Object()));
+                }
+                boolean live;
+                try {
+                    live = state.admitLateObjects(resident.metadata);
+                } catch (IllegalArgumentException misuse) {
+                    return CompletableFuture.failedFuture(misuse);
+                }
+                if (!live) {
+                    return CompletableFuture.completedFuture(ObjectsOutcome.DROPPED);
                 }
                 var operation = new ObjectsOperation(resident, exterior.data());
                 objectsOperation = operation;
@@ -900,6 +913,7 @@ public final class WorldStreamTransport {
                 if (reference != null) {
                     synchronized (lock) {
                         if (!stop.getAsBoolean()) {
+                            // Admitted synchronously; only retirement can have happened since.
                             var command =
                                     state.lateObjects(
                                             metadata, reference.length(), reference.sha256());

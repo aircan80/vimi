@@ -64,6 +64,17 @@ class WorldStreamLateObjectsTransportTest {
             assertSame(WorldStreamTransport.ExteriorObjects.DRAWN, first.exteriorObjects());
             assertSame(WorldStreamTransport.ExteriorObjects.NONE, second.exteriorObjects());
             fixture.until(() -> !Files.exists(fixture.objectsFile(first)));
+            // A second request for the same resident fails only that future, never the session.
+            var misuse =
+                    assertThrows(
+                            ExecutionException.class,
+                            () ->
+                                    fixture.session
+                                            .attachObjects(
+                                                    first, WorldStreamObjectsFileTest.small())
+                                            .get(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalArgumentException.class, misuse.getCause());
+            assertFalse(fixture.session.completion().isDone());
             // The lane is free again for the next resident.
             assertSame(
                     WorldStreamTransport.ObjectsOutcome.ATTACHED,

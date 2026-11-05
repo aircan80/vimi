@@ -144,6 +144,25 @@ class WorldStreamLateObjectsParentTest {
     }
 
     @Test
+    void synchronousAdmissionRefusesMisuseAndDropsRetiredResidents() {
+        var state = ready(true);
+        var first = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));
+        var second = resident(state, 7, 20, List.of(first), new WorldStreamState.Lease(2, 1, 3));
+        assertTrue(state.admitLateObjects(second));
+        assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(null));
+        var foreign = ready(true);
+        var other = resident(foreign, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));
+        assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(other));
+        commit(state, List.of(second));
+        assertFalse(state.admitLateObjects(first));
+        // The retired resident's one request is consumed; asking again is misuse.
+        assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(first));
+        assertNotNull(state.lateObjects(second, 4096, SHA));
+        state.status(done(second, WorldStreamStatus.LateOutcome.DROPPED));
+        assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(second));
+    }
+
+    @Test
     void closedSessionRefusesLateObjects() {
         var state = ready(true);
         var resident = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));

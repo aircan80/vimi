@@ -646,6 +646,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         if (upload.ready()) {
             return 0;
         }
+        if (!upload.dropped && !lateTarget(upload.lease)) {
+            // Retired by a commit since it began: stop building for a generation never drawn.
+            upload.dropped = true;
+            upload.build.abandon();
+            return 0;
+        }
         long started = System.nanoTime();
         int bytes = stepObjects(upload.build);
         maximumStepNanos = Math.max(maximumStepNanos, System.nanoTime() - started);
