@@ -78,7 +78,7 @@ class WorldStreamTransportDiagnosticsTest {
         assertTrue(report.contains("closed status not received"), report);
         assertTrue(report.contains("; failure: World"), report);
         assertTrue(report.contains("synthetic helper crash"), report);
-        assertTrue(report.contains("Cannot open <path> or <path>"), report);
+        assertTrue(report.contains("Cannot open <path>\n"), report);
         assertFalse(report.contains("tester"), report);
         assertFalse(report.contains(System.getProperty("user.home")), report);
         assertTrue(report.contains("earlier stderr lines omitted"), report);
@@ -87,6 +87,17 @@ class WorldStreamTransportDiagnosticsTest {
                 report.length()
                         < HelperStderrTail.MAX_LINES * (HelperStderrTail.MAX_LINE_CHARS + 4) + 1024,
                 "report must stay bounded");
+    }
+
+    @Test
+    void objectsWriteFailuresLogTheFirstAndThenEvery64th() {
+        var logged = new java.util.ArrayList<Long>();
+        for (long count = 1; count <= 200; count++) {
+            if (WorldStreamTransport.Session.objectsWriteLogged(count)) {
+                logged.add(count);
+            }
+        }
+        assertEquals(java.util.List.of(1L, 64L, 128L, 192L), logged);
     }
 
     @Test

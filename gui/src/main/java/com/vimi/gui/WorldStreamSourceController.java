@@ -498,8 +498,10 @@ final class WorldStreamSourceController {
                     waterTablesStarted=clock.getAsLong();
                     waterTables=request.world().prepareWaterTables(qualificationCancellation);
                     waterTables.whenComplete((ignored, failure) -> {
+                        // Closing cancels the qualification token: only that is routine.
                         if (failure != null)
-                            WorldDiagnostics.warn("World water tables unavailable; terrain continues without water", failure);
+                            WorldDiagnostics.degradedUnlessClean("water tables",
+                                    "World water tables unavailable; terrain continues without water", failure);
                         kick();
                     });
                 }
@@ -897,7 +899,8 @@ final class WorldStreamSourceController {
         } catch (RuntimeException failed) {
             // A stopping session cancels delivery; anything else fails only these objects.
             if (!closing && !cleanCancellation(failed)) work.entry.source().exteriorFailedLate();
-            if (!closing) WorldDiagnostics.degraded("exterior objects",
+            // Same rule as the guard above: a clean cancellation is routine, anything else is logged.
+            if (!closing) WorldDiagnostics.degradedUnlessClean("exterior objects",
                     "World exterior objects delivery failed; tile kept as terrain only", failed);
         }
         changed();

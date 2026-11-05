@@ -1753,7 +1753,7 @@ public final class WorldStreamTransport {
          */
         private void objectsWriteFailed(Throwable failed) {
             long count = objectsWriteFailures.incrementAndGet();
-            if (count != 1 && count % 64 != 0) {
+            if (!objectsWriteLogged(count)) {
                 return;
             }
             try {
@@ -1770,6 +1770,11 @@ public final class WorldStreamTransport {
             } catch (RuntimeException | Error ignored) {
                 // Diagnostic delivery cannot interrupt objects delivery.
             }
+        }
+
+        /** The first objects write failure of a session is logged, then every 64th. */
+        static boolean objectsWriteLogged(long count) {
+            return count == 1 || count % 64 == 0;
         }
 
         private static String exitSuffix(WorldStreamLaunchOwner.Drain drain) {

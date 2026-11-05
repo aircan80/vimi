@@ -19,14 +19,67 @@ final class WorldDiagnostics {
     static final int MAX_SUMMARY_CHARS = 2048;
     static final int MAX_BRIEF_CHARS = 120;
     private static final int MAX_FRAMES = 4;
-    private static final int RECORDS_PER_MINUTE = 30;
-    private static final long DEGRADED_INTERVAL_NANOS = 60_000_000_000L;
+    private static final long MINUTE_NANOS = 60_000_000_000L;
+    /** Bound on the text handed to the redactor; records keep at most 200 characters anyway. */
+    static final int MAX_CLEAN_INPUT_CHARS = 1024;
     private static final System.Logger LOG = System.getLogger("com.vimi.gui.World");
-    private static final Object RATE = new Object();
-    private static long windowStart;
-    private static int windowRecords;
-    private static long suppressed;
-    private static final java.util.Map<String, long[]> DEGRADED = new java.util.HashMap<>();
+    /** Test seam: the clock every budget reads. */
+    static volatile java.util.function.LongSupplier clock = System::nanoTime;
+
+    /**
+     * Terminal and lifecycle records (a FAILED viewer, a failed helper with its stderr tail) have
+     * their own budget, so per-request and per-part records can never rate-limit them away.
+     */
+    private static final Budget TERMINAL = new Budget(30);
+    private static final Budget REQUESTS = new Budget(20);
+    private static final Budget DEGRADED = new Budget(20);
+    private static final java.util.Map<String, long[]> PARTS = new java.util.HashMap<>();
+
+    /** One fixed one-minute window of records. */
+    private static final class Budget {
+        private final int limit;
+        private boolean started;
+        private long windowStart;
+        private int records;
+        private long suppressed;
+
+        Budget(int limit) {
+            this.limit = limit;
+        }
+
+        /** -1 when this record is suppressed, else the records dropped since the last one. */
+        synchronized long admit(long now) {
+            if (!started || now - windowStart >= MINUTE_NANOS) {
+                started = true;
+                windowStart = now;
+                records = 0;
+            }
+            if (records >= limit) {
+                suppressed++;
+                return -1;
+            }
+            records++;
+            long dropped = suppressed;
+            suppressed = 0;
+            return dropped;
+        }
+
+        synchronized void reset() {
+            started = false;
+            records = 0;
+            suppressed = 0;
+        }
+    }
+
+    /** Test seam: forgets every window, so tests do not share rate state. */
+    static void resetForTest() {
+        TERMINAL.reset();
+        REQUESTS.reset();
+        DEGRADED.reset();
+        synchronized (PARTS) {
+            PARTS.clear();
+        }
+    }
 
     private WorldDiagnostics() {}
 
@@ -65,26 +118,37 @@ final class WorldDiagnostics {
     }
 
     /**
-     * Cancellation is lifecycle, not a fault. Only a pure chain counts: completion wrappers and
-     * exact {@code CancellationException} links (nested JDK joins add one per join), with no
-     * suppressed failure anywhere, ending in a cause-free cancellation. Any real failure inside
-     * the chain, a subclass, a cycle or an over-bound chain is logged.
+     * Whether {@code failure} carries nothing but a standard cancellation: exactly the rule of
+     * {@code CleanCancellation.is} (#230). Up to 8 exact {@code CompletionException} or {@code
+     * ExecutionException} wrappers around up to 8 exact {@code CancellationException} links that
+     * end in a cause-free one, with no suppressed failure anywhere. A subclass is rejected before
+     * any of its accessors run. Never throws.
      */
     static boolean cancellation(Throwable failure) {
         try {
-            for (int i = 0; failure != null && i < MAX_CAUSES + 2; i++) {
-                Class<?> type = failure.getClass();
-                if (type != CancellationException.class && type != CompletionException.class
-                        && type != ExecutionException.class) return false;
-                if (failure.getSuppressed().length != 0) return false;
-                Throwable next = failure.getCause();
-                if (next == null) return type == CancellationException.class;
-                failure = next;
+            Throwable at = failure;
+            for (int depth = 0; depth < 8; depth++) {
+                if (at == null
+                        || at.getClass() != CompletionException.class
+                                && at.getClass() != ExecutionException.class) {
+                    break;
+                }
+                if (at.getSuppressed().length != 0) return false;
+                at = at.getCause();
             }
+            for (int depth = 0; depth < 8; depth++) {
+                if (at == null
+                        || at.getClass() != CancellationException.class
+                        || at.getSuppressed().length != 0) {
+                    return false;
+                }
+                at = at.getCause();
+                if (at == null) return true;
+            }
+            return false;
         } catch (Throwable unreadable) {
             return false;
         }
-        return false;
     }
 
     /** Multi-cause bounded summary for the application log. Never throws. */
@@ -165,17 +229,17 @@ final class WorldDiagnostics {
 
     /**
      * A failure that degrades one optional World part (exterior objects, creatures, water) while
-     * terrain continues. These can repeat on every tile, so each {@code part} logs at most one
-     * record a minute, carrying how many were skipped, and cannot crowd out terminal records.
+     * terrain continues. Always logged: the call site treats it as a failure. These can repeat on
+     * every tile, so each {@code part} logs at most one record a minute, carrying how many were
+     * skipped, and they spend their own budget. Never throws.
      */
     static void degraded(String part, String context, Throwable failure) {
         try {
-            if (cancellation(failure)) return;
             long skipped;
-            synchronized (RATE) {
-                long now = System.nanoTime();
-                long[] state = DEGRADED.computeIfAbsent(part, ignored -> new long[] {now, -1});
-                if (state[1] >= 0 && now - state[0] < DEGRADED_INTERVAL_NANOS) {
+            synchronized (PARTS) {
+                long now = clock.getAsLong();
+                long[] state = PARTS.computeIfAbsent(part, ignored -> new long[] {now, -1});
+                if (state[1] >= 0 && now - state[0] < MINUTE_NANOS) {
                     state[1]++;
                     return;
                 }
@@ -183,40 +247,51 @@ final class WorldDiagnostics {
                 state[0] = now;
                 state[1] = 0;
             }
-            warn(context + (skipped == 0 ? "" : " (" + skipped + " similar " + part
-                    + " failures since the last record)"), failure);
+            record(DEGRADED, context + (skipped == 0 ? "" : " (" + skipped + " similar " + part
+                    + " failures since the last record)"), failure, null);
         } catch (Throwable ignored) {
             // Diagnostics cannot interrupt World lifecycle or JavaFX delivery.
         }
     }
 
-    /** Rate-limited WARNING record; cancellations are not logged. Never throws. */
+    /** As {@link #degraded}, for a site that treats a clean cancellation as routine. */
+    static void degradedUnlessClean(String part, String context, Throwable failure) {
+        if (!cancellation(failure)) degraded(part, context, failure);
+    }
+
+    /**
+     * A failed World request. Requests are canceled routinely, so a clean cancellation is skipped;
+     * anything else spends the request budget, never the terminal one. Never throws.
+     */
+    static void request(String context, Throwable failure) {
+        try {
+            if (!cancellation(failure)) record(REQUESTS, context, failure, null);
+        } catch (Throwable ignored) {
+            // Diagnostics cannot interrupt World lifecycle or JavaFX delivery.
+        }
+    }
+
+    /**
+     * Terminal or lifecycle WARNING record on its own budget. Always written, even for a
+     * cancellation (then labelled), because the call site reports a failure. Never throws.
+     */
     static void warn(String context, Throwable failure) {
         warn(context, failure, null);
     }
 
     /** As {@link #warn(String, Throwable)} with an already bounded, sanitized detail block. */
     static void warn(String context, Throwable failure, String detail) {
+        record(TERMINAL, context, failure, detail);
+    }
+
+    private static void record(Budget budget, String context, Throwable failure, String detail) {
         try {
-            if (cancellation(failure)) return;
-            long dropped;
-            synchronized (RATE) {
-                long now = System.nanoTime();
-                if (windowRecords == 0 || now - windowStart > 60_000_000_000L) {
-                    windowStart = now;
-                    windowRecords = 0;
-                }
-                if (windowRecords >= RECORDS_PER_MINUTE) {
-                    suppressed++;
-                    return;
-                }
-                windowRecords++;
-                dropped = suppressed;
-                suppressed = 0;
-            }
-            LOG.log(System.Logger.Level.WARNING, cap(clean(context), MAX_MESSAGE_CHARS) + ": "
+            long dropped = budget.admit(clock.getAsLong());
+            if (dropped < 0) return;
+            LOG.log(System.Logger.Level.WARNING, cap(clean(context), MAX_MESSAGE_CHARS)
+                    + (cancellation(failure) ? " (cancellation)" : "") + ": "
                     + summary(failure)
-                    + (dropped == 0 ? "" : " (" + dropped + " earlier World records rate-limited)")
+                    + (dropped == 0 ? "" : " (" + dropped + " earlier similar World records rate-limited)")
                     + (detail == null ? "" : "; " + detail));
         } catch (Throwable ignored) {
             // Diagnostics cannot interrupt World lifecycle or JavaFX delivery.
@@ -230,10 +305,10 @@ final class WorldDiagnostics {
     }
 
     static String clean(String message) {
-        // Pre-truncate so a huge message cannot make regex work expensive on the FX thread.
-        if (message.length() > 4 * MAX_SUMMARY_CHARS) message = message.substring(0, 4 * MAX_SUMMARY_CHARS);
-        // One redaction for GUI records and helper stderr: control characters, URL queries and
-        // user-info, absolute local paths and this machine's user and host names.
+        // Pre-truncate so a huge message cannot make redaction expensive on the FX thread.
+        if (message.length() > MAX_CLEAN_INPUT_CHARS) message = message.substring(0, MAX_CLEAN_INPUT_CHARS);
+        // One redaction for GUI records and helper stderr: sensitive literals, URL queries and
+        // user-info, absolute local paths and control characters.
         return com.vibeminer.rendering.bgfx.HelperStderrTail.redact(message);
     }
 

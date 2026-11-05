@@ -29,12 +29,19 @@ rendering.
   stack accessors read. Any other failure contributes just its class name, which
   follows the existing detached-failure rule in the World lifecycle. Many request
   failures are already detached to a class name upstream, so their records stay
-  brief. The helpers never throw into lifecycle or FX code. Cancellation is not
-  logged, but only a pure chain counts as cancellation: completion wrappers and
-  exact `CancellationException` links (one per nested JDK join), no suppressed
-  failure, ending in a cause-free cancellation. A real failure inside such a chain
-  is logged. Logging is limited to 30 records a minute, and the next record that
-  gets through says how many were dropped.
+  brief. The helpers never throw into lifecycle or FX code.
+- **Cancellation.** A site that reports a failure always logs, even when the
+  failure is a cancellation, and labels it `(cancellation)`; a FAILED viewer
+  always leaves a record. Only sites that treat a clean cancellation as routine
+  skip it: World requests, late exterior objects delivery and the water tables.
+  "Clean" is exactly `CleanCancellation.is` (#230): up to 8 exact completion
+  wrappers around up to 8 exact `CancellationException` links ending in a
+  cause-free one, nothing suppressed.
+- **Budgets.** Terminal and lifecycle records (including the record carrying the
+  renderer stderr tail) have their own 30-a-minute budget. Request records and
+  optional-part records each have a separate 20-a-minute budget, so neither can
+  rate-limit a terminal record away. The next record admitted by a budget says
+  how many that budget dropped.
 - **Optional World parts.** Exterior objects, creatures and water degrade a tile
   to terrain only instead of failing World, so their failures used to leave only a
   class name in the status line. They now log through
@@ -66,13 +73,26 @@ GUI records, status text and the helper stderr tail share one redaction
 
 - URL query strings and fragments become `?<redacted>`, because signed query
   strings can be bearer capabilities. URL user-info becomes `<redacted>@`.
-- `file:` URLs and absolute paths (POSIX, `~/`, drive-letter and UNC) are
-  replaced whole by `<path>`, so no game install, home or scratch directory, and
-  no UNC server name, is recorded. Relative names such as `World/maps/...` stay.
-- This machine's home directory, user name and host name (from the JVM, the
-  environment and a background lookup of the local host name) are replaced by
-  `<redacted>` wherever they appear.
-- Control and line-separator characters are replaced too.
+- First, literal sensitive values are replaced in the original text, longest
+  first and in both slash styles: the home and temporary directories, the data
+  directory and the folder of an imported client hotfix cache become `<path>`;
+  this machine's user and host names become `<redacted>`. Names shorter than four
+  characters and common words (`world`, `root`, `user` and so on) are not
+  replaced as names, and names match only on Unicode word boundaries. The host
+  name comes from `/etc/hostname` and the environment synchronously, and from the
+  resolver on a daemon thread; the first redaction waits up to 250 ms for it.
+- Then every path-like span becomes `<path>`: `file:` URLs, drive-letter, UNC,
+  `\\?\` and `\\.\` paths, POSIX and `~/` paths, including a path right after
+  `:` or `=`. A span runs to the next double quote or backtick, an unbalanced
+  `)`, `]` or `>`, a `;` or `,`, or the end of the line, so spaces in
+  `C:\Program Files (x86)\World of Warcraft` or `C:\Users\John Smith` do not end
+  it. This over-redacts rather than leak. Relative names such as `World/maps/...`
+  and URLs such as `https://host/a` stay.
+- Helper stderr is decoded as UTF-8 and redacted before anything outside
+  printable ASCII becomes `?`, so a non-ASCII account name is still recognised.
+- Control and line-separator characters are replaced too. Input is cut to 1 KiB
+  (GUI) or 4 KiB (redactor) first, and every pattern is bounded, so redaction
+  stays cheap on the FX thread.
 
 Review diagnostics before sharing them anyway, as
 [data-flow-inventory.md](data-flow-inventory.md) advises: a name that is not a

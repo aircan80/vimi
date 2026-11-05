@@ -327,7 +327,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     /** Request failures stay visible in the application log even when the UI shows a summary. */
     private static <T> CompletableFuture<T> logged(CompletableFuture<T> call) {
         call.whenComplete((ignored, failure) -> {
-            if (failure != null) WorldDiagnostics.warn("World request failed", failure);
+            if (failure != null) WorldDiagnostics.request("World request failed", failure);
         });
         return call;
     }
