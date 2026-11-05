@@ -56,6 +56,14 @@ final class WorldSourceRefusals {
         return WorldTerrainStreaming.refusal(site);
     }
 
+    /**
+     * A refusal that also says which check failed; see {@link
+     * WorldTerrainStreaming.Refusal#detail}.
+     */
+    static WorldTerrainStreaming.Refusal at(Site site, String detail) {
+        return WorldTerrainStreaming.refusal(site, detail);
+    }
+
     private record Leaf(Throwable value, boolean clean, boolean bounded) {}
 
     private static Leaf inspect(Throwable failure) {

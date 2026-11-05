@@ -130,9 +130,17 @@ final class GlobalWmoMain {
         try {
             statuses.emit(
                     new WorldGlobalStatus.InputConsumed(identity.nonce(), identity.fileSha256()));
-            context.initialize();
-            contextLive = true;
-            owner.initialize(decoded, control::stopping);
+            try {
+                context.initialize();
+                contextLive = true;
+                owner.initialize(decoded, control::stopping);
+            } catch (GlobalWmoCapabilityException unavailable) {
+                // A classified backend negative, not a failure: report it and retire normally.
+                statuses.emit(
+                        new WorldGlobalStatus.Unavailable(
+                                identity, WorldGlobalStatus.Code.CAPABILITY));
+                return;
+            }
             boolean announced = false;
             while (!control.stopping()) {
                 var request = control.latest();
@@ -361,7 +369,7 @@ final class GlobalWmoMain {
                 init.resolution().width(0).height(0).reset(BGFX_RESET_NONE);
                 BGFXPlatform.bgfx_render_frame(0);
                 if (!bgfx_init(init)) {
-                    throw new IOException("Unable to initialize GPU backend");
+                    throw new GlobalWmoCapabilityException("Unable to initialize GPU backend");
                 }
             }
             var caps = bgfx_get_caps();
@@ -370,7 +378,7 @@ final class GlobalWmoMain {
                         Short.toUnsignedInt(caps.vendorId()), Short.toUnsignedInt(caps.deviceId()));
             } catch (IOException software) {
                 bgfx_shutdown();
-                throw software;
+                throw new GlobalWmoCapabilityException("Global renderer needs a hardware GPU");
             }
         }
 

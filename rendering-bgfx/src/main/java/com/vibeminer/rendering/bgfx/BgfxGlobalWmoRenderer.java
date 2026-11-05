@@ -3,7 +3,9 @@ package com.vibeminer.rendering.bgfx;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_POSITION;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TEXCOORD0;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TYPE_FLOAT;
+import static org.lwjgl.bgfx.BGFX.BGFX_BUFFER_INDEX32;
 import static org.lwjgl.bgfx.BGFX.BGFX_BUFFER_NONE;
+import static org.lwjgl.bgfx.BGFX.BGFX_CAPS_INDEX32;
 import static org.lwjgl.bgfx.BGFX.BGFX_DISCARD_ALL;
 import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIP_POINT;
 import static org.lwjgl.bgfx.BGFX.BGFX_STATE_DEPTH_TEST_GREATER;
@@ -41,6 +43,7 @@ import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_add;
 import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_begin;
 import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_end;
 
+import com.vibeminer.rendering.world.GlobalInteriorLimits;
 import java.io.IOException;
 import java.nio.ByteOrder;
 import java.util.Arrays;
@@ -62,8 +65,8 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
                     | BGFX_STATE_DEPTH_TEST_GREATER;
     private static final int SAMPLER_STATE = BGFX_SAMPLER_MIP_POINT;
     private final Thread owner = Thread.currentThread();
-    private final short[] textures = new short[18];
-    private final int[] materialImages = new int[24];
+    private final short[] textures = new short[GlobalInteriorLimits.IMAGES];
+    private final int[] materialImages = new int[GlobalInteriorLimits.MATERIALS];
     private GpuGlobalWmoSceneFile.Decoded data;
     private final int vertexCount;
     private final GlobalWmoCamera initialCamera;
@@ -104,11 +107,13 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
             check(canceled);
             var caps = bgfx_get_caps();
             if (caps.homogeneousDepth()
+                    || (caps.supported() & BGFX_CAPS_INDEX32) == 0
                     || !bgfx_is_texture_valid(
                             0, false, 1, BGFX_TEXTURE_FORMAT_D32F, BGFX_TEXTURE_RT)
                     || !bgfx_is_texture_valid(
                             0, false, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
-                throw new IOException("Global requires qualified reversed D32F and RGBA8");
+                throw new GlobalWmoCapabilityException(
+                        "Global requires reversed D32F, RGBA8 and 32-bit indices");
             }
             program = program(BgfxModelRenderer.shaderProfile(caps.rendererType()));
             eye = valid(bgfx_create_uniform("u_globalEye", BGFX_UNIFORM_TYPE_MAT4, 1));
@@ -124,7 +129,9 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
                         materialImages[m] = i;
                     }
                 }
-                if (materialImages[m] < 0) {
+            }
+            for (var batch : data.batches()) {
+                if (materialImages[batch.material()] < 0) {
                     throw new IOException("Global material image absent");
                 }
             }
@@ -159,7 +166,8 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
     }
 
     private void uploadMesh(BooleanSupplier canceled) throws IOException {
-        int indexCount = data.counts().indices(), size = vertexCount * 20 + indexCount * 2;
+        int indexCount = data.counts().indices();
+        int size = vertexCount * 20 + indexCount * WorldGlobalLayout.INDEX_BYTES;
         if (size > GPU_MESH) {
             throw new IOException("Global mesh cap");
         }
@@ -179,7 +187,7 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
                 if ((i & 1023) == 0) {
                     check(canceled);
                 }
-                staging.putShort((short) data.index(i));
+                staging.putInt(data.index(i));
             }
             staging.flip();
             check(canceled);
@@ -204,8 +212,12 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
                 indices =
                         valid(
                                 bgfx_create_index_buffer(
-                                        bgfx_copy(staging.slice(vertexCount * 20, indexCount * 2)),
-                                        BGFX_BUFFER_NONE));
+                                        bgfx_copy(
+                                                staging.slice(
+                                                        vertexCount * 20,
+                                                        indexCount
+                                                                * WorldGlobalLayout.INDEX_BYTES)),
+                                        BGFX_BUFFER_INDEX32));
             }
         } finally {
             stagingBytes = 0;

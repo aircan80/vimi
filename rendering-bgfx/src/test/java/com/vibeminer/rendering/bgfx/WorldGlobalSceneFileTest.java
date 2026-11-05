@@ -467,7 +467,8 @@ class WorldGlobalSceneFileTest {
                 var decoded =
                         GpuGlobalWmoSceneFile.read(
                                 target.path(), source.expected().input(), () -> false)) {
-            assertEquals(5_577_600, Files.size(target.path()));
+            // The first profile's maximum, with 96-byte image records and 32-bit indices.
+            assertEquals(5_577_600 + 18 * 32 + 98304 * 2, Files.size(target.path()));
             assertEquals(maximum, decoded.counts());
             assertEquals(32767, decoded.index(98303));
             assertEquals(255, decoded.imageByte(17, 262143));

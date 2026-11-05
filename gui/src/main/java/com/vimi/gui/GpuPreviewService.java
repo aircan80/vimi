@@ -727,6 +727,7 @@ final class GpuPreviewService {
         com.vibeminer.rendering.bgfx.WorldGlobalTransport.Session session = null;
         Throwable failure = null;
         boolean ownedClosed = false, retirementUnknown = false;
+        Throwable unavailable = null;
         String message = "Interior renderer unavailable";
         try {
             var parent = temporaryParent == null
@@ -738,6 +739,7 @@ final class GpuPreviewService {
             var initial = com.vibeminer.rendering.bgfx.WorldGlobalTransport.Camera.inspecting(
                     prepared.bounds());
             var outline = outline(prepared);
+            String readyMessage = readyMessage(prepared.facts());
             owned = prepared.move();
             // MOVE transferred the file; Source payload/credit retires independently.
             var source = prepared;
@@ -777,12 +779,14 @@ final class GpuPreviewService {
                 if (!readyShown && ready.isDone()) {
                     readyShown = true;
                     if (ready.isCompletedExceptionally()) {
-                        request.publish(State.FAILED,
-                                "GPU interior renderer failed; waiting for cleanup…");
+                        unavailable = classifiedUnavailable(ready);
+                        request.publish(State.FAILED, unavailable != null
+                                ? GPU_UNAVAILABLE + "; closing…"
+                                : "GPU interior renderer failed; waiting for cleanup…");
                         request.stopping = true;
                     } else {
                         request.ready = true;
-                        request.publish(State.READY, "GPU interior");
+                        request.publish(State.READY, readyMessage);
                     }
                 }
                 Thread.sleep(10);
@@ -828,7 +832,12 @@ final class GpuPreviewService {
                 }
             }
             if (!drained) failClosed(request);
-            if (failure == null || drained && request.stopping && CleanCancellation.is(failure)) {
+            if (failure == null && unavailable != null && drained) {
+                // The child reported a classified capability negative and retired cleanly.
+                request.publish(State.FAILED, GPU_UNAVAILABLE);
+                request.finish(unavailable);
+            } else if (failure == null
+                    || drained && request.stopping && CleanCancellation.is(failure)) {
                 request.publish(State.CLOSED, "GPU interior renderer stopped");
                 request.finish(null);
             } else {
@@ -838,14 +847,51 @@ final class GpuPreviewService {
         }
     }
 
+    /** READY text; says how many recorded groups are left out and the most common reason. */
+    static String readyMessage(com.vibeminer.concepts.world.WorldGlobalScenes.Facts facts) {
+        int skipped = facts.skippedGroups();
+        if (skipped == 0) {
+            return "GPU interior";
+        }
+        int total = facts.groups().size() + skipped;
+        var reason = facts.skippedGroupReasons().entrySet().stream()
+                .max(java.util.Map.Entry.comparingByValue())
+                .map(java.util.Map.Entry::getKey)
+                .orElse("");
+        return "GPU interior · " + skipped + " of " + total + " WMO groups not drawn ("
+                + reason + (facts.skippedGroupReasons().size() > 1 ? ", …" : "") + ")";
+    }
+
+    static final String GPU_UNAVAILABLE =
+            "This GPU or graphics backend can't draw interiors (it needs a hardware GPU with"
+                    + " 32-bit depth and 32-bit indices)";
+
+    /** The child's classified GLOBAL_UNAVAILABLE, or null for any other READY failure. */
+    private static Throwable classifiedUnavailable(
+            java.util.concurrent.CompletableFuture<Void> ready) {
+        try {
+            ready.join();
+            return null;
+        } catch (java.util.concurrent.CompletionException failed) {
+            return failed.getCause()
+                    instanceof com.vibeminer.rendering.bgfx.WorldGlobalTransport.Unavailable u
+                    ? u : null;
+        } catch (java.util.concurrent.CancellationException canceled) {
+            return null;
+        }
+    }
+
     /** Bounded user text; never raw paths, provider messages or arbitrary causes. */
     static String globalMessage(Throwable error) {
         for (Throwable at = error; at != null; at = at.getCause()) {
             if (at instanceof com.vibeminer.concepts.world.WorldTerrainStreaming.Refusal refusal) {
                 return switch (refusal.reason()) {
                     case CAPABILITY_UNAVAILABLE ->
-                            "This instance is outside the supported interior profile ("
-                                    + refusal.site() + ")";
+                            refusal.detail()
+                                    .map(detail -> "Can't show this interior: " + detail + " ("
+                                            + refusal.site() + ")")
+                                    .orElse("This instance is outside the supported interior"
+                                            + " profile (" + refusal.site() + ")");
                     case RETRY_LATER -> "Interior source is busy; retry shortly";
                     case SOURCE_INVALIDATED -> "Interior source changed; retry";
                 };

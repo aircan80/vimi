@@ -2,9 +2,15 @@ package com.vibeminer.rendering.bgfx;
 
 import static com.vibeminer.rendering.bgfx.WorldGlobalLayout.require;
 
+import com.vibeminer.rendering.world.GlobalInteriorLimits;
+
 /** Bounded immutable-global status syntax, never source authority or a parent pixel receipt. */
 public sealed interface WorldGlobalStatus {
-    int MAX_LINE_BYTES = 256, READY_BYTES = 208, CONSUMED_BYTES = 120, CLOSED_BYTES = 177;
+    /**
+     * Exclusive line bounds. READY is 187 fixed characters plus at most 28 count digits (six each
+     * for vertices and both triangle counts, three for groups and images, four for batches).
+     */
+    int MAX_LINE_BYTES = 256, READY_BYTES = 216, CONSUMED_BYTES = 120, CLOSED_BYTES = 177;
 
     record Identity(String nonce, String scope, String fileSha256) {
         public Identity {
@@ -25,7 +31,10 @@ public sealed interface WorldGlobalStatus {
             int images)
             implements WorldGlobalStatus {
         public Ready {
-            require(identity != null && rawTriangles >= 1 && rawTriangles <= 32768);
+            require(
+                    identity != null
+                            && rawTriangles >= 1
+                            && rawTriangles <= GlobalInteriorLimits.TRIANGLES);
             new WorldGlobalLayout.Counts(
                     images,
                     groups,
@@ -149,12 +158,12 @@ public sealed interface WorldGlobalStatus {
                                 && p[11].equals("511"));
                 yield new Ready(
                         new Identity(p[1], p[2], p[3]),
-                        number(p[5], 32768),
-                        number(p[6], 32768),
-                        number(p[7], 32768),
-                        number(p[8], 8),
-                        number(p[9], 64),
-                        number(p[10], 18));
+                        number(p[5], GlobalInteriorLimits.VERTICES),
+                        number(p[6], GlobalInteriorLimits.TRIANGLES),
+                        number(p[7], GlobalInteriorLimits.TRIANGLES),
+                        number(p[8], GlobalInteriorLimits.GROUPS),
+                        number(p[9], GlobalInteriorLimits.BATCHES),
+                        number(p[10], GlobalInteriorLimits.IMAGES));
             }
             case "GLOBAL_INPUT_CONSUMED" -> {
                 require(line.length() < CONSUMED_BYTES && p.length == 3);
@@ -183,7 +192,7 @@ public sealed interface WorldGlobalStatus {
     private static int number(String value, int max) {
         require(
                 !value.isEmpty()
-                        && value.length() <= 5
+                        && value.length() <= Integer.toString(max).length()
                         && (value.length() == 1 || value.charAt(0) != '0'));
         int result = 0;
         for (int i = 0; i < value.length(); i++) {

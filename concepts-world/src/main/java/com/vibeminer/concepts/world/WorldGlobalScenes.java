@@ -87,9 +87,13 @@ public final class WorldGlobalScenes {
         private final List<Image> images;
         private final List<Source> sources;
         private final byte[] modf;
+        private final int skippedGroups;
+        private final java.util.SortedMap<String, Integer> skippedReasons;
 
         private Facts(WorldGlobalAssetFactory.Manifest manifest) {
             declaration = manifest.declaration();
+            skippedGroups = manifest.skippedGroups();
+            skippedReasons = manifest.skippedReasons();
             root = manifest.root().header();
             materials =
                     manifest.root().materials().stream()
@@ -133,7 +137,7 @@ public final class WorldGlobalScenes {
                                                     i.sourceRgbaSha256(),
                                                     i.opaqueRgbaSha256()))
                             .toList();
-            var sourceList = new java.util.ArrayList<Source>(28);
+            var sourceList = new java.util.ArrayList<Source>();
             sourceList.add(
                     new Source(
                             "WDT",
@@ -213,6 +217,19 @@ public final class WorldGlobalScenes {
 
         public List<Source> sources() {
             return sources;
+        }
+
+        /**
+         * Root groups left out of the drawn interior because their file is missing or their layout
+         * is outside the profile; the drawn groups are complete.
+         */
+        public int skippedGroups() {
+            return skippedGroups;
+        }
+
+        /** {@link #skippedGroups()} by fixed reason text (counts only; no names or paths). */
+        public java.util.SortedMap<String, Integer> skippedGroupReasons() {
+            return skippedReasons;
         }
     }
 

@@ -8,6 +8,7 @@ import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.formats.world.WdtReferenceFacts;
 import com.vibeminer.formats.world.WdtSceneFacts;
+import com.vibeminer.rendering.world.GlobalInteriorLimits;
 import java.io.DataOutputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
@@ -368,13 +369,13 @@ final class WorldGlobalScopes {
             if (id <= 0
                     || id > 0xffff_ffffL
                     || id == facts.wdtId()
-                    || consumed.size() >= 27
+                    || consumed.size() >= GlobalInteriorLimits.ASSETS
                     || consumed.stream().anyMatch(value -> value.id() == id)) {
                 throw new IllegalArgumentException("Global candidate identity/count");
             }
             if (kind == AssetKind.ROOT && ++roots > 1
-                    || kind == AssetKind.GROUP && ++groups > 8
-                    || kind == AssetKind.IMAGE && ++images > 18) {
+                    || kind == AssetKind.GROUP && ++groups > GlobalInteriorLimits.GROUPS
+                    || kind == AssetKind.IMAGE && ++images > GlobalInteriorLimits.IMAGES) {
                 throw new IllegalStateException("Global role credit exhausted");
             }
             if (kind != AssetKind.ROOT && roots != 1) {
@@ -395,7 +396,7 @@ final class WorldGlobalScopes {
     <R extends AutoCloseable> R withAssetInputs(
             GlobalScope scope, Selection comparison, Cancellation external, AssetUse<R> use) {
         Objects.requireNonNull(use);
-        var finalBindings = new java.util.ArrayList<AssetReceipt>(27);
+        var finalBindings = new java.util.ArrayList<AssetReceipt>(GlobalInteriorLimits.ASSETS);
         return withDeclaration(
                 scope,
                 comparison,
@@ -451,7 +452,12 @@ final class WorldGlobalScopes {
 
     private void readAsset(
             long id, AssetKind kind, Cancellation token, RawUse use, List<AssetReceipt> consumed) {
-        int limit = kind == AssetKind.GROUP ? INPUT_LIMIT : 64 << 10;
+        int limit =
+                switch (kind) {
+                    case ROOT -> GlobalInteriorLimits.ROOT_BYTES;
+                    case GROUP -> GlobalInteriorLimits.GROUP_BYTES;
+                    case IMAGE -> GlobalInteriorLimits.IMAGE_BYTES;
+                };
         synchronized (this) {
             if (inputReserved) {
                 throw new IllegalStateException("Global input owner already live");
@@ -464,7 +470,7 @@ final class WorldGlobalScopes {
         try {
             var before = stat(id, token, WorldSourceRefusals.Site.SOURCE_INPUT);
             if (before.size() != null && (before.size() < 12 || before.size() > limit)) {
-                throw unavailable();
+                throw oversize(kind, limit);
             }
             var opened = WorldSourceFutures.await(files.openRead(FileTypes.FileRef.id(id), token));
             stream = opened.stream();
@@ -475,11 +481,11 @@ final class WorldGlobalScopes {
                 throw unavailable();
             }
             long length = stream.length();
-            if (opened.state() != FileTypes.FileReadState.COMPLETE
-                    || !stream.holes().isEmpty()
-                    || length < 12
-                    || length > limit) {
+            if (opened.state() != FileTypes.FileReadState.COMPLETE || !stream.holes().isEmpty()) {
                 throw unavailable();
+            }
+            if (length < 12 || length > limit) {
+                throw oversize(kind, limit);
             }
             if (before.size() != null && before.size() != length) {
                 throw assetChanged();
@@ -907,9 +913,9 @@ final class WorldGlobalScopes {
         FileReadStream stream = null;
         Throwable primary = null;
         try {
-            var before = stat(map.wdtId(), token, WorldSourceRefusals.Site.SOURCE_INPUT);
+            var before = wdtStat(map.wdtId(), token);
             if (before.size() != null && (before.size() < 12 || before.size() > INPUT_LIMIT)) {
-                throw unavailable();
+                throw wdtUnavailable();
             }
             var opened =
                     WorldSourceFutures.await(
@@ -919,14 +925,14 @@ final class WorldGlobalScopes {
                 if (opened.state() == FileTypes.FileReadState.COMPLETE) {
                     throw new IllegalStateException("Complete global source has no stream");
                 }
-                throw unavailable();
+                throw wdtUnavailable();
             }
             long length = stream.length();
             if (opened.state() != FileTypes.FileReadState.COMPLETE
                     || !stream.holes().isEmpty()
                     || length < 12
                     || length > INPUT_LIMIT) {
-                throw unavailable();
+                throw wdtUnavailable();
             }
             if (before.size() != null && before.size() != length) {
                 throw changed();
@@ -940,7 +946,7 @@ final class WorldGlobalScopes {
                     throw new IllegalStateException("Global source read progress differs");
                 }
                 if (count <= 0) {
-                    throw unavailable();
+                    throw wdtUnavailable();
                 }
             }
             token.check();
@@ -994,6 +1000,13 @@ final class WorldGlobalScopes {
             Cancellation token) {
         var refs = WdtReferenceFacts.scan(bytes, token::isCanceled);
         var scene = WdtSceneFacts.read(bytes, token::isCanceled);
+        if (scene.mode() != WdtSceneFacts.Mode.GLOBAL_WMO_ONLY) {
+            throw profile(
+                    scene.mode() == WdtSceneFacts.Mode.TERRAIN_ONLY
+                            ? "this instance is a terrain (ADT) map, not a single interior WMO;"
+                                    + " it can only be explored as a map"
+                            : "the map is neither terrain-only nor one interior WMO");
+        }
         if (!refs.mainPresent()
                 || !refs.maidPresent()
                 || !refs.modfPresent()
@@ -1004,7 +1017,7 @@ final class WorldGlobalScopes {
                 || scene.mode() != WdtSceneFacts.Mode.GLOBAL_WMO_ONLY
                 || scene.nameBlockPresent()
                 || scene.globalObjects().size() != 1) {
-            throw profile();
+            throw profile("the map declaration is not one plain WMO placement");
         }
         var environment = new ArrayList<Long>(7);
         var input = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
@@ -1024,7 +1037,7 @@ final class WorldGlobalScopes {
                         default -> -1;
                     };
             if (size != expected) {
-                throw profile();
+                throw profile("the map file has chunks a WMO-only map does not use");
             }
             if (tag == 0x4d504844) {
                 for (int i = 1; i < 8; i++) {
@@ -1052,7 +1065,7 @@ final class WorldGlobalScopes {
                 || object.rotation().x() != 0
                 || object.rotation().y() != 0
                 || object.rotation().z() != 0) {
-            throw profile();
+            throw profile("the interior WMO is placed with a transform, doodad set or name set");
         }
         String body = sha(bytes, 0, bytes.length);
         String digest = scopeDigest(map, key, body);
@@ -1231,12 +1244,44 @@ final class WorldGlobalScopes {
         }
     }
 
+    private static WorldTerrainStreaming.Refusal oversize(AssetKind kind, int limit) {
+        return WorldSourceRefusals.at(
+                WorldSourceRefusals.Site.SOURCE_INPUT,
+                "a WMO "
+                        + kind.name().toLowerCase(java.util.Locale.ROOT)
+                        + " file is empty or larger than "
+                        + (limit >> 10)
+                        + " KiB");
+    }
+
+    private static final String WDT_UNAVAILABLE =
+            "the map's WDT file is not readable from local client data (missing, encrypted or"
+                    + " too large)";
+
+    private FileTypes.BuildFile wdtStat(long id, Cancellation token) {
+        try {
+            return stat(id, token, WorldSourceRefusals.Site.SOURCE_INPUT);
+        } catch (WorldTerrainStreaming.Refusal missing) {
+            throw wdtUnavailable();
+        }
+    }
+
+    private static WorldTerrainStreaming.Refusal wdtUnavailable() {
+        return WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT, WDT_UNAVAILABLE);
+    }
+
     private static WorldTerrainStreaming.Refusal unavailable() {
         return WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
     }
 
     private static WorldTerrainStreaming.Refusal profile() {
         return WorldSourceRefusals.at(WorldSourceRefusals.Site.GLOBAL_PROFILE);
+    }
+
+    private static WorldTerrainStreaming.Refusal profile(String detail) {
+        return detail == null
+                ? profile()
+                : WorldSourceRefusals.at(WorldSourceRefusals.Site.GLOBAL_PROFILE, detail);
     }
 
     private static WorldTerrainStreaming.Refusal changed() {

@@ -1,12 +1,27 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.GlobalInteriorLimits;
+
 /** Pure standalone structural bounds. No file, source or native ownership is granted. */
 public final class WorldGlobalLayout {
-    public static final int HEADER_BYTES = 1024, MAX_FILE_BYTES = 6 << 20;
-    public static final int MAX_ENCODED_BYTES = 5_577_600;
-    public static final int PROFILE = 1, OMISSIONS = 0x1ff;
+    public static final int HEADER_BYTES = 1024;
+    public static final int PROFILE = 2, OMISSIONS = 0x1ff;
     public static final int SOURCE_BYTES = 64, MATERIAL_BYTES = 64, GROUP_BYTES = 64;
-    public static final int BATCH_BYTES = 16, IMAGE_BYTES = 64;
+    public static final int BATCH_BYTES = 16, IMAGE_BYTES = 96, INDEX_BYTES = 4;
+
+    /** The largest file the profile bounds allow (about 48 MiB); real interiors are far smaller. */
+    public static final int MAX_ENCODED_BYTES =
+            HEADER_BYTES
+                    + GlobalInteriorLimits.SOURCES * SOURCE_BYTES
+                    + GlobalInteriorLimits.MATERIALS * MATERIAL_BYTES
+                    + GlobalInteriorLimits.GROUPS * GROUP_BYTES
+                    + GlobalInteriorLimits.BATCHES * BATCH_BYTES
+                    + GlobalInteriorLimits.IMAGES * IMAGE_BYTES
+                    + GlobalInteriorLimits.VERTICES * 20
+                    + GlobalInteriorLimits.INDICES * INDEX_BYTES
+                    + GlobalInteriorLimits.PIXELS * 4;
+
+    public static final int MAX_FILE_BYTES = 64 << 20;
 
     private WorldGlobalLayout() {}
 
@@ -44,26 +59,27 @@ public final class WorldGlobalLayout {
         public Counts {
             require(
                     materials >= 1
-                            && materials <= 24
+                            && materials <= GlobalInteriorLimits.MATERIALS
                             && groups >= 1
-                            && groups <= 8
+                            && groups <= GlobalInteriorLimits.GROUPS
                             && batches >= groups
-                            && batches <= 64
+                            && batches <= GlobalInteriorLimits.BATCHES
                             && images >= 1
-                            && images <= 18
+                            && images <= GlobalInteriorLimits.IMAGES
                             && images <= materials
                             && vertices >= groups
-                            && vertices <= 32768
-                            && vertices <= groups * 16384
+                            && vertices <= GlobalInteriorLimits.VERTICES
+                            && (long) vertices
+                                    <= (long) groups * GlobalInteriorLimits.GROUP_VERTICES
                             && indices >= groups * 3
-                            && indices <= 98304
-                            && indices <= groups * 49152
+                            && indices <= GlobalInteriorLimits.INDICES
+                            && (long) indices <= (long) groups * GlobalInteriorLimits.GROUP_INDICES
                             && indices % 3 == 0
                             && drawnTriangles >= batches
                             && drawnTriangles <= indices / 3
                             && pixels >= images
-                            && pixels <= 1179648
-                            && pixels <= images * 65536);
+                            && pixels <= GlobalInteriorLimits.PIXELS
+                            && (long) pixels <= (long) images * GlobalInteriorLimits.IMAGE_PIXELS);
         }
 
         public int sources() {
@@ -98,7 +114,7 @@ public final class WorldGlobalLayout {
         int image = batch + c.batches() * BATCH_BYTES;
         int vertices = image + c.images() * IMAGE_BYTES;
         int indices = vertices + c.vertices() * 20;
-        int rgba = indices + c.indices() * 2;
+        int rgba = indices + c.indices() * INDEX_BYTES;
         int actual = rgba + c.pixels() * 4;
         require(actual <= MAX_ENCODED_BYTES && actual <= MAX_FILE_BYTES);
         return new Offsets(source, material, group, batch, image, vertices, indices, rgba, actual);

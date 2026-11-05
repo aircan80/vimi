@@ -200,6 +200,24 @@ class WorldGlobalScopesTest {
     }
 
     @Test
+    void terrainMapRefusalSaysItIsATerrainMapNotAnInterior() throws Exception {
+        try (var f = new Fixture()) {
+            var raw = f.files.sources.get(1L);
+            // Terrain-only: no global WMO flag, one active MAIN tile, no MODF.
+            var terrain = java.util.Arrays.copyOf(raw, MODF - 8);
+            ByteBuffer.wrap(terrain).order(ByteOrder.LITTLE_ENDIAN).putInt(20, 0).putInt(MAIN, 1);
+            f.files.sources.put(1L, terrain);
+            var failure = assertThrows(WorldTerrainStreaming.Refusal.class, f::create);
+            assertEquals("GLOBAL_PROFILE", failure.site());
+            assertEquals(
+                    java.util.Optional.of(
+                            "this instance is a terrain (ADT) map, not a single interior WMO;"
+                                    + " it can only be explored as a map"),
+                    failure.detail());
+        }
+    }
+
+    @Test
     void onlyExactZeroGlobalProfileIsAdmittedAndMalformedChunksRemainFatal() throws Exception {
         for (int field :
                 new int[] {MODF, MODF + 8, MODF + 20, MODF + 56, MODF + 58, MODF + 60, MODF + 62}) {
@@ -419,9 +437,9 @@ class WorldGlobalScopesTest {
     void knownOversizedInputRefusesBeforeOpenAndAllocation() throws Exception {
         try (var f = new Fixture()) {
             f.files.sources.put(1L, new byte[(1 << 20) + 1]);
-            assertEquals(
-                    "SOURCE_INPUT",
-                    assertThrows(WorldTerrainStreaming.Refusal.class, f::create).site());
+            var refused = assertThrows(WorldTerrainStreaming.Refusal.class, f::create);
+            assertEquals("SOURCE_INPUT", refused.site());
+            assertTrue(refused.detail().orElseThrow().startsWith("the map's WDT file"));
             assertEquals(0, f.files.totalOpens());
         }
     }

@@ -12,6 +12,7 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.files.FileReadStream;
 import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.images.Blp2Types;
+import com.vibeminer.rendering.world.GlobalInteriorLimits;
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -341,13 +342,15 @@ class WorldGlobalAssetFactoryTest {
 
     @Test
     void materialAndCrossRoleAncestryFailuresNeverIssueUnauthorizedDescendantIo() throws Exception {
-        for (int variant = 0; variant < 4; variant++) {
+        try (var f = new Fixture()) {
+            ByteBuffer.wrap(f.files.sources.get(123L))
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(96, 1); // MOMT shader: recorded, drawn as unlit opaque diffuse
+            assertEquals(1L, f.inspect().root().materials().getFirst().rawWords().get(1));
+        }
+        for (int variant = 1; variant < 4; variant++) {
             try (var f = new Fixture()) {
                 switch (variant) {
-                    case 0 ->
-                            ByteBuffer.wrap(f.files.sources.get(123L))
-                                    .order(ByteOrder.LITTLE_ENDIAN)
-                                    .putInt(96, 1); // MOMT shader
                     case 1 -> f.files.sources.put(123L, root(new long[] {201, 201}, 301));
                     case 2 -> f.files.sources.put(123L, root(new long[] {201}, 201));
                     case 3 -> f.files.sources.put(123L, root(new long[] {201}, 1));
@@ -377,7 +380,7 @@ class WorldGlobalAssetFactoryTest {
     }
 
     @Test
-    void bc1OpaqueStillWorksButTransparentBc1AndUnknownOpaqueMaterialDecline() throws Exception {
+    void bc1DrawsOpaqueWhetherOrNotItCarriesAlpha() throws Exception {
         try (var f = new Fixture()) {
             f.files.sources.put(301L, image(false, false));
             var im = f.inspect().images().getFirst();
@@ -386,10 +389,12 @@ class WorldGlobalAssetFactoryTest {
             assertEquals(im.sourceRgbaSha256(), im.opaqueRgbaSha256());
         }
         try (var f = new Fixture()) {
+            // One-bit alpha is recorded, then dropped: the profile draws every texel opaque.
             f.files.sources.put(301L, image(false, true));
-            assertEquals(
-                    "GLOBAL_ASSET_PROFILE",
-                    assertThrows(WorldTerrainStreaming.Refusal.class, f::inspect).site());
+            var im = f.inspect().images().getFirst();
+            assertEquals(Blp2Types.Encoding.BC1, im.encoding());
+            assertTrue(im.nonopaque() > 0);
+            assertNotEquals(im.sourceRgbaSha256(), im.opaqueRgbaSha256());
         }
     }
 
@@ -525,7 +530,7 @@ class WorldGlobalAssetFactoryTest {
                                 }
                                 return new FileReadStream() {
                                     public long length() {
-                                        return (64 << 10) + 1;
+                                        return GlobalInteriorLimits.ROOT_BYTES + 1L;
                                     }
 
                                     public long position() {
@@ -1026,26 +1031,103 @@ class WorldGlobalAssetFactoryTest {
     }
 
     @Test
-    void narrowNumericGuardsDeclineOnlyPayloadWithoutChangingG1Inspection() throws Exception {
+    void outOfRangePositionsOrUvsSkipTheGroupAndAnEmptyInteriorIsRefused() throws Exception {
+        try (var f = new Fixture()) {
+            // Tiled texture coordinates far past 16 are ordinary and draw.
+            ByteBuffer.wrap(f.files.sources.get(201L))
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putFloat(184, 17);
+            assertEquals(3, f.inspect().vertices());
+            try (var asset = f.factory.createOwned(f.scope, SELECT, Cancellation.NONE)) {
+                assertEquals(3, asset.facts().vertices());
+            }
+            assertEquals(0, f.scopes.payloadCredits());
+        }
         for (boolean uv : List.of(false, true)) {
             try (var f = new Fixture()) {
                 var g = ByteBuffer.wrap(f.files.sources.get(201L)).order(ByteOrder.LITTLE_ENDIAN);
                 if (uv) {
-                    g.putFloat(184, 17);
+                    g.putFloat(184, GlobalInteriorLimits.UV * 2);
                 } else {
-                    g.putFloat(96, 5000);
-                    g.putFloat(44, 8192);
-                    ByteBuffer.wrap(f.files.sources.get(123L))
-                            .order(ByteOrder.LITTLE_ENDIAN)
-                            .putFloat(68, 8192);
+                    g.putFloat(96, GlobalInteriorLimits.POSITION + 1);
                 }
-                assertEquals(3, f.inspect().vertices());
+                // The only group is skipped, so nothing is left to draw: a bounded refusal.
+                var refused = assertThrows(WorldTerrainStreaming.Refusal.class, f::inspect);
+                assertEquals("GLOBAL_ASSET_PROFILE", refused.site());
+                assertEquals(
+                        java.util.Optional.of("none of the interior's WMO groups can be read"),
+                        refused.detail());
                 assertThrows(
                         WorldTerrainStreaming.Refusal.class,
                         () -> f.factory.createOwned(f.scope, SELECT, Cancellation.NONE));
                 assertEquals(0, f.scopes.payloadCredits());
             }
         }
+    }
+
+    @Test
+    void unreadableOrUnlistedGroupsAreSkippedWithTheirReasonAndTheRestDraws() throws Exception {
+        try (var f = new Fixture()) {
+            f.files.sources.put(123L, root(new long[] {201, 0, 202, 203}, 301));
+            f.files.sources.put(202L, group(true, false)); // overlapping batches
+            f.files.sources.put(203L, new byte[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12});
+            var m = f.inspect();
+            assertEquals(1, m.groups().size());
+            assertEquals(0, m.groups().getFirst().ordinal(), "drawn ordinals stay dense");
+            assertEquals(3, m.skippedGroups());
+            assertEquals(
+                    java.util.Map.of(
+                            "no group file is listed", 1,
+                            "overlapping batches", 1,
+                            "unsupported group layout", 1),
+                    stripParserDetail(m.skippedReasons()));
+            try (var asset = f.factory.createOwned(f.scope, SELECT, Cancellation.NONE)) {
+                assertEquals(3, asset.facts().vertices());
+            }
+            assertEquals(0, f.scopes.payloadCredits());
+        }
+    }
+
+    @Test
+    void manyGroupsMaterialsAndImagesBeyondTheFirstProfileQualify() throws Exception {
+        try (var f = new Fixture()) {
+            int groupCount = 40, imageCount = 30;
+            long[] groups = new long[groupCount], images = new long[imageCount];
+            for (int i = 0; i < groupCount; i++) {
+                groups[i] = 1000 + i;
+                var bytes = group(false, false);
+                // Each group draws material i % imageCount (MOBA material byte at batch +23).
+                int moba = bytes.length - 24;
+                bytes[moba + 23] = (byte) (i % imageCount);
+                f.files.sources.put(groups[i], bytes);
+            }
+            for (int i = 0; i < imageCount; i++) {
+                images[i] = 2000 + i;
+                f.files.sources.put(images[i], image(i % 2 == 0, false));
+            }
+            f.files.sources.put(123L, root(groups, images));
+            var m = f.inspect();
+            assertEquals(groupCount, m.groups().size());
+            assertEquals(imageCount, m.images().size());
+            assertEquals(groupCount * 3, m.vertices());
+            assertEquals(groupCount, m.batches());
+            try (var asset = f.factory.createOwned(f.scope, SELECT, Cancellation.NONE)) {
+                asset.withBorrow(
+                        b -> {
+                            assertEquals(groupCount, b.spans().size());
+                            assertEquals(imageCount - 1, b.spans().get(imageCount - 1).material());
+                            assertEquals(3 * (groupCount - 1), b.index(6 * (groupCount - 1)));
+                            return null;
+                        });
+            }
+        }
+    }
+
+    private static java.util.Map<String, Integer> stripParserDetail(
+            java.util.Map<String, Integer> reasons) {
+        var result = new java.util.TreeMap<String, Integer>();
+        reasons.forEach((k, v) -> result.merge(k.replaceAll(" \\(.*\\)$", ""), v, Integer::sum));
+        return result;
     }
 
     private static byte[] largeGroup() {
@@ -1109,37 +1191,41 @@ class WorldGlobalAssetFactoryTest {
     }
 
     @Test
-    void maximumPrefixesAndImagesUseOnlyTheFixedMeshAndAdoptedImageArrays() throws Exception {
+    void fullGroupsGrowTheMeshArraysAndOnlyDrawnMaterialsReadImages() throws Exception {
         try (var f = new Fixture()) {
             long[] ids = new long[18];
             for (int i = 0; i < 18; i++) {
                 ids[i] = 301 + i;
                 f.files.sources.put(ids[i], largeOpaqueImage());
             }
-            f.files.sources.put(123L, root(new long[] {201, 202}, ids));
+            f.files.sources.put(123L, root(new long[] {201, 202, 203}, ids));
             f.files.sources.put(201L, largeGroup());
             f.files.sources.put(202L, largeGroup());
+            f.files.sources.put(203L, largeGroup());
             try (var asset = f.factory.createOwned(f.scope, SELECT, Cancellation.NONE)) {
                 asset.withBorrow(
                         b -> {
-                            assertEquals(32768, b.vertices());
-                            assertEquals(98304, b.indices());
-                            assertEquals(18, b.imageCount());
+                            assertEquals(49152, b.vertices());
+                            assertEquals(147456, b.indices());
+                            assertEquals(1, b.imageCount(), "only material 0 is drawn");
                             assertEquals(16384, b.index(49152));
-                            assertEquals(2, b.spans().size());
-                            assertEquals(49152, b.spans().get(1).firstIndex());
-                            for (int i = 0; i < 18; i++) {
-                                assertEquals(262144, b.imageBytes(i));
-                            }
+                            assertEquals(32768, b.index(98304));
+                            assertEquals(3, b.spans().size());
+                            assertEquals(98304, b.spans().get(2).firstIndex());
+                            assertEquals(262144, b.imageBytes(0));
                             return null;
                         });
                 var mesh = asset.getClass().getDeclaredField("mesh");
                 mesh.setAccessible(true);
                 var indices = asset.getClass().getDeclaredField("indices");
                 indices.setAccessible(true);
-                assertEquals(163840, ((float[]) mesh.get(asset)).length);
-                assertEquals(98304, ((int[]) indices.get(asset)).length);
-                assertEquals(1179648, asset.facts().pixels());
+                // Doubling from one full group: 1, 2, then 4 groups' worth.
+                assertEquals(4 * 16384 * 5, ((float[]) mesh.get(asset)).length);
+                assertEquals(4 * 49152, ((int[]) indices.get(asset)).length);
+                assertEquals(65536, asset.facts().pixels());
+            }
+            for (int i = 1; i < 18; i++) {
+                assertEquals(0, f.files.opens(301 + i), "unused material image " + i);
             }
             assertEquals(0, f.scopes.payloadCredits());
         }

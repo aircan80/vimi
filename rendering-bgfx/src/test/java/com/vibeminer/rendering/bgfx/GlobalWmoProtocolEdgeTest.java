@@ -105,7 +105,14 @@ class GlobalWmoProtocolEdgeTest {
             rejects(with(key, value + "0"));
         }
         for (String length :
-                List.of("0", "01", "1023", "-2048", "+2048", "5577601", "9999999999")) {
+                List.of(
+                        "0",
+                        "01",
+                        "1023",
+                        "-2048",
+                        "+2048",
+                        Integer.toString(WorldGlobalLayout.MAX_ENCODED_BYTES + 1),
+                        "9999999999")) {
             rejects(with("--global-length", length));
         }
         rejects(with("--global-frame-nonce", "0000000000000000"));
