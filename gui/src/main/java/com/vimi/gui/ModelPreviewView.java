@@ -692,8 +692,9 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
 
     private void updateGpu(long revision, int width, int height) {
         if (!viewportActive() || !gpuButton.isSelected() || gpuFailed || mesh == null) return;
-        // One renderer per scene: a static surface awaiting its appearance is drawn in software.
-        if (gpuDeferred()) return;
+        // One renderer per scene: a static surface awaiting its appearance is drawn in software
+        // until the appearance arrives. A renderer that already runs keeps receiving the view.
+        if (gpuDeferred() && !gpuRequested) return;
         if (!gpuRequested
                 || gpuMesh != mesh
                 || gpuAppearance != appearance

@@ -146,6 +146,14 @@ final class RaceAppearance {
         }
     }
 
+    /** Drops every remembered result; called once the workers have terminated. */
+    void forget() {
+        synchronized (remembered) {
+            remembered.clear();
+            rememberedBytes = 0;
+        }
+    }
+
     /** Remembered results, for tests. */
     int rememberedCount() {
         synchronized (remembered) {
@@ -199,6 +207,10 @@ final class RaceAppearance {
                 return prepareFailure(
                         issues, "Texture preparation is unavailable for this workspace.");
             }
+            if (!RaceAppearancePlan.reviewedPair(raceId, modelId)) {
+                // Refused before any read, so an unreviewed race's GPU preview is not held back.
+                return prepareFailure(issues, RaceAppearancePlan.UNREVIEWED_PAIR);
+            }
             var known = remembered(request, token);
             if (known != null) {
                 return new Prepared(null, null, null, issues, known, request, null);
@@ -207,6 +219,7 @@ final class RaceAppearance {
                     new RaceCustomization(media)
                             .select(raceId, classId, modelId, token, issues, requested);
             var base = media.preview(raceId, classId, modelId, token, selection);
+            boolean unread = media.unreadParts();
             base.issues().stream()
                     .filter(issue -> !issue.startsWith("Static native rest positions"))
                     .filter(issue -> requested.isEmpty() || !issue.startsWith("Sample look uses"))
@@ -219,6 +232,9 @@ final class RaceAppearance {
                 return prepareFailure(issues, base.message());
             }
             var plan = plans.build(raceId, classId, base.variant(), token, issues, selection);
+            // A plan or sample that skipped a source only because it could not be read now is
+            // shown but not remembered: without recorded sources the next request prepares again.
+            unread |= plans.unsettled();
             base =
                     new RaceMediaTypes.Preview(
                             base.state(),
@@ -277,7 +293,7 @@ final class RaceAppearance {
                         .append(source.file() == null ? "" : source.file().contentKey());
             }
             var key = GeneratedKey.hash(identity.toString().getBytes(StandardCharsets.UTF_8));
-            return new Prepared(base, plan, key, issues, null, request, sources);
+            return new Prepared(base, plan, key, issues, null, request, unread ? null : sources);
         } catch (RacesService.Projection unavailable) {
             return prepareFailure(issues, unavailable.getMessage());
         }

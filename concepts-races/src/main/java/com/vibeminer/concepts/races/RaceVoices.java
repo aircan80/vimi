@@ -67,6 +67,15 @@ final class RaceVoices {
         this.generated = generated;
     }
 
+    /** Drops every remembered catalog; called once the workers have terminated. */
+    void forget() {
+        catalogs.clear();
+    }
+
+    int retained() {
+        return catalogs.size();
+    }
+
     RaceVoiceTypes.Catalog catalog(long raceId, long classId, int sex, Cancellation token) {
         String key = raceId + ":" + classId + ":" + sex;
         var hit = catalogs.get(key);

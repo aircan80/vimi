@@ -54,6 +54,27 @@ final class RaceMedia {
      */
     private final Map<String, KnownPreview> previews = lru(MAX_CACHED_PREVIEWS);
 
+    /**
+     * Whether the last derived preview's visible parts omitted customization choices only because a
+     * table page could not be read now; such a preview is not remembered.
+     */
+    private boolean unreadParts;
+
+    /** Drops every remembered result; called once the workers have terminated. */
+    synchronized void forget() {
+        cached.clear();
+        variantLists.clear();
+        previews.clear();
+    }
+
+    synchronized int retained() {
+        return cached.size() + variantLists.size() + previews.size();
+    }
+
+    boolean unreadParts() {
+        return unreadParts;
+    }
+
     /** Whether a row lookup of the current variant assessment had an UNKNOWN outcome. */
     private boolean unknownRows;
 
@@ -211,6 +232,7 @@ final class RaceMedia {
             long chrModelId,
             Cancellation token,
             RaceCustomization.Selection selection) {
+        unreadParts = false;
         if (selection != null) {
             selection.requireContext(this, raceId, classId, chrModelId);
         }
@@ -291,7 +313,7 @@ final class RaceMedia {
         return new KnownPreview(
                 new RaceMediaTypes.Preview(
                         RaceTypes.State.PARTIAL, variant, mesh, parts, issues, restored, null),
-                content);
+                unreadParts ? null : content);
     }
 
     private Set<Integer> visibleParts(
@@ -373,6 +395,7 @@ final class RaceMedia {
                     issues,
                     "Sample look uses the first known eligible recorded customization choice; unknown unlock requirements are omitted.");
         } catch (RacesService.Projection unavailable) {
+            unreadParts = unavailable instanceof RacesService.Unreadable;
             issue(issues, "Customization selection unavailable: " + unavailable.getMessage());
         }
         return Set.copyOf(visible);

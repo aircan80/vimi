@@ -29,8 +29,10 @@ previews (while the model file keeps its content key) and complete composed
 appearances (while the model and every layer file keep the content keys that named
 their generated derivative; at most 6 results and 160 MiB of texels). Idle results
 follow the rules above; a reassessment reuses the model read and its Stand facts.
-A result whose sources could not be read is prepared again on the next request, and
-a workspace or source change publishes a new handle with empty caches.
+A result whose sources could not be read, including a plan or sample that skipped
+an UNKNOWN row or an unreadable page, is prepared again on the next request.
+Unreviewed race/model pairs are refused before any read. A workspace or source
+change publishes a new handle with empty caches, and closing a handle drops them.
 
 ```sh
 ./gradlew :concepts-races:check

@@ -67,6 +67,17 @@ final class RaceIdleAnimations {
 
     private final Map<String, ModelSources> sources = RaceMedia.lru(MAX_CACHED_SOURCES);
 
+    /** Drops every cached result and model source; called once the workers have terminated. */
+    void forget() {
+        cached.clear();
+        sources.clear();
+    }
+
+    /** Cached results and model sources, for tests. */
+    int cachedCount() {
+        return cached.size() + sources.size();
+    }
+
     RaceIdleAnimations(RaceMedia media, BuildFiles files) {
         this.media = media;
         this.files = files;

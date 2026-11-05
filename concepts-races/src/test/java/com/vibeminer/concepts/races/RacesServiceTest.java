@@ -1168,17 +1168,17 @@ final class RacesServiceTest {
                         files,
                         new com.vibeminer.generated.MemoryGeneratedStore());
         try {
-            String request = RaceAppearance.request(1, 2, 10, Map.of());
+            String request = RaceAppearance.request(1, 2, 1, Map.of());
             var result = composed(false);
             appearance.remember(
                     prepared(request, Map.of(1234L, "1".repeat(32), 500L, "2".repeat(32))), result);
-            var hit = appearance.prepare(1, 2, 10, Cancellation.NONE);
+            var hit = appearance.prepare(1, 2, 1, Cancellation.NONE);
             assertTrue(hit.finished() == result, "A repeated request is answered at once");
             // Picks name another request; the remembered default stays separate.
-            assertTrue(RaceAppearance.request(1, 2, 10, Map.of(30L, 7L)).endsWith("{30=7}"));
+            assertTrue(RaceAppearance.request(1, 2, 1, Map.of(30L, 7L)).endsWith("{30=7}"));
             // A layer with new content is not answered from memory, and is forgotten.
             files.add(500, "3".repeat(32), new byte[] {3});
-            var changed = appearance.prepare(1, 2, 10, Cancellation.NONE);
+            var changed = appearance.prepare(1, 2, 1, Cancellation.NONE);
             assertTrue(changed.finished() != result);
             assertEquals(0, appearance.rememberedCount());
             // Results without recorded sources, and failures, are never remembered.
@@ -1206,7 +1206,7 @@ final class RacesServiceTest {
                 appearance.remember(prepared("r" + i, sources), composed(false));
             }
             assertEquals(RaceAppearance.MAX_REMEMBERED, appearance.rememberedCount());
-            // At most five of the largest appearances fit the byte bound.
+            // At most four of the largest appearances (32 MiB of texels each) fit the byte bound.
             long large = RaceAppearance.bytes(composed(true).appearance());
             assertEquals(4, RaceAppearance.MAX_REMEMBERED_BYTES / large);
             for (int i = 0; i < RaceAppearance.MAX_REMEMBERED; i++) {
@@ -1217,5 +1217,131 @@ final class RacesServiceTest {
             service.closeAsync().join();
             tables.closeAsync().join();
         }
+    }
+
+    /** A stored composed derivative in the layout {@code RaceAppearance} saves and restores. */
+    private static void storeDerivative(
+            com.vibeminer.generated.GeneratedStore store,
+            com.vibeminer.generated.GeneratedKey key,
+            long model,
+            long skin,
+            String skinContent,
+            com.vibeminer.rendering.models.MeshAppearance appearance) {
+        byte[] payload = com.vibeminer.rendering.models.MeshAppearanceCodec.encode(appearance);
+        var bytes =
+                java.nio.ByteBuffer.allocate(40 + payload.length)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                        .putInt(0x56414331)
+                        .putLong(model)
+                        .putLong(skin)
+                        .put(java.util.HexFormat.of().parseHex(skinContent))
+                        .putInt(payload.length)
+                        .put(payload);
+        store.put(List.of(new com.vibeminer.generated.GeneratedTypes.Put(key, bytes.array())))
+                .join();
+    }
+
+    @Test
+    void renderRemembersRestoredAppearancesOnlyWhenTheirSourcesAreSettled() {
+        var tables = idleTables();
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), new byte[] {1})
+                        .add(900, "2".repeat(32), new byte[] {2});
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var service = new RacesService(tables);
+        var appearance =
+                new RaceAppearance(
+                        service,
+                        new RaceMedia(service, tables, files, generated),
+                        tables,
+                        files,
+                        generated);
+        try {
+            var stored = composed(false).appearance();
+            var key =
+                    com.vibeminer.generated.GeneratedKey.hash(
+                            "authored-derivative"
+                                    .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            storeDerivative(generated, key, 1234, 900, "2".repeat(32), stored);
+            var base =
+                    new RaceMediaTypes.Preview(
+                            RaceTypes.State.PARTIAL,
+                            new RaceMediaTypes.Variant(1, 0, 1, 1, 1234),
+                            stored.mesh(),
+                            Set.of(0),
+                            List.of(),
+                            true,
+                            null);
+            var plan =
+                    new RaceAppearancePlan.Plan(
+                            List.of(new RaceAppearancePlan.Canvas(1, 2, 2)),
+                            List.of(
+                                    new RaceAppearancePlan.Layer(
+                                            1, 1234, 0, 0, 2, 2, 1, 0, "Authored base")),
+                            List.of(),
+                            RaceAppearanceProfiles.Profile.LEGACY);
+            String request = RaceAppearance.request(1, 0, 1, Map.of());
+            // A plan that skipped a source it could not read now carries no sources.
+            var unsettled =
+                    new RaceAppearance.Prepared(base, plan, key, List.of(), null, request, null);
+            var shown = appearance.render(unsettled, Cancellation.NONE);
+            assertTrue(shown.restored(), shown.message());
+            assertEquals(0, appearance.rememberedCount());
+            // A settled plan's restored derivative is remembered and answers the next prepare.
+            var settled =
+                    new RaceAppearance.Prepared(
+                            base,
+                            plan,
+                            key,
+                            List.of(),
+                            null,
+                            request,
+                            Map.of(1234L, "1".repeat(32)));
+            var restored = appearance.render(settled, Cancellation.NONE);
+            assertTrue(restored.restored(), restored.message());
+            assertEquals(1, appearance.rememberedCount());
+            assertTrue(appearance.prepare(1, 0, 1, Cancellation.NONE).finished() == restored);
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void unreviewedPairsAreRefusedBeforeAnyRead() {
+        var tables = idleTables();
+        var files = new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS");
+        var service =
+                new RacesService(tables, files, new com.vibeminer.generated.MemoryGeneratedStore());
+        try {
+            var refused = service.appearance(95, 11, 218, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.UNAVAILABLE, refused.state());
+            assertEquals(RaceAppearancePlan.UNREVIEWED_PAIR, refused.message());
+            assertEquals(0, files.stats.get() + files.opens.get());
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void closingTheHandleDropsEveryRememberedResult() throws Exception {
+        var tables = idleTables();
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), modelWithStand(0))
+                        .add(900, "2".repeat(32), golden("authored-274.skin"));
+        var service = new RacesService(tables, files, null);
+        try {
+            assertTrue(service.preview(1, 0, 10, Cancellation.NONE).join().mesh() != null);
+            assertEquals(
+                    RaceTypes.State.READY, service.idle(1, 10, Cancellation.NONE).join().state());
+            assertTrue(service.retained() > 0);
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+        assertEquals(0, service.retained());
     }
 }
