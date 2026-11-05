@@ -32,9 +32,14 @@ Wholly unreadable or unsupported tables retain explicit failure codes.
 Optional spell names/raw descriptions use SpellName/Spell lookups, including
 readable rows in PARTIAL tables. Unreadable individual rows use explicit fallback
 names/descriptions without hiding other readable spell text. SpellMisc is
-streamed with a row bound, retaining only requested spell IDs; a unique
-DifficultyID=0 entry supplies SpellIconFileDataID. Missing/ambiguous media metadata
-never invents an image or blocks tree structure. Raw descriptions may contain WoW
+streamed once per handle with a row bound into a compact spell-to-icon index
+shared by every class; identical duplicate rows collapse and one distinct
+DifficultyID=0 icon supplies SpellIconFileDataID. Each talent without an icon
+carries `iconIssue`, the reported cause. Missing/ambiguous media metadata never
+invents an image or blocks tree structure. A failed optional table (names,
+descriptions, icons, legacy tree names) is not remembered and is read again on
+the next request; only a SpellMisc table over the row bound is a lasting,
+explained failure. Raw descriptions may contain WoW
 formatting/substitution tokens; this component does not evaluate them as tooltip
 numbers. TalentTab's background descriptor is retained but the UI uses a neutral
 fallback until a real build asset is resolved.
