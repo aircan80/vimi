@@ -8,8 +8,17 @@ import java.util.concurrent.CompletableFuture;
 
 /** Small application-arbiter adapter; readiness and actual ownership drain stay separate. */
 final class WorldStreamGpuOwner {
-    /** BASIC_EXTERIOR_V1 outdoor buildings; {@code -Dvimi.world.exteriors=false} disables them. */
-    static final boolean EXTERIORS = !"false".equals(System.getProperty("vimi.world.exteriors"));
+    /**
+     * BASIC_EXTERIOR_V1 outdoor buildings are opt-in with {@code -Dvimi.world.exteriors=true}.
+     * They stay off by default because a tile's terrain OFFER still waits for its object
+     * preparation (0.4 to 21 s per tile on a cold cache), which is not acceptable as a default.
+     */
+    static final boolean EXTERIORS = exteriorsEnabled(System.getProperty("vimi.world.exteriors"));
+
+    /** Only an explicit {@code true} selects the exterior session profile. */
+    static boolean exteriorsEnabled(String property) {
+        return Boolean.parseBoolean(property);
+    }
 
     private final Object owner = new Object();
     private final GpuPreviewService service;

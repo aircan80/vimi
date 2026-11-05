@@ -91,6 +91,12 @@ final class WorldStreamSourceBridge {
         String site() { return site; }
     }
 
+    /** The exterior object source operation of one producer; returns null for terrain only. */
+    @FunctionalInterface
+    interface ExteriorPreparer {
+        WorldStreamTileWriter.Exterior prepare(Cancellation cancellation);
+    }
+
     /** Single-use producer. Close retires an untaken base; take only after transport success. */
     static final class Producer implements WorldStreamTransport.PacketProducer, AutoCloseable {
         private final WorldTerrainStreaming source;
@@ -104,6 +110,7 @@ final class WorldStreamSourceBridge {
         private volatile String waterNote = "", exteriorNote = "";
         private volatile boolean exteriorFailed;
         private final boolean exteriors;
+        private final ExteriorPreparer exteriorPreparer;
 
         Producer(WorldTerrainStreaming source, WorldTerrainStreaming.Scope scope,
                 WorldFormats.Tile tile, BooleanSupplier latest) {
@@ -123,7 +130,15 @@ final class WorldStreamSourceBridge {
          */
         Producer(WorldTerrainStreaming source, WorldWaterPreview water, boolean exteriors,
                 WorldTerrainStreaming.Scope scope, WorldFormats.Tile tile, BooleanSupplier latest) {
+            this(source, water, exteriors, scope, tile, latest, null);
+        }
+
+        /** Tests replace the exterior source operation; {@code null} keeps the actual one. */
+        Producer(WorldTerrainStreaming source, WorldWaterPreview water, boolean exteriors,
+                WorldTerrainStreaming.Scope scope, WorldFormats.Tile tile, BooleanSupplier latest,
+                ExteriorPreparer exteriorPreparer) {
             this.exteriors = exteriors;
+            this.exteriorPreparer = exteriorPreparer == null ? this::prepareExterior : exteriorPreparer;
             this.source = Objects.requireNonNull(source);
             this.water = water;
             this.scope = Objects.requireNonNull(scope);
@@ -161,7 +176,7 @@ final class WorldStreamSourceBridge {
             try {
                 check(stopping, cancellation);
                 if (exteriors && destination.exteriorObjects()) {
-                    var exterior = prepareExterior(cancellation);
+                    var exterior = exteriorPreparer.prepare(cancellation);
                     check(stopping, cancellation);
                     if (exterior != null) {
                         try {
