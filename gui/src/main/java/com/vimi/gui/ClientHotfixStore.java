@@ -285,7 +285,13 @@ final class ClientHotfixStore implements AutoCloseable {
         // mismatch changes nothing. Identical bytes keep the existing binding.
         var imported = importActual(to, original, true, token);
         if (!imported.changed() && toWatched) {
-            // The new build already uses this original; only the old watch may be left.
+            // The new build already uses these bytes. Make sure it watches the followed file,
+            // not another file with identical bytes; then only the old watch may be left.
+            Path watchedByTo = readWatch(watch(to)).original();
+            if (!watchedByTo.equals(imported.input())) {
+                probe.beforeFollowWatch();
+                writeWatch(to, imported.input(), imported.source(), token);
+            }
             return new FollowResult(imported.summary(), false, clearOldWatch(from, token));
         }
         try {
@@ -315,7 +321,8 @@ final class ClientHotfixStore implements AutoCloseable {
             deleteWatch(from, token);
             return true;
         } catch (IOException | RuntimeException failure) {
-            if (token.isCanceled() || canceled(failure)) throw new CancellationException();
+            // Includes cancellation: the new build is already bound and watched, so the move is
+            // reported as done with the old check left for Refresh sources to remove.
             return false;
         }
     }
@@ -1111,6 +1118,7 @@ final class ClientHotfixStore implements AutoCloseable {
             }
         }
         files.sort(null);
+        dropSupersededWatches(files, token);
         var results = new java.util.ArrayList<RefreshResult>();
         // On cancellation, stop and return what was already checked: those bindings are
         // durable, and the caller still reports the run as canceled from its own token.
@@ -1124,6 +1132,42 @@ final class ClientHotfixStore implements AutoCloseable {
             if (!(token.isCanceled() || canceled(failure))) throw failure;
         }
         return List.copyOf(results);
+    }
+
+    /**
+     * One original is checked for one build only. When a follow could not remove the old
+     * build's watch, the same file is watched twice; the newest build keeps it and the older
+     * watches are removed here (retried on every refresh), so each file reports and prompts once.
+     */
+    private void dropSupersededWatches(List<Path> files, Cancellation token) {
+        var newest = new java.util.HashMap<String, Watch>();
+        var read = new java.util.HashMap<Path, Watch>();
+        for (Path file : files) {
+            try {
+                var watch = readWatch(file);
+                read.put(file, watch);
+                String key = watch.scope().build().product() + "\n" + watch.scope().locale()
+                        + "\n" + watch.original();
+                var kept = newest.get(key);
+                if (kept == null || watch.scope().buildNumber() > kept.scope().buildNumber())
+                    newest.put(key, watch);
+            } catch (IOException | RuntimeException unreadable) {
+                // refreshOne reports and removes unreadable records.
+            }
+        }
+        for (var entry : read.entrySet()) {
+            var watch = entry.getValue();
+            String key = watch.scope().build().product() + "\n" + watch.scope().locale()
+                    + "\n" + watch.original();
+            if (newest.get(key) == watch) continue;
+            files.remove(entry.getKey());
+            try {
+                deleteWatch(watch.scope(), token);
+            } catch (IOException | RuntimeException failure) {
+                if (token.isCanceled() || canceled(failure)) throw new CancellationException();
+                // Not checked this time either way; retried on the next refresh.
+            }
+        }
     }
 
     private RefreshResult refreshOne(Path file, Cancellation token) throws IOException {

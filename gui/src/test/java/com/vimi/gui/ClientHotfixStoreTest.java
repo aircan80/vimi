@@ -43,9 +43,12 @@ public final class ClientHotfixStoreTest {
         confirmedBuildFollowMovesTheWatchAndKeepsTheOldImport();
         buildFollowMatchesOnePreparedBuildOrAsks();
         followFailuresAfterTheBindStateExactlyWhatChanged();
+        leftoverOldWatchIsRemovedByRefreshAndPromptsOncePerFile();
+        followRewatchesTheFollowedFileAndReportsCancellationTruthfully();
+        failedWatchRemovesABindingTheNewBuildDidNotHaveBefore();
         followPromptsAreOfferedOncePerMoveAndSession();
         System.out.println(
-                "CLIENT_HOTFIX_STORE_PASS authoredScenarios=12 noNetwork=true noGameAssets=true");
+                "CLIENT_HOTFIX_STORE_PASS authoredScenarios=15 noNetwork=true noGameAssets=true");
     }
 
     private static byte[] cache(int build, int value) {
@@ -762,7 +765,7 @@ public final class ClientHotfixStoreTest {
             var partial = store.follow(SCOPE, NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS);
             check(!partial.oldWatchCleared() && watched(store, NEXT) && watched(store, SCOPE),
                     "both builds are checked when the old watch stays");
-            check(ClientHotfixDetails.followOutcome(follow(), partial, null).contains("is still checked too"),
+            check(ClientHotfixDetails.followOutcome(follow(), partial, null).contains("leftover check"),
                     "the notice names the leftover check");
 
             // Applying the same move again only removes the leftover check.
@@ -776,6 +779,94 @@ public final class ClientHotfixStoreTest {
                             && !store.occupied(new ClientHotfixStore.Scope(NEXT.build(), "enUS", "1.60.1.70900"),
                                     Cancellation.NONE).get(3, TimeUnit.SECONDS),
                     "occupied reports an existing import or watch");
+        } finally {
+            remove(root);
+        }
+    }
+
+    private static void leftoverOldWatchIsRemovedByRefreshAndPromptsOncePerFile() throws Exception {
+        Path root = Files.createTempDirectory("client-hotfix-follow-leftover-").toRealPath();
+        Path original = root.resolve("DBCache.bin");
+        var unwatch = new AtomicBoolean(true);
+        rewrite(original, cache(70707, 1), 1);
+        try (var store = failing(root.resolve("store"), new AtomicBoolean(), unwatch, new AtomicBoolean())) {
+            store.importCache(SCOPE, original, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            rewrite(original, cache(70800, 2), 2);
+            var partial = store.follow(SCOPE, NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            check(!partial.oldWatchCleared() && watched(store, SCOPE) && watched(store, NEXT),
+                    "the old build's watch was left behind");
+            unwatch.set(false);
+            // The same file is watched twice: only the newest build reports, the leftover goes.
+            var results = refresh(store);
+            check(results.size() == 1 && results.getFirst().scope().equals(NEXT)
+                            && results.getFirst().outcome() == ClientHotfixStore.RefreshOutcome.UNCHANGED,
+                    "one result per file, for the build it now belongs to: " + results);
+            check(!watched(store, SCOPE) && watched(store, NEXT), "refresh removed the leftover watch");
+            // The client moves on to N+1: exactly one prompt-worthy result for the file.
+            rewrite(original, cache(70900, 3), 3);
+            results = refresh(store);
+            check(results.size() == 1 && results.getFirst().scope().equals(NEXT)
+                            && results.getFirst().outcome() == ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED,
+                    "one build change for one file");
+        } finally {
+            remove(root);
+        }
+    }
+
+    private static void followRewatchesTheFollowedFileAndReportsCancellationTruthfully() throws Exception {
+        Path root = Files.createTempDirectory("client-hotfix-follow-rewatch-").toRealPath();
+        Path followed = root.resolve("DBCache.bin"), twin = root.resolve("Twin.bin");
+        var unwatch = new AtomicBoolean();
+        rewrite(followed, cache(70707, 1), 1);
+        rewrite(twin, cache(70800, 2), 2);
+        try (var store = new ClientHotfixStore(root.resolve("store"), new ClientHotfixStore.Probe() {
+            @Override
+            public void beforeFollowUnwatch() {
+                if (unwatch.get()) throw new java.util.concurrent.CancellationException("authored close");
+            }
+        })) {
+            store.importCache(SCOPE, followed, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            // N already watches a different file with identical bytes.
+            store.importCache(NEXT, twin, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            rewrite(followed, cache(70800, 2), 3);
+            unwatch.set(true);
+            // Cancelled while removing the old watch: N is bound and watched, and the result says so.
+            var result = store.follow(SCOPE, NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            check(!result.oldWatchCleared(), "the old watch removal did not complete");
+            String text = ClientHotfixDetails.followOutcome(follow(), result, null);
+            check(text != null && text.contains("now uses the cache") && !text.contains("Nothing changed"),
+                    "the notice states N is bound: " + text);
+            unwatch.set(false);
+            // The followed file, not the twin, is what N now checks.
+            rewrite(twin, cache(70800, 7), 4);
+            rewrite(followed, cache(70800, 8), 5);
+            var results = refresh(store);
+            check(results.size() == 1 && results.getFirst().scope().equals(NEXT)
+                            && results.getFirst().outcome() == ClientHotfixStore.RefreshOutcome.UPDATED
+                            && boundPayload(store, NEXT)[0] == 8,
+                    "N checks the followed file: " + results);
+            check(!watched(store, SCOPE), "the leftover watch is gone after refresh");
+        } finally {
+            remove(root);
+        }
+    }
+
+    private static void failedWatchRemovesABindingTheNewBuildDidNotHaveBefore() throws Exception {
+        Path root = Files.createTempDirectory("client-hotfix-follow-nobinding-").toRealPath();
+        Path original = root.resolve("DBCache.bin");
+        rewrite(original, cache(70707, 1), 1);
+        try (var store = failing(root.resolve("store"), new AtomicBoolean(true), new AtomicBoolean(),
+                new AtomicBoolean())) {
+            store.importCache(SCOPE, original, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            rewrite(original, cache(70800, 2), 2);
+            check(!store.occupied(NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS), "N starts empty");
+            var failure = fails(store.follow(SCOPE, NEXT, Cancellation.NONE));
+            check(ClientHotfixDetails.followOutcome(follow(), null, failure).contains("Nothing changed"),
+                    "nothing changed");
+            check(!store.occupied(NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS)
+                            && store.open(NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS) == null,
+                    "the binding made for N was removed again");
+            check(watched(store, SCOPE), "the old build keeps its watch");
         } finally {
             remove(root);
         }

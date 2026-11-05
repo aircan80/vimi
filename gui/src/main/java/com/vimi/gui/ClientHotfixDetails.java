@@ -135,7 +135,7 @@ final class ClientHotfixDetails {
         if (result != null) {
             return result.oldWatchCleared() ? null
                     : "Build " + n + " now uses the cache and is checked on Refresh sources. Build " + m
-                            + " is still checked too; applying again removes that check.";
+                            + " still has a leftover check; the next Refresh sources removes it.";
         }
         if (incomplete(error) != null)
             return "Build " + n + " now uses the cache, but it is not checked on Refresh sources. Import it"
