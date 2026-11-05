@@ -1288,9 +1288,11 @@ class WorldExteriorObjectsTest {
                         new Modd(0, 0, 0, 0, new double[] {0, 0, h, h}, 0.5f), // 90 deg about z
                         new Modd(1, 0, 0, 0, new double[] {0, 0, 0, 1}, 1), // MODI entry 0
                         new Modd(5, 0, 0, 0, new double[] {0, 0, 0, 1}, 1), // outside MODI
-                        new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 2}, 1)); // not unit
+                        new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 2}, 1), // not unit
+                        new Modd(0, 0, 0, 0, new double[] {h, 0, 0, h}, 1), // pitched: tilted
+                        new Modd(0x02000000, 0, 0, 0, new double[] {0, 0, 0, 1}, 1)); // flag 0x2
         var chunks =
-                doodadChunks(new int[][] {{0, 2}, {2, 3}, {4, 1}}, new long[] {MODEL, 0}, defs);
+                doodadChunks(new int[][] {{0, 2}, {2, 5}, {4, 1}}, new long[] {MODEL, 0}, defs);
         var building = new Modf(ROOT, 77, 0xc, 100, 20, 300, 0, 90, 0, 2048);
         var other = new Modf(ROOT, 78, 0x8, 50, 5, 60, 0, 180, 0, 1024);
         try (var f = new Fixture(List.of())) {
@@ -1307,7 +1309,8 @@ class WorldExteriorObjectsTest {
                                 Map.entry(WorldExteriorObjects.Count.BATCH_DRAWN, 1),
                                 Map.entry(WorldExteriorObjects.Count.IMAGE_DECODED, 1),
                                 Map.entry(WorldExteriorObjects.Count.SET_DOODAD_DRAWN, 4),
-                                Map.entry(WorldExteriorObjects.Count.SET_DOODAD_UNSUPPORTED, 3),
+                                Map.entry(WorldExteriorObjects.Count.SET_DOODAD_UNSUPPORTED, 4),
+                                Map.entry(WorldExteriorObjects.Count.SET_DOODAD_TILTED, 1),
                                 Map.entry(WorldExteriorObjects.Count.SET_UNSUPPORTED, 1),
                                 Map.entry(WorldExteriorObjects.Count.MODEL_DRAWN, 1),
                                 Map.entry(WorldExteriorObjects.Count.MODEL_BATCH_DRAWN, 1),
@@ -1491,6 +1494,67 @@ class WorldExteriorObjectsTest {
                 assertEquals(7, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
                 assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
                 assertEquals(16_384 * 6 + 3, set.vertices());
+            }
+        }
+    }
+
+    @Test
+    void cutoutRangesAreDroppedBeforeAnOpaqueBuildingIsCappedAtTheDrawBudget() {
+        // A group of 64 opaque batches and a group with one cutout batch: 64 placements cost
+        // exactly the 4,096-draw budget under the opaque-only profile, 4,160 with the cutout.
+        var batches = new ArrayList<Batch>();
+        for (int b = 0; b < 64; b++) {
+            batches.add(new Batch(b * 3, 3, 0, 0));
+        }
+        var cutout = group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 1)));
+        var records = new ArrayList<Modf>();
+        for (int i = 0; i < 64; i++) {
+            records.add(Modf.of(ROOT, i + 1, 0x8));
+        }
+        try (var f = new Fixture(records)) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            2,
+                            new long[] {GROUP, GROUP + 1},
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
+            f.files.sources.put(GROUP, group(EXT, 3, 64, batches));
+            f.files.sources.put(GROUP + 1, cutout);
+            putModel(f, MODEL, model());
+            f.files.sources.put(4L, obj0(records, List.of(Mddf.of(MODEL, 900, 0x40))));
+            try (var set = f.run()) {
+                assertEquals(64, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
+                assertEquals(64, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
+                // The cutout-only group is dropped whole; the opaque group is untouched.
+                assertEquals(1, set.models().getFirst().meshes().size());
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                var mesh = set.models().getFirst().meshes().getFirst();
+                assertEquals(64, mesh.ranges().size());
+                assertEquals(64 * 3, mesh.indices().remaining());
+                assertTrue(
+                        mesh.ranges().stream()
+                                .allMatch(r -> r.blend() == WorldExteriorObjects.OPAQUE));
+                // The budget is full, so the doodad is capped, never a building.
+                assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
+            }
+        }
+        // One placement fewer: the cutout range fits (63 * 65 = 4,095 draws) and is kept.
+        try (var f = new Fixture(records.subList(0, 63))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            2,
+                            new long[] {GROUP, GROUP + 1},
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
+            f.files.sources.put(GROUP, group(EXT, 3, 64, batches));
+            f.files.sources.put(GROUP + 1, cutout);
+            try (var set = f.run()) {
+                assertEquals(63, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
             }
         }
     }

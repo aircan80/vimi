@@ -117,7 +117,8 @@ final class WorldStreamSourceBridge {
     /**
      * Descriptive drawn and omitted counts of one tile's BASIC_EXTERIOR set, as written. Omitted
      * buildings and doodads are records (MODF, MDDF and selected MODD entries) that are not
-     * drawn for any reason; tilted doodads are the omitted doodads whose pitch or roll is nonzero.
+     * drawn for any reason; tilted doodads are the omitted MDDF and MODD doodads with a pitch or
+     * roll (no reviewed convention is applied to them).
      * Omitted surfaces are unsupported, image-less, capped or unreadable batches of drawn or
      * empty roots and models; unreadable surfaces are the cutout and blended building batches
      * whose image could not be read now (they never cost the building).
@@ -174,7 +175,9 @@ final class WorldStreamSourceBridge {
                             set,
                             WorldExteriorObjects.Count.DOODAD_DRAWN,
                             WorldExteriorObjects.Count.SET_DOODAD_DRAWN);
-            int tilted = set.count(WorldExteriorObjects.Count.DOODAD_TILTED);
+            int tilted =
+                    set.count(WorldExteriorObjects.Count.DOODAD_TILTED)
+                            + set.count(WorldExteriorObjects.Count.SET_DOODAD_TILTED);
             int doodadsOmitted =
                     tilted
                             + sum(

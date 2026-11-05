@@ -81,6 +81,9 @@ public final class WorldExteriorObjects {
     /** MDDF flags: 0x40 direct FileDataID (required); 0x2, 0x20, 0x1000 carry no transform. */
     private static final int DOODAD_DIRECT_ID = 0x40, DOODAD_ADMITTED = 0x2 | 0x20 | 0x1000;
 
+    /** MODD flags: only 0x1 (accepts projected textures) is admitted; it carries no transform. */
+    private static final int SET_DOODAD_ADMITTED = 0x1;
+
     /** M2 bone flags that billboard (spherical or cylindrical); no view policy here. */
     private static final long BILLBOARD = 0x78;
 
@@ -168,8 +171,13 @@ public final class WorldExteriorObjects {
         DOODAD_FAILED_MODEL,
         DOODAD_EMPTY,
         SET_DOODAD_DRAWN,
-        /** Name-table (MODN) reference, zero or out-of-range MODI entry, or a bad transform. */
+        /**
+         * Name-table (MODN) reference, zero or out-of-range MODI entry, a MODD flag other than 0x1,
+         * or a bad transform.
+         */
         SET_DOODAD_UNSUPPORTED,
+        /** A MODD rotation that is not about local z only: no reviewed convention is applied. */
+        SET_DOODAD_TILTED,
         SET_DOODAD_CAPPED,
         SET_DOODAD_FAILED_MODEL,
         SET_DOODAD_EMPTY,
@@ -596,6 +604,7 @@ public final class WorldExteriorObjects {
                     metadata = WorldPlacements.readObj0(input.bytes(), token::isCanceled);
                 }
                 place(metadata.worldObjects());
+                fitMaterialDraws();
                 // Buildings first, then MDDF doodads, then the drawn buildings' doodad sets.
                 placeDoodads(metadata.doodads());
                 placeSetDoodads();
@@ -612,6 +621,78 @@ public final class WorldExteriorObjects {
 
         private void count(Count count) {
             counts[count.ordinal()]++;
+        }
+
+        /**
+         * A building's draw cost under the opaque-only profile: its opaque ranges, or (for a
+         * building that profile would not have drawn) all of its ranges.
+         */
+        private int admissionDraws(int model) {
+            int opaque = 0;
+            for (var mesh : models.get(model).meshes()) {
+                for (var range : mesh.ranges()) {
+                    opaque += range.blend() == OPAQUE ? 1 : 0;
+                }
+            }
+            return opaque > 0 ? opaque : modelDraws(model);
+        }
+
+        /**
+         * When the drawn buildings' full cost exceeds the draw budget, drops the cutout and blended
+         * ranges of buildings that also have opaque ranges, last root first, until it fits. Their
+         * placements stay: a building the opaque-only profile drew is never capped.
+         */
+        private void fitMaterialDraws() {
+            int[] uses = new int[models.size()];
+            for (var placement : placements) {
+                uses[placement.model()]++;
+            }
+            long total = 0;
+            for (int m = 0; m < models.size(); m++) {
+                total += (long) uses[m] * modelDraws(m);
+            }
+            for (int m = models.size() - 1; m >= 0 && total > MAX_DRAWS; m--) {
+                var model = models.get(m);
+                if (model.doodad() || admissionDraws(m) == modelDraws(m)) {
+                    continue;
+                }
+                var kept = new ArrayList<Mesh>();
+                int dropped = 0;
+                for (var mesh : model.meshes()) {
+                    var opaque = new ArrayList<DrawRange>();
+                    int end = 0;
+                    for (var range : mesh.ranges()) {
+                        if (range.blend() == OPAQUE) {
+                            opaque.add(range);
+                            end = Math.max(end, range.firstIndex() + range.indexCount());
+                            continue;
+                        }
+                        dropped++;
+                        count(Count.BATCH_CAPPED);
+                        counts[Count.BATCH_DRAWN.ordinal()]--;
+                        counts[
+                                (range.blend() == CUTOUT ? Count.BATCH_CUTOUT : Count.BATCH_BLENDED)
+                                        .ordinal()]--;
+                    }
+                    if (opaque.isEmpty()) {
+                        counts[Count.GROUP_DRAWN.ordinal()]--;
+                        count(Count.GROUP_EMPTY);
+                        continue;
+                    }
+                    // Opaque ranges come first, so their indices are a prefix of the mesh's.
+                    kept.add(
+                            new Mesh(
+                                    mesh.groupOrdinal,
+                                    mesh.groupId,
+                                    mesh.groupFlags,
+                                    mesh.vertices,
+                                    Arrays.copyOf(mesh.indices, end),
+                                    opaque));
+                }
+                models.set(m, new Model(model.rootId(), false, kept));
+                total -= (long) uses[m] * dropped;
+            }
+            draws = (int) total;
         }
 
         private int modelDraws(int model) {
@@ -673,7 +754,9 @@ public final class WorldExteriorObjects {
                     case CAPPED -> count(Count.PLACEMENT_CAPPED);
                     case EMPTY -> count(Count.PLACEMENT_EMPTY);
                     case DRAWN -> {
-                        int model = modelSlots.get(rootId), cost = modelDraws(model);
+                        // The opaque-only profile's cost decides; cutout and blended ranges are
+                        // dropped later (fitMaterialDraws) if they overflow the budget.
+                        int model = modelSlots.get(rootId), cost = admissionDraws(model);
                         if (cost > MAX_DRAWS - draws) {
                             count(Count.PLACEMENT_CAPPED);
                             continue;
@@ -833,6 +916,7 @@ public final class WorldExteriorObjects {
             double norm = StrictMath.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
             double scale = building.scale() * def.scale();
             if (id <= 0
+                    || (def.flags() & ~SET_DOODAD_ADMITTED) != 0
                     || !finite(def.x(), def.y(), def.z())
                     || !Double.isFinite(norm)
                     || Math.abs(norm - 1) > 1e-3
@@ -842,13 +926,18 @@ public final class WorldExteriorObjects {
                 count(Count.SET_DOODAD_UNSUPPORTED);
                 return;
             }
+            // Like MDDF: only a rotation about local z (no pitch or roll) is applied.
+            if (qx != 0 || qy != 0) {
+                count(Count.SET_DOODAD_TILTED);
+                return;
+            }
             double x = parent.x(def.x(), def.y()), y = parent.y(def.x(), def.y());
             double z = parent.z(def.z());
             if (!finite(x, y, z)) {
                 count(Count.SET_DOODAD_UNSUPPORTED);
                 return;
             }
-            var rotation = building.rotation().times(Rotation.quaternion(qx, qy, qz, qw));
+            var rotation = building.rotation().times(Rotation.quaternion(0, 0, qz, qw));
             var outcome =
                     doodad(
                             Kind.SET_DOODAD,
@@ -1284,6 +1373,8 @@ public final class WorldExteriorObjects {
             } catch (ModelFormatException malformed) {
                 count(modelOutcome(malformed));
                 return RootState.FAILED;
+            } catch (RuntimeException failure) {
+                return readerFailed(failure);
             }
             if (model.skinFileDataIds().isEmpty()
                     || model.skinFileDataIds().getFirst() <= 0
@@ -1304,9 +1395,16 @@ public final class WorldExteriorObjects {
             } catch (ModelFormatException malformed) {
                 count(modelOutcome(malformed));
                 return RootState.FAILED;
+            } catch (RuntimeException failure) {
+                return readerFailed(failure);
             }
             int[] local = new int[counts.length];
-            var pending = copyModel(id, skinId, model, skin, local);
+            PendingMesh pending;
+            try {
+                pending = copyModel(id, skinId, model, skin, local);
+            } catch (RuntimeException failure) {
+                return readerFailed(failure);
+            }
             if (pending == null) {
                 count(Count.MODEL_UNSUPPORTED);
                 return RootState.FAILED;
@@ -1341,6 +1439,20 @@ public final class WorldExteriorObjects {
             models.add(new Model(id, true, List.of(mesh)));
             count(Count.MODEL_DRAWN);
             return RootState.DRAWN;
+        }
+
+        /**
+         * Any other runtime failure while reading or copying one doodad model omits only that
+         * model's doodads. This tile's own cancellation propagates; a source refusal from the scope
+         * engine (a changed source) propagates too, as for every read.
+         */
+        private RootState readerFailed(RuntimeException failure) {
+            if (failure instanceof WorldTerrainStreaming.Refusal refusal) {
+                throw refusal;
+            }
+            token.check();
+            count(Count.MODEL_FAILED);
+            return RootState.FAILED;
         }
 
         private void mergeLocal(int[] local) {

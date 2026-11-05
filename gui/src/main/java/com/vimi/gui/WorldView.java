@@ -483,8 +483,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         gpuStatus.setTooltip(new javafx.scene.control.Tooltip(
                 "BASIC exterior objects: outdoor WMO exterior groups, their doodad sets and ADT doodads in "
                         + "a static bind pose, texture1 only with a fixed light. Opaque, alpha-key and "
-                        + "alpha-blended materials are drawn; other materials, tilted ADT doodads and "
-                        + "interiors are counted as not drawn. Not client lighting or animation."));
+                        + "alpha-blended materials are drawn; other materials and tilted doodads are "
+                        + "counted as not drawn. Interior groups are not drawn, but the doodads in "
+                        + "them are, because group membership is not evaluated. Not client "
+                        + "lighting or animation."));
         retryGpu.setDisable(true);
         gpuEnabled.setOnAction(e -> {
             if (streamingMode) {
