@@ -77,10 +77,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     /**
      * Ten slots (nine active, one staged). Exterior objects add at most one validated objects file
      * per slot: up to {@link WorldStreamObjectsFile#MAX_BYTES} of GPU vertices, indices and RGBA8
-     * textures (the version 2 maximum profile is about 22.2 MB with the HIGH texture tier), so the
-     * object GPU budget is about 222 MB in the worst case, charged in Stats.objectBytes; real tiles
-     * stay far below it (Zephras Isle: 5.2 MB mean, 8.7 MB max on STANDARD; 6.8 and 13.7 MB on
-     * HIGH).
+     * textures with their full mip chains. The version 3 maximum profile, with the HIGH texture
+     * tier's chains, is about 27 MB, so the object GPU budget is about 270 MB in the worst case,
+     * charged in Stats.objectBytes; real tiles stay far below it (see WorldStreamObjectsFile).
      */
     static final int SLOT_COUNT = 10, INSTANCE_BYTES = 48;
 
@@ -422,8 +421,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private void objectPass(String profile) {
         try {
             if (!org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
-                    0, false, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
-                throw new IOException("Exterior objects need RGBA8 textures");
+                    0, true, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
+                throw new IOException("Exterior objects need mipmapped RGBA8 textures");
             }
             wmoProgram = program(profile, "world-wmo/");
             wmoEye = valid(bgfx_create_uniform("u_wmoEye", BGFX_UNIFORM_TYPE_MAT4, 1));
@@ -624,12 +623,16 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 int image = build.image;
                 int width = source.images[image * 2], height = source.images[image * 2 + 1];
                 int count = width * height * 4;
+                // The image's packed chain, top level down to 1 x 1, is one mipmapped texture.
+                count =
+                        com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(width, height)
+                                * 4;
                 built.textures[image] =
                         valid(
                                 bgfx_create_texture_2d(
                                         width,
                                         height,
-                                        false,
+                                        true,
                                         1,
                                         BGFX_TEXTURE_FORMAT_RGBA8,
                                         BGFX_TEXTURE_NONE,
@@ -1044,8 +1047,18 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         return result;
     }
 
-    /** Alpha-test reference for cutout ranges: a BASIC approximation, not client parity. */
-    static final float CUTOUT_REFERENCE = 0.5f;
+    /**
+     * Alpha-test reference for cutout ranges: a BASIC approximation, not client parity. Cutout mip
+     * chains preserve the coverage this reference sees (issue #265).
+     */
+    static final float CUTOUT_REFERENCE =
+            com.vibeminer.rendering.world.ObjectTextureMips.CUTOUT_REFERENCE;
+
+    /**
+     * Object textures: trilinear (linear min, mag and mip, the zero flags) over each image's mip
+     * chain, with repeat addressing because model texture coordinates tile (issue #265).
+     */
+    static final int OBJECT_SAMPLER_FLAGS = 0;
 
     /** Blend state: depth tested, no depth or alpha write, source-alpha over. */
     static final long BLENDED_STATE =
@@ -1187,7 +1200,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         0,
                         wmoSampler,
                         objects.textures[objects.ranges[r * stride + 2]],
-                        BgfxWorldWmoPass.SAMPLER_STATE);
+                        OBJECT_SAMPLER_FLAGS);
                 bgfx_set_state(blendedPass ? BLENDED_STATE : BgfxWorldWmoPass.DRAW_STATE, 0);
                 bgfx_submit(0, wmoProgram, 0, BGFX_DISCARD_ALL);
             }

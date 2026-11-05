@@ -14,6 +14,7 @@ import com.vibeminer.formats.world.WmoFormats;
 import com.vibeminer.formats.world.WmoGroupSpans;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldPlacements;
+import com.vibeminer.rendering.world.ObjectTextureMips;
 import com.vibeminer.rendering.world.TerrainScene;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
@@ -67,8 +68,11 @@ public final class WorldExteriorObjects {
      * The objects file and renderer admit the HIGH totals.
      */
     public enum ImageDetail {
-        STANDARD(1 << 20, 1 << 18, 1 << 19),
-        HIGH(1 << 21, 1 << 19, 1 << 20);
+        // Budgets count whole mip chains (#265): each is the chain of one texture of the old
+        // top-level size (1 Mi, 256 Ki, 512 Ki texels; doubled on HIGH), so the same images keep
+        // the same top levels while the chains below them are paid for.
+        STANDARD(chain(1024, 1024), chain(512, 512), chain(1024, 512)),
+        HIGH(chain(2048, 1024), chain(1024, 512), chain(1024, 1024));
         private final int buildingPixels, materialPixels, doodadPixels;
 
         ImageDetail(int buildingPixels, int materialPixels, int doodadPixels) {
@@ -87,6 +91,10 @@ public final class WorldExteriorObjects {
 
         public int doodadPixels() {
             return doodadPixels;
+        }
+
+        private static int chain(int width, int height) {
+            return ObjectTextureMips.chainPixels(width, height);
         }
 
         /** All pools together: the most RGBA8 pixels one tile's object set can carry. */
@@ -270,7 +278,15 @@ public final class WorldExteriorObjects {
          * or a short read. Each is also counted as that read's UNAVAILABLE bucket; unlike a
          * building read, it omits only its doodads instead of failing the whole set.
          */
-        DOODAD_SOURCE_INPUT
+        DOODAD_SOURCE_INPUT,
+        /**
+         * Decoded images (building and model) by where their lower mip levels came from (issue
+         * #265): all from the file's own mips, some from the file and the rest generated, or all
+         * generated. A 1 x 1 image counts in none of these.
+         */
+        IMAGE_MIPS_FILE,
+        IMAGE_MIPS_PARTIAL,
+        IMAGE_MIPS_GENERATED
     }
 
     /** What a placement draws: an outdoor WMO, an MDDF doodad or a WMO doodad-set entry. */
@@ -465,13 +481,33 @@ public final class WorldExteriorObjects {
         private final long id;
         private final int width, height, mipLevel;
         private final byte[] rgba;
+        private final ObjectTextureMips.Source mips;
 
         private Image(long id, int width, int height, int mipLevel, byte[] rgba) {
+            this(id, width, height, mipLevel, rgba, null);
+        }
+
+        private Image(
+                long id,
+                int width,
+                int height,
+                int mipLevel,
+                byte[] rgba,
+                ObjectTextureMips.Source mips) {
             this.id = id;
             this.width = width;
             this.height = height;
             this.mipLevel = mipLevel;
             this.rgba = rgba;
+            this.mips = mips;
+        }
+
+        /**
+         * Where the chain's lower levels came from; null only while a builder still holds the
+         * single registered level.
+         */
+        public ObjectTextureMips.Source mips() {
+            return mips;
         }
 
         public long id() {
@@ -490,6 +526,10 @@ public final class WorldExteriorObjects {
             return mipLevel;
         }
 
+        /**
+         * The whole mip chain, top level first ({@link ObjectTextureMips#chainPixels} texels), for
+         * every image a tile set returns.
+         */
         public ByteBuffer rgba() {
             return ByteBuffer.wrap(rgba).asReadOnlyBuffer();
         }
@@ -736,6 +776,9 @@ public final class WorldExteriorObjects {
         private final Map<Long, RootState> doodadStates = new HashMap<>();
         private final Map<Long, Integer> doodadSlots = new HashMap<>();
 
+        /** Source bytes a relevel already read, kept until the image's chain is built. */
+        private final Map<Integer, byte[]> relevelled = new HashMap<>();
+
         /** Registered images by slot, in admission (priority) order; null for other slots. */
         private final List<Demand> demands = new ArrayList<>();
 
@@ -779,6 +822,7 @@ public final class WorldExteriorObjects {
                 placeSetDoodads();
             }
             allocateImages();
+            chainImages();
             dropUnusedImages();
             return new TileObjects(
                     admission.mapId(),
@@ -1469,7 +1513,7 @@ public final class WorldExteriorObjects {
                 if (range.blend() != OPAQUE) {
                     continue;
                 }
-                int slot = image(range.image(), true, Pool.BUILDING, local);
+                int slot = image(range.image(), OPAQUE, Pool.BUILDING, local);
                 if (slot < 0) {
                     local[Count.BATCH_MISSING_IMAGE.ordinal()]++;
                     continue;
@@ -1498,7 +1542,7 @@ public final class WorldExteriorObjects {
                     local[Count.BATCH_CAPPED.ordinal()]++;
                     continue;
                 }
-                int slot = image(range.image(), false, Pool.MATERIAL, local);
+                int slot = image(range.image(), range.blend(), Pool.MATERIAL, local);
                 if (slot < 0) {
                     local[
                             (slot == UNREADABLE
@@ -1537,7 +1581,7 @@ public final class WorldExteriorObjects {
             var compact = new int[mesh.indices().length];
             int used = 0;
             for (var range : mesh.ranges()) {
-                int slot = image(range.image(), range.blend() == OPAQUE, pool, local);
+                int slot = image(range.image(), range.blend(), pool, local);
                 if (slot < 0) {
                     local[missing.ordinal()]++;
                     continue;
@@ -1942,9 +1986,10 @@ public final class WorldExteriorObjects {
          * Image slot for a texture1 FileDataID; MISSING when it is missing for any other reason,
          * UNREADABLE when a material-pool read was refused at SOURCE_INPUT.
          */
-        private int image(long id, boolean opaque, Pool pool, int[] local) {
-            // Alpha is forced only for opaque ranges, so one ID may decode twice.
-            long key = id * 2 + (opaque ? 0 : 1);
+        private int image(long id, int materialClass, Pool pool, int[] local) {
+            // Alpha is forced for opaque ranges and coverage-preserved down the chain for cutout
+            // ones, so one ID may decode once per material class.
+            long key = id * 3 + materialClass;
             var slots =
                     switch (pool) {
                         case BUILDING -> imageSlots;
@@ -1972,7 +2017,7 @@ public final class WorldExteriorObjects {
                     case MATERIAL -> materialImagesRead++;
                     case DOODAD -> modelImagesRead++;
                 }
-                slot = decode(id, opaque, pool, local);
+                slot = decode(id, materialClass, pool, local);
             }
             slots.put(key, slot);
             return slot;
@@ -1986,7 +2031,7 @@ public final class WorldExteriorObjects {
                 int slot,
                 Pool pool,
                 long id,
-                boolean opaque,
+                int materialClass,
                 long width,
                 long height,
                 int recorded,
@@ -1996,7 +2041,8 @@ public final class WorldExteriorObjects {
          * Reads and decodes one image at the registration side; the uploaded level is chosen later
          * by {@link #allocateImages}. Missing, protected or undecodable images are counted here.
          */
-        private int decode(long id, boolean opaque, Pool pool, int[] local) {
+        private int decode(long id, int materialClass, Pool pool, int[] local) {
+            boolean opaque = materialClass == OPAQUE;
             boolean building = pool != Pool.DOODAD;
             var unavailable = building ? Count.IMAGE_UNAVAILABLE : Count.MODEL_IMAGE_UNAVAILABLE;
             var undecodable = building ? Count.IMAGE_UNDECODABLE : Count.MODEL_IMAGE_UNDECODABLE;
@@ -2033,7 +2079,8 @@ public final class WorldExteriorObjects {
                 while (demands.size() < slot) {
                     demands.add(null);
                 }
-                demands.add(new Demand(slot, pool, id, opaque, width, height, recorded, level));
+                demands.add(
+                        new Demand(slot, pool, id, materialClass, width, height, recorded, level));
                 local[(building ? Count.IMAGE_DECODED : Count.MODEL_IMAGE_DECODED).ordinal()]++;
                 return slot;
             }
@@ -2126,6 +2173,86 @@ public final class WorldExteriorObjects {
             }
         }
 
+        /**
+         * Replaces every used image's final level with its full mip chain (#265): the file's own
+         * mips below that level while it records them, generated after that, with the alpha
+         * treatment of the image's material class.
+         */
+        private void chainImages() {
+            boolean[] used = new boolean[images.size()];
+            for (var model : models) {
+                for (var mesh : model.meshes()) {
+                    for (var range : mesh.ranges()) {
+                        used[range.image()] = true;
+                    }
+                }
+            }
+            for (var demand : demands) {
+                if (demand == null || !used[demand.slot()]) {
+                    continue;
+                }
+                token.check();
+                var top = images.get(demand.slot());
+                int level = top.mipLevel();
+                // A relevel already read the source; otherwise read it again only when the file
+                // records levels below the final one.
+                byte[] raw = relevelled.remove(demand.slot());
+                if (raw == null && level + 1 < demand.recorded()) {
+                    var input = derived(demand.id(), imageKind(demand.pool()));
+                    if (input != null) {
+                        try (input) {
+                            raw = input.bytes().clone();
+                        }
+                    }
+                }
+                byte[] file = raw;
+                var chain =
+                        ObjectTextureMips.build(
+                                top.width(),
+                                top.height(),
+                                top.rgba,
+                                demand.materialClass(),
+                                (below, w, h) ->
+                                        file == null || level + below >= demand.recorded()
+                                                ? null
+                                                : fileMip(file, level + below, w, h),
+                                token::isCanceled);
+                switch (chain.source()) {
+                    case FILE -> counts[Count.IMAGE_MIPS_FILE.ordinal()]++;
+                    case PARTIAL -> counts[Count.IMAGE_MIPS_PARTIAL.ordinal()]++;
+                    case GENERATED -> counts[Count.IMAGE_MIPS_GENERATED.ordinal()]++;
+                    case SINGLE -> {}
+                }
+                images.set(
+                        demand.slot(),
+                        new Image(
+                                top.id,
+                                top.width(),
+                                top.height(),
+                                level,
+                                chain.rgba(),
+                                chain.source()));
+            }
+        }
+
+        /** The file's own mip {@code level}, or null when it does not decode at that size. */
+        private byte[] fileMip(byte[] raw, int level, int width, int height) {
+            try {
+                var mip =
+                        Blp2Decoder.decodeSynchronous(
+                                AssetSource.bytes(raw),
+                                level,
+                                IMAGE_LIMITS,
+                                token,
+                                Blp2Types.MipProfile.STRICT);
+                return mip.mipLevel() == level && mip.width() == width && mip.height() == height
+                        ? mip.rgba()
+                        : null;
+            } catch (BlpFormatException | IllegalArgumentException absent) {
+                return null;
+            }
+        }
+
         /** Every level down to 1x1: recorded levels come from the file, the rest are reduced. */
         private static int levelsDown(Demand demand) {
             int levels = 1;
@@ -2143,6 +2270,7 @@ public final class WorldExteriorObjects {
                 var input = derived(demand.id(), imageKind(demand.pool()));
                 if (input != null) {
                     try (input) {
+                        relevelled.put(demand.slot(), input.bytes().clone());
                         var image =
                                 decodeLevel(
                                         input.bytes(),
@@ -2150,7 +2278,7 @@ public final class WorldExteriorObjects {
                                         demand.width(),
                                         demand.height(),
                                         level,
-                                        demand.opaque());
+                                        demand.materialClass() == OPAQUE);
                         if (image != null) {
                             return image;
                         }

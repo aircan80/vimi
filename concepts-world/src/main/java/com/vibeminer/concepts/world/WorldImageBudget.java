@@ -6,9 +6,9 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Mip-level selection for object textures under a per-tile pixel budget (#267). Pure and reusable:
- * a level is always one the BLP file records, so the authored mips are uploaded rather than
- * resampled.
+ * Mip-level selection for object textures under a per-tile pixel budget (#267), charged in whole
+ * mip chains (#265). Pure and reusable: a level is always one the BLP file records, so the authored
+ * mips are uploaded rather than resampled.
  *
  * <p>{@link #allocate} shares the budget fairly in rounds: every image first gets the smallest
  * allowed side, then each round raises images to the next side in priority order while the budget
@@ -52,6 +52,15 @@ public final class WorldImageBudget {
     }
 
     /**
+     * What {@link #allocate} charges for one level: its whole mip chain down to 1 x 1, which is
+     * what the World uploads (#265), at most about 4/3 of the level's own pixels.
+     */
+    public static long cost(long width, long height, int level) {
+        return com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(
+                (int) Math.max(1, width >> level), (int) Math.max(1, height >> level));
+    }
+
+    /**
      * Levels for {@code requests} (highest priority first) within {@code budget} pixels, using the
      * allowed {@code sides} (largest first). Returns -1 for a request that cannot fit at all.
      */
@@ -72,7 +81,7 @@ public final class WorldImageBudget {
         for (int i = 0; i < n; i++) {
             var r = requests.get(i);
             level[i] = levelFor(r.width(), r.height(), smallest, r.levels());
-            long cost = pixels(r.width(), r.height(), level[i]);
+            long cost = cost(r.width(), r.height(), level[i]);
             if (total + cost > budget) {
                 level[i] = -1; // lower priority than everything that fit
             } else {
@@ -90,8 +99,7 @@ public final class WorldImageBudget {
                     continue;
                 }
                 long delta =
-                        pixels(r.width(), r.height(), next)
-                                - pixels(r.width(), r.height(), level[i]);
+                        cost(r.width(), r.height(), next) - cost(r.width(), r.height(), level[i]);
                 if (total + delta <= budget) {
                     level[i] = next;
                     total += delta;
