@@ -402,6 +402,30 @@ final class SpellTextsTest {
     }
 
     @Test
+    void forgettingCachedPreviewsResolvesAgainAfterReload() {
+        var world = world(List.of(effect(99, "4.0", null)), false);
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70707")) {
+            var first =
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join();
+            assertTrue(
+                    first
+                            == service.description(
+                                            16929,
+                                            TableTypes.Priority.INTERACTIVE,
+                                            Cancellation.NONE)
+                                    .join());
+            service.forgetCached();
+            var again =
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join();
+            assertFalse(first == again);
+            assertEquals(first, again);
+        }
+    }
+
+    @Test
     void newScalarFormsRequirePercentUnitsAndEveryReviewedContextGuard() {
         for (String guard :
                 List.of(

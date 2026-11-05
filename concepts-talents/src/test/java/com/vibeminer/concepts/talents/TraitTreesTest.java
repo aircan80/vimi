@@ -558,7 +558,7 @@ final class TraitTreesTest {
     }
 
     @Test
-    void treeNamesAreReadAgainAfterATransientLegacyFailure() {
+    void treeNamesAreReadAgainOnReloadAfterATransientLegacyFailure() {
         var failing = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
         failing.add("TalentTab");
         try (var real = handle(FOREVER, fixture());
@@ -571,6 +571,7 @@ final class TraitTreesTest {
                     neutral.trees().stream().map(TalentTypes.Tree::name).toList());
             assertTrue(neutral.issues().stream().anyMatch(i -> i.contains("Reload to retry")));
             failing.clear();
+            service.catalog(Cancellation.NONE).join();
             var named = service.trees(1, Cancellation.NONE).join();
             assertFalse(
                     named.trees().stream()

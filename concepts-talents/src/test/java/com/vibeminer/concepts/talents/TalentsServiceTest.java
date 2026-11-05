@@ -594,6 +594,17 @@ final class TalentsServiceTest {
     /** Fails reads of the named tables until they are removed from {@code failing}. */
     static com.vibeminer.formats.tables.BuildTables flaky(
             com.vibeminer.formats.tables.BuildTables real, java.util.Set<String> failing) {
+        return flaky(real, failing, new java.util.concurrent.ConcurrentHashMap<>());
+    }
+
+    /**
+     * Fails schema and page reads of tables in {@code failing}; an entry {@code page:Name} fails
+     * only page reads (a mid-scan failure). Counts page calls per table in {@code pages}.
+     */
+    static com.vibeminer.formats.tables.BuildTables flaky(
+            com.vibeminer.formats.tables.BuildTables real,
+            java.util.Set<String> failing,
+            Map<String, Integer> pages) {
         return (com.vibeminer.formats.tables.BuildTables)
                 java.lang.reflect.Proxy.newProxyInstance(
                         TalentsServiceTest.class.getClassLoader(),
@@ -607,10 +618,14 @@ final class TalentsServiceTest {
                                     name = page.table().name();
                                 }
                             }
+                            boolean page = method.getName().equals("page");
+                            if (name != null && page) {
+                                pages.merge(name, 1, Integer::sum);
+                            }
                             if (name != null
-                                    && failing.contains(name)
-                                    && (method.getName().equals("schema")
-                                            || method.getName().equals("page"))) {
+                                    && (failing.contains(name)
+                                                    && (method.getName().equals("schema") || page)
+                                            || page && failing.contains("page:" + name))) {
                                 return java.util.concurrent.CompletableFuture.failedFuture(
                                         new java.io.UncheckedIOException(
                                                 new java.io.IOException("transient read")));
@@ -696,12 +711,46 @@ final class TalentsServiceTest {
                                                             "Localized spell names are unavailable")
                                                     && issue.contains("transient read")));
             failing.clear();
+            // A class switch does not repeat the failed reads; Reload (the catalog) does.
+            var remembered = service.trees(1, Cancellation.NONE).join();
+            assertEquals("Spell 1000", remembered.trees().getFirst().talents().getFirst().name());
+            service.catalog(Cancellation.NONE).join();
             var recovered = service.trees(1, Cancellation.NONE).join();
             var again = recovered.trees().getFirst().talents().getFirst();
             assertEquals("First talent", again.name());
             assertEquals("Raw $s1 description", again.description());
             assertEquals(900L, again.iconFileDataId());
             assertFalse(recovered.issues().stream().anyMatch(issue -> issue.contains("retry")));
+        }
+    }
+
+    @Test
+    void midScanSpellMiscFailureIsNotRescannedUntilReload() {
+        var failing = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+        failing.add("page:SpellMisc");
+        var pages = new java.util.concurrent.ConcurrentHashMap<String, Integer>();
+        try (var real = handle(fixture(nodes()));
+                var service = new TalentsService(flaky(real, failing, pages), "1.60.1.70000")) {
+            var first = service.trees(1, Cancellation.NONE).join();
+            assertTrue(
+                    first.trees().getFirst().talents().getFirst().iconIssue().contains("Reload"));
+            int scans = pages.getOrDefault("SpellMisc", 0);
+            assertEquals(1, scans);
+            for (int i = 0; i < 3; i++) {
+                var again = service.trees(1, Cancellation.NONE).join();
+                assertTrue(
+                        again.issues().stream()
+                                .anyMatch(issue -> issue.startsWith("Spell icon references")));
+            }
+            assertEquals(scans, pages.get("SpellMisc"));
+            failing.clear();
+            service.catalog(Cancellation.NONE).join();
+            var recovered = service.trees(1, Cancellation.NONE).join();
+            assertEquals(900L, recovered.trees().getFirst().talents().getFirst().iconFileDataId());
+            assertEquals(scans + 1, pages.get("SpellMisc"));
+            long partialNotices =
+                    recovered.issues().stream().filter(issue -> issue.contains("PARTIAL")).count();
+            assertEquals(0, partialNotices);
         }
     }
 }

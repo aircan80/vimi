@@ -87,6 +87,16 @@ public final class SpellTexts implements AutoCloseable {
         this.miscIndex = new RelationIndexes(tables, relationEntries);
     }
 
+    /**
+     * Forgets cached previews so the next request resolves again, for example after a transient
+     * failure of a referenced spell's rows. Requests in progress are not affected.
+     */
+    public void forgetCached() {
+        synchronized (gate) {
+            cache.clear();
+        }
+    }
+
     public BuildRef build() {
         return tables.build();
     }

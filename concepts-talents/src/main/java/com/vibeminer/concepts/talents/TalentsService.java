@@ -58,8 +58,17 @@ public final class TalentsService implements BuildTalents {
     /** Set only for a deterministic failure (the table exceeds the row bound). */
     private String spellIconsFailure;
 
-    /** Why the most recent icon scan failed, for per-talent explanations. Null after success. */
-    private String spellIconsUnavailable;
+    /** Transient failures, remembered until the next catalog request (Reload). */
+    private String spellIconsUnavailable, spellNamesFailure, spellDescriptionsFailure;
+
+    /** Reload: forget transient optional-table failures so they are read once more. */
+    private void retryFailedMetadata() {
+        spellIconsUnavailable = null;
+        spellNamesFailure = null;
+        spellDescriptionsFailure = null;
+        traits.retryFailedNaming();
+        spellTexts.forgetCached();
+    }
 
     public TalentsService(BuildTables tables, String buildVersion) {
         this.tables = Objects.requireNonNull(tables);
@@ -93,6 +102,7 @@ public final class TalentsService implements BuildTalents {
         return submit(
                 externalToken,
                 token -> {
+                    retryFailedMetadata();
                     if (!classicModel(tables.build().product(), version)) {
                         return new TalentTypes.Catalog(
                                 TalentTypes.State.UNSUPPORTED,
@@ -406,40 +416,45 @@ public final class TalentsService implements BuildTalents {
     }
 
     /**
-     * Reads spell names, descriptions and icon references. A failed table is not remembered: the
-     * next request (another class, or Reload) reads it again. Only a SpellMisc table larger than
-     * the row bound is a lasting, explained failure.
+     * Reads spell names, descriptions and icon references. A failed table is remembered until the
+     * next catalog request (Reload), so switching classes never repeats a failing scan. A SpellMisc
+     * table larger than the row bound stays an explained failure.
      */
     void optionalMetadata(Cancellation token, List<String> issues, java.util.Set<Long> wanted) {
         var failures = new ArrayList<String>();
-        if (spellNames == null) {
+        if (spellNames == null && spellNamesFailure == null) {
             try {
                 var names = schema("SpellName", token, metadataIssues);
                 names.textField("Name_lang");
                 spellNames = names;
             } catch (RuntimeException failure) {
-                failures.add(
+                spellNamesFailure =
                         "Localized spell names are unavailable: "
                                 + cause(failure)
-                                + ". Reload to retry.");
+                                + ". Reload to retry.";
             }
         }
-        if (spellDescriptions == null) {
+        if (spellNamesFailure != null) {
+            failures.add(spellNamesFailure);
+        }
+        if (spellDescriptions == null && spellDescriptionsFailure == null) {
             try {
                 var descriptions = schema("Spell", token, metadataIssues);
                 descriptions.textField("Description_lang");
                 spellDescriptions = descriptions;
             } catch (RuntimeException failure) {
-                failures.add(
+                spellDescriptionsFailure =
                         "Spell descriptions are unavailable: "
                                 + cause(failure)
-                                + ". Reload to retry.");
+                                + ". Reload to retry.";
             }
         }
-        if (spellIcons == null && spellIconsFailure == null) {
+        if (spellDescriptionsFailure != null) {
+            failures.add(spellDescriptionsFailure);
+        }
+        if (spellIcons == null && spellIconsFailure == null && spellIconsUnavailable == null) {
             try {
                 spellIcons = scanIcons(token);
-                spellIconsUnavailable = null;
             } catch (RuntimeException failure) {
                 if (failure instanceof Projection projection
                         && "TALENTS_TABLE_LIMIT".equals(projection.code)) {
@@ -452,12 +467,13 @@ public final class TalentsService implements BuildTalents {
                             "Spell icon references are unavailable: "
                                     + cause(failure)
                                     + ". Reload to retry.";
-                    failures.add(spellIconsUnavailable);
                 }
             }
         }
         if (spellIconsFailure != null) {
             failures.add(spellIconsFailure);
+        } else if (spellIcons == null && spellIconsUnavailable != null) {
+            failures.add(spellIconsUnavailable);
         }
         for (String issue : metadataIssues) {
             if (!issues.contains(issue)) {

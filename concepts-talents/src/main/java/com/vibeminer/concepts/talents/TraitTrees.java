@@ -61,6 +61,13 @@ final class TraitTrees {
     private Map<Long, Set<Long>> legacyTabSpells;
     private Data legacyTabs;
 
+    /** A failed legacy naming read, remembered until the next catalog request (Reload). */
+    private String legacyNamingFailure;
+
+    void retryFailedNaming() {
+        legacyNamingFailure = null;
+    }
+
     TraitTrees(TalentsService owner) {
         this.owner = owner;
     }
@@ -694,12 +701,12 @@ final class TraitTrees {
     }
 
     /**
-     * Reads the legacy tab names once. A failure is returned, not remembered, so the next request
-     * reads the tables again.
+     * Reads the legacy tab names once. A failure is returned and remembered until Reload, so class
+     * switches do not repeat a failing read.
      */
     private String legacyNaming(Cancellation token) {
-        if (legacyTabs != null) {
-            return null;
+        if (legacyTabs != null || legacyNamingFailure != null) {
+            return legacyNamingFailure;
         }
         var ignored = new ArrayList<String>();
         try {
@@ -729,7 +736,8 @@ final class TraitTrees {
             legacyTabs = tabs;
             return null;
         } catch (RuntimeException failure) {
-            return TalentsService.cause(failure) + ".";
+            legacyNamingFailure = TalentsService.cause(failure) + ".";
+            return legacyNamingFailure;
         } finally {
             // Legacy tables only name trees; their partial state does not qualify trait data.
             owner.partialTables.remove("TalentTab");
