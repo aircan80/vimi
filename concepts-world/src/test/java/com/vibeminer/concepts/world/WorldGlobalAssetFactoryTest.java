@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.files.FileReadStream;
@@ -77,6 +78,11 @@ class WorldGlobalAssetFactoryTest {
     }
 
     private static byte[] root(long[] groups, long... images) {
+        return root(new byte[0], groups, images);
+    }
+
+    /** Recorded MOGN (when non-empty) precedes GFID, as in client roots. */
+    private static byte[] root(byte[] names, long[] groups, long... images) {
         var h = buffer(64).putInt(images.length).putInt(groups.length);
         h.position(28);
         h.putInt(0xff123456)
@@ -98,7 +104,18 @@ class WorldGlobalAssetFactoryTest {
                 version(17),
                 chunk("MOHD", h.array()),
                 chunk("MOMT", m.array()),
+                names.length == 0 ? new byte[0] : chunk("MOGN", names),
                 chunk("GFID", g.array()));
+    }
+
+    private static byte[] namedGroup(int nameOffset, int descriptionOffset) {
+        var bytes = group(false, false);
+        // MOGP payload starts after MVER (12 bytes) and the MOGP chunk header (8 bytes).
+        ByteBuffer.wrap(bytes)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(20, nameOffset)
+                .putInt(24, descriptionOffset);
+        return bytes;
     }
 
     private static byte[] group(boolean overlap, boolean extraUv) {
@@ -339,6 +356,23 @@ class WorldGlobalAssetFactoryTest {
                 assertThrows(RuntimeException.class, f::inspect);
                 assertEquals(java.util.Set.of(1L, 123L), f.files.opens.keySet());
             }
+        }
+    }
+
+    @Test
+    void recordedGroupNameIsReadAtTheNameOffsetAndQualifiedRootStillQualifies() throws Exception {
+        byte[] names = {0, 0, 'H', 'a', 'l', 'l', 0, 'D', 'e', 's', 'c', 0};
+        try (var f = new Fixture()) {
+            f.files.sources.put(123L, root(names, new long[] {201}, 301));
+            f.files.sources.put(201L, namedGroup(2, 7));
+            var m = f.inspect();
+            assertTrue(m.root().groupNames().present());
+            assertEquals("Hall", m.groups().getFirst().name(), "name offset, not description");
+        }
+        try (var f = new Fixture()) {
+            f.files.sources.put(123L, root(names, new long[] {201}, 301));
+            f.files.sources.put(201L, namedGroup(names.length + 4, 7));
+            assertNull(f.inspect().groups().getFirst().name(), "offset outside block");
         }
     }
 

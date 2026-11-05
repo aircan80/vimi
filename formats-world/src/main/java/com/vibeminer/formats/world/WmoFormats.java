@@ -421,6 +421,7 @@ public final class WmoFormats {
         long[] gfids = new long[0];
         byte[] names = new byte[0];
         GroupNames groupNames = GroupNames.absent();
+        int namesAt = -1, namesBytes = 0;
         while (input.hasRemaining()) {
             check(canceled);
             var chunk = chunk(input, input.limit(), chunks, budget, ROOT_TAGS);
@@ -490,14 +491,9 @@ public final class WmoFormats {
                 }
                 case MOGN -> {
                     unique(seen, MOGN);
-                    // Descriptive only: an oversized block or tight budget leaves names absent
-                    // rather than declining a root that qualified before names were read.
-                    if (chunk.bytes() <= GroupNames.MAX_BLOCK_BYTES
-                            && budget.tryClaim(64L + chunk.bytes())) {
-                        var block = new byte[chunk.bytes()];
-                        input.get(block);
-                        groupNames = new GroupNames(block);
-                    }
+                    // Retained after every other declaration has claimed its budget.
+                    namesAt = at;
+                    namesBytes = chunk.bytes();
                 }
                 default -> {
                     /* All unparsed declarations remain in chunks, never inferred empty. */
@@ -511,6 +507,15 @@ public final class WmoFormats {
                 || !seen.contains(MOMT)
                 || materials.size() != header.materialCount()) {
             throw invalid("Root missing required declarations or material count mismatch");
+        }
+        // Descriptive only and claimed last: an oversized block or a tight budget leaves names
+        // absent rather than declining a root that qualifies without them.
+        if (namesAt >= 0
+                && namesBytes <= GroupNames.MAX_BLOCK_BYTES
+                && budget.tryClaim(64L + namesBytes)) {
+            var block = new byte[namesBytes];
+            input.get(namesAt, block);
+            groupNames = new GroupNames(block);
         }
         return new Root(
                 header,

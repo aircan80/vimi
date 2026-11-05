@@ -15,6 +15,7 @@ public final class GlobalInteriorOutlineTest {
         groupsKeepRecordedNamesFlagsAndOrder();
         groupBoundsAreClippedToTheDrawnSceneAndFrameTheirCentre();
         unusableBoundsStayListedButCannotMoveTheCamera();
+        entriesSelectOverviewGroupCentreOrNothing();
         entranceAndFloorsAreReportedUnknownNeverInferred();
         System.out.println(
                 "Global interior outline: recorded names/flags, clipped group framing and unknown"
@@ -120,10 +121,32 @@ public final class GlobalInteriorOutlineTest {
                 "malformed box");
     }
 
+    private static void entriesSelectOverviewGroupCentreOrNothing() {
+        var overview = new com.vibeminer.rendering.bgfx.WorldGlobalTransport.Camera(-50, 0, 5, 0, 0);
+        var outline =
+                GlobalInteriorOutline.of(
+                        List.of(
+                                group(0, 1, "Hall", 0x2005, v(-1, -1, 0), v(1, 1, 2)),
+                                group(1, 2, "Away", 0x2005, v(500, 500, 500), v(600, 600, 600))),
+                        SCENE);
+        require(
+                GlobalInteriorOutline.target(java.util.Optional.empty(), overview) == overview,
+                "overview entry restores the initial framing");
+        var hall =
+                GlobalInteriorOutline.target(
+                        java.util.Optional.of(outline.groups().get(0)), overview);
+        require(hall != null && hall.x() == 0 && hall.y() == 0 && hall.z() == 1, "hall " + hall);
+        require(
+                GlobalInteriorOutline.target(
+                                java.util.Optional.of(outline.groups().get(1)), overview)
+                        == null,
+                "unusable bounds never move the camera");
+    }
+
     private static void entranceAndFloorsAreReportedUnknownNeverInferred() {
         for (var outline :
                 List.of(
-                        GlobalInteriorOutline.empty(),
+                        GlobalInteriorOutline.unreadable(),
                         GlobalInteriorOutline.of(
                                 List.of(group(0, 1, "Hall", 0x2005, v(0, 0, 0), v(1, 1, 1))),
                                 SCENE))) {
@@ -135,7 +158,11 @@ public final class GlobalInteriorOutlineTest {
                     outline.floors().equals(GlobalInteriorOutline.FLOORS_UNQUALIFIED),
                     "floors are not inferred from height or group order");
         }
-        require(GlobalInteriorOutline.empty().groups().isEmpty(), "empty outline");
+        var unreadable = GlobalInteriorOutline.unreadable();
+        require(unreadable.groups().isEmpty() && !unreadable.groupsReadable(), "unreadable says so");
+        require(
+                GlobalInteriorOutline.of(List.of(), SCENE).groupsReadable(),
+                "a read with no groups is not unreadable");
     }
 
     private static Vec3 v(float x, float y, float z) {

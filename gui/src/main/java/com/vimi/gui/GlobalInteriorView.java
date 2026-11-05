@@ -156,6 +156,11 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
                                     java.util.Optional<GlobalInteriorOutline.Group> entry,
                                     boolean empty) {
                                 super.updateItem(entry, empty);
+                                // Only a click on a row jumps; scrollbar/empty space do not.
+                                setOnMouseClicked(
+                                        empty || entry == null
+                                                ? null
+                                                : e -> jumpToSelection());
                                 var group = entry == null ? null : entry.orElse(null);
                                 if (empty || entry == null) {
                                     setText(null);
@@ -169,7 +174,6 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
                                 }
                             }
                         });
-        groups.setOnMouseClicked(e -> jumpToSelection());
         groups.setOnKeyPressed(
                 e -> {
                     if (e.getCode() == KeyCode.ENTER) {
@@ -208,20 +212,16 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
 
     /** Replaces the latest camera only; the transport still sends one coalesced latest CAM. */
     private void jumpTo(GlobalInteriorOutline.Group group) {
-        if (closed || session == null || overview == null) {
+        if (closed || session == null || overview == null || groups.isDisabled()) {
             return;
         }
-        if (group == null) {
-            camera = overview;
-        } else if (group.bounds() != null) {
-            try {
-                camera = group.camera();
-            } catch (IllegalArgumentException outside) {
-                return;
-            }
-        } else {
+        var target = GlobalInteriorOutline.target(java.util.Optional.ofNullable(group), overview);
+        if (target == null) {
+            status.setText(
+                    group.label() + " · recorded bounds are outside the camera range; not moved");
             return;
         }
+        camera = target;
         dirty = true;
         status.setText(
                 group == null
@@ -283,6 +283,10 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
         items.add(java.util.Optional.empty());
         outline.groups().forEach(group -> items.add(java.util.Optional.of(group)));
         groups.getItems().setAll(items);
+        if (!outline.groupsReadable()) {
+            groups.setPlaceholder(new Label(GlobalInteriorOutline.GROUPS_UNREADABLE));
+            groups.getItems().clear();
+        }
         floors.setText(outline.floors());
         entrance.setText(outline.entrance());
         dirty = true;
@@ -307,7 +311,12 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
             } catch (InterruptedException interrupted) {
                 return;
             } catch (java.io.IOException | RuntimeException failed) {
-                Platform.runLater(() -> status.setText("Interior frames unavailable"));
+                Platform.runLater(
+                        () -> {
+                            // A later jump must not hide this failure.
+                            groups.setDisable(true);
+                            status.setText("Interior frames unavailable");
+                        });
                 return;
             }
         }

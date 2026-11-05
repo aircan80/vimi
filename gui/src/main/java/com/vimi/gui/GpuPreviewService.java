@@ -190,7 +190,7 @@ final class GpuPreviewService {
         try {
             return GlobalInteriorOutline.of(prepared.facts().groups(), prepared.bounds());
         } catch (RuntimeException unreadable) {
-            return GlobalInteriorOutline.empty();
+            return GlobalInteriorOutline.unreadable();
         }
     }
 

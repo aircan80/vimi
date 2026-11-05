@@ -323,6 +323,21 @@ class WmoFormatsTest {
         var root = WmoFormats.root(join(root(), chunk("MOGN", new byte[4096])), tight, () -> false);
         assertFalse(root.groupNames().present());
         assertEquals(1, root.materials().size());
+        // MOGN before GFID, as in client roots: later declarations still claim first.
+        var ordered =
+                join(
+                        version(),
+                        chunk("MOHD", header()),
+                        chunk("MOMT", material()),
+                        chunk("MOGN", new byte[4096]),
+                        chunk("GFID", buffer(12).putInt(-1).putInt(0).putInt(123).array()));
+        var early = WmoFormats.root(ordered, tight, () -> false);
+        assertFalse(early.groupNames().present());
+        assertEquals(3, early.gfidCount());
+        var roomy = new WmoFormats.Limits(1 << 20, 1 << 20, 8, 24, 8, 16384, 16384, 64, 1, 8192);
+        var named = WmoFormats.root(ordered, roomy, () -> false);
+        assertTrue(named.groupNames().present());
+        assertEquals("", named.groupNames().name(0).orElseThrow());
         assertThrows(
                 IllegalArgumentException.class,
                 () ->

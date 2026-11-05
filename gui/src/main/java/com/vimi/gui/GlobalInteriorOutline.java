@@ -11,10 +11,11 @@ import java.util.Objects;
  * Detached group, floor and entrance facts for one qualified global interior. Built off FX from
  * the recorded WMO facts; every entry is either recorded by a source or explicitly unknown.
  */
-record GlobalInteriorOutline(List<Group> groups, String floors, String entrance) {
+record GlobalInteriorOutline(
+        List<Group> groups, String floors, String entrance, boolean groupsReadable) {
     /** No loaded source records an instance entrance; it is never derived from geometry. */
     static final String ENTRANCE_UNKNOWN =
-            "Entrance: unknown · no loaded source records an entrance for this instance";
+            "Entrance: unknown · no entrance source is read for this interior yet";
 
     /** Floors are never inferred from height; no qualified UiMap/WMO-group link is read yet. */
     static final String FLOORS_UNQUALIFIED =
@@ -87,13 +88,43 @@ record GlobalInteriorOutline(List<Group> groups, String floors, String entrance)
         return new GlobalInteriorOutline(groups, FLOORS_UNQUALIFIED, ENTRANCE_UNKNOWN);
     }
 
-    static GlobalInteriorOutline empty() {
-        return new GlobalInteriorOutline(List.of(), FLOORS_UNQUALIFIED, ENTRANCE_UNKNOWN);
+    /**
+     * The camera a list entry selects: the overview for the empty entry, the group's centre when
+     * its bounds are usable, otherwise null (the entry cannot move the camera).
+     */
+    static WorldGlobalTransport.Camera target(
+            java.util.Optional<Group> entry, WorldGlobalTransport.Camera overview) {
+        Objects.requireNonNull(entry);
+        if (entry.isEmpty()) {
+            return overview;
+        }
+        var group = entry.get();
+        if (group.bounds() == null) {
+            return null;
+        }
+        try {
+            return group.camera();
+        } catch (IllegalArgumentException outside) {
+            return null;
+        }
     }
 
+    /** Fallback when the recorded facts are unreadable; says so instead of listing nothing. */
+    static GlobalInteriorOutline unreadable() {
+        return new GlobalInteriorOutline(List.of(), FLOORS_UNQUALIFIED, ENTRANCE_UNKNOWN, false);
+    }
+
+    GlobalInteriorOutline(List<Group> groups, String floors, String entrance) {
+        this(groups, floors, entrance, true);
+    }
+
+    /** Shown instead of the group list when the recorded group facts could not be read. */
+    static final String GROUPS_UNREADABLE = "Recorded groups could not be read for this interior";
+
     /**
-     * Intersection of the recorded group box and the drawn scene box. Qualification proved every
-     * group vertex lies in both, so the intersection still contains the whole group mesh.
+     * Intersection of the recorded group box and the drawn scene box. Qualification checks every
+     * group vertex against the MOGP box (within 0.001), and the scene box is the AABB of all drawn
+     * vertices, so the intersection holds the group mesh up to that tolerance.
      */
     static float[] clip(float[] group, float[] scene) {
         if (group == null || group.length != 6 || scene.length != 6) {
