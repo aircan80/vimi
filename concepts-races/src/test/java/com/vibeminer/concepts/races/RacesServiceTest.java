@@ -154,7 +154,11 @@ final class RacesServiceTest {
                         201,
                         "EmotesText",
                         List.of(text("Name")),
-                        List.of(row(329, "JOKE"), row(305, "CHARGE")),
+                        List.of(
+                                row(329, "JOKE"),
+                                row(305, "CHARGE"),
+                                row(77, "FLIRT"),
+                                row(50, "WAVE")),
                         "CCDBFBAF"),
                 table(
                         202,
@@ -169,7 +173,14 @@ final class RacesServiceTest {
                                 row(1, "329", "1", "0", "0", "100"),
                                 row(2, "305", "1", "2", "0", "101"),
                                 row(3, "329", "1", "0", "1", "102"),
-                                row(4, "329", "2", "0", "0", "103")),
+                                row(4, "329", "2", "0", "0", "103"),
+                                row(5, "329", "3", "0", "0", "104"),
+                                row(6, "329", "3", "1", "0", "105"),
+                                row(7, "305", "3", "0", "0", "0"),
+                                row(8, "999", "3", "0", "0", "106"),
+                                row(9, "77", "3", "0", "0", "107"),
+                                row(10, "50", "3", "0", "0", "108"),
+                                row(11, "305", "3", "2", "0", "0")),
                         "3ECA1BE0"),
                 table(
                         203,
@@ -179,7 +190,11 @@ final class RacesServiceTest {
                                 row(10, "100", "200"),
                                 row(11, "101", "201"),
                                 row(12, "102", "202"),
-                                row(13, "103", "203")),
+                                row(13, "103", "203"),
+                                row(14, "104", "204"),
+                                row(15, "104", "0"),
+                                row(16, "105", "205"),
+                                row(17, "108", "208")),
                         "8F82FF7D"));
     }
 
@@ -190,7 +205,16 @@ final class RacesServiceTest {
         try {
             var generic = service.voices(1, 1, 0, Cancellation.NONE).join();
             assertEquals(
-                    List.of(new RaceVoiceTypes.Clip(10, 329, "Joke", 100, 200)), generic.clips());
+                    List.of(
+                            new RaceVoiceTypes.Clip(
+                                    10,
+                                    329,
+                                    "Joke",
+                                    100,
+                                    200,
+                                    new RaceVoiceTypes.Source("JOKE", 1, 1, 0, 0))),
+                    generic.clips());
+            assertEquals(List.of(), generic.refusals());
             var specialized = service.voices(1, 2, 0, Cancellation.NONE).join();
             assertEquals(
                     List.of("Charge", "Joke"),
@@ -205,6 +229,67 @@ final class RacesServiceTest {
             assertEquals(
                     RaceTypes.State.UNAVAILABLE,
                     service.voice(1, 1, 0, 12, Cancellation.NONE).join().state());
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void voicesShowRecordedSourceChainAndRefuseUnrecordedOrAmbiguousLinks() {
+        var tables = open(voiceFixture());
+        var service = new RacesService(tables);
+        try {
+            var single = service.voices(3, 2, 0, Cancellation.NONE).join();
+            assertEquals(
+                    List.of(14L),
+                    single.clips().stream().map(RaceVoiceTypes.Clip::entryId).toList());
+            assertEquals(
+                    "EmotesText #329 JOKE → EmotesTextSound #5 (race 3, sex 0, every class)"
+                            + " → SoundKit #104 → SoundKitEntry #14 → FileDataID 204",
+                    single.clips().getFirst().chain());
+            assertEquals(
+                    List.of(
+                            new RaceVoiceTypes.Refusal(
+                                    "SoundKitEntry #15 (Joke)",
+                                    "No valid FileDataID is recorded for this entry."),
+                            new RaceVoiceTypes.Refusal(
+                                    "EmotesTextSound #7 (Charge)",
+                                    "No SoundKit is recorded for this link."),
+                            new RaceVoiceTypes.Refusal(
+                                    "EmotesTextSound #11 (Charge)",
+                                    "No SoundKit is recorded for this link."),
+                            new RaceVoiceTypes.Refusal(
+                                    "EmotesTextSound #8 → EmotesText #999",
+                                    "The linked EmotesText row is not recorded in this build."),
+                            new RaceVoiceTypes.Refusal(
+                                    "SoundKit #107 (Flirt)",
+                                    "No SoundKitEntry rows are recorded for this SoundKit.")),
+                    single.refusals());
+            assertTrue(
+                    single.issues().stream()
+                            .anyMatch(issue -> issue.startsWith("1 recorded voice links use")));
+            assertEquals(
+                    RaceTypes.State.UNAVAILABLE,
+                    service.voice(3, 2, 0, 15, Cancellation.NONE).join().state());
+
+            var ambiguous = service.voices(3, 1, 0, Cancellation.NONE).join();
+            assertEquals(List.of(), ambiguous.clips());
+            assertEquals(
+                    new RaceVoiceTypes.Refusal(
+                            "EmotesText #329 JOKE → EmotesTextSound #5, #6",
+                            "Links name different SoundKits #104, #105 for this race, sex and"
+                                    + " class; the runtime choice is not evaluated."),
+                    ambiguous.refusals().getFirst());
+            assertEquals(
+                    "No reviewed voice clips are readable for this race and voice.",
+                    ambiguous.message());
+            assertEquals(
+                    RaceTypes.State.UNAVAILABLE,
+                    service.voice(3, 1, 0, 16, Cancellation.NONE).join().state());
+            for (var refusal : ambiguous.refusals()) {
+                assertFalse(refusal.link().contains("/") || refusal.reason().contains("/"));
+            }
         } finally {
             service.closeAsync().join();
             tables.closeAsync().join();

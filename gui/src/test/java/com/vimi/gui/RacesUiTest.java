@@ -185,7 +185,9 @@ public final class RacesUiTest {
                                                                         329,
                                                                         "Authored joke",
                                                                         100,
-                                                                        200)),
+                                                                        200,
+                                                                        null)),
+                                                        List.of(),
                                                         List.of(
                                                                 "Authored voice metadata; no"
                                                                         + " recording."),
@@ -1004,7 +1006,8 @@ public final class RacesUiTest {
                         "Authored",
                         List.of(
                                 new com.vibeminer.concepts.races.RaceVoiceTypes.Clip(
-                                        1, 1, "Authored", 1, 1)),
+                                        1, 1, "Authored", 1, 1, null)),
+                        List.of(),
                         List.of(),
                         null);
         var panel = new RaceVoicePanel(handle, external::get);
@@ -1121,6 +1124,7 @@ public final class RacesUiTest {
     private static void voiceLoadingFeedback() {
         var catalog = new CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Catalog>();
         var audio = new CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Audio>();
+        var decodes = new java.util.concurrent.atomic.AtomicInteger();
         BuildRaces handle =
                 new BuildRaces() {
                     public CompletableFuture<RaceTypes.Catalog> catalog(Cancellation token) {
@@ -1144,6 +1148,7 @@ public final class RacesUiTest {
                                     int sex,
                                     long entry,
                                     Cancellation token) {
+                        decodes.incrementAndGet();
                         return audio;
                     }
 
@@ -1163,13 +1168,38 @@ public final class RacesUiTest {
                         "Authored locale",
                         List.of(
                                 new com.vibeminer.concepts.races.RaceVoiceTypes.Clip(
-                                        1, 1, "Authored joke", 1, 1)),
+                                        1,
+                                        1,
+                                        "Authored joke",
+                                        1,
+                                        1,
+                                        new com.vibeminer.concepts.races.RaceVoiceTypes.Source(
+                                                "JOKE", 7, 1, 0, 0))),
+                        List.of(
+                                new com.vibeminer.concepts.races.RaceVoiceTypes.Refusal(
+                                        "Authored link #9",
+                                        "Authored reason; no recording.")),
                         List.of(),
                         null));
         Platform.runLater(
                 () -> {
                     try {
                         require(activityCount(panel) == 0, "Ready voice catalog retires activity");
+                        require(decodes.get() == 0, "Voice catalog never autoplays");
+                        require(
+                                labels(panel)
+                                        .contains(
+                                                "Source: EmotesText #1 JOKE → EmotesTextSound #7"
+                                                        + " (race 1, sex 0, every class) →"
+                                                        + " SoundKit #1 → SoundKitEntry #1 →"
+                                                        + " FileDataID 1"),
+                                "Selected voice shows its recorded source chain");
+                        require(
+                                labels(panel)
+                                        .contains(
+                                                "Not playable (1):\nAuthored link #9 —"
+                                                        + " Authored reason; no recording."),
+                                "Refused voice links show their reasons");
                         panel.lookupAll(".button").stream()
                                 .filter(
                                         node ->
@@ -1199,6 +1229,9 @@ public final class RacesUiTest {
                                                                         "Voice preview is"
                                                                                 + " unavailable."),
                                                 "Voice failure retires loading");
+                                        require(
+                                                decodes.get() == 1,
+                                                "Only the explicit Play button decodes");
                                         panel.selection(1, 1, 1);
                                         panel.close();
                                         require(

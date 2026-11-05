@@ -4,6 +4,7 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.files.BuildFiles;
 import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.audio.VoiceDecoder;
+import com.vibeminer.formats.db2.Db2Types;
 import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.formats.tables.TableTypes;
 import com.vibeminer.generated.GeneratedKey;
@@ -11,8 +12,10 @@ import com.vibeminer.generated.GeneratedStore;
 import com.vibeminer.generated.GeneratedTypes;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeSet;
 
 /** Serialized by the Races worker; media never owns the borrowed build/locale handles. */
 @SuppressWarnings("try")
@@ -27,6 +30,7 @@ final class RaceVoices {
                     "Charge",
                     "HEALME",
                     "I need healing");
+    static final int MAX_REFUSALS = 32;
     private final RacesService owner;
     private final RaceMedia media;
     private final BuildTables tables;
@@ -48,6 +52,7 @@ final class RaceVoices {
 
     RaceVoiceTypes.Catalog catalog(long raceId, long classId, int sex, Cancellation token) {
         var clips = new ArrayList<RaceVoiceTypes.Clip>();
+        var refusals = new ArrayList<RaceVoiceTypes.Refusal>();
         var issues = new ArrayList<String>();
         try {
             var texts = media.data("EmotesText", 2048, token, issues);
@@ -65,6 +70,7 @@ final class RaceVoices {
             var entries = owner.schema("SoundKitEntry", token, issues);
             entries.reference("SoundKitID", "SoundKit");
             entries.field("FileDataID", true);
+            var byEmote = new LinkedHashMap<Long, List<Db2Types.Row>>();
             for (var mapping : mappings.rows) {
                 token.check();
                 long mappedClass = mappings.number(mapping, "ClassID");
@@ -73,23 +79,83 @@ final class RaceVoices {
                         || (mappedClass != 0 && mappedClass != classId)) {
                     continue;
                 }
-                long emote = mappings.number(mapping, "EmotesTextID");
+                byEmote.computeIfAbsent(
+                                mappings.number(mapping, "EmotesTextID"),
+                                ignored -> new ArrayList<>())
+                        .add(mapping);
+            }
+            int unreviewed = 0;
+            for (var group : byEmote.entrySet()) {
+                token.check();
+                long emote = group.getKey();
+                var links = group.getValue();
                 var text =
                         texts.rows.stream()
                                 .filter(row -> row.id() == emote)
                                 .findFirst()
                                 .orElse(null);
                 if (text == null) {
+                    for (var mapping : links) {
+                        refuse(
+                                refusals,
+                                issues,
+                                "EmotesTextSound #" + mapping.id() + " → EmotesText #" + emote,
+                                "The linked EmotesText row is not recorded in this build.");
+                    }
                     continue;
                 }
-                String action = ACTIONS.get(texts.text(text, "Name"));
+                String name = texts.text(text, "Name");
+                String action = ACTIONS.get(name);
                 if (action == null) {
+                    unreviewed += links.size();
                     continue;
                 }
-                long kit = mappings.number(mapping, "SoundID");
-                if (kit <= 0) {
+                var kits = new TreeSet<Long>();
+                var kitLinks = new ArrayList<Db2Types.Row>();
+                for (var mapping : links) {
+                    long kit = mappings.number(mapping, "SoundID");
+                    if (kit <= 0) {
+                        refuse(
+                                refusals,
+                                issues,
+                                "EmotesTextSound #" + mapping.id() + " (" + action + ")",
+                                "No SoundKit is recorded for this link.");
+                    } else {
+                        kits.add(kit);
+                        kitLinks.add(mapping);
+                    }
+                }
+                if (kits.size() > 1) {
+                    refuse(
+                            refusals,
+                            issues,
+                            "EmotesText #"
+                                    + emote
+                                    + " "
+                                    + name
+                                    + " → EmotesTextSound "
+                                    + ids(kitLinks.stream().map(Db2Types.Row::id).toList()),
+                            "Links name different SoundKits "
+                                    + ids(List.copyOf(kits))
+                                    + " for this race, sex and class; the runtime choice is not"
+                                    + " evaluated.");
                     continue;
                 }
+                if (kits.isEmpty()) {
+                    continue;
+                }
+                long kit = kits.first();
+                var mapping =
+                        kitLinks.stream()
+                                .min(java.util.Comparator.comparingLong(Db2Types.Row::id))
+                                .orElseThrow();
+                var source =
+                        new RaceVoiceTypes.Source(
+                                name,
+                                mapping.id(),
+                                raceId,
+                                sex,
+                                mappings.number(mapping, "ClassID"));
                 var page =
                         tables.page(
                                         new TableTypes.PageRequest(
@@ -110,6 +176,14 @@ final class RaceVoices {
                     note(issues, "Some voice entry rows are unavailable: " + page.state());
                     continue;
                 }
+                if (page.rows().isEmpty()) {
+                    refuse(
+                            refusals,
+                            issues,
+                            "SoundKit #" + kit + " (" + action + ")",
+                            "No SoundKitEntry rows are recorded for this SoundKit.");
+                    continue;
+                }
                 if (page.nextAfter() != null) {
                     note(issues, "Voice entry display is bounded to128 clips per kit.");
                 }
@@ -117,10 +191,16 @@ final class RaceVoices {
                     var row = entry.row();
                     long fid = entries.number(row, "FileDataID");
                     if (fid <= 0 || fid > 0xffffffffL) {
+                        refuse(
+                                refusals,
+                                issues,
+                                "SoundKitEntry #" + row.id() + " (" + action + ")",
+                                "No valid FileDataID is recorded for this entry.");
                         continue;
                     }
                     if (clips.stream().noneMatch(clip -> clip.entryId() == row.id())) {
-                        clips.add(new RaceVoiceTypes.Clip(row.id(), emote, action, kit, fid));
+                        clips.add(
+                                new RaceVoiceTypes.Clip(row.id(), emote, action, kit, fid, source));
                     }
                     if (clips.size() >= 256) {
                         note(issues, "Voice display is bounded to256 clips.");
@@ -130,6 +210,13 @@ final class RaceVoices {
                 if (clips.size() >= 256) {
                     break;
                 }
+            }
+            if (unreviewed > 0) {
+                note(
+                        issues,
+                        unreviewed
+                                + " recorded voice links use emotes outside the reviewed joke,"
+                                + " flirt, charge and healing actions.");
             }
             clips.sort(
                     java.util.Comparator.comparing(RaceVoiceTypes.Clip::action)
@@ -141,13 +228,39 @@ final class RaceVoices {
                     RaceTypes.State.PARTIAL,
                     tables.locale(),
                     clips,
+                    refusals,
                     issues,
                     clips.isEmpty()
                             ? "No reviewed voice clips are readable for this race and voice."
                             : null);
         } catch (RacesService.Projection unavailable) {
             return new RaceVoiceTypes.Catalog(
-                    unavailable.state, tables.locale(), clips, issues, unavailable.getMessage());
+                    unavailable.state,
+                    tables.locale(),
+                    clips,
+                    refusals,
+                    issues,
+                    unavailable.getMessage());
+        }
+    }
+
+    private static String ids(List<Long> ids) {
+        var text = new StringBuilder();
+        for (int i = 0; i < ids.size() && i < 8; i++) {
+            text.append(i == 0 ? "#" : ", #").append(ids.get(i));
+        }
+        return ids.size() > 8 ? text + " and " + (ids.size() - 8) + " more" : text.toString();
+    }
+
+    private static void refuse(
+            List<RaceVoiceTypes.Refusal> refusals,
+            List<String> issues,
+            String link,
+            String reason) {
+        if (refusals.size() < MAX_REFUSALS) {
+            refusals.add(new RaceVoiceTypes.Refusal(link, reason));
+        } else {
+            note(issues, "Refused voice link display is bounded to" + MAX_REFUSALS + " links.");
         }
     }
 
