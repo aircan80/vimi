@@ -69,12 +69,15 @@ public final class DbdTypes {
             }
         }
 
+        private static final java.util.regex.Pattern FORMAT =
+                java.util.regex.Pattern.compile(
+                        "(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)");
+
         public static BuildVersion parse(String value) {
             if (value == null
                     || value.length() < 7
                     || value.length() > 43
-                    || !value.matches(
-                            "(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)")) {
+                    || !FORMAT.matcher(value).matches()) {
                 throw new Db2FormatException(
                         "DBD_INVALID", "Exact four-component numeric build required");
             }
