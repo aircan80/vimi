@@ -75,10 +75,31 @@ final class WorldStreamNeighborhoodBudgetTest {
                 (long) BgfxWorldStreamRenderer.MAX_TRIANGLES
                         * BgfxWorldStreamRenderer.INSTANCE_BYTES;
         assertEquals(3_932_160, buffer);
-        long atlas = WorldStreamTileFile.ATLAS_BYTES;
+        long atlas = WorldStreamAtlasMips.CHAIN_BYTES;
         long terrain = BgfxWorldStreamRenderer.SLOT_COUNT * (buffer + atlas);
-        // 26 slots: 129.5 MB with 1 MiB atlases (138.6 MB once atlases carry a mip chain).
-        assertEquals(129_499_136, terrain);
+        // FAR, 26 slots: 138.6 MB (5.33 MB per slot with the atlas mip chain); NEAR, 10: 53.3 MB.
+        assertEquals(138_586_760, terrain);
+        assertEquals(53_302_600, WorldStreamTransport.ViewDistance.NEAR.slots() * (buffer + atlas));
+    }
+
+    @Test
+    void objectTextureTiersSelectAPinnedSessionBudget() {
+        var standard = WorldStreamTransport.ObjectTextures.STANDARD;
+        var high = WorldStreamTransport.ObjectTextures.HIGH;
+        assertEquals(160L << 20, standard.budgetBytes());
+        assertEquals(256L << 20, high.budgetBytes());
+        assertEquals(standard.budgetBytes(), BgfxWorldStreamRenderer.OBJECT_BUDGET_BYTES);
+        assertEquals(
+                standard,
+                new WorldStreamTransport.Spec(
+                                "ab".repeat(32), 1, WorldStreamTransport.Backend.DEFAULT)
+                        .objectTextures());
+        // Measured real-data means per tile object set (#267): STANDARD 5.70 MB, HIGH 7.69 MB.
+        long far = WorldStreamTransport.ViewDistance.FAR.residents();
+        assertTrue(BgfxWorldStreamRenderer.objectsFit(standard.budgetBytes(), 0, far * 5_700_000));
+        assertTrue(BgfxWorldStreamRenderer.objectsFit(high.budgetBytes(), 0, far * 7_690_000));
+        // FAR + HIGH at the mean would not fit the STANDARD budget: why HIGH has its own.
+        assertFalse(BgfxWorldStreamRenderer.objectsFit(standard.budgetBytes(), 0, far * 7_690_000));
     }
 
     @Test

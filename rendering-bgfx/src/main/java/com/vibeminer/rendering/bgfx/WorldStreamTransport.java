@@ -62,6 +62,37 @@ public final class WorldStreamTransport {
         }
     }
 
+    /**
+     * Exterior object texture tier (#267 wires its image detail here). It selects the session's
+     * shared objects GPU budget: STANDARD 160 MiB, HIGH 256 MiB.
+     */
+    public enum ObjectTextures {
+        STANDARD(WorldStreamEnvelope.Session.STANDARD_TEXTURES),
+        HIGH(WorldStreamEnvelope.Session.HIGH_TEXTURES);
+
+        private final int code;
+
+        ObjectTextures(int code) {
+            this.code = code;
+        }
+
+        /** GPU bytes all exterior object sets of a session may reserve together. */
+        public long budgetBytes() {
+            return code == WorldStreamEnvelope.Session.HIGH_TEXTURES
+                    ? WorldStreamEnvelope.Session.HIGH_OBJECT_BUDGET
+                    : WorldStreamEnvelope.Session.STANDARD_OBJECT_BUDGET;
+        }
+
+        static ObjectTextures of(int code) {
+            for (var value : values()) {
+                if (value.code == code) {
+                    return value;
+                }
+            }
+            throw new IllegalArgumentException("Unknown object texture tier");
+        }
+    }
+
     public enum Backend {
         DEFAULT,
         VULKAN,
@@ -78,7 +109,8 @@ public final class WorldStreamTransport {
             long initialPolicy,
             Backend backend,
             boolean exteriorObjects,
-            ViewDistance viewDistance) {
+            ViewDistance viewDistance,
+            ObjectTextures objectTextures) {
         public Spec(String scopeSha256, long initialPolicy, Backend backend) {
             this(scopeSha256, initialPolicy, backend, false);
         }
@@ -88,9 +120,25 @@ public final class WorldStreamTransport {
             this(scopeSha256, initialPolicy, backend, exteriorObjects, ViewDistance.NEAR);
         }
 
+        public Spec(
+                String scopeSha256,
+                long initialPolicy,
+                Backend backend,
+                boolean exteriorObjects,
+                ViewDistance viewDistance) {
+            this(
+                    scopeSha256,
+                    initialPolicy,
+                    backend,
+                    exteriorObjects,
+                    viewDistance,
+                    ObjectTextures.STANDARD);
+        }
+
         public Spec {
             Objects.requireNonNull(backend);
             Objects.requireNonNull(viewDistance);
+            Objects.requireNonNull(objectTextures);
             new WorldStreamEnvelope.Session(
                     new WorldStreamState.Nonce(1, 1), scopeSha256, initialPolicy);
         }
@@ -592,7 +640,8 @@ public final class WorldStreamTransport {
                         spec.scopeSha256(),
                         spec.initialPolicy(),
                         spec.exteriorObjects(),
-                        spec.viewDistance().residents());
+                        spec.viewDistance().residents(),
+                        spec.objectTextures().code);
         String backend =
                 spec.backend() == Backend.DEFAULT
                         ? null
@@ -802,6 +851,11 @@ public final class WorldStreamTransport {
         /** This session's resident neighborhood; commits name at most its residents. */
         public ViewDistance viewDistance() {
             return ViewDistance.of(descriptor.maxActive());
+        }
+
+        /** This session's object texture tier, which sets its shared objects GPU budget. */
+        public ObjectTextures objectTextures() {
+            return ObjectTextures.of(descriptor.objectTextures());
         }
 
         /** Protocol success is separate from process/resource drain. */
