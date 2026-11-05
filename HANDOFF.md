@@ -1,7 +1,7 @@
 # Current continuation entry point
 
 Development now happens on a single Windows machine. Live status is tracked on GitHub in
-#253 (Windows task list) and #186 (roadmap). The [Linux AI handoff, 2026-11-04](docs/ai-handoff-2026-11-04.md)
+[#253](https://github.com/aircan80/vimi/issues/253) (Windows task list) and [#186](https://github.com/aircan80/vimi/issues/186) (roadmap). The [Linux AI handoff, 2026-11-04](docs/ai-handoff-2026-11-04.md)
 and the [Windows handoff](docs/windows-dev-handoff.md) are historical, as is the release and task status below.
 
 # vimi development handoff

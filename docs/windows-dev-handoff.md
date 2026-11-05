@@ -2,8 +2,8 @@
 
 > **Historical document.** This was the one-time handoff from the Linux session.
 > Development now happens on a single Windows machine; there is no parallel Linux
-> session. Live status is tracked on GitHub in #253 (Windows task list) and #186
-> (roadmap). The sections below are kept as history, with small factual corrections.
+> session. Live status is tracked on GitHub in [#253](https://github.com/aircan80/vimi/issues/253) (Windows task list)
+> and [#186](https://github.com/aircan80/vimi/issues/186) (roadmap). The sections below are kept as history, with small factual corrections.
 
 Written 2026-11-05 from the Linux session. Main includes everything through #236. The
 latest release is v0.1.0-alpha.26.
@@ -27,7 +27,8 @@ Turn outdoor buildings off with `-Dvimi.world.exteriors=false`.
 
 ## Rules carried over from the Linux session
 
-These rules still apply on the Windows machine.
+Their intent still applies on the Windows machine, in tool-neutral form: no AI or
+tool attribution in commits or PRs.
 
 - No Claude attribution in commits or PRs: no `Co-Authored-By: Claude`, and no
   "Generated with Claude Code". This lives in the user's global CLAUDE.md on Linux.
@@ -45,9 +46,9 @@ These rules still apply on the Windows machine.
 ## State when Linux handed over
 
 Every PR from the Linux session is merged, including #238 (JavaFX natives in the
-app image, pinned deb `Depends`) and #241 (cn region CDN fallback). The plan was
-for the Linux session to publish **v0.1.0-alpha.27**. In the end the lead published
-it from Windows. Nothing remains in flight on Linux.
+app image, pinned deb `Depends`) and #241 (cn region CDN fallback). **v0.1.0-alpha.27**
+was published on 2026-11-05 from the #242 merge (`37dd876`); it predates #243–#245,
+which ship in alpha.28. Nothing remains in flight on Linux.
 
 Packaging follow-ups from the #238 review (low priority):
 - Add `libharfbuzz0b` to `DEB_DEPENDS`. On arm64, the glass and font natives link it directly.
