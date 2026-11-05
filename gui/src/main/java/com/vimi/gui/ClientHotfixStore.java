@@ -64,6 +64,37 @@ final class ClientHotfixStore implements AutoCloseable {
         default void beforeCopy(long copied, Cancellation token) {}
 
         default void afterSnapshotClose() {}
+
+        /** After a follow bound the new build, before its watch is written. */
+        default void beforeFollowWatch() {}
+
+        /** After a follow watched the new build, before the old build's watch is removed. */
+        default void beforeFollowUnwatch() {}
+
+        /** After a failed follow watch, before the new build's earlier binding is restored. */
+        default void beforeFollowRestore() {}
+    }
+
+    /**
+     * A confirmed follow. {@code bindingChanged} is false when the new build already used these
+     * bytes; {@code oldWatchCleared} is false when the old build is still checked on Refresh
+     * sources (a later apply of the same pair retries only that removal).
+     */
+    record FollowResult(Summary summary, boolean bindingChanged, boolean oldWatchCleared) {}
+
+    /**
+     * The new build was bound but its watch could not be written, and restoring its earlier
+     * binding failed too. The new build uses {@link #bound} and is not checked on Refresh
+     * sources; the old build keeps its import and its check.
+     */
+    static final class FollowIncomplete extends IOException {
+        private static final long serialVersionUID = 1L;
+        final transient Summary bound;
+
+        FollowIncomplete(Summary bound, Throwable cause) {
+            super("Client cache bound without its watch", cause);
+            this.bound = bound;
+        }
     }
 
     private final ThreadPoolExecutor worker =
@@ -210,6 +241,97 @@ final class ClientHotfixStore implements AutoCloseable {
      */
     CompletableFuture<List<RefreshResult>> refreshWatched(Cancellation token) {
         return submit(token, cancel -> unchecked(() -> refreshActual(cancel)));
+    }
+
+    /**
+     * After the user confirms, moves a watched original whose client now runs another build into
+     * that build's scope: the original is fully verified against {@code to}, imported, bound and
+     * watched there, and the watch leaves {@code from}. The binding of {@code from} never changes.
+     *
+     * <p>A failed future means neither build changed, except {@link FollowIncomplete}, which names
+     * the state left behind. Applying a pair that was already applied changes nothing; if only the
+     * old watch was left behind, it is removed then.
+     */
+    CompletableFuture<FollowResult> follow(Scope from, Scope to, Cancellation token) {
+        Objects.requireNonNull(from);
+        Objects.requireNonNull(to);
+        if (from.equals(to)
+                || !from.build().product().equals(to.build().product())
+                || !from.locale().equals(to.locale()))
+            throw new IllegalArgumentException("A client cache follows only its product and locale");
+        return submit(
+                token,
+                cancel ->
+                        unchecked(
+                                () -> {
+                                    ensureStorage();
+                                    return followActual(from, to, cancel);
+                                }));
+    }
+
+    private FollowResult followActual(Scope from, Scope to, Cancellation token)
+            throws IOException {
+        Path file = watch(from);
+        boolean toWatched = Files.exists(watch(to), LinkOption.NOFOLLOW_LINKS);
+        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
+            var current = readManifest(to);
+            // Already applied: a second apply of the same pair is a no-op.
+            if (current != null && toWatched) return new FollowResult(current, false, true);
+            throw new IOException("This build has no watched client cache");
+        }
+        var original = readWatch(file).original();
+        byte[] priorBinding = readPrivate(binding(to));
+        // Verifies the declared build against the target scope before anything is bound; a
+        // mismatch changes nothing. Identical bytes keep the existing binding.
+        var imported = importActual(to, original, true, token);
+        if (!imported.changed() && toWatched) {
+            // The new build already uses this original; only the old watch may be left.
+            return new FollowResult(imported.summary(), false, clearOldWatch(from, token));
+        }
+        try {
+            probe.beforeFollowWatch();
+            writeWatch(to, imported.input(), imported.source(), token);
+        } catch (IOException | RuntimeException failure) {
+            if (!imported.changed()) throw failure;
+            try {
+                // Restore the new build's earlier binding so the failure changes neither build.
+                probe.beforeFollowRestore();
+                Path binding = binding(to);
+                if (priorBinding == null) Files.deleteIfExists(binding);
+                else writeAtomic(binding, priorBinding, Cancellation.NONE);
+            } catch (IOException | RuntimeException restore) {
+                failure.addSuppressed(restore);
+                throw new FollowIncomplete(imported.summary(), failure);
+            }
+            throw failure;
+        }
+        return new FollowResult(imported.summary(), imported.changed(), clearOldWatch(from, token));
+    }
+
+    /** False when the old watch stays; the binding and new watch are already durable. */
+    private boolean clearOldWatch(Scope from, Cancellation token) {
+        try {
+            probe.beforeFollowUnwatch();
+            deleteWatch(from, token);
+            return true;
+        } catch (IOException | RuntimeException failure) {
+            if (token.isCanceled() || canceled(failure)) throw new CancellationException();
+            return false;
+        }
+    }
+
+    /** True when the build already has an imported cache or a watch that applying replaces. */
+    CompletableFuture<Boolean> occupied(Scope scope, Cancellation token) {
+        Objects.requireNonNull(scope);
+        return submit(
+                token,
+                cancel ->
+                        unchecked(
+                                () -> {
+                                    ensureStorage();
+                                    return Files.exists(binding(scope), LinkOption.NOFOLLOW_LINKS)
+                                            || Files.exists(watch(scope), LinkOption.NOFOLLOW_LINKS);
+                                }));
     }
 
     CompletableFuture<Snapshot> open(Scope scope, Cancellation token) {

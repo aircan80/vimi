@@ -12,6 +12,7 @@ import com.vibeminer.formats.definitions.TableSchema;
 import com.vibeminer.formats.definitions.WowLocale;
 import com.vibeminer.formats.tables.MemoryTables;
 import com.vibeminer.formats.tables.TableTypes;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -104,13 +105,25 @@ final class SpellTextsTest {
                             false,
                             null,
                             null));
+            // Array elements X[0..n] form one definition field X of length n, as in real data.
+            var element = java.util.regex.Pattern.compile("(.+)\\[(\\d+)\\]").matcher(field);
+            String fieldName = field;
+            int length = 1;
+            if (element.matches()) {
+                if (!element.group(2).equals("0")) {
+                    continue;
+                }
+                fieldName = element.group(1);
+                String prefix = fieldName + "[";
+                length = (int) names.stream().filter(n -> n.startsWith(prefix)).count();
+            }
             fields.add(
                     new TableSchema.SchemaColumn(
-                            field,
+                            fieldName,
                             kind,
                             text || floating ? null : 32,
                             text || floating ? null : false,
-                            1,
+                            length,
                             null,
                             TableSchema.KeyStorage.NONE,
                             TableSchema.KeyStorage.NONE,
@@ -425,8 +438,350 @@ final class SpellTextsTest {
         }
     }
 
+    private static MemoryTables.FakeTable auraOptions(List<Db2Types.Row> rows) {
+        return layout(
+                table(
+                        5,
+                        "SpellAuraOptions",
+                        List.of(
+                                "ID",
+                                "DifficultyID",
+                                "ProcChance",
+                                "SpellProcsPerMinuteID",
+                                "SpellID"),
+                        rows,
+                        TableTypes.State.READY),
+                "95F4D5E1");
+    }
+
+    private static SpellTexts.Description procPreview(String raw, List<Db2Types.Row> options) {
+        var world =
+                new MemoryTables()
+                        .add(
+                                BUILD,
+                                "enUS",
+                                List.of(
+                                        table(
+                                                1,
+                                                "Spell",
+                                                List.of("Description_lang"),
+                                                List.of(row(16929, raw)),
+                                                TableTypes.State.READY),
+                                        auraOptions(options)));
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70790")) {
+            return service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                    .join();
+        }
+    }
+
     @Test
-    void newScalarFormsRequirePercentUnitsAndEveryReviewedContextGuard() {
+    void procChanceReadsTheSingleDifficultyZeroAuraOptionsRow() {
+        var result =
+                procPreview(
+                        "A $h% chance.",
+                        List.of(
+                                row(7, "7", "0", "30", "0", "16929"),
+                                row(8, "8", "1", "50", "0", "16929")));
+        assertEquals("A 30% chance.", result.display());
+        assertTrue(
+                result.substitutions().getFirst().sources().stream()
+                        .anyMatch(s -> s.table().equals("SpellAuraOptions") && s.rowId() == 7));
+        for (var rows :
+                List.of(
+                        List.of(row(7, "7", "0", "0", "0", "16929")),
+                        List.of(row(7, "7", "0", "101", "0", "16929")),
+                        List.of(row(7, "7", "0", "30", "4", "16929")),
+                        List.of(
+                                row(7, "7", "0", "30", "0", "16929"),
+                                row(9, "9", "0", "20", "0", "16929")),
+                        List.<Db2Types.Row>of())) {
+            assertEquals(
+                    "A ?% chance.", procPreview("A $h% chance.", rows).display(), rows.toString());
+        }
+    }
+
+    private static Db2Types.Row typed(long id, String effect, String aura, String coefficient) {
+        var values = new ArrayList<>(scalar(id, 0, null).values());
+        values.set(FIELDS.indexOf("Effect"), effect);
+        values.set(FIELDS.indexOf("EffectAura"), aura);
+        values.set(FIELDS.indexOf("EffectBasePointsF"), "7");
+        values.set(FIELDS.indexOf("EffectBonusCoefficient"), coefficient);
+        return new Db2Types.Row(id, false, null, values, List.of());
+    }
+
+    @Test
+    void aCoefficientOfOneIsInertOnlyForReviewedAuraTypes() {
+        // Spell power scaled or unreviewed: health leech (9), school damage (2), heal (10), and
+        // periodic damage/heal, mana shield, periodic dummy and heal absorb auras.
+        for (var type :
+                List.of(
+                        List.of("9", "0"),
+                        List.of("2", "0"),
+                        List.of("10", "0"),
+                        List.of("3", "0"),
+                        List.of("6", "3"),
+                        List.of("6", "8"),
+                        List.of("6", "4"),
+                        List.of("6", "97"),
+                        List.of("6", "226"),
+                        List.of("6", "301"))) {
+            var scaled =
+                    scalarPreview(
+                            "Value $s1.",
+                            List.of(typed(101, type.get(0), type.get(1), "1")),
+                            List.of(),
+                            List.of());
+            assertEquals("Value ?.", scaled.display(), type.toString());
+            var unscaled =
+                    scalarPreview(
+                            "Value $s1.",
+                            List.of(typed(101, type.get(0), type.get(1), "0")),
+                            List.of(),
+                            List.of());
+            assertEquals("Value 7.", unscaled.display(), type.toString());
+        }
+        for (int aura : SpellTexts.INERT_COEFFICIENT_AURAS) {
+            assertEquals(
+                    "Value 7.",
+                    scalarPreview(
+                                    "Value $s1.",
+                                    List.of(typed(101, "6", Integer.toString(aura), "1")),
+                                    List.of(),
+                                    List.of())
+                            .display(),
+                    Integer.toString(aura));
+        }
+    }
+
+    @Test
+    void totalPeriodicValueNeedsAReadableAttributesArray() {
+        var tick = new ArrayList<>(scalar(101, 0, null).values());
+        tick.set(FIELDS.indexOf("EffectAura"), "3");
+        tick.set(FIELDS.indexOf("EffectBasePointsF"), "4");
+        tick.set(FIELDS.indexOf("EffectAuraPeriod"), "3000");
+        var misc = miscTable(List.of(row(90, "16929", "0", "1", "0", "0")));
+        // The same rows with an Attributes array that is not one verified 32-bit field.
+        var fields = new ArrayList<TableSchema.SchemaColumn>();
+        for (var field : misc.schema().columns()) {
+            fields.add(
+                    !field.name().equals("Attributes")
+                            ? field
+                            : new TableSchema.SchemaColumn(
+                                    "Attributes",
+                                    TableSchema.ColumnKind.INT,
+                                    16,
+                                    false,
+                                    17,
+                                    null,
+                                    TableSchema.KeyStorage.NONE,
+                                    TableSchema.KeyStorage.NONE,
+                                    true,
+                                    WowLocale.parse("enUS"),
+                                    null,
+                                    null));
+        }
+        var unreadable =
+                new MemoryTables.FakeTable(
+                        misc.entry(),
+                        misc.columns(),
+                        misc.rows(),
+                        new TableSchema(
+                                fields,
+                                misc.schema().layoutHashes(),
+                                misc.schema().match(),
+                                misc.schema().locale(),
+                                null),
+                        Map.of(),
+                        true);
+        var world =
+                new MemoryTables()
+                        .add(
+                                BUILD,
+                                "enUS",
+                                List.of(
+                                        table(
+                                                1,
+                                                "Spell",
+                                                List.of("Description_lang"),
+                                                List.of(row(16929, "Bleeds $o1 over $d.")),
+                                                TableTypes.State.READY),
+                                        table(
+                                                2,
+                                                "SpellEffect",
+                                                FIELDS,
+                                                List.of(
+                                                        new Db2Types.Row(
+                                                                101, false, null, tick, List.of())),
+                                                TableTypes.State.READY),
+                                        unreadable,
+                                        layout(
+                                                table(
+                                                        4,
+                                                        "SpellDuration",
+                                                        List.of(
+                                                                "Duration",
+                                                                "DurationPerLevel",
+                                                                "MaxDuration",
+                                                                "DurationPerResource"),
+                                                        List.of(row(1, "15000", "0", "15000", "0")),
+                                                        TableTypes.State.READY),
+                                                "4FDF0951")));
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70790")) {
+            var result =
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join();
+            assertEquals("Bleeds ? over 15 sec.", result.display());
+            assertEquals(
+                    "Whether the spell ticks on application is unreadable",
+                    result.substitutions().getFirst().issue());
+        }
+    }
+
+    @Test
+    void totalPeriodicValueRefusesSpellsThatTickOnApplication() {
+        var tick = new ArrayList<>(scalar(101, 0, null).values());
+        tick.set(FIELDS.indexOf("EffectAura"), "3");
+        tick.set(FIELDS.indexOf("EffectBasePointsF"), "4");
+        tick.set(FIELDS.indexOf("EffectAuraPeriod"), "3000");
+        var misc = miscTable(List.of(row(90, "16929", "0", "1", "0", "0")));
+        var rows = new ArrayList<Db2Types.Row>();
+        for (var row : misc.rows()) {
+            var values = new ArrayList<>(row.values());
+            values.set(6, "512");
+            rows.add(new Db2Types.Row(row.id(), false, null, values, List.of()));
+        }
+        var world =
+                new MemoryTables()
+                        .add(
+                                BUILD,
+                                "enUS",
+                                List.of(
+                                        table(
+                                                1,
+                                                "Spell",
+                                                List.of("Description_lang"),
+                                                List.of(row(16929, "Bleeds $o1 over $d.")),
+                                                TableTypes.State.READY),
+                                        table(
+                                                2,
+                                                "SpellEffect",
+                                                FIELDS,
+                                                List.of(
+                                                        new Db2Types.Row(
+                                                                101, false, null, tick, List.of())),
+                                                TableTypes.State.READY),
+                                        new MemoryTables.FakeTable(
+                                                misc.entry(),
+                                                misc.columns(),
+                                                rows,
+                                                misc.schema(),
+                                                Map.of(),
+                                                true),
+                                        layout(
+                                                table(
+                                                        4,
+                                                        "SpellDuration",
+                                                        List.of(
+                                                                "Duration",
+                                                                "DurationPerLevel",
+                                                                "MaxDuration",
+                                                                "DurationPerResource"),
+                                                        List.of(row(1, "15000", "0", "15000", "0")),
+                                                        TableTypes.State.READY),
+                                                "4FDF0951")));
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70790")) {
+            var result =
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join();
+            assertEquals("Bleeds ? over 15 sec.", result.display());
+            assertEquals(
+                    "The spell also ticks on application; the total is not computed",
+                    result.substitutions().getFirst().issue());
+        }
+    }
+
+    @Test
+    void totalPeriodicValueMultipliesAFixedTickByWholeTicks() {
+        var tick = new ArrayList<>(scalar(101, 0, null).values());
+        tick.set(FIELDS.indexOf("EffectAura"), "3");
+        tick.set(FIELDS.indexOf("EffectBasePointsF"), "4");
+        tick.set(FIELDS.indexOf("EffectAuraPeriod"), "3000");
+        var result =
+                scalarPreview(
+                        "Bleeds $o1 over $d, $m1 a tick.",
+                        List.of(new Db2Types.Row(101, false, null, tick, List.of())),
+                        List.of(row(90, "16929", "0", "1", "0", "0")),
+                        List.of(row(1, "15000", "0", "15000", "0")));
+        assertEquals("Bleeds 20 over 15 sec, 4 a tick.", result.display());
+        tick.set(FIELDS.indexOf("EffectBonusCoefficient"), "0.129");
+        assertEquals(
+                "Bleeds ? over 15 sec, ? a tick.",
+                scalarPreview(
+                                "Bleeds $o1 over $d, $m1 a tick.",
+                                List.of(new Db2Types.Row(101, false, null, tick, List.of())),
+                                List.of(row(90, "16929", "0", "1", "0", "0")),
+                                List.of(row(1, "15000", "0", "15000", "0")))
+                        .display());
+    }
+
+    @Test
+    void rankOverridesReplaceTheBaseAndAreNeverCached() {
+        var world = world(List.of(effect(99, "2", null)), false);
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70707")) {
+            var source = new SpellTexts.Source("CurvePoint", 85348, "Pos at rank 1", "3");
+            var ranked =
+                    service.description(
+                                    16929,
+                                    List.of(
+                                            new SpellTexts.EffectOverride(
+                                                    0, new BigDecimal("3"), null, List.of(source))),
+                                    TableTypes.Priority.INTERACTIVE,
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals("Increases armor by 3%.", ranked.display());
+            // The reverse: a cached plain preview never answers a later override request.
+            assertEquals(
+                    "Increases armor by 2%.",
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join()
+                            .display());
+            assertEquals(
+                    "Increases armor by 4%.",
+                    service.description(
+                                    16929,
+                                    List.of(
+                                            new SpellTexts.EffectOverride(
+                                                    0, new BigDecimal("4"), null, List.of())),
+                                    TableTypes.Priority.INTERACTIVE,
+                                    Cancellation.NONE)
+                            .join()
+                            .display());
+            assertTrue(ranked.substitutions().getFirst().sources().contains(source));
+            var unknown =
+                    service.description(
+                                    16929,
+                                    List.of(
+                                            new SpellTexts.EffectOverride(
+                                                    0, null, "No rank value", List.of())),
+                                    TableTypes.Priority.INTERACTIVE,
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals("Increases armor by ?%.", unknown.display());
+            assertEquals("No rank value", unknown.substitutions().getFirst().issue());
+            assertEquals(
+                    "Increases armor by 2%.",
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join()
+                            .display());
+        }
+    }
+
+    @Test
+    void fixedAmountsNeedEveryReviewedContextGuardButNoUnit() {
         for (String guard :
                 List.of(
                         "Variance",
@@ -439,9 +794,7 @@ final class SpellTextsTest {
                         "GroupSizeBasePointsCoefficient",
                         "PvpMultiplier",
                         "ScalingClass",
-                        "EffectAttributes",
-                        "EffectAuraPeriod",
-                        "EffectTriggerSpell")) {
+                        "EffectAttributes")) {
             var result =
                     scalarPreview(
                             "Slow by $s1%.", List.of(scalar(101, 0, guard)), List.of(), List.of());
@@ -454,7 +807,8 @@ final class SpellTextsTest {
                         List.of(scalar(101, 0, null), scalar(102, 1, null)),
                         List.of(),
                         List.of());
-        assertEquals("Amount ?; dummy ?.", unitless.display());
+        // The recorded number does not depend on a unit; a unitless use shows it as well.
+        assertEquals("Amount 50; dummy 80.", unitless.display());
         var duplicate =
                 scalarPreview(
                         "$s1%",
@@ -587,13 +941,17 @@ final class SpellTextsTest {
                         "EffectPointsPerResource",
                         "ScalingClass",
                         "Effect",
-                        "EffectAura",
                         "GroupSizeBasePointsCoefficient",
                         "EffectBonusCoefficient",
                         "PvpMultiplier")) {
             assertUnknown(world(List.of(effect(99, "5", context)), false));
         }
         assertUnknown(world(List.of(effect(99, "5", null), effect(100, "5", null)), false));
+        // A periodic damage aura scales with spell power when its coefficient is not zero.
+        var periodic = new ArrayList<>(effect(99, "5", null).values());
+        periodic.set(FIELDS.indexOf("EffectAura"), "3");
+        assertUnknown(
+                world(List.of(new Db2Types.Row(99, false, null, periodic, List.of())), false));
         assertUnknown(world(List.of(effect(99, "5", null)), true));
         assertUnknown(world(List.of(), false));
     }

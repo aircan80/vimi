@@ -17,7 +17,7 @@ import java.util.Objects;
  * select cache entries, authenticate sources, apply overlays or mint native capture evidence.
  */
 public final class HotfixRowDecoder {
-    public static final String REVISION = "hotfix-flat-dbd-v2";
+    public static final String REVISION = "hotfix-flat-dbd-v3";
 
     public enum Reason {
         LIMIT,
@@ -31,7 +31,11 @@ public final class HotfixRowDecoder {
         INLINE_ID,
         TRAILING_BYTES,
         /** Non-finite single; base DB2 rows refuse these too. */
-        FLOAT
+        FLOAT,
+        /**
+         * Negative value in a raw-physical column, whose base rows print unsigned physical values.
+         */
+        RAW_INTEGER
     }
 
     public static final class Invalid extends IllegalArgumentException {
@@ -75,10 +79,15 @@ public final class HotfixRowDecoder {
      * does not retain raw flags/id index, so they are explicit, not guessed from names.
      */
     public record Layout(
-            TableSchema schema, Db2Types.Header header, int nativeFlags, int nativeIdFieldIndex) {
+            TableSchema schema,
+            Db2Types.Header header,
+            int nativeFlags,
+            int nativeIdFieldIndex,
+            java.util.Set<Integer> fittedRawColumns) {
         public Layout {
             Objects.requireNonNull(schema);
             Objects.requireNonNull(header);
+            fittedRawColumns = java.util.Set.copyOf(fittedRawColumns);
             if (nativeFlags < 0
                     || nativeFlags > 65535
                     || nativeIdFieldIndex < 0
@@ -86,6 +95,54 @@ public final class HotfixRowDecoder {
                 throw new IllegalArgumentException("Hotfix layout scalars");
             }
         }
+
+        /** No raw-physical column admitted: any such column refuses the table. */
+        public Layout(
+                TableSchema schema,
+                Db2Types.Header header,
+                int nativeFlags,
+                int nativeIdFieldIndex) {
+            this(schema, header, nativeFlags, nativeIdFieldIndex, java.util.Set.of());
+        }
+    }
+
+    /**
+     * Whether a header column is a raw-physical integer the hotfix body may decode at its declared
+     * width: an unverified-name, non-relation field whose interpretation describes exactly the
+     * declared width and signedness. Raw-evidence and low-bit-collision columns never qualify. The
+     * caller must still show that every base value of the column fits that width.
+     */
+    public static boolean rawCandidate(Db2Types.Column column, TableSchema.SchemaColumn field) {
+        var raw = column.interpretation();
+        return raw != null
+                && Db2Types.RAW_PHYSICAL_POLICY.equals(raw.policy())
+                && Db2Types.UNVERIFIED_RAW_WARNING.equals(raw.warning())
+                && field.kind() == TableSchema.ColumnKind.INT
+                && field.id() == TableSchema.KeyStorage.NONE
+                && field.relation() == TableSchema.KeyStorage.NONE
+                && field.bits() != null
+                && raw.candidateBits() == field.bits()
+                && raw.candidateUnsigned() == Boolean.TRUE.equals(field.unsigned())
+                && raw.physicalBits() >= raw.candidateBits()
+                && !raw.physicalSigned();
+    }
+
+    /** Whether a base row's text for a raw candidate column is a value of its declared width. */
+    public static boolean fitsDeclared(String text, Db2Types.Interpretation raw) {
+        long value;
+        try {
+            value = Long.parseLong(text);
+        } catch (NumberFormatException notDecimal) {
+            return false;
+        }
+        int bits = raw.candidateBits();
+        // Base rows print the physical unsigned value; only non-negative declared values have the
+        // same text in base and hotfix rows.
+        long limit =
+                raw.candidateUnsigned()
+                        ? (bits >= 63 ? Long.MAX_VALUE : 1L << bits)
+                        : 1L << (bits - 1);
+        return value >= 0 && value < limit;
     }
 
     /** Values may include key material; toString deliberately does not render any cells. */
@@ -144,6 +201,8 @@ public final class HotfixRowDecoder {
                 if (field.id() == TableSchema.KeyStorage.NONINLINE) {
                     value = Long.toString(recordId);
                 } else if (field.kind() == TableSchema.ColumnKind.INT) {
+                    boolean rawColumn =
+                            layout.header().columns().get(values.size()).interpretation() != null;
                     int bits = field.bits();
                     need(input, bits / 8);
                     long raw = integer(input, bits);
@@ -152,14 +211,15 @@ public final class HotfixRowDecoder {
                             throw invalid(Reason.INLINE_ID);
                         }
                         value = Long.toString(recordId);
+                    } else if (Boolean.TRUE.equals(field.unsigned())) {
+                        value = Long.toUnsignedString(raw);
                     } else {
-                        value =
-                                Boolean.TRUE.equals(field.unsigned())
-                                        ? Long.toUnsignedString(raw)
-                                        : Long.toString(
-                                                bits == 64
-                                                        ? raw
-                                                        : (raw << (64 - bits)) >> (64 - bits));
+                        long signed = bits == 64 ? raw : (raw << (64 - bits)) >> (64 - bits);
+                        if (rawColumn && signed < 0) {
+                            // The base row would print a physical unsigned value instead.
+                            throw invalid(Reason.RAW_INTEGER);
+                        }
+                        value = Long.toString(signed);
                     }
                 } else if (field.kind() == TableSchema.ColumnKind.FLOAT) {
                     need(input, 4);
@@ -273,7 +333,9 @@ public final class HotfixRowDecoder {
                 if (!name.equals(actual.name())
                         || !kind.equals(actual.kind())
                         || actual.isId() != (field.id() != TableSchema.KeyStorage.NONE)
-                        || actual.interpretation() != null) {
+                        || actual.interpretation() != null
+                                && !(layout.fittedRawColumns().contains(column - 1)
+                                        && rawCandidate(actual, field))) {
                     throw invalid(Reason.COLUMNS);
                 }
             }

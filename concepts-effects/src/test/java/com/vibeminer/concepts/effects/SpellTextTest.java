@@ -222,4 +222,86 @@ final class SpellTextTest {
                     assertFalse(result.display().contains("|"), raw);
                 });
     }
+
+    @Test
+    void basePointsTotalPeriodicValueAndProcChance() {
+        var periodic =
+                new SpellText.Amount(
+                        new BigDecimal("4"),
+                        List.of(
+                                new SpellTexts.Source(
+                                        "SpellEffect", 7, "EffectAuraPeriod", "3000")),
+                        null,
+                        false,
+                        3000L);
+        var durations = new java.util.HashMap<Long, SpellText.Value>();
+        durations.put(
+                100L,
+                new SpellText.Value(
+                        "15 sec",
+                        List.of(new SpellTexts.Source("SpellDuration", 1, "Duration", "15000")),
+                        null,
+                        15000L,
+                        Boolean.FALSE));
+        var procs = new java.util.HashMap<Long, SpellText.Value>();
+        procs.put(100L, new SpellText.Value("30", List.of(), null));
+        var values =
+                new SpellText.Values(
+                        Map.of(100L, Map.of(0, periodic, 1, amount("10"))), durations, procs);
+        var result =
+                SpellText.project(
+                        100,
+                        "Bleeds for $o1 over $d, $m1 per tick, $M2 more; $h% chance.",
+                        values,
+                        List.of());
+        assertEquals(
+                "Bleeds for 20 over 15 sec, 4 per tick, 10 more; 30% chance.", result.display());
+        assertEquals(SpellTexts.State.RESOLVED, result.state());
+        assertEquals(0, result.substitutions().getFirst().effectIndex());
+        var needs = SpellText.needs(100, "$o1 $m2 $h $123h");
+        assertEquals(java.util.Set.of(100L), needs.amounts());
+        assertEquals(java.util.Set.of(100L), needs.durations());
+        assertEquals(java.util.Set.of(100L, 123L), needs.procChances());
+        var notPeriodic = SpellText.project(100, "Total $o2.", values, List.of());
+        assertEquals("Total ?.", notPeriodic.display());
+        assertEquals("Effect is not periodic", notPeriodic.substitutions().getFirst().issue());
+        var noDuration =
+                SpellText.project(
+                        100,
+                        "Total $o1.",
+                        new SpellText.Values(Map.of(100L, Map.of(0, periodic)), Map.of()),
+                        List.of());
+        assertTrue(
+                noDuration.substitutions().getFirst().issue().startsWith("Total periodic value"));
+        var partialTick = new java.util.HashMap<Long, SpellText.Value>();
+        partialTick.put(
+                100L, new SpellText.Value("10 sec", List.of(), null, 10000L, Boolean.FALSE));
+        assertEquals(
+                "Duration is not a whole number of ticks",
+                SpellText.project(
+                                100,
+                                "Total $o1.",
+                                new SpellText.Values(
+                                        Map.of(100L, Map.of(0, periodic)), partialTick),
+                                List.of())
+                        .substitutions()
+                        .getFirst()
+                        .issue());
+        assertEquals(
+                "Chance ?%.", SpellText.project(100, "Chance $h%.", Map.of(), List.of()).display());
+        // A duration whose tick-on-application attribute is unknown never gives a total.
+        var unknownTick = new java.util.HashMap<Long, SpellText.Value>();
+        unknownTick.put(100L, new SpellText.Value("15 sec", List.of(), null, 15000L, null));
+        assertEquals(
+                "Whether the spell ticks on application is unreadable",
+                SpellText.project(
+                                100,
+                                "Total $o1.",
+                                new SpellText.Values(
+                                        Map.of(100L, Map.of(0, periodic)), unknownTick),
+                                List.of())
+                        .substitutions()
+                        .getFirst()
+                        .issue());
+    }
 }

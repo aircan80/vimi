@@ -53,6 +53,105 @@ final class ClientHotfixDetails {
         return String.join(" · ", parts);
     }
 
+    /** A confirmed move of a watched cache into the build its client now runs. */
+    record BuildFollow(
+            ClientHotfixStore.Scope from, ClientHotfixStore.Scope to, int build, String prompt) {
+        String key() {
+            return from.key() + ">" + to.key();
+        }
+    }
+
+    /**
+     * The prompt for a watched cache whose client moved to another build, when exactly one
+     * prepared build of the same product and locale has that build number (same region preferred).
+     * Empty when nothing matches or the choice would be a guess; the user is never switched silently.
+     */
+    static java.util.Optional<BuildFollow> buildFollow(ClientHotfixStore.RefreshResult result,
+            List<BuildInfo> builds, List<PreparationHistory.Receipt> receipts) {
+        if (result.outcome() != ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED
+                || result.scope() == null || result.clientBuild() <= 0) return java.util.Optional.empty();
+        var from = result.scope();
+        int build = result.clientBuild();
+        var candidates = new java.util.ArrayList<ClientHotfixStore.Scope>();
+        for (var receipt : receipts) {
+            if (receipt.milestone() != BuildPreparation.Ready.TABLES_READY
+                    || !receipt.product().equals(from.build().product())
+                    || !from.locale().equals(canonicalLocale(receipt.locale()))
+                    || receipt.cdnConfig() == null || receipt.region() == null) continue;
+            for (var info : builds) {
+                if (!info.identity().equals(receipt.identity()) || !info.config().equals(receipt.config())
+                        || info.version() == null || !info.version().endsWith("." + build)) continue;
+                try {
+                    var to = new ClientHotfixStore.Scope(new com.vibeminer.builds.BuildTypes.BuildRef(
+                            receipt.product(), receipt.config(), receipt.cdnConfig(), receipt.region()),
+                            receipt.locale(), info.version());
+                    if (to.buildNumber() == build && !to.equals(from) && !candidates.contains(to))
+                        candidates.add(to);
+                } catch (IllegalArgumentException notExact) {
+                    // Only exact four-part versions can hold a client cache.
+                }
+            }
+        }
+        var sameRegion = candidates.stream()
+                .filter(to -> java.util.Objects.equals(to.build().region(), from.build().region())).toList();
+        var pick = sameRegion.size() == 1 ? sameRegion : candidates;
+        if (pick.size() != 1) return java.util.Optional.empty();
+        return java.util.Optional.of(new BuildFollow(from, pick.getFirst(), build,
+                "Client updated to build " + build + ". Apply this cache to build " + build + "?"));
+    }
+
+    /** Dialog body for a move; says when the new build's own import or check is replaced. */
+    static String followDetail(BuildFollow follow, boolean replacesExisting) {
+        return "The watched client cache now belongs to " + follow.to().version() + ". Applying imports it"
+                + " for that build and checks it there on Refresh sources"
+                + (replacesExisting ? ", replacing the import or check that build has now" : "")
+                + ". Build " + follow.from().version() + " keeps its current import either way.";
+    }
+
+    /** True when a finished or failed move changed the new build's binding (reopen it). */
+    static boolean followChangedBinding(ClientHotfixStore.FollowResult result, Throwable error) {
+        return result != null ? result.bindingChanged() : incomplete(error) != null;
+    }
+
+    /** Digest the new build is now bound to after a move that changed it, else null. */
+    static String followBoundSha(ClientHotfixStore.FollowResult result, Throwable error) {
+        if (result != null) return result.bindingChanged() ? result.summary().sha256() : null;
+        var incomplete = incomplete(error);
+        return incomplete == null || incomplete.bound == null ? null : incomplete.bound.sha256();
+    }
+
+    private static ClientHotfixStore.FollowIncomplete incomplete(Throwable error) {
+        for (int i = 0; i < 8 && error != null; i++, error = error.getCause())
+            if (error instanceof ClientHotfixStore.FollowIncomplete incomplete) return incomplete;
+        return null;
+    }
+
+    /**
+     * What to tell the user after a move, or null when it simply succeeded. Every text states the
+     * actual state of both builds; none claims "unchanged" unless nothing changed.
+     */
+    static String followOutcome(BuildFollow follow, ClientHotfixStore.FollowResult result, Throwable error) {
+        String n = follow.to().version(), m = follow.from().version();
+        if (result != null) {
+            return result.oldWatchCleared() ? null
+                    : "Build " + n + " now uses the cache and is checked on Refresh sources. Build " + m
+                            + " is still checked too; applying again removes that check.";
+        }
+        if (incomplete(error) != null)
+            return "Build " + n + " now uses the cache, but it is not checked on Refresh sources. Import it"
+                    + " for build " + n + " again with \"Check on Refresh sources\" ticked to keep it current."
+                    + " Build " + m + " keeps its import and its check.";
+        return failure(error) + " Nothing changed: build " + n + " and build " + m + " keep their imports and checks.";
+    }
+
+    private static String canonicalLocale(String locale) {
+        try {
+            return com.vibeminer.formats.definitions.WowLocale.parse(locale).code();
+        } catch (RuntimeException unknown) {
+            return null;
+        }
+    }
+
     static boolean refreshFailed(List<ClientHotfixStore.RefreshResult> results) {
         return results.stream().anyMatch(result -> result.outcome() == ClientHotfixStore.RefreshOutcome.FAILED);
     }

@@ -97,6 +97,41 @@ public final class TalentsService implements BuildTalents {
                                 .join());
     }
 
+    /**
+     * TraitTree talents take their rank values from TraitDefinitionEffectPoints curves; the spell's
+     * own base points describe another rank or none. Without a readable curve for an effect, that
+     * effect's value is shown as unknown rather than as the base points.
+     */
+    @Override
+    public CompletableFuture<com.vibeminer.concepts.effects.SpellTexts.Description> description(
+            TalentTypes.Talent talent, int rank, Cancellation token) {
+        if (talent.origin().model() != TalentTypes.Model.TRAIT_TREE
+                || talent.origin().traitDefinitionId() == null) {
+            return BuildTalents.super.description(talent, rank, token);
+        }
+        if (rank < 1 || rank > talent.maxRanks()) {
+            throw new IllegalArgumentException("Rank is outside the talent's recorded ranks");
+        }
+        long definition = talent.origin().traitDefinitionId();
+        long spell = talent.rankSpells().getFirst();
+        return submit(
+                token,
+                request ->
+                        spellTexts
+                                .description(
+                                        spell,
+                                        traits.rankPoints(definition, rank, request),
+                                        TableTypes.Priority.INTERACTIVE,
+                                        request)
+                                .join());
+    }
+
+    /** Rank values of a trait definition on the caller's thread; for tests. */
+    List<com.vibeminer.concepts.effects.SpellTexts.EffectOverride> rankPoints(
+            long definition, int rank, Cancellation token) {
+        return traits.rankPoints(definition, rank, token);
+    }
+
     @Override
     public CompletableFuture<TalentTypes.Catalog> catalog(Cancellation externalToken) {
         return submit(
@@ -306,7 +341,9 @@ public final class TalentsService implements BuildTalents {
                                                 description,
                                                 icon(spell),
                                                 TalentTypes.Origin.LEGACY,
-                                                iconIssue(spell)));
+                                                iconIssue(spell),
+                                                // Classic rule for legacy rows: 5 points per tier.
+                                                tier == 0 ? null : tier * 5));
                                 if (++total > MAX_CLASS_TALENTS) {
                                     throw invalid("Class talent count exceeds the supported bound");
                                 }
@@ -755,6 +792,27 @@ public final class TalentsService implements BuildTalents {
                 .join();
     }
 
+    /**
+     * Records of a table that the local client hotfix cache changes but the overlay could not
+     * decode (shown as UNKNOWN). Zero when no cache applies or the count is unavailable.
+     */
+    int hotfixUnknownRows(String name, Cancellation token) {
+        token.check();
+        try {
+            return tables.hotfixInfo(
+                            TableTypes.Ref.forName(name),
+                            null,
+                            TableTypes.Priority.INTERACTIVE,
+                            token)
+                    .join()
+                    .map(info -> info.unavailable() == null ? info.unknownRows() : 0)
+                    .orElse(0);
+        } catch (RuntimeException failure) {
+            cause(failure); // rethrows cancellation
+            return 0;
+        }
+    }
+
     TableTypes.RowResult get(String name, long id, Cancellation token) {
         token.check();
         return tables.get(TableTypes.Ref.forName(name), id, TableTypes.Priority.INTERACTIVE, token)
@@ -991,6 +1049,36 @@ public final class TalentsService implements BuildTalents {
 
         void textField(String name) {
             field(name, 1, false);
+        }
+
+        /** A verified or reviewed FLOAT field read as decimal text. */
+        void floatField(String name, int count) {
+            var fields = schema.columns().stream().filter(f -> f.name().equals(name)).toList();
+            if (fields.size() != 1) {
+                throw unsupported(name + " is not one verified field");
+            }
+            var field = fields.getFirst();
+            if (!field.verifiedName() && !reviewedLayout
+                    || field.arrayLength() != count
+                    || field.kind() != TableSchema.ColumnKind.FLOAT) {
+                throw unsupported(name + " has an unsupported type or cardinality");
+            }
+            for (int i = 0; i < count; i++) {
+                var column = columns.get(index(count == 1 ? name : name + "[" + i + "]"));
+                if (!column.kind().equals("float")
+                        || column.interpretation() != null
+                        || column.isId()) {
+                    throw unsupported(name + " is not a plain matching column");
+                }
+            }
+        }
+
+        java.math.BigDecimal decimal(Db2Types.Row row, String field) {
+            try {
+                return new java.math.BigDecimal(text(row, field));
+            } catch (NumberFormatException e) {
+                throw invalid("Invalid decimal " + field);
+            }
         }
 
         int index(String field) {

@@ -331,6 +331,8 @@ public final class VimiApp extends Application {
                     System.getLogger(VimiApp.class.getName()).log(System.Logger.Level.WARNING,
                             "Client hotfix refresh check failed: {0}", ClientHotfixDetails.failure(result.failure()));
             if (token.isCanceled()) throw new java.util.concurrent.CancellationException();
+            // Only a refresh that ran to completion may prompt.
+            offerBuildFollows(imports, results);
             if (ClientHotfixDetails.refreshFailed(results))
                 throw new IllegalStateException(hotfixRefreshSummary);
         }).exceptionally(error -> {
@@ -346,6 +348,68 @@ public final class VimiApp extends Application {
             throw new IllegalStateException("Client caches could not be checked: "
                     + ClientHotfixDetails.failure(cause));
         });
+    }
+
+    /** One prompt per move at a time; kept and applied moves are not offered again. */
+    private final ClientHotfixFollows buildFollows = new ClientHotfixFollows();
+
+    /**
+     * A watched cache whose client moved to a prepared build is offered to that build. The user
+     * decides; declining keeps the existing import. Nothing is switched silently.
+     */
+    private void offerBuildFollows(ClientHotfixStore imports, List<ClientHotfixStore.RefreshResult> results) {
+        if (results.stream().noneMatch(result ->
+                result.outcome() == ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED)) return;
+        service.listBuilds().thenAccept(builds -> {
+            for (var follow : buildFollows.offer(results, builds, service.preparedReceipts()))
+                imports.occupied(follow.to(), new com.vibeminer.access.Cancellation())
+                        .exceptionally(error -> true)
+                        .thenAccept(occupied -> Platform.runLater(() -> promptBuildFollow(imports, follow, occupied)));
+        }).exceptionally(error -> {
+            System.getLogger(VimiApp.class.getName()).log(System.Logger.Level.WARNING,
+                    "Could not match a client cache to a newer build: {0}", ClientHotfixDetails.failure(error));
+            return null;
+        });
+    }
+
+    private void promptBuildFollow(ClientHotfixStore imports, ClientHotfixDetails.BuildFollow follow,
+            boolean replacesExisting) {
+        if (closing) {
+            buildFollows.finished(follow, false);
+            return;
+        }
+        var apply = new javafx.scene.control.ButtonType("Apply to build " + follow.build(),
+                javafx.scene.control.ButtonBar.ButtonData.OK_DONE);
+        var keep = new javafx.scene.control.ButtonType("Keep current import",
+                javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
+        var alert = new javafx.scene.control.Alert(javafx.scene.control.Alert.AlertType.CONFIRMATION,
+                ClientHotfixDetails.followDetail(follow, replacesExisting), apply, keep);
+        alert.initOwner(root.getScene().getWindow());
+        alert.setTitle("Client hotfix cache");
+        alert.setHeaderText(follow.prompt());
+        alert.showAndWait().filter(apply::equals).ifPresentOrElse(ignored ->
+                imports.follow(follow.from(), follow.to(), new com.vibeminer.access.Cancellation())
+                        .whenComplete((result, error) -> Platform.runLater(() -> {
+                            // A move that changed nothing may be offered again by a later refresh.
+                            buildFollows.finished(follow, result != null
+                                    || ClientHotfixDetails.followChangedBinding(null, error));
+                            if (closing) return;
+                            String bound = ClientHotfixDetails.followBoundSha(result, error);
+                            if (bound != null)
+                                for (var job : service.preparation().jobs())
+                                    if (job.work() instanceof NativePreparationWork work && work.canImportHotfix()
+                                            && work.hotfixScope().equals(follow.to()))
+                                        work.noteRefreshedHotfix(bound);
+                            String outcome = ClientHotfixDetails.followOutcome(follow, result, error);
+                            if (outcome == null) return;
+                            var notice = new javafx.scene.control.Alert(
+                                    javafx.scene.control.Alert.AlertType.INFORMATION, outcome);
+                            notice.initOwner(root.getScene().getWindow());
+                            notice.setHeaderText(error == null ? "Cache applied to build " + follow.build()
+                                    : "Cache not fully applied to build " + follow.build());
+                            notice.show();
+                        })),
+                () -> buildFollows.declined(follow));
     }
 
     private void refreshSources(boolean startupRefresh) {
