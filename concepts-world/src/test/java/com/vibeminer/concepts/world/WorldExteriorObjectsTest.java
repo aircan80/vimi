@@ -1687,6 +1687,80 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void aGroupFileOverOneMebibyteIsReadAndDrawn() {
+        // The BASIC_EXTERIOR read profile follows WmoGroupSpans.MAX_BYTES (8 MiB): a group padded
+        // past the old 1 MiB cap with an unparsed chunk still draws.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            byte[] small = group(EXT);
+            int mogp = indexOf(small, "MOGP");
+            byte[] pad = chunk("ZZZZ", new byte[1 << 20]);
+            byte[] big = join(small, pad);
+            ByteBuffer.wrap(big)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(mogp + 4, small.length - mogp - 8 + pad.length);
+            assertTrue(big.length > 1 << 20);
+            f.files.sources.put(GROUP, big);
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+            }
+        }
+    }
+
+    @Test
+    void pendingGroupCopiesStayWithinWhatTheBudgetsCanDraw() {
+        // A cutout-only group larger than the whole material vertex budget is capped before its
+        // copy is held (BATCH_CAPPED, GROUP_EMPTY), exactly as resolving it would have; its image
+        // is never read.
+        int vertices = WorldExteriorObjects.MAX_MATERIAL_VERTICES + 1;
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            2,
+                            new long[] {GROUP, GROUP + 1},
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
+            f.files.sources.put(GROUP + 1, group(EXT, vertices, 1, List.of(new Batch(0, 3, 0, 1))));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_EMPTY));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
+                assertNull(f.files.opens.get(IMAGE2), "the capped cutout image is never read");
+            }
+        }
+        // Hostile input: three groups each with one opaque triangle and 65,535 cutout triangles,
+        // hold more candidate indices than both index budgets together; the root is capped whole
+        // instead of keeping every copy.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            3,
+                            new long[] {GROUP, GROUP + 1, GROUP + 2},
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
+            for (int g = 0; g < 3; g++) {
+                f.files.sources.put(
+                        GROUP + g,
+                        group(
+                                EXT,
+                                3,
+                                65536,
+                                List.of(
+                                        new Batch(0, 3, 0, 0),
+                                        // MOBA counts are u16: three batches of 21,845 triangles
+                                        new Batch(3, 65535, 0, 1),
+                                        new Batch(3 + 65535, 65535, 0, 1),
+                                        new Batch(3 + 2 * 65535, 65535, 0, 1))));
+            }
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertTrue(set.models().isEmpty());
+            }
+        }
+    }
+
+    @Test
     void wmoDoodadSetsComposeTheBuildingTransform() {
         double h = Math.sqrt(0.5);
         var defs =

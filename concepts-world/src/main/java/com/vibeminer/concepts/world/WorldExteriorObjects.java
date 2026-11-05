@@ -148,6 +148,9 @@ public final class WorldExteriorObjects {
      */
     private static final int SET_DOODAD_ADMITTED = 0x1 | 0x2 | 0x4 | 0x8 | 0x10;
 
+    // MODD 0x2 selects interior rather than exterior lighting; vimi lights every set doodad as
+    // exterior (BASIC profile, fixed light), so the flag is admitted but not honoured.
+
     /**
      * Whether texture1 of a batch is sampled with UV0: the batch's shader ID and texture count name
      * a vertex shader ({@link M2Combiners#name}, the reviewed transcription of wow.export
@@ -1404,6 +1407,8 @@ public final class WorldExteriorObjects {
             int[] local = new int[counts.length];
             var pending = new ArrayList<PendingMesh>();
             int tentativeVertices = 0, tentativeIndices = 0, tentativeRanges = 0;
+            // Heap held by pending copies: every candidate vertex and index of every kept group.
+            long pendingVertices = 0, pendingIndices = 0, tentativeMaterialVertices = 0;
             for (int g = 0; g < lod0; g++) {
                 token.check();
                 long groupId = root.gfid(g);
@@ -1415,6 +1420,33 @@ public final class WorldExteriorObjects {
                 var mesh = readGroup(g, groupId, root, local);
                 if (mesh == null) {
                     continue;
+                }
+                int meshVertices = mesh.vertices().length / VERTEX_FLOATS;
+                boolean materialOnly = mesh.ranges().stream().noneMatch(r -> r.blend() == OPAQUE);
+                if (materialOnly
+                        && !mesh.ranges().isEmpty()
+                        && meshVertices
+                                > MAX_MATERIAL_VERTICES
+                                        - materialVertices
+                                        - tentativeMaterialVertices) {
+                    // resolveBuilding would cap every range of this cutout- or blend-only mesh on
+                    // its vertices (BATCH_CAPPED, then GROUP_EMPTY) before reading any image; do it
+                    // now so its copy is never held. Material vertices still pending are charged
+                    // as if kept, a conservative bound.
+                    local[Count.BATCH_CAPPED.ordinal()] += mesh.ranges().size();
+                    local[Count.GROUP_EMPTY.ordinal()]++;
+                    continue;
+                }
+                if (materialOnly) {
+                    tentativeMaterialVertices += meshVertices;
+                }
+                pendingVertices += meshVertices;
+                pendingIndices += mesh.indices().length;
+                if (pendingVertices > MAX_VERTICES + MAX_MATERIAL_VERTICES
+                        || pendingIndices > MAX_INDICES + MAX_MATERIAL_INDICES) {
+                    // More candidate geometry than both budgets could ever draw: never hold it.
+                    count(Count.ROOT_CAPPED);
+                    return RootState.CAPPED;
                 }
                 pending.add(mesh);
                 // Caps are decided by opaque candidates alone, exactly as the opaque-only profile

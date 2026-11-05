@@ -319,10 +319,39 @@ class WmoGroupSpansTest {
                         assertEquals(triangles * 3, b.indices().size());
                     });
         }
-        // The format's own bound: 16-bit indices address at most 65,536 vertices.
-        var over = mesh();
-        over[0] = chunk("MOVT", new byte[(65536 + 1) * 12]);
-        reject(group(over));
+        // The format's own bound: 16-bit indices address at most 65,536 vertices. Every vertex
+        // stream at N, one triangle using index N - 1.
+        for (int n : new int[] {65536, 65537}) {
+            int last = Math.min(n, 65536) - 1;
+            var full =
+                    new byte[][] {
+                        chunk("MOVT", new byte[n * 12]),
+                        chunk("MONR", new byte[n * 12]),
+                        chunk("MOTV", new byte[n * 8]),
+                        chunk(
+                                "MOVI",
+                                buffer(6)
+                                        .putShort((short) 0)
+                                        .putShort((short) 1)
+                                        .putShort((short) last)
+                                        .array()),
+                        chunk("MOPY", new byte[2]),
+                        chunk("MOBA", batch(0, 3, last)),
+                        chunk("MOCV", new byte[n * 4])
+                    };
+            if (n == 65536) {
+                WmoGroupSpans.withGroup(
+                        group(full),
+                        () -> false,
+                        b -> assertEquals(65536 * 3, b.positions().size()));
+            } else {
+                var refused =
+                        assertThrows(
+                                IllegalArgumentException.class,
+                                () -> WmoGroupSpans.withGroup(group(full), () -> false, b -> {}));
+                assertEquals("Group stream count", refused.getMessage());
+            }
+        }
     }
 
     @Test
