@@ -49,6 +49,7 @@ public final class WorldStreamSourceControllerTest {
         missingNearestIsFiniteUnavailableWithoutFillingOutputUnion();
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
+        capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
         sameResidentCameraFrameDoesNotRetryMaterialPool();
         queuedGpuOwnerLateCloseIsPartOfControllerDrain();
         closeDuringActualInitialWdtQualificationIsCleanAndWaitsSourceDrain();
@@ -393,6 +394,64 @@ public final class WorldStreamSourceControllerTest {
                     && fixture.controller.snapshot().prepared()==9);
         } finally {
             release.countDown();
+            fixture.close();
+        }
+    }
+
+    /**
+     * Lost wake-up regression (#283): a tile preparation refused with RETRY_LATER for a non-pool
+     * reason (the geometry lane) waits for a capacity change. Here the change, the refused
+     * reservation's unused-credit CREDIT, lands after the refusal but before the controller records
+     * it. With the frozen test clock the controller must still retry, because capacity changed
+     * after the refused reservation was issued.
+     */
+    private static void capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation()
+            throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 1);
+        var geometry = com.vibeminer.concepts.world.AuthoredGeometryPressure.hold(fixture.world);
+        Path holdCredit = fixture.directory.resolve("authored-hold-unused-credit");
+        var seamRan = new java.util.concurrent.atomic.AtomicBoolean();
+        try {
+            Files.writeString(holdCredit, "hold");
+            Runnable seam = () -> {
+                if (!seamRan.compareAndSet(false, true)) return;
+                try {
+                    // Inside the window: free the geometry lane and let the refused
+                    // reservation's credit arrive, then wait for its capacity change.
+                    geometry.close();
+                    var session = fixture.gpu.session;
+                    long before = session.capacityRevision();
+                    Files.delete(holdCredit);
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                    while (session.capacityRevision() == before && System.nanoTime() < deadline)
+                        java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                    check(session.capacityRevision() != before,
+                            "The refused reservation's credit changed capacity inside the window");
+                } catch (Exception failure) {
+                    throw new AssertionError(failure);
+                }
+            };
+            // Install the seam before any tile can be prepared: the GPU starts first.
+            fixture.start(scope -> {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (fixture.controller == null && System.nanoTime() < deadline)
+                    java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                fixture.controller.tileRefusalSeam = seam;
+                return fixture.gpu.start(scope);
+            });
+            fixture.until(seamRan::get);
+            var blocked = WorldStreamSourceController.class.getDeclaredField("blockedOnMaterialPool");
+            blocked.setAccessible(true);
+            check(!blocked.getBoolean(fixture.controller),
+                    "A geometry-lane refusal waits on capacity, not on the material pool");
+            // The clock never advances: only the observed capacity change may trigger the retry.
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+        } finally {
+            Files.deleteIfExists(holdCredit);
+            geometry.close();
             fixture.close();
         }
     }

@@ -359,10 +359,24 @@ public final class WorldStreamTransport {
         private volatile boolean stop;
         private volatile WorldStreamProducerCancellation.Producer cancellation;
         private boolean produced, offerOutstanding, cancelOutstanding;
+        // Guarded by the session lock: the capacity revision when this reservation was issued and
+        // the capacity changes it made itself before its result completed (#283).
+        private long issuedCapacity;
+        private int ownCapacityChanges;
 
         private TileReservation(Session session, WorldStreamParentState.Ticket ticket) {
             this.session = session;
             this.ticket = ticket;
+        }
+
+        /**
+         * The capacity revision this reservation alone accounts for: the revision when it was
+         * issued plus its own retirement and drain changes up to its result. Once the result has
+         * completed, a session revision above this means capacity changed for some other reason
+         * since the reservation was issued, so a caller blocked by its refusal should retry.
+         */
+        public long capacityBaseline() {
+            return session.baseline(this);
         }
 
         public CompletableFuture<Resident> produce(PacketProducer producer) {
@@ -1136,6 +1150,20 @@ public final class WorldStreamTransport {
             }
         }
 
+        /** A capacity change caused by {@code reservation}'s own drain or retirement. */
+        private void capacityChanged(TileReservation reservation) {
+            synchronized (lock) {
+                capacityChanged();
+                reservation.ownCapacityChanges++;
+            }
+        }
+
+        private long baseline(TileReservation reservation) {
+            synchronized (lock) {
+                return reservation.issuedCapacity + reservation.ownCapacityChanges;
+            }
+        }
+
         /** Cheap metadata reservation; empty means genuine child/file credit is not available. */
         public java.util.Optional<TileReservation> tryReserveTile(int x, int y) {
             synchronized (lock) {
@@ -1147,6 +1175,7 @@ public final class WorldStreamTransport {
                     return java.util.Optional.empty();
                 }
                 tile = new TileReservation(this, reserved);
+                tile.issuedCapacity = capacityRevision;
                 return java.util.Optional.of(tile);
             }
         }
@@ -1279,9 +1308,9 @@ public final class WorldStreamTransport {
                     throw unavailable;
                 }
                 state.producerDrained(reservation.ticket);
-                capacityChanged();
+                capacityChanged(reservation);
                 state.retireTileFile(reservation.ticket);
-                capacityChanged();
+                capacityChanged(reservation);
                 reservation.result.completeExceptionally(
                         new java.util.concurrent.CancellationException(
                                 "World stopped before producer"));
@@ -1324,7 +1353,7 @@ public final class WorldStreamTransport {
                 error = cancellation.failure();
             }
             state.producerDrained(reservation.ticket);
-            capacityChanged();
+            capacityChanged(reservation);
             try {
                 if (error != null
                         && !(error instanceof PreparationRefusal refusal
@@ -1343,7 +1372,7 @@ public final class WorldStreamTransport {
                         packet = null;
                     }
                     state.retireTileFile(reservation.ticket);
-                    capacityChanged();
+                    capacityChanged(reservation);
                     synchronized (lock) {
                         var command = state.cancel(reservation.ticket);
                         if (command != null) {
@@ -1386,7 +1415,7 @@ public final class WorldStreamTransport {
                     packet.close();
                     packet = null;
                     state.retireTileFile(reservation.ticket);
-                    capacityChanged();
+                    capacityChanged(reservation);
                     synchronized (lock) {
                         var command = state.cancel(reservation.ticket);
                         if (command != null) {
