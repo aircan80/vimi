@@ -915,10 +915,14 @@ final class GpuPreviewService {
                                             + refusal.site() + ")")
                                     .orElse("This instance is outside the supported interior"
                                             + " profile (" + refusal.site() + ")");
+                    // Only the pending-asset site's detail is shown for a retry; every refusal
+                    // detail is fixed user-safe text (WorldTerrainStreaming.Refusal.detail).
                     case RETRY_LATER ->
-                            refusal.detail()
-                                    .map(detail -> "Can't show this interior yet: " + detail)
-                                    .orElse("Interior source is busy; retry shortly");
+                            "GLOBAL_ASSET_PENDING".equals(refusal.site())
+                                    ? refusal.detail()
+                                            .map(detail -> "Can't show this interior yet: " + detail)
+                                            .orElse("Interior source is busy; retry shortly")
+                                    : "Interior source is busy; retry shortly";
                     case SOURCE_INVALIDATED -> "Interior source changed; retry";
                 };
             }

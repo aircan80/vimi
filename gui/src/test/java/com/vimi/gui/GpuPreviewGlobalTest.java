@@ -27,6 +27,7 @@ public final class GpuPreviewGlobalTest {
             onlyPureCancellationChainsEndAStoppedPreparationClosed(root);
             capabilityUnavailableChildFailsWithItsMessageAndKeepsTheOwner(root);
             readyMessagesSayWhatWasLeftOut();
+            aNetworkReadFailsWithTheRetryMessage(root);
         } finally {
             try (var files = Files.walk(root)) {
                 for (var file : files.sorted(java.util.Comparator.reverseOrder()).toList()) {
@@ -418,6 +419,34 @@ public final class GpuPreviewGlobalTest {
         } catch (java.util.concurrent.ExecutionException expected) {
             require(expected.getCause().getMessage().equals("successor ran"), "successor ran");
         }
+        service.closeAsync().get(5, TimeUnit.SECONDS);
+    }
+
+    private static void aNetworkReadFailsWithTheRetryMessage(Path root) throws Exception {
+        var launches = new AtomicInteger();
+        var service = service(root, launches);
+        var states = new ConcurrentLinkedQueue<GpuPreviewService.Status>();
+        try (var fixture = new AuthoredGlobalSource()) {
+            fixture.failOpen(AuthoredGlobalSource.GROUP,
+                    com.vibeminer.files.FileTypes.FileReadState.NEEDS_NETWORK, null);
+            var done = service.openGlobal(new Object(),
+                    (parent, cancel) -> WorldGlobalSourceBridge.prepare(
+                            fixture.source(), fixture.scope(), parent, cancel),
+                    session -> {}, states::add);
+            try {
+                done.get(15, TimeUnit.SECONDS);
+                throw new AssertionError("A network read must not open the interior");
+            } catch (java.util.concurrent.ExecutionException expected) {
+                require(GpuPreviewService.globalMessage(expected.getCause()).equals(
+                        "Can't show this interior yet: some of the interior's files need the"
+                                + " network (offline or not downloaded yet); try again when online"),
+                        GpuPreviewService.globalMessage(expected.getCause()));
+            }
+        }
+        var last = states.stream().reduce((a, b) -> b).orElseThrow();
+        require(last.state() == GpuPreviewService.State.FAILED
+                && last.message().startsWith("Can't show this interior yet:"), "state " + last);
+        require(launches.get() == 0, "no child for a refused source");
         service.closeAsync().get(5, TimeUnit.SECONDS);
     }
 

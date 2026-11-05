@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.files.FileReadStream;
+import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.world.WdtSceneFacts;
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
@@ -430,6 +431,32 @@ class WorldGlobalScopesTest {
                                 return (AutoCloseable) () -> {};
                             })) {}
             assertTrue(f.source.isKnown(scope));
+        }
+    }
+
+    @Test
+    void wdtReadsUseTheSameNetworkAndEncryptionClassifier() throws Exception {
+        try (var f = new Fixture()) {
+            f.files.failedOpens.put(
+                    1L,
+                    new FileTypes.FileOpen(
+                            FileTypes.FileReadState.NEEDS_NETWORK, null, null, null, null));
+            var refused = assertThrows(WorldTerrainStreaming.Refusal.class, f::create);
+            assertEquals("GLOBAL_ASSET_PENDING", refused.site());
+            assertEquals(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER, refused.reason());
+        }
+        try (var f = new Fixture()) {
+            f.files.failedOpens.put(
+                    1L,
+                    new FileTypes.FileOpen(
+                            FileTypes.FileReadState.PROTECTED, null, null, null, null));
+            var refused = assertThrows(WorldTerrainStreaming.Refusal.class, f::create);
+            assertEquals("SOURCE_INPUT", refused.site());
+            assertEquals(
+                    java.util.Optional.of(
+                            "the map's WDT file is encrypted and its decryption key is not"
+                                    + " available"),
+                    refused.detail());
         }
     }
 

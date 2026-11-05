@@ -121,6 +121,13 @@ class WorldGlobalPureCodecTest {
                         + 8388608 * 4,
                 max.offsets().actualBytes());
         assertEquals(WorldGlobalLayout.MAX_ENCODED_BYTES, max.offsets().actualBytes());
+        // One group may exceed 16,384 vertices and triangles, up to the 16-bit MOVI domain (the
+        // largest real dungeon groups have about 17,300 vertices and 22,200 triangles).
+        new WorldGlobalHashes.Group(0, 20_000, 0, 66_600, 0, 1, 0x2805);
+        new WorldGlobalLayout.Counts(1, 1, 1, 1, 20_000, 66_600, 1, 1);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorldGlobalHashes.Group(0, 65_537, 0, 3, 0, 1, 0x2805));
         assertTrue(max.offsets().actualBytes() < WorldGlobalLayout.MAX_FILE_BYTES);
         assertEquals(1024, COUNTS.offsets().source());
         assertEquals(1280, COUNTS.offsets().material());

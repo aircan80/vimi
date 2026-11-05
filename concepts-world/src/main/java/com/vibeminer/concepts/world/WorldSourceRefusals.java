@@ -17,7 +17,10 @@ final class WorldSourceRefusals {
         WATER_ROOT_BINDING(WorldTerrainStreaming.Refusal.Reason.SOURCE_INVALIDATED),
         OUTPUT_CREDIT(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         GLOBAL_ASSET_CAPACITY(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
-        /** A global root, group or image read is partial, needs the network or is locked. */
+        /**
+         * A global map, root, group or image read needs the network (offline, no CDN route, a
+         * failed store or a fetch that stopped mid-read); its detail is user-safe fixed text.
+         */
         GLOBAL_ASSET_PENDING(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         GEOMETRY_CREDIT(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         SOURCE_WORKER(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),

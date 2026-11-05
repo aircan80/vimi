@@ -1015,9 +1015,7 @@ final class WorldGlobalAssetFactory {
             var batch = borrow.batches().get(b);
             int material = batch.materialIndex();
             skipUnless(
-                    material >= 0
-                            && material < root.materials().size()
-                            && root.materials().get(material).texture() > 0,
+                    material >= 0 && material < root.materials().size(),
                     "a batch without a textured material");
             skipUnless(
                     batch.firstIndex() % 3 == 0
@@ -1026,9 +1024,12 @@ final class WorldGlobalAssetFactory {
                             && batch.firstIndex() + batch.indexCount() <= borrow.indices().size(),
                     "a batch outside the group's indices");
             if (root.materials().get(material).rawWords().get(2) >= FIRST_BLENDED_MODE) {
-                blended++;
+                blended++; // Left out before its texture matters, so it never skips the group.
                 continue;
             }
+            skipUnless(
+                    root.materials().get(material).texture() > 0,
+                    "a batch without a textured material");
             drawnBatches.add(b);
             materials.add(material);
             drawn += batch.indexCount() / 3;

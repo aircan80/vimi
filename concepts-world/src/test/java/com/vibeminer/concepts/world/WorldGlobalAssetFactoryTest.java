@@ -1116,33 +1116,125 @@ class WorldGlobalAssetFactoryTest {
         }
     }
 
+    private static final String ENCRYPTED_GROUP =
+            "a WMO group file is encrypted and its decryption key is not available";
+
+    private static FileTypes.FileOpen failed(FileTypes.FileReadState state, String code) {
+        return new FileTypes.FileOpen(state, null, code, null, null);
+    }
+
+    private static void assertPending(Fixture f) {
+        var refused = assertThrows(WorldTerrainStreaming.Refusal.class, f::inspect);
+        assertEquals("GLOBAL_ASSET_PENDING", refused.site());
+        assertEquals(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER, refused.reason());
+        assertTrue(refused.detail().orElseThrow().contains("need the network"));
+        assertThrows(
+                WorldTerrainStreaming.Refusal.class,
+                () -> f.factory.createOwned(f.scope, SELECT, Cancellation.NONE));
+        assertEquals(0, f.scopes.payloadCredits());
+    }
+
     @Test
-    void aMissingGroupFileIsSkippedButATransientReadRefusesTheInteriorForARetry() throws Exception {
+    void missingAndEncryptedGroupsAreSkippedWithTheirReasons() throws Exception {
         try (var f = new Fixture()) {
-            // 998 is not in the build at all: a permanent, non-transient absence.
+            // 998 is not in the build at all: a permanent absence.
             f.files.sources.put(123L, root(new long[] {201, 998}, 301));
             var m = f.inspect();
             assertEquals(1, m.groups().size());
             assertEquals(java.util.Map.of("the group file is not readable", 1), m.skippedReasons());
         }
+        for (int variant = 0; variant < 3; variant++) {
+            try (var f = new Fixture()) {
+                // Holes, PARTIAL and PROTECTED all mean an unknown decryption key: retrying never
+                // helps, so the group is skipped, not the interior refused.
+                f.files.sources.put(202L, f.files.sources.get(201L));
+                f.files.sources.put(123L, root(new long[] {201, 202}, 301));
+                switch (variant) {
+                    case 0 -> f.files.protectedId = 202;
+                    case 1 ->
+                            f.files.failedOpens.put(
+                                    202L, failed(FileTypes.FileReadState.PARTIAL, null));
+                    default ->
+                            f.files.failedOpens.put(
+                                    202L, failed(FileTypes.FileReadState.PROTECTED, null));
+                }
+                var m = f.inspect();
+                assertEquals(1, m.groups().size(), "variant " + variant);
+                assertEquals(java.util.Map.of(ENCRYPTED_GROUP, 1), m.skippedReasons());
+            }
+        }
         try (var f = new Fixture()) {
-            // A read with holes (partly fetched) may complete later: never open with a hole.
-            f.files.protectedId = 201;
+            // An encrypted root or image cannot be skipped: the interior is refused, not retried.
+            f.files.failedOpens.put(301L, failed(FileTypes.FileReadState.PROTECTED, null));
             var refused = assertThrows(WorldTerrainStreaming.Refusal.class, f::inspect);
-            assertEquals("GLOBAL_ASSET_PENDING", refused.site());
-            assertEquals(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER, refused.reason());
-            assertTrue(refused.detail().orElseThrow().contains("try again"));
-            assertThrows(
-                    WorldTerrainStreaming.Refusal.class,
-                    () -> f.factory.createOwned(f.scope, SELECT, Cancellation.NONE));
-            assertEquals(0, f.scopes.payloadCredits());
+            assertEquals("SOURCE_INPUT", refused.site());
+            assertEquals(
+                    java.util.Optional.of(
+                            "a WMO image file is encrypted and its decryption key is not"
+                                    + " available"),
+                    refused.detail());
+        }
+    }
+
+    @Test
+    void networkReadsOfAGroupRootOrImageRefuseTheInteriorForARetry() throws Exception {
+        try (var f = new Fixture()) {
+            f.files.failedOpens.put(201L, failed(FileTypes.FileReadState.NEEDS_NETWORK, null));
+            assertPending(f);
+        }
+        try (var f = new Fixture()) {
+            f.files.failedOpens.put(123L, failed(FileTypes.FileReadState.NEEDS_NETWORK, null));
+            assertPending(f);
+        }
+        try (var f = new Fixture()) {
+            f.files.failedOpens.put(
+                    301L, failed(FileTypes.FileReadState.UNAVAILABLE, "CDN_OFFLINE"));
+            assertPending(f);
+        }
+        try (var f = new Fixture()) {
+            f.files.failedOpens.put(201L, failed(FileTypes.FileReadState.STORE_FAILED, null));
+            assertPending(f);
+        }
+        try (var f = new Fixture()) {
+            // Any other unavailable state is a missing group: skipped.
+            f.files.sources.put(202L, f.files.sources.get(201L));
+            f.files.sources.put(123L, root(new long[] {201, 202}, 301));
+            f.files.failedOpens.put(202L, failed(FileTypes.FileReadState.UNAVAILABLE, "OTHER"));
+            assertEquals(
+                    java.util.Map.of("the group file is not readable", 1),
+                    f.inspect().skippedReasons());
         }
         for (var state : FileTypes.FileReadState.values()) {
-            boolean expected =
-                    state == FileTypes.FileReadState.PARTIAL
-                            || state == FileTypes.FileReadState.NEEDS_NETWORK
-                            || state == FileTypes.FileReadState.PROTECTED;
-            assertEquals(expected, WorldGlobalScopes.transientState(state), state.name());
+            var expected =
+                    switch (state) {
+                        case NEEDS_NETWORK, STORE_FAILED -> WorldGlobalScopes.ReadOutcome.NETWORK;
+                        case PARTIAL, PROTECTED, WRONG_KEY ->
+                                WorldGlobalScopes.ReadOutcome.ENCRYPTED;
+                        default -> WorldGlobalScopes.ReadOutcome.UNAVAILABLE;
+                    };
+            assertEquals(expected, WorldGlobalScopes.classify(state, null), state.name());
+        }
+        for (String code : new String[] {"CDN_OFFLINE", "OBJECT_ACCESS_NO_CDN_CONTEXT"}) {
+            assertEquals(
+                    WorldGlobalScopes.ReadOutcome.NETWORK,
+                    WorldGlobalScopes.classify(FileTypes.FileReadState.UNAVAILABLE, code));
+        }
+    }
+
+    @Test
+    void anUntexturedBlendedBatchIsLeftOutWithoutSkippingItsGroup() throws Exception {
+        try (var f = new Fixture()) {
+            f.files.sources.put(302L, f.files.sources.get(301L));
+            byte[] root = withBlend(root(new long[] {201}, 301, 302), 1, 3);
+            // Material 1 names no texture (word 3 is 0).
+            ByteBuffer.wrap(root).order(ByteOrder.LITTLE_ENDIAN).putInt(92 + 64 + 12, 0);
+            f.files.sources.put(123L, root);
+            f.files.sources.put(201L, twoBatchGroup(0, 1));
+            var m = f.inspect();
+            assertEquals(1, m.groups().size());
+            assertEquals(1, m.groups().getFirst().batches());
+            assertEquals(1, m.skippedBlendedBatches());
+            assertEquals(0, m.skippedGroups());
         }
     }
 
