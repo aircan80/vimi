@@ -477,6 +477,13 @@ final class WorldPreparedTerrain {
         scopes.activate(scope);
     }
 
+    /** One serialized BASIC_EXTERIOR source operation for a recorded tile; owns no output. */
+    WorldExteriorObjects.TileObjects exteriorObjects(
+            WorldStreamScopes.Scope scope, WorldFormats.Tile tile, Cancellation cancel) {
+        checkOpen();
+        return WorldExteriorObjects.prepare(scopes, scope, tile, cancel);
+    }
+
     void invalidate() {
         invalidated = true;
     }

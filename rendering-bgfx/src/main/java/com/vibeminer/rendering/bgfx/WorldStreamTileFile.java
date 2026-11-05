@@ -200,7 +200,57 @@ final class WorldStreamTileFile {
             Source wdt,
             Source root,
             Source tex0,
-            List<Source> diffuse) {
+            List<Source> diffuse,
+            // Optional BASIC_EXTERIOR objects file named by exact length and SHA-256.
+            WorldStreamObjectsFile.Reference objects) {
+        /** Terrain-only header, without an objects file. */
+        Header(
+                WorldStreamState.Nonce nonce,
+                String scope,
+                long transaction,
+                WorldStreamState.Lease lease,
+                int x,
+                int y,
+                int chunks,
+                int vertices,
+                int indices,
+                String geometrySha256,
+                String materialDigest,
+                Outcome outcome,
+                Reason reason,
+                long[] coverage,
+                float maxX,
+                float maxY,
+                double uvError,
+                Source wdt,
+                Source root,
+                Source tex0,
+                List<Source> diffuse) {
+            this(
+                    nonce,
+                    scope,
+                    transaction,
+                    lease,
+                    x,
+                    y,
+                    chunks,
+                    vertices,
+                    indices,
+                    geometrySha256,
+                    materialDigest,
+                    outcome,
+                    reason,
+                    coverage,
+                    maxX,
+                    maxY,
+                    uvError,
+                    wdt,
+                    root,
+                    tex0,
+                    diffuse,
+                    null);
+        }
+
         Header {
             Objects.requireNonNull(nonce);
             Objects.requireNonNull(lease);
@@ -777,6 +827,10 @@ final class WorldStreamTileFile {
         putSource(out, 512, h.wdt());
         putSource(out, 560, h.root());
         putSource(out, 608, h.tex0());
+        if (h.objects() != null) {
+            out.position(656).putInt(h.objects().length()).putInt(0);
+            out.put(HexFormat.of().parseHex(h.objects().sha256()));
+        }
         for (int i = 0; i < h.diffuse().size(); i++) {
             putSource(out, 1024 + i * 48, h.diffuse().get(i));
         }
@@ -802,7 +856,16 @@ final class WorldStreamTileFile {
                             && lease.equals(expected.lease()),
                     "Header expectation");
             zero(bytes, 260, 512);
-            zero(bytes, 656, 1024);
+            WorldStreamObjectsFile.Reference objects = null;
+            if (in.getInt(656) == 0) {
+                zero(bytes, 656, 1024);
+            } else {
+                zero(bytes, 660, 664);
+                zero(bytes, 696, 1024);
+                objects =
+                        new WorldStreamObjectsFile.Reference(
+                                in.getInt(656), HexFormat.of().formatHex(bytes, 664, 696));
+            }
             int count = in.getInt(256);
             require(count >= 0 && count <= 64, "Diffuse count");
             zero(bytes, 1024 + count * 48, HEADER_BYTES);
@@ -849,7 +912,8 @@ final class WorldStreamTileFile {
                             getSource(in, 512, true),
                             getSource(in, 560, true),
                             getSource(in, 608, true),
-                            diffuse);
+                            diffuse,
+                            objects);
             require(
                     in.getInt(120) == header.geometryBytes()
                             && header.totalBytes() == in.getLong(16)

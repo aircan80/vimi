@@ -149,7 +149,7 @@ final class WorldStreamSourceController {
             this.reservation = reservation;
             producer =
                     new WorldStreamSourceBridge.Producer(
-                            source, water, scope, tile, () -> useful);
+                            source, water, true, scope, tile, () -> useful);
         }
     }
 
@@ -759,9 +759,20 @@ final class WorldStreamSourceController {
 
     private String readyDetail() {
         int textured = 0, partial = 0, height = 0, watered = 0;
+        int buildingTiles = 0, buildings = 0, buildingFailures = 0;
         String reason = "";
         for (var entry : current) {
             if (entry.source().waterCells() > 0) watered++;
+            switch (entry.resident().exteriorObjects()) {
+                case DRAWN -> {
+                    buildingTiles++;
+                    buildings += entry.source().exteriorPlacements();
+                }
+                case FAILED -> buildingFailures++;
+                default -> {
+                    if (entry.source().exteriorFailed()) buildingFailures++;
+                }
+            }
             var facts = entry.source().facts();
             if (facts.outcome() == WorldTerrainStreaming.Outcome.TEXTURED) {
                 textured++;
@@ -785,6 +796,10 @@ final class WorldStreamSourceController {
                 + " height fallback"
                 + (reason.isEmpty() ? "" : "; " + reason)
                 + (watered == 0 ? "" : "; static diagnostic water on " + watered)
+                + (buildingTiles == 0
+                        ? ""
+                        : "; " + buildings + " BASIC exterior buildings on " + buildingTiles)
+                + (buildingFailures == 0 ? "" : "; building objects failed on " + buildingFailures)
                 + (water != null && waterTables != null && waterTables.isDone() && !waterReady()
                         ? "; water tables unavailable"
                         : "")

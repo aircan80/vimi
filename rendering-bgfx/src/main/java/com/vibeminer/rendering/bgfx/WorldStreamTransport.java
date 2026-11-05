@@ -22,7 +22,16 @@ public final class WorldStreamTransport {
         D3D11
     }
 
-    public record Spec(String scopeSha256, long initialPolicy, Backend backend) {
+    /**
+     * {@code exteriorObjects} selects the BASIC_EXTERIOR_V1 session profile, under which each tile
+     * packet may carry one immutable objects file drawn after terrain.
+     */
+    public record Spec(
+            String scopeSha256, long initialPolicy, Backend backend, boolean exteriorObjects) {
+        public Spec(String scopeSha256, long initialPolicy, Backend backend) {
+            this(scopeSha256, initialPolicy, backend, false);
+        }
+
         public Spec {
             Objects.requireNonNull(backend);
             new WorldStreamEnvelope.Session(
@@ -46,6 +55,20 @@ public final class WorldStreamTransport {
     public enum Appearance {
         TEXTURED,
         HEIGHT_FALLBACK
+    }
+
+    /**
+     * Child-reported outcome of a tile's BASIC_EXTERIOR objects file; terrain never depends on it.
+     */
+    public enum ExteriorObjects {
+        /** The session is not in the exterior profile. */
+        NOT_IN_PROFILE,
+        /** The tile packet named no objects file. */
+        NONE,
+        /** Decoded and uploaded; drawn whenever the tile is committed. */
+        DRAWN,
+        /** Decode or upload failed; the tile's terrain stays staged and committable. */
+        FAILED
     }
 
     public enum Refusal {
@@ -126,6 +149,15 @@ public final class WorldStreamTransport {
         public int coveredRectangles() {
             return metadata.coverage;
         }
+
+        public ExteriorObjects exteriorObjects() {
+            return switch (metadata.objects) {
+                case 0 -> ExteriorObjects.NONE;
+                case 1 -> ExteriorObjects.DRAWN;
+                case 2 -> ExteriorObjects.FAILED;
+                default -> ExteriorObjects.NOT_IN_PROFILE;
+            };
+        }
     }
 
     /** Only producer/fixed-writer lanes receive this unadvertised owner; close is off JavaFX. */
@@ -133,9 +165,12 @@ public final class WorldStreamTransport {
         private final Object ownershipLock = new Object();
         private WorldStreamPacketFile.Moved moved;
         private final int outcome, coverage;
+        private final boolean objects;
 
-        private OwnedPacket(WorldStreamPacketFile.Moved moved, int outcome, int coverage) {
+        private OwnedPacket(
+                WorldStreamPacketFile.Moved moved, int outcome, int coverage, boolean objects) {
             this.moved = Objects.requireNonNull(moved);
+            this.objects = objects;
             if (!(outcome == 1 && coverage >= 1 && coverage <= 256
                     || outcome == 2 && coverage == 0)) {
                 throw new IllegalArgumentException("Packet appearance");
@@ -196,12 +231,14 @@ public final class WorldStreamTransport {
         private final Path path;
         private final WorldStreamProducerCancellation.Producer cancellation;
         private volatile boolean active = true;
+        private final boolean exteriorObjects;
 
         private PacketDestination(
                 WorldStreamEnvelope.Session descriptor,
                 WorldStreamParentState.Ticket ticket,
                 Path path,
                 WorldStreamProducerCancellation.Producer cancellation) {
+            exteriorObjects = descriptor.exteriorObjects();
             this.context =
                     new Context(
                             descriptor.nonce(),
@@ -247,6 +284,12 @@ public final class WorldStreamTransport {
             return context;
         }
 
+        /** Whether this session's profile admits a per-tile exterior objects file. */
+        public boolean exteriorObjects() {
+            requireActive();
+            return exteriorObjects;
+        }
+
         // The separately reviewed fixed writer performs MOVE inside the source's pinned resource
         // callback.
         OwnedPacket adopt(
@@ -272,10 +315,15 @@ public final class WorldStreamTransport {
             for (long word : writtenHeader.coverage()) {
                 coverage += Long.bitCount(word);
             }
+            if ((writtenHeader.objects() != null) != (moved.objectsPath() != null)
+                    || writtenHeader.objects() != null && !exteriorObjects) {
+                throw new IllegalArgumentException("Packet objects differ from owner or profile");
+            }
             return new OwnedPacket(
                     moved,
                     writtenHeader.outcome() == WorldStreamTileFile.Outcome.TEXTURED ? 1 : 2,
-                    coverage);
+                    coverage,
+                    writtenHeader.objects() != null);
         }
 
         private void requireActive() {
@@ -443,7 +491,8 @@ public final class WorldStreamTransport {
                 new WorldStreamEnvelope.Session(
                         new WorldStreamState.Nonce(high, low),
                         spec.scopeSha256(),
-                        spec.initialPolicy());
+                        spec.initialPolicy(),
+                        spec.exteriorObjects());
         String backend =
                 spec.backend() == Backend.DEFAULT
                         ? null
@@ -1036,7 +1085,8 @@ public final class WorldStreamTransport {
                                         expected.length(),
                                         expected.sha256(),
                                         packet.outcome,
-                                        packet.coverage);
+                                        packet.coverage,
+                                        packet.objects);
                         enqueueCommand(command);
                         packet = null;
                         published = true;
