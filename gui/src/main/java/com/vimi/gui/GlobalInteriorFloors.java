@@ -26,7 +26,8 @@ record GlobalInteriorFloors(List<Floor> floors, List<Unlinked> unlinked, String 
         AMBIGUOUS_GROUP("more than one group in this interior records its WMO group ID"),
         PLACEMENT_SCOPED("it also names a WMO placement, which is not matched yet"),
         UI_MAP_UNAVAILABLE("its UiMap record is unavailable"),
-        UNREADABLE("its group, placement or UiMap fields could not be read");
+        UNREADABLE("its group, placement or UiMap fields could not be read"),
+        OVER_LIMIT("it is beyond the per-map assignment list limit");
 
         final String text;
 
@@ -138,6 +139,29 @@ record GlobalInteriorFloors(List<Floor> floors, List<Unlinked> unlinked, String 
 
     static final String READING = "Floors: reading group-scoped UiMap assignments…";
 
+    /**
+     * The whole off-FX lookup: resolves the source, reads its group assignments and links them.
+     * Never throws; any failure (including an Error) becomes a not-linked result, and null is
+     * returned only when {@code cancel} was canceled, so nothing is published after close.
+     */
+    static GlobalInteriorFloors lookup(
+            java.util.function.Supplier<com.vibeminer.concepts.locations.BuildLocationMaps> maps,
+            long mapId,
+            GlobalInteriorOutline outline,
+            com.vibeminer.access.Cancellation cancel) {
+        GlobalInteriorFloors result;
+        try {
+            var source = maps == null ? null : maps.get();
+            result =
+                    source == null
+                            ? notLinked("UiMap tables are not ready for this build")
+                            : link(outline, source.wmoGroupAssignments(mapId, cancel).join());
+        } catch (Throwable failed) {
+            result = notLinked("group-scoped UiMap assignments could not be read");
+        }
+        return cancel.isCanceled() ? null : result;
+    }
+
     /** No floors and a reason, keeping the unknown-by-default wording. */
     static GlobalInteriorFloors notLinked(String reason) {
         return new GlobalInteriorFloors(
@@ -212,6 +236,9 @@ record GlobalInteriorFloors(List<Floor> floors, List<Unlinked> unlinked, String 
         if (recorded.unreadable() > 0) {
             counts.merge(Reason.UNREADABLE, recorded.unreadable(), Integer::sum);
         }
+        if (recorded.overLimit() > 0) {
+            counts.merge(Reason.OVER_LIMIT, recorded.overLimit(), Integer::sum);
+        }
         var unlinked = new ArrayList<Unlinked>();
         int unlinkedRows = 0;
         for (var entry : counts.entrySet()) {
@@ -262,12 +289,16 @@ record GlobalInteriorFloors(List<Floor> floors, List<Unlinked> unlinked, String 
         }
     }
 
+    /** True only when {@code start} itself lies on a parent cycle among the listed floors. */
     private static boolean cyclic(Map<Long, Linked> linked, long start) {
         var seen = new HashSet<Long>();
-        Long current = start;
+        Long current = linked.get(start).map.parentId();
         while (current != null && linked.containsKey(current)) {
-            if (!seen.add(current)) {
+            if (current == start) {
                 return true;
+            }
+            if (!seen.add(current)) {
+                return false;
             }
             current = linked.get(current).map.parentId();
         }
@@ -340,7 +371,9 @@ record GlobalInteriorFloors(List<Floor> floors, List<Unlinked> unlinked, String 
             int floors, Map<Long, Linked> linked, int unlinked, MapTypes.WmoGroupAssignments a) {
         int rows = linked.values().stream().mapToInt(l -> l.assignments.size()).sum();
         String partial =
-                a.state() == MapTypes.State.PARTIAL ? " · assignment table read partially" : "";
+                a.state() == MapTypes.State.PARTIAL
+                        ? " · some assignment or UiMap records were incomplete"
+                        : "";
         if (floors == 0) {
             return "Floors: not linked · "
                     + (unlinked == 0
@@ -355,7 +388,7 @@ record GlobalInteriorFloors(List<Floor> floors, List<Unlinked> unlinked, String 
                 + rows
                 + (rows == 1 ? " exact WMO group assignment" : " exact WMO group assignments")
                 + (unlinked == 0 ? "" : " · " + unlinked + " not linked")
-                + " · listed by UiMap ID, not by height"
+                + " · listed by UiMap ID within each level, not by height"
                 + partial;
     }
 }

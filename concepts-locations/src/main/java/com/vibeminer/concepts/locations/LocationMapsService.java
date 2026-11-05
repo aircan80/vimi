@@ -240,7 +240,7 @@ public final class LocationMapsService implements BuildLocationMaps {
         var issues = new ArrayList<String>();
         var result = new ArrayList<MapTypes.WmoGroupAssignment>();
         var parents = new java.util.LinkedHashMap<Long, MapTypes.MapInfo>();
-        int unreadable = 0;
+        int unreadable = 0, overLimit = 0;
         try {
             load("UiMap", 8192, request, issues);
             var assignments = load("UiMapAssignment", 16_384, request, issues);
@@ -274,7 +274,7 @@ public final class LocationMapsService implements BuildLocationMaps {
                 }
                 if (result.size() == MapTypes.WmoGroupAssignments.MAX_ASSIGNMENTS) {
                     MapTable.issue(issues, "Group assignments for this map exceed the list limit.");
-                    unreadable++;
+                    overLimit++;
                     continue;
                 }
                 var info = map(uiMap, issues);
@@ -305,6 +305,7 @@ public final class LocationMapsService implements BuildLocationMaps {
                     result,
                     List.copyOf(parents.values()),
                     unreadable,
+                    overLimit,
                     issues,
                     result.isEmpty() ? "No group-scoped UiMap assignment names this map." : null);
         } catch (MapTable.Projection failure) {
@@ -315,6 +316,7 @@ public final class LocationMapsService implements BuildLocationMaps {
                     worldMapId,
                     List.of(),
                     List.of(),
+                    0,
                     0,
                     issues,
                     failure.getMessage());

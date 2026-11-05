@@ -840,6 +840,41 @@ final class LocationMapsServiceTest {
     }
 
     @Test
+    void groupAssignmentsBeyondTheListLimitAreCountedSeparately() {
+        var fixture = groupFixture();
+        var rows = new ArrayList<Db2Types.Row>();
+        int total = MapTypes.WmoGroupAssignments.MAX_ASSIGNMENTS + 3;
+        for (int i = 0; i < total; i++) {
+            rows.add(
+                    row(
+                            10_000 + i,
+                            "0",
+                            "0",
+                            "1",
+                            "1",
+                            "100",
+                            "-100",
+                            "-1000",
+                            "200",
+                            "100",
+                            "1000",
+                            "2001",
+                            "0",
+                            "1",
+                            "0",
+                            String.valueOf(100 + i)));
+        }
+        replace(fixture, assignments(rows));
+        try (var tables = open(fixture);
+                var service = new LocationMapsService(tables)) {
+            var result = service.wmoGroupAssignments(1, Cancellation.NONE).join();
+            assertEquals(MapTypes.WmoGroupAssignments.MAX_ASSIGNMENTS, result.assignments().size());
+            assertEquals(3, result.overLimit());
+            assertEquals(0, result.unreadable());
+        }
+    }
+
+    @Test
     void defaultGroupAssignmentQueryIsUnsupported() {
         BuildLocationMaps minimal =
                 new BuildLocationMaps() {

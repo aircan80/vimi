@@ -276,7 +276,11 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
      * Frames the floor's exactly linked groups. Replaces the latest camera only, like a group jump.
      */
     private void jumpToFloor(GlobalInteriorFloors.Floor floor) {
-        if (closed || session == null || overview == null || groups.isDisabled()) {
+        if (closed
+                || session == null
+                || overview == null
+                || groups.isDisabled()
+                || floorList.isDisabled()) {
             return;
         }
         var target = floor.camera();
@@ -303,27 +307,11 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
                 .name("global-interior-floors")
                 .start(
                         () -> {
-                            GlobalInteriorFloors result;
-                            try {
-                                var source = maps == null ? null : maps.get();
-                                result =
-                                        source == null
-                                                ? GlobalInteriorFloors.notLinked(
-                                                        "UiMap tables are not ready for this build")
-                                                : GlobalInteriorFloors.link(
-                                                        outline,
-                                                        source.wmoGroupAssignments(mapId, lookup)
-                                                                .join());
-                            } catch (RuntimeException failed) {
-                                if (lookup.isCanceled()) {
-                                    return;
-                                }
-                                result =
-                                        GlobalInteriorFloors.notLinked(
-                                                "group-scoped UiMap assignments could not be read");
+                            var result =
+                                    GlobalInteriorFloors.lookup(maps, mapId, outline, lookup);
+                            if (result != null) {
+                                Platform.runLater(() -> showFloors(result));
                             }
-                            var published = result;
-                            Platform.runLater(() -> showFloors(published));
                         });
     }
 

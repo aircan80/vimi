@@ -21,6 +21,7 @@ public final class GlobalInteriorFloorsTest {
         nothingIsInferredWithoutAnExactAssignment();
         unavailableSourcesAndUnreadableGroupsStayNotLinked();
         parentCyclesListEveryFloorOnce();
+        lookupNeverThrowsAndPublishesNothingAfterCancel();
         System.out.println(
                 "Global interior floors: exact WMO group links, hierarchy, framing and unlinked"
                         + " reasons passed");
@@ -83,6 +84,7 @@ public final class GlobalInteriorFloorsTest {
                 List.of(rows),
                 List.of(ZONE),
                 unreadable,
+                0,
                 List.of(),
                 null);
     }
@@ -136,7 +138,7 @@ public final class GlobalInteriorFloorsTest {
                 linked.summary()
                         .equals(
                                 "Floors: 2 UiMap layers linked by 4 exact WMO group assignments · 6"
-                                        + " not linked · listed by UiMap ID, not by height"),
+                                        + " not linked · listed by UiMap ID within each level, not by height"),
                 linked.summary());
         require(GlobalInteriorFloors.typeText(9).equals("UiMap type 9"), "unknown type raw");
         require(GlobalInteriorFloors.typeText(null).equals("UiMap type unknown"), "no type");
@@ -243,11 +245,20 @@ public final class GlobalInteriorFloorsTest {
                         List.of(row(1, UPPER, 2001, 77, 0)),
                         List.of(),
                         0,
+                        3,
                         List.of("partial"),
                         null);
         var linked = GlobalInteriorFloors.link(outline(), partial);
         require(linked.floors().size() == 1, "partial table still links exact rows");
-        require(linked.summary().endsWith("assignment table read partially"), linked.summary());
+        require(
+                linked.summary().endsWith("some assignment or UiMap records were incomplete"),
+                linked.summary());
+        var over = linked.unlinked();
+        require(
+                over.size() == 1
+                        && over.getFirst().reason() == GlobalInteriorFloors.Reason.OVER_LIMIT
+                        && over.getFirst().count() == 3,
+                "rows beyond the list limit are their own reason: " + over);
         require(
                 linked.floors().getFirst().parentName() == null
                         && linked.floors().getFirst().details().contains("parent UiMap #1411"),
@@ -266,6 +277,123 @@ public final class GlobalInteriorFloorsTest {
                         .equals(List.of(3001L, 3002L)),
                 "both cyclic floors listed once: " + floors);
         require(floors.stream().allMatch(f -> f.depth() == 0), "cycles are listed flat");
+        // C's parent A is on the A<->B cycle, but C itself is not: it stays nested under A.
+        var c = map(3003, "C", 3001L, 4);
+        var tail =
+                GlobalInteriorFloors.link(
+                                outline(),
+                                recorded(
+                                        0,
+                                        row(1, a, 3001, 77, 0),
+                                        row(2, b, 3002, 78, 0),
+                                        row(3, c, 3003, 77, 0)))
+                        .floors();
+        require(tail.size() == 3, "every floor once: " + tail);
+        var nested = tail.stream().filter(f -> f.uiMapId() == 3003).findFirst().orElseThrow();
+        require(nested.depth() == 1, "a floor leading into a cycle stays nested: " + tail);
+        int ai = tail.indexOf(tail.stream().filter(f -> f.uiMapId() == 3001).findFirst().get());
+        require(tail.indexOf(nested) == ai + 1, "nested directly under its parent: " + tail);
+    }
+
+    private static com.vibeminer.concepts.locations.BuildLocationMaps source(
+            java.util.function.Function<
+                            Long,
+                            java.util.concurrent.CompletableFuture<MapTypes.WmoGroupAssignments>>
+                    query) {
+        return new com.vibeminer.concepts.locations.BuildLocationMaps() {
+            public java.util.concurrent.CompletableFuture<MapTypes.Resolution> resolve(
+                    com.vibeminer.concepts.locations.LocationTypes.Location location,
+                    com.vibeminer.access.Cancellation token) {
+                throw new AssertionError();
+            }
+
+            public java.util.concurrent.CompletableFuture<MapTypes.Artwork> artwork(
+                    long uiMapId, com.vibeminer.access.Cancellation token) {
+                throw new AssertionError();
+            }
+
+            public java.util.concurrent.CompletableFuture<MapTypes.TileImage> tile(
+                    long uiMapId, long tileRowId, com.vibeminer.access.Cancellation token) {
+                throw new AssertionError();
+            }
+
+            @Override
+            public java.util.concurrent.CompletableFuture<MapTypes.WmoGroupAssignments>
+                    wmoGroupAssignments(long worldMapId, com.vibeminer.access.Cancellation token) {
+                return query.apply(worldMapId);
+            }
+
+            public java.util.concurrent.CompletableFuture<Void> closeAsync() {
+                return java.util.concurrent.CompletableFuture.completedFuture(null);
+            }
+        };
+    }
+
+    private static void lookupNeverThrowsAndPublishesNothingAfterCancel() {
+        var live = new com.vibeminer.access.Cancellation();
+        var asked = new java.util.concurrent.atomic.AtomicLong();
+        var ok =
+                GlobalInteriorFloors.lookup(
+                        () ->
+                                source(
+                                        id -> {
+                                            asked.set(id);
+                                            return java.util.concurrent.CompletableFuture
+                                                    .completedFuture(sample());
+                                        }),
+                        249,
+                        outline(),
+                        live);
+        require(asked.get() == 249 && ok.floors().size() == 2, "lookup queries the map and links");
+        require(
+                GlobalInteriorFloors.lookup(null, 249, outline(), live)
+                        .summary()
+                        .contains("not ready"),
+                "no supplier");
+        require(
+                GlobalInteriorFloors.lookup(() -> null, 249, outline(), live)
+                        .summary()
+                        .contains("not ready"),
+                "no source yet");
+        for (Throwable failure :
+                List.<Throwable>of(new IllegalStateException("x"), new AssertionError("x"))) {
+            var failed =
+                    GlobalInteriorFloors.lookup(
+                            () ->
+                                    source(
+                                            id ->
+                                                    java.util.concurrent.CompletableFuture
+                                                            .failedFuture(failure)),
+                            249,
+                            outline(),
+                            live);
+            require(
+                    failed.floors().isEmpty() && failed.summary().contains("could not be read"),
+                    "failure " + failure + " becomes not linked: " + failed.summary());
+        }
+        var thrower =
+                GlobalInteriorFloors.lookup(
+                        () -> {
+                            throw new AssertionError("supplier");
+                        },
+                        249,
+                        outline(),
+                        live);
+        require(thrower.summary().contains("could not be read"), "an Error never escapes");
+        var canceled = new com.vibeminer.access.Cancellation();
+        canceled.cancel();
+        require(
+                GlobalInteriorFloors.lookup(
+                                () ->
+                                        source(
+                                                id ->
+                                                        java.util.concurrent.CompletableFuture
+                                                                .completedFuture(sample())),
+                                249,
+                                outline(),
+                                canceled)
+                        == null,
+                "nothing is published after close");
     }
 
     private static Vec3 v(float x, float y, float z) {

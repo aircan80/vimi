@@ -73,14 +73,15 @@ by exact keys only.
 - **Match.** `GlobalInteriorFloors.link` (pure, off FX) links a row when its placement ID is 0, its
   UiMap record is readable and exactly one group's MOGP header records the same group ID
   (`GroupHeader.groupId`, kept as `GlobalInteriorOutline.Group.recordedGroupId`). Groups with
-  group ID 0 never match.
+  group ID 0 never match. Matching assumes the row belongs to the one drawn WMO, which holds only for these
+  single-global-WMO maps; IDs shared by two groups are reported as ambiguous, never picked.
 - **Not linked.** Every other row is counted, with up to 8 example group IDs, under one reason:
   no recorded group has the ID; more than one group has it (ambiguous); the row also names a WMO
   placement (not matched yet); the UiMap record is unavailable; or the row's fields could not be
-  read.
+  read; or the row is beyond the 1024-row per-map list limit.
 - **Hierarchy.** Each linked UiMap is one entry with its recorded type and parent. A UiMap whose
-  ParentUiMapID is another listed floor is nested under it; parent cycles are listed flat. Floors
-  are ordered by UiMap ID, not by height.
+  ParentUiMapID is another listed floor is nested under it; floors on a parent cycle are listed
+  flat. Floors are ordered by UiMap ID within each level, not by height.
 - **Select.** A floor entry lists its groups in file order. Selecting it frames the union of
   those groups' usable boxes with the same inspection framing as the overview; it replaces only the
   latest camera, so the transport protocol is unchanged. Floors whose groups cannot frame a camera

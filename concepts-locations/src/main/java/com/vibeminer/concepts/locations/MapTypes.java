@@ -127,7 +127,8 @@ public final class MapTypes {
     /**
      * Every readable group-scoped assignment for one world map, with the UiMap records their
      * parents name (one level). {@code unreadable} counts rows for the map whose group, placement
-     * or UiMap fields could not be read; they are never matched.
+     * or UiMap fields could not be read; {@code overLimit} counts readable rows beyond {@link
+     * #MAX_ASSIGNMENTS}. Neither is ever matched.
      */
     public record WmoGroupAssignments(
             State state,
@@ -137,6 +138,7 @@ public final class MapTypes {
             List<WmoGroupAssignment> assignments,
             List<MapInfo> parents,
             int unreadable,
+            int overLimit,
             List<String> issues,
             String message) {
         public static final int MAX_ASSIGNMENTS = 1024;
@@ -146,7 +148,7 @@ public final class MapTypes {
             assignments = List.copyOf(assignments);
             parents = List.copyOf(parents);
             issues = List.copyOf(issues);
-            if (assignments.size() > MAX_ASSIGNMENTS || unreadable < 0) {
+            if (assignments.size() > MAX_ASSIGNMENTS || unreadable < 0 || overLimit < 0) {
                 throw new IllegalArgumentException("Group assignments exceed their limits");
             }
         }
@@ -159,6 +161,7 @@ public final class MapTypes {
                     worldMapId,
                     List.of(),
                     List.of(),
+                    0,
                     0,
                     List.of(),
                     "Group-scoped UiMap assignments are not readable from this source.");
