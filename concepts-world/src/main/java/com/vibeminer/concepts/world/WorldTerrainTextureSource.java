@@ -1213,14 +1213,12 @@ public final class WorldTerrainTextureSource {
         return failure instanceof SourceFailure known && known.reason == Reason.CHANGED;
     }
 
+    /** Rethrows a pure cancellation; a real failure, even one caused by a stop, stays itself. */
     private static void propagateCancellation(Request request, RuntimeException failure) {
         request.check();
-        Throwable value = failure;
-        for (int i = 0; i < 16 && value.getCause() != null; i++) {
-            value = value.getCause();
-        }
-        if (value instanceof CancellationException canceled) {
-            throw canceled;
+        var stop = WorldSourceRefusals.cleanCancellation(failure);
+        if (stop != null) {
+            throw stop;
         }
     }
 }

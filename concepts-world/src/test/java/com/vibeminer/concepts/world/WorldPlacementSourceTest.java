@@ -302,6 +302,32 @@ class WorldPlacementSourceTest {
     }
 
     @Test
+    void realFailureCausedByACancellationIsUnavailableAndPureChainsStayCancellation()
+            throws Exception {
+        var joined = new java.util.concurrent.CancellationException("join");
+        joined.initCause(new java.util.concurrent.CancellationException());
+        var source = new Source();
+        source.statFailure = new IllegalStateException("cleanup failed", joined);
+        var reader = new WorldPlacementSource(source.files());
+        try {
+            var result = reader.read(MAP, tile(91, 1), Cancellation.NONE).get(5, TimeUnit.SECONDS);
+            assertEquals(WorldPlacementSource.State.UNAVAILABLE, result.state());
+            source.statFailure = joined;
+            var canceled =
+                    assertThrows(
+                            Exception.class,
+                            () ->
+                                    reader.read(MAP, tile(91, 1), Cancellation.NONE)
+                                            .get(5, TimeUnit.SECONDS));
+            assertTrue(
+                    WorldSourceRefusals.cleanCancellation(canceled) != null,
+                    "a pure chain stays a clean stop: " + canceled);
+        } finally {
+            reader.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void recordAndEntryCacheBudgetsEvictWholeFactsDeterministically() throws Exception {
         var source = new Source();
         source.records = 4096;
@@ -443,6 +469,7 @@ class WorldPlacementSourceTest {
                 closed = new AtomicInteger();
         volatile boolean wrongId, postReadChange, changeId;
         volatile String key = "a".repeat(32);
+        volatile Throwable statFailure;
         int mode, records;
 
         FileTypes.FileStat stat(long id, Cancellation token) {
@@ -482,6 +509,9 @@ class WorldPlacementSourceTest {
                                     assertTrue(
                                             ref.fileDataId() >= 91 && ref.fileDataId() < 999,
                                             "onlyrecordedobj0IDs");
+                                    if (statFailure != null) {
+                                        return CompletableFuture.failedFuture(statFailure);
+                                    }
                                     return CompletableFuture.completedFuture(
                                             stat(ref.fileDataId(), (Cancellation) args[1]));
                                 }

@@ -181,12 +181,10 @@ public final class WorldPlacementSource {
                 result = load(request);
             } catch (RuntimeException unavailable) {
                 check(request);
-                Throwable cause = unavailable;
-                for (int i = 0; i < 16 && cause.getCause() != null; i++) {
-                    cause = cause.getCause();
-                }
-                if (cause instanceof java.util.concurrent.CancellationException canceled) {
-                    throw canceled;
+                // Only a pure cancellation chain stops; a real failure caused by one stays itself.
+                var stop = WorldSourceRefusals.cleanCancellation(unavailable);
+                if (stop != null) {
+                    throw stop;
                 }
                 result = Result.unavailable("World object metadata unavailable");
             }

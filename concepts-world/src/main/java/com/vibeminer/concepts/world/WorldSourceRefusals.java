@@ -117,6 +117,23 @@ final class WorldSourceRefusals {
     }
 
     /**
+     * The stop {@code failure} carries when it is nothing but cancellation: up to eight exact
+     * standard async wrappers, none with suppressed failures, around a chain {@link
+     * #cancellationOrigin} accepts. Anything else, including a real failure caused by a
+     * cancellation, returns null. No arbitrary cause is walked.
+     */
+    static CancellationException cleanCancellation(Throwable failure) {
+        var leaf = inspect(failure);
+        if (!leaf.bounded
+                || !leaf.clean
+                || leaf.value == null
+                || leaf.value.getClass() != CancellationException.class) {
+            return null;
+        }
+        return cancellationOrigin((CancellationException) leaf.value);
+    }
+
+    /**
      * On current JDKs (25 here) {@code CompletableFuture.join()} and {@code get()} rethrow a stored
      * cancellation as a new {@code CancellationException} whose cause is the stored one, so each
      * nested join adds a link. Accepts only a bounded chain of exact {@code CancellationException}

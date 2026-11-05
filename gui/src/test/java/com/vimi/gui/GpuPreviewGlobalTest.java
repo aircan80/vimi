@@ -21,6 +21,7 @@ public final class GpuPreviewGlobalTest {
             cancellationDuringPreparationNeverLaunches(root);
             replacementWaitsForHeldGlobalPreparation(root);
             messagesNeverExposeRawCauses();
+            onlyPureCancellationChainsEndAStoppedPreparationClosed(root);
         } finally {
             try (var files = Files.walk(root)) {
                 for (var file : files.sorted(java.util.Comparator.reverseOrder()).toList()) {
@@ -133,6 +134,80 @@ public final class GpuPreviewGlobalTest {
         done.handle((ignored, error) -> null).get(5, TimeUnit.SECONDS);
         require(launches.get() == 0, "canceled preparation never launches");
         service.closeAsync().get(5, TimeUnit.SECONDS);
+    }
+
+    private static void onlyPureCancellationChainsEndAStoppedPreparationClosed(Path root)
+            throws Exception {
+        var join = new java.util.concurrent.CancellationException("join");
+        join.initCause(new java.util.concurrent.CancellationException());
+        require(
+                stoppedPreparationEnds(root, new java.util.concurrent.CompletionException(join))
+                        == GpuPreviewService.State.CLOSED,
+                "a wrapped join cancellation chain is a clean stop");
+        require(
+                stoppedPreparationEnds(root, new java.util.concurrent.CancellationException())
+                        == GpuPreviewService.State.CLOSED,
+                "a lone cancellation is a clean stop");
+        var withCause = new java.util.concurrent.CancellationException("stopped");
+        withCause.initCause(new IllegalStateException("cleanup failed"));
+        require(
+                stoppedPreparationEnds(root, withCause) == GpuPreviewService.State.FAILED,
+                "a cancellation carrying a real failure stays a failure");
+        var withSuppressed = new java.util.concurrent.CancellationException();
+        withSuppressed.addSuppressed(new IllegalStateException("cleanup failed"));
+        require(
+                stoppedPreparationEnds(root, withSuppressed) == GpuPreviewService.State.FAILED,
+                "a cancellation with a suppressed failure stays a failure");
+        var subclassWrapper =
+                new java.util.concurrent.CompletionException(
+                        new java.util.concurrent.CancellationException()) {};
+        require(
+                stoppedPreparationEnds(root, subclassWrapper) == GpuPreviewService.State.FAILED,
+                "a wrapper subclass is not a standard cancellation wrapper");
+    }
+
+    /** Stops a GLOBAL preparation, which then throws {@code thrown}; returns the final state. */
+    private static GpuPreviewService.State stoppedPreparationEnds(Path root, RuntimeException thrown)
+            throws Exception {
+        var launches = new AtomicInteger();
+        var service = service(root, launches);
+        var entered = new CountDownLatch(1);
+        var states = new ConcurrentLinkedQueue<GpuPreviewService.Status>();
+        var owner = new Object();
+        var done =
+                service.openGlobal(
+                        owner,
+                        (parent, cancel) -> {
+                            entered.countDown();
+                            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                            while (!cancel.isCanceled() && System.nanoTime() < deadline) {
+                                java.util.concurrent.locks.LockSupport.parkNanos(5_000_000L);
+                            }
+                            throw thrown;
+                        },
+                        opened -> {
+                            throw new AssertionError("No session may open");
+                        },
+                        states::add);
+        require(entered.await(5, TimeUnit.SECONDS), "preparation entered");
+        boolean closeFailed =
+                service.closeOwner(owner)
+                        .handle((ignored, error) -> error != null)
+                        .get(10, TimeUnit.SECONDS);
+        boolean failed = done.handle((ignored, error) -> error != null).get(5, TimeUnit.SECONDS);
+        service.closeAsync().get(5, TimeUnit.SECONDS);
+        require(launches.get() == 0, "stopped preparation never launches");
+        GpuPreviewService.State last = null;
+        for (var status : states) {
+            if (status.state() == GpuPreviewService.State.CLOSED
+                    || status.state() == GpuPreviewService.State.FAILED) {
+                last = status.state();
+            }
+        }
+        require(
+                failed == (last == GpuPreviewService.State.FAILED) && closeFailed == failed,
+                "request and owner close outcomes match the final state " + last);
+        return last;
     }
 
     private static void replacementWaitsForHeldGlobalPreparation(Path root) throws Exception {

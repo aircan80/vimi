@@ -175,6 +175,106 @@ class HelperStderrTailTest {
     }
 
     @Test
+    void accountRealmAndCharacterFoldersAreRedactedInRelativePathsAndBothSlashStyles() {
+        var fragments = List.of("ACCT2", "CCT2", "12345678#1", "Silvermoon", "Thrall", "x.lua");
+        for (var input :
+                List.of(
+                        "load _retail_\\WTF\\Account\\ACCT2\\x.lua failed",
+                        "load _retail_/WTF/Account/ACCT2/Silvermoon/Thrall/x.lua failed",
+                        "Games/World of Warcraft/WTF/Account/12345678#1/SavedVariables/x.lua",
+                        "wtf\\account/ACCT2\\Silvermoon",
+                        "WTF\\\\Account\\\\ACCT2\\\\x.lua",
+                        "(_classic_\\WTF\\Account\\ACCT2\\Silvermoon\\Thrall) missing",
+                        "D:\\Games\\WoW\\WTF\\Account\\ACCT2\\Silvermoon\\Thrall\\x.lua")) {
+            String redacted = HelperStderrTail.redact(input, NONE);
+            for (var fragment : fragments) {
+                assertFalse(
+                        redacted.toLowerCase(java.util.Locale.ROOT)
+                                .contains(fragment.toLowerCase(java.util.Locale.ROOT)),
+                        "'" + fragment + "' survived in: " + redacted);
+            }
+        }
+        assertEquals(
+                "load _retail_\\WTF\\Account\\<redacted>",
+                HelperStderrTail.redact("load _retail_\\WTF\\Account\\ACCT2\\x.lua failed", NONE));
+        assertEquals(
+                "(_classic_/WTF/Account/<redacted>) missing",
+                HelperStderrTail.redact("(_classic_/WTF/Account/ACCT2/Realm) missing", NONE));
+        // Realm folders may hold spaces, so the span runs on like a path span.
+        assertEquals(
+                "'_retail_/WTF/Account/<redacted>' failed",
+                HelperStderrTail.redact("'_retail_/WTF/Account/ACCT2/Argent Dawn' failed", NONE));
+        // Absolute ones still become a single path.
+        assertEquals(
+                "<path>",
+                HelperStderrTail.redact("D:\\Games\\WoW\\WTF\\Account\\ACCT2\\x.lua", NONE));
+        // The folder name alone, without an account below it, is not redacted.
+        assertEquals(
+                "WTF/Account/ is empty", HelperStderrTail.redact("WTF/Account/ is empty", NONE));
+    }
+
+    @Test
+    void absolutePathsAfterBracesPipesArrowsPlusAndHashAreRedacted() {
+        for (var input :
+                List.of(
+                        "Map{/home/jsmith/secret}",
+                        "Map{C:\\Users\\jsmith\\secret}",
+                        "a|/home/jsmith/secret",
+                        "a|C:\\Users\\jsmith\\secret",
+                        "link->/home/jsmith/secret",
+                        "a+/home/jsmith/secret",
+                        "#/home/jsmith/secret",
+                        "item#/Users/John Smith/secret")) {
+            String redacted = HelperStderrTail.redact(input, NONE);
+            assertNoSensitive(redacted);
+            assertFalse(redacted.contains("home"), redacted);
+            assertTrue(redacted.contains("<path>"), redacted);
+        }
+        assertEquals("Map{<path>}", HelperStderrTail.redact("Map{/home/jsmith/secret}", NONE));
+        assertEquals(
+                "Map{a=<path>, b=<path>}",
+                HelperStderrTail.redact("Map{a=/home/jsmith/secret, b=/home/x/y}", NONE));
+        assertEquals("link-><path>", HelperStderrTail.redact("link->/home/jsmith/secret", NONE));
+        assertEquals("a|<path>", HelperStderrTail.redact("a|/home/jsmith/secret", NONE));
+    }
+
+    @Test
+    void encodedPathsInNonFileUrlsAreDecodedBeforeMatching() {
+        var names = HelperStderrTail.Sensitive.of(List.of(), List.of("jsmith"));
+        for (var input :
+                List.of(
+                        "GET http://cdn.invalid/get/C%3A%5CUsers%5Cjsmith%5Cx failed",
+                        "GET http://cdn.invalid/get/c%3a%5cusers%5cjsmith%5cx failed",
+                        "GET https://cdn.invalid/get/%2Fhome%2Fjsmith%2Fsecret failed")) {
+            for (var values : List.of(NONE, names)) {
+                String redacted = HelperStderrTail.redact(input, values);
+                assertNoSensitive(redacted);
+                for (var fragment : List.of("%5C", "%2F", "%3A", "ACCT2", "CCT2", "users")) {
+                    assertFalse(
+                            redacted.toLowerCase(java.util.Locale.ROOT)
+                                    .contains(fragment.toLowerCase(java.util.Locale.ROOT)),
+                            "'" + fragment + "' survived in: " + redacted);
+                }
+                assertTrue(redacted.startsWith("GET http"), redacted);
+            }
+        }
+        assertEquals(
+                "GET http://cdn.invalid/get/<path>",
+                HelperStderrTail.redact(
+                        "GET http://cdn.invalid/get/C%3A%5CUsers%5Cjsmith%5Cx", NONE));
+        assertEquals(
+                "GET https://cdn.invalid/a/<path> failed",
+                HelperStderrTail.redact(
+                        "GET https://cdn.invalid/a/WTF%2FAccount%2FACCT2%2Fsecret failed", NONE));
+        // A segment that held an encoded separator becomes a path whole.
+        assertEquals(
+                "GET http://cdn.invalid/<path>",
+                HelperStderrTail.redact("GET http://cdn.invalid/%5Cjsmith/x", names));
+        // Text outside URLs is left alone.
+        assertEquals("100%2F of 5", HelperStderrTail.redact("100%2F of 5", NONE));
+    }
+
+    @Test
     void literalSensitiveValuesComeFirstInBothSlashStyles() {
         var values =
                 HelperStderrTail.Sensitive.of(
@@ -236,5 +336,87 @@ class HelperStderrTailTest {
         assertEquals("", tail.snapshot());
         feed(tail, "\n");
         assertFalse(tail.isEmpty());
+    }
+
+    private static void assertNone(String redacted, List<String> fragments) {
+        for (var fragment : fragments) {
+            assertFalse(
+                    redacted.toLowerCase(java.util.Locale.ROOT)
+                            .contains(fragment.toLowerCase(java.util.Locale.ROOT)),
+                    "'" + fragment + "' survived in: " + redacted);
+        }
+    }
+
+    @Test
+    void anEncodedPathAfterOrdinaryTextInTheSameSegmentIsRedacted() {
+        for (var input :
+                List.of(
+                        "GET http://h.invalid/files/foo%2Fhome%2Fbob%2Fsecret failed",
+                        "GET http://h.invalid/files/name%20C%3A%5CUsers%5Cbob%5Cx failed",
+                        "GET http://h.invalid/files/a%3DC%3A%5CUsers%5Cbob failed")) {
+            String redacted = HelperStderrTail.redact(input, NONE);
+            assertNone(redacted, List.of("bob", "secret", "Users", "home", "%5C", "%2F"));
+            assertEquals("GET http://h.invalid/files/<path> failed", redacted);
+        }
+    }
+
+    @Test
+    void doubleAndTripleEncodedPathsAndTheUserNameAreRedacted() {
+        var names = HelperStderrTail.Sensitive.of(List.of(), List.of("jsmith"));
+        for (var input :
+                List.of(
+                        "GET http://h.invalid/get/C%253A%255CUsers%255Cjsmith%255Cx failed",
+                        "GET http://h.invalid/get/C%25253A%25255CUsers%25255Cjsmith failed",
+                        "GET http://h.invalid/get/%252Fhome%252Fjsmith%252Fx failed")) {
+            for (var values : List.of(NONE, names)) {
+                String redacted = HelperStderrTail.redact(input, values);
+                assertNone(redacted, List.of("jsmith", "Users", "home", "%25"));
+                assertEquals("GET http://h.invalid/get/<path> failed", redacted);
+            }
+        }
+        // Outside a URL, the name still matches right after an encoded separator.
+        for (var input : List.of("owner C%5Cjsmith", "owner x%255Cjsmith", "owner a%2fjsmith")) {
+            String redacted = HelperStderrTail.redact(input, names);
+            assertNone(redacted, List.of("jsmith"));
+            assertTrue(redacted.endsWith("<redacted>"), redacted);
+        }
+        // Still not inside a longer word.
+        assertEquals("ajsmith", HelperStderrTail.redact("ajsmith", names));
+    }
+
+    @Test
+    void anyDelimiterStartsTheAccountAndCommasOrSemicolonsNeverEndIt() {
+        for (var input :
+                List.of(
+                        "WTF\\Account\\ACCT2\\Realm, Name\\Thrall\\x.lua",
+                        "WTF/Account/ACCT2/Realm; Name/Thrall/x.lua",
+                        "WTF/Account/;ACCT2/Silvermoon",
+                        "WTF/Account/>ACCT2/Silvermoon",
+                        "WTF/Account/}ACCT2/Silvermoon",
+                        "WTF/Account/'ACCT2'/Silvermoon",
+                        "WTF/Account/\"ACCT2\"/Silvermoon",
+                        "WTF/Account/`ACCT2`/Silvermoon")) {
+            String redacted = HelperStderrTail.redact(input, NONE);
+            assertNone(redacted, List.of("ACCT2", "CCT2", "Name", "Thrall", "Silvermoon"));
+            assertTrue(redacted.contains("<redacted>"), redacted);
+        }
+        // A quote opened before the path closes it, even with an apostrophe realm inside.
+        assertEquals(
+                "'WTF/Account/<redacted>' and more text",
+                HelperStderrTail.redact(
+                        "'WTF/Account/ACCT2/Kel'Thuzad/Thrall' and more text", NONE));
+    }
+
+    @Test
+    void closingBracketsBeforeAPathAndApostrophesInsideAQuotedPath() {
+        String braces = HelperStderrTail.redact("}}}/home/bob {{{", NONE);
+        assertNone(braces, List.of("bob", "home"));
+        assertTrue(braces.contains("<path>"), braces);
+        assertEquals("a)<path>", HelperStderrTail.redact("a)/home/bob", NONE));
+        assertEquals("a]<path>", HelperStderrTail.redact("a]/home/bob", NONE));
+        assertEquals(
+                "open '<path>' failed",
+                HelperStderrTail.redact(
+                        "open 'C:\\Users\\Other Person\\it's here\\Wow.exe' failed", NONE));
     }
 }
