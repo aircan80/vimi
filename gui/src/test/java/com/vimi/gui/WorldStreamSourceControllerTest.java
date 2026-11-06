@@ -81,6 +81,7 @@ public final class WorldStreamSourceControllerTest {
         refusedCommitRetriesWhenItsRetirementKickWasAlreadyConsumed();
         materialPoolRefusalRetriesOnItsDeadline();
         anIdleViewRunsNoStepOnTicksAndScansAreasOnlyWhenTheCameraMoves();
+        aHelperRejectedTileRetriesOnItsBackoffDeadline();
         aSkyFrameThatChangesTheStepsInputsStartsAStep();
         borrowedTilesAreNeverDroppedToMakeRoom();
         tilesKeepStreamingWhileAFrameIsBorrowed();
@@ -452,6 +453,56 @@ public final class WorldStreamSourceControllerTest {
             long woke = fixture.controller.skyWakeAtStep.get();
             fixture.until(() -> fixture.controller.steps.get() > woke);
         } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * #366 with #424: a tile the helper rejected is retried after its back-off from the FX tick
+     * alone. The back-off arms the controller's own deadline at exactly the retry time, so one
+     * tick past it retries the tile with no other event (the wall-clock fallback timer of the
+     * back-off is far longer than this test waits).
+     */
+    private static void aHelperRejectedTileRetriesOnItsBackoffDeadline() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        Path reject = fixture.directory.resolve("authored-reject-tile");
+        Path log = fixture.directory.resolve("authored-rejections.log");
+        try {
+            Files.writeString(reject, Integer.toString(fixture.tiles.get(1).y()));
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+            fixture.controller.neighborhood(fixture.tiles);
+            int key = fixture.tiles.get(1).x() * 64 + fixture.tiles.get(1).y();
+            fixture.until(() -> fixture.controller.helperRejections(key) == 1);
+            var armed = WorldStreamSourceController.class.getDeclaredField("pulseArmed");
+            var at = WorldStreamSourceController.class.getDeclaredField("pulseAt");
+            var retries = WorldStreamSourceController.class.getDeclaredField("helperRetryAt");
+            armed.setAccessible(true);
+            at.setAccessible(true);
+            retries.setAccessible(true);
+            long retryAt = ((java.util.Map<?, ?>) retries.get(fixture.controller)).entrySet().stream()
+                    .filter(entry -> entry.getKey().equals(key))
+                    .map(entry -> (Long) entry.getValue())
+                    .findFirst().orElseThrow();
+            fixture.until(() -> {
+                try {
+                    return armed.getBoolean(fixture.controller)
+                            && at.getLong(fixture.controller) == retryAt;
+                } catch (IllegalAccessException failure) {
+                    throw new AssertionError(failure);
+                }
+            });
+            check(lines(log) == 1, "Not retried before its back-off");
+            fixture.clock.set(retryAt);
+            fixture.controller.pulse(); // one FX tick past the deadline, and nothing else
+            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(400);
+            while (lines(log) < 2 && System.nanoTime() < deadline) Thread.sleep(2);
+            check(lines(log) == 2, "The tick past the back-off retried the rejected tile");
+        } finally {
+            Files.deleteIfExists(reject);
             fixture.close();
         }
     }

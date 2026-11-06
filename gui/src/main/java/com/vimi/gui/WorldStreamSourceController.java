@@ -1107,7 +1107,12 @@ final class WorldStreamSourceController {
         for (var tile : admissionOrder) {
             if (unavailable.containsKey(key(tile))) continue;
             var retryAt = helperRetryAt.get(key(tile));
-            if (retryAt != null && clock.getAsLong() - retryAt < 0) continue;
+            if (retryAt != null && clock.getAsLong() - retryAt < 0) {
+                // Event-driven steps (#366): the back-off arms its own deadline, so an FX tick
+                // on the controller clock retries the tile even if nothing else happens.
+                wakeAt(retryAt);
+                continue;
+            }
             boolean found = false;
             for (var entry : current)
                 if (same(tile, entry.resident())) {
