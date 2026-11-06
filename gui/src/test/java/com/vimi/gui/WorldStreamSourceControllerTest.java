@@ -79,15 +79,18 @@ public final class WorldStreamSourceControllerTest {
             check(fixture.pool.stats().leaseClaims() == residents, "One source atlas owner per resident");
             fixture.controller.neighborhood(fixture.tiles.subList(5, residents + 5));
             long[] peak = {0};
+            // Right after the shift the snapshot still reads READY with 25 prepared from the old
+            // demand, so wait for the five new tiles' commits too. Keep presenting throughout:
+            // replaced tiles retire only after accepted pixels stop showing them, and at the
+            // residents + 3 source bound the controller rightly waits for those pixels.
             fixture.untilPresented(() -> {
                 peak[0] = Math.max(peak[0], fixture.pool.stats().leaseClaims());
-                return fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
+                return fixture.commitLines().size() >= residents + 5
+                        && fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
                         && fixture.controller.snapshot().prepared() == residents
                         && fixture.pool.stats().leaseClaims() == residents;
             });
             check(peak[0] <= residents + 3, "Source owners never exceed residents plus staged, pending and retiring");
-            // The authored child's commit log may trail the controller's READY by a write.
-            fixture.until(() -> fixture.commitLines().size() >= residents + 5);
             check(fixture.pool.stats().leaseClaims() <= com.vibeminer.concepts.world.TerrainAtlasPool.MAX_ENTRIES,
                     "The shared atlas pool keeps headroom for other borrowers");
         } finally { fixture.close(); }
