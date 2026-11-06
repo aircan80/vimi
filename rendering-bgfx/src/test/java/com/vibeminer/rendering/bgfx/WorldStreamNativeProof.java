@@ -19,8 +19,8 @@ import javax.imageio.ImageIO;
 
 /** Authored real Vulkan/native/mmap proof only. No user data, window, pipe or GUI integration. */
 public final class WorldStreamNativeProof {
-    private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(123, -456);
-    private static final String SCOPE = "cd".repeat(32);
+    static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(123, -456);
+    static final String SCOPE = "cd".repeat(32);
     private static final WorldStreamEnvelope.Session SESSION =
             new WorldStreamEnvelope.Session(NONCE, SCOPE, 1);
     private static final TerrainCamera CAMERA = new TerrainCamera(-100, -10, 50, 0, -.6);
@@ -78,6 +78,19 @@ public final class WorldStreamNativeProof {
             int red,
             boolean textured)
             throws Exception {
+        return prepare(NONCE, directory, tx, lease, x, y, red, textured);
+    }
+
+    static WorldStreamPackedTile prepare(
+            WorldStreamState.Nonce nonce,
+            Path directory,
+            long tx,
+            WorldStreamState.Lease lease,
+            int x,
+            int y,
+            int red,
+            boolean textured)
+            throws Exception {
         require(
                 !Thread.currentThread().getName().equals("main"),
                 "Packing must be off native owner");
@@ -97,7 +110,7 @@ public final class WorldStreamNativeProof {
                         0);
         var header =
                 new WorldStreamTileFile.Header(
-                        NONCE,
+                        nonce,
                         SCOPE,
                         tx,
                         lease,
@@ -483,5 +496,8 @@ public final class WorldStreamNativeProof {
                                 nextSession, nextFrames, BGFX_RENDERER_TYPE_VULKAN)) {
             require(successor.stats().dynamicBuffers() == 10, "Successor context resources");
         }
+        // Exterior object culling on a further fresh context: draw counts and pixels, culled and
+        // not.
+        WorldStreamObjectsCullProof.run(directory);
     }
 }

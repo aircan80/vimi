@@ -59,6 +59,12 @@ public final class ExplorerMotion {
      */
     public static final double TURN_RATE = Math.PI, TILT_RATE = Math.PI / 2;
 
+    /**
+     * Keyboard turn and tilt rates in radians per second: half a turn per second, like the game
+     * client's keyboard turning, and half that for looking up and down.
+     */
+    public static final double TURN_RATE = Math.PI, TILT_RATE = Math.PI / 2;
+
     /** Velocity response and downward settle time constants for smoothed motion, seconds. */
     public static final double RESPONSE_SECONDS = .12, SETTLE_SECONDS = .15;
 
