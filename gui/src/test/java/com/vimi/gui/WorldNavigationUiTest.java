@@ -35,11 +35,14 @@ import javafx.util.Duration;
 public final class WorldNavigationUiTest {
     private static final int X = 7, Y = 19;
     private static final double SIZE = WorldFormats.TILE_SIZE;
+    // Default flight preset over one 0.1 s timer step.
+    private static final double STEP = WorldControls.Speed.FLY.yardsPerSecond * .1;
     private static final int[][] MOVES = {
         {1,0}, {0,0}, {-1,0}, {0,0}, {0,1}, {0,0}, {0,-1}, {0,0},
         {1,1}, {-1,1}, {-1,-1}, {1,-1}, {0,0}
     };
     private static final CompletableFuture<Void> DONE = new CompletableFuture<>();
+    private static final java.util.concurrent.atomic.AtomicBoolean RACE_CHECKED = new java.util.concurrent.atomic.AtomicBoolean();
 
     private WorldNavigationUiTest() {}
 
@@ -199,6 +202,7 @@ public final class WorldNavigationUiTest {
 
     private static void finish(WorldView view, Fixture fixture) {
             controls(view);
+            streamingSizeIsDebouncedPerPulse(view);
             invoke(view,"requestFrame");
             await(fixture,() -> !view.lookup("#world-minimap-activity").isVisible(),() -> {
                 int before = fixture.minimapCalls.get();
@@ -210,8 +214,107 @@ public final class WorldNavigationUiTest {
                 require(!view.lookup("#world-minimap").isVisible(),"Retired source cannot reveal minimap after resize");
                 require(((javafx.scene.control.Label)view.lookup("#world-current-area")).getText().equals("Terrain area unavailable"),"Retired source cannot retain current-area name");
                 require(fixture.minimapCalls.get()==before,"Retired source cannot request artwork after resize");
-                DONE.complete(null);
+                await(fixture,RACE_CHECKED::get,() -> DONE.complete(null));
             });
+    }
+
+    /** The stream request size: first size at once, a new size after one quiet pulse, reset. */
+    private static void streamingSizeIsDebouncedPerPulse(WorldView view) {
+        var viewport=(javafx.scene.layout.Region)view.lookup("#world-viewport");
+        invoke(view,"resetStreamingSize");
+        require((long)get(view,"streamingPolicy")==1 && (int)get(view,"streamingWidth")==0,"Reset starts at policy 1 without a size");
+        viewport.resize(640,400);
+        invoke(view,"streamingSize");
+        require((int)get(view,"streamingWidth")==640 && (int)get(view,"streamingHeight")==400
+                && (long)get(view,"streamingPolicy")==1,"The first size applies at once without a policy bump");
+        for (int step=1; step<=5; step++) {
+            viewport.resize(640+step*10,400+step*4);
+            invoke(view,"streamingSize");
+            require(!pulse(view),"A size still changing never settles");
+        }
+        require((int)get(view,"streamingWidth")==640 && (long)get(view,"streamingPolicy")==1,
+                "During the drag the old size and policy are requested");
+        require(pulse(view),"After one quiet pulse the new size settles and a camera request is made");
+        invoke(view,"streamingSize");
+        // 690 x 420 fits the 800 x 500 cap unscaled.
+        require((int)get(view,"streamingWidth")==690 && (int)get(view,"streamingHeight")==420
+                && (long)get(view,"streamingPolicy")==2,"The settled size is sent once, with one policy bump");
+        require(!pulse(view),"Nothing more owed");
+        invoke(view,"resetStreamingSize");
+        require((long)get(view,"streamingPolicy")==1 && (int)get(view,"streamingWidth")==0,"A new stream resets");
+    }
+
+    private static boolean pulse(WorldView view) {
+        try{var m=WorldView.class.getDeclaredMethod("streamingSizePulse");m.setAccessible(true);return (boolean)m.invoke(view);}
+        catch(ReflectiveOperationException error){throw new AssertionError(error);}
+    }
+
+    /** Showing stored controls sets every control without saving a half-applied value. */
+    private static void storedControlsLoadWithoutBeingOverwritten(WorldView view) {
+        var saved=new ArrayList<String>();
+        view.controls(new WorldControls.Store() {
+            public java.util.concurrent.CompletableFuture<String> load() { return java.util.concurrent.CompletableFuture.completedFuture(null); }
+            public void save(String value) { saved.add(value); }
+        });
+        var stored=WorldControls.DEFAULTS.withSensitivity(.013).withInvertY(true).withSpeed(WorldControls.Speed.TURBO)
+                .withKeys(WorldControls.Layout.AZERTY.keys());
+        view.showControls(stored);
+        var invert=(javafx.scene.control.CheckBox)view.lookup("#world-invert-look");
+        var slider=(javafx.scene.control.Slider)view.lookup("#world-look-sensitivity");
+        require(saved.isEmpty(),"Loading controls never saves: "+saved);
+        require(invert.isSelected() && Math.abs(slider.getValue()-.013)<1e-12 && input(view).controls().equals(stored),
+                "Stored invert-Y and sensitivity both apply");
+        require(slider.getBlockIncrement()==.001,"Slider steps suit its range");
+        @SuppressWarnings("unchecked")
+        var speed=(javafx.scene.control.ChoiceBox<WorldControls.Speed>)view.lookup("#world-flight-speed");
+        require(speed.getValue()==WorldControls.Speed.TURBO,"The stored speed preset shows");
+        require(view.lookupAll(".label").stream().anyMatch(n -> n instanceof javafx.scene.control.Label l
+                && l.getText().startsWith("Z Q S D move")),"The key help follows the stored bindings");
+        invert.fire();
+        require(saved.size()==1 && WorldControls.decode(saved.getFirst()).equals(stored.withInvertY(false)),
+                "A user change saves the whole value: "+saved);
+        view.showControls(WorldControls.DEFAULTS);
+        view.controls(WorldControls.memory());
+        controlsLoadRace(view, invert);
+    }
+
+    /** A slow load never overwrites an edit made meanwhile; a load that wins applies. */
+    private static void controlsLoadRace(WorldView view, javafx.scene.control.CheckBox invert) {
+        var stored=WorldControls.DEFAULTS.withInvertY(true).withSensitivity(.015);
+        var slow=new java.util.concurrent.CompletableFuture<String>();
+        var savedSlow=new ArrayList<String>();
+        view.controls(new WorldControls.Store() {
+            public java.util.concurrent.CompletableFuture<String> load() { return slow; }
+            public void save(String value) { savedSlow.add(value); }
+        });
+        require(!invert.isSelected(),"Defaults shown while the load is pending");
+        invert.fire();
+        require(savedSlow.size()==1,"The edit saves at once");
+        require(input(view).controls().invertY(),"The edit applies");
+        // The load completes after the edit; its result is applied on a later FX turn.
+        slow.complete(stored.encode());
+        var fast=new java.util.concurrent.CompletableFuture<String>();
+        Platform.runLater(() -> {
+            try {
+                // Later test steps may have changed controls since; the slow load must not have
+                // applied its distinctive sensitivity.
+                require(input(view).controls().sensitivity()!=stored.sensitivity(),
+                        "A load finishing after an edit is ignored: "+input(view).controls());
+                view.controls(new WorldControls.Store() {
+                    public java.util.concurrent.CompletableFuture<String> load() { return fast; }
+                    public void save(String value) { throw new AssertionError("A load never saves"); }
+                });
+                fast.complete(stored.encode());
+                Platform.runLater(() -> {
+                    try {
+                        require(input(view).controls().equals(stored),"A load before any edit applies");
+                        view.showControls(WorldControls.DEFAULTS);
+                        view.controls(WorldControls.memory());
+                        RACE_CHECKED.set(true);
+                    } catch (Throwable error) { DONE.completeExceptionally(error); }
+                });
+            } catch (Throwable error) { DONE.completeExceptionally(error); }
+        });
     }
 
     private static void controls(WorldView view) {
@@ -230,7 +333,7 @@ public final class WorldNavigationUiTest {
             for(var key:keys) key(viewport,key,true);
             timer.handle(1_000_000_000L);
             timer.handle(1_100_000_000L);
-            double expected=500 + 8 * (((keys.contains(KeyCode.SPACE) || keys.contains(KeyCode.E)) ? 1 : 0) - ((keys.contains(KeyCode.Q) || keys.contains(KeyCode.X)) ? 1 : 0));
+            double expected=500 + STEP * (((keys.contains(KeyCode.SPACE) || keys.contains(KeyCode.E)) ? 1 : 0) - ((keys.contains(KeyCode.Q) || keys.contains(KeyCode.X)) ? 1 : 0));
             double actual=((TerrainRenderer.Camera)get(view,"camera")).z();
             require(Math.abs(actual-expected)<1e-9,"Actual key/timer ascent "+keys+": "+actual+" expected "+expected);
             for(var key:keys) key(viewport,key,false);
@@ -248,28 +351,41 @@ public final class WorldNavigationUiTest {
             key(viewport,code,false);
             var moved=(TerrainRenderer.Camera)get(view,"camera");
             if (code == KeyCode.LEFT || code == KeyCode.RIGHT) {
-                double wanted = code == KeyCode.LEFT ? .1 : -.1;
+                double wanted = (code == KeyCode.LEFT ? .1 : -.1) * com.vibeminer.rendering.world.ExplorerMotion.TURN_RATE;
                 require(Math.abs(moved.yaw()-wanted)<1e-12,"Actual turn key geographic yaw: "+code);
                 var nativeCamera=com.vibeminer.rendering.world.TerrainCamera.from(moved);
                 var east=nativeCamera.eye(start.x()+10,start.y()-4,start.z());
                 require(code == KeyCode.RIGHT ? east.right()<4 : east.right()>4,
                         "Actual key turns toward the same side in native projection: "+code);
             } else if (code == KeyCode.W) {
-                require(Math.abs(moved.x()-start.x()-8)<1e-9,"W moves north at yaw zero");
+                require(Math.abs(moved.x()-start.x()-STEP)<1e-9,"W moves north at yaw zero");
             } else {
-                double wanted = code == KeyCode.D ? -8 : 8;
+                double wanted = code == KeyCode.D ? -STEP : STEP;
                 require(Math.abs(moved.y()-start.y()-wanted)<1e-9,"Actual strafe key geographic direction: "+code);
             }
         }
         for (double delta : new double[] {-25,25}) {
             var start=new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,0,0);
             set(view,"camera",start);
-            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_PRESSED,50,50);
-            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_DRAGGED,50+delta,50);
-            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_RELEASED,50+delta,50);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_PRESSED,50,50,javafx.scene.input.MouseButton.PRIMARY);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_DRAGGED,50+delta,50,javafx.scene.input.MouseButton.PRIMARY);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_RELEASED,50+delta,50,javafx.scene.input.MouseButton.PRIMARY);
+            require(viewport.getCursor()==null,"Left-drag look keeps the cursor visible");
+            timer.handle(2_200_000_000L);
+            var left=(TerrainRenderer.Camera)get(view,"camera");
+            require(Math.abs(left.yaw()+delta*WorldControls.DEFAULT_SENSITIVITY)<1e-12,"Left drag looks without capture");
+            set(view,"camera",start);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_PRESSED,50,50,javafx.scene.input.MouseButton.SECONDARY);
+            require(viewport.getCursor()==javafx.scene.Cursor.NONE,"Right-button look hides the cursor");
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_DRAGGED,50+delta,50,javafx.scene.input.MouseButton.SECONDARY);
+            require(start.equals(get(view,"camera")),"Look waits for the next pulse");
+            timer.handle(2_300_000_000L);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_RELEASED,50+delta,50,javafx.scene.input.MouseButton.SECONDARY);
+            require(viewport.getCursor()==null,"Releasing the right button shows the cursor");
             var moved=(TerrainRenderer.Camera)get(view,"camera");
-            require(Math.abs(moved.yaw()+delta*.006)<1e-12,"Mouse drag turns toward actual screen side");
+            require(Math.abs(moved.yaw()+delta*WorldControls.DEFAULT_SENSITIVITY)<1e-12,"Right-button look turns toward actual screen side");
         }
+        storedControlsLoadWithoutBeingOverwritten(view);
         var before = new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,.7,-.8);
         set(view,"camera",before);
         double originalSpeed = input(view).speed();
@@ -286,6 +402,14 @@ public final class WorldNavigationUiTest {
         scroll(viewport,40,true);
         require(restored.equals(get(view,"camera")),"Shift+wheel does not zoom");
         require(input(view).speed()>originalSpeed,"Shift+wheel adjusts flight speed");
+        @SuppressWarnings("unchecked")
+        var speedChoice=(javafx.scene.control.ChoiceBox<WorldControls.Speed>)view.lookup("#world-flight-speed");
+        require(speedChoice.getValue()==input(view).controls().speed(),"The speed control shows the Shift+wheel preset");
+        speedChoice.setValue(WorldControls.Speed.TURBO);
+        require(input(view).speed()==200,"Choosing a preset sets the flight speed");
+        speedChoice.setValue(WorldControls.DEFAULTS.speed());
+        require(input(view).speed()==WorldControls.Speed.FLY.yardsPerSecond,"The preset control is reset after the test");
+        keyBindingEditor();
         scroll(viewport,Double.NaN,false);
         require(restored.equals(get(view,"camera")),"Nonfinite wheel input is ignored");
         set(view,"camera",new TerrainRenderer.Camera(1_000_000,1_000_000,1_000_000,.7,.8));
@@ -294,7 +418,29 @@ public final class WorldNavigationUiTest {
         require(bounded.x()<=1_000_000&&bounded.y()<=1_000_000&&bounded.z()<=1_000_000,"Wheel remains within camera coordinate bounds");
         walk(view,timer,viewport);
         set(view,"camera",before);
-        input(view).speed(originalSpeed);
+        input(view).controls(WorldControls.DEFAULTS);
+    }
+
+    /** The key editor's capture: a press binds, Escape cancels, reserved keys keep waiting. */
+    private static void keyBindingEditor() {
+        var editor=new WorldKeyBindings(WorldControls.DEFAULTS);
+        editor.capture(WorldControls.Action.FORWARD);
+        var press=new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.I,false,false,false,false);
+        editor.captured(press);
+        require(press.isConsumed(),"A captured key never reaches the dialog buttons");
+        require(editor.controls().keys().get(KeyCode.I)==WorldControls.Action.FORWARD,"Captured key binds");
+        editor.capture(WorldControls.Action.BACK);
+        editor.captured(new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.W,false,false,false,false));
+        require(editor.hint().startsWith("W moved from Forward to Back."),"A moved key is named: "+editor.hint());
+        var idle=new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.K,false,false,false,false);
+        editor.captured(idle);
+        require(!idle.isConsumed() && !editor.controls().keys().containsKey(KeyCode.K),"Without a capture keys pass through");
+        editor.capture(WorldControls.Action.BACK);
+        editor.captured(new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.F11,false,false,false,false));
+        require(!editor.controls().keys().containsKey(KeyCode.F11),"Reserved keys never bind");
+        editor.captured(new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.ESCAPE,false,false,false,false));
+        editor.captured(new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.J,false,false,false,false));
+        require(!editor.controls().keys().containsKey(KeyCode.J),"Escape cancels the capture");
     }
 
     /** Walk mode over an authored qualified ADT18 surface and over the unqualified fixture mesh. */
@@ -362,10 +508,12 @@ public final class WorldNavigationUiTest {
         return bytes.array();
     }
 
-    private static void mouse(Node node,javafx.event.EventType<javafx.scene.input.MouseEvent> type,double x,double y) {
-        Event.fireEvent(node,new javafx.scene.input.MouseEvent(type,x,y,x,y,javafx.scene.input.MouseButton.PRIMARY,1,
-                false,false,false,false,type!=javafx.scene.input.MouseEvent.MOUSE_RELEASED,
-                false,false,false,false,true,new PickResult(node,x,y)));
+    private static void mouse(Node node,javafx.event.EventType<javafx.scene.input.MouseEvent> type,double x,double y,
+            javafx.scene.input.MouseButton button) {
+        boolean down=type!=javafx.scene.input.MouseEvent.MOUSE_RELEASED;
+        Event.fireEvent(node,new javafx.scene.input.MouseEvent(type,x,y,x,y,button,1,
+                false,false,false,false,down&&button==javafx.scene.input.MouseButton.PRIMARY,
+                false,down&&button==javafx.scene.input.MouseButton.SECONDARY,false,false,true,new PickResult(node,x,y)));
     }
 
     private static void scroll(Node target,double delta,boolean shift) {

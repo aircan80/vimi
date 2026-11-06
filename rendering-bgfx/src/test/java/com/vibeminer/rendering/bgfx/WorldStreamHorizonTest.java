@@ -104,6 +104,19 @@ class WorldStreamHorizonTest {
     }
 
     @Test
+    void theHorizonIsOneFixedBudgetLineBesideThePerSlotTerrainBudgets() {
+        // One double-buffered allocation for the session, whatever the view distance: 7.6 MiB.
+        assertEquals(7_987_616, WorldStreamHorizon.GPU_BUDGET_BYTES);
+        long perSlot = WorldStreamPackedTile.MAX_GEOMETRY_BYTES + WorldStreamAtlasMips.CHAIN_BYTES;
+        long far = WorldStreamTransport.ViewDistance.FAR.slots() * perSlot;
+        // Under three terrain slots, and about a tenth of the FAR terrain total (78.2 MB).
+        assertTrue(WorldStreamHorizon.GPU_BUDGET_BYTES < 3 * perSlot);
+        assertTrue(WorldStreamHorizon.GPU_BUDGET_BYTES * 9 < far);
+        // The window reaches past the widest streamed neighbourhood, so FAR still has a horizon.
+        assertTrue(WorldStreamHorizon.RADIUS > WorldStreamTransport.ViewDistance.FAR.radius() + 2);
+    }
+
+    @Test
     void failedBuildsKeepTheWorkerAliveAndRepeatedFailuresStopTheHorizon() throws Exception {
         var calls = new java.util.concurrent.atomic.AtomicInteger();
         var failing = new java.util.concurrent.atomic.AtomicBoolean(true);

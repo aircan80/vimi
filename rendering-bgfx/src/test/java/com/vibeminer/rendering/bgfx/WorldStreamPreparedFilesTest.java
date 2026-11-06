@@ -28,7 +28,7 @@ class WorldStreamPreparedFilesTest {
         var options = WorldStreamMain.options(args);
         assertEquals(files.directory(), options.directory());
         assertEquals(files.framePath(), options.frames());
-        assertEquals(256, Files.size(files.directory().resolve("session.wss")));
+        assertEquals(512, Files.size(files.directory().resolve("session.wss")));
         assertEquals(WorldFrameFileV2.FILE_BYTES, Files.size(files.framePath()));
         var decoded =
                 WorldStreamEnvelope.decodeSession(

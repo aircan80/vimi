@@ -585,7 +585,7 @@ class WorldStreamLateObjectsTransportTest {
             Set<WorldStreamState.Lease> active = java.util.concurrent.ConcurrentHashMap.newKeySet();
             Map<Integer, int[]> tiles = new HashMap<>();
             Map<Integer, Long> transactions = new HashMap<>();
-            long[] generations = new long[10];
+            long[] generations = new long[WorldStreamState.SLOTS];
             long serial = 0;
             // The renderer's object pass reports why it is unavailable on stderr only.
             System.err.println(

@@ -82,7 +82,7 @@ final class WorldStreamSession {
         this.session = Objects.requireNonNull(session);
         this.directory = Objects.requireNonNull(directory).toAbsolutePath().normalize();
         mailbox = new WorldControlMailbox(session.nonce());
-        state = new WorldStreamState(session.nonce());
+        state = new WorldStreamState(session.nonce(), session.maxActive());
         status = new WorldStreamStatusWriter(session.nonce(), output, deadline);
     }
 
@@ -125,8 +125,10 @@ final class WorldStreamSession {
                 advertiseCredit();
                 while (!closing.get()) {
                     if (mailbox.closing() || status.failure() != null) {
-                        if (mailbox.failed() || status.failure() != null) {
-                            failed = true;
+                        if (mailbox.failed()) {
+                            fail("control mailbox failed");
+                        } else if (status.failure() != null) {
+                            fail("status write failed: " + describe(status.failure()));
                         }
                         requestClose();
                         break;
@@ -198,12 +200,12 @@ final class WorldStreamSession {
                 }
                 state.close();
             } catch (Throwable error) {
-                failed = true;
+                fail("native owner: " + describe(error));
                 requestClose(); // Arm the independent deadline BEFORE native close can block.
                 throw error;
             }
         } catch (Throwable error) {
-            failed = true;
+            fail("session: " + describe(error));
             requestClose();
             throw error;
         } finally {
@@ -239,13 +241,19 @@ final class WorldStreamSession {
             reconcile();
             state.close();
             if (!state.drained()) {
-                failed = true;
+                fail("state not drained at close: " + state.drainSummary());
             }
             status.quiet();
             if (!failed && status.failure() == null) {
                 send("CLOSED");
             }
             status.finish().handle((ignored, error) -> null).join();
+            if (failed) {
+                System.err.println(
+                        "World v2 session failed: "
+                                + String.valueOf(failure).replaceAll("[\\p{Cntrl}]", " "));
+                System.err.flush();
+            }
             if (!failed && status.failure() == null) {
                 allDrained.set(true);
             }
@@ -279,13 +287,13 @@ final class WorldStreamSession {
                 }
                 if (result == WorldControlMailbox.Result.OVERFLOW) {
                     send("REJECTED 0 STATUS_OVERFLOW");
-                    failed = true;
+                    fail("control overflow");
                     requestClose();
                 }
             }
         } catch (IOException | RuntimeException error) {
             send("REJECTED 0 PROTOCOL_ERROR");
-            failed = true;
+            fail("control stream: " + describe(error));
             requestClose();
         }
     }
@@ -297,7 +305,7 @@ final class WorldStreamSession {
             }
             var action = deadline.poll(allDrained.get());
             if (action == WorldStatusDeadline.Action.REQUEST_CLOSE) {
-                failed = true;
+                fail("status deadline expired");
                 requestClose();
             }
             if (action == WorldStatusDeadline.Action.TERMINATE
@@ -764,7 +772,7 @@ final class WorldStreamSession {
                 return;
             }
             var decoded = result.commit();
-            List<WorldStreamState.Lease> table = new ArrayList<>(9);
+            List<WorldStreamState.Lease> table = new ArrayList<>(session.maxActive());
             for (var member : decoded.members()) {
                 var lease =
                         state.active().stream()
@@ -893,9 +901,27 @@ final class WorldStreamSession {
         send("REJECTED " + transaction + " " + code);
     }
 
+    private volatile String failure;
+
+    /** Class name and a capped, single-line message, like WorldStreamMain's failure line. */
+    static String describe(Throwable error) {
+        String message = error.getMessage() == null ? "" : error.getMessage();
+        message = message.replaceAll("[\\p{Cntrl}]", " ");
+        message = message.substring(0, Math.min(160, message.length()));
+        return error.getClass().getSimpleName() + (message.isEmpty() ? "" : ": " + message);
+    }
+
+    /** Marks the session failed; the first reason goes to stderr when the session ends. */
+    private void fail(String reason) {
+        if (failure == null) {
+            failure = reason;
+        }
+        failed = true;
+    }
+
     private void send(String line) {
         if (!status.reliable(line)) {
-            failed = true;
+            fail("status not accepted: " + line);
             requestClose();
         }
     }

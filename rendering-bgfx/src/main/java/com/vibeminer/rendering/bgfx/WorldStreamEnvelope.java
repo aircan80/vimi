@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -14,7 +15,15 @@ import java.util.Objects;
 
 /** Fixed-size v2 metadata codecs only. No paths, source authority, mappings or native resources. */
 final class WorldStreamEnvelope {
-    static final int BYTES = 256;
+    /** Fixed envelope size; a commit of MAX_ACTIVE 16-byte members needs 72 + 400 bytes. */
+    static final int BYTES = 512;
+
+    /**
+     * Layout version: 3 since issue #173 (512 bytes, session view distance and object texture
+     * tier). A helper from another build fails as a version mismatch, not as invalid caps.
+     */
+    static final int VERSION = 3;
+
     // Terrain 2,284,544B plus the optional 622,720B static water trailer.
     static final int MAX_PACKET_BYTES = 2_907_264;
     private static final byte[] SESSION_MAGIC = "VIMIWSS2".getBytes(StandardCharsets.US_ASCII);
@@ -25,22 +34,63 @@ final class WorldStreamEnvelope {
      * tile headers may name a per-tile objects file and whose STAGED status reports its outcome.
      */
     record Session(
-            WorldStreamState.Nonce nonce, String scope, long policy, boolean exteriorObjects) {
+            WorldStreamState.Nonce nonce,
+            String scope,
+            long policy,
+            boolean exteriorObjects,
+            int maxActive,
+            int objectTextures) {
+        /** Active-table bound of the near 3 x 3 view distance. */
+        static final int NEAR_ACTIVE = 9;
+
+        /** Object texture tiers: 1 STANDARD, 2 HIGH (more image pixels per object set). */
+        static final int STANDARD_TEXTURES = 1, HIGH_TEXTURES = 2;
+
+        /** GPU bytes all exterior object sets of a session may reserve together, per tier. */
+        static final long STANDARD_OBJECT_BUDGET = 192L << 20, HIGH_OBJECT_BUDGET = 256L << 20;
+
         Session(WorldStreamState.Nonce nonce, String scope, long policy) {
             this(nonce, scope, policy, false);
         }
 
+        Session(WorldStreamState.Nonce nonce, String scope, long policy, boolean exteriorObjects) {
+            this(nonce, scope, policy, exteriorObjects, NEAR_ACTIVE);
+        }
+
+        Session(
+                WorldStreamState.Nonce nonce,
+                String scope,
+                long policy,
+                boolean exteriorObjects,
+                int maxActive) {
+            this(nonce, scope, policy, exteriorObjects, maxActive, STANDARD_TEXTURES);
+        }
+
         Session {
             Objects.requireNonNull(nonce);
-            if (scope == null || !scope.matches("[0-9a-f]{64}") || policy <= 0) {
+            if (scope == null
+                    || !scope.matches("[0-9a-f]{64}")
+                    || policy <= 0
+                    || maxActive != NEAR_ACTIVE && maxActive != WorldStreamState.MAX_ACTIVE
+                    || objectTextures != STANDARD_TEXTURES && objectTextures != HIGH_TEXTURES) {
                 throw new IllegalArgumentException("Invalid session metadata");
             }
+        }
+
+        /** Renderer slots of this session: every active one plus one staged. */
+        int slots() {
+            return maxActive + 1;
+        }
+
+        /** Shared exterior objects GPU budget of this session's texture tier. */
+        long objectBudgetBytes() {
+            return objectTextures == HIGH_TEXTURES ? HIGH_OBJECT_BUDGET : STANDARD_OBJECT_BUDGET;
         }
     }
 
     record Resident(int slot, long generation) {
         Resident {
-            if (slot < 0 || slot >= 10 || generation <= 0) {
+            if (slot < 0 || slot >= WorldStreamState.SLOTS || generation <= 0) {
                 throw new IllegalArgumentException("Invalid resident identity");
             }
         }
@@ -62,7 +112,7 @@ final class WorldStreamEnvelope {
                     || expected == Long.MAX_VALUE
                     || next != expected + 1
                     || policy <= 0
-                    || members.size() > 9) {
+                    || members.size() > WorldStreamState.MAX_ACTIVE) {
                 throw new IllegalArgumentException("Invalid commit metadata");
             }
             members = List.copyOf(members);
@@ -87,12 +137,15 @@ final class WorldStreamEnvelope {
 
     static byte[] encode(Session session) {
         var out = buffer();
-        out.put(SESSION_MAGIC).putInt(2).putInt(BYTES);
+        out.put(SESSION_MAGIC).putInt(VERSION).putInt(BYTES);
         nonce(out, session.nonce());
         out.put(HexFormat.of().parseHex(session.scope()));
         out.putInt(1).putInt(1).putInt(1).putInt(session.exteriorObjects() ? 2 : 1);
-        out.putLong(session.policy()).putInt(800).putInt(500).putInt(10).putInt(9);
-        out.putInt(MAX_PACKET_BYTES);
+        out.putLong(session.policy())
+                .putInt(WorldFrameLimits.MAX_WIDTH)
+                .putInt(WorldFrameLimits.MAX_HEIGHT);
+        out.putInt(session.slots()).putInt(session.maxActive());
+        out.putInt(MAX_PACKET_BYTES).putInt(session.objectTextures());
         return out.array();
     }
 
@@ -109,14 +162,22 @@ final class WorldStreamEnvelope {
             require(objects == 1 || objects == 2, "Unsupported session profile");
             long policy = in.getLong();
             require(
-                    in.getInt() == 800
-                            && in.getInt() == 500
-                            && in.getInt() == 10
-                            && in.getInt() == 9
+                    in.getInt() == WorldFrameLimits.MAX_WIDTH
+                            && in.getInt() == WorldFrameLimits.MAX_HEIGHT,
+                    "Invalid session caps");
+            int slots = in.getInt(), active = in.getInt();
+            require(
+                    (active == Session.NEAR_ACTIVE || active == WorldStreamState.MAX_ACTIVE)
+                            && slots == active + 1
                             && in.getInt() == MAX_PACKET_BYTES,
                     "Invalid session caps");
+            int textures = in.getInt();
+            require(
+                    textures == Session.STANDARD_TEXTURES || textures == Session.HIGH_TEXTURES,
+                    "Invalid object texture tier");
             zero(in, BYTES);
-            return new Session(nonce, HexFormat.of().formatHex(scope), policy, objects == 2);
+            return new Session(
+                    nonce, HexFormat.of().formatHex(scope), policy, objects == 2, active, textures);
         } catch (IllegalArgumentException error) {
             throw new Invalid("Invalid session fields");
         }
@@ -124,7 +185,7 @@ final class WorldStreamEnvelope {
 
     static byte[] encode(Commit commit) {
         var out = buffer();
-        out.put(COMMIT_MAGIC).putInt(2).putInt(BYTES);
+        out.put(COMMIT_MAGIC).putInt(VERSION).putInt(BYTES);
         nonce(out, commit.nonce());
         out.putLong(commit.transaction()).putLong(commit.expected()).putLong(commit.next());
         out.putLong(commit.policy()).putInt(commit.members().size()).putInt(0);
@@ -147,7 +208,9 @@ final class WorldStreamEnvelope {
                     next = in.getLong(),
                     policy = in.getLong();
             int count = in.getInt();
-            require(count >= 0 && count <= 9 && in.getInt() == 0, "Invalid commit count");
+            require(
+                    count >= 0 && count <= WorldStreamState.MAX_ACTIVE && in.getInt() == 0,
+                    "Invalid commit count");
             var members = new ArrayList<Resident>(count);
             for (int i = 0; i < count; i++) {
                 int slot = Byte.toUnsignedInt(in.get());
@@ -178,7 +241,9 @@ final class WorldStreamEnvelope {
         for (byte expected : magic) {
             require(in.get() == expected, "Wrong envelope mode");
         }
-        require(in.getInt() == 2 && in.getInt() == BYTES, "Wrong envelope version");
+        require(
+                in.getInt() == VERSION && in.getInt() == BYTES,
+                "Wrong envelope version (parent and World helper differ)");
         return in;
     }
 

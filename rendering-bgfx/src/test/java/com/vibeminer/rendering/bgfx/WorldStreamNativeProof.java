@@ -7,6 +7,7 @@ import com.vibeminer.rendering.world.TerrainCamera;
 import com.vibeminer.rendering.world.TerrainGeometryFingerprint;
 import com.vibeminer.rendering.world.TerrainScene;
 import java.awt.image.BufferedImage;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,7 +23,7 @@ import javax.imageio.ImageIO;
 public final class WorldStreamNativeProof {
     static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(123, -456);
     static final String SCOPE = "cd".repeat(32);
-    private static final WorldStreamEnvelope.Session SESSION =
+    static final WorldStreamEnvelope.Session SESSION =
             new WorldStreamEnvelope.Session(NONCE, SCOPE, 1);
     private static final TerrainCamera CAMERA = new TerrainCamera(-100, -10, 50, 0, -.6);
     private static final int WIDTH = 256, HEIGHT = 256;
@@ -49,7 +50,7 @@ public final class WorldStreamNativeProof {
         };
     }
 
-    private static long camera = 1, sequence;
+    static long camera = 1, sequence;
     private static int framesDuringUploads;
 
     /**
@@ -201,7 +202,7 @@ public final class WorldStreamNativeProof {
         return WorldStreamPackedTile.prepare(input, () -> false);
     }
 
-    private static CompletableFuture<WorldStreamPackedTile> prepare(
+    static CompletableFuture<WorldStreamPackedTile> prepare(
             ExecutorService worker,
             Path path,
             long tx,
@@ -221,12 +222,48 @@ public final class WorldStreamNativeProof {
                 worker);
     }
 
-    private static WorldStreamControl.Camera command(
-            long revision, int width, int height, long policy) {
+    /** Submits once in-flight readbacks have retired (a resize waits for them), bounded. */
+    private static boolean submitted(
+            WorldStreamNativeOwner owner, WorldStreamControl.Camera command) throws IOException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            if (owner.submit(command)) {
+                return true;
+            }
+            owner.advance();
+        }
+        return false;
+    }
+
+    private static WorldFrameFileV2.Frame frameAt(
+            WorldStreamNativeOwner owner,
+            WorldFrameFileV2 reader,
+            long policy,
+            int width,
+            int height,
+            long camera,
+            long content)
+            throws IOException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            owner.advance();
+            var frame =
+                    reader.readLatest(
+                            0,
+                            new WorldFrameFileV2.Barrier(
+                                    policy, width, height, camera, camera, content, content));
+            if (frame != null) {
+                return frame;
+            }
+        }
+        throw new AssertionError("No " + width + "x" + height + " frame");
+    }
+
+    static WorldStreamControl.Camera command(long revision, int width, int height, long policy) {
         return new WorldStreamControl.Camera(NONCE, revision, policy, width, height, CAMERA);
     }
 
-    private static WorldFrameFileV2.Frame read(WorldFrameFileV2 reader, long content, long floor)
+    static WorldFrameFileV2.Frame read(WorldFrameFileV2 reader, long content, long floor)
             throws Exception {
         var frame =
                 reader.readLatest(
@@ -239,7 +276,7 @@ public final class WorldStreamNativeProof {
         return frame;
     }
 
-    private static void upload(
+    static void upload(
             WorldStreamNativeOwner owner,
             WorldStreamPackedTile packed,
             WorldFrameFileV2 reader,
@@ -267,7 +304,7 @@ public final class WorldStreamNativeProof {
         require(upload.successful() != cancel, "Upload terminal state");
     }
 
-    private static WorldFrameFileV2.Frame accepted(
+    static WorldFrameFileV2.Frame accepted(
             WorldStreamNativeOwner owner, WorldFrameFileV2 reader, long content) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         // Reuse the same camera revision after COMMIT: standing-still content must produce a frame.
@@ -443,13 +480,13 @@ public final class WorldStreamNativeProof {
                     }
                     var stats = owner.stats();
                     require(
-                            stats.dynamicBuffers() == 10
+                            stats.dynamicBuffers() == SESSION.slots()
                                     && stats.backingBuffers() == backing
                                     && backing > stats.contextBuffers(),
                             "Fixed native buffer counts " + stats);
                     require(
-                            stats.textures() == stats.contextTextures() + 15,
-                            "Ten atlases plus five fixed target/readbacks");
+                            stats.textures() == stats.contextTextures() + SESSION.slots() + 5,
+                            "One atlas per slot plus five fixed target/readbacks");
                     require(
                             stats.upload().references() == 0
                                     && stats.upload().liveUploadBytes() == 0,
@@ -462,7 +499,19 @@ public final class WorldStreamNativeProof {
                     require(ProcessHandle.current().pid() == pid, "Unexpected process replacement");
                 }
                 long drawnCamera = ++camera;
-                require(owner.submit(command(drawnCamera, 800, 500, 2)), "Resize submit");
+                int allocations = owner.reallocations();
+                int samplesBefore = owner.stats().msaaSamples();
+                require(
+                        submitted(owner, command(drawnCamera, 800, 500, 2)),
+                        "Resize submit after in-flight readbacks retire");
+                require(
+                        owner.reallocations() == allocations + 1
+                                && owner.targetWidth() == 1024
+                                && owner.targetHeight() == 512,
+                        "Grown target in 256 px steps: "
+                                + owner.targetWidth()
+                                + "x"
+                                + owner.targetHeight());
                 require(
                         !owner.submit(command(++camera, 800, 500, 2)),
                         "Two draws in one bgfx frame");
@@ -496,6 +545,87 @@ public final class WorldStreamNativeProof {
                     relabeled = true;
                 }
                 require(relabeled, "Same camera revision changed its view");
+                // Native resolution: the full shared cap, then back down (memory returned).
+                long resizePolicy = 2;
+                var nativeSizes = new StringBuilder();
+                var edges = new StringBuilder();
+                for (int[] size : new int[][] {{2560, 1600}, {1920, 1080}, {256, 256}}) {
+                    long drawn = ++camera;
+                    long epoch = ++resizePolicy;
+                    require(
+                            submitted(owner, command(drawn, size[0], size[1], epoch)),
+                            "Resize to " + size[0] + "x" + size[1]);
+                    var big = frameAt(owner, reader, epoch, size[0], size[1], drawn, content);
+                    require(
+                            big.pixels().remaining() == size[0] * size[1],
+                            "Native frame size " + size[0] + "x" + size[1]);
+                    int center = big.pixels().get(size[1] / 2 * size[0] + size[0] / 2);
+                    require(
+                            Math.abs((center >>> 16 & 255) - 83) <= 1,
+                            "Native-size pixels " + Integer.toHexString(center));
+                    // Edge rows: the crop must take the frame's own first and last rows, never
+                    // rows of the larger allocation beyond the view rect (cleared to black).
+                    int top = big.pixels().get(size[0] / 2);
+                    int bottom = big.pixels().get((size[1] - 1) * size[0] + size[0] / 2);
+                    int left = big.pixels().get(size[1] / 2 * size[0]);
+                    int right = big.pixels().get(size[1] / 2 * size[0] + size[0] - 1);
+                    for (int edge : new int[] {top, bottom, left, right}) {
+                        require(
+                                (edge & 0xffffff) != 0,
+                                "Edge pixel is drawn, not the cleared allocation: "
+                                        + Integer.toHexString(edge));
+                    }
+                    // First row is the sky gradient at that row's elevation (#407), last row the
+                    // terrain.
+                    float[] sky =
+                            WorldFog.STREAM.skyPixel(
+                                    CAMERA.pitch(),
+                                    TerrainCamera.focalPixels(size[0]),
+                                    size[0],
+                                    size[1],
+                                    size[0] / 2,
+                                    0);
+                    require(
+                            Math.abs((top >>> 16 & 255) - Math.round(sky[0])) <= 1
+                                    && Math.abs((top >>> 8 & 255) - Math.round(sky[1])) <= 1
+                                    && Math.abs((top & 255) - Math.round(sky[2])) <= 1,
+                            "Top row is the frame's own first row: "
+                                    + Integer.toHexString(top)
+                                    + " sky "
+                                    + java.util.Arrays.toString(sky));
+                    require(
+                            Math.abs((bottom >>> 16 & 255) - 83) <= 1,
+                            "Bottom row is the frame's own last row: "
+                                    + Integer.toHexString(bottom));
+                    edges.append(' ')
+                            .append(size[0])
+                            .append('x')
+                            .append(size[1])
+                            .append(":top=")
+                            .append(Integer.toHexString(top))
+                            .append(",bottom=")
+                            .append(Integer.toHexString(bottom));
+                    big.release();
+                    nativeSizes
+                            .append(' ')
+                            .append(size[0])
+                            .append('x')
+                            .append(size[1])
+                            .append("->")
+                            .append(owner.targetWidth())
+                            .append('x')
+                            .append(owner.targetHeight());
+                }
+                require(
+                        owner.targetWidth() == 256 && owner.targetHeight() == 256,
+                        "Shrunk target returns memory");
+                // MSAA is chosen once per device; every reallocation keeps it.
+                require(
+                        owner.stats().msaaSamples() == samplesBefore,
+                        "Reallocation kept "
+                                + samplesBefore
+                                + " samples: "
+                                + owner.stats().msaaSamples());
                 require(
                         framesDuringUploads > 20,
                         "Camera frames were starved during incremental uploads");
@@ -516,7 +646,7 @@ public final class WorldStreamNativeProof {
                 require(
                         closingUpload.retainedInputBytes() == TERRAIN_FIXTURE_BYTES,
                         "Closing upload owner");
-                owner.submit(command(++camera, 800, 500, 2));
+                owner.submit(command(++camera, 256, 256, resizePolicy));
                 owner.close();
                 require(
                         closingUpload.finished() && !closingUpload.successful(),
@@ -536,6 +666,14 @@ public final class WorldStreamNativeProof {
                                 + content
                                 + " framesDuringUploads="
                                 + framesDuringUploads
+                                + " nativeSizes="
+                                + nativeSizes.toString().strip()
+                                + " edges="
+                                + edges.toString().strip()
+                                + " reallocations="
+                                + owner.reallocations()
+                                + " samples="
+                                + samplesBefore
                                 + " stats="
                                 + finalStats);
             }
@@ -547,7 +685,9 @@ public final class WorldStreamNativeProof {
                         WorldFrameFileV2.create(
                                 directory.resolve("frames-successor"), nextNonce, SCOPE);
                 var successor = new WorldStreamNativeOwner(nextSession, nextFrames, BACKEND)) {
-            require(successor.stats().dynamicBuffers() == 10, "Successor context resources");
+            require(
+                    successor.stats().dynamicBuffers() == SESSION.slots(),
+                    "Successor context resources");
         }
         // Exterior object culling on a further fresh context: draw counts and pixels, culled and
         // not.

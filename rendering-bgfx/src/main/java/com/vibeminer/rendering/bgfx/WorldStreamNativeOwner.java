@@ -23,6 +23,7 @@ import static org.lwjgl.bgfx.BGFX.bgfx_read_texture;
 import static org.lwjgl.bgfx.BGFX.bgfx_set_view_frame_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_shutdown;
 
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.NoSuchAlgorithmException;
@@ -39,7 +40,10 @@ import org.lwjgl.system.MemoryUtil;
  */
 final class WorldStreamNativeOwner implements AutoCloseable {
     private static final short INVALID = -1;
-    private static final int WIDTH = 800, HEIGHT = 500, PIXELS = WIDTH * HEIGHT * 4;
+
+    /** Targets grow in these steps, so a window drag reallocates only every few hundred px. */
+    static final int TARGET_STEP = 256;
+
     private static final AtomicBoolean CONTEXT = new AtomicBoolean();
 
     private static final class Readback {
@@ -121,6 +125,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     private long submittedObjects;
     private long publishedCamera, publishedContent, sequence, order;
     private int width, height, currentFrame, contextBuffers, contextTextures, samples = 1;
+    // The render target, readback textures and buffers, sized to the viewport (see targetSize).
+    private int targetWidth, targetHeight, reallocations, failedWidth, failedHeight;
     private long contextGpuHeap;
     private boolean initialized, acquired, closed, renderedThisFrame;
 
@@ -157,6 +163,11 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 initialized = true;
             }
             var caps = bgfx_get_caps();
+            if (caps.originBottomLeft()) {
+                // World backends are D3D11, Vulkan and Metal (top-left origin); the readback crop
+                // takes the first rows of the target, which a bottom-left origin (GL) would not.
+                throw new IOException("World requires a top-left-origin backend");
+            }
             GpuViewerMain.requireHardware(
                     Short.toUnsignedInt(caps.vendorId()), Short.toUnsignedInt(caps.deviceId()));
             if ((caps.supported() & (BGFX_CAPS_TEXTURE_BLIT | BGFX_CAPS_TEXTURE_READ_BACK))
@@ -201,48 +212,10 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 System.err.println("World render target: multisampling unavailable, 1 sample");
                 System.err.flush();
             }
-            color =
-                    valid(
-                            bgfx_create_texture_2d(
-                                    WIDTH,
-                                    HEIGHT,
-                                    false,
-                                    1,
-                                    BGFX_TEXTURE_FORMAT_BGRA8,
-                                    colourFlags(samples),
-                                    null,
-                                    0));
-            depth =
-                    valid(
-                            bgfx_create_texture_2d(
-                                    WIDTH,
-                                    HEIGHT,
-                                    false,
-                                    1,
-                                    BGFX_TEXTURE_FORMAT_D32F,
-                                    depthFlags(samples),
-                                    null,
-                                    0));
-            target =
-                    valid(bgfx_create_frame_buffer_from_handles(new short[] {color, depth}, false));
             for (int i = 0; i < readbacks.length; i++) {
-                var slot = new Readback();
-                readbacks[i] = slot;
-                slot.pixels = MemoryUtil.memAlloc(PIXELS);
-                slot.texture =
-                        valid(
-                                bgfx_create_texture_2d(
-                                        WIDTH,
-                                        HEIGHT,
-                                        false,
-                                        1,
-                                        BGFX_TEXTURE_FORMAT_BGRA8,
-                                        BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK,
-                                        null,
-                                        0));
+                readbacks[i] = new Readback();
             }
-            cropped = MemoryUtil.memAlloc(PIXELS);
-            bgfx_set_view_frame_buffer(0, target);
+            // The render target is allocated by the first camera, at its size.
         } catch (IOException | RuntimeException | Error failure) {
             try {
                 close();
@@ -251,6 +224,148 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             }
             throw failure;
         }
+    }
+
+    /**
+     * The allocation for a {@code width x height} frame: rounded up to {@link #TARGET_STEP}, within
+     * the shared cap. Reallocate when the frame outgrows it, or shrinks below half of it in either
+     * dimension (to give the memory back), never on a small change.
+     */
+    static int stepped(int frame, int max) {
+        return Math.min(max, (frame + TARGET_STEP - 1) / TARGET_STEP * TARGET_STEP);
+    }
+
+    /**
+     * The allocation {@code {width, height}} for a frame: unchanged while the frame fits and the
+     * allocation is at most twice the stepped frame's area (bgfx reads back the whole readback
+     * texture, so this bounds the over-read to 2x); else the stepped frame size.
+     */
+    static int[] targetSize(
+            int frameWidth, int frameHeight, int allocatedWidth, int allocatedHeight) {
+        int width = stepped(frameWidth, WorldFrameLimits.MAX_WIDTH);
+        int height = stepped(frameHeight, WorldFrameLimits.MAX_HEIGHT);
+        boolean fits = frameWidth <= allocatedWidth && frameHeight <= allocatedHeight;
+        if (fits && (long) allocatedWidth * allocatedHeight <= 2L * width * height) {
+            return new int[] {allocatedWidth, allocatedHeight};
+        }
+        return new int[] {width, height};
+    }
+
+    /** Sizes to try when allocating: the stepped size, then the exact frame if that differs. */
+    static java.util.List<int[]> allocationAttempts(
+            int[] stepped, int frameWidth, int frameHeight) {
+        return stepped[0] == frameWidth && stepped[1] == frameHeight
+                ? java.util.List.of(stepped)
+                : java.util.List.of(stepped, new int[] {frameWidth, frameHeight});
+    }
+
+    /** Frees the target; callers ensure no readback still writes into a slot's buffer. */
+    private void releaseTarget() {
+        if (target != INVALID) {
+            bgfx_destroy_frame_buffer(target);
+            target = INVALID;
+        }
+        if (color != INVALID) {
+            bgfx_destroy_texture(color);
+            color = INVALID;
+        }
+        if (depth != INVALID) {
+            bgfx_destroy_texture(depth);
+            depth = INVALID;
+        }
+        for (var slot : readbacks) {
+            if (slot.texture != INVALID) {
+                bgfx_destroy_texture(slot.texture);
+                slot.texture = INVALID;
+            }
+            if (slot.pixels != null) {
+                MemoryUtil.memFree(slot.pixels);
+                slot.pixels = null;
+            }
+        }
+        if (cropped != null) {
+            MemoryUtil.memFree(cropped);
+            cropped = null;
+        }
+        targetWidth = 0;
+        targetHeight = 0;
+    }
+
+    /**
+     * Allocates the stepped target, then the exact frame size if that fails. If neither fits in
+     * device memory this size is not drawn (the session stays up; a smaller viewport retries).
+     */
+    private boolean allocateWithFallback(int[] stepped) {
+        RuntimeException last = null;
+        for (int[] size : allocationAttempts(stepped, width, height)) {
+            try {
+                allocateTarget(size[0], size[1]);
+                return true;
+            } catch (IOException | OutOfMemoryError failure) {
+                releaseTarget();
+                last = new IllegalStateException(size[0] + "x" + size[1], failure);
+            }
+        }
+        if (failedWidth != width || failedHeight != height) {
+            failedWidth = width;
+            failedHeight = height;
+            System.err.println(
+                    "World render target unavailable for "
+                            + width
+                            + "x"
+                            + height
+                            + ": "
+                            + last.getCause());
+            System.err.flush();
+        }
+        return false;
+    }
+
+    private void allocateTarget(int newWidth, int newHeight) throws IOException {
+        releaseTarget();
+        int bytes = newWidth * newHeight * 4;
+        color =
+                valid(
+                        bgfx_create_texture_2d(
+                                newWidth,
+                                newHeight,
+                                false,
+                                1,
+                                BGFX_TEXTURE_FORMAT_BGRA8,
+                                colourFlags(samples),
+                                null,
+                                0));
+        depth =
+                valid(
+                        bgfx_create_texture_2d(
+                                newWidth,
+                                newHeight,
+                                false,
+                                1,
+                                BGFX_TEXTURE_FORMAT_D32F,
+                                depthFlags(samples),
+                                null,
+                                0));
+        target = valid(bgfx_create_frame_buffer_from_handles(new short[] {color, depth}, false));
+        for (var slot : readbacks) {
+            slot.pixels = MemoryUtil.memAlloc(bytes);
+            slot.texture =
+                    valid(
+                            bgfx_create_texture_2d(
+                                    newWidth,
+                                    newHeight,
+                                    false,
+                                    1,
+                                    BGFX_TEXTURE_FORMAT_BGRA8,
+                                    BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK,
+                                    null,
+                                    0));
+        }
+        cropped = MemoryUtil.memAlloc(bytes);
+        bgfx_set_view_frame_buffer(0, target);
+        targetWidth = newWidth;
+        targetHeight = newHeight;
+        reallocations++;
     }
 
     BgfxWorldStreamRenderer.Upload begin(WorldStreamPackedTile input) {
@@ -291,6 +406,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.finishLate(upload, live);
     }
 
+    /** Test seam for native proofs; see {@link BgfxWorldStreamRenderer#objectBudgetForProof}. */
+    void objectBudgetForProof(long bytes) {
+        requireOpen();
+        renderer.objectBudgetForProof(bytes);
+    }
+
     void commit(long expected, long next, List<WorldStreamState.Lease> table) {
         requireOpen();
         renderer.commit(expected, next, table);
@@ -326,6 +447,17 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         }
         if (renderedThisFrame) {
             return false;
+        }
+        int[] want = targetSize(width, height, targetWidth, targetHeight);
+        if (want[0] != targetWidth || want[1] != targetHeight) {
+            for (var slot : readbacks) {
+                if (slot.ticket != null) {
+                    return false; // advance() retires in-flight readbacks first
+                }
+            }
+            if (!allocateWithFallback(want)) {
+                return false;
+            }
         }
         Readback available = null;
         for (var slot : readbacks) {
@@ -380,10 +512,9 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             }
             var ticket = newest.ticket;
             cropped.clear();
-            int stride = WIDTH * 4, length = ticket.width() * 4;
-            boolean flip = bgfx_get_caps().originBottomLeft();
+            int stride = targetWidth * 4, length = ticket.width() * 4;
             for (int row = 0; row < ticket.height(); row++) {
-                int sourceRow = flip ? HEIGHT - 1 - row : row;
+                int sourceRow = row; // top-left origin (checked at init)
                 cropped.put(
                         newest.pixels
                                 .duplicate()
@@ -411,6 +542,19 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             }
         }
         return published;
+    }
+
+    /** Current render-target allocation and how often it was (re)made; proofs and tests. */
+    int targetWidth() {
+        return targetWidth;
+    }
+
+    int targetHeight() {
+        return targetHeight;
+    }
+
+    int reallocations() {
+        return reallocations;
     }
 
     /** Sequence of the newest frame written to the mapping, or 0 before the first. */
@@ -542,19 +686,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 if (renderer != null) {
                     renderer.close();
                 }
-                if (target != INVALID) {
-                    bgfx_destroy_frame_buffer(target);
-                    target = INVALID;
-                }
-                for (short texture : new short[] {color, depth}) {
-                    if (texture != INVALID) {
-                        bgfx_destroy_texture(texture);
-                    }
-                }
-                for (var slot : readbacks) {
-                    if (slot != null && slot.texture != INVALID) {
-                        bgfx_destroy_texture(slot.texture);
-                    }
+                if (readbacks[readbacks.length - 1] != null) {
+                    releaseTarget();
                 }
             }
         } finally {

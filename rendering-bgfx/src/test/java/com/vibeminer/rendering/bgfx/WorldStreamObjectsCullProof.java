@@ -13,10 +13,10 @@ import java.util.concurrent.TimeUnit;
 /**
  * Actual GPU proof (Vulkan, or D3D11 on request; see WorldStreamNativeProof.BACKEND) of CPU
  * exterior object culling on the production native owner: one authored terrain tile with the
- * material proof's late objects (three camera-facing quads in placement 0, then the tile filled to
- * the placement cap behind the camera). With culling on, only placement 0 is drawn; with it off,
- * every placement is. Both frames must have identical pixels, and the bgfx draw counts must drop by
- * the culled placements' submits. Authored data only.
+ * material proof's late objects (three camera-facing quads in placement 0, the layout ladders in
+ * placement 1, then the tile filled to the placement cap behind the camera). With culling on, only
+ * placements 0 and 1 are drawn; with it off, every placement is. Both frames must have identical
+ * pixels, and the bgfx draw counts must drop by the culled placements' submits. Authored data only.
  */
 final class WorldStreamObjectsCullProof {
     private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(321, -654);
@@ -92,13 +92,15 @@ final class WorldStreamObjectsCullProof {
             require(
                     culled.placements() == placements && all.placements() == placements,
                     "Placements tested " + culled + " " + all);
-            // Placement 0 draws its cutout and opaque ranges, then its blended one; the rest are
-            // behind the camera.
+            // Placement 0 draws its cutout and opaque ranges, then its blended one; placement 1 is
+            // the layout ladders (#374), one opaque range per level; the rest are quads behind the
+            // camera.
+            int ladders = WorldStreamObjectsMaterialProof.ladderQuads();
             require(
-                    culled.culled() == placements - 1 && culled.objectSubmits() == 3,
+                    culled.culled() == placements - 2 && culled.objectSubmits() == 3 + ladders,
                     "Culled counts " + culled);
             require(
-                    all.culled() == 0 && all.objectSubmits() == 3 * placements,
+                    all.culled() == 0 && all.objectSubmits() == 3 * (placements - 1) + ladders,
                     "Unculled counts " + all);
             // Terrain eye, projection and rebase plus object eye and projection: once per frame,
             // whatever the number of slots and placements drawn.
@@ -135,7 +137,11 @@ final class WorldStreamObjectsCullProof {
             int middle = a.get(HEIGHT / 2 * WIDTH + 400);
             int red = Math.max(middle >>> 16 & 255, middle & 255);
             require(
-                    Math.abs(red - 200) <= 1 && Math.abs((middle >>> 8 & 255) - 40) <= 1,
+                    Math.abs(red - WorldStreamObjectsMaterialProof.OPAQUE_R) <= 1
+                            && Math.abs(
+                                            (middle >>> 8 & 255)
+                                                    - WorldStreamObjectsMaterialProof.OPAQUE_G)
+                                    <= 1,
                     "Visible placement drawn " + Integer.toHexString(middle));
             // The sky, drawn after the opaque surfaces with GEQUAL at the cleared depth, fills the
             // uncovered top-left pixel (terrain ends 20 yd ahead) with the horizon gradient colour

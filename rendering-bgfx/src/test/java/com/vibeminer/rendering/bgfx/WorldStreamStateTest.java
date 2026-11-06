@@ -76,7 +76,7 @@ final class WorldStreamStateTest {
     }
 
     @Test
-    void reusesTenSlotsForHundredsOfOrderedAtomicCommitsWithoutReplayOrAba() {
+    void reusesEverySlotForHundredsOfOrderedAtomicCommitsWithoutReplayOrAba() {
         var state = new WorldStreamState(NONCE);
         long tx = 0;
         var oldLeases = new ArrayList<WorldStreamState.Lease>();
@@ -97,7 +97,7 @@ final class WorldStreamStateTest {
             assertEquals(OK, state.staged(lease));
             assertEquals(oldTable, state.active(), "Inactive incoming pair never becomes visible");
             var table = new ArrayList<>(oldTable);
-            if (table.size() == 9) {
+            if (table.size() == WorldStreamState.MAX_ACTIVE) {
                 table.removeFirst();
             }
             table.addFirst(lease); // Intentional insertion order disagrees with slot ordering.
@@ -114,7 +114,7 @@ final class WorldStreamStateTest {
             assertEquals(STALE, state.offer(NONCE, offered, lease, 0, 0));
             assertEquals(BAD_LEASE, state.offer(NONCE, ++tx, lease, 0, 0));
             assertEquals(BAD_LEASE, state.consumedReference(lease));
-            assertTrue(state.active().size() <= 9);
+            assertTrue(state.active().size() <= WorldStreamState.MAX_ACTIVE);
             oldLeases.add(lease);
         }
         state.close();

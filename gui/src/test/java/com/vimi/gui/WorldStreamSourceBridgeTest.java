@@ -70,6 +70,17 @@ public final class WorldStreamSourceBridgeTest {
         // Budgets are mip-chain texels (#265): the chain of a twice-as-large texture is double
         // within one texel, the 1 x 1 level.
         check(Math.abs(high.totalPixels() - 2 * standard.totalPixels()) <= 3, "High doubles every pool");
+        // #280: dungeon (InstanceType 1) and raid (2) maps draw WMO interiors; others do not.
+        check(WorldView.instanceInteriors(new com.vibeminer.concepts.world.WorldService.MapInfo(
+                36, "Dungeon", "D", 1, 1L)), "Dungeon maps draw interiors");
+        check(WorldView.instanceInteriors(new com.vibeminer.concepts.world.WorldService.MapInfo(
+                249, "Raid", "R", 2, 1L)), "Raid maps draw interiors");
+        check(!WorldView.instanceInteriors(new com.vibeminer.concepts.world.WorldService.MapInfo(
+                0, "Continent", "C", 0, 1L)), "Open-world maps keep exteriors only");
+        check(!WorldView.instanceInteriors(new com.vibeminer.concepts.world.WorldService.MapInfo(
+                30, "Battleground", "B", 3, 1L)), "Battlegrounds keep exteriors only");
+        check(!WorldView.instanceInteriors(new com.vibeminer.concepts.world.WorldService.MapInfo(
+                7, "Unknown", "U", null, 1L)), "An unreadable instance type keeps exteriors only");
         check(WorldStreamGpuOwner.exteriorsEnabled(null), "Exteriors are on without the property");
         check(WorldStreamGpuOwner.exteriorsEnabled("true"), "true keeps exteriors on");
         check(WorldStreamGpuOwner.exteriorsEnabled(""), "An empty value keeps exteriors on");
@@ -82,6 +93,14 @@ public final class WorldStreamSourceBridgeTest {
         if (System.getProperty("vimi.world.creatures") == null) {
             check(!WorldStreamGpuOwner.CREATURES, "The default GUI session draws no creature models");
         }
+        var highSpec = WorldStreamGpuOwner.spec("0".repeat(64),
+                com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH);
+        check(highSpec.objectTextures() == com.vibeminer.rendering.bgfx.WorldStreamTransport.ObjectTextures.HIGH,
+                "HIGH object textures select the HIGH objects budget");
+        check(WorldStreamGpuOwner.spec("0".repeat(64),
+                        com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.STANDARD).objectTextures()
+                        == com.vibeminer.rendering.bgfx.WorldStreamTransport.ObjectTextures.STANDARD,
+                "STANDARD object textures keep the STANDARD budget");
         var spec = WorldStreamGpuOwner.spec("0".repeat(64));
         check(spec.exteriorObjects() == WorldStreamGpuOwner.EXTERIORS,
                 "The GUI session profile follows the property");

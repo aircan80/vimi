@@ -94,7 +94,11 @@ final class WorldStreamParentState {
 
     private final Object owner = new Object();
     private final WorldStreamEnvelope.Session session;
-    private final long[] generations = new long[10];
+    private final long[] generations = new long[WorldStreamState.SLOTS];
+    // Whether a slot's current generation holds GPU objects. Staging a new generation into such a
+    // slot means the child destroyed them, releasing their objects budget reservation.
+    private final boolean[] slotObjects = new boolean[WorldStreamState.SLOTS];
+    private long objectsReleases;
     private WorldStreamState.Lease credit;
     private long serial, transaction, content;
     private boolean hello, closed, childGone;
@@ -223,7 +227,7 @@ final class WorldStreamParentState {
     Commit prepareCommit(long policy, List<Resident> ordered) {
         Objects.requireNonNull(ordered);
         int count = ordered.size();
-        require(count >= 0 && count <= 9, "Commit count");
+        require(count >= 0 && count <= session.maxActive(), "Commit count");
         var snapshot = new Resident[count];
         // Caller list code must never run under the state monitor.
         for (int i = 0; i < count; i++) {
@@ -312,15 +316,29 @@ final class WorldStreamParentState {
     }
 
     /**
+     * Changes whenever a slot whose generation held objects is replaced: the child destroyed those
+     * objects before staging, so budget refused earlier may now fit.
+     */
+    synchronized long objectsReleases() {
+        return objectsReleases;
+    }
+
+    /**
      * Synchronous admission before any file is written. Misuse (a foreign resident, one with inline
      * objects, or one already requested) is refused with IllegalArgumentException so the caller can
      * fail only that request. Returns false when the resident is no longer the active generation of
      * its slot. Any admission of a live session consumes the resident's one request, whatever the
-     * delivery then does.
+     * delivery then does, except a BUDGET refusal, after which it may be offered again.
      */
     synchronized boolean admitLateObjects(Resident member) {
         if (member == null || member.owner != owner) {
             throw new IllegalArgumentException("Foreign late objects resident");
+        }
+        if (member.late == WorldStreamStatus.LateOutcome.BUDGET) {
+            // A budget refusal attached nothing; the same generation may be offered again.
+            member.lateRequested = false;
+            member.lateSent = false;
+            member.late = null;
         }
         if (member.objects != 0 || member.lateRequested) {
             throw new IllegalArgumentException("Resident objects already requested or inline");
@@ -401,7 +419,7 @@ final class WorldStreamParentState {
                             && value.lease().generation() == generations[value.lease().slot()] + 1,
                     "Credit order");
             int free = 0;
-            while (free < 10) {
+            while (free < session.slots()) {
                 int slot = free;
                 if (active.stream().noneMatch(member -> member.lease.slot() == slot)) {
                     break;
@@ -466,6 +484,11 @@ final class WorldStreamParentState {
                                     : value.objects() == -1),
                     "Unmatched staged payload");
             ticket.resident = new Resident(ticket, value.objects());
+            int slot = value.lease().slot();
+            if (slotObjects[slot]) {
+                objectsReleases++;
+            }
+            slotObjects[slot] = value.objects() == 1;
             return Change.STAGED;
         }
         if (message instanceof WorldStreamStatus.Committed value) {
@@ -550,6 +573,9 @@ final class WorldStreamParentState {
                             && objectsTarget.lease.equals(value.lease()),
                     "Unmatched late objects outcome");
             objectsTarget.late = value.outcome();
+            if (value.outcome() == WorldStreamStatus.LateOutcome.ATTACHED) {
+                slotObjects[value.lease().slot()] = true;
+            }
             objectsTarget = null;
             return Change.OBJECTS;
         }
