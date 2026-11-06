@@ -237,7 +237,8 @@ final class WorldStreamObjectsFileTest {
             indices[r * 3 + 2] = 2;
         }
         draws.mesh(FloatBuffer.wrap(new float[24]), IntBuffer.wrap(indices), ranges);
-        for (int p = 0; p < 5; p++) {
+        // 1,024 ranges per placement: one more placement than the draw budget allows.
+        for (int p = 0; p <= WorldStreamObjectsFile.MAX_DRAWS / 1024; p++) {
             draws.placement(0, 0, 0, 0, 1, 1, 0);
         }
         var budget = assertThrows(IllegalArgumentException.class, draws::build);

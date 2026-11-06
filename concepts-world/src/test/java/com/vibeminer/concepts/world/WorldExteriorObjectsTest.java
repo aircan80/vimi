@@ -1954,20 +1954,34 @@ class WorldExteriorObjectsTest {
 
     @Test
     void doodadPlacementAndModelCapsKeepSourceOrder() {
+        // MDDF doodads fill the placement cap first (an obj0 records at most 4,096 of them, the
+        // cap itself); the drawn building's three set doodads come after and are capped.
         var doodads = new ArrayList<Mddf>();
-        for (int i = 0; i < WorldExteriorObjects.MAX_DOODADS + 3; i++) {
+        for (int i = 0; i < WorldExteriorObjects.MAX_DOODADS; i++) {
             doodads.add(Mddf.of(MODEL, i + 1, 0x40));
+        }
+        var three = new ArrayList<Modd>();
+        for (int i = 0; i < 3; i++) {
+            three.add(new Modd(0, i, 0, 0, new double[] {0, 0, 0, 1}, 1));
         }
         try (var f = new Fixture(List.of())) {
             putModel(f, MODEL, model());
-            try (var set = run(f, obj0(List.of(), doodads))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            1,
+                            new long[] {GROUP},
+                            List.of(new Material(0, IMAGE, 0)),
+                            doodadChunks(new int[][] {{0, 3}}, new long[] {MODEL}, three)));
+            try (var set = run(f, obj0(List.of(Modf.of(ROOT, 1, 0x8)), doodads, 0))) {
                 assertEquals(
                         WorldExteriorObjects.MAX_DOODADS,
                         set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
-                assertEquals(3, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
+                assertEquals(3, set.count(WorldExteriorObjects.Count.SET_DOODAD_CAPPED));
                 assertEquals(3, set.count(WorldExteriorObjects.Count.DOODAD_CAP_PLACEMENTS));
-                assertEquals(
-                        WorldExteriorObjects.MAX_DOODADS - 1, set.placements().getLast().ordinal());
+                var last = set.placements().getLast();
+                assertEquals(WorldExteriorObjects.Kind.DOODAD, last.kind());
+                assertEquals(WorldExteriorObjects.MAX_DOODADS - 1, last.ordinal());
             }
         }
         var distinct = new ArrayList<Mddf>();
@@ -2775,8 +2789,10 @@ class WorldExteriorObjectsTest {
 
     @Test
     void cutoutRangesAreDroppedBeforeAnOpaqueBuildingIsCappedAtTheDrawBudget() {
-        // A group of 64 opaque batches and a group with one cutout batch: 64 placements cost
-        // exactly the 4,096-draw budget under the opaque-only profile, 4,160 with the cutout.
+        // Two groups of 64 opaque batches and a group with one cutout batch: 64 placements cost
+        // exactly the 8,192-draw budget under the opaque-only profile, 64 more with the cutout.
+        int per = WorldExteriorObjects.MAX_DRAWS / 64;
+        assertEquals(128, per);
         var batches = new ArrayList<Batch>();
         for (int b = 0; b < 64; b++) {
             batches.add(new Batch(b * 3, 3, 0, 0));
@@ -2790,44 +2806,51 @@ class WorldExteriorObjectsTest {
             f.files.sources.put(
                     ROOT,
                     root(
-                            2,
-                            new long[] {GROUP, GROUP + 1},
+                            3,
+                            new long[] {GROUP, GROUP + 2, GROUP + 1},
                             List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
             f.files.sources.put(GROUP, group(EXT, 3, 64, batches));
+            f.files.sources.put(GROUP + 2, group(EXT, 3, 64, batches));
             f.files.sources.put(GROUP + 1, cutout);
             putModel(f, MODEL, model());
             f.files.sources.put(4L, obj0(records, List.of(Mddf.of(MODEL, 900, 0x40))));
             try (var set = f.run()) {
                 assertEquals(64, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
-                assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
-                assertEquals(64, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
+                assertEquals(
+                        1,
+                        set.count(WorldExteriorObjects.Count.BATCH_CAPPED),
+                        counts(set).toString());
+                assertEquals(per, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
-                // The cutout-only group is dropped whole; the opaque group is untouched.
-                assertEquals(1, set.models().getFirst().meshes().size());
-                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
-                var mesh = set.models().getFirst().meshes().getFirst();
-                assertEquals(64, mesh.ranges().size());
-                assertEquals(64 * 3, mesh.indices().remaining());
-                assertTrue(
-                        mesh.ranges().stream()
-                                .allMatch(r -> r.blend() == WorldExteriorObjects.OPAQUE));
+                // The cutout-only group is dropped whole; the opaque groups are untouched.
+                assertEquals(2, set.models().getFirst().meshes().size());
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                for (var mesh : set.models().getFirst().meshes()) {
+                    assertEquals(64, mesh.ranges().size());
+                    assertEquals(64 * 3, mesh.indices().remaining());
+                    assertTrue(
+                            mesh.ranges().stream()
+                                    .allMatch(r -> r.blend() == WorldExteriorObjects.OPAQUE));
+                }
                 // The budget is full, so the doodad is capped, never a building.
                 assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_CAP_DRAWS));
                 // The dropped cutout range's image is not uploaded.
                 assertTrue(set.images().stream().noneMatch(image -> image.id() == IMAGE2));
                 assertImageSlotsValid(set);
             }
         }
-        // One placement fewer: the cutout range fits (63 * 65 = 4,095 draws) and is kept.
+        // One placement fewer: the cutout range fits (63 * (per + 1) draws) and is kept.
         try (var f = new Fixture(records.subList(0, 63))) {
             f.files.sources.put(
                     ROOT,
                     root(
-                            2,
-                            new long[] {GROUP, GROUP + 1},
+                            3,
+                            new long[] {GROUP, GROUP + 2, GROUP + 1},
                             List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
             f.files.sources.put(GROUP, group(EXT, 3, 64, batches));
+            f.files.sources.put(GROUP + 2, group(EXT, 3, 64, batches));
             f.files.sources.put(GROUP + 1, cutout);
             try (var set = f.run()) {
                 assertEquals(63, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
@@ -2849,10 +2872,12 @@ class WorldExteriorObjectsTest {
 
     @Test
     void aMaterialOnlyBuildingNeverCapsALaterOpaqueBuildingAndIsTrimmedInstead() {
-        // A building with only two cutout batches, placed first, then a building with 65 opaque
-        // batches in two groups. The opaque-only profile left the first empty, so it costs
-        // nothing at admission: 63 opaque placements (4,095 draws) are all drawn, and the cutout
-        // building, which no longer fits, returns to its opaque-only outcome.
+        // A building with only three cutout batches, placed first, then a building with 130
+        // opaque batches in two groups. The opaque-only profile left the first empty, so it
+        // costs nothing at admission: 63 opaque placements (8,190 of the 8,192 draws) are all
+        // drawn, and the cutout building, which no longer fits, returns to its opaque-only
+        // outcome.
+        assertEquals(8192, WorldExteriorObjects.MAX_DRAWS);
         long cutoutRoot = ROOT + 10, cutoutGroup = GROUP + 10;
         var opaque = new ArrayList<Batch>();
         for (int b = 0; b < 64; b++) {
@@ -2869,18 +2894,31 @@ class WorldExteriorObjectsTest {
                 records.add(Modf.of(ROOT, i + 2, 0x8));
             }
             try (var f = new Fixture(records)) {
-                // 64 opaque batches in one group and one in a second: 65 opaque ranges.
+                // 64 + 64 opaque batches in two groups and two in a third: 130 opaque ranges.
                 f.files.sources.put(
                         ROOT,
-                        root(2, new long[] {GROUP, GROUP + 1}, List.of(new Material(0, IMAGE, 0))));
+                        root(
+                                3,
+                                new long[] {GROUP, GROUP + 2, GROUP + 1},
+                                List.of(new Material(0, IMAGE, 0))));
                 f.files.sources.put(GROUP, group(EXT, 3, 64, opaque));
-                f.files.sources.put(GROUP + 1, group(EXT));
+                f.files.sources.put(GROUP + 2, group(EXT, 3, 64, opaque));
+                f.files.sources.put(
+                        GROUP + 1,
+                        group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 0))));
                 f.files.sources.put(
                         cutoutRoot,
                         root(1, new long[] {cutoutGroup}, List.of(new Material(1, IMAGE2, 0))));
                 f.files.sources.put(
                         cutoutGroup,
-                        group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 0))));
+                        group(
+                                EXT,
+                                3,
+                                3,
+                                List.of(
+                                        new Batch(0, 3, 0, 0),
+                                        new Batch(3, 3, 0, 0),
+                                        new Batch(6, 3, 0, 0))));
                 try (var set = f.run()) {
                     // Slots: only a material-only placement beyond 64 placements is capped.
                     int capped =
@@ -2900,9 +2938,9 @@ class WorldExteriorObjectsTest {
                                 set.count(WorldExteriorObjects.Count.PLACEMENT_EMPTY));
                         assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
                         assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_EMPTY));
-                        assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
+                        assertEquals(3, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
                         assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
-                        assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                        assertEquals(3, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
                         assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_EMPTY));
                         assertEquals(1, set.models().size());
                         assertEquals(63, set.placements().size());
@@ -2915,7 +2953,7 @@ class WorldExteriorObjectsTest {
                     } else {
                         assertEquals(63, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
                         assertEquals(2, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
-                        assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
+                        assertEquals(3, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
                         assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
                         assertEquals(2, set.images().size());
                     }

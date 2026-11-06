@@ -49,12 +49,20 @@ public final class WorldExteriorObjects {
     static final int MAX_RANGES = 1024, MAX_MESHES = 256, MAX_PIXELS = 1 << 20;
 
     /**
-     * BASIC doodad caps, separate from the building caps so buildings are never displaced. Distinct
-     * models are the binding cap on dense tiles: Zephras Isle read 48 models per tile and capped
-     * 791 set doodads at 48, while no tile came near 512 doodad placements, so 96 models (and 96
-     * model images) are read.
+     * BASIC doodad caps, separate from the building caps so buildings are never displaced.
+     *
+     * <p>Placements (#308): on Elwynn Forest's 3 x 3 tiles around Goldshire the 512-placement cap
+     * was the only one that bound (every one of 8,253 capped doodads and set doodads), with about
+     * 1,350 candidate doodads per tile against 36 distinct models. 4,096 placements cover the
+     * densest measured tiles; a placement is 104 bytes in the objects file and draws its model's
+     * ranges, which {@link #MAX_DRAWS} bounds.
+     *
+     * <p>Models: Zephras Isle read 48 models per tile and capped 791 set doodads at 48, so 96
+     * models are read. Model images: with billboard-bearing models admitted (#390) Elwynn tiles
+     * already reached 96, so 192 are read; the doodad pixel budget is unchanged, so more images
+     * share it at lower levels instead of being dropped.
      */
-    static final int MAX_DOODADS = 512, MAX_MODELS = 96, MAX_MODEL_IMAGES = 96;
+    static final int MAX_DOODADS = 4096, MAX_MODELS = 96, MAX_MODEL_IMAGES = 192;
 
     static final int MAX_DOODAD_VERTICES = 65_536, MAX_DOODAD_INDICES = 196_608;
     static final int MAX_DOODAD_RANGES = 512, MAX_DOODAD_PIXELS = 1 << 19;
@@ -115,8 +123,12 @@ public final class WorldExteriorObjects {
      */
     static final long RETAINED_SOURCE_BYTES = 32L << 20;
 
-    /** Per-tile draw budget: the sum over all placements of their model's ranges. */
-    static final int MAX_DRAWS = 4096;
+    /**
+     * Per-tile draw budget: the sum over all placements of their model's ranges. Elwynn doodad
+     * models average about two ranges, so 4,096 placements need about 8,192 draws (#308); the
+     * renderer culls placements outside the view (#369), so a frame submits far fewer.
+     */
+    static final int MAX_DRAWS = 8192;
 
     /** Largest admitted placement scale (building scale times doodad scale). */
     static final double MAX_SCALE = 64;

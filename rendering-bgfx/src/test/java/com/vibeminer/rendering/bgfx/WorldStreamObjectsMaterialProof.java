@@ -193,9 +193,10 @@ public final class WorldStreamObjectsMaterialProof {
                 });
         builder.placement(
                 0, VIEW.x(), VIEW.y(), VIEW.z(), 1, new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1});
-        // Fill the tile to the placement cap behind the camera (looking along +x), so every frame
-        // draws all of them in the opaque/cutout pass and again in the sorted blended pass.
-        while (builder.placementRoom() > 0) {
+        // Fill the tile to the placement or draw cap, whichever binds first, behind the camera
+        // (looking along +x), so every frame draws all of them in the opaque/cutout pass and
+        // again in the sorted blended pass.
+        while (builder.placementRoom() > 0 && builder.drawCost(0) <= builder.drawRoom()) {
             int i = builder.placementCount();
             builder.placement(
                     0,

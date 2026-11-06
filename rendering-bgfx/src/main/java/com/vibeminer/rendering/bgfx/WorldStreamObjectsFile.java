@@ -44,10 +44,11 @@ final class WorldStreamObjectsFile {
     // Opaque buildings (24 roots, 256 meshes, 1,024 ranges, 64 placements, 64 images, 98,304
     // vertices, 294,912 indices), plus cutout and blended building surfaces (256 ranges, 32
     // images, 32,768 vertices, 98,304 indices), plus BASIC doodads (96 models and meshes, 512
-    // ranges and placements, 96 images, 65,536 vertices, 196,608 indices). Creature models share
-    // whatever room remains. Every table at its cap is about 27 MB.
-    static final int MAX_MODELS = 120, MAX_MESHES = 352, MAX_RANGES = 1792, MAX_PLACEMENTS = 576;
-    static final int MAX_IMAGES = 192, MAX_VERTICES = 196_608, MAX_INDICES = 589_824;
+    // ranges, 4,096 placements (#308), 192 images, 65,536 vertices, 196,608 indices). Creature
+    // models share whatever room remains. Every table at its cap is about 27.5 MB.
+    static final int MAX_MODELS = 120, MAX_MESHES = 352, MAX_RANGES = 1792;
+    static final int MAX_PLACEMENTS = 64 + 4096;
+    static final int MAX_IMAGES = 64 + 32 + 192, MAX_VERTICES = 196_608, MAX_INDICES = 589_824;
     static final int MAX_IMAGE_SIDE = 256, MAX_MESH_VERTICES = 65_536;
 
     /**
@@ -65,8 +66,11 @@ final class WorldStreamObjectsFile {
 
     static final int RANGE_INTS = 4, PLACEMENT_DOUBLES = 13;
 
-    /** Draw calls per tile (sum over placements of their model's ranges); bounds a frame. */
-    static final int MAX_DRAWS = 4096;
+    /**
+     * Draw calls per tile (sum over placements of their model's ranges); bounds a frame. Raised
+     * with the doodad placements (#308); the renderer culls placements outside the view (#369).
+     */
+    static final int MAX_DRAWS = 8192;
 
     static final int VERTEX_FLOATS = 8, VERTEX_BYTES = 32;
     static final double MAX_SCALE = 64;
