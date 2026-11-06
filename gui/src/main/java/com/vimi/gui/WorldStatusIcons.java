@@ -157,7 +157,7 @@ final class WorldStatusIcons {
         return row;
     }
 
-    /** Adds a trailing control (the "More" toggle) to the row with the same input rules. */
+    /** Adds a trailing control to the row with the same input rules (a hook for later HUD keys). */
     void trailing(javafx.scene.control.ButtonBase control) {
         control.setFocusTraversable(false);
         control.getStyleClass().add("world-hud-icon");

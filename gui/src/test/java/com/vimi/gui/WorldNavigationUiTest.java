@@ -434,15 +434,12 @@ public final class WorldNavigationUiTest {
         require(mapName.getText().equals(heading.getText()) && !mapName.getText().isBlank(),"The map name is the former heading: "+mapName.getText());
         var status=(Node)get(view,"status");
         require(isWithin(status,hud),"The status line floats in the HUD");
-        // HUD step 2: the status icons replace the slim bar; the rows left fold behind More.
+        // HUD step 2: the status icons replace the slim bar; step 5: the rest lives on menu pages.
         var row=view.lookup("#world-status-icons");
-        var more=(javafx.scene.control.ToggleButton)view.lookup("#world-hud-more");
-        var rows=view.lookup("#world-hud-more-rows");
-        require(view.lookup("#world-hud-bar")==null && isWithin(row,hud) && isWithin(more,row),
-                "No slim bar: the icon row holds the More toggle");
-        require(isWithin(rows,content.getBottom()),"The More rows are the only bottom");
-        for (var id : new String[] {"#world-walk-mode","#world-flight-speed","#world-audio"})
-            require(view.lookup(id)==null,"Its icon replaced the row control: "+id);
+        require(view.lookup("#world-hud-bar")==null && view.lookup("#world-hud-more")==null && isWithin(row,hud),
+                "No slim bar and no More drawer: the icon row is the HUD's bottom-left");
+        require(content.getBottom() instanceof javafx.scene.layout.VBox bottom && bottom.getChildren().equals(List.of(get(view,"inspection"))),
+                "Only an inspect result can sit under the view");
         statusIcons(view,viewport);
         // HUD step 2: the area and position lines leave the bar; the zone text and the coordinates
         // pill show them over the view and keep the full lines as their tooltips.
@@ -471,17 +468,32 @@ public final class WorldNavigationUiTest {
                 "The travel panel reads the copied coordinates back");
         require(view.getScene().getFocusOwner()==viewport,"Focus stays on the viewport after copying");
         view.coordinatesCopy(WorldCoordinatesPill::systemClipboard);
-        require(!more.isSelected() && !rows.isVisible() && !rows.isManaged() && !more.isFocusTraversable(),"More starts collapsed");
-        for (var id : new String[] {"#world-smooth-motion","#world-motion-status","#world-save-bookmark",
-                "#world-hide-panels","#world-fullscreen","#world-look-sensitivity","#world-invert-look",
-                "#world-key-bindings-open","#world-look-status","#world-gpu-enabled",
-                "#world-object-textures","#world-gpu-retry","#world-gpu-status","#world-texture-status",
-                "#world-texture-retry","#world-instance-entrances","#world-instance-enter","#world-instance-leave",
-                "#world-instance-status","#world-back","#world-gpu-activity","#world-texture-activity"})
-            require(view.lookup(id)!=null && isWithin(view.lookup(id),rows),"Still reachable under More: "+id);
-        require(isWithin((Node)get(view,"keyHelp"),rows),"The key help line is under More");
-        // The long GPU and texture texts show once, on the developer overlay; More keeps Retry,
-        // whose tooltip always gives the current reason.
+        // HUD step 5: every control that was a row is on an Escape menu page; nothing is removed.
+        var pages=java.util.Map.of(
+                "controls",new String[] {"#world-flight-speed","#world-smooth-motion","#world-walk-mode","#world-motion-status",
+                        "#world-look-sensitivity","#world-invert-look","#world-look-status","#world-layout-qwerty",
+                        "#world-layout-azerty","#world-key-bindings-open"},
+                "audio",new String[] {"#world-audio","#world-music","#world-ambience","#world-music-volume",
+                        "#world-ambience-volume","#world-audio-variant","#world-audio-status"},
+                "display",new String[] {"#world-show-coordinates","#world-hide-panels","#world-fullscreen","#world-gpu-enabled",
+                        "#world-object-textures","#world-gpu-activity","#world-gpu-retry","#world-gpu-status",
+                        "#world-texture-activity","#world-texture-status","#world-texture-retry"},
+                "bookmarks",new String[] {"#world-save-bookmark"},
+                "instances",new String[] {"#world-instance-status","#world-instance-entrances","#world-instance-enter",
+                        "#world-instance-leave"});
+        pages.forEach((page,ids) -> {
+            var box=view.lookup("#world-menu-page-"+page);
+            for (var id : ids) require(view.lookup(id)!=null && isWithin(view.lookup(id),box),"On the "+page+" page: "+id);
+        });
+        require(isWithin((Node)get(view,"keyHelp"),view.lookup("#world-menu-page-controls")),"The key help is the Controls page footer");
+        var inspectHint=(javafx.scene.control.Label)view.lookup("#world-inspect-hint");
+        require(inspectHint!=null && isWithin(inspectHint,view.lookup("#world-menu-page-controls"))
+                        && inspectHint.getText().equals(WorldView.INSPECT_HINT),
+                "The click-to-inspect hint is in the Controls page footer too");
+        require(isWithin((Node)get(view,"travel"),view.lookup("#world-menu-page-bookmarks")),"The bookmark list is on the Bookmarks page");
+        require(isWithin(view.lookup("#world-back"),view.lookup("#world-menu-main")),"Back to the map list is a menu entry");
+        // The long GPU and texture texts show once, on the developer overlay; the Display page keeps
+        // Retry, whose tooltip always gives the current reason.
         for (var pair : new String[][] {{"#world-gpu-retry","#world-gpu-status"},{"#world-texture-retry","#world-texture-status"}}) {
             var retry=(Button)view.lookup(pair[0]);
             var text=(javafx.scene.control.Label)view.lookup(pair[1]);
@@ -493,23 +505,19 @@ public final class WorldNavigationUiTest {
             text.setText(was);
         }
         for (var id : new String[] {"#world-gpu-status","#world-texture-status"})
-            require(!view.lookup(id).isVisible() && !view.lookup(id).isManaged(),"Not shown under More: "+id);
-        for (var id : new String[] {"#world-gpu-retry","#world-texture-retry"})
-            require(view.lookup(id).isVisible(),"Retry stays under More: "+id);
-        // The spawn and role controls live in the minimap's tracking popup (#515), not under More.
+            require(!view.lookup(id).isVisible() && !view.lookup(id).isManaged(),"Not shown on the Display page: "+id);
+        // The spawn and role controls live in the minimap's tracking popup (#515), not on a page.
         for (var name : new String[] {"spawns","roles"}) {
             var overlay=get(view,name);
             if (overlay==null) continue;
             try {
                 var controls=(Node)overlay.getClass().getDeclaredMethod("controls").invoke(overlay);
-                require(!isWithin(controls,rows),"The "+name+" controls are not under More");
+                require(!isWithin(controls,view.lookup("#world-menu-page-display")),"The "+name+" layers stay in the tracking popup");
             } catch (ReflectiveOperationException error) { throw new AssertionError(error); }
         }
-        more.fire();
-        require(rows.isVisible() && rows.isManaged(),"More shows every other control");
-        require(view.getScene().getFocusOwner()==viewport,"Focus returns to the viewport after More");
-        more.fire();
-        require(!rows.isVisible() && !rows.isManaged(),"More again folds them");
+        gameMenu(view,viewport);
+        cardIsTheFirstEscapeLayer(view,viewport);
+        fullscreenEscapeIsTheLastLayer(view,viewport);
         // M toggles the map panel; the map list moves into it and back out.
         var panel=view.lookup("#world-map-panel");
         require(panel!=null && !panel.isVisible(),"Map panel starts closed");
@@ -768,23 +776,182 @@ public final class WorldNavigationUiTest {
                 "Detail text never turns a chip red: "+icons.render()+" / "+icons.texture());
         gpuStatus.setText(gpuWas);
         textureStatus.setText(textureWas);
-        var more=(javafx.scene.control.ToggleButton)view.lookup("#world-hud-more");
-        // Details open where they live: render and texture on the developer overlay's pages.
+        // Details open where they live: render and texture on the developer overlay's pages, the
+        // mouse on the menu's Controls page.
         var overlay=view.devOverlay();
         render.fire();
-        require(overlay.isVisible() && overlay.page()==WorldDevReport.Page.RENDER && !more.isSelected()
+        require(overlay.isVisible() && overlay.page()==WorldDevReport.Page.RENDER
                         && view.getScene().getFocusOwner()==viewport,
                 "The render chip opens the developer overlay's Render page; focus on the world");
         ((Button)view.lookup("#world-icon-texture")).fire();
         require(overlay.page()==WorldDevReport.Page.STREAM,"The texture chip opens the Stream page");
         overlay.show(null);
-        // The mouse detail stays under More until the Controls page (step 5).
+        var menu=(WorldGameMenu)get(view,"menu");
         ((Button)view.lookup("#world-icon-mouse")).fire();
-        require(more.isSelected(),"The mouse chip opens the rows under More");
-        more.fire();
-        require(!more.isSelected() && view.getScene().getFocusOwner()==viewport,"More closes again; focus on the world");
+        require(menu.current()==WorldGameMenu.Page.CONTROLS,"The mouse icon opens the Controls page");
+        menu.close();
+        require(!menu.shown() && view.getScene().getFocusOwner()==viewport,"Closed again; focus on the world");
         key(viewport,KeyCode.W,true);
         require(input(view).keysHeld(),"WASD works straight after icon clicks");
+        key(viewport,KeyCode.W,false);
+    }
+
+    /**
+     * The inspect card is the first Escape layer: Escape closes it before the map panel, and never
+     * opens the menu over it (the viewport's own Escape branch is gone; the scene filter owns it).
+     */
+    private static void cardIsTheFirstEscapeLayer(WorldView view, Node viewport) {
+        var menu=(WorldGameMenu)get(view,"menu");
+        var hud=(WorldHud)get(view,"hud");
+        var card=view.inspectCard();
+        var camera=(TerrainRenderer.Camera)get(view,"camera");
+        card.show(WorldInspection.note("Authored card"),camera.x(),camera.y(),camera.z());
+        require(card.isOpen() && !menu.shown(),"A card is open, the menu closed");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!card.isOpen() && !menu.shown(),"Escape closes the card and does not open the menu over it");
+        card.show(WorldInspection.note("Authored card"),camera.x(),camera.y(),camera.z());
+        invoke(view,"toggleMapPanel");
+        require(card.isOpen() && hud.panelShown(),"Card and map panel open");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!card.isOpen() && hud.panelShown(),"The card closes before the map panel");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!hud.panelShown() && !menu.shown(),"Then the map panel");
+        // A card the hidden HUD hides stays open: Escape moves on to the next layer (the menu).
+        card.show(WorldInspection.note("Authored card"),camera.x(),camera.y(),camera.z());
+        key(viewport,KeyCode.H,true);
+        key(viewport,KeyCode.H,false);
+        require(card.isOpen() && !card.isVisible() && hud.hidden(),"H hides the card with the HUD");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(card.isOpen() && menu.shown(),"Escape skips the hidden card and opens the menu");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!menu.shown() && card.isOpen(),"Escape closes the menu; the card is still open");
+        key(viewport,KeyCode.H,true);
+        key(viewport,KeyCode.H,false);
+        require(card.isVisible(),"H shows the card again");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!card.isOpen() && !menu.shown(),"Now it shows, Escape closes it");
+        require(!input(view).keysHeld(),"Escape never becomes a held key");
+    }
+
+    /**
+     * In full screen the stage's own Escape exit is off; Escape closes the map panel, then the menu,
+     * and only with nothing open leaves full screen. A held Escape never goes on to open the menu.
+     */
+    private static void fullscreenEscapeIsTheLastLayer(WorldView view, Node viewport) {
+        var full=(WorldFullscreen)get(view,"fullscreen");
+        var menu=(WorldGameMenu)get(view,"menu");
+        var hud=(WorldHud)get(view,"hud");
+        var content=(javafx.scene.layout.BorderPane)get(view,"content");
+        full.windowed(true);
+        press(viewport,KeyCode.F11,false);
+        release(viewport,KeyCode.F11);
+        require(full.active() && full.stage().getFullScreenExitKeyCombination()==javafx.scene.input.KeyCombination.NO_MATCH,
+                "Full screen, with the platform's Escape exit turned off");
+        require(view.keyBindingsOwner()==full.stage(),"In full screen the Key bindings dialog is owned by the full-screen stage");
+        invoke(view,"toggleMapPanel");
+        require(hud.panelShown(),"Map panel open in full screen");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!hud.panelShown() && full.active(),"Escape closes the map panel first and stays in full screen");
+        menu.open();
+        // The menu is a viewport overlay, so it is on the full-screen stage with the viewport.
+        ((Button)viewport.lookup("#world-menu-controls")).fire();
+        require(menu.current()==WorldGameMenu.Page.CONTROLS,"A menu page open in full screen");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!menu.shown() && full.active(),"Then the menu, from a page too, still in full screen");
+        for (int i=0;i<5;i++) press(viewport,KeyCode.ESCAPE,false);
+        require(!full.active() && content.getCenter()==viewport,"With nothing open, Escape leaves full screen last");
+        require(view.keyBindingsOwner()==view.getScene().getWindow(),"In the window the dialog is owned by the app window");
+        require(!menu.shown(),"A held Escape does not go on to open the menu");
+        release(viewport,KeyCode.ESCAPE);
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(menu.shown(),"In the window, the next Escape opens the menu as before");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!menu.shown(),"And closes it");
+    }
+
+    /** HUD step 5: layered Escape, the menu's pages and entries, held keys released, focus back. */
+    private static void gameMenu(WorldView view, Node viewport) {
+        var menu=(WorldGameMenu)get(view,"menu");
+        var hud=(WorldHud)get(view,"hud");
+        require(!menu.shown() && menu.getParent()==viewport,"The menu is a viewport overlay, closed at first");
+        // Nothing open: Escape opens the menu and releases held keys; nothing flies behind it.
+        key(viewport,KeyCode.W,true);
+        require(input(view).keysHeld(),"W held");
+        press(viewport,KeyCode.ESCAPE,false);
+        require(menu.shown() && menu.current()==null && !input(view).keysHeld(),"Escape opens the menu and releases W");
+        var dim=view.lookup("#world-menu-dim");
+        require(dim.isVisible() && dim.getStyle().contains("0.4"),"The world is dimmed to 60%");
+        key(viewport,KeyCode.W,false);
+        key(viewport,KeyCode.W,true);
+        require(!input(view).keysHeld(),"W does not fly while the menu is open");
+        key(viewport,KeyCode.W,false);
+        for (int i=0;i<10;i++) press(viewport,KeyCode.ESCAPE,false);
+        require(menu.shown(),"A held Escape (key repeat) does not close it again");
+        release(viewport,KeyCode.ESCAPE);
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!menu.shown() && view.getScene().getFocusOwner()==viewport,"Escape again closes it; focus on the world");
+        // An open map panel closes first.
+        invoke(view,"toggleMapPanel");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!hud.panelShown() && !menu.shown(),"Escape closes the map panel before anything else");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(menu.shown(),"Then it opens the menu");
+        // Pages: each entry opens its page under a Back header; Back returns; Escape on a page closes.
+        for (var page : WorldGameMenu.Page.values()) {
+            ((Button)view.lookup("#world-menu-"+page.id())).fire();
+            var box=view.lookup("#world-menu-page-"+page.id());
+            require(menu.current()==page && box.isVisible()
+                            && view.lookup("#world-menu-back").isVisible() && !view.lookup("#world-menu-main").isVisible(),
+                    "The "+page+" page shows");
+            ((Button)view.lookup("#world-menu-back")).fire();
+            require(menu.shown() && menu.current()==null && view.lookup("#world-menu-main").isVisible(),"Back returns to the menu");
+        }
+        ((Button)view.lookup("#world-menu-controls")).fire();
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!menu.shown(),"Escape on a page closes the menu");
+        // Resume closes; Leave instance only inside an instance; Back to map list is the old button.
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!view.lookup("#world-menu-leave").isVisible(),"No Leave instance outside an instance");
+        ((Button)view.lookup("#world-menu-resume")).fire();
+        require(!menu.shown() && view.getScene().getFocusOwner()==viewport,"Resume closes the menu");
+        // The pages drive the same settings: the layout preset, and coordinates on or off.
+        var controls=input(view).controls();
+        require(((javafx.scene.control.RadioButton)view.lookup("#world-layout-qwerty")).isSelected(),"QWERTY preset shown");
+        ((javafx.scene.control.RadioButton)view.lookup("#world-layout-azerty")).fire();
+        require(input(view).controls().keys().equals(WorldControls.Layout.AZERTY.keys()),"The AZERTY radio applies the preset");
+        ((javafx.scene.control.RadioButton)view.lookup("#world-layout-qwerty")).fire();
+        require(input(view).controls().keys().equals(WorldControls.Layout.QWERTY.keys()),"And back to QWERTY");
+        input(view).controls(controls);
+        var show=(javafx.scene.control.CheckBox)view.lookup("#world-show-coordinates");
+        var pill=view.lookup("#world-coordinates");
+        show.fire();
+        require(pill.getOpacity()==0 && pill.isMouseTransparent(),"Show coordinates off hides the pill");
+        show.fire();
+        require(pill.getOpacity()==1 && !pill.isMouseTransparent(),"On shows it again");
+        // Typing in a page (the bookmark search) never flies.
+        menu.open(WorldGameMenu.Page.BOOKMARKS);
+        var search=((Node)get(view,"travel")).lookup(".text-field");
+        key(search,KeyCode.W,true);
+        require(!input(view).keysHeld(),"Keys typed on a page do not fly");
+        key(search,KeyCode.W,false);
+        menu.close();
+        key(viewport,KeyCode.W,true);
+        require(input(view).keysHeld(),"WASD works after the menu closes");
         key(viewport,KeyCode.W,false);
     }
 

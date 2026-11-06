@@ -126,9 +126,13 @@ public final class WorldDevOverlayUiTest {
                         && overlay().text().equals("audio     "
                                 + ((WorldAudioControls) get("audio")).statusText().get()),
                 "Audio page shows the audio status:\n" + overlay().text());
+        // Escape opens the game menu (HUD step 5) and closes it again; the overlay stays throughout.
         press(KeyCode.ESCAPE);
         require(overlay().page() == WorldDevReport.Page.AUDIO && node.isVisible(),
                 "Escape leaves the overlay open");
+        press(KeyCode.ESCAPE);
+        require(overlay().page() == WorldDevReport.Page.AUDIO && node.isVisible(),
+                "Closing the menu leaves the overlay open too");
         press(KeyCode.F3);
         require(overlay().page() == null && !node.isVisible(), "F3 after Audio turns the overlay off");
         tick();
@@ -141,8 +145,8 @@ public final class WorldDevOverlayUiTest {
         require(overlay().page() == WorldDevReport.Page.INPUT && overlay().text().contains("held      W"),
                 "The Input page lists held keys:\n" + overlay().text());
         // The map list is out of the scene while exploring (HUD step 1), and the walk toggle is an
-        // icon now (step 2); the icon row's More toggle takes focus.
-        view.lookup("#world-hud-more").requestFocus();
+        // icon now (step 2); the icon row's mode icon takes focus (step 5 removed More).
+        view.lookup("#world-icon-mode").requestFocus();
         require(!viewport.isFocused() && overlay().text().contains("held      none"),
                 "Focus loss clears the held keys on the Input page:\n" + overlay().text());
         viewport.requestFocus();

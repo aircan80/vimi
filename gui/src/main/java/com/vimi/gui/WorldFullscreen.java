@@ -14,8 +14,9 @@ import javafx.stage.Window;
 /**
  * Full-screen World viewport. The viewport node itself moves into an owned full-screen stage, so
  * its key, mouse and overlay wiring keep working, and moves back when full screen ends: by F11
- * or Alt+Enter, by Escape (the platform leaves full screen), by closing the stage, or when the
- * view leaves the explorer. The application window and its layout are not touched. FX thread.
+ * or Alt+Enter, by Escape (the view's last Escape layer; the platform's own Escape exit is turned
+ * off so Escape can close the map panel or the menu first), by closing the stage, or when the view
+ * leaves the explorer. The application window and its layout are not touched. FX thread.
  */
 final class WorldFullscreen {
     static final String EXIT_HINT = "F11, Alt+Enter or Esc leaves full screen";
@@ -71,6 +72,8 @@ final class WorldFullscreen {
         scene.addEventFilter(KeyEvent.ANY, keys);
         next.setScene(scene);
         next.setFullScreenExitHint(EXIT_HINT);
+        // The view's key filter owns Escape: it leaves full screen only when nothing else is open.
+        next.setFullScreenExitKeyCombination(javafx.scene.input.KeyCombination.NO_MATCH);
         stage = next;
         root.getChildren().addAll(viewport, overlay);
         StackPane.setAlignment(overlay, javafx.geometry.Pos.BOTTOM_LEFT);

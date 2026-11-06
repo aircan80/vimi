@@ -127,8 +127,8 @@ public final class WorldMinimapInputUiTest {
     }
 
     private static void clickButton(ButtonBase button) {
-        // Focus elsewhere first: the icon row's More toggle (HUD steps 1 and 2).
-        view.lookup("#world-hud-more").requestFocus();
+        // Focus elsewhere first: the icon row's mode icon (HUD steps 1, 2 and 5).
+        view.lookup("#world-icon-mode").requestFocus();
         mouse(button, MouseEvent.MOUSE_PRESSED, 10, 10);
         mouse(button, MouseEvent.MOUSE_RELEASED, 10, 10);
     }

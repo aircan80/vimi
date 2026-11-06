@@ -138,6 +138,7 @@ public final class WorldInstanceUiTest {
                         + combo.getItems());
         require(status.getText().contains("2 recorded entrances"), status.getText());
         require(!leave.isVisible(), "No leave in the open world");
+        require(!view.lookup("#world-menu-leave").isVisible(), "No menu Leave instance in the open world");
         require(enter.isDisabled(), "Nothing chosen yet");
         combo.setValue(combo.getItems().get(1));
         enter.fire();
@@ -175,6 +176,7 @@ public final class WorldInstanceUiTest {
                 require(!hud.panelShown() && !hud.hidden() && !(boolean) get(view, "panelsHidden"),
                         "Inside the instance the map panel is closed and the HUD shown");
                 require(leave.isVisible(), "Leave is offered inside the instance");
+                require(view.lookup("#world-menu-leave").isVisible(), "The Escape menu offers Leave instance inside it");
                 var toasts = view.toasts();
                 require(toasts.getScene() != null && toasts.isVisible() && toasts.toasts().stream()
                                 .anyMatch(t -> t.text().startsWith("Entering ")),
@@ -188,6 +190,7 @@ public final class WorldInstanceUiTest {
                     require(camera.x() == saved.x() && camera.y() == saved.y(),
                             "Leave returns to the open-world position of entry: " + camera);
                     require(!leave.isVisible(), "No leave after returning");
+                    require(!view.lookup("#world-menu-leave").isVisible(), "No menu Leave instance after returning");
                     require(!view.lookup("#world-zone-leave").isVisible(), "No leave chip after returning");
                     var back = view.toasts();
                     require(back.getScene() != null && back.isVisible() && back.toasts().stream()
@@ -215,6 +218,13 @@ public final class WorldInstanceUiTest {
         require(leave.isVisible() && leave.getText().equals("Cancel"), "Cancel is offered");
         require(view.lookup("#world-gpu-enabled") == null && view.lookup("#world-instance-enter") == null,
                 "Explorer controls are not reachable while entering");
+        require(((WorldHud) get(view, "hud")).isDisabled() && view.lookup("#world-back") == null,
+                "The HUD does not act and the menu holds no controls while entering");
+        javafx.event.Event.fireEvent(leave, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_PRESSED,
+                "", "", javafx.scene.input.KeyCode.ESCAPE, false, false, false, false));
+        javafx.event.Event.fireEvent(leave, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_RELEASED,
+                "", "", javafx.scene.input.KeyCode.ESCAPE, false, false, false, false));
+        require(!((WorldGameMenu) get(view, "menu")).shown(), "Escape opens no menu while the switch owns the layout");
         var full = (WorldFullscreen) get(view, "fullscreen");
         full.windowed(true);
         javafx.event.Event.fireEvent(leave, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_PRESSED,

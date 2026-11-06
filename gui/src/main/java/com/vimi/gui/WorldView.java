@@ -76,7 +76,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             status = new Label("Choose a map"),
             position = new Label();
     private final Label currentArea = new Label("Terrain area unavailable");
-    private static final String INSPECT_HINT =
+    static final String INSPECT_HINT =
             "Click terrain, a drawn building, doodad or creature model, or a shown NPC spawn marker to inspect it";
     private final Label inspection = new Label(INSPECT_HINT);
     // Latest click wins: one CPU pick at a time over immutable height snapshots, never on FX.
@@ -106,9 +106,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
             new WorldCoordinatesPill(text -> this.coordinatesCopy.accept(text), hud::refocus);
     // Where a pill click copies to: the system clipboard, or a test's capture.
     private java.util.function.Consumer<String> coordinatesCopy = WorldCoordinatesPill::systemClipboard;
-    // The explorer's one slim bar, and the other control rows behind its "More" toggle.
-    private final javafx.scene.control.ToggleButton moreControls = new javafx.scene.control.ToggleButton("More");
-    private final VBox moreRows = new VBox(8);
+    // HUD step 5: the Escape menu; its pages hold the controls that used to be rows.
+    private final WorldGameMenu menu = new WorldGameMenu(this::menuOpened, this::menuClosed,
+            () -> this.leaveInstance.fire());
+    private final javafx.scene.control.ToggleGroup layoutChoice = new javafx.scene.control.ToggleGroup();
+    private final javafx.scene.control.RadioButton qwerty = new javafx.scene.control.RadioButton(
+            WorldControls.Layout.QWERTY.label), azerty = new javafx.scene.control.RadioButton(
+            WorldControls.Layout.AZERTY.label);
+    private final CheckBox showCoordinates = new CheckBox("Show coordinates");
+    private boolean escapeKeyHeld;
     private final WorldFullscreen fullscreen = new WorldFullscreen(viewport, node -> {
         // During an instance switch the switch owns the layout: never put the world back over it.
         if (this.explorer && !this.instances.engaged()) content.setCenter(node);
@@ -253,17 +259,20 @@ final class WorldView extends BorderPane implements AutoCloseable {
             audio.variant().setValue(all[now == null ? 0 : (now.ordinal() + 1) % all.length]);
         }
         // Each detail opens where it lives: render and texture on the developer overlay's Render
-        // and Stream pages, tracking in the minimap's tracking popup. The mouse detail stays in
-        // the rows under "More" until the Controls page exists (step 5).
+        // and Stream pages, tracking in the minimap's tracking popup, mouse on the Controls page.
         @Override public void details(String icon) {
             switch (icon) {
                 case "render" -> devOverlay.show(WorldDevReport.Page.RENDER);
                 case "texture" -> devOverlay.show(WorldDevReport.Page.STREAM);
                 case "tracking" -> {
-                    if (minimap.isVisible()) minimap.tracking().toggle(minimap);
-                    else moreControls.setSelected(true);
+                    // The minimap key hid the cluster: show it again and open its popup.
+                    if (minimap.userHidden()) {
+                        minimap.toggleShown();
+                        if (minimap.shown() && !minimap.tracking().showing()) minimap.toggleTracking();
+                    } else if (minimap.shown()) minimap.toggleTracking();
+                    else menu.open(WorldGameMenu.Page.DISPLAY);
                 }
-                default -> moreControls.setSelected(true);
+                default -> menu.open(WorldGameMenu.Page.CONTROLS);
             }
         }
     }, viewport::requestFocus);
@@ -645,6 +654,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         try {
             input.controls(controls);
             keyHelp.setText(controls.help());
+            showLayoutChoice(controls);
             hud.mapKey(mapKey(controls));
             hideHudKey = boundKeys(controls, WorldControls.Action.HIDE_HUD);
             panelsButton.setText(hideHudButton(hideHudKey));
@@ -812,7 +822,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         keyBindings.setOnAction(e -> {
             clearKeys();
             new WorldKeyBindings(input.controls())
-                    .edit(getScene() == null ? null : getScene().getWindow())
+                    .edit(keyBindingsOwner())
                     .ifPresent(edited -> {
                         if (!edited.equals(input.controls())) {
                             showControls(edited);
@@ -1009,7 +1019,6 @@ final class WorldView extends BorderPane implements AutoCloseable {
         hud.banner(zoneText.banner());
         hud.bottomRight(coordinates.node());
         hud.bottomLeft(icons.node());
-        icons.trailing(moreControls);
         // Change listeners, not invalidation ones: refreshIcons does not read every source each time.
         javafx.beans.value.ChangeListener<Object> iconState = (o, before, after) -> refreshIcons();
         for (javafx.beans.value.ObservableValue<?> source : java.util.List.<javafx.beans.value.ObservableValue<?>>of(
@@ -1032,12 +1041,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         panelBack.setFocusTraversable(false);
         panelBack.textProperty().bind(back.textProperty());
         panelBack.setOnAction(e -> back.fire());
-        moreControls.setId("world-hud-more");
-        moreControls.setFocusTraversable(false);
-        moreControls.setOnAction(e -> viewport.requestFocus());
-        moreRows.setId("world-hud-more-rows");
-        moreRows.visibleProperty().bind(moreControls.selectedProperty());
-        moreRows.managedProperty().bind(moreControls.selectedProperty());
+        menuSetup();
         currentArea.setId("world-current-area");
         inspection.setId("world-inspection");
         inspection.setWrapText(true);
@@ -1055,7 +1059,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         position.setWrapText(false);
         position.setMinWidth(0);
         position.setMaxWidth(Double.MAX_VALUE);
-        // The bar shows an inspect result; the click hint itself lives under "More".
+        // Under the view only an inspect result shows; the click hint is in the key help.
         inspection.visibleProperty().bind(inspection.textProperty().isNotEqualTo(INSPECT_HINT));
         inspection.managedProperty().bind(inspection.visibleProperty());
         zones.setPrefHeight(180);
@@ -1227,11 +1231,6 @@ final class WorldView extends BorderPane implements AutoCloseable {
         image.setPreserveRatio(true);
         viewport.setOnKeyPressed(
                 e -> {
-                    // Escape closes the inspect card first (the first layer of the HUD's order).
-                    if (e.getCode() == KeyCode.ESCAPE && inspectCard.close()) {
-                        e.consume();
-                        return;
-                    }
                     viewportKey(e);
                     e.consume();
                 });
@@ -2119,21 +2118,144 @@ final class WorldView extends BorderPane implements AutoCloseable {
         leaveInstance.setManaged(adtInstance);
         refreshEntrances();
         explorerChrome(true);
-        // HUD step 2: the status icons replace the slim bar (walk, speed, audio, day/night);
-        // the rows that have no icon yet fold behind the row's "More" toggle.
-        var inspectHint = new Label(INSPECT_HINT);
-        inspectHint.setWrapText(true);
-        moreRows.getChildren().setAll(
-                new HBox(10, back, keyHelp),
-                new HBox(10, smoothMotion, motionStatus, saveBookmark, panelsButton, fullscreenButton),
-                new HBox(8, new Label("Look sensitivity"), lookSensitivity, invertLook, keyBindings,
-                        lookStatus),
-                inspectHint,
-                new HBox(8, gpuEnabled, objectTextures, gpuActivity, retryGpu, gpuStatus),
-                new HBox(8, textureActivity, textureStatus, retryTextures),
-                new HBox(8, new Label("Instances"), entrances, enterInstance, leaveInstance,
-                        instanceStatus));
-        content.setBottom(new VBox(6, inspection, moreRows));
+        // HUD step 5: the status icons replaced the slim bar; every other control lives on an
+        // Escape menu page. The pages are filled here because an instance switch borrows some of
+        // these controls for its own layout.
+        fillMenuPages();
+        content.setBottom(new VBox(6, inspection));
+        applyPanels();
+    }
+
+    private void fillMenuPages() {
+        var speedRow = new HBox(8, new Label("Speed preset"), flightSpeed);
+        speedRow.setAlignment(Pos.CENTER_LEFT);
+        var sensitivityRow = new HBox(8, new Label("Sensitivity"), lookSensitivity);
+        sensitivityRow.setAlignment(Pos.CENTER_LEFT);
+        var layoutRow = new HBox(10, new Label("Layout"), qwerty, azerty);
+        layoutRow.setAlignment(Pos.CENTER_LEFT);
+        menu.page(WorldGameMenu.Page.CONTROLS).getChildren().setAll(
+                WorldGameMenu.section("Movement", speedRow, smoothMotion, walkMode, motionStatus),
+                WorldGameMenu.section("Look", sensitivityRow, invertLook, lookStatus),
+                WorldGameMenu.section("Keys", layoutRow, keyBindings),
+                keyHelp, inspectHint());
+        menu.page(WorldGameMenu.Page.AUDIO).getChildren().setAll(
+                WorldGameMenu.section("Music, ambience and day / night", audio.node()));
+        var display = menu.page(WorldGameMenu.Page.DISPLAY);
+        display.getChildren().setAll(
+                WorldGameMenu.section("View", showCoordinates, panelsButton, fullscreenButton),
+                WorldGameMenu.section("Renderer", new HBox(8, gpuEnabled, objectTextures),
+                        new HBox(8, gpuActivity, retryGpu, gpuStatus),
+                        new HBox(8, textureActivity, textureStatus, retryTextures)));
+        // Map layers stay here until a tracking popup takes them; never steal them from one.
+        var layers = new VBox(6);
+        for (var overlay : new Object[] {spawns, roles}) {
+            javafx.scene.Node controls = overlay instanceof WorldSpawnOverlay s ? s.controls()
+                    : overlay instanceof WorldRoleOverlay r ? r.controls() : null;
+            if (controls != null && (controls.getParent() == null || isWithinMenu(controls)))
+                layers.getChildren().add(controls);
+        }
+        if (!layers.getChildren().isEmpty()) display.getChildren().add(WorldGameMenu.section("Map layers", layers));
+        menu.page(WorldGameMenu.Page.BOOKMARKS).getChildren().setAll(saveBookmark, travel);
+        menu.page(WorldGameMenu.Page.INSTANCES).getChildren().setAll(instanceStatus,
+                new HBox(8, entrances, enterInstance), leaveInstance);
+        menu.lastEntry(back);
+    }
+
+    /**
+     * The Key bindings dialog's owner: the viewport's window, so the dialog opens on top of the
+     * full-screen stage while full screen (the menu page that opens it is on that stage too).
+     */
+    javafx.stage.Window keyBindingsOwner() {
+        var scene = viewport.getScene() != null ? viewport.getScene() : getScene();
+        return scene == null ? null : scene.getWindow();
+    }
+
+    /** The click-to-inspect hint, under the key help in the Controls page footer. */
+    private Label inspectHint() {
+        var hint = new Label(INSPECT_HINT);
+        hint.setId("world-inspect-hint");
+        hint.setWrapText(true);
+        hint.setStyle("-fx-opacity: .75;");
+        return hint;
+    }
+
+    private boolean isWithinMenu(javafx.scene.Node node) {
+        for (var at = node; at != null; at = at.getParent()) if (at == menu) return true;
+        return false;
+    }
+
+    private void menuSetup() {
+        viewport.getChildren().add(menu);
+        menu.leaveEntry().visibleProperty().bind(leaveInstance.visibleProperty()
+                .and(leaveInstance.textProperty().isEqualTo("Leave instance")));
+        qwerty.setToggleGroup(layoutChoice);
+        azerty.setToggleGroup(layoutChoice);
+        for (var choice : new javafx.scene.control.RadioButton[] {qwerty, azerty}) {
+            choice.setFocusTraversable(false);
+            choice.setOnAction(e -> {
+                var layout = choice == azerty ? WorldControls.Layout.AZERTY : WorldControls.Layout.QWERTY;
+                var next = input.controls().withKeys(layout.keys());
+                showControls(next);
+                controlsStore.save(next.encode());
+            });
+        }
+        qwerty.setId("world-layout-qwerty");
+        azerty.setId("world-layout-azerty");
+        showCoordinates.setId("world-show-coordinates");
+        showCoordinates.setFocusTraversable(false);
+        showCoordinates.setSelected(true);
+        coordinates.node().opacityProperty().bind(javafx.beans.binding.Bindings.when(
+                showCoordinates.selectedProperty()).then(1.0).otherwise(0.0));
+        coordinates.node().mouseTransparentProperty().bind(showCoordinates.selectedProperty().not());
+        keyHelp.setWrapText(true);
+        keyHelp.setStyle("-fx-opacity: .75;");
+    }
+
+    /** The layout radio that matches the bindings; neither for custom bindings. */
+    private void showLayoutChoice(WorldControls controls) {
+        layoutChoice.selectToggle(controls.keys().equals(WorldControls.Layout.QWERTY.keys()) ? qwerty
+                : controls.keys().equals(WorldControls.Layout.AZERTY.keys()) ? azerty : null);
+    }
+
+    /** The menu opened: held keys and mouse look end, so nothing moves behind it. */
+    private void menuOpened() {
+        clearKeys();
+    }
+
+    private void menuClosed() {
+        if (explorer) viewport.requestFocus();
+    }
+
+    /**
+     * Escape, closing the top-most thing first: the inspect card while it shows (a card the hidden
+     * HUD hides stays open, and Escape moves on), then the menu (from a page too, the whole menu),
+     * then the map panel. With nothing open, a
+     * window opens the menu, and full screen leaves full screen: that is the last layer, so Escape
+     * never drops out of full screen while something is still open. This is the only Escape
+     * handling: it runs as the scene filter (the full-screen stage's own Escape exit is off, see
+     * {@link WorldFullscreen}), so the viewport never sees an Escape.
+     */
+    boolean escape() {
+        // A showing card goes first, so Escape never opens the menu over it.
+        if (inspectCard.isVisible() && inspectCard.close()) return true;
+        if (fullscreen.active() && (!explorer || instances.engaged())) {
+            leaveFullscreenByEscape();
+            return true;
+        }
+        if (!explorer || instances.engaged()) return false;
+        if (menu.shown()) menu.close();
+        else if (hud.panelShown()) {
+            closeMapPanel();
+            viewport.requestFocus();
+        } else if (fullscreen.active()) leaveFullscreenByEscape();
+        else menu.open();
+        return true;
+    }
+
+    private void leaveFullscreenByEscape() {
+        layoutToggledAt = System.nanoTime();
+        fullscreen.exit();
+        clearKeys();
         applyPanels();
     }
 
@@ -2144,6 +2266,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
      */
     private void explorerChrome(boolean exploring) {
         closeMapPanel();
+        // HUD widgets only act while the explorer owns the layout (not while an instance switch does).
+        hud.setDisable(!exploring);
         if (exploring) {
             if (split.getItems().contains(sidebarPane)) {
                 if (split.getDividers().size() == 1) sidebarDivider = split.getDividerPositions()[0];
@@ -2153,6 +2277,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
             hud.status(status, localLoading);
             return;
         }
+        menu.close();
+        menu.clearPages(back);
         hud.clearStatus();
         zoneText.reset();
         coordinates.clear();
@@ -2189,9 +2315,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
         tileInventory.setScaleY(1);
     }
 
-    /** The viewport's key handling: flight input and HUD commands. */
+    /**
+     * The viewport's key handling: flight input and HUD commands, from the viewport and from the
+     * tracking popup's forwarding. While the menu is open no press acts (nothing flies and no
+     * command runs behind it); releases still pass, so nothing stays held.
+     */
     private void viewportKey(javafx.scene.input.KeyEvent e) {
-        if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_PRESSED) input.keyPressed(e.getCode());
+        if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_PRESSED) {
+            if (!menu.shown()) input.keyPressed(e.getCode());
+        }
         else if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_RELEASED) input.keyReleased(e.getCode());
         devOverlay.refresh();
     }
@@ -2246,6 +2378,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
      */
     void layoutKeys(javafx.scene.input.KeyEvent e) {
         var code = e.getCode();
+        if (code == KeyCode.ESCAPE) {
+            if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_RELEASED) escapeKeyHeld = false;
+            else if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_PRESSED) {
+                // Once per press: a held Escape never opens and closes the menu in turn.
+                if (escapeKeyHeld ? explorer || fullscreen.active() : escape()) e.consume();
+                escapeKeyHeld = true;
+            }
+            return;
+        }
         boolean full = code == KeyCode.F11 || code == KeyCode.ENTER && e.isAltDown();
         boolean panel = code == KeyCode.Z && e.isAltDown();
         if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_RELEASED) {
@@ -2292,7 +2433,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void viewportFocusLost() {
         clearKeys();
         if (System.nanoTime() - layoutToggledAt > LAYOUT_FOCUS_SETTLE_NANOS)
-            fullscreenKeyHeld = panelsKeyHeld = false;
+            fullscreenKeyHeld = panelsKeyHeld = escapeKeyHeld = false;
     }
 
     /**

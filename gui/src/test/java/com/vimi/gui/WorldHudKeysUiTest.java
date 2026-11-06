@@ -123,12 +123,37 @@ public final class WorldHudKeysUiTest {
                     Event.fireEvent(popup.getScene(), new KeyEvent(KeyEvent.KEY_RELEASED, "", "", KeyCode.T,
                             false, false, false, false));
                     require(audio.slot() != before && !leaked[0], "A command key at the popup's scene is forwarded");
+                    // With the Escape menu open, a command key forwarded from the popup does nothing.
+                    var menu = (WorldGameMenu) get("menu");
+                    menu.open();
+                    var withMenu = audio.slot();
+                    Event.fireEvent(popup.getScene(), new KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.T,
+                            false, false, false, false));
+                    Event.fireEvent(popup.getScene(), new KeyEvent(KeyEvent.KEY_RELEASED, "", "", KeyCode.T,
+                            false, false, false, false));
+                    require(audio.slot() == withMenu && !input.keysHeld(),
+                            "Behind the open menu a forwarded command key does nothing");
+                    menu.close();
                 } finally {
                     popup.removeEventHandler(KeyEvent.KEY_PRESSED, spy);
                     Event.fireEvent(popup.getScene(), new KeyEvent(KeyEvent.KEY_RELEASED, "", "", KeyCode.W,
                             false, false, false, false));
                 }
                 require(!input.keysHeld(), "Nothing stays held after the scene keys");
+                press(KeyCode.L);
+            });
+            await(() -> !view.minimap().tracking().showing());
+            // With the minimap hidden by N, the tracking icon shows it again and opens the popup.
+            fx(() -> {
+                press(KeyCode.N);
+                require(view.minimap().userHidden() && !view.minimap().isVisible(), "N hides the minimap");
+                ((javafx.scene.control.ButtonBase) view.lookup("#world-icon-tracking")).fire();
+                require(!view.minimap().userHidden() && view.minimap().isVisible(),
+                        "The tracking icon shows the hidden minimap");
+            });
+            await(() -> view.minimap().tracking().showing());
+            fx(() -> {
+                require(!((WorldGameMenu) get("menu")).shown(), "It opens the popup, not the Display page");
                 press(KeyCode.L);
             });
             await(() -> !view.minimap().tracking().showing());
