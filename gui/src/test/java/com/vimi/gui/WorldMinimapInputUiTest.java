@@ -224,6 +224,14 @@ public final class WorldMinimapInputUiTest {
             require(minimap.isVisible(), "H shows it again");
             viewport.requestFocus();
             input().clear();
+            // The tracking chip in the status icon row opens the same popup (HUD step 2).
+            ((ButtonBase) view.lookup("#world-icon-tracking")).fire();
+        });
+        await(() -> view.minimap().tracking().showing());
+        fx(() -> {
+            ((ButtonBase) view.lookup("#world-icon-tracking")).fire();
+            require(!view.minimap().tracking().showing(), "The tracking chip closes it again");
+            view.lookup("#world-viewport").requestFocus();
         });
     }
 

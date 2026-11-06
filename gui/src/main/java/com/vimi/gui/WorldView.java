@@ -246,9 +246,20 @@ final class WorldView extends BorderPane implements AutoCloseable {
             var now = audio.variant().getValue();
             audio.variant().setValue(all[now == null ? 0 : (now.ordinal() + 1) % all.length]);
         }
-        // Until the developer overlay, the Controls page and the tracking popup exist, the
-        // detail for these icons is in the rows under "More".
-        @Override public void details(String icon) { moreControls.setSelected(true); }
+        // Each detail opens where it lives: render and texture on the developer overlay's Render
+        // and Stream pages, tracking in the minimap's tracking popup. The mouse detail stays in
+        // the rows under "More" until the Controls page exists (step 5).
+        @Override public void details(String icon) {
+            switch (icon) {
+                case "render" -> devOverlay.show(WorldDevReport.Page.RENDER);
+                case "texture" -> devOverlay.show(WorldDevReport.Page.STREAM);
+                case "tracking" -> {
+                    if (minimap.isVisible()) minimap.tracking().toggle(minimap);
+                    else moreControls.setSelected(true);
+                }
+                default -> moreControls.setSelected(true);
+            }
+        }
     }, viewport::requestFocus);
     private final Button saveBookmark = new Button("Bookmark this view");
     private String buildLabel = "";

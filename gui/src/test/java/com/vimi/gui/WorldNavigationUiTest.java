@@ -762,8 +762,18 @@ public final class WorldNavigationUiTest {
         gpuStatus.setText(gpuWas);
         textureStatus.setText(textureWas);
         var more=(javafx.scene.control.ToggleButton)view.lookup("#world-hud-more");
+        // Details open where they live: render and texture on the developer overlay's pages.
+        var overlay=view.devOverlay();
         render.fire();
-        require(more.isSelected(),"Until the developer overlay lands, the render chip opens the rows under More");
+        require(overlay.isVisible() && overlay.page()==WorldDevReport.Page.RENDER && !more.isSelected()
+                        && view.getScene().getFocusOwner()==viewport,
+                "The render chip opens the developer overlay's Render page; focus on the world");
+        ((Button)view.lookup("#world-icon-texture")).fire();
+        require(overlay.page()==WorldDevReport.Page.STREAM,"The texture chip opens the Stream page");
+        overlay.show(null);
+        // The mouse detail stays under More until the Controls page (step 5).
+        ((Button)view.lookup("#world-icon-mouse")).fire();
+        require(more.isSelected(),"The mouse chip opens the rows under More");
         more.fire();
         require(!more.isSelected() && view.getScene().getFocusOwner()==viewport,"More closes again; focus on the world");
         key(viewport,KeyCode.W,true);
