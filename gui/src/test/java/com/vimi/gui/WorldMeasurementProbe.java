@@ -31,24 +31,47 @@ import javax.management.NotificationEmitter;
 import javax.management.openmbean.CompositeData;
 
 /**
- * Opt-in real-data World measurement (Phase 0). Opens the prepared local build, drives the
- * production {@link WorldStreamSourceController}, GPU helper and JavaFX presentation over fixed
- * tile neighbourhoods, and prints per-stage timings ({@code -Dvimi.world.stageTimings=true}),
- * helper frame statistics, delivery cadence, exterior object counts and GC pauses. A second mode
- * counts terrain texture refusals over whole maps. Holds the store's writer lock: run it alone,
- * with the application closed. Every run is bounded by {@code probe.deadlineSeconds} (default
- * 570 s).
+ * Opt-in real-data World measurement (Phase 0, #353; tile prep, #422).
  *
- * <p>Properties: {@code probe.mode} = stream (default) or refusals; {@code probe.build} (default
- * 70790); {@code probe.scenarios} = name:map:x:y list (default Elwynn around Goldshire and
- * Stormwind); {@code probe.maps} for refusals (default 0,1); {@code probe.out} for the helper's
- * table and the report; {@code probe.gcLog} for the -Xlog:gc file the task writes.
+ * <p>Modes ({@code probe.mode}): {@code stream} (default) drives the production {@link
+ * WorldStreamSourceController}, GPU helper and JavaFX presentation over fixed tile
+ * neighbourhoods; {@code prep} times the real source path alone (terrain prepareAndWrite and
+ * exterior preparation per tile, no helper or FX); {@code refusals} counts terrain texture
+ * refusals over whole maps. All report per-stage timings ({@code -Dvimi.world.stageTimings=true}).
+ *
+ * <p>What it touches. It opens the library at {@code vimi.dataDirectory} (Gradle {@code
+ * -PdataDirectory=...}; default the application's own) with {@link BuildApplication#open}, which
+ * takes the store's writer lock and may run the library's own idempotent migration and owner
+ * retention, exactly as starting the application does. It never starts, runs or publishes a
+ * preparation job: it refuses a build that was never prepared, and opens one local-only work (no
+ * network sources) for that build: metadata, resolution indexes and file handle without the file
+ * catalog pass, the build's cached key graphs, and a World over its own workspace tables (no
+ * known-table pass or warmup). Streaming writes only the helper's private packet files in the
+ * probe's own temporary directory. Run it alone, with the application closed, under the shared
+ * real-data lock.
+ *
+ * <p>Bounds. {@code probe.deadlineSeconds} (default 540 s) stops new work; the run then closes
+ * the controller, helper, World and library normally. Only when closing itself overruns by {@code
+ * probe.graceSeconds} (default 45 s), and never while the library is opening or closing, does the
+ * watchdog halt the JVM. Exit codes: 0 complete, 2 failed, 3 deadline or incomplete.
+ *
+ * <p>Other properties: {@code probe.build} (default 70790); {@code probe.scenarios} = name:map:x:y
+ * list (vimi tile coordinates; default Elwynn around Goldshire 49,31 and Stormwind City 48,30);
+ * {@code probe.size}, {@code probe.passes}, {@code probe.objects} for prep; {@code probe.maps} for
+ * refusals (default 0,1); {@code probe.out} for the report; {@code probe.gcLog} for the -Xlog:gc
+ * file the task writes.
  */
 public final class WorldMeasurementProbe {
     private static final long START = System.nanoTime();
     private static final long DEADLINE =
-            START + TimeUnit.SECONDS.toNanos(Long.getLong("probe.deadlineSeconds", 570));
+            START + TimeUnit.SECONDS.toNanos(Long.getLong("probe.deadlineSeconds", 540));
+    private static final long GRACE =
+            TimeUnit.SECONDS.toNanos(Long.getLong("probe.graceSeconds", 45));
     private static final StringBuilder REPORT = new StringBuilder();
+    // Library open and close are never halted; the watchdog waits for them.
+    private static final java.util.concurrent.atomic.AtomicInteger LIBRARY_WRITES =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private static volatile boolean incomplete;
 
     private WorldMeasurementProbe() {}
 
@@ -59,9 +82,10 @@ public final class WorldMeasurementProbe {
                         .start(
                                 () -> {
                                     try {
-                                        long left = DEADLINE - System.nanoTime();
+                                        long left = DEADLINE + GRACE - System.nanoTime();
                                         if (left > 0) TimeUnit.NANOSECONDS.sleep(left);
-                                        say("PROBE deadline reached; partial results follow");
+                                        while (LIBRARY_WRITES.get() > 0) Thread.sleep(100);
+                                        say("PROBE closing overran the deadline; halting");
                                         finish(3);
                                     } catch (InterruptedException ignored) {
                                         // Normal end.
@@ -71,6 +95,10 @@ public final class WorldMeasurementProbe {
         try {
             run();
             gcSummary();
+            if (incomplete || System.nanoTime() > DEADLINE) {
+                say("PROBE incomplete: deadline reached or a scenario did not finish");
+                code = 3;
+            }
         } catch (Throwable failure) {
             say("PROBE failed: " + failure);
             failure.printStackTrace(System.out);
@@ -91,6 +119,7 @@ public final class WorldMeasurementProbe {
             // Report is also on stdout.
         }
         System.out.flush();
+        // Every owner is closed on the normal path; halt only skips JavaFX and AWT exit hooks.
         Runtime.getRuntime().halt(code);
     }
 
@@ -106,7 +135,13 @@ public final class WorldMeasurementProbe {
         }
         listenToGc();
         long opening = System.nanoTime();
-        var service = BuildApplication.open(BuildApplication.defaultDataDirectory()).join();
+        BackendBuildService service;
+        LIBRARY_WRITES.incrementAndGet();
+        try {
+            service = BuildApplication.open(BuildApplication.defaultDataDirectory()).join();
+        } finally {
+            LIBRARY_WRITES.decrementAndGet();
+        }
         try {
             BuildInfo build = null;
             String locale = null;
@@ -120,33 +155,134 @@ public final class WorldMeasurementProbe {
                     locale = summary.substring(summary.lastIndexOf(" · ") + 3).strip();
                 }
             }
-            if (build == null) throw new IllegalStateException("No prepared build " + wanted);
-            var region = build.observations().getFirst();
-            var job = service.preparation().find(build, region, locale);
-            if (job == null) job = service.preparation().start(build, region, locale);
-            while (!(job.work() instanceof NativePreparationWork w && w.worldHandle() != null)) {
-                Thread.sleep(200);
+            if (build == null) {
+                throw new IllegalStateException(
+                        "No build matching "
+                                + wanted
+                                + " was ever prepared in this library; prepare it in the"
+                                + " application first (the probe never does)");
             }
-            var handle = ((NativePreparationWork) job.work()).worldHandle();
-            var catalog = handle.catalog(Cancellation.NONE).get(5, TimeUnit.MINUTES);
-            say(
-                    String.format(
-                            Locale.ROOT,
-                            "PROBE build %s opened in %.1f s; java %s; %d processors; max heap %d MiB; backend %s",
-                            build.version(),
-                            seconds(System.nanoTime() - opening),
-                            System.getProperty("java.version"),
-                            Runtime.getRuntime().availableProcessors(),
-                            Runtime.getRuntime().maxMemory() >> 20,
-                            WorldStreamGpuOwner.configuredBackend()));
-            String mode = System.getProperty("probe.mode", "stream");
-            if (mode.equals("refusals")) {
-                refusals(handle, catalog);
-            } else {
-                stream(handle, catalog);
+            var region = build.observations().getFirst();
+            var contexts = (NativePreparationContexts) service.preparation().factory();
+            NativePreparationWork work =
+                    contexts.createLocalComparison(
+                            build, region, locale, true, com.vibeminer.files.keys.TactKeys.EMPTY);
+            NativePreparationWork.MeasurementWorld measured = null;
+            try {
+                var token = Cancellation.NONE;
+                work.metadata(token);
+                work.openFilesForMeasurement(token);
+                for (String issue : work.keysPreparedLocal(token)) say("PROBE key issue: " + issue);
+                measured = work.openWorldForMeasurement(token);
+                BuildWorld handle = measured.world();
+                var catalog = handle.catalog(Cancellation.NONE).get(5, TimeUnit.MINUTES);
+                say(
+                        String.format(
+                                Locale.ROOT,
+                                "PROBE build %s opened in %.1f s (local-only work, no preparation job); java %s; %d processors; max heap %d MiB; backend %s",
+                                build.version(),
+                                seconds(System.nanoTime() - opening),
+                                System.getProperty("java.version"),
+                                Runtime.getRuntime().availableProcessors(),
+                                Runtime.getRuntime().maxMemory() >> 20,
+                                WorldStreamGpuOwner.configuredBackend()));
+                switch (System.getProperty("probe.mode", "stream")) {
+                    case "refusals" -> refusals(handle, catalog);
+                    case "prep" -> prep(handle, catalog);
+                    default -> stream(handle, catalog);
+                }
+            } finally {
+                try {
+                    if (measured != null) measured.close();
+                } finally {
+                    work.abortPending();
+                    work.close();
+                }
             }
         } finally {
-            service.closeAsync().get(2, TimeUnit.MINUTES);
+            LIBRARY_WRITES.incrementAndGet();
+            try {
+                service.closeAsync().get(2, TimeUnit.MINUTES);
+            } finally {
+                LIBRARY_WRITES.decrementAndGet();
+            }
+        }
+    }
+
+    // ---- Tile prep only: the real source path, no helper, GPU or FX (#422) ----------------
+
+    private static void prep(BuildWorld handle, WorldService.Catalog catalog) throws Exception {
+        var scenarios =
+                Scenario.parse(System.getProperty("probe.scenarios", "elwynn:0:49:31"));
+        int size = Integer.getInteger("probe.size", 3);
+        int passes = Integer.getInteger("probe.passes", 2);
+        boolean objects = !"false".equals(System.getProperty("probe.objects"));
+        var detail = WorldStreamGpuOwner.IMAGE_DETAIL;
+        var source =
+                handle.terrainStreaming()
+                        .orElseThrow(() -> new IllegalStateException("No terrain streaming"));
+        for (var scenario : scenarios) {
+            var map =
+                    catalog.maps().stream()
+                            .filter(m -> m.id() == scenario.map())
+                            .findFirst()
+                            .orElseThrow();
+            var inventory = handle.inventory(map, Cancellation.NONE).get(5, TimeUnit.MINUTES);
+            var tiles = new ArrayList<WorldFormats.Tile>();
+            int half = size / 2;
+            for (var tile : inventory.world().tiles()) {
+                if (Math.abs(tile.x() - scenario.x()) <= half
+                        && Math.abs(tile.y() - scenario.y()) <= half) tiles.add(tile);
+            }
+            var scope = source.createScope(map, Cancellation.NONE);
+            source.activate(scope);
+            for (int pass = 1; pass <= passes && beforeDeadline(); pass++) {
+                WorldStageTimings.reset();
+                FileDecodeTimings.reset();
+                long began = System.nanoTime();
+                int done = 0;
+                for (var tile : tiles) {
+                    if (!beforeDeadline()) break;
+                    long terrain = WorldStageTimings.start();
+                    var written =
+                            source.prepareAndWrite(
+                                    scope, tile, Cancellation.NONE, (borrow, token) -> () -> {});
+                    WorldStageTimings.stop("prep.terrain", terrain);
+                    written.close();
+                    if (objects) {
+                        long prepared = WorldStageTimings.start();
+                        var copy =
+                                WorldStreamSourceBridge.prepareExterior(
+                                        source, scope, tile, Cancellation.NONE, null, detail);
+                        WorldStageTimings.stop(
+                                copy.failed() ? "prep.objectsFailed" : "prep.objects", prepared);
+                    }
+                    done++;
+                }
+                if (done < tiles.size()) incomplete = true;
+                var decode = FileDecodeTimings.snapshot();
+                say(
+                        String.format(
+                                Locale.ROOT,
+                                "PROBE prep %s pass %d (%s): %d of %d tiles (%dx%d around %d,%d) in %.2f s;"
+                                        + " BLTE zlib %d chunks, %.1f MiB, %.1f ms",
+                                scenario.name(),
+                                pass,
+                                pass == 1 ? "first in this process" : "repeat",
+                                done,
+                                tiles.size(),
+                                size,
+                                size,
+                                scenario.x(),
+                                scenario.y(),
+                                seconds(System.nanoTime() - began),
+                                decode.zlibChunks(),
+                                decode.zlibBytes() / 1048576.0,
+                                decode.zlibNanos() / 1e6));
+                var snapshot = WorldStageTimings.snapshot();
+                print(snapshot, false);
+                if (objects) printCounts(snapshot);
+            }
         }
     }
 
@@ -171,13 +307,14 @@ public final class WorldMeasurementProbe {
     private static void stream(BuildWorld handle, WorldService.Catalog catalog) throws Exception {
         var scenarios =
                 Scenario.parse(
-                        System.getProperty("probe.scenarios", "elwynn:0:31:49,stormwind:0:30:48"));
+                        System.getProperty("probe.scenarios", "elwynn:0:49:31,stormwind:0:48:30"));
         Platform.startup(() -> Platform.setImplicitExit(false));
         var gpu = GpuPreviewService.application();
         try {
             for (var scenario : scenarios) {
                 if (System.nanoTime() > DEADLINE - TimeUnit.SECONDS.toNanos(45)) {
                     say("PROBE skipped " + scenario.name() + ": deadline");
+                    incomplete = true;
                     continue;
                 }
                 var map =
@@ -313,6 +450,21 @@ public final class WorldMeasurementProbe {
                         timer.start();
                         return null;
                     });
+            try {
+                measure(allocated);
+            } finally {
+                // Every path, including failures and the deadline, retires the controller (and
+                // with it the helper session and its private files) before the probe moves on.
+                fx(
+                        () -> {
+                            timer.stop();
+                            return null;
+                        });
+                controller.closeAsync().get(60, TimeUnit.SECONDS);
+            }
+        }
+
+        private void measure(long allocated) throws Exception {
             long fillBudget = TimeUnit.SECONDS.toNanos(Long.getLong("probe.fillSeconds", 150));
             // 1. Fill: stationary camera at the seed until every tile and its objects are done.
             long lastObjects = -1, settledSince = 0;
@@ -331,6 +483,10 @@ public final class WorldMeasurementProbe {
                         && System.nanoTime() - settledSince > TimeUnit.SECONDS.toNanos(3)) {
                     break;
                 }
+            }
+            if (!(desired > 0 && prepared == desired && phase.equals("READY")
+                    && prepares() >= desired)) {
+                incomplete = true;
             }
             say(
                     String.format(
@@ -388,6 +544,7 @@ public final class WorldMeasurementProbe {
                 Thread.sleep(250);
                 if (prepared == desired && phase.equals("READY")) break;
             }
+            if (!(prepared == desired && phase.equals("READY"))) incomplete = true;
             say(
                     String.format(
                             Locale.ROOT,
@@ -398,12 +555,6 @@ public final class WorldMeasurementProbe {
                             desired,
                             seconds(System.nanoTime() - flyEnd)));
             var flyTimings = WorldStageTimings.snapshot();
-            fx(
-                    () -> {
-                        timer.stop();
-                        return null;
-                    });
-            controller.closeAsync().get(60, TimeUnit.SECONDS);
             long totalAllocated = allocatedBytes() - allocated;
             say("PROBE --- " + scenario.name() + " fill: parent stage timings ---");
             print(fillTimings, false);
@@ -619,6 +770,7 @@ public final class WorldMeasurementProbe {
                     }
                 }
             }
+            if (tiles < all.size()) incomplete = true;
             say(
                     String.format(
                             Locale.ROOT,

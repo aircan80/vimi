@@ -1,6 +1,13 @@
 package com.vimi.gui;
 
+import com.vibeminer.access.Cancellation;
+import com.vibeminer.access.ObjectSource;
+import com.vibeminer.builds.Builds;
+import com.vibeminer.formats.tables.BuildTables;
+import java.lang.reflect.Proxy;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Opt-in World measurement wiring: helper JVM options and the probe's GC log parsing. */
 public final class WorldMeasurementTest {
@@ -9,7 +16,10 @@ public final class WorldMeasurementTest {
         helperGetsTheSwitchAndItsOwnTable();
         blankTableFileIsNotForwarded();
         gcLogPausesAreGroupedByKind();
-        System.out.println("World measurement: helper options and GC log pauses passed");
+        measurementWorldNeedsPreparedFiles();
+        measurementWorldClosesTheWorldBeforeItsTables();
+        System.out.println(
+                "World measurement: helper options, GC log pauses and the measurement World passed");
     }
 
     private static void check(boolean value, String message) {
@@ -58,5 +68,72 @@ public final class WorldMeasurementTest {
                         .equals(List.of(3.456, 1.5)),
                 "young pauses: " + pauses);
         check(pauses.get("Pause Remark").equals(List.of(0.8)), "remark: " + pauses);
+    }
+
+    private static <T> T refusing(Class<T> type) {
+        return type.cast(
+                Proxy.newProxyInstance(
+                        type.getClassLoader(),
+                        new Class<?>[] {type},
+                        (proxy, method, values) -> {
+                            throw new AssertionError("Unexpected " + method.getName());
+                        }));
+    }
+
+    private static void measurementWorldNeedsPreparedFiles() {
+        var info =
+                new BuildInfo(
+                        "wow",
+                        "Retail",
+                        "1.2.3.45678",
+                        "us",
+                        "a".repeat(32),
+                        BuildInfo.BuildSource.CURRENT,
+                        false,
+                        null,
+                        0);
+        var evidence = new BuildInfo.RegionEvidence("us", "b".repeat(32), true, null, null);
+        Builds builds =
+                (build, token) -> CompletableFuture.failedFuture(new AssertionError("No opening"));
+        var work =
+                new NativePreparationWork(
+                        info,
+                        evidence,
+                        "enUS",
+                        builds,
+                        refusing(ObjectSource.class),
+                        null,
+                        null,
+                        refusing(ObjectSource.class));
+        try {
+            work.openWorldForMeasurement(Cancellation.NONE);
+            throw new AssertionError("Opened a measurement World without prepared files");
+        } catch (IllegalStateException expected) {
+            check(expected.getMessage().contains("Files must be prepared"), expected.getMessage());
+        }
+    }
+
+    private static void measurementWorldClosesTheWorldBeforeItsTables() {
+        var tablesClosed = new AtomicBoolean();
+        var worldRef = new com.vibeminer.concepts.world.WorldService[1];
+        var tables =
+                (BuildTables)
+                        Proxy.newProxyInstance(
+                                BuildTables.class.getClassLoader(),
+                                new Class<?>[] {BuildTables.class},
+                                (proxy, method, values) -> {
+                                    if (!method.getName().equals("close"))
+                                        throw new AssertionError("Unexpected " + method.getName());
+                                    try {
+                                        worldRef[0].waterPreview();
+                                        throw new AssertionError("World still open at table close");
+                                    } catch (IllegalStateException closed) {
+                                        tablesClosed.set(true);
+                                    }
+                                    return null;
+                                });
+        worldRef[0] = new com.vibeminer.concepts.world.WorldService(tables, null, null);
+        new NativePreparationWork.MeasurementWorld(tables, worldRef[0]).close();
+        check(tablesClosed.get(), "tables closed after the World");
     }
 }

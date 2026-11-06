@@ -4,6 +4,9 @@ What the World explorer actually spends its time on, measured on the real pipeli
 local build. These numbers set the Phase 2 priorities. They come from one machine and are
 single observations, not guarantees.
 
+**Measured 2026-11-06 on main at `0bbe365c` (#352) plus this instrumentation.** That is before
+#397, #416 and #418. Rerun on the same scenarios to compare later changes.
+
 ## How to reproduce
 
 Everything is opt-in. The instrumentation is a process-wide table,
@@ -13,22 +16,63 @@ While off, each call site costs one volatile read. BLTE inflate has its own tota
 inherits it and writes its own table (`WorldStageTimingsDump`) to
 `-Dvimi.world.stageTimings.file`.
 
-The probe opens the prepared local build, so it holds the store's writer lock. Close the app
-first, and take the shared real-data lock:
+### What the probe touches
+
+The probe opens the library at `-PdataDirectory=<dir>`, or the application's own library by
+default, with `BuildApplication.open`. That is the same call the application makes at start:
+- it takes the store's writer lock;
+- it may run the library's own idempotent migration and owner retention.
+
+To leave the real library alone, point `-PdataDirectory` at a copy.
+
+**It never starts, runs or publishes a preparation job.** It refuses a build that was never
+prepared in that library. For a prepared build, it opens one local-only work, with no network
+sources, and uses only:
+- the build metadata;
+- the resolution indexes and file handle, without the file catalog pass;
+- the build's cached key graphs;
+- a World over its own workspace tables, with no known-table pass or warmup.
+
+That is why it starts within seconds (#422).
+
+**Writes.** Streaming writes only the helper's private packet files, under
+`gui/build/world-measurement/tmp`. The deadline (default 540 s) stops new work, and the run then
+closes the controller, helper, World and library normally. The watchdog halts the JVM only if
+closing itself overruns the deadline by a further 45 s, and never while the library is opening or
+closing.
+
+**Exit codes:** 0 complete, 2 failed, 3 deadline or incomplete.
+
+### Commands
+
+Close the app first, and take the shared real-data lock. Remove the lock only if your own
+`mkdir` succeeded:
 
 ```sh
-mkdir ../.realdata-lock    # shared real-data lock, next to the worktrees
-./gradlew :gui:worldMeasurementProbe --max-workers=2 "-PsqliteLibrary=<sqlite3.dll>" \
-    -Pprobe.scenarios=elwynn:0:49:31,stormwind:0:48:30           # about 4 minutes
-./gradlew :gui:worldMeasurementProbe --max-workers=2 "-PsqliteLibrary=<sqlite3.dll>" \
-    -Pprobe.mode=refusals -Pprobe.maps=0,1                       # whole-map texture refusals
-rmdir ../.realdata-lock
+mkdir ../.realdata-lock && {    # shared real-data lock, next to the worktrees
+  trap 'rmdir ../.realdata-lock' EXIT
+  ./gradlew :gui:worldMeasurementProbe --max-workers=2 "-PsqliteLibrary=<sqlite3.dll>" \
+      -Pprobe.scenarios=elwynn:0:49:31,stormwind:0:48:30        # stream, about 4 minutes
+  ./gradlew :gui:worldMeasurementProbe --max-workers=2 "-PsqliteLibrary=<sqlite3.dll>" \
+      -Pprobe.mode=prep                                         # tile prep only, about 3 minutes
+  ./gradlew :gui:worldMeasurementProbe --max-workers=2 "-PsqliteLibrary=<sqlite3.dll>" \
+      -Pprobe.mode=refusals -Pprobe.maps=0,1                    # whole-map texture refusals
+}
 ```
 
-Both runs are bounded. The task timeout is 10 minutes, and the probe's own deadline is 570 s:
-when it hits the deadline it prints what it has and exits 3. The report goes to stdout and to
+The task timeout is 10 minutes. The report goes to stdout and to
 `gui/build/world-measurement/report.txt`. The task also writes
 `gui/build/world-measurement/gc.log` (`-Xlog:gc*`) and the helper's table.
+
+**Prep mode** (#422) times the real source path one tile at a time, for a `probe.size` square
+(default 3) around each scenario centre. Per tile it runs:
+- `WorldTerrainStreaming.prepareAndWrite`, with a no-op output (`prep.terrain`);
+- the production `WorldStreamSourceBridge.prepareExterior` (`prep.objects`).
+
+It runs `probe.passes` passes (default 2): the first in a fresh process, the second a repeat. It
+skips the helper, the GPU, FX and the packet files: in stream mode the terrain packet write is
+about 25 ms per tile. Use `-Pprobe.objects=false` for terrain alone. It reports the same series
+as stream mode, so before and after runs compare directly.
 
 **Stream mode** builds the production `WorldStreamSourceController` exactly as `WorldView` does:
 - the real `WorldStreamGpuOwner` and helper, on the default backend (D3D11 here);
@@ -96,10 +140,18 @@ map, in batches of 9. It counts:
 | `parent.commit.roundTrip` | 3.9 ms | 3.5 ms | |
 | `parent.commit.toAcceptedFrame` | 37 ms | 31 ms | Receipt to the first FX-accepted frame |
 
+About 400 ms of `produceToStaged` (Elwynn p50 1,179 ms) is not attributed to any timed stage:
+- source total 742 ms;
+- child read, pack and upload about 57 ms.
+
+The rest is the producer and transport hand-offs between them: the reservation and credit, the
+offer, and decode scheduling on the single decoder. None of those are timed separately here.
+
 BLTE zlib inflate for the whole Elwynn fill took 0.45 s for 109 MiB out (3,803 chunks).
 
-**Reading:** about 1.1 s of each terrain tile's ~1.2 s is texture-source work and per-file read
-latency, done serially. Each file read costs 20-35 ms regardless of size. File write, fsync,
+**Reading:** of each terrain tile's ~1.2 s, about 0.5 s is texture-source work, mostly per-file
+read latency. Each file read costs 20-35 ms regardless of size. A further 0.2 s goes on the other
+timed source stages, and about 0.4 s is unattributed hand-off time (above). All of it is serial. File write, fsync,
 SHA and the IPC round trips together cost under 100 ms per tile. Two conclusions follow:
 - Dropping fsync or swapping SHA-256 for CRC32C is worth a few percent at most.
 - Parallel source preparation (N tiles in flight), together with cheaper reads, is the lever.
@@ -239,15 +291,21 @@ Chunks lost, ranked:
 | Whole tile TEXTURE_PROFILE (MPHD, unknown chunks, MHID) | 24 tiles | 1 tile | |
 | ABSENT | 0 | 2 | |
 
-**Reading:** LAYER_SHAPE accounts for 99.7% of refused chunks on both continents. Accepting
-extra sub-chunks would raise textured terrain from ~60% to ~96-97% of chunks. It is the single
-cheapest visible win in this report. The alpha-sum and MCCV-alpha refusals the review suspected
-do not occur on these maps.
+**Reading:** LAYER_SHAPE accounts for most of the refused chunks:
+- **Eastern Kingdoms:** 99.7% of refused chunks, over every tile.
+- **Kalimdor:** about 92%, from a partial sample. The survey stopped at the time budget after the
+  first 486 of 988 tiles in inventory order, so the sample is not uniform. CHUNK_SHAPE is most of
+  the rest.
+
+Accepting the extra MCSH/MCMT sub-chunks raises textured terrain from ~60% to ~96% of chunks.
+**That is fixed by #397.** A probe on the #397 branch found only 29 LAYER_SHAPE chunks remaining;
+that residual is tracked in #398. The alpha-sum and MCCV-alpha refusals the review suspected do
+not occur on these maps.
 
 ## What this means for Phase 2
 
-0. **Terrain texture LAYER_SHAPE** (a Phase 1 reader fix) brings textured chunks from ~60% to
-   ~96-97%.
+0. **Terrain texture LAYER_SHAPE** brings textured chunks from ~60% to ~96%. Fixed by #397;
+   the residual is tracked in #398.
 1. **Source read latency and the serial lane** are the main cost of both terrain (~1 s/tile) and
    objects (~7 s/tile, 85% reads). The candidate fixes:
    - parallel reads or N in-flight tiles;
@@ -257,8 +315,11 @@ do not occur on these maps.
      models are read once.
 
    Decode-side work (BLP once, CRC32C, no fsync) is worth a few percent.
-2. **Doodad caps**: 39-68% of qualified doodads are not drawn. Raising the caps needs (1) and the
-   asset library first. Otherwise prep time grows with them.
+2. **Doodad caps:** 39-68% of qualified doodads are not drawn. Raising the caps grows prep time
+   roughly in proportion to the extra reads. Since this baseline, #416 and #418 cut per-read cost
+   about 5x on real data (19.3 to 3.6 ms), so #308 goes ahead before #380. #308 must report prep
+   time with the raised caps. #380, the session asset library, is what removes the per-tile
+   duplication of shared models and city WMOs.
 3. **Frame path**: 30 fps and 49 ms latency come from pacing, not from GPU work, so the Phase 1
    frame quick wins apply as planned. Per-placement culling becomes necessary when caps rise or
    the view distance grows.
