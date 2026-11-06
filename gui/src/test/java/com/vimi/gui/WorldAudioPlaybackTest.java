@@ -51,12 +51,46 @@ public final class WorldAudioPlaybackTest {
         @Override public void close() { closed = true; }
     }
 
+    /**
+     * One accepted write and how much of it was heard. A line holds up to its buffer of written
+     * frames unplayed; closing without {@code drain()} discards them, as a real line does.
+     */
+    private static final class Heard {
+        /** Counts are in 16-bit samples. */
+        final int line, frames;
+        final byte[] bytes;
+        volatile int discarded;
+
+        Heard(int line, byte[] bytes) {
+            this.line = line;
+            this.bytes = bytes;
+            frames = bytes.length / 2;
+        }
+
+        boolean heard() {
+            return discarded < frames;
+        }
+
+        /** Magnitude of the last sample that was heard. */
+        int lastSample() {
+            int at = 2 * (frames - discarded - 1);
+            return at < 0 ? 0 : Math.abs((short) (bytes[at] << 8 | bytes[at + 1] & 0xff));
+        }
+    }
+
     private static final class Device {
         final AtomicInteger opened = new AtomicInteger(), closedLines = new AtomicInteger();
+        /** Every write on every line of this device, in order, with what was heard of it. */
+        final java.util.List<Heard> log = new java.util.concurrent.CopyOnWriteArrayList<>();
+        /** The latest write's record. */
+        volatile Heard latest;
+        private final AtomicInteger lineIds = new AtomicInteger();
         final AtomicLong frames = new AtomicLong();
         final ConcurrentLinkedQueue<Integer> peaks = new ConcurrentLinkedQueue<>();
         /** Magnitude of the first sample of each accepted write, in order. */
         final ConcurrentLinkedQueue<Integer> firsts = new ConcurrentLinkedQueue<>();
+        /** Magnitude of the last sample of the latest accepted write. */
+        volatile int end;
         /** Thrown by drain, when set. */
         volatile RuntimeException drainFailure;
         /** Bytes per accepted write, in order. */
@@ -64,14 +98,31 @@ public final class WorldAudioPlaybackTest {
         volatile int last;
         /** A removed device or a line stopped by the OS accepts no bytes. */
         volatile boolean dead;
+        /** Writes accepted before the device stops accepting bytes. */
+        volatile int dieAfter = Integer.MAX_VALUE;
+
+        /** Frames heard on every line so far. */
+        long heardFrames() {
+            return log.stream().mapToLong(h -> h.frames - h.discarded).sum();
+        }
+
+        /** The last write that was at least partly heard, on any line. */
+        Heard lastHeard() {
+            var heard = log.stream().filter(Heard::heard).toList();
+            return heard.isEmpty() ? null : heard.getLast();
+        }
 
         SourceDataLine line() {
+            int id = lineIds.getAndIncrement();
+            // Written frames not yet played, oldest first; at most the line's buffer.
+            var pending = new java.util.ArrayDeque<Heard>();
+            int[] buffer = {Integer.MAX_VALUE}, pendingFrames = {0};
             return (SourceDataLine) Proxy.newProxyInstance(
                     WorldAudioPlaybackTest.class.getClassLoader(),
                     new Class<?>[] {SourceDataLine.class},
                     (proxy, method, args) -> switch (method.getName()) {
                         case "write" -> {
-                            if (dead) yield 0;
+                            if (dead || log.size() >= dieAfter) yield 0;
                             byte[] bytes = (byte[]) args[0];
                             int offset = (Integer) args[1], length = (Integer) args[2];
                             int peak = 0;
@@ -81,18 +132,54 @@ public final class WorldAudioPlaybackTest {
                             peaks.add(peak);
                             firsts.add(length < 2 ? 0 : Math.abs((short) (bytes[offset] << 8
                                     | bytes[offset + 1] & 0xff)));
+                            end = length < 2 ? 0 : Math.abs((short) (bytes[offset + length - 2] << 8
+                                    | bytes[offset + length - 1] & 0xff));
                             writes.add(length);
                             last = peak;
                             frames.addAndGet(length / 2);
+                            var heard = new Heard(id, java.util.Arrays.copyOfRange(bytes, offset,
+                                    offset + length));
+                            synchronized (pending) {
+                                pending.add(heard);
+                                pendingFrames[0] += heard.frames;
+                                // Frames older than one buffer have been played.
+                                while (pendingFrames[0] - pending.peekFirst().frames
+                                        >= buffer[0]) {
+                                    pendingFrames[0] -= pending.pollFirst().frames;
+                                }
+                            }
+                            log.add(heard);
+                            latest = heard;
                             Thread.sleep(1);
                             yield length;
                         }
+                        case "open" -> {
+                            // The buffer in bytes, counted here in 16-bit samples.
+                            if (args != null && args.length == 2) buffer[0] = (Integer) args[1] / 2;
+                            yield null;
+                        }
                         case "close" -> {
+                            synchronized (pending) {
+                                // Closing without a drain discards what the buffer holds.
+                                int unplayed = Math.min(pendingFrames[0], buffer[0]);
+                                for (var it = pending.descendingIterator();
+                                        it.hasNext() && unplayed > 0; ) {
+                                    var h = it.next();
+                                    h.discarded = Math.min(h.frames, unplayed);
+                                    unplayed -= h.discarded;
+                                }
+                                pending.clear();
+                                pendingFrames[0] = 0;
+                            }
                             closedLines.incrementAndGet();
                             yield null;
                         }
                         case "drain" -> {
                             if (drainFailure != null) throw drainFailure;
+                            synchronized (pending) {
+                                pending.clear();
+                                pendingFrames[0] = 0;
+                            }
                             yield null;
                         }
                         case "isOpen", "isActive", "isRunning" -> false;
@@ -137,7 +224,7 @@ public final class WorldAudioPlaybackTest {
         music.enabled(true);
         await(() -> device.frames.get() > 8000 * 2, "music did not stream");
         int first = device.peaks.peek();
-        if (first > 2000 || device.last < 16000)
+        if (first > 6000 || device.last < 16000)
             throw new AssertionError("Music must fade in from silence: " + first + " " + device.last);
         if (statuses.stream().noneMatch(s -> s.playing() && s.message().contains("sound kit #100")))
             throw new AssertionError("Playing status must name the recorded sound kit");
@@ -147,24 +234,17 @@ public final class WorldAudioPlaybackTest {
         Thread.sleep(100);
         if (streams.size() != 1) throw new AssertionError("Same kit restarted");
 
-        // A different kit fades the old track out before the next one starts.
+        // A different kit cross-fades: the old track keeps sounding while the next one starts,
+        // then fades out over the recorded ramp and closes (gain curves are in crossfade tests).
         var replaced = streams.peek();
         long sentBefore = replaced.sent;
-        device.peaks.clear();
         music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), FILES);
         await(() -> streams.size() == 2, "new kit did not start");
-        var before = streams.peek();
-        if (!before.closed) throw new AssertionError("Replaced decoder was not closed");
-        if (device.closedLines.get() < 1) throw new AssertionError("Replaced line was not closed");
-        long faded = before.sent - sentBefore;
+        await(() -> replaced.closed, "replaced decoder was not closed");
+        await(() -> device.closedLines.get() >= 1, "replaced line was not closed");
+        long faded = replaced.sent - sentBefore;
         if (faded < 8000 * WorldAudioPlayback.FADE_SECONDS * 0.9)
             throw new AssertionError("Replacement must fade out over the recorded ramp: " + faded);
-        var fade = device.peaks.toArray(Integer[]::new);
-        int quiet = 0;
-        for (int i = 1; i < fade.length && quiet == 0; i++)
-            if (fade[i] < 500) quiet = i;
-        if (quiet == 0 || fade[0] < 16000 || fade[quiet / 2] >= fade[0])
-            throw new AssertionError("Old track must ramp down toward silence");
 
         music.enabled(false);
         await(() -> streams.stream().allMatch(s -> s.closed), "muted decoder was not closed");
@@ -407,15 +487,36 @@ public final class WorldAudioPlaybackTest {
             throw new AssertionError("Authored decoder detail was hidden");
     }
 
+    /**
+     * The fade position moves at a fixed rate and maps to amplitude on an equal-power curve; the
+     * level is a separate linear scale.
+     */
     private static void gainRampsPerFrame() {
         byte[] block = new byte[8];
         for (int i = 0; i < 8; i += 2) block[i] = 0x40;
-        double gain = WorldAudioPlayback.apply(block, 8, 1, 0, 1, 0.5);
-        if (gain != 1) throw new AssertionError("Ramp did not reach target");
+        var gain = new WorldAudioPlayback.Envelope(0, 1);
+        WorldAudioPlayback.apply(block, 8, 1, gain, 1, 1, 0.5, 1);
+        if (gain.position != 1) throw new AssertionError("Ramp did not reach the end");
         int first = (short) (block[0] << 8 | block[1] & 0xff);
         int last = (short) (block[6] << 8 | block[7] & 0xff);
-        if (first != 0x4000 / 4 || last != 0x4000)
-            throw new AssertionError("Perceptual ramp " + first + " " + last);
+        if (first != (int) Math.round(0x4000 * Math.sin(Math.PI / 4)) || last != 0x4000)
+            throw new AssertionError("Equal-power ramp " + first + " " + last);
+        // Two voices crossing at the same rate keep their summed power at every step.
+        for (double t = 0; t <= 1; t += 0.125) {
+            double in = Math.sin(t * Math.PI / 2), out = Math.sin((1 - t) * Math.PI / 2);
+            if (Math.abs(in * in + out * out - 1) > 1e-9)
+                throw new AssertionError("Power dips at " + t);
+        }
+        // A fade lasts the same number of frames at any level.
+        for (double level : new double[] {1, 0.25}) {
+            var fading = new WorldAudioPlayback.Envelope(0, level);
+            int frames = 0;
+            while (fading.position < 1) {
+                WorldAudioPlayback.apply(new byte[2], 2, 1, fading, 1, level, 0.01, 0.01);
+                frames++;
+            }
+            if (frames != 100) throw new AssertionError("Fade at level " + level + ": " + frames);
+        }
     }
 
     /**
@@ -712,7 +813,7 @@ public final class WorldAudioPlaybackTest {
         for (int i = 1; i < lines.length; i++) {
             Integer peak = lines[i].peaks.peek(), first = lines[i].firsts.peek();
             if (peak == null) continue; // the last line may be closed before it wrote
-            if (first > 100)
+            if (first > 1000)
                 throw new AssertionError("Line " + i + " started at full gain: " + first);
             if (peak < 16000)
                 throw new AssertionError("Line " + i + " restarted the slow fade-in: " + peak);
@@ -832,6 +933,542 @@ public final class WorldAudioPlaybackTest {
     }
 
 
+    /** One timed write on one line: when it was accepted and its peak. */
+    private record Timed(int line, long nanos, int peak, int end, int bytes, Heard heard) {}
+
+    /** The last sample heard on these writes; 0 when nothing was heard. */
+    private static int lastHeard(java.util.List<Timed> writes) {
+        var heard = writes.stream().filter(w -> w.heard().heard()).toList();
+        return heard.isEmpty() ? 0 : heard.getLast().heard().lastSample();
+    }
+
+    private static long heardFrames(java.util.List<Timed> writes) {
+        return writes.stream().mapToLong(w -> w.heard().frames - w.heard().discarded).sum();
+    }
+
+    private static void nap(long millis) throws IOException {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("interrupted");
+        }
+    }
+
+    /**
+     * Lines paced at 16x real time for the authored mono 8 kHz streams, so two lines advance
+     * together and their writes can be ordered on one timeline.
+     */
+    private static final class Timeline {
+        final ConcurrentLinkedQueue<Timed> writes = new ConcurrentLinkedQueue<>();
+        final java.util.List<Device> devices = new java.util.concurrent.CopyOnWriteArrayList<>();
+        /** Refuses a line while another is still open, like a single-line device. */
+        volatile boolean singleLine;
+        /** A sample rate the device does not support, as a format refusal; 0 for none. */
+        volatile float refusedRate;
+
+        SourceDataLine open(javax.sound.sampled.AudioFormat format)
+                throws javax.sound.sampled.LineUnavailableException {
+            if (format.getSampleRate() == refusedRate)
+                throw new IllegalArgumentException("unsupported format");
+            if (singleLine && devices.stream().anyMatch(d -> d.closedLines.get() == 0))
+                throw new javax.sound.sampled.LineUnavailableException("one line only");
+            var device = new Device();
+            int index = devices.size();
+            devices.add(device);
+            SourceDataLine line = device.line();
+            return (SourceDataLine) Proxy.newProxyInstance(
+                    WorldAudioPlaybackTest.class.getClassLoader(),
+                    new Class<?>[] {SourceDataLine.class}, (proxy, method, args) -> {
+                        Object result = method.invoke(line, args);
+                        if (method.getName().equals("write")) {
+                            int length = (Integer) args[2];
+                            writes.add(new Timed(index, System.nanoTime(), device.last, device.end,
+                                    length, device.latest));
+                            Thread.sleep(Math.max(1, length / 256)); // 16x real time
+                        }
+                        return result;
+                    });
+        }
+
+        java.util.List<Timed> line(int index) {
+            return writes.stream().filter(w -> w.line() == index).toList();
+        }
+
+        boolean closed(int index) {
+            return devices.size() > index && devices.get(index).closedLines.get() > 0;
+        }
+    }
+
+    /** A decoder that waits until canceled, as a stalled source would; never yields audio. */
+    private static WorldAudioPlayback.Pcm stalled(BooleanSupplier canceled) throws IOException {
+        while (!canceled.getAsBoolean()) {
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException interrupted) {
+                throw new IOException("interrupted");
+            }
+        }
+        throw new IOException("World audio decoding canceled");
+    }
+
+    private static void awaitFull(Timeline lines, int index) throws Exception {
+        await(() -> lines.line(index).stream().anyMatch(w -> w.peak() >= 16000),
+                "line " + index + " did not reach full volume");
+    }
+
+    /**
+     * The old track holds full volume until the next one has audio; then the old ramps down while
+     * the new ramps up over the same 1.5 s, overlapping at mid-fade; then the old line closes.
+     */
+    private static void crossfadeHoldsUntilTheNextTrackHasAudio() throws Exception {
+        var lines = new Timeline();
+        var decodes = new AtomicInteger();
+        var changed = new AtomicLong(Long.MAX_VALUE);
+        var playback = new WorldAudioPlayback(lines::open, (bytes, canceled) -> {
+            // A slow decoder start, measured in the old line's writes rather than wall time so
+            // a slow or coarse clock (CI runners) cannot shorten the hold.
+            if (decodes.incrementAndGet() == 2) {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (lines.line(0).stream().filter(w -> w.nanos() > changed.get()).count() < 6
+                        && System.nanoTime() < deadline) nap(2);
+            }
+            return new FakePcm(Long.MAX_VALUE);
+        }, status -> {});
+        var music = playback.music;
+        music.volume(1);
+        music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), FILES);
+        music.enabled(true);
+        awaitFull(lines, 0);
+        long change = System.nanoTime();
+        changed.set(change);
+        music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), FILES);
+        await(() -> lines.closed(0), "old line did not close");
+        awaitFull(lines, 1);
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+
+        var old = lines.line(0);
+        var next = lines.line(1);
+        long started = next.getFirst().nanos();
+        var held = old.stream().filter(w -> w.nanos() > change && w.nanos() < started).toList();
+        if (held.size() < 5)
+            throw new AssertionError("Old track must keep playing while the next loads: "
+                    + held.size() + " writes");
+        if (held.stream().anyMatch(w -> w.peak() < 16000))
+            throw new AssertionError("Old track must hold full volume while the next loads: "
+                    + held.stream().map(Timed::peak).toList());
+        var fading = old.stream().filter(w -> w.nanos() >= started).toList();
+        if (fading.isEmpty()) throw new AssertionError("Fades must overlap, not run in turn");
+        for (int i = 1; i < fading.size(); i++)
+            if (fading.get(i).peak() > fading.get(i - 1).peak())
+                throw new AssertionError("Old track must only ramp down");
+        if (lastHeard(fading) > 500) throw new AssertionError("Old track did not fade out");
+        // The fade starts in the old line's first block that ends below full volume; that block
+        // can be written just before the new track's first write is timed, so count from it.
+        int fadeStart = 0;
+        while (fadeStart < old.size() && old.get(fadeStart).end() >= 16000) fadeStart++;
+        long fadeFrames = heardFrames(old.subList(fadeStart, old.size()));
+        if (fadeFrames < 8000 * WorldAudioPlayback.FADE_SECONDS * 0.9)
+            throw new AssertionError("Old fade too short: " + fadeFrames);
+        var rising = next.stream().takeWhile(w -> w.peak() < 16000).toList();
+        for (int i = 1; i < rising.size(); i++)
+            if (rising.get(i).peak() < rising.get(i - 1).peak())
+                throw new AssertionError("New track must only ramp up");
+        if (next.getFirst().peak() > 6000) throw new AssertionError("New track must fade in");
+        // While the new track is mid-fade the old one is still clearly audible.
+        boolean overlap = false;
+        int lastOld = 0x4000;
+        for (var w : lines.writes) {
+            if (w.line() == 0) lastOld = w.peak();
+            else if (w.peak() > 2000 && w.peak() < 14000 && lastOld > 2000) overlap = true;
+        }
+        if (!overlap) throw new AssertionError("Fades never overlapped");
+        // Equal power: the two voices' summed power stays near full through the crossfade.
+        lastOld = 0x4000;
+        for (var w : lines.writes) {
+            if (w.line() == 0) lastOld = w.peak();
+            else if (w.peak() >= 16000) break;
+            else if ((double) lastOld * lastOld + (double) w.peak() * w.peak()
+                    < 0.6 * 0x4000 * 0x4000)
+                throw new AssertionError("Crossfade power dips: " + lastOld + " " + w.peak());
+        }
+    }
+
+    /** Muting while the next track loads fades the held one out instead of holding it. */
+    private static void mutingWhileHeldFadesOut() throws Exception {
+        var lines = new Timeline();
+        var decodes = new AtomicInteger();
+        var playback = new WorldAudioPlayback(lines::open, (bytes, canceled) ->
+                decodes.incrementAndGet() == 1 ? new FakePcm(Long.MAX_VALUE) : stalled(canceled),
+                status -> {});
+        playback.music.volume(1);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), FILES);
+        playback.music.enabled(true);
+        awaitFull(lines, 0);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), FILES);
+        await(() -> decodes.get() == 2, "next decoder did not start");
+        long muted = System.nanoTime();
+        playback.music.enabled(false);
+        await(() -> lines.closed(0), "held track did not fade out when muted");
+        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - muted);
+        if (took > WorldAudioPlayback.HOLD_MAX_MILLIS)
+            throw new AssertionError("Mute waited for the hold bound: " + took);
+        if (lastHeard(lines.line(0)) > 500) throw new AssertionError("Mute cut, not faded");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+    }
+
+    /** A next track that never gets audio releases the held one after the hold bound. */
+    private static void holdIsBounded() throws Exception {
+        var lines = new Timeline();
+        var decodes = new AtomicInteger();
+        var playback = new WorldAudioPlayback(lines::open, (bytes, canceled) ->
+                decodes.incrementAndGet() == 1 ? new FakePcm(Long.MAX_VALUE) : stalled(canceled),
+                status -> {});
+        playback.music.volume(1);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), FILES);
+        playback.music.enabled(true);
+        awaitFull(lines, 0);
+        long change = System.nanoTime();
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), FILES);
+        await(() -> lines.closed(0), "held track was never released");
+        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - change);
+        if (took < WorldAudioPlayback.HOLD_MAX_MILLIS)
+            throw new AssertionError("Released before the hold bound: " + took);
+        if (lines.devices.size() != 1) throw new AssertionError("A stalled track opened a line");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+    }
+
+    /** An unavailable next track releases the held one and shows why. */
+    private static void unavailableNextTrackReleasesTheHeldOne() throws Exception {
+        var lines = new Timeline();
+        var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        var playback = new WorldAudioPlayback(lines::open,
+                (bytes, canceled) -> new FakePcm(Long.MAX_VALUE), statuses::add);
+        playback.music.volume(1);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), FILES);
+        playback.music.enabled(true);
+        awaitFull(lines, 0);
+        long change = System.nanoTime();
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), (id, token) ->
+                CompletableFuture.completedFuture(new WorldAreaAudio.AudioFile(id,
+                        WorldAreaAudio.FileState.UNAVAILABLE, null, "Audio file #" + id
+                        + " is NOT_FOUND.")));
+        await(() -> lines.closed(0), "held track was not released");
+        if (TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - change)
+                >= WorldAudioPlayback.HOLD_MAX_MILLIS)
+            throw new AssertionError("A failed track waited for the hold bound");
+        await(() -> statuses.stream().anyMatch(s -> s.message().contains("NOT_FOUND")),
+                "failure was hidden");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+    }
+
+    /**
+     * A next track replaced before it has audio passes the held track on: the old one stays at
+     * full volume until the newest track plays.
+     */
+    private static void supersededLoadsPassTheHeldTrackOn() throws Exception {
+        var lines = new Timeline();
+        var decodes = new AtomicInteger();
+        var playback = new WorldAudioPlayback(lines::open, (bytes, canceled) ->
+                switch (decodes.incrementAndGet()) {
+                    case 2 -> stalled(canceled);
+                    case 3 -> {
+                        nap(200);
+                        yield new FakePcm(Long.MAX_VALUE);
+                    }
+                    default -> new FakePcm(Long.MAX_VALUE);
+                }, status -> {});
+        playback.music.volume(1);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), FILES);
+        playback.music.enabled(true);
+        awaitFull(lines, 0);
+        long change = System.nanoTime();
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), FILES);
+        await(() -> decodes.get() == 2, "second track did not start loading");
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 300, 0), FILES);
+        await(() -> lines.closed(0), "held track was not released");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        if (lines.devices.size() != 2) throw new AssertionError("Lines " + lines.devices.size());
+        long started = lines.line(1).getFirst().nanos();
+        if (lines.line(0).stream().filter(w -> w.nanos() > change && w.nanos() < started)
+                .anyMatch(w -> w.peak() < 16000))
+            throw new AssertionError("The held track faded before the newest track played");
+    }
+
+    /** A device with one line: the old track yields quickly and the next one still plays. */
+    private static void singleLineDevicesYieldTheLine() throws Exception {
+        var lines = new Timeline();
+        lines.singleLine = true;
+        var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        var playback = new WorldAudioPlayback(lines::open,
+                (bytes, canceled) -> new FakePcm(Long.MAX_VALUE), statuses::add);
+        playback.music.volume(1);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), FILES);
+        playback.music.enabled(true);
+        awaitFull(lines, 0);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), FILES);
+        awaitFull(lines, 1);
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        if (count(statuses, WorldAudioPlayback.OUTPUT_UNAVAILABLE) != 0)
+            throw new AssertionError("A single-line device lost the next track");
+        if (lastHeard(lines.line(0)) > 500)
+            throw new AssertionError("The yielding track's fade was not heard");
+    }
+
+    /**
+     * A replaced single-file ambience keeps looping its short file while it fades, instead of
+     * stopping (and clicking) at the end of the current pass.
+     */
+    private static void replacedAmbienceLoopsWhileItFades() throws Exception {
+        var lines = new Timeline();
+        var playback = new WorldAudioPlayback(lines::open,
+                (bytes, canceled) -> new FakePcm(400), status -> {});
+        playback.ambience.volume(1);
+        playback.ambience.track(track(WorldAreaAudio.Kind.AMBIENCE, 100, 0), FILES);
+        playback.ambience.enabled(true);
+        awaitFull(lines, 0);
+        long change = System.nanoTime();
+        playback.ambience.track(null, null);
+        await(() -> lines.closed(0), "ambience did not fade out");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        var fading = lines.line(0).stream().filter(w -> w.nanos() > change).toList();
+        long frames = heardFrames(fading);
+        if (frames < 8000 * WorldAudioPlayback.FADE_SECONDS * 0.9)
+            throw new AssertionError("Fade-out stopped with the 400-frame file: " + frames);
+        if (lastHeard(fading) > 500) throw new AssertionError("Ambience was cut");
+    }
+
+    /** Closing mid-crossfade releases every decoder and line. */
+    private static void closeDuringACrossfadeReleasesEverything() throws Exception {
+        var lines = new Timeline();
+        var streams = new ConcurrentLinkedQueue<FakePcm>();
+        var playback = new WorldAudioPlayback(lines::open, (bytes, canceled) -> {
+            var pcm = new FakePcm(Long.MAX_VALUE);
+            streams.add(pcm);
+            return pcm;
+        }, status -> {});
+        playback.music.volume(1);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), FILES);
+        playback.music.enabled(true);
+        awaitFull(lines, 0);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), FILES);
+        await(() -> lines.devices.size() == 2 && !lines.line(1).isEmpty(), "no crossfade");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        if (!streams.stream().allMatch(s -> s.closed))
+            throw new AssertionError("Close left a decoder open");
+        if (lines.devices.stream().anyMatch(d -> d.closedLines.get() == 0))
+            throw new AssertionError("Close left a line open");
+    }
+
+    /**
+     * On a single-line device a tail that is already released and fading also gives back its
+     * line: mute and unmute within the fade still plays.
+     */
+    private static void singleLineDevicesYieldEveryTail() throws Exception {
+        var lines = new Timeline();
+        lines.singleLine = true;
+        var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        var playback = new WorldAudioPlayback(lines::open,
+                (bytes, canceled) -> new FakePcm(Long.MAX_VALUE), statuses::add);
+        playback.music.volume(1);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), FILES);
+        playback.music.enabled(true);
+        awaitFull(lines, 0);
+        int before = lines.line(0).size();
+        playback.music.enabled(false);
+        // Unmute only once the muted track is a released tail, audibly fading.
+        await(() -> lines.line(0).stream().skip(before).anyMatch(w -> w.peak() < 12000),
+                "muted track did not start fading");
+        playback.music.enabled(true);
+        awaitFull(lines, 1);
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        if (count(statuses, WorldAudioPlayback.OUTPUT_UNAVAILABLE) != 0)
+            throw new AssertionError("A fading tail kept the only line: " + statuses);
+        if (lastHeard(lines.line(0)) > 500)
+            throw new AssertionError("The yielding tail's fade was not heard");
+    }
+
+    /**
+     * A format the device refuses is not a busy device: the old track fades out normally over
+     * the full fade instead of yielding in 50 ms.
+     */
+    private static void formatRefusalsKeepTheOldTrackFading() throws Exception {
+        var lines = new Timeline();
+        lines.refusedRate = 16000;
+        var decodes = new AtomicInteger();
+        var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        var playback = new WorldAudioPlayback(lines::open, (bytes, canceled) ->
+                decodes.incrementAndGet() == 1 ? new FakePcm(Long.MAX_VALUE)
+                        : new RatePcm(16000, Long.MAX_VALUE), statuses::add);
+        playback.music.volume(1);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), FILES);
+        playback.music.enabled(true);
+        awaitFull(lines, 0);
+        long change = System.nanoTime();
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), FILES);
+        await(() -> count(statuses, WorldAudioPlayback.OUTPUT_UNAVAILABLE) == 1,
+                "the refused format was hidden");
+        await(() -> lines.closed(0), "old track did not fade out");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        var fading = lines.line(0).stream().filter(w -> w.nanos() > change).toList();
+        if (heardFrames(fading) < 8000 * WorldAudioPlayback.FADE_SECONDS * 0.9)
+            throw new AssertionError("A format refusal cut the old track short: "
+                    + heardFrames(fading));
+    }
+
+    /** A track that ends while held plays out its line's buffer instead of losing it. */
+    private static void aTrackEndingWhileHeldIsHeardToItsEnd() throws Exception {
+        var lines = new Timeline();
+        var decodes = new AtomicInteger();
+        var playback = new WorldAudioPlayback(lines::open, (bytes, canceled) ->
+                decodes.incrementAndGet() == 1 ? new FakePcm(8000 * 6) : stalled(canceled),
+                status -> {});
+        playback.music.volume(1);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), FILES);
+        playback.music.enabled(true);
+        awaitFull(lines, 0);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), FILES);
+        await(() -> lines.closed(0), "the held track did not end");
+        var played = lines.line(0);
+        long heard = heardFrames(played), written = played.stream().mapToLong(w -> w.bytes() / 2)
+                .sum();
+        if (written != 8000 * 6 || heard != written)
+            throw new AssertionError("End of the held track was cut: " + heard + " of " + written);
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+    }
+
+    /** A track replaced in the middle of its fade-in fades out from there without a jump. */
+    private static void aTrackReplacedMidFadeInFadesOutSmoothly() throws Exception {
+        var lines = new Timeline();
+        var playback = new WorldAudioPlayback(lines::open,
+                (bytes, canceled) -> new FakePcm(Long.MAX_VALUE), status -> {});
+        playback.music.volume(1);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), FILES);
+        playback.music.enabled(true);
+        awaitFull(lines, 0);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), FILES);
+        await(() -> lines.devices.size() > 1 && lines.line(1).stream()
+                .anyMatch(w -> w.peak() > 3000), "second track did not start fading in");
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 300, 0), FILES);
+        awaitFull(lines, 2);
+        await(() -> lines.closed(0) && lines.closed(1), "replaced tracks did not close");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        var middle = lines.line(1);
+        for (int i = 1; i < middle.size(); i++)
+            if (Math.abs(middle.get(i).peak() - middle.get(i - 1).peak()) > 5000)
+                throw new AssertionError("Level jumped at block " + i);
+        if (lastHeard(middle) > 500 || lastHeard(lines.line(0)) > 500)
+            throw new AssertionError("A replaced track was cut");
+    }
+
+    /** Several replaced tracks fading at once all fade out and close. */
+    private static void severalReleasedTailsFadeTogether() throws Exception {
+        var lines = new Timeline();
+        var playback = new WorldAudioPlayback(lines::open,
+                (bytes, canceled) -> new FakePcm(Long.MAX_VALUE), status -> {});
+        playback.music.volume(1);
+        for (int kit = 1; kit <= 4; kit++) {
+            int line = kit - 1;
+            playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100 * kit, 0), FILES);
+            if (kit == 1) playback.music.enabled(true);
+            await(() -> lines.devices.size() > line && !lines.line(line).isEmpty(),
+                    "track " + kit + " did not start");
+        }
+        awaitFull(lines, 3);
+        await(() -> lines.closed(0) && lines.closed(1) && lines.closed(2),
+                "replaced tracks did not close");
+        for (int line = 0; line < 3; line++)
+            if (lastHeard(lines.line(line)) > 500)
+                throw new AssertionError("Tail " + line + " was cut");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        if (lines.devices.stream().anyMatch(d -> d.closedLines.get() == 0))
+            throw new AssertionError("A line stayed open");
+    }
+
+    /**
+     * A next track whose stream or line fails after its first write reports it; the old track,
+     * released at that write, still fades out and closes.
+     */
+    private static void failuresAfterTheFirstWriteReleaseTheOldTrack() throws Exception {
+        for (boolean lineFails : new boolean[] {false, true}) {
+            var lines = new Timeline();
+            var decodes = new AtomicInteger();
+            var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+            var playback = new WorldAudioPlayback(format -> {
+                var line = lines.open(format);
+                if (lineFails && lines.devices.size() == 2) lines.devices.get(1).dieAfter = 2;
+                return line;
+            }, (bytes, canceled) -> {
+                if (decodes.incrementAndGet() == 1 || lineFails) return new FakePcm(Long.MAX_VALUE);
+                return new FakePcm(Long.MAX_VALUE) {
+                    int reads;
+
+                    @Override
+                    public int read(byte[] buffer, int offset, int length, BooleanSupplier c)
+                            throws IOException {
+                        if (++reads > 2) throw new IOException("World audio decoder stalled");
+                        return super.read(buffer, offset, length, c);
+                    }
+                };
+            }, statuses::add);
+            playback.music.volume(1);
+            playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), FILES);
+            playback.music.enabled(true);
+            awaitFull(lines, 0);
+            playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), FILES);
+            String expected = lineFails ? WorldAudioPlayback.OUTPUT_STOPPED
+                    : "Recorded music stream failed: World audio decoder stalled";
+            await(() -> count(statuses, expected) == 1, "failure was hidden: " + expected);
+            await(() -> lines.closed(0), "old track did not close");
+            if (lastHeard(lines.line(0)) > 500) throw new AssertionError("Old track was cut");
+            playback.closeAsync().get(10, TimeUnit.SECONDS);
+        }
+    }
+
+    /** Closing while a held track waits for a stalled next track releases everything. */
+    private static void closeDuringAHoldWithAStalledNextTrack() throws Exception {
+        var lines = new Timeline();
+        var decodes = new AtomicInteger();
+        var streams = new ConcurrentLinkedQueue<FakePcm>();
+        var playback = new WorldAudioPlayback(lines::open, (bytes, canceled) -> {
+            if (decodes.incrementAndGet() > 1) return stalled(canceled);
+            var pcm = new FakePcm(Long.MAX_VALUE);
+            streams.add(pcm);
+            return pcm;
+        }, status -> {});
+        playback.music.volume(1);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), FILES);
+        playback.music.enabled(true);
+        awaitFull(lines, 0);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), FILES);
+        await(() -> decodes.get() == 2, "next track did not start loading");
+        long closing = System.nanoTime();
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        if (TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - closing)
+                >= WorldAudioPlayback.HOLD_MAX_MILLIS)
+            throw new AssertionError("Close waited for the hold bound");
+        if (!streams.stream().allMatch(s -> s.closed) || !lines.closed(0))
+            throw new AssertionError("Close left the held track open");
+    }
+
+    /** A fade lasts the full 1.5 s at a low slider volume too, not half of it. */
+    private static void fadesLastTheSameAtAnyVolume() throws Exception {
+        var lines = new Timeline();
+        var playback = new WorldAudioPlayback(lines::open,
+                (bytes, canceled) -> new FakePcm(Long.MAX_VALUE), status -> {});
+        playback.music.volume(0.5);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), FILES);
+        playback.music.enabled(true);
+        int full = (int) Math.round(0x4000 * 0.25);
+        await(() -> lines.line(0).stream().anyMatch(w -> w.peak() >= full - 2),
+                "music did not reach its level");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        long rising = lines.line(0).stream().takeWhile(w -> w.peak() < full - 2)
+                .mapToLong(w -> w.bytes() / 2).sum();
+        if (rising < 8000 * WorldAudioPlayback.FADE_SECONDS * 0.8)
+            throw new AssertionError("Fade-in at half volume lasted " + rising + " frames");
+    }
+
     public static void main(String[] args) throws Exception {
         probeMatchesWindowsLinuxAndMonoMixerFormats();
         downmixAveragesStereoFrames();
@@ -850,10 +1487,29 @@ public final class WorldAudioPlaybackTest {
         busySourceIsRetriedNotUnavailable();
         entryVolumesScaleEachFileAndSilentKitsSaySo();
         failuresDuringAFormatSwitchStopCleanly();
+        crossfadeHoldsUntilTheNextTrackHasAudio();
+        mutingWhileHeldFadesOut();
+        holdIsBounded();
+        unavailableNextTrackReleasesTheHeldOne();
+        supersededLoadsPassTheHeldTrackOn();
+        singleLineDevicesYieldTheLine();
+        replacedAmbienceLoopsWhileItFades();
+        closeDuringACrossfadeReleasesEverything();
+        singleLineDevicesYieldEveryTail();
+        formatRefusalsKeepTheOldTrackFading();
+        aTrackEndingWhileHeldIsHeardToItsEnd();
+        aTrackReplacedMidFadeInFadesOutSmoothly();
+        severalReleasedTailsFadeTogether();
+        failuresAfterTheFirstWriteReleaseTheOldTrack();
+        closeDuringAHoldWithAStalledNextTrack();
+        fadesLastTheSameAtAnyVolume();
         System.out.println("World audio playback: fades, kit continuity, ambience loops,"
                 + " recorded silence, mute, missing sources, missing device, dead lines,"
                 + " path-free status, mono downmix, recorded weights and kit volume, reopen status,"
                 + " mixed-format ambience and switch failures, busy-source retry, entry volumes"
-                + " and owned close passed");
+                + ", crossfade hold, curves, mute, hold bound, failure, superseded loads, single-line"
+                + " devices, looping fade-out, yield of every tail, format refusal, heard ends,"
+                + " mid-fade replacement, several tails, failures after audio, equal-power"
+                + " fixed-time fades and owned close passed");
     }
 }

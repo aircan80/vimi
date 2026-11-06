@@ -42,6 +42,7 @@ public final class WorldTileCreaturesTest {
         creaturesStandInTheirIdlePoseOrSayWhyNot();
         unreadableStandSequencesAreAskedAgainButUnsupportedOnesAreKept();
         cutoutReductionKeepsThinStrands();
+        displayGeosetRowsChooseEachGroupsVariant();
         appendDrawsOnlyQualifiedSpawnsOfTheTile();
         buildingsKeepTheirBudgetFirst();
         cachesPerRevisionAndRetriesFailures();
@@ -154,12 +155,37 @@ public final class WorldTileCreaturesTest {
         var unreadable = WorldTileCreatures.convert(preview(7, 0L, null, geosets()), Cancellation.NONE);
         require(unreadable.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
                 && unreadable.detail().contains("could not be read"), "An unreadable CreatureGeosetDataID is refused");
-        var own = WorldTileCreatures.convert(preview(7, 0L, 0L, true, geosets()), Cancellation.NONE);
-        require(own.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
-                && own.detail().contains("not evaluated"), "A display with its own geoset rows is refused");
         var unknown = WorldTileCreatures.convert(preview(7, 0L, 0L, null, geosets()), Cancellation.NONE);
         require(unknown.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
                 && unknown.detail().contains("unknown"), "Unknown display geoset rows are refused");
+    }
+
+    private static void displayGeosetRowsChooseEachGroupsVariant() {
+        // Parts 0, 100 and 101 (group 1 has x00 and x01); the display chooses value 1 for group 1
+        // (GeosetIndex 0): parts 0 and 101 draw, 100 is hidden.
+        var chosen = WorldTileCreatures.convert(preview(7, 0L, 0L, Map.of(1, 1), geosets()), Cancellation.NONE);
+        require(chosen.model() != null && java.util.Arrays.equals(chosen.model().ranges(), new int[] {0, 3, 0, 3, 3, 0})
+                && chosen.model().omittedSurfaces() == 0, "The display's chosen variant replaces x00: " + chosen.detail());
+        var hidden = WorldTileCreatures.visibleGeosets(
+                preview(7, 0L, 0L, Map.of(1, 1), geosets()).reference(), geosets().mesh());
+        require(hidden.ids().equals(java.util.Set.of(0, 101)), "Visible sections: " + hidden.ids());
+        // A non-zero CreatureGeosetDataID only says the display has rows; with rows it is evaluated.
+        require(WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(1, 0), geosets()), Cancellation.NONE).model() != null,
+                "Recorded geoset data with display rows draws");
+        require(WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(), geosets()), Cancellation.NONE).detail()
+                .contains("has no geoset rows"), "Recorded geoset data without display rows is refused");
+        // A variant the model lacks, or conflicting rows, is refused rather than guessed.
+        require(WorldTileCreatures.convert(preview(7, 0L, 0L, Map.of(1, 7), geosets()), Cancellation.NONE).detail()
+                .contains("geoset 107 chosen by the display is not in the model"), "A missing chosen variant is refused");
+        require(WorldTileCreatures.convert(preview(7, 0L, 0L,
+                        Map.of(1, DisplayModelTypes.Reference.CONFLICTING_GEOSET), geosets()), Cancellation.NONE)
+                .detail().contains("conflict"), "Conflicting rows are refused");
+        // A row for a group the model does not have changes nothing.
+        require(WorldTileCreatures.visibleGeosets(preview(7, 0L, 0L, Map.of(4, 2), geosets()).reference(),
+                geosets().mesh()).ids().equals(java.util.Set.of(0, 100)), "Rows for absent groups are ignored");
+        // A group with only x01 is drawn when the display chooses it.
+        require(WorldTileCreatures.convert(preview(7, 0L, 0L, Map.of(1, 1), hiddenGeosets()), Cancellation.NONE)
+                .model() != null, "A chosen x01-only group draws");
     }
 
     private static void cutoutReductionKeepsThinStrands() {
@@ -679,11 +705,12 @@ public final class WorldTileCreaturesTest {
     }
 
     static DisplayModelTypes.Preview preview(long display, Long extended, Long geosets, MeshAppearance appearance) {
-        return preview(display, extended, geosets, false, appearance);
+        return preview(display, extended, geosets, Map.of(), appearance);
     }
 
-    /** {@code displayGeosets}: whether the display has CreatureDisplayInfoGeosetData rows (null unknown). */
-    static DisplayModelTypes.Preview preview(long display, Long extended, Long geosets, Boolean displayGeosets,
+    /** {@code displayGeosets}: the display's geoset group to value choices (null unknown). */
+    static DisplayModelTypes.Preview preview(long display, Long extended, Long geosets,
+            Map<Integer, Integer> displayGeosets,
             MeshAppearance appearance) {
         return new DisplayModelTypes.Preview(DisplayModelTypes.State.PARTIAL,
                 new DisplayModelTypes.Reference(display, 20, 123456, List.of(), extended, geosets, displayGeosets),

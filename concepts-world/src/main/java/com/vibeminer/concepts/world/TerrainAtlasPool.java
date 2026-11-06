@@ -9,7 +9,9 @@ import java.util.function.Consumer;
 
 /** Application-owned bounded atlas storage; build sources must explicitly share this pool. */
 public final class TerrainAtlasPool {
-    public static final int MAX_ENTRIES = 18;
+    /** Every World output's atlas lease plus six for other borrowers, as before issue #173. */
+    public static final int MAX_ENTRIES = WorldPreparedTerrain.MAX_OUTPUTS + 6;
+
     public static final long ENTRY_BYTES = TerrainTileAtlas.PIXEL_BYTES + 32L + 256L * 64 + 256;
 
     public record Stats(
