@@ -79,9 +79,13 @@ Tokens are case-insensitive (`$S1`, `$D`). Colour, link and newline markup is
 rendered as text. `$lsingular:plural;` follows the preceding resolved amount and
 shows both forms otherwise; `$gmale:female;` always shows both. `$/N;s1` and
 `$*N;s1` scale a resolved amount (at most two decimals). `$<spell>s1` and
-`$<spell>d` read up to eight other spells' rows. Expressions (`${...}`),
-conditionals (`$?...[...]`), `$@` references and named variables are never
-evaluated and show `?`. Raw templates and exact substitution provenance remain
+`$<spell>d` read up to eight other spells' rows. `${...}` expressions are
+evaluated only when they use numbers, `+ - * /`, parentheses and fixed effect
+amounts (`$s1`, `$m2`, `$123s1`); the result must be non-negative and a whole
+number, or exact at the `.N` decimal places the template gives, otherwise it
+shows `?`. Expressions with any other variable, conditionals
+(`$?...[...]`), `$@` references and named variables are never evaluated and
+show `?`. Raw templates and exact substitution provenance remain
 in collapsed Source details, not the styled tooltip. SpellEffect and SpellMisc
 reverse indexes have separate budgets.
 
