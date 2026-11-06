@@ -61,6 +61,11 @@ public final class WorldFormats {
         private final int chunks;
 
         public Terrain(float[] vertices, int[] triangles, int chunks) {
+            this(vertices.clone(), triangles.clone(), chunks, true);
+        }
+
+        /** Adopts arrays no one else holds (the parser's own output). */
+        private Terrain(float[] vertices, int[] triangles, int chunks, boolean owned) {
             if (vertices.length == 0
                     || vertices.length % 3 != 0
                     || vertices.length > 256 * 145 * 3
@@ -80,17 +85,27 @@ public final class WorldFormats {
                     throw new IllegalArgumentException("Invalid terrain index");
                 }
             }
-            this.vertices = vertices.clone();
-            this.triangles = triangles.clone();
+            this.vertices = vertices;
+            this.triangles = triangles;
             this.chunks = chunks;
         }
 
+        /** A defensive copy; prefer {@link #vertexView()} to read without copying. */
         public float[] vertices() {
             return vertices.clone();
         }
 
+        /** A defensive copy; prefer {@link #triangleView()} to read without copying. */
         public int[] triangles() {
             return triangles.clone();
+        }
+
+        public java.nio.FloatBuffer vertexView() {
+            return java.nio.FloatBuffer.wrap(vertices).asReadOnlyBuffer();
+        }
+
+        public java.nio.IntBuffer triangleView() {
+            return java.nio.IntBuffer.wrap(triangles).asReadOnlyBuffer();
         }
 
         public int chunks() {
@@ -234,6 +249,14 @@ public final class WorldFormats {
     public static TerrainAreas adtTile(byte[] bytes, BooleanSupplier canceled) {
         var parsed = parseAdt(bytes, canceled, true);
         return new TerrainAreas(parsed.terrain(), parsed.areas());
+    }
+
+    /** Geometry, area metadata and the native grid from one checked source walk. */
+    public record TerrainAreasGrid(Terrain terrain, AreaMetadata areas, TerrainGrid grid) {}
+
+    public static TerrainAreasGrid adtTileGrid(byte[] bytes, BooleanSupplier canceled) {
+        var parsed = parseAdt(bytes, canceled, true, true);
+        return new TerrainAreasGrid(parsed.terrain(), parsed.areas(), parsed.grid());
     }
 
     /** Native source samples through the same checked walker, never inferred from a mesh. */
@@ -462,7 +485,7 @@ public final class WorldFormats {
             return new ParsedAdt(null, metadata, captureGrid ? new TerrainGrid(grids) : null);
         }
         return new ParsedAdt(
-                new Terrain(vertices.take(), indices.take(), chunks),
+                new Terrain(vertices.take(), indices.take(), chunks, true),
                 metadata,
                 captureGrid ? new TerrainGrid(grids) : null);
     }

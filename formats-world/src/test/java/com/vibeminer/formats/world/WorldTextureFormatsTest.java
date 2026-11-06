@@ -646,4 +646,32 @@ class WorldTextureFormatsTest {
             assertEquals(0, shadow.get(7) & 255);
         }
     }
+
+    @Test
+    void adoptReadsTheCallersArrayWithoutACopyAndKeepsEveryBound() {
+        byte[] source = texture(chunk(2, true));
+        try (var adopted =
+                        WorldTextureFormats.adopt(
+                                source, WorldTextureFormats.AlphaFormat.BIG_8BIT, () -> false);
+                var copied = WorldTextureFormats.read(source, () -> false)) {
+            assertEquals(source.length, adopted.retainedSourceBytes());
+            var a = ByteBuffer.allocate(8192);
+            var b = ByteBuffer.allocate(8192);
+            assertTrue(adopted.decodeAlphas(0, a, () -> false).admitted());
+            assertTrue(copied.decodeAlphas(0, b, () -> false).admitted());
+            assertEquals(a.flip(), b.flip());
+        }
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        WorldTextureFormats.adopt(
+                                new byte[(8 << 20) + 1],
+                                WorldTextureFormats.AlphaFormat.BIG_8BIT,
+                                () -> false));
+        assertThrows(
+                CancellationException.class,
+                () ->
+                        WorldTextureFormats.adopt(
+                                source, WorldTextureFormats.AlphaFormat.BIG_8BIT, () -> true));
+    }
 }
