@@ -134,9 +134,10 @@ final class WorldAudioDirector {
         if (on) channel.track(null, null);
         channel.enabled(on);
         if (on) {
+            // The current area resolves at once; only area changes wait for the settle delay.
             resolved = null;
             failures = 0;
-            schedule();
+            settled();
         }
         refresh();
     }

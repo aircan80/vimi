@@ -320,13 +320,57 @@ public final class WorldAudioControlsTest {
         check(world.requests.size() == 1 && rig.music() == null, "closed director acted");
     }
 
+    /**
+     * Turning audio on resolves the current area at once instead of waiting for the settle
+     * delay; area changes while it plays are still debounced.
+     */
+    private static void toggleOnResolvesAtOnce() throws Exception {
+        var rig = new Rig(LocalTime.NOON);
+        var world = new World();
+        rig.director.area(world, 0, area(10));
+        rig.director.settled();
+        check(world.requests.isEmpty(), "audio that is off resolved an area");
+        int debounces = rig.debounces;
+        rig.director.toggle(WorldAreaAudio.Kind.MUSIC, true);
+        check(world.requests.size() == 1 && world.last().areaId() == 10,
+                "toggle-on waited for the settle delay: " + world.requests);
+        check(rig.debounces == debounces, "toggle-on restarted the settle delay");
+        world.last().result().complete(plan(10, WorldAreaAudio.Variant.DAY, 100));
+        rig.drain();
+        check(rig.music() != null && rig.music().soundKitId() == 100, "plan was not published");
+        rig.director.settled();
+        check(world.requests.size() == 1, "a later settle resolved the same area again");
+
+        // Turning ambience on as well resolves again at once; the music kit is unchanged.
+        var playing = rig.music();
+        rig.director.toggle(WorldAreaAudio.Kind.AMBIENCE, true);
+        check(world.requests.size() == 2, "second toggle-on waited");
+        world.last().result().complete(plan(10, WorldAreaAudio.Variant.DAY, 100));
+        rig.drain();
+        check(rig.music() == playing, "toggle-on restarted the playing music kit");
+
+        // An area change while playing still waits for the settle delay.
+        rig.director.area(world, 0, area(11));
+        check(world.requests.size() == 2, "an area change skipped the settle delay");
+        rig.director.settled();
+        check(world.requests.size() == 3, "the settled area did not resolve");
+
+        // Turning on before any area is known resolves nothing until one is reported.
+        var empty = new Rig(LocalTime.NOON);
+        empty.director.toggle(WorldAreaAudio.Kind.MUSIC, true);
+        empty.director.settled();
+        rig.close();
+        empty.close();
+    }
+
     public static void main(String[] args) throws Exception {
         debounceResolvesOnlyTheSettledArea();
         unchangedAreasAndRepeatedSettlesAreDeduplicated();
         dayAndNightFollowTheClockUnlessChosen();
         failedPlansKeepPlayingAndRetry();
         closedDirectorIgnoresEverything();
+        toggleOnResolvesAtOnce();
         System.out.println("World audio controls: debounce, dedup, clock day/night with manual"
-                + " override, failed-plan retry, stale plans and close passed");
+                + " override, failed-plan retry, stale plans, immediate toggle-on and close passed");
     }
 }
