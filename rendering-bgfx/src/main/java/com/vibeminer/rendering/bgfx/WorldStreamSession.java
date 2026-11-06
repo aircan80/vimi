@@ -535,7 +535,7 @@ final class WorldStreamSession {
             throws IOException {
         Path path = directory.resolve(WorldStreamControl.Horizon.BASENAME);
         if (!java.nio.file.Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
-            throw new IOException("Horizon is not a regular private file");
+            throw new IOException("Horizon is not a regular file (links are not followed)");
         }
         byte[] bytes;
         try (var channel =

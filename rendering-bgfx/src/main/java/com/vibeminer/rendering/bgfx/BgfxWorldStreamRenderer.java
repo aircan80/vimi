@@ -126,7 +126,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * buffers, the last rebuild's time on the horizon worker, and how many rebuilds were uploaded.
      */
     record HorizonCounts(
-            int tiles, int triangles, long gpuBytes, long lastBuildNanos, long uploads) {}
+            int tiles,
+            int triangles,
+            long gpuBytes,
+            long lastBuildNanos,
+            long uploads,
+            // Draw submits of the last frame: merged tile runs plus skirts facing full tiles.
+            int submits) {}
 
     /**
      * Exterior objects of the last drawn frame: placements tested in the opaque/cutout pass, how
@@ -424,6 +430,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private long horizonBuildNanos, horizonUploads;
     private boolean horizonRequested, horizonSwapped;
     private WorldStreamHorizon.Packed horizonStaging;
+    private com.vibeminer.rendering.world.HorizonMesh.Ranges horizonRanges;
+    private int[] horizonDrawRanges = new int[0];
+    private int frameHorizonSubmits;
     private int horizonStagedBytes;
     // Samples of the target this renderer draws into; above 1, cutouts use alpha to coverage.
     private int targetSamples = 1;
@@ -982,6 +991,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             horizonIndexCount = packed.indexCount();
             horizonTiles = packed.tiles();
             horizonBuildNanos = packed.buildNanos();
+            horizonRanges = packed.ranges();
             horizonUploads++;
             horizonStaging = null;
             horizonSwapped = true;
@@ -1014,20 +1024,52 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 horizon == null ? 0 : horizonIndexCount / 3,
                 horizon == null ? 0 : WorldStreamHorizon.GPU_BUDGET_BYTES,
                 horizonBuildNanos,
-                horizonUploads);
+                horizonUploads,
+                frameHorizonSubmits);
     }
 
     /** Asks for the horizon around the camera; the build and its upload never block a frame. */
     private void refreshHorizon(TerrainCamera camera) {
-        long[] resident = new long[64];
-        for (var lease : active) {
-            var slot = slots[lease.slot()];
-            int bit = slot.x * 64 + slot.y;
-            resident[bit / 64] |= 1L << (bit % 64);
-        }
-        horizon.request(camera.x(), camera.y(), resident);
+        horizon.request(camera.x(), camera.y());
         horizonRequested = true;
         horizonSwapped = false;
+    }
+
+    /** Whether a tile is drawn at full detail this frame (an active slot holds it). */
+    private boolean resident(int x, int y) {
+        for (var lease : active) {
+            var slot = slots[lease.slot()];
+            if (slot.x == x && slot.y == y) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The horizon's draws this frame: every tile not drawn at full detail now, and the skirts that
+     * face one. Chosen per frame from the active slots, so a tile committed or evicted since the
+     * last rebuild is handled at once.
+     */
+    private void drawHorizon(MemoryStack stack) {
+        var ranges = horizonRanges;
+        if (ranges == null || horizon.failed()) {
+            frameHorizonSubmits = 0;
+            return;
+        }
+        if (horizonDrawRanges.length < ranges.maxDrawRangeInts()) {
+            horizonDrawRanges = new int[ranges.maxDrawRangeInts()];
+        }
+        int count = ranges.drawRanges(this::resident, horizonDrawRanges);
+        frameHorizonSubmits = count / 2;
+        bgfx_set_uniform(atlasUniform, stack.floats(0, 0, 0, 0), 1);
+        for (int i = 0; i < count; i += 2) {
+            bgfx_set_dynamic_vertex_buffer(0, horizonVertices[horizonFront], 0, horizonVertexCount);
+            bgfx_set_dynamic_index_buffer(
+                    horizonIndices[horizonFront], horizonDrawRanges[i], horizonDrawRanges[i + 1]);
+            bgfx_set_state(TERRAIN_STATE, 0);
+            bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
+        }
     }
 
     /** The fog and sky of the next frames; #177 feeds it from the light tables. */
@@ -1330,13 +1372,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
             // The horizon right after the streamed terrain, before objects and the sky, with the
             // terrain state and the vertex-colour path (no atlas).
-            if (horizon != null && horizonIndexCount > 0) {
-                bgfx_set_uniform(atlasUniform, stack.floats(0, 0, 0, 0), 1);
-                bgfx_set_dynamic_vertex_buffer(
-                        0, horizonVertices[horizonFront], 0, horizonVertexCount);
-                bgfx_set_dynamic_index_buffer(horizonIndices[horizonFront], 0, horizonIndexCount);
-                bgfx_set_state(TERRAIN_STATE, 0);
-                bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
+            if (horizon != null) {
+                drawHorizon(stack);
             }
             // One fixed set of object uniform buffers per frame: per-placement work allocates
             // nothing on the frame's MemoryStack, whatever the number of placements.

@@ -74,10 +74,13 @@ record WorldFog(
      * keep a shorter end with the cut at the horizon.
      */
     WorldFog withHorizon(float horizonEnd) {
-        if (!(horizonEnd >= end)) {
-            throw new IllegalArgumentException("Horizon fog must reach at least the current end");
+        if (!(horizonEnd > 0) || Float.isInfinite(horizonEnd)) {
+            throw new IllegalArgumentException("Horizon fog end");
         }
-        return new WorldFog(horizon, top, start, horizonEnd, maximum, horizonEnd, topElevation);
+        // A longer recorded end or start (#177) is clamped to the horizon, never refused.
+        float clampedStart = Math.min(start, Math.nextDown(horizonEnd));
+        return new WorldFog(
+                horizon, top, clampedStart, horizonEnd, maximum, horizonEnd, topElevation);
     }
 
     @Override

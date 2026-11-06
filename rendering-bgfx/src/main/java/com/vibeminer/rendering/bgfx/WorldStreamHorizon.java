@@ -5,7 +5,6 @@ import com.vibeminer.formats.world.WorldLowRes;
 import com.vibeminer.rendering.world.HorizonMesh;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -50,9 +49,25 @@ final class WorldStreamHorizon implements AutoCloseable {
             int indexCount,
             int tiles,
             long buildNanos,
-            long generation) {}
+            long generation,
+            HorizonMesh.Ranges ranges) {}
+
+    /** Consecutive failed builds after which this horizon stops drawing for the session. */
+    static final int MAX_FAILURES = 3;
+
+    /** One rebuild around a camera tile; {@link #build} outside tests. */
+    @FunctionalInterface
+    interface Builder {
+        Packed build(
+                WorldLowRes.LowRes lowRes,
+                int cameraX,
+                int cameraY,
+                long generation,
+                java.util.function.BooleanSupplier canceled);
+    }
 
     private final WorldLowRes.LowRes lowRes;
+    private final Builder builder;
     private final ExecutorService worker =
             Executors.newSingleThreadExecutor(
                     Thread.ofPlatform().daemon().name("world-horizon-build").factory());
@@ -61,16 +76,20 @@ final class WorldStreamHorizon implements AutoCloseable {
     // Guarded by lock. The newest request; a finished build is kept only if nothing newer came.
     private long generation;
     private int requestedX = -1, requestedY = -1;
-    private long[] requestedResident;
-    private boolean building;
-    private long[] pendingResident;
-    private int pendingX, pendingY;
+    private boolean building, pending;
+    private int pendingX, pendingY, failures;
+    private volatile boolean failed;
     private long pendingGeneration;
     private Packed ready;
     private volatile String lastFailure;
 
     WorldStreamHorizon(WorldLowRes.LowRes lowRes) {
+        this(lowRes, WorldStreamHorizon::build);
+    }
+
+    WorldStreamHorizon(WorldLowRes.LowRes lowRes, Builder builder) {
         this.lowRes = Objects.requireNonNull(lowRes);
+        this.builder = Objects.requireNonNull(builder);
     }
 
     int tilesInWdl() {
@@ -83,28 +102,21 @@ final class WorldStreamHorizon implements AutoCloseable {
     }
 
     /**
-     * Asks for the horizon around the camera with these full-detail tiles hidden; cheap, and a
-     * no-op when nothing changed. {@code resident} holds bit {@code x * 64 + y} per tile.
+     * Asks for the horizon around the camera; cheap, and a no-op while the camera stays in the same
+     * tile. The mesh does not depend on which tiles are drawn at full detail: the renderer leaves
+     * those out at draw time, so a resident change never waits for a rebuild.
      */
-    void request(double cameraX, double cameraY, long[] resident) {
-        Objects.requireNonNull(resident);
-        if (resident.length != 64) {
-            throw new IllegalArgumentException("Resident tile mask");
-        }
+    void request(double cameraX, double cameraY) {
         int x = tileOf(cameraX), y = tileOf(cameraY);
         synchronized (lock) {
-            if (closed.get()
-                    || x == requestedX
-                            && y == requestedY
-                            && Arrays.equals(resident, requestedResident)) {
+            if (closed.get() || failed || x == requestedX && y == requestedY) {
                 return;
             }
             requestedX = x;
             requestedY = y;
-            requestedResident = resident.clone();
             pendingX = x;
             pendingY = y;
-            pendingResident = requestedResident;
+            pending = true;
             pendingGeneration = ++generation;
             if (building) {
                 return; // The running build picks up the newest request when it finishes.
@@ -117,6 +129,14 @@ final class WorldStreamHorizon implements AutoCloseable {
     /** The last build failure, or null; a failed build leaves the previous horizon drawn. */
     String lastFailure() {
         return lastFailure;
+    }
+
+    /**
+     * Whether rebuilds failed {@link #MAX_FAILURES} times in a row; the renderer then stops drawing
+     * this horizon, since it no longer follows the camera.
+     */
+    boolean failed() {
+        return failed;
     }
 
     /** Whether a finished horizon is waiting to be taken, so the next frame should draw. */
@@ -136,31 +156,49 @@ final class WorldStreamHorizon implements AutoCloseable {
     }
 
     private void buildLoop() {
-        while (true) {
-            int x, y;
-            long built;
-            long[] resident;
-            synchronized (lock) {
-                if (closed.get() || pendingResident == null) {
-                    building = false;
-                    return;
+        boolean finished = false;
+        try {
+            while (true) {
+                int x, y;
+                long built;
+                synchronized (lock) {
+                    if (closed.get() || failed || !pending) {
+                        // Under the lock, so a request arriving now starts a new loop.
+                        building = false;
+                        finished = true;
+                        return;
+                    }
+                    x = pendingX;
+                    y = pendingY;
+                    built = pendingGeneration;
+                    pending = false;
                 }
-                x = pendingX;
-                y = pendingY;
-                built = pendingGeneration;
-                resident = pendingResident;
-                pendingResident = null;
+                Packed packed = null;
+                try {
+                    packed = builder.build(lowRes, x, y, built, closed::get);
+                } catch (Throwable error) {
+                    // Any failure, errors included, leaves the previous horizon in place.
+                    lastFailure = error.toString();
+                }
+                synchronized (lock) {
+                    if (packed == null) {
+                        if (!closed.get() && ++failures >= MAX_FAILURES) {
+                            failed = true;
+                        }
+                        // The next request asks again, even from the same camera tile.
+                        requestedX = -1;
+                    } else {
+                        failures = 0;
+                        if (built == generation) {
+                            ready = packed;
+                        }
+                    }
+                }
             }
-            Packed packed;
-            try {
-                packed = build(lowRes, x, y, resident, built, closed::get);
-            } catch (RuntimeException failed) {
-                packed = null;
-                lastFailure = failed.toString();
-            }
-            synchronized (lock) {
-                if (packed != null && built == generation) {
-                    ready = packed;
+        } finally {
+            if (!finished) {
+                synchronized (lock) {
+                    building = false;
                 }
             }
         }
@@ -170,18 +208,10 @@ final class WorldStreamHorizon implements AutoCloseable {
             WorldLowRes.LowRes lowRes,
             int cameraX,
             int cameraY,
-            long[] resident,
             long generation,
             java.util.function.BooleanSupplier canceled) {
         long started = System.nanoTime();
-        var mesh =
-                HorizonMesh.build(
-                        lowRes,
-                        cameraX,
-                        cameraY,
-                        RADIUS,
-                        (x, y) -> (resident[(x * 64 + y) / 64] & 1L << ((x * 64 + y) % 64)) != 0,
-                        canceled);
+        var mesh = HorizonMesh.buildWindow(lowRes, cameraX, cameraY, RADIUS, canceled);
         int vertices = mesh.vertexCount(), indexCount = mesh.triangleCount() * 3;
         if (vertices > MAX_VERTICES || indexCount > MAX_INDICES) {
             throw new IllegalStateException("Horizon exceeds its GPU budget");
@@ -199,6 +229,9 @@ final class WorldStreamHorizon implements AutoCloseable {
                     vy = positions.get(c * 3 + 1) - positions.get(a * 3 + 1),
                     vz = positions.get(c * 3 + 2) - positions.get(a * 3 + 2);
             float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+            if (nz == 0) {
+                continue; // a vertical skirt: it must not darken the surface's edge
+            }
             if (nz < 0) {
                 nx = -nx;
                 ny = -ny;
@@ -239,7 +272,8 @@ final class WorldStreamHorizon implements AutoCloseable {
                 indexCount,
                 mesh.tiles(),
                 System.nanoTime() - started,
-                generation);
+                generation,
+                mesh.ranges());
     }
 
     @Override

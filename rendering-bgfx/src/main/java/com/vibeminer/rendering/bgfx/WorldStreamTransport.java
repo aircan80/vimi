@@ -811,16 +811,17 @@ public final class WorldStreamTransport {
                 HorizonOperation operation, WorldStreamLaunchOwner.Handle handle) throws Exception {
             Path path = handle.files().directory().resolve(WorldStreamControl.Horizon.BASENAME);
             WorldStreamStatus.HorizonOutcome outcome = null;
+            // Set before the write, so a partial file from a failed write is deleted too.
             boolean written = false;
             Throwable fatal = null;
             try {
                 // Session scratch: no fsync, the same as tile files (#364).
+                written = true;
                 java.nio.file.Files.write(
                         path,
                         operation.wdl,
                         java.nio.file.StandardOpenOption.CREATE_NEW,
                         java.nio.file.StandardOpenOption.WRITE);
-                written = true;
                 String sha =
                         java.util.HexFormat.of()
                                 .formatHex(

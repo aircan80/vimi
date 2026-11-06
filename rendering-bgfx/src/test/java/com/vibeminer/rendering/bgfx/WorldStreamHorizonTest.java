@@ -71,18 +71,16 @@ class WorldStreamHorizonTest {
     }
 
     @Test
-    void buildsOffTheCallerAndOnlyWhenTheCameraTileOrResidentSetChanges() throws Exception {
+    void buildsOffTheCallerAndOnlyWhenTheCameraTileChanges() throws Exception {
         try (var horizon = new WorldStreamHorizon(lowRes())) {
-            long[] resident = new long[64];
-            // The camera tile and its east neighbour are resident.
-            resident[(32 * 64 + 32) / 64] |= 1L << ((32 * 64 + 32) % 64);
-            resident[(32 * 64 + 33) / 64] |= 1L << ((32 * 64 + 33) % 64);
             long before = System.nanoTime();
-            horizon.request(centre(32), centre(32), resident);
+            horizon.request(centre(32), centre(32));
             // Requesting never waits for the build.
             assertTrue(System.nanoTime() - before < 50_000_000L);
             var first = await(horizon);
-            assertEquals(169 - 2, first.tiles());
+            // The whole window: which tiles are drawn at full detail is chosen per frame.
+            assertEquals(169, first.tiles());
+            assertEquals(169 * (1024 + 128), first.indexCount() / 3);
             assertEquals(first.vertexCount() * 16, first.vertices().remaining());
             assertEquals(first.indexCount() * 4, first.indices().remaining());
             assertTrue(first.vertexCount() <= WorldStreamHorizon.MAX_VERTICES);
@@ -94,27 +92,74 @@ class WorldStreamHorizonTest {
                     first.vertexCount(),
                     first.indexCount() / 3,
                     first.buildNanos() / 1e6);
-            // Same camera tile (another spot in it) and same resident set: no rebuild.
-            horizon.request(centre(32) + 100, centre(32) - 100, resident.clone());
+            // Same camera tile (another spot in it): no rebuild.
+            horizon.request(centre(32) + 100, centre(32) - 100);
             Thread.sleep(100);
             assertNull(horizon.take());
             // A camera tile change rebuilds around the new tile.
-            horizon.request(centre(33), centre(32), resident);
-            var moved = await(horizon);
-            assertEquals(169 - 2, moved.tiles());
-            // A resident change rebuilds too.
-            resident[(33 * 64 + 32) / 64] |= 1L << ((33 * 64 + 32) % 64);
-            horizon.request(centre(33), centre(32), resident);
-            assertEquals(169 - 3, await(horizon).tiles());
+            horizon.request(centre(33), centre(32));
+            assertEquals(169, await(horizon).tiles());
+            assertTrue(!horizon.failed());
         }
+    }
+
+    @Test
+    void failedBuildsKeepTheWorkerAliveAndRepeatedFailuresStopTheHorizon() throws Exception {
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var failing = new java.util.concurrent.atomic.AtomicBoolean(true);
+        WorldStreamHorizon.Builder builder =
+                (lowRes, x, y, generation, canceled) -> {
+                    calls.incrementAndGet();
+                    if (failing.get()) {
+                        // An Error, not just an exception: the worker must still reset.
+                        throw new OutOfMemoryError("test");
+                    }
+                    return WorldStreamHorizon.build(lowRes, x, y, generation, canceled);
+                };
+        try (var horizon = new WorldStreamHorizon(lowRes(), builder)) {
+            horizon.request(centre(32), centre(32));
+            awaitCalls(calls, 1);
+            assertTrue(horizon.lastFailure().contains("OutOfMemoryError"));
+            assertTrue(!horizon.failed());
+            // A failure lets the same camera tile ask again, and a success resets the count.
+            failing.set(false);
+            horizon.request(centre(32), centre(32));
+            assertEquals(169, await(horizon).tiles());
+            failing.set(true);
+            for (int i = 0; i < WorldStreamHorizon.MAX_FAILURES; i++) {
+                int before = calls.get();
+                horizon.request(centre(33 + i), centre(32));
+                awaitCalls(calls, before + 1);
+            }
+            for (int i = 0; i < 200 && !horizon.failed(); i++) {
+                Thread.sleep(5);
+            }
+            assertTrue(horizon.failed());
+            // A failed horizon builds no more.
+            int after = calls.get();
+            failing.set(false);
+            horizon.request(centre(40), centre(32));
+            Thread.sleep(100);
+            assertEquals(after, calls.get());
+            assertNull(horizon.take());
+        }
+    }
+
+    private static void awaitCalls(java.util.concurrent.atomic.AtomicInteger calls, int count)
+            throws InterruptedException {
+        for (int i = 0; i < 2000 && calls.get() < count; i++) {
+            Thread.sleep(5);
+        }
+        assertEquals(count, calls.get());
+        // Let the worker record the outcome.
+        Thread.sleep(20);
     }
 
     @Test
     void onlyTheNewestRequestIsKeptAndPositionsAreNearTheCamera() throws Exception {
         try (var horizon = new WorldStreamHorizon(lowRes())) {
-            long[] none = new long[64];
             for (int tile = 28; tile <= 36; tile++) {
-                horizon.request(centre(tile), centre(32), none);
+                horizon.request(centre(tile), centre(32));
             }
             var packed = await(horizon);
             Thread.sleep(200);

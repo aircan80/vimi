@@ -170,10 +170,33 @@ class WorldFogTest {
                     WorldStreamHorizon.FOG_END
                 },
                 far.rangeUniform());
-        // The same end is allowed; pulling it in is not.
+        // The same end is allowed, and a shorter horizon pulls the end and cut in.
         org.junit.jupiter.api.Assertions.assertEquals(
                 base.end(), base.withHorizon(base.end()).end());
+        var shorter = base.withHorizon(base.end() - 1);
+        org.junit.jupiter.api.Assertions.assertEquals(base.end() - 1, shorter.end());
+        org.junit.jupiter.api.Assertions.assertEquals(base.end() - 1, shorter.cut());
+    }
+
+    @org.junit.jupiter.api.Test
+    void withHorizonClampsALongerRecordedFogInsteadOfThrowing() {
+        float horizonEnd = WorldStreamHorizon.FOG_END;
+        // A recorded fog (#177) that ends, and even starts, beyond the horizon.
+        var recorded =
+                new WorldFog(
+                        WorldFog.STREAM.horizon(),
+                        WorldFog.STREAM.top(),
+                        horizonEnd + 100,
+                        horizonEnd + 900,
+                        1,
+                        horizonEnd + 900,
+                        WorldFog.STREAM.topElevation());
+        var clamped = recorded.withHorizon(horizonEnd);
+        org.junit.jupiter.api.Assertions.assertEquals(horizonEnd, clamped.end());
+        org.junit.jupiter.api.Assertions.assertEquals(horizonEnd, clamped.cut());
+        org.junit.jupiter.api.Assertions.assertTrue(clamped.start() < clamped.end());
+        org.junit.jupiter.api.Assertions.assertEquals(1, clamped.factor(horizonEnd));
         org.junit.jupiter.api.Assertions.assertThrows(
-                IllegalArgumentException.class, () -> base.withHorizon(base.end() - 1));
+                IllegalArgumentException.class, () -> recorded.withHorizon(Float.NaN));
     }
 }

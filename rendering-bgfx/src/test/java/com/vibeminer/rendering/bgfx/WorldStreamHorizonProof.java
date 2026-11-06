@@ -124,7 +124,10 @@ final class WorldStreamHorizonProof {
                 throw new AssertionError(
                         "Horizon was never uploaded and drawn: " + counts + " " + (after != null));
             }
-            if (counts.tiles() != 169 || counts.triangles() != 169 * 1024) {
+            // Every tile of the window with its four skirts; none is resident, so one range.
+            if (counts.tiles() != 169
+                    || counts.triangles() != 169 * (1024 + 128)
+                    || counts.submits() != 1) {
                 throw new AssertionError("Horizon counts " + counts);
             }
             write(output, "without", before);
@@ -156,6 +159,183 @@ final class WorldStreamHorizonProof {
                     changed,
                     before.length);
         }
+        measure(output);
+    }
+
+    /** Frame cost with the horizon off or on, over the same streamed tile with objects. */
+    private record Cost(
+            double wallMs,
+            int draws,
+            BgfxWorldStreamRenderer.FrameCounts counts,
+            BgfxWorldStreamRenderer.HorizonCounts horizon) {}
+
+    private static final int MEASURED = 60;
+
+    /**
+     * Streams one full-detail tile (the camera tile, 32_32) with the material proof's objects,
+     * measures {@link #MEASURED} frames without the horizon, attaches it and measures again. The
+     * camera tile must be left out of the horizon (the streamed tile draws its surface), the four
+     * skirts facing it drawn, and the streamed chunk and object counts must not change: past the
+     * streamed neighbourhood the longer cut has none of theirs to add.
+     */
+    @SuppressWarnings("try")
+    private static void measure(Path output) throws Exception {
+        Path directory = Files.createTempDirectory(output, "cost-");
+        var nonce = new WorldStreamState.Nonce(92, -372);
+        var session = new WorldStreamEnvelope.Session(nonce, WorldStreamNativeProof.SCOPE, 1, true);
+        var lease = new WorldStreamState.Lease(0, 1, 1);
+        var exterior = WorldStreamObjectsMaterialProof.quads();
+        WorldStreamPackedTile tile;
+        WorldStreamPackedObjects objects;
+        try (var worker =
+                java.util.concurrent.Executors.newSingleThreadExecutor(
+                        Thread.ofPlatform().daemon().name("world-horizon-pack").factory())) {
+            tile =
+                    worker.submit(
+                                    () ->
+                                            WorldStreamNativeProof.prepare(
+                                                    nonce, directory, 1, lease, 32, 32, 120, true))
+                            .get(20, TimeUnit.SECONDS);
+            objects =
+                    worker.submit(() -> WorldStreamPackedObjects.pack(exterior.data(), () -> false))
+                            .get(20, TimeUnit.SECONDS);
+        }
+        Path mapping = directory.resolve("frames");
+        try (var frames = WorldFrameFileV2.create(mapping, nonce, WorldStreamNativeProof.SCOPE);
+                var reader = WorldFrameFileV2.open(mapping, nonce, WorldStreamNativeProof.SCOPE);
+                var owner =
+                        new WorldStreamNativeOwner(
+                                session, frames, WorldStreamNativeProof.BACKEND)) {
+            var upload = owner.begin(tile);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+            while (!upload.finished()) {
+                owner.step(upload);
+                owner.advance();
+                require(System.nanoTime() < deadline, "Terrain upload did not drain");
+            }
+            require(upload.successful(), "Terrain upload failed");
+            owner.commit(0, 1, List.of(lease));
+            var late = owner.beginLate(lease, objects);
+            while (!late.ready()) {
+                owner.stepLate(late);
+                owner.advance();
+                require(System.nanoTime() < deadline, "Late objects did not build");
+            }
+            require(
+                    owner.finishLate(late, true) == WorldStreamStatus.LateOutcome.ATTACHED,
+                    "Late objects attach");
+            // Down at the streamed tile and its objects, then low over it looking out across the
+            // horizon.
+            TerrainCamera[] views = {
+                WorldStreamObjectsMaterialProof.VIEW, new TerrainCamera(-20, -2, 120, 0.4, -0.05)
+            };
+            String[] names = {"down at the tile", "out at the horizon"};
+            long[] revision = {0};
+            long[] sequence = {0};
+            Cost[] off = new Cost[2], on = new Cost[2];
+            for (int v = 0; v < 2; v++) {
+                off[v] = cost(owner, reader, nonce, views[v], revision, sequence);
+            }
+            owner.attachHorizon(hills());
+            while (owner.horizonCounts().uploads() == 0) {
+                if (owner.horizonUploading()) {
+                    owner.stepHorizon();
+                }
+                timed(owner, reader, nonce, views[0], revision, sequence);
+                require(System.nanoTime() < deadline, "Horizon was not uploaded");
+            }
+            for (int v = 0; v < 2; v++) {
+                on[v] = cost(owner, reader, nonce, views[v], revision, sequence);
+            }
+            System.out.printf(
+                    "World horizon cost, %d frames each at %dx%d, median wall time from camera"
+                            + " submit to read back:%n",
+                    MEASURED, WIDTH, HEIGHT);
+            for (int v = 0; v < 2; v++) {
+                System.out.printf(
+                        "  %s off: %.2f ms, %d bgfx draws, %s%n"
+                                + "  %s on:  %.2f ms, %d bgfx draws, %s, %s%n",
+                        names[v],
+                        off[v].wallMs,
+                        off[v].draws,
+                        off[v].counts,
+                        names[v],
+                        on[v].wallMs,
+                        on[v].draws,
+                        on[v].counts,
+                        on[v].horizon);
+                require(
+                        on[v].counts.equals(off[v].counts),
+                        "Streamed counts changed " + off[v] + " " + on[v]);
+                // The camera tile splits the window's surfaces into the runs before and after
+                // it, plus the four skirts facing it; nothing is drawn over the streamed tile.
+                require(on[v].horizon.submits() == 2 + 4, "Horizon submits " + on[v].horizon);
+                require(
+                        on[v].draws == off[v].draws + on[v].horizon.submits(),
+                        "bgfx draws " + off[v] + on[v]);
+            }
+            require(off[0].counts.terrainSubmits() > 0, "Streamed tile drawn " + off[0]);
+        }
+    }
+
+    private static void require(boolean value, String message) {
+        if (!value) {
+            throw new AssertionError(message);
+        }
+    }
+
+    private static Cost cost(
+            WorldStreamNativeOwner owner,
+            WorldFrameFileV2 reader,
+            WorldStreamState.Nonce nonce,
+            TerrainCamera view,
+            long[] revision,
+            long[] sequence)
+            throws Exception {
+        double[] wall = new double[MEASURED];
+        int draws = 0;
+        for (int i = 0; i < MEASURED; i++) {
+            double[] sample = timed(owner, reader, nonce, view, revision, sequence);
+            wall[i] = sample[0];
+            draws = (int) sample[1];
+        }
+        java.util.Arrays.sort(wall);
+        return new Cost(wall[MEASURED / 2], draws, owner.frameCounts(), owner.horizonCounts());
+    }
+
+    /** One frame for a new camera revision: wall ms and bgfx draws. */
+    private static double[] timed(
+            WorldStreamNativeOwner owner,
+            WorldFrameFileV2 reader,
+            WorldStreamState.Nonce nonce,
+            TerrainCamera view,
+            long[] revision,
+            long[] sequence)
+            throws Exception {
+        long id = ++revision[0];
+        long started = System.nanoTime();
+        long deadline = started + TimeUnit.SECONDS.toNanos(10);
+        var command = new WorldStreamControl.Camera(nonce, id, 1, WIDTH, HEIGHT, view);
+        while (!owner.submit(command)) {
+            owner.advance();
+            require(System.nanoTime() < deadline, "Camera submit");
+        }
+        // bgfx double-buffers its frames: this frame's stats are reported after the next swap.
+        owner.advance();
+        owner.advance();
+        int draws = org.lwjgl.bgfx.BGFX.bgfx_get_stats().numDraw();
+        while (System.nanoTime() < deadline) {
+            var frame =
+                    reader.readLatest(
+                            sequence[0],
+                            new WorldFrameFileV2.Barrier(1, WIDTH, HEIGHT, id, id, 1, 1));
+            if (frame != null) {
+                sequence[0] = frame.metadata().sequence();
+                return new double[] {(System.nanoTime() - started) / 1e6, draws};
+            }
+            owner.advance();
+        }
+        throw new AssertionError("No frame for camera " + id);
     }
 
     /** One drawn frame for this camera, or null when the owner had nothing new to draw. */
