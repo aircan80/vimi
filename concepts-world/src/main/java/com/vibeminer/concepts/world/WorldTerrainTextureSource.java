@@ -640,6 +640,14 @@ public final class WorldTerrainTextureSource {
         }
     }
 
+    /**
+     * Largest diffuse BLP file accepted. Terrain diffuses are 1024 or 2048 square BC3 chains up to
+     * about 5.6 MiB, but the decoder reads only the header and the one small mip it decodes, and
+     * the decoded stream keeps one BLTE chunk, so memory is bounded by the mip limits rather than
+     * by this file size.
+     */
+    static final int DIFFUSE_SOURCE_LIMIT = 8 << 20;
+
     private record CachedInventory(FileBinding binding, WorldTextureFormats.Inventory inventory) {}
 
     private static final int INVENTORY_CACHE = 4;
@@ -943,7 +951,7 @@ public final class WorldTerrainTextureSource {
                         continue;
                     }
                     try {
-                        stats.put(id, stat(id, 1 << 20, request));
+                        stats.put(id, stat(id, DIFFUSE_SOURCE_LIMIT, request));
                     } catch (RuntimeException missing) {
                         propagateCancellation(request, missing);
                         issues.add(
@@ -1076,12 +1084,18 @@ public final class WorldTerrainTextureSource {
             if (stream == null) {
                 throw new SourceFailure(Reason.ABSENT);
             }
-            validateStream(opened, stream.length(), before, 1 << 20, !stream.holes().isEmpty());
+            validateStream(
+                    opened,
+                    stream.length(),
+                    before,
+                    DIFFUSE_SOURCE_LIMIT,
+                    !stream.holes().isEmpty());
             var image =
                     Blp2Decoder.decodeLargestWithin(
                                     AssetSources.file(stream),
                                     4,
-                                    new Blp2Types.Limits(1 << 20, 16384, 16, 1 << 20, 64),
+                                    new Blp2Types.Limits(
+                                            DIFFUSE_SOURCE_LIMIT, 16384, 16, 1 << 20, 64),
                                     request.token,
                                     Blp2Types.MipProfile.DECLARED_HANDMADE_V1)
                             .join();
@@ -1138,14 +1152,19 @@ public final class WorldTerrainTextureSource {
             if (stream == null) {
                 throw new SourceFailure(Reason.ABSENT);
             }
-            validateStream(opened, stream.length(), before, 1 << 20, !stream.holes().isEmpty());
+            validateStream(
+                    opened,
+                    stream.length(),
+                    before,
+                    DIFFUSE_SOURCE_LIMIT,
+                    !stream.holes().isEmpty());
             var image =
                     Blp2Decoder.decodeLargestWithin(
                                     AssetSources.file(stream),
                                     TerrainDiffuseDetails.MAX_SIDE,
                                     // Decoded pixels and bytes bounded by one 128 x 128 layer.
                                     new Blp2Types.Limits(
-                                            1 << 20,
+                                            DIFFUSE_SOURCE_LIMIT,
                                             16384,
                                             TerrainDiffuseDetails.MAX_SIDE
                                                     * TerrainDiffuseDetails.MAX_SIDE,

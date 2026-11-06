@@ -157,6 +157,37 @@ class WorldTerrainTextureSourceTest {
         return out.toByteArray();
     }
 
+    /** A full handmade BC2 chain from side x side down to 1 x 1, every block one colour. */
+    private static byte[] blpChain(int color, int side) {
+        int levels = Integer.numberOfTrailingZeros(side) + 1;
+        long total = 148;
+        for (int level = 0; level < levels; level++) {
+            int blocks = Math.max(1, (side >> level) / 4);
+            total += (long) blocks * blocks * 16;
+        }
+        var data = ByteBuffer.allocate((int) total).order(ByteOrder.LITTLE_ENDIAN);
+        data.put(new byte[] {'B', 'L', 'P', '2'})
+                .putInt(1)
+                .put((byte) 2)
+                .put((byte) 8)
+                .put((byte) 1)
+                .put((byte) 2)
+                .putInt(side)
+                .putInt(side);
+        int at = 148;
+        for (int level = 0; level < levels; level++) {
+            int blocks = Math.max(1, (side >> level) / 4);
+            int length = blocks * blocks * 16;
+            data.putInt(20 + level * 4, at).putInt(84 + level * 4, length);
+            data.position(at);
+            for (int block = 0; block < blocks * blocks; block++) {
+                data.putLong(-1).putShort((short) color).putShort((short) 0).putInt(0);
+            }
+            at += length;
+        }
+        return data.array();
+    }
+
     /** The same authored BLP2 the coverage tests use, for the splatting detail decode. */
     static byte[] blpForDetail(int color) {
         return blp(color);
@@ -1520,6 +1551,43 @@ class WorldTerrainTextureSourceTest {
         } finally {
             source.closeAsync().get(5, TimeUnit.SECONDS);
             pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void diffuseFilesUpToEightMebibytesAreDecodedFromTheirSmallMip() throws Exception {
+        byte[] large = blpChain(0xf800, 2048);
+        assertTrue(large.length > 5 << 20 && large.length < 6 << 20);
+        for (byte[] diffuse :
+                new byte[][] {
+                    blpChain(0xf800, 1024), large, java.util.Arrays.copyOf(large, (8 << 20) + 1)
+                }) {
+            int size = diffuse.length;
+            var files = new Files();
+            // Only the header and the 4x4 mip of these chains are read.
+            files.sources.put(10L, diffuse);
+            var pool = new TerrainAtlasPool();
+            var source = new WorldTerrainTextureSource(files.files(), pool);
+            try (var result = read(source)) {
+                var tile = result.tiles().getFirst();
+                if (size <= WorldTerrainTextureSource.DIFFUSE_SOURCE_LIMIT) {
+                    assertEquals(WorldTerrainTextureSource.State.READY, tile.state());
+                } else {
+                    // Every authored chunk uses this diffuse, so none is drawn.
+                    assertEquals(WorldTerrainTextureSource.State.UNAVAILABLE, tile.state());
+                    assertTrue(
+                            tile.issues().stream()
+                                    .anyMatch(
+                                            issue ->
+                                                    issue.reason()
+                                                                    == WorldTerrainTextureSource
+                                                                            .Reason.LIMIT
+                                                            && issue.fileId() == 10));
+                }
+            } finally {
+                source.closeAsync().get(5, TimeUnit.SECONDS);
+                pool.closeAsync().get(5, TimeUnit.SECONDS);
+            }
         }
     }
 }

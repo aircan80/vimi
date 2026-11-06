@@ -323,7 +323,8 @@ final class WorldStreamTileFile {
             for (var source : diffuse) {
                 require(
                         source.encoding() != null
-                                && source.sourceLimit() <= 1 << 20
+                                // Terrain diffuse BLPs up to 8 MiB; only a small mip is decoded.
+                                && source.sourceLimit() <= 8 << 20
                                 && ids.add(source.id()),
                         "Diffuse source domain");
                 identity(identities, source);
