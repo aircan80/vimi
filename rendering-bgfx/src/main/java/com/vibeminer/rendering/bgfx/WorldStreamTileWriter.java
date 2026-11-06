@@ -647,8 +647,9 @@ public final class WorldStreamTileWriter {
     /**
      * One tile's splatting inputs for the writer (issue #174 step 2): its distinct layer diffuses
      * (file id and content key), the 16 x 16 chunk table of four indices into that list (255 for
-     * none), the 512 x 512 RGBA8 mask map, and a decoder for a diffuse's pixels (square power-of
-     * two RGBA8 within 128), consulted only for layers new to the shared array.
+     * none), the 512 x 512 RGBA8 mask map, and a source of a diffuse's 256 x 256 BC1 layer chain
+     * ({@link com.vibeminer.rendering.world.TerrainLayerBlocks}), consulted only for layers new to
+     * the shared array.
      */
     public record SplatInput(
             long[] fileIds,
@@ -671,8 +672,15 @@ public final class WorldStreamTileWriter {
         }
     }
 
-    /** A decoded layer diffuse: square power-of-two RGBA8, side 1 to 128. */
-    public record Diffuse(int side, ByteBuffer rgba) {}
+    /** One layer diffuse as its {@link com.vibeminer.rendering.world.TerrainLayerBlocks} chain. */
+    public record Diffuse(ByteBuffer chain) {
+        public Diffuse {
+            Objects.requireNonNull(chain);
+            if (chain.remaining() != WorldStreamTileFile.SPLAT_LAYER_BYTES) {
+                throw new IllegalArgumentException("Splat layer chain size");
+            }
+        }
+    }
 
     /** Source R owns this unadvertised file until its independently pinned one-shot MOVE. */
     public static final class PacketFile implements AutoCloseable {
@@ -717,11 +725,8 @@ public final class WorldStreamTileWriter {
                 try {
                     var decoded = input.decode().apply(input.fileIds()[index]);
                     if (decoded.isPresent()) {
-                        var chain =
-                                WorldStreamDiffuseArray.chain(
-                                        decoded.get().rgba().duplicate(), decoded.get().side());
-                        pixels = new byte[WorldStreamTileFile.SPLAT_LAYER_PIXELS];
-                        chain.get(0, pixels);
+                        pixels = new byte[WorldStreamTileFile.SPLAT_LAYER_BYTES];
+                        decoded.get().chain().duplicate().get(pixels);
                     }
                 } catch (RuntimeException failed) {
                     if (failed instanceof java.util.concurrent.CancellationException) {

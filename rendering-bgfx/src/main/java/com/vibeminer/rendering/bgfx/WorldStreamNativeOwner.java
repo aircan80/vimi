@@ -231,6 +231,11 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.splatted(slot);
     }
 
+    boolean splatBlocks() {
+        requireOpen();
+        return renderer.splatBlocks();
+    }
+
     boolean splatArrayCreated() {
         requireOpen();
         return renderer.splatArrayCreated();

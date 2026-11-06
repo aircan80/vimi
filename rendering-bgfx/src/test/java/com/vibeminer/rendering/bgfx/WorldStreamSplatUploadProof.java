@@ -1,7 +1,5 @@
 package com.vibeminer.rendering.bgfx;
 
-import static org.lwjgl.bgfx.BGFX.BGFX_RENDERER_TYPE_VULKAN;
-
 import com.vibeminer.rendering.world.TerrainCamera;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -41,7 +39,11 @@ public final class WorldStreamSplatUploadProof {
                 var frames = WorldFrameFileV2.create(mapping, NONCE, SCOPE);
                 var reader = WorldFrameFileV2.open(mapping, NONCE, SCOPE);
                 var owner =
-                        new WorldStreamNativeOwner(session, frames, BGFX_RENDERER_TYPE_VULKAN)) {
+                        new WorldStreamNativeOwner(
+                                session,
+                                frames,
+                                GpuViewerMain.backend(
+                                        System.getProperty("vimi.proof.backend", "vulkan")))) {
             var splatted = new WorldStreamState.Lease(0, 1, 1);
             var plain = new WorldStreamState.Lease(1, 1, 2);
             WorldStreamNativeProof.splatForNextPrepare = WorldStreamTileSplatTest.splat(0, 1, 2);
@@ -54,6 +56,10 @@ public final class WorldStreamSplatUploadProof {
             int[] peak = {0};
             upload(owner, packed, peak);
             require(owner.splatArrayCreated(), "Shared splat layer array created");
+            boolean forced = Boolean.getBoolean(BgfxWorldStreamRenderer.SPLAT_RGBA8_PROPERTY);
+            require(
+                    owner.splatBlocks() == !forced,
+                    "Layer array format: BC1 unless forced to the RGBA8 fallback");
             require(owner.splatted(0), "Splat inputs uploaded for the slot");
             var second =
                     worker.submit(
@@ -91,7 +97,11 @@ public final class WorldStreamSplatUploadProof {
             var stats = owner.stats();
             require(stats.upload().liveUploadBytes() == 0, "Inputs drained");
             System.out.println(
-                    "WORLD_SPLAT_UPLOAD_PASS peakStepBytes="
+                    "WORLD_SPLAT_UPLOAD_PASS backend="
+                            + System.getProperty("vimi.proof.backend", "vulkan")
+                            + " layers="
+                            + (owner.splatBlocks() ? "BC1-256" : "RGBA8-128")
+                            + " peakStepBytes="
                             + peak[0]
                             + " textures="
                             + stats.textures()

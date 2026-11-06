@@ -27,7 +27,7 @@ final class WorldStreamTileSplatTest {
         byte[] alpha = new byte[WorldStreamTileFile.SPLAT_ALPHA_BYTES];
         alpha[0] = 7;
         alpha[alpha.length - 1] = 9;
-        byte[][] pixels = new byte[layers.length][WorldStreamTileFile.SPLAT_LAYER_PIXELS];
+        byte[][] pixels = new byte[layers.length][WorldStreamTileFile.SPLAT_LAYER_BYTES];
         for (int i = 0; i < layers.length; i++) {
             pixels[i][0] = (byte) (i + 1);
         }
@@ -110,6 +110,8 @@ final class WorldStreamTileSplatTest {
                 IllegalArgumentException.class,
                 () -> splat(WorldStreamTileFile.SPLAT_NONE),
                 "The none marker is not an array layer");
-        assertEquals(64 + 1024 + (1 << 20) + 16 * (4 + 65536), WorldStreamTileFile.MAX_SPLAT_BYTES);
+        // Sixteen new layers of one 256 x 256 BC1 chain each (43,704 bytes).
+        assertEquals(
+                64 + 1024 + (1 << 20) + 16 * (4 + 43_704), WorldStreamTileFile.MAX_SPLAT_BYTES);
     }
 }

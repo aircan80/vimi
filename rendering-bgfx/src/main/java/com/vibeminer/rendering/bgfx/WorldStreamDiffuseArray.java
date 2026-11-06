@@ -1,5 +1,7 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.ObjectTextureFormats;
+import com.vibeminer.rendering.world.TerrainLayerBlocks;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -11,21 +13,32 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Bookkeeping and pixels for the shared terrain layer array of shader-side splatting (issue #174
- * step 2). Every layer is one diffuse as RGBA8 at {@link #SIDE} with a full mip chain; a fixed
- * {@link #CAPACITY} of layers is shared by all resident tiles, keyed by diffuse file id and content
- * key. A layer referenced by any slot is never evicted; unreferenced layers stay cached and are
- * reused least recently used first. When no layer is free the caller falls back to the baked atlas
- * for that chunk. No bgfx calls: the renderer owns the GPU array.
+ * Bookkeeping and layout of the shared terrain layer array of shader-side splatting (issue #174
+ * step 2). Every layer is one diffuse as a {@link TerrainLayerBlocks} BC1 chain at {@link #SIDE};
+ * where the backend samples no BC1 array, it is decoded to RGBA8 at {@link #FALLBACK_SIDE} (its
+ * levels 1 to 8). A fixed {@link #CAPACITY} of layers is shared by all resident tiles, keyed by
+ * diffuse file id and content key. A layer referenced by any slot is never evicted; unreferenced
+ * layers stay cached and are reused least recently used first. When no layer is free the caller
+ * falls back to the baked atlas for that chunk. No bgfx calls: the renderer owns the GPU array.
  */
 final class WorldStreamDiffuseArray {
-    static final int SIDE = 128, LEVELS = 8, CAPACITY = 256;
+    static final int SIDE = TerrainLayerBlocks.SIDE, LEVELS = TerrainLayerBlocks.LEVELS;
 
-    /** One layer with its mip chain, 128 x 128 down to 1 x 1: 87,380 bytes. */
-    static final int LAYER_BYTES = chainBytes();
+    static final int CAPACITY = 256;
 
-    /** The whole array: 256 layers, about 21.3 MiB. */
+    /** One BC1 layer with its mip chain, 256 x 256 down to 1 x 1: 43,704 bytes. */
+    static final int LAYER_BYTES = TerrainLayerBlocks.CHAIN_BYTES;
+
+    /** The whole BC1 array: 256 layers, about 10.7 MiB. */
     static final long ARRAY_BYTES = (long) LAYER_BYTES * CAPACITY;
+
+    /** RGBA8 fallback layer: the BC1 chain's levels 1 to 8, 128 x 128 down to 1 x 1. */
+    static final int FALLBACK_SIDE = SIDE / 2, FALLBACK_LEVELS = LEVELS - 1;
+
+    /** One fallback layer: 87,380 bytes; the fallback array is about 21.3 MiB. */
+    static final int FALLBACK_LAYER_BYTES = fallbackOffset(FALLBACK_LEVELS);
+
+    static final long FALLBACK_ARRAY_BYTES = (long) FALLBACK_LAYER_BYTES * CAPACITY;
 
     /** A diffuse identity: file id and lowercase hex content key. */
     record Key(long fileId, String contentKey) {
@@ -54,20 +67,40 @@ final class WorldStreamDiffuseArray {
         }
     }
 
-    static int side(int level) {
-        return SIDE >> level;
+    /** Side of fallback level {@code level}: 128 down to 1. */
+    static int fallbackSide(int level) {
+        return FALLBACK_SIDE >> level;
     }
 
-    static int offset(int level) {
+    /** Byte offset of fallback level {@code level} in its RGBA8 chain. */
+    static int fallbackOffset(int level) {
         int bytes = 0;
         for (int i = 0; i < level; i++) {
-            bytes += side(i) * side(i) * 4;
+            bytes += fallbackSide(i) * fallbackSide(i) * 4;
         }
         return bytes;
     }
 
-    private static int chainBytes() {
-        return offset(LEVELS);
+    /** The RGBA8 fallback chain of one BC1 layer chain: its levels 1 to 8, decoded. */
+    static ByteBuffer fallback(ByteBuffer chain) {
+        Objects.requireNonNull(chain);
+        if (chain.remaining() != LAYER_BYTES) {
+            throw new IllegalArgumentException("Invalid layer chain");
+        }
+        var source = chain.slice();
+        var out = ByteBuffer.allocate(FALLBACK_LAYER_BYTES);
+        for (int level = 0; level < FALLBACK_LEVELS; level++) {
+            int side = fallbackSide(level);
+            out.put(
+                    fallbackOffset(level),
+                    ObjectTextureFormats.decodeLevel(
+                            ObjectTextureFormats.BC1,
+                            side,
+                            side,
+                            source,
+                            TerrainLayerBlocks.levelOffset(level + 1)));
+        }
+        return out;
     }
 
     /**
@@ -193,61 +226,5 @@ final class WorldStreamDiffuseArray {
 
     int referenced() {
         return references.size();
-    }
-
-    /**
-     * Builds one layer's chain from a square power-of-two RGBA8 diffuse of side 1 to {@link #SIDE}:
-     * smaller sources are enlarged by repetition-aware bilinear filtering (the diffuse tiles across
-     * a chunk), then each level is a 2 x 2 box average of the previous one.
-     */
-    static ByteBuffer chain(ByteBuffer rgba, int side) {
-        Objects.requireNonNull(rgba);
-        if (side < 1
-                || side > SIDE
-                || Integer.bitCount(side) != 1
-                || rgba.remaining() != side * side * 4) {
-            throw new IllegalArgumentException("Invalid layer diffuse");
-        }
-        var out = ByteBuffer.allocate(LAYER_BYTES);
-        int base = rgba.position();
-        for (int y = 0; y < SIDE; y++) {
-            for (int x = 0; x < SIDE; x++) {
-                // Sample at the target texel center, wrapping, in source texel space.
-                double sx = (x + .5) * side / SIDE - .5, sy = (y + .5) * side / SIDE - .5;
-                int x0 = (int) Math.floor(sx), y0 = (int) Math.floor(sy);
-                double fx = sx - x0, fy = sy - y0;
-                for (int c = 0; c < 4; c++) {
-                    double value = 0;
-                    for (int dy = 0; dy < 2; dy++) {
-                        for (int dx = 0; dx < 2; dx++) {
-                            int tx = Math.floorMod(x0 + dx, side),
-                                    ty = Math.floorMod(y0 + dy, side);
-                            double weight = (dx == 0 ? 1 - fx : fx) * (dy == 0 ? 1 - fy : fy);
-                            value += weight * (rgba.get(base + (ty * side + tx) * 4 + c) & 255);
-                        }
-                    }
-                    out.put((y * SIDE + x) * 4 + c, (byte) Math.round(value));
-                }
-            }
-        }
-        for (int level = 1; level < LEVELS; level++) {
-            int to = offset(level), from = offset(level - 1), s = side(level), child = s * 2;
-            for (int y = 0; y < s; y++) {
-                for (int x = 0; x < s; x++) {
-                    for (int c = 0; c < 4; c++) {
-                        int sum = 0;
-                        for (int dy = 0; dy < 2; dy++) {
-                            for (int dx = 0; dx < 2; dx++) {
-                                sum +=
-                                        out.get(from + ((2 * y + dy) * child + 2 * x + dx) * 4 + c)
-                                                & 255;
-                            }
-                        }
-                        out.put(to + (y * s + x) * 4 + c, (byte) ((sum + 2) / 4));
-                    }
-                }
-            }
-        }
-        return out;
     }
 }

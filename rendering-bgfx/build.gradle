@@ -313,6 +313,9 @@ tasks.register('nativeGpuWorldStreamSplatUploadProof', JavaExec) {
     mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamSplatUploadProof'
     timeout = java.time.Duration.ofMinutes(2)
     jvmArgs '--enable-native-access=ALL-UNNAMED'
+    // -PsplatProofBackend=vulkan|d3d11|metal; -PsplatProofRgba8=true forces the RGBA8 layer array.
+    systemProperty 'vimi.proof.backend', providers.gradleProperty('splatProofBackend').getOrElse('vulkan')
+    systemProperty 'vimi.world.splat.rgba8', providers.gradleProperty('splatProofRgba8').getOrElse('false')
     args layout.buildDirectory.dir('native-world-stream-splat').get().asFile.absolutePath
 }
 

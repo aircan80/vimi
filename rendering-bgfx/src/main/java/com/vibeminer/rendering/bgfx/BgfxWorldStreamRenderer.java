@@ -643,10 +643,20 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     }
 
     /**
-     * Shared splat layer array: 255 layers of 128 x 128 RGBA8 with mips (about 21.3 MiB), created
-     * on the first packet that carries splatting inputs, only where 2D arrays are supported.
+     * Shared splat layer array: 256 layers of 256 x 256 BC1 with mips (about 10.7 MiB), or of 128 x
+     * 128 RGBA8 (about 21.3 MiB) where BC1 arrays are not sampled, created on the first packet that
+     * carries splatting inputs, only where 2D arrays are supported.
      */
     private short splatArray = INVALID;
+
+    /** Whether the layer array holds BC1 blocks (else the RGBA8 128 x 128 fallback). */
+    private boolean splatBlocks;
+
+    /**
+     * Diagnostic override: when this system property is {@code true}, the splat layer array takes
+     * its RGBA8 fallback, as on a backend without BC1 array sampling.
+     */
+    static final String SPLAT_RGBA8_PROPERTY = "vimi.world.splat.rgba8";
 
     private boolean splatSupported = true;
 
@@ -672,13 +682,23 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             splatSupported = false;
             return false;
         }
+        splatBlocks =
+                !Boolean.getBoolean(SPLAT_RGBA8_PROPERTY)
+                        && org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
+                                0,
+                                false,
+                                WorldStreamDiffuseArray.CAPACITY,
+                                BGFX_TEXTURE_FORMAT_BC1,
+                                BGFX_TEXTURE_NONE);
+        int side =
+                splatBlocks ? WorldStreamDiffuseArray.SIDE : WorldStreamDiffuseArray.FALLBACK_SIDE;
         splatArray =
                 bgfx_create_texture_2d(
-                        WorldStreamDiffuseArray.SIDE,
-                        WorldStreamDiffuseArray.SIDE,
+                        side,
+                        side,
                         true,
                         WorldStreamDiffuseArray.CAPACITY,
-                        BGFX_TEXTURE_FORMAT_RGBA8,
+                        splatBlocks ? BGFX_TEXTURE_FORMAT_BC1 : BGFX_TEXTURE_FORMAT_RGBA8,
                         BGFX_TEXTURE_NONE,
                         null,
                         0);
@@ -686,6 +706,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             splatSupported = false;
             return false;
         }
+        System.err.println(splatReport(splatBlocks, Boolean.getBoolean(SPLAT_RGBA8_PROPERTY)));
+        System.err.flush();
         return true;
     }
 
@@ -776,8 +798,34 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         int index = step - alphaSteps - 1;
         int layer = source.splatLayers[index];
         var chain = source.splatChains[index];
-        for (int level = 0; level < WorldStreamDiffuseArray.LEVELS; level++) {
-            int side = WorldStreamDiffuseArray.side(level);
+        if (splatBlocks) {
+            // The layer's BC1 chain as carried, in block rows (one step: 43,704 bytes).
+            int bytes = 0;
+            for (var stepSlices :
+                    WorldStreamObjectMips.plan(
+                            ObjectTextureFormats.BC1,
+                            WorldStreamDiffuseArray.SIDE,
+                            WorldStreamDiffuseArray.SIDE,
+                            OBJECT_CHUNK)) {
+                for (var slice : stepSlices) {
+                    bgfx_update_texture_2d(
+                            splatArray,
+                            layer,
+                            slice.level(),
+                            0,
+                            slice.row(),
+                            com.vibeminer.rendering.world.TerrainLayerBlocks.side(slice.level()),
+                            slice.rows(),
+                            copyHeap(chain.slice(slice.offset(), slice.bytes())),
+                            slice.pitch());
+                    bytes += slice.bytes();
+                }
+            }
+            return bytes;
+        }
+        var rgba = WorldStreamDiffuseArray.fallback(chain);
+        for (int level = 0; level < WorldStreamDiffuseArray.FALLBACK_LEVELS; level++) {
+            int side = WorldStreamDiffuseArray.fallbackSide(level);
             bgfx_update_texture_2d(
                     splatArray,
                     layer,
@@ -786,10 +834,31 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     0,
                     side,
                     side,
-                    copyHeap(chain.slice(WorldStreamDiffuseArray.offset(level), side * side * 4)),
+                    copyHeap(
+                            rgba.slice(
+                                    WorldStreamDiffuseArray.fallbackOffset(level),
+                                    side * side * 4)),
                     side * 4);
         }
-        return WorldStreamDiffuseArray.LAYER_BYTES;
+        return WorldStreamDiffuseArray.FALLBACK_LAYER_BYTES;
+    }
+
+    /** Whether the shared splat layer array holds BC1 blocks; proof observation. */
+    boolean splatBlocks() {
+        requireOwner();
+        return splatArray != INVALID && splatBlocks;
+    }
+
+    /** One stderr line naming the splat layer array's format, when it is created. */
+    static String splatReport(boolean blocks, boolean forced) {
+        return "World splat layers: "
+                + (blocks
+                        ? "BC1 compressed, " + WorldStreamDiffuseArray.SIDE
+                        : "decoded to RGBA8, " + WorldStreamDiffuseArray.FALLBACK_SIDE)
+                + " px, "
+                + WorldStreamDiffuseArray.CAPACITY
+                + " layers"
+                + (forced ? " (" + SPLAT_RGBA8_PROPERTY + ")" : "");
     }
 
     /** bgfx_copy reads native memory: stage a heap slice through a short-lived native buffer. */

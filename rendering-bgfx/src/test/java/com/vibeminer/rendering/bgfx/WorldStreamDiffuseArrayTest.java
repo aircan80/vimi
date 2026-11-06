@@ -7,7 +7,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.vibeminer.rendering.world.TerrainLayerBlocks;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -27,11 +29,16 @@ final class WorldStreamDiffuseArrayTest {
 
     @Test
     void layoutIsAFullChainPerLayerAndAFixedArray() {
-        assertEquals(87_380, WorldStreamDiffuseArray.LAYER_BYTES);
-        assertEquals(1, WorldStreamDiffuseArray.side(WorldStreamDiffuseArray.LEVELS - 1));
-        assertEquals(87_380L * 256, WorldStreamDiffuseArray.ARRAY_BYTES);
-        // About 21.3 MiB: fixed regardless of view distance.
-        assertTrue(WorldStreamDiffuseArray.ARRAY_BYTES < 22L << 20);
+        // 256 x 256 BC1 down to 1 x 1 per layer: about 10.7 MiB for the whole array.
+        assertEquals(43_704, WorldStreamDiffuseArray.LAYER_BYTES);
+        assertEquals(43_704L * 256, WorldStreamDiffuseArray.ARRAY_BYTES);
+        assertTrue(WorldStreamDiffuseArray.ARRAY_BYTES < 11L << 20);
+        // The RGBA8 fallback: 128 x 128 down to 1 x 1, about 21.3 MiB.
+        assertEquals(87_380, WorldStreamDiffuseArray.FALLBACK_LAYER_BYTES);
+        assertEquals(
+                1,
+                WorldStreamDiffuseArray.fallbackSide(WorldStreamDiffuseArray.FALLBACK_LEVELS - 1));
+        assertTrue(WorldStreamDiffuseArray.FALLBACK_ARRAY_BYTES < 22L << 20);
     }
 
     @Test
@@ -128,54 +135,34 @@ final class WorldStreamDiffuseArrayTest {
     }
 
     @Test
-    void chainOfAUniformDiffuseIsUniformAtEveryLevel() {
-        var source = ByteBuffer.allocate(8 * 8 * 4);
-        for (int i = 0; i < 64; i++) {
-            source.put((byte) 200).put((byte) 100).put((byte) 50).put((byte) 255);
-        }
-        source.flip();
-        var chain = WorldStreamDiffuseArray.chain(source, 8);
-        assertEquals(WorldStreamDiffuseArray.LAYER_BYTES, chain.capacity());
+    void fallbackIsTheChainsLowerLevelsDecoded() {
+        // Level k of the layer chain: blocks of one colour per level.
+        var chain =
+                ByteBuffer.allocate(WorldStreamDiffuseArray.LAYER_BYTES)
+                        .order(ByteOrder.LITTLE_ENDIAN);
         for (int level = 0; level < WorldStreamDiffuseArray.LEVELS; level++) {
-            int at = WorldStreamDiffuseArray.offset(level);
-            int side = WorldStreamDiffuseArray.side(level);
-            for (int texel = 0; texel < side * side; texel++) {
-                assertEquals((byte) 200, chain.get(at + texel * 4));
-                assertEquals((byte) 50, chain.get(at + texel * 4 + 2));
+            int colour = (level * 3) << 11 | (level * 7) << 5 | level;
+            for (int at = TerrainLayerBlocks.levelOffset(level);
+                    at
+                            < TerrainLayerBlocks.levelOffset(level)
+                                    + TerrainLayerBlocks.levelBytes(level);
+                    at += 8) {
+                chain.putShort(at, (short) colour).putShort(at + 2, (short) 0).putInt(at + 4, 0);
             }
         }
-    }
-
-    @Test
-    void enlargementWrapsBecauseTheDiffuseRepeats() {
-        // A 2 x 2 checker: the enlarged edges blend with the opposite edge, not with black.
-        var source = ByteBuffer.allocate(16);
-        int[] values = {0, 255, 255, 0};
-        for (int v : values) {
-            source.put((byte) v).put((byte) v).put((byte) v).put((byte) 255);
+        var rgba = WorldStreamDiffuseArray.fallback(chain.asReadOnlyBuffer());
+        assertEquals(WorldStreamDiffuseArray.FALLBACK_LAYER_BYTES, rgba.capacity());
+        for (int level = 0; level < WorldStreamDiffuseArray.FALLBACK_LEVELS; level++) {
+            int source = level + 1, side = WorldStreamDiffuseArray.fallbackSide(level);
+            int r = source * 3, g = source * 7;
+            int last = WorldStreamDiffuseArray.fallbackOffset(level) + (side * side - 1) * 4;
+            assertEquals((r << 3) | (r >>> 2), rgba.get(last) & 255, "level " + level);
+            assertEquals((g << 2) | (g >>> 4), rgba.get(last + 1) & 255, "level " + level);
+            assertEquals(255, rgba.get(last + 3) & 255);
         }
-        source.flip();
-        var chain = WorldStreamDiffuseArray.chain(source, 2);
-        // Texel (0, 0) of level 0 lies a quarter texel from the source corner: a wrap blend.
-        int corner = chain.get(0) & 255;
-        assertTrue(corner > 0 && corner < 255, "Corner blends across the wrap: " + corner);
-        // The 1 x 1 level is the mean of the checker.
-        int last = WorldStreamDiffuseArray.offset(WorldStreamDiffuseArray.LEVELS - 1);
-        assertEquals(128, chain.get(last) & 255, 1);
-        assertEquals(255, chain.get(last + 3) & 255);
-    }
-
-    @Test
-    void chainRefusesNonSquareOrOversizedSources() {
         assertThrows(
                 IllegalArgumentException.class,
-                () -> WorldStreamDiffuseArray.chain(ByteBuffer.allocate(256 * 256 * 4), 256));
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> WorldStreamDiffuseArray.chain(ByteBuffer.allocate(3 * 3 * 4), 3));
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> WorldStreamDiffuseArray.chain(ByteBuffer.allocate(10), 4));
+                () -> WorldStreamDiffuseArray.fallback(ByteBuffer.allocate(87_380)));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new WorldStreamDiffuseArray.Key(0, "a".repeat(32)));

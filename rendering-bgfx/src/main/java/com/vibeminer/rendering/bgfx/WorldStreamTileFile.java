@@ -42,14 +42,18 @@ final class WorldStreamTileFile {
             "VIMIWSP1".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
 
     /**
-     * Optional splatting trailer (issue #174 step 2), before any water trailer: a 64-byte head, the
-     * 16 x 16 chunk table of four GPU layer indices ({@link #SPLAT_NONE} keeps the atlas), the 512
-     * x 512 RGBA8 mask map, and up to {@link #MAX_SPLAT_LAYERS} new layer diffuses (an int layer
-     * index and 128 x 128 RGBA8) for the parent-owned shared array.
+     * Optional splatting trailer (issue #174 step 2), version 2, before any water trailer: a
+     * 64-byte head, the 16 x 16 chunk table of four GPU layer indices ({@link #SPLAT_NONE} keeps
+     * the atlas), the 512 x 512 RGBA8 mask map, and up to {@link #MAX_SPLAT_LAYERS} new layer
+     * diffuses (an int layer index and one {@link com.vibeminer.rendering.world.TerrainLayerBlocks}
+     * 256 x 256 BC1 chain) for the parent-owned shared array.
      */
     static final int SPLAT_HEAD_BYTES = 64, SPLAT_TABLE_BYTES = 1024, SPLAT_ALPHA_BYTES = 1 << 20;
 
-    static final int SPLAT_LAYER_PIXELS = 128 * 128 * 4, MAX_SPLAT_LAYERS = 16, SPLAT_NONE = 255;
+    static final int SPLAT_LAYER_BYTES =
+            com.vibeminer.rendering.world.TerrainLayerBlocks.CHAIN_BYTES;
+
+    static final int MAX_SPLAT_LAYERS = 16, SPLAT_NONE = 255, SPLAT_VERSION = 2;
 
     static final int MAX_SPLAT_BYTES = splatBytes(MAX_SPLAT_LAYERS);
 
@@ -57,12 +61,12 @@ final class WorldStreamTileFile {
         return SPLAT_HEAD_BYTES
                 + SPLAT_TABLE_BYTES
                 + SPLAT_ALPHA_BYTES
-                + layers * (4 + SPLAT_LAYER_PIXELS);
+                + layers * (4 + SPLAT_LAYER_BYTES);
     }
 
     /**
      * Splatting inputs of one tile: {@code table} holds GPU layer indices into the shared array,
-     * {@code layers}/{@code pixels} the new layers this packet uploads (array index, 128 x 128).
+     * {@code layers}/{@code pixels} the new layers this packet uploads (array index, BC1 chain).
      */
     record Splat(byte[] table, byte[] alpha, int[] layers, byte[][] pixels) {
         Splat {
@@ -83,7 +87,7 @@ final class WorldStreamTileFile {
                                 && layers[i] < SPLAT_NONE
                                 && seen.add(layers[i])
                                 && pixels[i] != null
-                                && pixels[i].length == SPLAT_LAYER_PIXELS,
+                                && pixels[i].length == SPLAT_LAYER_BYTES,
                         "Splat layer upload");
             }
         }
@@ -673,7 +677,7 @@ final class WorldStreamTileFile {
         var in = ByteBuffer.wrap(head).order(ByteOrder.LITTLE_ENDIAN);
         int count = in.getInt(12);
         require(
-                in.getInt(8) == 1
+                in.getInt(8) == SPLAT_VERSION
                         && count >= 0
                         && count <= MAX_SPLAT_LAYERS
                         && splatBytes(count) <= limit,
@@ -691,7 +695,7 @@ final class WorldStreamTileFile {
         for (int i = 0; i < count; i++) {
             check(canceled);
             layers[i] = Integer.reverseBytes(input.readInt());
-            pixels[i] = new byte[SPLAT_LAYER_PIXELS];
+            pixels[i] = new byte[SPLAT_LAYER_BYTES];
             input.readFully(pixels[i]);
         }
         return new Splat(table, alpha, layers, pixels);
@@ -720,7 +724,7 @@ final class WorldStreamTileFile {
 
     static byte[] encodeSplat(Splat splat) {
         var out = ByteBuffer.allocate(splat.bytes()).order(ByteOrder.LITTLE_ENDIAN);
-        out.put(SPLAT_MAGIC).putInt(1).putInt(splat.layers().length);
+        out.put(SPLAT_MAGIC).putInt(SPLAT_VERSION).putInt(splat.layers().length);
         out.position(SPLAT_HEAD_BYTES);
         out.put(splat.table()).put(splat.alpha());
         for (int i = 0; i < splat.layers().length; i++) {

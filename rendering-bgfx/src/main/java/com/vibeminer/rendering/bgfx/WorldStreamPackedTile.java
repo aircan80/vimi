@@ -220,10 +220,9 @@ final class WorldStreamPackedTile implements AutoCloseable {
                 splatChains = new ByteBuffer[splat.layers().length];
                 for (int i = 0; i < splatChains.length; i++) {
                     check(canceled);
-                    splatChains[i] =
-                            WorldStreamDiffuseArray.chain(
-                                    ByteBuffer.wrap(splat.pixels()[i]),
-                                    WorldStreamDiffuseArray.SIDE);
+                    // The layer's BC1 chain as carried; the renderer decodes it only when its
+                    // backend has no BC1 array.
+                    splatChains[i] = ByteBuffer.wrap(splat.pixels()[i]).asReadOnlyBuffer();
                 }
             }
             check(canceled);

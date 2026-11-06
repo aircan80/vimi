@@ -1,12 +1,16 @@
 package com.vibeminer.concepts.world;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
+import com.vibeminer.rendering.world.ObjectTextureFormats;
+import com.vibeminer.rendering.world.TerrainLayerBlocks;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
@@ -18,21 +22,35 @@ final class TerrainDiffuseDetailsTest {
         return String.format("%032x", id);
     }
 
-    private static TerrainDiffuseDetails.Detail detail(long id, int side) {
-        return new TerrainDiffuseDetails.Detail(id, key(id), side, new byte[side * side * 4]);
+    private static TerrainDiffuseDetails.Detail detail(long id) {
+        return new TerrainDiffuseDetails.Detail(
+                id, key(id), new byte[TerrainLayerBlocks.CHAIN_BYTES], false);
+    }
+
+    /** RGB of texel 0 of one chain level. */
+    private static int[] texel(TerrainDiffuseDetails.Detail detail, int level) {
+        int side = TerrainLayerBlocks.side(level);
+        var rgba =
+                ObjectTextureFormats.decodeLevel(
+                        ObjectTextureFormats.BC1,
+                        side,
+                        side,
+                        detail.blocks(),
+                        TerrainLayerBlocks.levelOffset(level));
+        return new int[] {rgba[0] & 255, rgba[1] & 255, rgba[2] & 255};
     }
 
     @Test
     void cacheIsBoundedByEntriesAndEvictsLeastRecentlyUsed() {
         var cache = new TerrainDiffuseDetails();
         for (long id = 1; id <= TerrainDiffuseDetails.MAX_ENTRIES; id++) {
-            cache.put(detail(id, TerrainDiffuseDetails.MAX_SIDE));
+            cache.put(detail(id));
         }
         assertEquals(TerrainDiffuseDetails.MAX_ENTRIES, cache.size());
         assertEquals(TerrainDiffuseDetails.MAX_BYTES, cache.bytes());
         // Touch the oldest entry, then overflow by one: the second oldest is evicted.
         assertTrue(cache.get(1, key(1)) != null);
-        cache.put(detail(1000, TerrainDiffuseDetails.MAX_SIDE));
+        cache.put(detail(1000));
         assertEquals(TerrainDiffuseDetails.MAX_ENTRIES, cache.size());
         assertTrue(cache.get(1, key(1)) != null);
         assertNull(cache.get(2, key(2)));
@@ -42,33 +60,31 @@ final class TerrainDiffuseDetailsTest {
     @Test
     void replacingAnEntryKeepsTheByteCountExact() {
         var cache = new TerrainDiffuseDetails();
-        cache.put(detail(7, 8));
-        cache.put(detail(7, 16));
+        cache.put(detail(7));
+        cache.put(detail(7));
         assertEquals(1, cache.size());
-        assertEquals(16 * 16 * 4, cache.bytes());
+        assertEquals(TerrainLayerBlocks.CHAIN_BYTES, cache.bytes());
         assertNull(cache.get(7, "e".repeat(32)), "A different content key is a different entry");
     }
 
     @Test
-    void detailsAreSquarePowerOfTwoWithinTheLayerSide() {
-        for (int side : new int[] {0, 3, 6, 256}) {
+    void detailsAreExactlyOneLayerChain() {
+        assertEquals(256L * 43_704, TerrainDiffuseDetails.MAX_BYTES);
+        for (int bytes : new int[] {0, TerrainLayerBlocks.CHAIN_BYTES - 1, 128 * 128 * 4}) {
             assertThrows(
                     IllegalArgumentException.class,
-                    () ->
-                            new TerrainDiffuseDetails.Detail(
-                                    7, key(7), side, new byte[side * side * 4]));
+                    () -> new TerrainDiffuseDetails.Detail(7, key(7), new byte[bytes], true));
         }
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new TerrainDiffuseDetails.Detail(7, key(7), 4, new byte[63]));
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> new TerrainDiffuseDetails.Detail(7, "X".repeat(32), 4, new byte[64]));
-        assertTrue(detail(7, 4).pixels().isReadOnly());
+                () ->
+                        new TerrainDiffuseDetails.Detail(
+                                7, "X".repeat(32), new byte[TerrainLayerBlocks.CHAIN_BYTES], true));
+        assertTrue(detail(7).blocks().isReadOnly());
     }
 
     @Test
-    void sourceDecodesTheLargestMipWithinTheLayerSideOnceAndRevalidates() throws Exception {
+    void aSmallDiffuseIsDecodedEncodedOnceAndRevalidates() throws Exception {
         var files = new WorldTerrainTextureSourceTest.Files();
         long id = 10;
         files.sources.put(id, WorldTerrainTextureSourceTest.blpForDetail(0xf800));
@@ -82,14 +98,10 @@ final class TerrainDiffuseDetailsTest {
             var binding =
                     new WorldTerrainTextureSource.FileBinding(id, key(id), length, length, 1 << 20);
             var first = source.detail(binding, request);
-            // The authored BLP2 is 8 x 8 at its base: the largest mip within 128.
-            assertEquals(8, first.side());
-            var pixels = first.pixels().order(ByteOrder.LITTLE_ENDIAN);
-            // BC2 color 0xf800 is pure red with full alpha.
-            assertEquals((byte) 0xff, pixels.get(0));
-            assertEquals(0, pixels.get(1));
-            assertEquals(0, pixels.get(2));
-            assertEquals((byte) 0xff, pixels.get(3));
+            // The authored BLP2 is 8 x 8: too small to carry, so it is enlarged and encoded.
+            assertFalse(first.fileBlocks());
+            assertArrayEquals(new int[] {255, 0, 0}, texel(first, 0), "BC2 0xf800 stays red");
+            assertArrayEquals(new int[] {255, 0, 0}, texel(first, 8));
             int opens = files.opens(id);
             assertSame(first, source.detail(binding, request), "Second request is a cache hit");
             assertEquals(opens, files.opens(id), "A cache hit reads nothing");
@@ -138,7 +150,7 @@ final class TerrainDiffuseDetailsTest {
     }
 
     @Test
-    void aBaseAbove128SelectsTheLargestLowerMip() throws Exception {
+    void a256DiffuseCarriesItsOwnBlocks() throws Exception {
         var files = new WorldTerrainTextureSourceTest.Files();
         long id = 11;
         files.sources.put(id, blpChain(256));
@@ -148,19 +160,19 @@ final class TerrainDiffuseDetailsTest {
                     new WorldTerrainTextureSource.Request(
                             source, null, List.of(), Cancellation.NONE, progress -> {}, false);
             var detail = source.detail(bound(files, id), request);
-            assertEquals(128, detail.side(), "256 base: level 1 is the largest within 128");
-            var pixels = detail.pixels();
-            // Level 1 is red; level 0 (blue) was not selected.
-            assertEquals((byte) 0xff, pixels.get(0));
-            assertEquals(0, pixels.get(2));
-            assertEquals(128 * 128 * 4, pixels.remaining());
+            assertTrue(detail.fileBlocks(), "a 256 BC2 chain is carried as blocks");
+            // Level 0 of the file is blue, every lower level red: the layer keeps that split.
+            assertArrayEquals(new int[] {0, 0, 255}, texel(detail, 0));
+            for (int level = 1; level < TerrainLayerBlocks.LEVELS; level++) {
+                assertArrayEquals(new int[] {255, 0, 0}, texel(detail, level), "level " + level);
+            }
         } finally {
             source.closeAsync().get(5, TimeUnit.SECONDS);
         }
     }
 
     @Test
-    void aDiffuseLargerThanOneMebibyteDecodesFromItsSelectedMipRange() throws Exception {
+    void aDiffuseLargerThanOneMebibyteCarriesItsMipAt256() throws Exception {
         var files = new WorldTerrainTextureSourceTest.Files();
         long id = 12;
         byte[] large = blpChain(1024);
@@ -179,8 +191,8 @@ final class TerrainDiffuseDetailsTest {
                             (long) large.length,
                             WorldTerrainTextureSource.DIFFUSE_SOURCE_LIMIT);
             var detail = source.detail(binding, request);
-            assertEquals(128, detail.side());
-            assertEquals((byte) 0xff, detail.pixels().get(0), "Level 3 (128) is red");
+            assertTrue(detail.fileBlocks());
+            assertArrayEquals(new int[] {255, 0, 0}, texel(detail, 0), "File level 2 (256) is red");
         } finally {
             source.closeAsync().get(5, TimeUnit.SECONDS);
         }
@@ -206,13 +218,13 @@ final class TerrainDiffuseDetailsTest {
     }
 
     @Test
-    void detailPixelsCannotBeMutatedThroughTheRecord() {
-        byte[] input = new byte[4 * 4 * 4];
-        var value = new TerrainDiffuseDetails.Detail(7, key(7), 4, input);
+    void detailBlocksCannotBeMutatedThroughTheRecord() {
+        byte[] input = new byte[TerrainLayerBlocks.CHAIN_BYTES];
+        var value = new TerrainDiffuseDetails.Detail(7, key(7), input, true);
         input[0] = 9;
-        assertEquals(0, value.rgba()[0], "The constructor copies its input");
-        value.rgba()[0] = 9;
-        assertEquals(0, value.rgba()[0], "The accessor returns a copy");
+        assertEquals(0, value.chain()[0], "The constructor copies its input");
+        value.chain()[0] = 9;
+        assertEquals(0, value.chain()[0], "The accessor returns a copy");
     }
 
     @Test

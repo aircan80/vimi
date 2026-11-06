@@ -918,7 +918,7 @@ final class WorldStreamSourceBridge {
     }
 
     /** The tile's splatting inputs, decoding a layer diffuse only when the writer asks for it. */
-    private static WorldStreamTileWriter.SplatInput splatInput(
+    static WorldStreamTileWriter.SplatInput splatInput(
             WorldTerrainStreaming.CheckedBorrow borrow,
             WorldTerrainStreaming.Material material,
             com.vibeminer.rendering.world.TerrainTileSplat splat) {
@@ -935,7 +935,7 @@ final class WorldStreamSourceBridge {
         splat.layers().get(table);
         return new WorldStreamTileWriter.SplatInput(ids, keys, table, splat.alpha(),
                 id -> borrow.diffuseDetail(id, Cancellation.NONE)
-                        .map(detail -> new WorldStreamTileWriter.Diffuse(detail.side(), detail.rgba())));
+                        .map(detail -> new WorldStreamTileWriter.Diffuse(detail.chain())));
     }
 
     private static WorldStreamTileWriter.Source structural(WorldTerrainStreaming.SourceTuple input) {

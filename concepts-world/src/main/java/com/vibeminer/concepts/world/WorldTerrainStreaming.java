@@ -374,13 +374,19 @@ public final class WorldTerrainStreaming {
         }
     }
 
-    /** A decoded layer diffuse for splatting; {@code rgba} is a read-only view. */
+    /**
+     * A layer diffuse for splatting as its 256 x 256 BC1 chain ({@link
+     * com.vibeminer.rendering.world.TerrainLayerBlocks}); {@code chain} is a read-only view, and
+     * {@code fileBlocks} says whether it is the file's own blocks or an encoding of its pixels.
+     */
     public record DiffuseDetail(
-            long fileId, String contentKey, int side, java.nio.ByteBuffer rgba) {
+            long fileId, String contentKey, java.nio.ByteBuffer chain, boolean fileBlocks) {
         public DiffuseDetail {
             Objects.requireNonNull(contentKey);
-            Objects.requireNonNull(rgba);
-            if (!rgba.isReadOnly() || rgba.remaining() != side * side * 4) {
+            Objects.requireNonNull(chain);
+            if (!chain.isReadOnly()
+                    || chain.remaining()
+                            != com.vibeminer.rendering.world.TerrainLayerBlocks.CHAIN_BYTES) {
                 throw new IllegalArgumentException("Invalid diffuse detail");
             }
         }
@@ -427,7 +433,7 @@ public final class WorldTerrainStreaming {
         }
 
         /**
-         * One layer diffuse of this tile for splatting: square power-of-two RGBA8 within 128, read
+         * One layer diffuse of this tile for splatting, as its 256 x 256 BC1 layer chain, read
          * through the same bounds and revalidation as the atlas's own mips, and cached by content.
          * Empty when the diffuse is not part of this tile's material.
          */
@@ -440,8 +446,8 @@ public final class WorldTerrainStreaming {
                             new DiffuseDetail(
                                     detail.fileId(),
                                     detail.contentKey(),
-                                    detail.side(),
-                                    detail.pixels()));
+                                    detail.blocks(),
+                                    detail.fileBlocks()));
         }
 
         public WorldFormats.AreaMetadata areas() {
