@@ -40,7 +40,9 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         LOOK_DOWN("Look down"),
         SPRINT("Faster (hold; with the wheel: speed)"),
         WALK("Walk on terrain (toggle)"),
-        MAP_PANEL("Map panel (toggle)", true);
+        MAP_PANEL("Map panel (toggle)", true),
+        HIDE_HUD("Hide or show the HUD (toggle)", true),
+        DEV_OVERLAY("Developer overlay (next page)", true);
 
         final String label;
         /**
@@ -130,6 +132,10 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
             keys.put(KeyCode.F, Action.WALK);
             // M is a letter on both layouts, so the key labelled M opens the map on either.
             keys.put(KeyCode.M, Action.MAP_PANEL);
+            // H is a letter on both layouts too, and free in both presets.
+            keys.put(KeyCode.H, Action.HIDE_HUD);
+            // Function keys sit in the same place on every layout.
+            keys.put(KeyCode.F3, Action.DEV_OVERLAY);
             return keys;
         }
     }
@@ -232,7 +238,9 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
                 + "/" + keysOf.apply(Action.LOOK_UP) + "/" + keysOf.apply(Action.LOOK_DOWN) + " to look · "
                 + keysOf.apply(Action.SPRINT) + " faster · wheel zooms"
                 + (modifier == null ? "" : " · " + modifier.getName() + "+wheel changes speed")
-                + " · " + keysOf.apply(Action.WALK) + " walks · " + keysOf.apply(Action.MAP_PANEL) + " map · click inspects · Keys… rebinds";
+                + " · " + keysOf.apply(Action.WALK) + " walks · " + keysOf.apply(Action.MAP_PANEL)
+                + " map · " + keysOf.apply(Action.HIDE_HUD) + " hides the HUD · click inspects · "
+                + keysOf.apply(Action.DEV_OVERLAY) + " developer overlay · Keys… rebinds";
     }
 
     String encode() {

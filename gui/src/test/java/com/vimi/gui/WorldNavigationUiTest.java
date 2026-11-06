@@ -294,21 +294,22 @@ public final class WorldNavigationUiTest {
         view.activate();
         var split=(javafx.scene.control.SplitPane)get(view,"split");
         var hint=view.lookup("#world-panels-hint");
-        var hud=view.lookup("#world-hud");
+        // The HUD's hideable rows; the HUD layer itself stays for the developer overlay's slot.
+        var hud=view.lookup("#world-hud-top-left");
         // The map list already left the split for the explorer (HUD step 1); Alt+Z hides the HUD.
         require(split.getItems().size()==1 && content.getBottom().isVisible() && hud.isVisible() && !hint.isVisible(),
                 "The HUD starts shown, without the map list");
         for (int i=0;i<30;i++) press(viewport,KeyCode.Z,true);
         require(!content.getBottom().isVisible() && !content.getBottom().isManaged() && !hud.isVisible(),
                 "Alt+Z hides the slim bar and the HUD overlays once, however long it is held");
-        require(split.getItems().size()==1 && split.getItems().getFirst()==content,"The map list stays out");
+        require(split.getItems().size()==1 && split.getItems().getFirst()==content.getParent(),"The map list stays out");
         require(hint.isVisible(),"A hint says how to bring the HUD back");
         release(viewport,KeyCode.Z);
         press(viewport,KeyCode.Z,true);
         release(viewport,KeyCode.Z);
         require(content.getBottom().isVisible() && hud.isVisible() && !hint.isVisible(),"Alt+Z shows them again");
         var hide=(javafx.scene.control.Button)view.lookup("#world-hide-panels");
-        require(hide.getText().equals("Hide HUD (Alt+Z)"),"The button names the HUD: "+hide.getText());
+        require(hide.getText().equals("Hide HUD (H or Alt+Z)"),"The button names the HUD: "+hide.getText());
         hide.fire();
         require(!hud.isVisible() && !content.getBottom().isVisible(),"The Hide HUD button hides it");
         press(viewport,KeyCode.Z,true);
@@ -317,7 +318,7 @@ public final class WorldNavigationUiTest {
         // The HUD lives in the viewport, so it comes along to full screen, and Alt+Z works there.
         press(viewport,KeyCode.F11,false);
         release(viewport,KeyCode.F11);
-        require(full.active() && full.stage().getScene().getRoot().lookup("#world-hud")==hud,"The HUD is on the full-screen stage");
+        require(full.active() && full.stage().getScene().getRoot().lookup("#world-hud-top-left")==hud,"The HUD is on the full-screen stage");
         press(viewport,KeyCode.Z,true);
         release(viewport,KeyCode.Z);
         require(full.active() && !hud.isVisible() && hint.isVisible(),"Alt+Z hides the HUD in full screen");
@@ -331,13 +332,13 @@ public final class WorldNavigationUiTest {
         // Alt+Z first, then F11: the hint follows into full screen and names the right keys there.
         press(viewport,KeyCode.Z,true);
         release(viewport,KeyCode.Z);
-        require(!hud.isVisible() && hint.isVisible() && ((javafx.scene.control.Label)hint).getText().equals(WorldView.PANELS_HINT),
+        require(!hud.isVisible() && hint.isVisible() && ((javafx.scene.control.Label)hint).getText().equals("H or Alt+Z shows the HUD · F11 full screen"),
                 "Hidden HUD in the window: "+((javafx.scene.control.Label)hint).getText());
         press(viewport,KeyCode.F11,false);
         release(viewport,KeyCode.F11);
         require(full.active() && !hud.isVisible() && hint.isVisible()
                         && full.stage().getScene().getRoot().lookup("#world-panels-hint")==hint
-                        && ((javafx.scene.control.Label)hint).getText().equals(WorldView.PANELS_HINT_FULLSCREEN),
+                        && ((javafx.scene.control.Label)hint).getText().equals("H or Alt+Z shows the HUD · F11 or Esc leaves full screen"),
                 "F11 with the HUD hidden: one hint, on the full-screen stage, saying how to leave: "
                         +((javafx.scene.control.Label)hint).getText());
         press(viewport,KeyCode.Z,true);
@@ -346,7 +347,7 @@ public final class WorldNavigationUiTest {
         press(viewport,KeyCode.Z,true);
         release(viewport,KeyCode.Z);
         full.exit();
-        require(!full.active() && hint.isVisible() && ((javafx.scene.control.Label)hint).getText().equals(WorldView.PANELS_HINT),
+        require(!full.active() && hint.isVisible() && ((javafx.scene.control.Label)hint).getText().equals("H or Alt+Z shows the HUD · F11 full screen"),
                 "Leaving full screen another way (Esc, close) brings the window hint back");
         press(viewport,KeyCode.Z,true);
         release(viewport,KeyCode.Z);
@@ -407,7 +408,7 @@ public final class WorldNavigationUiTest {
         var content=(javafx.scene.layout.BorderPane)get(view,"content");
         var split=(javafx.scene.control.SplitPane)get(view,"split");
         var sidebar=(Node)get(view,"sidebarPane");
-        require(split.getItems().size()==1 && split.getItems().getFirst()==content && sidebar.getParent()==null,
+        require(split.getItems().size()==1 && split.getItems().getFirst()==content.getParent() && sidebar.getParent()==null,
                 "The map list is not in the split while exploring");
         require(content.getTop()==null && content.getCenter()==viewport,"Nothing sits above the viewport");
         // Acceptance: the view takes at least 80% of the window (it was about 27%). This scene is
@@ -471,12 +472,29 @@ public final class WorldNavigationUiTest {
                 "#world-instance-status","#world-back","#world-gpu-activity","#world-texture-activity"})
             require(view.lookup(id)!=null && isWithin(view.lookup(id),rows),"Still reachable under More: "+id);
         require(isWithin((Node)get(view,"keyHelp"),rows),"The key help line is under More");
+        // The long GPU and texture texts show once, on the developer overlay; More keeps Retry,
+        // whose tooltip always gives the current reason.
+        for (var pair : new String[][] {{"#world-gpu-retry","#world-gpu-status"},{"#world-texture-retry","#world-texture-status"}}) {
+            var retry=(Button)view.lookup(pair[0]);
+            var text=(javafx.scene.control.Label)view.lookup(pair[1]);
+            require(retry.getTooltip()!=null && retry.getTooltip().getText().equals(text.getText()),
+                    pair[0]+" explains itself: "+(retry.getTooltip()==null?null:retry.getTooltip().getText()));
+            String was=text.getText();
+            text.setText("Renderer not responding; Retry");
+            require(retry.getTooltip().getText().equals("Renderer not responding; Retry"),pair[0]+" follows the status text");
+            text.setText(was);
+        }
+        for (var id : new String[] {"#world-gpu-status","#world-texture-status"})
+            require(!view.lookup(id).isVisible() && !view.lookup(id).isManaged(),"Not shown under More: "+id);
+        for (var id : new String[] {"#world-gpu-retry","#world-texture-retry"})
+            require(view.lookup(id).isVisible(),"Retry stays under More: "+id);
+        // The spawn and role controls live in the minimap's tracking popup (#515), not under More.
         for (var name : new String[] {"spawns","roles"}) {
             var overlay=get(view,name);
             if (overlay==null) continue;
             try {
                 var controls=(Node)overlay.getClass().getDeclaredMethod("controls").invoke(overlay);
-                require(isWithin(controls,rows),"The "+name+" controls are under More");
+                require(!isWithin(controls,rows),"The "+name+" controls are not under More");
             } catch (ReflectiveOperationException error) { throw new AssertionError(error); }
         }
         more.fire();
@@ -527,13 +545,15 @@ public final class WorldNavigationUiTest {
         var extra=new javafx.scene.control.Label("extra row");
         hudNode.addTopLeft(extra);
         var column=(javafx.scene.layout.VBox)view.lookup("#world-hud-top-left");
-        require(column.getChildren().indexOf(extra)==column.getChildren().indexOf(panel)-1,"Added rows go above the map panel");
+        var left=(javafx.scene.layout.VBox)view.lookup("#world-hud-left");
+        require(column.getChildren().getLast()==extra && left.getChildren().indexOf(column)<left.getChildren().indexOf(panel),
+                "Added rows go above the map panel");
         key(extra,KeyCode.W,true);
         require(!input(view).keysHeld(),"Added rows stop flight keys");
         key(extra,KeyCode.W,false);
         hudNode.removeTopLeft(panel);
         hudNode.removeTopLeft(statusChip);
-        require(column.getChildren().contains(panel) && column.getChildren().contains(statusChip),"Core rows cannot be removed");
+        require(left.getChildren().contains(panel) && column.getChildren().contains(statusChip),"Core rows cannot be removed");
         hudNode.removeTopLeft(extra);
         require(!column.getChildren().contains(extra),"Added rows can be removed");
         require(!(hudNode.hiddenProperty() instanceof javafx.beans.value.WritableBooleanValue),"Followers get a read-only hidden state");
@@ -549,6 +569,119 @@ public final class WorldNavigationUiTest {
         require(panel.isVisible(),"The next M opens the panel at once");
         mapButton.fire();
         require(!panel.isVisible(),"The Map button closes it");
+        hideHudKeyAndDeveloperSlot(view,viewport,hud,panel);
+    }
+
+    /**
+     * H (rebindable) and Alt+Z share one hidden state; the developer overlay sits in the HUD's own
+     * slot under the left column and stays when the HUD is hidden.
+     */
+    private static void hideHudKeyAndDeveloperSlot(WorldView view,Node viewport,Node hud,Node panel) {
+        var rows=view.lookup("#world-hud-top-left");
+        var bottom=((javafx.scene.layout.BorderPane)get(view,"content")).getBottom();
+        var hint=view.lookup("#world-panels-hint");
+        var hudNode=(WorldHud)get(view,"hud");
+        require(rows.isVisible() && bottom.isVisible() && !hudNode.hidden(),"The HUD starts shown");
+        for (int i=0;i<20;i++) key(viewport,KeyCode.H,true);
+        require(!rows.isVisible() && !bottom.isVisible() && hint.isVisible() && hudNode.hidden(),
+                "H hides the HUD and the slim bar once, however long it is held");
+        require(input(view).axes().equals(com.vibeminer.rendering.world.ExplorerMotion.Input.NONE),"H is not movement");
+        key(viewport,KeyCode.H,false);
+        press(viewport,KeyCode.Z,true);
+        release(viewport,KeyCode.Z);
+        key(viewport,KeyCode.ALT,false);
+        require(rows.isVisible() && bottom.isVisible() && !hint.isVisible(),"Alt+Z shows what H hid: one state");
+        press(viewport,KeyCode.Z,true);
+        release(viewport,KeyCode.Z);
+        key(viewport,KeyCode.ALT,false);
+        key(viewport,KeyCode.H,true);
+        key(viewport,KeyCode.H,false);
+        require(rows.isVisible() && !hint.isVisible(),"H shows what Alt+Z hid");
+        // M opens the panel, H closes it with the HUD, the next M opens it again.
+        key(viewport,KeyCode.M,true);
+        key(viewport,KeyCode.M,false);
+        require(panel.isVisible(),"M opens the panel");
+        key(viewport,KeyCode.H,true);
+        key(viewport,KeyCode.H,false);
+        require(!panel.isVisible() && !rows.isVisible(),"H with the panel open closes it");
+        key(viewport,KeyCode.M,true);
+        key(viewport,KeyCode.M,false);
+        require(panel.isVisible() && rows.isVisible(),"M shows the HUD and opens the panel");
+        key(viewport,KeyCode.M,true);
+        key(viewport,KeyCode.M,false);
+        // The developer overlay lives in the HUD's slot, under the rows, and ignores the hidden state.
+        var overlay=view.devOverlay();
+        var slot=view.lookup("#world-hud-dev-slot");
+        var left=(javafx.scene.layout.VBox)view.lookup("#world-hud-left");
+        require(overlay.getParent()==slot && isWithin(slot,view.lookup("#world-hud")) && !isWithin(slot,rows)
+                        && left.getChildren().indexOf(slot)>left.getChildren().indexOf(rows)
+                        && left.getChildren().indexOf(slot)<left.getChildren().indexOf(panel),
+                "The developer overlay is in the HUD's slot, under the left column's rows");
+        require(!overlay.isVisible() && !slot.isVisible() && !slot.isManaged(),"Off, the slot takes no room");
+        key(viewport,KeyCode.F3,true);
+        key(viewport,KeyCode.F3,false);
+        require(overlay.isVisible() && slot.isVisible(),"F3 shows the overlay");
+        view.getScene().getRoot().applyCss();
+        view.getScene().getRoot().layout();
+        double rowsBottom=rows.localToScene(rows.getLayoutBounds()).getMaxY();
+        double overlayTop=overlay.localToScene(overlay.getLayoutBounds()).getMinY();
+        require(overlayTop>=rowsBottom,"The overlay starts below the Map row and status: "+overlayTop+" >= "+rowsBottom);
+        key(viewport,KeyCode.H,true);
+        key(viewport,KeyCode.H,false);
+        require(!rows.isVisible() && overlay.isVisible() && slot.isVisible() && view.lookup("#world-hud").isVisible(),
+                "Hiding the HUD keeps the developer overlay");
+        view.getScene().getRoot().applyCss();
+        view.getScene().getRoot().layout();
+        require(overlay.localToScene(overlay.getLayoutBounds()).getMinY()<overlayTop,
+                "With the rows hidden the overlay moves up to the top of the column");
+        // The hidden-HUD hint sits in the same column, above the overlay: they never overlap.
+        var hintSlot=view.lookup("#world-hud-hint-slot");
+        require(hint.isVisible() && hint.getParent()==hintSlot && hintSlot.isVisible()
+                        && left.getChildren().indexOf(hintSlot)<left.getChildren().indexOf(slot),
+                "The hint is in the HUD column, above the developer slot");
+        var hintBox=hint.localToScene(hint.getLayoutBounds());
+        var overlayBox=overlay.localToScene(overlay.getLayoutBounds());
+        require(hintBox.getHeight()>0 && hintBox.getMaxY()<=overlayBox.getMinY() && !hintBox.intersects(overlayBox),
+                "Hint and overlay do not overlap: "+hintBox+" / "+overlayBox);
+        key(viewport,KeyCode.H,true);
+        key(viewport,KeyCode.H,false);
+        require(rows.isVisible() && overlay.isVisible(),"Shown again, overlay still on");
+        // Rebinding: J hides the HUD, H no longer does.
+        var controls=input(view).controls();
+        view.showControls(controls.unbind(WorldControls.Action.HIDE_HUD).bind(KeyCode.J,WorldControls.Action.HIDE_HUD));
+        key(viewport,KeyCode.H,true);
+        key(viewport,KeyCode.H,false);
+        require(rows.isVisible(),"An unbound H does nothing");
+        key(viewport,KeyCode.J,true);
+        key(viewport,KeyCode.J,false);
+        require(!rows.isVisible(),"A rebound hide HUD key works");
+        require(((javafx.scene.control.Label)hint).getText().equals("J or Alt+Z shows the HUD · F11 full screen")
+                        && ((Button)view.lookup("#world-hide-panels")).getText().equals("Hide HUD (J or Alt+Z)"),
+                "The hint and the button follow the rebinding: "+((javafx.scene.control.Label)hint).getText());
+        key(viewport,KeyCode.J,true);
+        key(viewport,KeyCode.J,false);
+        view.showControls(controls.unbind(WorldControls.Action.HIDE_HUD));
+        require(((Button)view.lookup("#world-hide-panels")).getText().equals("Hide HUD (Alt+Z)")
+                        && ((javafx.scene.control.Label)hint).getText().equals("Alt+Z shows the HUD · F11 full screen"),
+                "Unbound, they name Alt+Z alone");
+        view.showControls(controls);
+        require(((Button)view.lookup("#world-hide-panels")).getText().equals("Hide HUD (H or Alt+Z)"),"H again");
+        overlay.show(null);
+        require(!slot.isVisible(),"Overlay off again");
+        commandActionsAreRouted(view);
+    }
+
+    /** Every command action has a branch in the view's command dispatcher (no silent drop). */
+    private static void commandActionsAreRouted(WorldView view) {
+        int commands=0;
+        for (var action : WorldControls.Action.values()) {
+            if (!action.command) continue;
+            commands++;
+            // Twice, so the map panel and the hidden state end where they started.
+            require(view.command(action) && view.command(action),"WorldView.command routes "+action);
+        }
+        require(commands>=3,"The command actions are walked: "+commands);
+        view.devOverlay().show(null);
     }
 
     private static boolean isWithin(Node node, Node ancestor) {
@@ -582,7 +715,7 @@ public final class WorldNavigationUiTest {
         var split=(javafx.scene.control.SplitPane)get(view,"split");
         var content=(javafx.scene.layout.BorderPane)get(view,"content");
         require(split.getItems().size()==2 && split.getItems().getFirst()==get(view,"sidebarPane")
-                        && split.getItems().get(1)==content,
+                        && split.getItems().get(1)==content.getParent(),
                 "Leaving the explorer, even with the map panel open, puts the map list back in the split");
         require(!((Node)get(view,"viewport")).lookup("#world-map-panel").isVisible() && content.getTop()!=null
                         && isWithin((Node)get(view,"status"),content.getTop()),

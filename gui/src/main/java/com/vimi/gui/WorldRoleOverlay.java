@@ -240,6 +240,12 @@ final class WorldRoleOverlay implements AutoCloseable {
         status.setText(summary(loaded, layers, filter, shown.size(), onMap, hidden));
     }
 
+    /** The nearest drawn marker under a minimap canvas point, or null. */
+    MapRoles.Marker markerAt(double x, double y) {
+        var near = grid.near(x, y);
+        return near.markers().isEmpty() || loaded == null ? null : near.markers().getFirst();
+    }
+
     /** Hover text for the markers under a minimap canvas point, or null. */
     String hoverText(double x, double y) {
         var near = grid.near(x, y);
