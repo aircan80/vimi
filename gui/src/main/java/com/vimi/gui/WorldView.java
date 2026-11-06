@@ -1250,6 +1250,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void command(WorldControls.Action action) {
         switch (action) {
             case DEV_OVERLAY -> devOverlay.cycle();
+            case SPAWNS -> {
+                if (spawns != null && !spawns.toggle().isDisabled()) spawns.toggle().fire();
+            }
+            case DAY_NIGHT -> audio.cycleSlot();
+            case SPEED_STROLL, SPEED_MOUNT, SPEED_FLY, SPEED_FAST, SPEED_TURBO -> {
+                flightSpeed.setValue(action.speed());
+                controlsChanged();
+            }
             default -> {}
         }
     }

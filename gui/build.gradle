@@ -594,6 +594,13 @@ tasks.register('worldDevOverlayUiTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldDevOverlayUiTest'
 }
 
+// HUD keys (V, T, 1-5) over the real World view; display required.
+tasks.register('worldHudKeysUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldHudKeysUiTest'
+}
+
 // Authored JavaFX artwork/lifecycle proof; requires a desktop display.
 tasks.register('worldMinimapUiTest', JavaExec) {
     dependsOn testClasses

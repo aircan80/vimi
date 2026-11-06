@@ -19,6 +19,7 @@ public final class WorldExplorerInputTest {
         keysMapToClampedAxes();
         walkToggleIgnoresKeyRepeat();
         devOverlayKeyCommandsOncePerPress();
+        hudKeysDefaultWithoutClashes();
         clearDropsHeldKeys();
         lookButtons();
         capturedLookIsRelativeAwayFromTheEdge();
@@ -173,6 +174,50 @@ public final class WorldExplorerInputTest {
                 "Stored controls from before the overlay gain its default key: " + older.keys());
         require(WorldControls.DEFAULTS.help().contains("F3 developer overlay"),
                 "Help names the overlay key: " + WorldControls.DEFAULTS.help());
+    }
+
+    private static void hudKeysDefaultWithoutClashes() {
+        var movement = java.util.EnumSet.of(WorldControls.Action.FORWARD, WorldControls.Action.BACK,
+                WorldControls.Action.LEFT, WorldControls.Action.RIGHT, WorldControls.Action.UP,
+                WorldControls.Action.DOWN, WorldControls.Action.TURN_LEFT, WorldControls.Action.TURN_RIGHT,
+                WorldControls.Action.LOOK_UP, WorldControls.Action.LOOK_DOWN, WorldControls.Action.SPRINT,
+                WorldControls.Action.WALK);
+        for (var layout : WorldControls.Layout.values()) {
+            var keys = layout.keys();
+            require(keys.get(KeyCode.V) == WorldControls.Action.SPAWNS
+                            && keys.get(KeyCode.T) == WorldControls.Action.DAY_NIGHT,
+                    layout + " binds V and T: " + keys);
+            var controls = WorldControls.DEFAULTS.withKeys(keys);
+            var bound = controls.byAction();
+            for (var action : movement)
+                require(!bound.get(action).isEmpty(), layout + ": the new keys take no movement key from " + action);
+            for (var action : WorldControls.Action.values())
+                require(action.command != movement.contains(action),
+                        "Every HUD key is a command and no movement key is: " + action);
+            boolean digits = keys.containsKey(KeyCode.DIGIT1);
+            require(digits == (layout == WorldControls.Layout.QWERTY),
+                    layout + (digits ? " binds" : " leaves unbound") + " the speed digits");
+        }
+        var qwerty = WorldControls.Layout.QWERTY.keys();
+        var speeds = List.of(KeyCode.DIGIT1, KeyCode.DIGIT2, KeyCode.DIGIT3, KeyCode.DIGIT4, KeyCode.DIGIT5);
+        for (int i = 0; i < speeds.size(); i++)
+            require(qwerty.get(speeds.get(i)).speed() == WorldControls.Speed.values()[i],
+                    "Digit " + (i + 1) + " selects " + WorldControls.Speed.values()[i]);
+        require(WorldControls.Action.SPAWNS.speed() == null, "Only speed actions name a preset");
+        var host = new Host();
+        var input = exact(host);
+        for (var code : List.of(KeyCode.V, KeyCode.T, KeyCode.DIGIT5)) {
+            input.keyPressed(code);
+            input.keyPressed(code);
+            input.keyReleased(code);
+        }
+        require(host.commands.equals(List.of(WorldControls.Action.SPAWNS, WorldControls.Action.DAY_NIGHT,
+                        WorldControls.Action.SPEED_TURBO)) && input.axes().equals(ExplorerMotion.Input.NONE),
+                "Each HUD key commands once per press and moves nothing: " + host.commands);
+        var stored = WorldControls.decode(WorldControls.DEFAULTS.unbind(WorldControls.Action.SPAWNS)
+                .bind(KeyCode.K, WorldControls.Action.SPAWNS).encode());
+        require(stored.keys().get(KeyCode.K) == WorldControls.Action.SPAWNS && !stored.keys().containsKey(KeyCode.V),
+                "A rebound HUD key persists through the controls codec");
     }
 
     private static void clearDropsHeldKeys() {

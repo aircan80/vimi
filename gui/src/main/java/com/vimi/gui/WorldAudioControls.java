@@ -83,6 +83,18 @@ final class WorldAudioControls implements AutoCloseable {
         return slider;
     }
 
+    /** The day/night key: by clock, then day, then night, then by clock again. */
+    void cycleSlot() {
+        var all = WorldAudioDirector.Slot.values();
+        var now = variant.getValue() == null ? WorldAudioDirector.Slot.CLOCK : variant.getValue();
+        variant.setValue(all[(now.ordinal() + 1) % all.length]);
+    }
+
+    /** The selected day/night slot; for tests. */
+    WorldAudioDirector.Slot slot() {
+        return variant.getValue();
+    }
+
     /** The audio status text, e.g. for the developer overlay. */
     javafx.beans.property.ReadOnlyStringProperty statusText() {
         return status.textProperty();
