@@ -619,6 +619,19 @@ public final class WorldTerrainStreaming {
             WorldFormats.Tile comparison,
             Cancellation cancel,
             WorldExteriorObjects.ImageDetail detail) {
+        return prepareExteriorObjects(scope, comparison, cancel, detail, false);
+    }
+
+    /**
+     * As above; {@code interiors} also draws interior WMO groups, for dungeon and raid maps (#280),
+     * within the budgets each building's exterior groups leave.
+     */
+    public WorldExteriorObjects.TileObjects prepareExteriorObjects(
+            Scope scope,
+            WorldFormats.Tile comparison,
+            Cancellation cancel,
+            WorldExteriorObjects.ImageDetail detail,
+            boolean interiors) {
         Objects.requireNonNull(detail);
         Objects.requireNonNull(scope);
         Objects.requireNonNull(comparison);
@@ -630,7 +643,7 @@ public final class WorldTerrainStreaming {
             throw new IllegalArgumentException("Tile coordinate profile");
         }
         try {
-            return source().exteriorObjects(scope.token, comparison, cancel, detail);
+            return source().exteriorObjects(scope.token, comparison, cancel, detail, interiors);
         } catch (RuntimeException failure) {
             throw WorldSourceRefusals.boundary(failure);
         }

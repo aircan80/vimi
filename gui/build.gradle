@@ -360,6 +360,13 @@ tasks.register('worldPickTest', JavaExec) {
 }
 check.dependsOn worldPickTest
 
+// Streamed frame size debounce over authored pulses; no display.
+tasks.register('worldResizeDebounceTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldResizeDebounceTest'
+}
+check.dependsOn worldResizeDebounceTest
 // Stream camera revisions and presented-frame overlay projection; no display.
 tasks.register('worldCameraRingTest', JavaExec) {
     dependsOn testClasses
