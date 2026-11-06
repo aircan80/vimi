@@ -32,6 +32,11 @@ public interface AssetSource {
      * the array while the source is in use: decoding a file one level at a time then costs no copy
      * of the whole file per level. Reads still return fresh arrays, so nothing reached through the
      * source can change the caller's bytes.
+     *
+     * <p>"In use" includes asynchronous work: {@code Blp2Decoder.decode}, {@code readMips} and
+     * {@code decodeLargestWithin} read the source on another task, so the caller must not reuse or
+     * change the array until that task's future completes. The synchronous decoder methods have
+     * returned before the caller continues.
      */
     static AssetSource borrowed(byte[] source) {
         return over(java.util.Objects.requireNonNull(source));
