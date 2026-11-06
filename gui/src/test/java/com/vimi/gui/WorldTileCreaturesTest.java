@@ -39,6 +39,7 @@ public final class WorldTileCreaturesTest {
         defaultGeosetsDrawWithoutCreatureGeosetData();
         aDenseNeighbourNoLongerStarvesTheTilesOwnSpawns();
         busyOrClosedPreviewsCostNoBudget();
+        creaturesStandInTheirIdlePoseOrSayWhyNot();
         cutoutReductionKeepsThinStrands();
         appendDrawsOnlyQualifiedSpawnsOfTheTile();
         buildingsKeepTheirBudgetFirst();
@@ -235,6 +236,119 @@ public final class WorldTileCreaturesTest {
         var crowded = one.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
         require(asked.get() == 1 && crowded.count(WorldTileCreatures.Count.PREVIEWS_BUSY) == 300,
                 "A busy display is not resubmitted for every spawn: " + asked.get());
+    }
+
+    /** One opaque triangle at z 0 and its one-bone Stand sequence that lifts it by 5. */
+    static MeshAppearance standing() {
+        var mesh = new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, new int[] {0, 1, 2},
+                List.of(new PreviewMesh.Part(0, 0, 3)));
+        return new MeshAppearance(mesh, new float[6], List.of(new MeshAppearance.Surface(0, 0, true, true, false)),
+                List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})));
+    }
+
+    static com.vibeminer.rendering.models.PreviewAnimation lift(MeshAppearance appearance) {
+        var up = new com.vibeminer.rendering.models.PreviewAnimation.Track(
+                com.vibeminer.rendering.models.PreviewAnimation.Interpolation.LINEAR, -1, 3, new int[] {0},
+                new float[] {0, 0, 5});
+        var bone = new com.vibeminer.rendering.models.PreviewAnimation.Bone(-1, 0, 0, 0, up, null, null, false);
+        int vertices = appearance.mesh().vertexCount();
+        int[] bones = new int[vertices * 4], weights = new int[vertices * 4];
+        for (int v = 0; v < vertices; v++) weights[v * 4] = 255;
+        return new com.vibeminer.rendering.models.PreviewAnimation("Stand", 1000, new long[0], List.of(bone),
+                appearance.mesh(), new float[0], bones, weights);
+    }
+
+    static WorldTileCreatures standingCreatures(java.util.function.Supplier<DisplayModelTypes.Idle> idle) {
+        var appearance = standing();
+        return new WorldTileCreatures(token -> index(List.of(WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0),
+                WorldSpawnOverlayTest.spawn(1, 2, -110, -100, 10.0))), () -> "r1",
+                (npc, token) -> qualified(7, null), new WorldTileCreatures.Previews() {
+                    public DisplayModelTypes.Preview preview(long display, Cancellation token) {
+                        return preview(display, 0L, 0L, appearance);
+                    }
+
+                    public DisplayModelTypes.Idle idle(long display, Cancellation token) {
+                        return idle.get();
+                    }
+
+                    private DisplayModelTypes.Preview preview(long display, Long extended, Long geosets,
+                            MeshAppearance appearance) {
+                        return WorldTileCreaturesTest.preview(display, extended, geosets, appearance);
+                    }
+                });
+    }
+
+    private static void creaturesStandInTheirIdlePoseOrSayWhyNot() throws Exception {
+        var appearance = standing();
+        var animation = lift(appearance);
+        var available = new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.AVAILABLE, null, animation, "Stand");
+        // The Stand sequence's first frame is baked into the converted mesh.
+        var preview = preview(7, 0L, 0L, appearance);
+        var stood = new WorldTileCreatures(token -> index(List.of()), () -> "r1", (npc, token) -> qualified(7, null),
+                new WorldTileCreatures.Previews() {
+                    public DisplayModelTypes.Preview preview(long display, Cancellation token) {
+                        return preview;
+                    }
+
+                    public DisplayModelTypes.Idle idle(long display, Cancellation token) {
+                        return available;
+                    }
+                }).stand(7, preview, Cancellation.NONE);
+        require(stood.model() != null && stood.model().restPose() == null, "A qualified Stand pose is baked");
+        float[] v = stood.model().vertices();
+        var expected = animation.pose(appearance.mesh(), 0).mesh().positions();
+        require(v[0] == expected[0] && v[1] == expected[1] && v[2] == expected[2] && v[2] == 5,
+                "Posed vertices match the animation's Stand frame: " + v[2]);
+        // Placements of a posed model are not disclosed as rest-posed.
+        var tile = standingCreatures(() -> available).append(WorldStreamTileWriter.Exterior.builder(), 0, TILE,
+                Cancellation.NONE);
+        require(tile.drawn() == 2 && tile.restPosed() == 0, "Both placements stand");
+        require(WorldStreamSourceController.creatureDetail(tile, 1).contains("(Stand pose, facing north)"),
+                WorldStreamSourceController.creatureDetail(tile, 1));
+        // No qualified sequence: the rest pose is drawn and the reason recorded.
+        var missing = standingCreatures(() -> DisplayModelTypes.Idle.unavailable("The Stand sequence records no bone keys"));
+        var rest = missing.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(rest.drawn() == 2 && rest.restPosed() == 2, "Rest-posed placements are counted");
+        require(WorldStreamSourceController.creatureDetail(rest, 1).contains("(rest pose, facing north)"),
+                WorldStreamSourceController.creatureDetail(rest, 1));
+        var otherSurface = new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.AVAILABLE, null, lift(new MeshAppearance(
+                new PreviewMesh(new float[] {0, 0, 1, 1, 0, 1, 0, 1, 1}, new int[] {0, 1, 2},
+                        List.of(new PreviewMesh.Part(0, 0, 3))),
+                new float[6], List.of(new MeshAppearance.Surface(0, 0, true, true, false)),
+                List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})))),
+                "Stand");
+        var mismatched = new WorldTileCreatures(token -> index(List.of()), () -> "r1",
+                (npc, token) -> qualified(7, null), new WorldTileCreatures.Previews() {
+                    public DisplayModelTypes.Preview preview(long display, Cancellation token) {
+                        return preview;
+                    }
+
+                    public DisplayModelTypes.Idle idle(long display, Cancellation token) {
+                        return otherSurface;
+                    }
+                }).stand(7, preview, Cancellation.NONE);
+        require(mismatched.model().restPose().contains("another rest surface"),
+                "A sequence for another surface is not applied: " + mismatched.model().restPose());
+        require(mismatched.model().vertices()[2] == 0, "The rest pose is kept");
+        // An idle read failure keeps the rest pose; a busy reader is not cached as anything.
+        var failing = new WorldTileCreatures(token -> index(List.of()), () -> "r1",
+                (npc, token) -> qualified(7, null), new WorldTileCreatures.Previews() {
+                    public DisplayModelTypes.Preview preview(long display, Cancellation token) {
+                        return preview;
+                    }
+
+                    public DisplayModelTypes.Idle idle(long display, Cancellation token) {
+                        throw new IllegalStateException("broken");
+                    }
+                });
+        require(failing.stand(7, preview, Cancellation.NONE).model().restPose()
+                .equals("Stand pose failed: IllegalStateException"), "An idle failure is stated");
+        var busyIdle = standingCreatures(() -> {
+            throw new DisplayModelTypes.ServiceUnavailable("Display previews busy", false, null);
+        });
+        var busy = busyIdle.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(busy.count(WorldTileCreatures.Count.PREVIEWS_BUSY) == 2 && busy.drawn() == 0,
+                "A busy idle read is a busy preview, not a rest pose");
     }
     private static void appendDrawsOnlyQualifiedSpawnsOfTheTile() {
         var previews = new AtomicInteger();
