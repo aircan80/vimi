@@ -2,6 +2,7 @@ package com.vibeminer.rendering.bgfx;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -79,7 +80,7 @@ public final class WorldAppearanceProof {
     @SuppressWarnings("try")
     static Map<String, int[]> render(Path output, WorldStreamTransport.Backend backend)
             throws Exception {
-        var process = new AtomicReference<Process>();
+        var process = new AtomicReference<TeeProcess>();
         var prepared =
                 WorldStreamTransport.prepare(
                         output, new WorldStreamTransport.Spec("cd".repeat(32), 1, backend, true));
@@ -99,7 +100,7 @@ public final class WorldAppearanceProof {
                                                     System.getProperty("java.class.path"),
                                                     GpuViewerMain.class.getName()));
                             command.addAll(controls);
-                            var child = new ProcessBuilder(command).start();
+                            var child = new TeeProcess(new ProcessBuilder(command).start());
                             process.set(child);
                             return child;
                         });
@@ -107,6 +108,19 @@ public final class WorldAppearanceProof {
         try {
             session.initialized().get(15, TimeUnit.SECONDS);
             prepared.close();
+            String renderer = process.get().renderer(Duration.ofSeconds(5));
+            String expected =
+                    switch (backend) {
+                        case VULKAN -> "Vulkan";
+                        case D3D11 -> "Direct3D 11";
+                        case METAL -> "Metal";
+                        case DEFAULT -> throw new IllegalArgumentException("Name a backend");
+                    };
+            System.out.println("WORLD_APPEARANCE_RENDERER " + renderer);
+            if (!renderer.equals(expected)) {
+                throw new AssertionError(
+                        "The helper used " + renderer + ", not the requested " + backend);
+            }
             var resident = grid(reserve(session)).get(8, TimeUnit.SECONDS);
             // Above the tile's centre, looking down at its whole textured surface.
             var above = new com.vibeminer.rendering.world.TerrainCamera(-266, -266, 330, 0, -1.45);
@@ -238,6 +252,124 @@ public final class WorldAppearanceProof {
                         return packet;
                     }
                 });
+    }
+
+    /**
+     * The helper process, with its stderr copied as the transport reads it, so the proof can see
+     * the helper's "World v2 renderer: <name>" diagnostic line.
+     */
+    static final class TeeProcess extends Process {
+        private final Process delegate;
+        private final java.io.ByteArrayOutputStream copy = new java.io.ByteArrayOutputStream();
+        private final java.io.InputStream errors;
+
+        TeeProcess(Process delegate) {
+            this.delegate = delegate;
+            errors =
+                    new java.io.FilterInputStream(delegate.getErrorStream()) {
+                        @Override
+                        public int read() throws java.io.IOException {
+                            int b = super.read();
+                            if (b >= 0) {
+                                synchronized (copy) {
+                                    copy.write(b);
+                                }
+                            }
+                            return b;
+                        }
+
+                        @Override
+                        public int read(byte[] buffer, int offset, int length)
+                                throws java.io.IOException {
+                            int read = super.read(buffer, offset, length);
+                            if (read > 0) {
+                                synchronized (copy) {
+                                    copy.write(buffer, offset, read);
+                                }
+                            }
+                            return read;
+                        }
+                    };
+        }
+
+        /** The renderer name the helper reported on stderr, waiting up to {@code timeout}. */
+        String renderer(Duration timeout) throws InterruptedException {
+            long until = System.nanoTime() + timeout.toNanos();
+            while (System.nanoTime() < until) {
+                String text;
+                synchronized (copy) {
+                    text = copy.toString(java.nio.charset.StandardCharsets.UTF_8);
+                }
+                var matcher =
+                        java.util.regex.Pattern.compile("World v2 renderer: ([^\r\n]+)")
+                                .matcher(text);
+                if (matcher.find()) {
+                    return matcher.group(1).trim();
+                }
+                Thread.sleep(10);
+            }
+            throw new AssertionError("The helper did not report its renderer");
+        }
+
+        @Override
+        public java.io.OutputStream getOutputStream() {
+            return delegate.getOutputStream();
+        }
+
+        @Override
+        public java.io.InputStream getInputStream() {
+            return delegate.getInputStream();
+        }
+
+        @Override
+        public java.io.InputStream getErrorStream() {
+            return errors;
+        }
+
+        @Override
+        public int waitFor() throws InterruptedException {
+            return delegate.waitFor();
+        }
+
+        @Override
+        public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException {
+            return delegate.waitFor(timeout, unit);
+        }
+
+        @Override
+        public int exitValue() {
+            return delegate.exitValue();
+        }
+
+        @Override
+        public void destroy() {
+            delegate.destroy();
+        }
+
+        @Override
+        public Process destroyForcibly() {
+            return delegate.destroyForcibly();
+        }
+
+        @Override
+        public boolean isAlive() {
+            return delegate.isAlive();
+        }
+
+        @Override
+        public long pid() {
+            return delegate.pid();
+        }
+
+        @Override
+        public ProcessHandle toHandle() {
+            return delegate.toHandle();
+        }
+
+        @Override
+        public java.util.concurrent.CompletableFuture<Process> onExit() {
+            return delegate.onExit().thenApply(ignored -> this);
+        }
     }
 
     private static WorldStreamTransport.TileReservation reserve(

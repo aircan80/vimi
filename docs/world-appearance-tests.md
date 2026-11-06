@@ -73,8 +73,11 @@ When a change is **meant** to alter the image (a new shading model, fog, a mater
 3. Run both again without the flag (they must pass), and commit the new PNGs with the change.
    Say in the PR which scenes changed and why.
 
-On the Windows development machine, both backends currently produce byte-identical frames for
-these scenes.
+The proof checks that the helper really used the requested backend: the helper reports the
+renderer bgfx created on stderr (`World v2 renderer: <name>`), the proof prints it as
+`WORLD_APPEARANCE_RENDERER <name>` and fails if it is not the requested one ("Vulkan",
+"Direct3D 11"). On the Windows development machine both backends report their own renderer and
+still produce byte-identical frames for these flat, untextured-light scenes.
 
 ## Not covered yet
 

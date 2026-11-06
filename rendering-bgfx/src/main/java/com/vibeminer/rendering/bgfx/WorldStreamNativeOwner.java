@@ -117,6 +117,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             var caps = bgfx_get_caps();
             GpuViewerMain.requireHardware(
                     Short.toUnsignedInt(caps.vendorId()), Short.toUnsignedInt(caps.deviceId()));
+            // Diagnostics only (stderr, never the protocol): the renderer bgfx actually created,
+            // so proofs can check that the requested backend was used (#379).
+            System.err.println(
+                    "World v2 renderer: "
+                            + org.lwjgl.bgfx.BGFX.bgfx_get_renderer_name(caps.rendererType()));
+            System.err.flush();
             if ((caps.supported() & (BGFX_CAPS_TEXTURE_BLIT | BGFX_CAPS_TEXTURE_READ_BACK))
                             != (BGFX_CAPS_TEXTURE_BLIT | BGFX_CAPS_TEXTURE_READ_BACK)
                     || !bgfx_is_texture_valid(
