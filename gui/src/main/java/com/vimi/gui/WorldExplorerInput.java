@@ -24,7 +24,11 @@ final class WorldExplorerInput {
 
         TerrainGround ground();
 
-        /** True when the wheel may dolly: an explorer scene or stream is present. */
+        /**
+         * True when the wheel may dolly. The view answers {@code terrainScene != null}, which is
+         * set only on the legacy CPU explorer path, so in GPU streaming mode the plain wheel
+         * currently does nothing (as before this extraction; fixed in the #355 controls work).
+         */
         boolean wheelReady();
 
         /** True when frames are cheap enough for the 16 ms movement cadence. */
@@ -56,13 +60,11 @@ final class WorldExplorerInput {
     private final Set<KeyCode> keys = new HashSet<>();
     private double mouseX, mouseY, speed = DEFAULT_SPEED;
     private long lastTick, lastRender, lastNearby;
+    // The camera moved since the last frame this input requested (cadence held it back).
+    private boolean unshown;
 
     WorldExplorerInput(Host host) {
         this.host = Objects.requireNonNull(host);
-    }
-
-    ExplorerMotion.Mode mode() {
-        return motion.mode();
     }
 
     /** Applies the walk and smoothing toggles; drops retained velocity. */
@@ -120,7 +122,7 @@ final class WorldExplorerInput {
         host.camera(camera.look((mouseX - x) * LOOK_PER_PIXEL, (mouseY - y) * LOOK_PER_PIXEL));
         mouseX = x;
         mouseY = y;
-        host.requestFrame();
+        frame();
     }
 
     /** True when a click should inspect: primary button released without movement. */
@@ -150,7 +152,7 @@ final class WorldExplorerInput {
         if (zoomed.moved()) {
             host.camera(zoomed.camera());
             host.abandonUnusableCandidate();
-            host.requestFrame();
+            frame();
             host.loadNext();
         }
     }
@@ -184,22 +186,40 @@ final class WorldExplorerInput {
                         || input.vertical() != 0
                         || input.turn() != 0
                         || input.tilt() != 0;
-        if (!steering && !motion.coasting() && motion.mode() != ExplorerMotion.Mode.WALK) return;
+        if (!steering && !motion.coasting() && motion.mode() != ExplorerMotion.Mode.WALK) {
+            showFinal();
+            return;
+        }
         var stepped = motion.step(camera, input, dt, speed, host.ground());
         host.groundStatus(stepped.ground());
-        if (!stepped.moved()) return;
+        if (!stepped.moved()) {
+            // Velocity just decayed to zero: the last moving step may still be unframed.
+            if (stepped.resting()) showFinal();
+            return;
+        }
         host.camera(stepped.camera());
+        unshown = true;
         long cadence = host.fastCadence() ? FAST_CADENCE_NANOS : SLOW_CADENCE_NANOS;
         // The final settling/coasting step is always shown, not dropped by cadence.
         if (now - lastRender > cadence || stepped.resting()) {
             lastRender = now;
-            host.requestFrame();
+            frame();
         }
         host.abandonUnusableCandidate();
         if (now - lastNearby > NEARBY_NANOS) {
             lastNearby = now;
             host.loadNext();
         }
+    }
+
+    private void frame() {
+        unshown = false;
+        host.requestFrame();
+    }
+
+    /** Frames a position the cadence held back once motion has stopped. */
+    private void showFinal() {
+        if (unshown) frame();
     }
 
     /** Test hook: suppress cadence-driven frames and discovery while exercising motion. */

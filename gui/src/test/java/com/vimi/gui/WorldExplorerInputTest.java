@@ -26,6 +26,9 @@ public final class WorldExplorerInputTest {
         pulseIntegratesHeldKeysAtTheEstablishedRates();
         pulseRequestsFramesAtCadenceAndNearbyLoadsThrottled();
         idleRestartsIntegrationAtZeroSeconds();
+        walkAtRestStillReportsTheGround();
+        smoothReleaseCoastsThenFramesTheRestingStep();
+        walkWheelMovesAlongTheHeadingOnly();
         System.out.println(
                 "World explorer input: key axes, walk toggle, look drag, inspect click, wheel,"
                         + " speed, pulse cadence and idle passed");
@@ -214,7 +217,8 @@ public final class WorldExplorerInputTest {
         input.pulse(t);
         host.calls.clear();
         for (int i = 1; i <= 20; i++) input.pulse(t + i * 5_000_000L);
-        // 100 ms of 5 ms pulses: fast cadence (> 16 ms) frames every 4th pulse, nearby every 100 ms.
+        // 100 ms of 5 ms pulses: fast cadence (> 16 ms) frames on pulses 1, 5, 9, 13 and 17;
+        // nearby loads every 100 ms.
         require(host.count("frame") == 5, "Fast cadence frames: " + host.count("frame"));
         require(host.count("abandon") == 20, "Every moving pulse checks the candidate");
         require(host.count("nearby") == 1, "Nearby loads are throttled: " + host.count("nearby"));
@@ -225,8 +229,8 @@ public final class WorldExplorerInputTest {
         input.keyReleased(KeyCode.W);
         host.calls.clear();
         input.pulse(t + 61 * 5_000_000L);
-        require(host.calls.equals(List.of("ground:FREE")),
-                "The release pulse drops retained velocity without moving: " + host.calls);
+        require(host.calls.equals(List.of("ground:FREE", "frame")),
+                "The release pulse stops and frames the position the cadence held back: " + host.calls);
         host.calls.clear();
         input.pulse(t + 62 * 5_000_000L);
         require(host.calls.isEmpty(), "At rest in flight no hooks fire: " + host.calls);
@@ -246,6 +250,75 @@ public final class WorldExplorerInputTest {
         host.camera = null;
         input.pulse(9_050_000_000L);
         require(host.camera == null, "No camera: the pulse does nothing");
+    }
+
+    /** Walking keeps sampling the ground every pulse, even with no key held. */
+    private static void walkAtRestStillReportsTheGround() {
+        var host = new Host();
+        var input = new WorldExplorerInput(host);
+        input.motion(true, false);
+        input.pulse(1_000_000_000L);
+        input.pulse(1_016_000_000L);
+        require(host.camera.equals(START), "No keys: walking holds the camera");
+        require(host.calls.equals(List.of("ground:UNAVAILABLE", "ground:UNAVAILABLE")),
+                "Each walking pulse reports the ground, never frames: " + host.calls);
+    }
+
+    /**
+     * Smoothed flight keeps moving after release until the velocity decays, and the camera's
+     * final position is always framed, even when the movement cadence would hold it back.
+     */
+    private static void smoothReleaseCoastsThenFramesTheRestingStep() {
+        var host = new Host();
+        var input = new WorldExplorerInput(host);
+        input.motion(false, true);
+        input.holdCadence();
+        input.keyPressed(KeyCode.W);
+        long t = 1_000_000_000L;
+        for (int i = 0; i < 30; i++) input.pulse(t += 16_000_000L);
+        input.keyReleased(KeyCode.W);
+        host.calls.clear();
+        var released = host.camera;
+        int pulses = 0;
+        while (pulses < 1000) {
+            pulses++;
+            int before = host.calls.size();
+            input.pulse(t += 16_000_000L);
+            if (host.calls.size() == before) break;
+        }
+        require(pulses < 1000, "Coasting comes to rest");
+        require(host.camera.x() > released.x() + 1, "Released flight coasts forward: " + (host.camera.x() - released.x()));
+        require(host.count("frame") == 1, "Only the resting step frames under a held cadence: " + host.calls);
+        require(host.calls.getLast().equals("frame") && host.calls.lastIndexOf("abandon") < host.calls.size() - 1,
+                "The frame is requested after the final move: " + host.calls.subList(Math.max(0, host.calls.size() - 5), host.calls.size()));
+        var rested = host.camera;
+        host.calls.clear();
+        input.pulse(t += 16_000_000L);
+        require(host.camera.equals(rested) && host.calls.isEmpty(), "At rest nothing more is owed: " + host.calls);
+    }
+
+    /**
+     * Walking dollies along the heading only (pitch ignored) by one notch of walk speed times
+     * 0.1 s: 0.7 yd, above the 0.5 yd walking floor. With no ground the altitude is held.
+     */
+    private static void walkWheelMovesAlongTheHeadingOnly() {
+        var host = new Host();
+        var input = new WorldExplorerInput(host);
+        input.motion(true, false);
+        host.camera = new TerrainRenderer.Camera(100, 200, 50, .7, -.8);
+        input.scroll(40, false);
+        double dx = host.camera.x() - 100, dy = host.camera.y() - 200;
+        double notch = Math.max(.5, ExplorerMotion.WALK_SPEED * .1);
+        require(Math.abs(Math.hypot(dx, dy) - notch) < 1e-9 && host.camera.z() == 50,
+                "Walk notch is " + notch + " yd along the heading: " + host.camera);
+        require(Math.abs(Math.atan2(dy, dx) - .7) < 1e-9, "Along the heading");
+        require(host.calls.getFirst().equals("ground:UNAVAILABLE"), "Walk wheel reports the ground");
+        // A fractional notch scales the step; a tiny one would still respect the 0.5 yd floor
+        // only through the clamp on the speed term, never below a whole-notch fraction.
+        host.camera = START;
+        input.scroll(4, false);
+        require(Math.abs(Math.hypot(host.camera.x() - START.x(), host.camera.y() - START.y())
+                - .1 * notch) < 1e-9, "A tenth of a notch moves a tenth");
     }
 
     private static void require(boolean condition, String message) {
