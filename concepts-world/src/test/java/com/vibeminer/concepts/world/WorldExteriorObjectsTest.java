@@ -843,6 +843,27 @@ class WorldExteriorObjectsTest {
     }
 
     /**
+     * Issue #375: each copied triangle's winding is compared with its vertex normals. Vertex 2 is
+     * moved off the line so both triangles have area; with normals along +z, 0-1-2 winds
+     * counter-clockwise (agrees) and 0-2-1 clockwise (opposes).
+     */
+    @Test
+    void triangleWindingIsCountedAgainstVertexNormals() {
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            var bytes = group(EXT, 3, 2, List.of(new Batch(0, 6, 0, 0)));
+            var data = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+            int movt = indexOf(bytes, "MOVT") + 8, movi = indexOf(bytes, "MOVI") + 8;
+            data.putFloat(movt + 2 * 12, 0).putFloat(movt + 2 * 12 + 4, 1);
+            data.putShort(movi + 8, (short) 2).putShort(movi + 10, (short) 1);
+            f.files.sources.put(GROUP, bytes);
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.TRIANGLE_WINDING_AGREES));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.TRIANGLE_WINDING_OPPOSES));
+            }
+        }
+    }
+
+    /**
      * Issue #375: MOMT flags other than F_UNLIT and F_UNCULLED (here F_UNFOGGED 0x2, F_EXTLIGHT
      * 0x8, F_SIDN 0x10, F_WINDOW 0x20 and an undocumented high bit) change nothing and are counted
      * once per admitted batch.

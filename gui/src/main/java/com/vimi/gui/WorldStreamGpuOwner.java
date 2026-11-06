@@ -40,6 +40,19 @@ final class WorldStreamGpuOwner {
                 : com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.STANDARD;
     }
 
+    /**
+     * WMO vertex colours (MOCV, #375) added to the building light. Off by default until compared
+     * with the client: only {@code -Dvimi.world.wmoVertexColours=true} turns them on. Off, every
+     * object vertex carries a zero colour, which adds nothing.
+     */
+    static final boolean WMO_VERTEX_COLOURS =
+            vertexColoursEnabled(System.getProperty("vimi.world.wmoVertexColours"));
+
+    /** Only {@code true} (any letter case) turns WMO vertex colours on. */
+    static boolean vertexColoursEnabled(String property) {
+        return "true".equalsIgnoreCase(property);
+    }
+
     /** Only {@code true} (any letter case) turns creature models on. */
     static boolean creaturesEnabled(String property) {
         return "true".equalsIgnoreCase(property);

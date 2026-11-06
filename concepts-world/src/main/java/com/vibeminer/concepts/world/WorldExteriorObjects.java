@@ -456,6 +456,14 @@ public final class WorldExteriorObjects {
          */
         GROUP_VERTEX_COLOURS,
         /**
+         * Copied exterior triangles whose winding, read counter-clockwise in raw local axes, faces
+         * the same way as their vertex normals (issue #375): the evidence that decides which side
+         * single-sided surfaces may cull. Not an outcome bucket.
+         */
+        TRIANGLE_WINDING_AGREES,
+        /** Copied exterior triangles whose winding faces against their vertex normals. */
+        TRIANGLE_WINDING_OPPOSES,
+        /**
          * Admitted batches whose MOMT flags set a bit this profile does not apply (anything but
          * F_UNLIT 0x1 and F_UNCULLED 0x4). Not an outcome bucket; the batch is drawn without it.
          */
@@ -1958,6 +1966,38 @@ public final class WorldExteriorObjects {
         }
 
         /**
+         * Counts copied triangles whose winding agrees or disagrees with their vertex normals
+         * (issue #375): the face normal (b - a) x (c - a) of raw local positions against the sum of
+         * the three unit vertex normals. Triangles where the dot product is zero count in neither.
+         */
+        static void winding(float[] vertices, int[] indices, int[] local) {
+            int agrees = 0, opposes = 0;
+            for (int t = 0; t + 2 < indices.length; t += 3) {
+                int a = indices[t] * VERTEX_FLOATS,
+                        b = indices[t + 1] * VERTEX_FLOATS,
+                        c = indices[t + 2] * VERTEX_FLOATS;
+                double ux = vertices[b] - vertices[a],
+                        uy = vertices[b + 1] - vertices[a + 1],
+                        uz = vertices[b + 2] - vertices[a + 2];
+                double vx = vertices[c] - vertices[a],
+                        vy = vertices[c + 1] - vertices[a + 1],
+                        vz = vertices[c + 2] - vertices[a + 2];
+                double fx = uy * vz - uz * vy, fy = uz * vx - ux * vz, fz = ux * vy - uy * vx;
+                double nx = vertices[a + 3] + vertices[b + 3] + vertices[c + 3];
+                double ny = vertices[a + 4] + vertices[b + 4] + vertices[c + 4];
+                double nz = vertices[a + 5] + vertices[b + 5] + vertices[c + 5];
+                double dot = fx * nx + fy * ny + fz * nz;
+                if (dot > 0) {
+                    agrees++;
+                } else if (dot < 0) {
+                    opposes++;
+                }
+            }
+            local[Count.TRIANGLE_WINDING_AGREES.ordinal()] += agrees;
+            local[Count.TRIANGLE_WINDING_OPPOSES.ordinal()] += opposes;
+        }
+
+        /**
          * Copies one exterior group; null (unsupported) for unusable normals or overlapping
          * batches.
          */
@@ -2077,6 +2117,7 @@ public final class WorldExteriorObjects {
                                 candidate.blend()));
                 used += candidate.indexCount();
             }
+            winding(vertices, indices, local);
             local[Count.BATCH_UNSUPPORTED.ordinal()] += unsupported;
             local[Count.BATCH_FLAGS_IGNORED.ordinal()] += ignoredFlags;
             if (colours.length > 0) {
