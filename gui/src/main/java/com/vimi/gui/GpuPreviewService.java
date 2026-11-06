@@ -1299,7 +1299,8 @@ final class GpuPreviewService {
     /**
      * The helper's own JVM: the low-pause collector of the app (a GC pause stalls its draw loop)
      * and a bounded heap. Its large buffers are native; heap use is bounded by its capped input
-     * files (40 MiB at most), so 1 GiB leaves wide headroom without reserving a quarter of RAM.
+     * files (the largest, a global scene, is 64 MiB on-heap), so 1 GiB leaves wide headroom
+     * without reserving a quarter of RAM.
      */
     static final List<String> HELPER_JVM_OPTIONS = List.of("-XX:+UseZGC", "-Xmx1g");
 

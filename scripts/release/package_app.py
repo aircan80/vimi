@@ -23,8 +23,9 @@ JVM_OPTIONS_FILE = ROOT / "gui/jvm-options.txt"
 
 def jvm_options(path=JVM_OPTIONS_FILE):
     """App JVM options shared with `gradlew :gui:run`: one per line, '#' comments."""
-    lines = (line.strip() for line in Path(path).read_text(encoding="utf-8").splitlines())
-    return [line for line in lines if line and not line.startswith("#")]
+    text = Path(path).read_text(encoding="utf-8-sig")
+    lines = (re.sub(r"(^|\s)#.*$", "", line).strip() for line in text.splitlines())
+    return [line for line in lines if line]
 
 
 MODULES = "java.base,java.desktop,java.logging,java.net.http,java.xml,java.sql,java.management,java.naming,jdk.unsupported,jdk.crypto.ec,jdk.zipfs,jdk.localedata"
@@ -114,6 +115,13 @@ def run(args, **options):
 
 def image_launcher(image, system):
     return image / ({"linux": "bin/VibeMiner", "macos": "Contents/MacOS/VibeMiner", "windows": "VibeMiner.exe"}[system])
+
+
+def require_collectors(report):
+    """The packaged app must run the shared jvm-options.txt collector (ZGC)."""
+    names = [name for name in report.get("collectors", "").split(",") if name]
+    if "-XX:+UseZGC" in jvm_options() and not any(name.startswith("ZGC") for name in names):
+        raise ValueError(f"Packaged app is not running ZGC: {names}")
 
 
 def smoke(image, system, output, ui):
@@ -299,6 +307,7 @@ def main():
     report = smoke(image, system, output, args.ui_smoke)
     if report.get("version") != args.tag:
         raise ValueError("Packaged version differs from requested tag")
+    require_collectors(report)
     if args.image_only:
         print(image)
         return

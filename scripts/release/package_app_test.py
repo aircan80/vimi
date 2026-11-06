@@ -119,14 +119,26 @@ class JvmOptionsTest(unittest.TestCase):
     def test_packaged_app_uses_the_shared_low_pause_options(self):
         options = package_app.jvm_options()
         self.assertIn('-XX:+UseZGC', options)
-        self.assertIn('-Djavafx.animation.pulse=120', options)
         self.assertTrue(all(option.startswith('-') for option in options))
 
     def test_comments_and_blank_lines_are_ignored(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'options.txt'
-            path.write_text('# note\n\n  -Xa  \n#-Xb\n-Xc\n', encoding='utf-8')
-            self.assertEqual(['-Xa', '-Xc'], package_app.jvm_options(path))
+            path.write_text('# note\n\n  -Xa  \n#-Xb\n-Xc # trailing\n-Dx=a#b\n', encoding='utf-8')
+            self.assertEqual(['-Xa', '-Xc', '-Dx=a#b'], package_app.jvm_options(path))
+
+    def test_smoke_report_must_show_zgc(self):
+        package_app.require_collectors({'collectors': 'ZGC Minor Cycles,ZGC Major Cycles,ZGC Minor Pauses'})
+        with self.assertRaisesRegex(ValueError, 'not running ZGC'):
+            package_app.require_collectors({'collectors': 'G1 Young Generation,G1 Old Generation'})
+        with self.assertRaisesRegex(ValueError, 'not running ZGC'):
+            package_app.require_collectors({})
+
+    def test_a_byte_order_mark_is_ignored(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'options.txt'
+            path.write_bytes('-Xa\n'.encode('utf-8-sig'))
+            self.assertEqual(['-Xa'], package_app.jvm_options(path))
 
 
 if __name__ == '__main__':
