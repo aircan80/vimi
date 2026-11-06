@@ -70,6 +70,7 @@ public final class WorldStreamSourceControllerTest {
         borrowedTilesAreNeverDroppedToMakeRoom();
         aTileOneRingBeyondKeepsItsPreparation();
         aKeptTileNeverDisplacesAWantedResident();
+        aKeptTileYieldsTheLaneWhenTheCameraTileIsMissing();
         tilesKeepStreamingWhileAFrameIsBorrowed();
         aBorrowedFrameKeepsTheSourcesOfTheTableItShows();
         fiveByFiveNeighborhoodHoldsTwentyFiveResidentsWithinTheSourceUnion();
@@ -471,6 +472,38 @@ public final class WorldStreamSourceControllerTest {
                     "Staged tile 2 was canceled, not committed over wanted tile 1");
             check(fixture.files.opens(1002) == fixture.files.opens(2),
                     "Wanted tile 1 was never evicted and reloaded: " + fixture.files.opens(1002));
+        } finally {
+            release.complete(null);
+            fixture.close();
+        }
+    }
+
+    /**
+     * #366 review: hysteresis never holds the single preparation lane while the camera tile is
+     * missing. Tile 1 is being prepared and is in the keep ring, but the camera moved to tile 3,
+     * which is not resident: tile 1 is canceled so tile 3 can load.
+     */
+    private static void aKeptTileYieldsTheLaneWhenTheCameraTileIsMissing() throws Exception {
+        var entered = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var canceled = new CompletableFuture<Void>();
+        var fixture = new Fixture(holding(1002, entered, release, canceled), 4);
+        fixture.residents = 2;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+            var t = fixture.tiles;
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(1)), List.of(t.get(2)));
+            fixture.until(entered::isDone);
+            fixture.controller.neighborhood(List.of(t.get(3), t.get(0)), List.of(t.get(1)));
+            fixture.until(canceled::isDone);
+            release.complete(null); // the held read now sees its cancellation and drains
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2);
         } finally {
             release.complete(null);
             fixture.close();

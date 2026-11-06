@@ -362,9 +362,6 @@ final class WorldStreamSourceController {
     void neighborhood(List<WorldFormats.Tile> ordered, List<WorldFormats.Tile> beyond) {
         Objects.requireNonNull(ordered);
         var kept = List.copyOf(beyond);
-        synchronized (lock) {
-            keep = kept;
-        }
         if (ordered.size() > residents)
             throw new IllegalArgumentException("Neighborhood bounds");
         var copy = List.copyOf(ordered);
@@ -375,9 +372,17 @@ final class WorldStreamSourceController {
             }
         }
         synchronized (lock) {
-            if (closing || desired.equals(copy)) return;
-            desired = copy;
-            demandRevision++;
+            if (closing) return;
+            // Published only once the demand is validated (#366 review). A changed keep set alone
+            // still kicks: a pending tile it no longer covers must be canceled.
+            boolean keepChanged = !keep.equals(kept);
+            keep = kept;
+            if (desired.equals(copy)) {
+                if (!keepChanged) return;
+            } else {
+                desired = copy;
+                demandRevision++;
+            }
         }
         kick();
     }
@@ -739,9 +744,11 @@ final class WorldStreamSourceController {
             synchronized (lock) {
                 kept = keep;
             }
-            // Hysteresis (#366): a tile one ring beyond the demand keeps its preparation.
+            // Hysteresis (#366): a tile one ring beyond the demand keeps its preparation, unless
+            // the camera tile or a wanted tile around it is still missing: the single lane then
+            // goes to what the view needs now (#366 review).
             if (!contains(wanted, pending.tile)
-                    && !contains(kept, pending.tile)
+                    && (!contains(kept, pending.tile) || nearestMissing(wanted))
                     && pending.cancellation == null) {
                 // Parent's explicit stop MUST precede the bridge's latest=false cancellation.
                 pending.cancellation = pending.reservation.cancel();
@@ -1481,6 +1488,21 @@ final class WorldStreamSourceController {
                             snapshot.seed(),
                             result);
         }
+    }
+
+    /**
+     * Whether the first wanted tile (the camera tile) or a wanted tile within one ring of it is
+     * neither current nor known unavailable.
+     */
+    private boolean nearestMissing(List<WorldFormats.Tile> wanted) {
+        if (wanted.isEmpty()) return false;
+        var first = wanted.getFirst();
+        for (var tile : wanted) {
+            if (Math.max(Math.abs(tile.x() - first.x()), Math.abs(tile.y() - first.y())) > 1) continue;
+            if (unavailable.containsKey(key(tile))) continue;
+            if (current.stream().noneMatch(entry -> same(tile, entry.resident()))) return true;
+        }
+        return false;
     }
 
     private void retireUnused() {
