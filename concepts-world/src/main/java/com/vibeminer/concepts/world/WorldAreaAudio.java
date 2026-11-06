@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit;
  * Recorded AreaTable music and ambience relationships for a resolved terrain-area chain, plus a
  * bounded original-file read. It evaluates no game time, WMO interior, underwater, intro, player
  * condition or SoundKit variation rule; those limits are reported in every plan. SoundKit volume
- * and SoundKitEntry frequencies are read when their fields are reviewed.
+ * and SoundKitEntry frequencies and volumes are read when their fields are reviewed.
  */
 public final class WorldAreaAudio {
     public static final int MAX_ENTRIES = 64, MAX_FILE_BYTES = 16 << 20;
@@ -46,7 +46,8 @@ public final class WorldAreaAudio {
      * One recorded sound relationship. {@code areaId} is the chain member that supplied it, which
      * is the parent zone when the subzone records none. {@code fileWeights} are the recorded
      * SoundKitEntry frequencies, one per file (a zero weight is never picked unless every weight is
-     * zero), and {@code volume} is the recorded linear SoundKit volume in 0..1.
+     * zero), {@code fileVolumes} are the recorded linear SoundKitEntry volumes, one per file, and
+     * {@code volume} is the recorded linear SoundKit volume; volumes are in 0..1.
      */
     public record Track(
             Kind kind,
@@ -56,6 +57,7 @@ public final class WorldAreaAudio {
             long soundKitId,
             List<Long> fileDataIds,
             List<Integer> fileWeights,
+            List<Double> fileVolumes,
             double volume,
             int silenceMinMillis,
             int silenceMaxMillis) {
@@ -63,6 +65,7 @@ public final class WorldAreaAudio {
             Objects.requireNonNull(kind);
             fileDataIds = List.copyOf(fileDataIds);
             fileWeights = List.copyOf(fileWeights);
+            fileVolumes = List.copyOf(fileVolumes);
             if (areaId <= 0
                     || relationId <= 0
                     || soundKitId <= 0
@@ -70,11 +73,39 @@ public final class WorldAreaAudio {
                     || fileDataIds.size() > MAX_ENTRIES
                     || fileWeights.size() != fileDataIds.size()
                     || fileWeights.stream().anyMatch(w -> w < 0 || w > MAX_WEIGHT)
+                    || fileVolumes.size() != fileDataIds.size()
+                    || fileVolumes.stream().anyMatch(v -> !(v >= 0 && v <= 1))
                     || !(volume >= 0 && volume <= 1)
                     || silenceMinMillis < 0
                     || silenceMaxMillis < silenceMinMillis) {
                 throw new IllegalArgumentException("Invalid recorded audio track");
             }
+        }
+
+        /** Full recorded volume for every file. */
+        public Track(
+                Kind kind,
+                long areaId,
+                String areaName,
+                long relationId,
+                long soundKitId,
+                List<Long> fileDataIds,
+                List<Integer> fileWeights,
+                double volume,
+                int silenceMinMillis,
+                int silenceMaxMillis) {
+            this(
+                    kind,
+                    areaId,
+                    areaName,
+                    relationId,
+                    soundKitId,
+                    fileDataIds,
+                    fileWeights,
+                    java.util.Collections.nCopies(fileDataIds.size(), 1.0),
+                    volume,
+                    silenceMinMillis,
+                    silenceMaxMillis);
         }
 
         /** Uniform weights at full recorded volume. */
@@ -98,6 +129,15 @@ public final class WorldAreaAudio {
                     1,
                     silenceMinMillis,
                     silenceMaxMillis);
+        }
+
+        /** Linear playback volume of one of this track's files: kit volume times entry volume. */
+        public double volume(long fileDataId) {
+            int at = fileDataIds.indexOf(fileDataId);
+            if (at < 0) {
+                throw new IllegalArgumentException("Not a file of this track");
+            }
+            return volume * fileVolumes.get(at);
         }
 
         /**
@@ -342,6 +382,11 @@ public final class WorldAreaAudio {
                                     + " falls back to the parent area.");
                 }
             }
+            // A more specific member was skipped: say so where the user sees it.
+            String fallback =
+                    unreadable == null
+                            ? ""
+                            : " (a more specific area is unreadable: " + unreadable + ")";
             if (relation == 0) {
                 if (unreadable != null) {
                     throw new Unavailable(unreadable);
@@ -381,6 +426,7 @@ public final class WorldAreaAudio {
                                 + label
                                 + " sound is recorded for "
                                 + source
+                                + fallback
                                 + ".");
             }
             var entries = Table.open(tables, "SoundKitEntry", token);
@@ -388,8 +434,11 @@ public final class WorldAreaAudio {
             entries.integer("FileDataID", -1);
             // Frequency weights the random file pick; without a reviewed field, picks are uniform.
             boolean weighted = entries.optionalInteger("Frequency", issues);
+            // Volume scales each file; without a reviewed field, every file plays at kit volume.
+            boolean loudness = entries.optionalDecimal("Volume", issues);
             var files = new ArrayList<Long>();
             var weights = new ArrayList<Integer>();
+            var volumes = new ArrayList<Double>();
             for (var row : entries.rows(tables, "SoundKitID", kit, MAX_ENTRIES, token, issues)) {
                 long id = entries.number(row, "FileDataID", -1);
                 if (id <= 0 || id > 0xffffffffL) {
@@ -411,10 +460,25 @@ public final class WorldAreaAudio {
                         weight = (int) frequency;
                     }
                 }
+                double entryVolume = 1;
+                if (loudness) {
+                    entryVolume = entryVolume(entries, row);
+                    if (entryVolume < 0) {
+                        note(
+                                issues,
+                                "SoundKit #"
+                                        + kit
+                                        + " records an unreadable entry Volume; that file plays at"
+                                        + " kit volume.");
+                        entryVolume = 1;
+                    }
+                }
                 int at = files.indexOf(id);
                 if (at < 0) {
                     files.add(id);
                     weights.add(weight);
+                    // A file recorded twice keeps its first recorded volume.
+                    volumes.add(entryVolume);
                 } else if (weighted) {
                     // A file recorded twice is as likely as its entries combined.
                     weights.set(at, Math.min(MAX_WEIGHT, weights.get(at) + weight));
@@ -434,10 +498,11 @@ public final class WorldAreaAudio {
                             kit,
                             files,
                             weights,
+                            volumes,
                             volume(tables, kit, token, issues),
                             silenceMin,
                             silenceMax),
-                    "Recorded " + label + " from " + source + ".");
+                    "Recorded " + label + " from " + source + fallback + ".");
         } catch (Unavailable unavailable) {
             return new Selection(
                     kind,
@@ -467,6 +532,19 @@ public final class WorldAreaAudio {
     }
 
     /**
+     * A recorded entry volume clamped to 1, or -1 when the row's value is unreadable, negative or
+     * not finite.
+     */
+    private static double entryVolume(Table entries, Db2Types.Row row) {
+        try {
+            double value = entries.decimal(row, "Volume");
+            return value >= 0 && Double.isFinite(value) ? Math.min(1, value) : -1;
+        } catch (Unavailable unreadable) {
+            return -1;
+        }
+    }
+
+    /**
      * The recorded linear SoundKit volume; full volume, with an issue, when it is not readable.
      * Recorded values above 1 are clamped so a kit never plays louder than the slider allows.
      */
@@ -476,7 +554,7 @@ public final class WorldAreaAudio {
             var kits = Table.open(tables, "SoundKit", token);
             kits.decimal("VolumeFloat");
             double value = kits.decimal(kits.get(tables, kit, token), "VolumeFloat");
-            if (!(value >= 0)) {
+            if (!(value >= 0) || !Double.isFinite(value)) {
                 throw new Unavailable("SoundKit #" + kit + " has an invalid VolumeFloat");
             }
             return Math.min(1, value);
@@ -629,6 +707,17 @@ public final class WorldAreaAudio {
                 return true;
             } catch (Unavailable unreadable) {
                 note(issues, unreadable.getMessage() + "; files are picked uniformly.");
+                return false;
+            }
+        }
+
+        /** True when the scalar float is readable; otherwise records why in {@code issues}. */
+        boolean optionalDecimal(String field, List<String> issues) {
+            try {
+                decimal(field);
+                return true;
+            } catch (Unavailable unreadable) {
+                note(issues, unreadable.getMessage() + "; files play at kit volume.");
                 return false;
             }
         }

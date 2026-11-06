@@ -55,6 +55,10 @@ public final class WorldAudioPlaybackTest {
         final AtomicInteger opened = new AtomicInteger(), closedLines = new AtomicInteger();
         final AtomicLong frames = new AtomicLong();
         final ConcurrentLinkedQueue<Integer> peaks = new ConcurrentLinkedQueue<>();
+        /** Magnitude of the first sample of each accepted write, in order. */
+        final ConcurrentLinkedQueue<Integer> firsts = new ConcurrentLinkedQueue<>();
+        /** Thrown by drain, when set. */
+        volatile RuntimeException drainFailure;
         /** Bytes per accepted write, in order. */
         final ConcurrentLinkedQueue<Integer> writes = new ConcurrentLinkedQueue<>();
         volatile int last;
@@ -75,6 +79,8 @@ public final class WorldAudioPlaybackTest {
                                 peak = Math.max(peak, Math.abs((short) (bytes[i] << 8
                                         | bytes[i + 1] & 0xff)));
                             peaks.add(peak);
+                            firsts.add(length < 2 ? 0 : Math.abs((short) (bytes[offset] << 8
+                                    | bytes[offset + 1] & 0xff)));
                             writes.add(length);
                             last = peak;
                             frames.addAndGet(length / 2);
@@ -83,6 +89,10 @@ public final class WorldAudioPlaybackTest {
                         }
                         case "close" -> {
                             closedLines.incrementAndGet();
+                            yield null;
+                        }
+                        case "drain" -> {
+                            if (drainFailure != null) throw drainFailure;
                             yield null;
                         }
                         case "isOpen", "isActive", "isRunning" -> false;
@@ -668,8 +678,10 @@ public final class WorldAudioPlaybackTest {
     }
 
     /**
-     * A mixed-format ambience kit switches lines on a format change and keeps its gain, instead
-     * of ending the track and fading in from silence on every loop.
+     * A mixed-format ambience kit switches lines on a format change instead of ending the track
+     * and fading in from silence over the 1.5 s fade on every loop. The new line ramps up from
+     * silence within a few milliseconds, so it starts without a click and reaches full volume
+     * inside its first block.
      */
     private static void mixedFormatAmbienceSwitchesLinesWithoutRestarting() throws Exception {
         var devices = new ConcurrentLinkedQueue<Device>();
@@ -698,9 +710,12 @@ public final class WorldAudioPlaybackTest {
         if (opened[0].getSampleRate() != 8000 || opened[1].getSampleRate() != 16000)
             throw new AssertionError("Lines must follow the decoded formats");
         for (int i = 1; i < lines.length; i++) {
-            Integer first = lines[i].peaks.peek();
-            if (first != null && first < 16000)
-                throw new AssertionError("Line " + i + " restarted the fade-in: " + first);
+            Integer peak = lines[i].peaks.peek(), first = lines[i].firsts.peek();
+            if (peak == null) continue; // the last line may be closed before it wrote
+            if (first > 100)
+                throw new AssertionError("Line " + i + " started at full gain: " + first);
+            if (peak < 16000)
+                throw new AssertionError("Line " + i + " restarted the slow fade-in: " + peak);
         }
         if (lines[0].closedLines.get() != 1)
             throw new AssertionError("The replaced line was not closed");
@@ -722,6 +737,9 @@ public final class WorldAudioPlaybackTest {
         await(() -> statuses.stream().anyMatch(WorldAudioPlayback.Status::playing),
                 "busy source was not retried");
         if (attempts.get() != 4) throw new AssertionError("Attempts " + attempts.get());
+        if (statuses.stream().noneMatch(s -> s.message().startsWith("Waiting for the audio source")
+                && s.message().contains("file #1000")))
+            throw new AssertionError("Repeated busy attempts must say so: " + statuses);
         if (statuses.stream().anyMatch(s -> s.message().contains("unavailable")))
             throw new AssertionError("A full queue was reported unavailable: " + statuses);
         // A disabled channel stops retrying a source that stays busy.
@@ -743,6 +761,77 @@ public final class WorldAudioPlaybackTest {
         waiting.closeAsync().get(10, TimeUnit.SECONDS);
     }
 
+    /**
+     * The recorded entry volume multiplies the kit volume per file (0.5 x 0.5 of 0x4000 is
+     * 0x1000), and a file whose recorded volume is 0 says it is silent.
+     */
+    private static void entryVolumesScaleEachFileAndSilentKitsSaySo() throws Exception {
+        var device = new Device();
+        var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        var playback = new WorldAudioPlayback(format -> device.line(),
+                (bytes, canceled) -> new FakePcm(8000 * 2), statuses::add);
+        playback.music.volume(1);
+        playback.music.track(new WorldAreaAudio.Track(WorldAreaAudio.Kind.MUSIC, 10,
+                "Authored zone", 5, 100, List.of(1L), List.of(1), List.of(0.5), 0.5,
+                MAX_SILENCE, MAX_SILENCE), FILES);
+        playback.music.enabled(true);
+        await(() -> statuses.stream().anyMatch(s -> s.message().startsWith("Recorded silence")),
+                "music did not play to its end");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        int max = device.peaks.stream().mapToInt(Integer::intValue).max().orElse(0);
+        if (max != 0x1000) throw new AssertionError("Entry volume peak " + max);
+        if (statuses.stream().anyMatch(s -> s.message().contains("silent")))
+            throw new AssertionError("An audible kit was called silent");
+
+        var muted = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        var silent = new WorldAudioPlayback(format -> new Device().line(),
+                (bytes, canceled) -> new FakePcm(Long.MAX_VALUE), muted::add);
+        silent.music.track(weighted(WorldAreaAudio.Kind.MUSIC, 100, List.of(1L), List.of(1), 0,
+                0), FILES);
+        silent.music.enabled(true);
+        await(() -> muted.stream().anyMatch(s -> s.playing()
+                && s.message().contains("recorded volume is 0")), "silent kit was not reported");
+        silent.closeAsync().get(10, TimeUnit.SECONDS);
+    }
+
+    /**
+     * A drain or line-open failure at a mixed-format switch is reported once; the next decoder
+     * is closed and nothing is re-decoded in a loop.
+     */
+    private static void failuresDuringAFormatSwitchStopCleanly() throws Exception {
+        for (boolean drainFails : new boolean[] {true, false}) {
+            var opens = new AtomicInteger();
+            var decoded = new ConcurrentLinkedQueue<FakePcm>();
+            var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+            var playback = new WorldAudioPlayback(format -> {
+                if (opens.incrementAndGet() > 1 && !drainFails)
+                    throw new javax.sound.sampled.LineUnavailableException("format refused");
+                var device = new Device();
+                if (drainFails) device.drainFailure = new IllegalStateException("removed");
+                return device.line();
+            }, (bytes, canceled) -> {
+                var pcm = new RatePcm(decoded.isEmpty() ? 8000 : 16000, 400);
+                decoded.add(pcm);
+                return pcm;
+            }, statuses::add);
+            playback.ambience.track(weighted(WorldAreaAudio.Kind.AMBIENCE, 100,
+                    List.of(1L, 2L), List.of(1, 1), 1, 0), FILES);
+            playback.ambience.enabled(true);
+            String expected = drainFails ? WorldAudioPlayback.OUTPUT_STOPPED
+                    : WorldAudioPlayback.OUTPUT_UNAVAILABLE;
+            await(() -> count(statuses, expected) == 1, "switch failure was hidden: " + expected);
+            Thread.sleep(200);
+            if (decoded.size() != 2 || count(statuses, expected) != 1)
+                throw new AssertionError("A failed switch must not retry: " + decoded.size());
+            if (!decoded.stream().allMatch(pcm -> pcm.closed))
+                throw new AssertionError("A failed switch leaked a decoder");
+            if (opens.get() != (drainFails ? 1 : 2))
+                throw new AssertionError("Lines opened " + opens.get());
+            playback.closeAsync().get(10, TimeUnit.SECONDS);
+        }
+    }
+
+
     public static void main(String[] args) throws Exception {
         probeMatchesWindowsLinuxAndMonoMixerFormats();
         downmixAveragesStereoFrames();
@@ -759,9 +848,12 @@ public final class WorldAudioPlaybackTest {
         ambienceReopenReportsPlayingAgain();
         mixedFormatAmbienceSwitchesLinesWithoutRestarting();
         busySourceIsRetriedNotUnavailable();
+        entryVolumesScaleEachFileAndSilentKitsSaySo();
+        failuresDuringAFormatSwitchStopCleanly();
         System.out.println("World audio playback: fades, kit continuity, ambience loops,"
                 + " recorded silence, mute, missing sources, missing device, dead lines,"
                 + " path-free status, mono downmix, recorded weights and kit volume, reopen status,"
-                + " mixed-format ambience, busy-source retry and owned close passed");
+                + " mixed-format ambience and switch failures, busy-source retry, entry volumes"
+                + " and owned close passed");
     }
 }

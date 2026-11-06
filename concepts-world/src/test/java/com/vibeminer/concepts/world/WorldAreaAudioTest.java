@@ -48,6 +48,15 @@ final class WorldAreaAudioTest {
 
     private static MemoryTables.FakeTable table(
             long id, String name, List<Field> fields, List<Db2Types.Row> rows) {
+        return table(id, name, fields, rows, Map.of());
+    }
+
+    private static MemoryTables.FakeTable table(
+            long id,
+            String name,
+            List<Field> fields,
+            List<Db2Types.Row> rows,
+            Map<Long, String> protectedIds) {
         var columns = new ArrayList<Db2Types.Column>();
         var schema = new ArrayList<TableSchema.SchemaColumn>();
         for (var field : fields) {
@@ -99,16 +108,25 @@ final class WorldAreaAudioTest {
                         TableSchema.SchemaMatch.BUILD,
                         WowLocale.parse("enUS"),
                         null),
-                Map.of(),
+                protectedIds,
                 true);
     }
 
     private static List<MemoryTables.FakeTable> fixture(boolean verifiedMusic) {
-        return fixture(verifiedMusic, true, true);
+        return fixture(verifiedMusic, true, true, "0.75");
     }
 
     private static List<MemoryTables.FakeTable> fixture(
             boolean verifiedMusic, boolean verifiedFrequency, boolean soundKits) {
+        return fixture(verifiedMusic, verifiedFrequency, soundKits, "0.75");
+    }
+
+    /** {@code kit400Volume} is the recorded VolumeFloat text of kit 400. */
+    private static List<MemoryTables.FakeTable> fixture(
+            boolean verifiedMusic,
+            boolean verifiedFrequency,
+            boolean soundKits,
+            String kit400Volume) {
         var tables = new ArrayList<MemoryTables.FakeTable>();
         tables.add(
                 table(
@@ -117,8 +135,10 @@ final class WorldAreaAudioTest {
                         List.of(
                                 reference("ZoneMusic", "ZoneMusic"),
                                 reference("AmbienceID", "SoundAmbience")),
-                        // Zone 10 records both; subzone 11 overrides ambience only.
-                        List.of(row(10, "5", "7"), row(11, "0", "8"), row(12, "0", "0"))));
+                        // Zone 10 records both; subzone 11 overrides ambience only. Subzone 15 is
+                        // encrypted and subzone 16's row is truncated.
+                        List.of(row(10, "5", "7"), row(11, "0", "8"), row(12, "0", "0"), row(16)),
+                        Map.of(15L, "encrypted")));
         tables.add(
                 table(
                         2,
@@ -133,7 +153,7 @@ final class WorldAreaAudioTest {
                         3,
                         "SoundAmbience",
                         List.of(array("AmbienceID", "SoundKit")),
-                        List.of(row(7, "200", "201"), row(8, "300", "301"))));
+                        List.of(row(7, "200", "201"), row(8, "300", "400"))));
         tables.add(
                 table(
                         4,
@@ -141,15 +161,19 @@ final class WorldAreaAudioTest {
                         List.of(
                                 reference("SoundKitID", "SoundKit"),
                                 reference("FileDataID", "FileData"),
-                                new Field("Frequency", 1, null, verifiedFrequency)),
-                        // File 9001 is recorded twice; its weights add up.
+                                new Field("Frequency", 1, null, verifiedFrequency),
+                                decimal("Volume")),
+                        // File 9001 is recorded twice; its weights add up and its first volume
+                        // stays. Kit 400 records an unreadable Frequency and Volume in one row.
                         List.of(
-                                row(1, "100", "9001", "3"),
-                                row(2, "100", "9002", "1"),
-                                row(3, "300", "9301", "0"),
-                                row(4, "201", "0", "1"),
-                                row(5, "100", "9001", "2"),
-                                row(6, "200", "9201", "1"))));
+                                row(1, "100", "9001", "3", "0.5"),
+                                row(2, "100", "9002", "1", "1"),
+                                row(3, "300", "9301", "0", "2"),
+                                row(4, "201", "0", "1", "1"),
+                                row(5, "100", "9001", "2", "0.25"),
+                                row(6, "200", "9201", "1", "1"),
+                                row(7, "400", "9401", "2", "1"),
+                                row(8, "400", "9402", "x", "NaN"))));
         if (soundKits) {
             tables.add(
                     table(
@@ -157,7 +181,7 @@ final class WorldAreaAudioTest {
                             "SoundKit",
                             List.of(decimal("VolumeFloat")),
                             // Kit 300 records more than full volume; kit 200 has no row.
-                            List.of(row(100, "0.5"), row(300, "2.5"))));
+                            List.of(row(100, "0.5"), row(300, "2.5"), row(400, kit400Volume))));
         }
         return tables;
     }
@@ -182,7 +206,9 @@ final class WorldAreaAudioTest {
                             new WorldService.Area(12, "Silent zone", 0, 0),
                             // No AreaTable rows record areas 13 and 14.
                             new WorldService.Area(13, "Unreadable subzone", 10, 0),
-                            new WorldService.Area(14, "Unreadable zone", 0, 0)));
+                            new WorldService.Area(14, "Unreadable zone", 0, 0),
+                            new WorldService.Area(15, "Encrypted subzone", 10, 0),
+                            new WorldService.Area(16, "Truncated subzone", 10, 0)));
 
     @Test
     void subzoneRelationshipsOverrideTheirZoneIndependentlyForMusicAndAmbience() {
@@ -335,9 +361,13 @@ final class WorldAreaAudioTest {
             assertEquals(List.of(9001L, 9002L), music.fileDataIds());
             assertEquals(List.of(5, 1), music.fileWeights(), "duplicate entries add weights");
             assertEquals(0.5, music.volume());
+            assertEquals(List.of(0.5, 1.0), music.fileVolumes(), "a duplicate keeps its first");
+            assertEquals(0.25, music.volume(9001));
+            assertEquals(0.5, music.volume(9002));
             var ambience = plan.ambience().track();
             assertEquals(List.of(0), ambience.fileWeights());
             assertEquals(1.0, ambience.volume(), "recorded volume above 1 is clamped");
+            assertEquals(List.of(1.0), ambience.fileVolumes(), "entry volume above 1 is clamped");
             assertTrue(
                     plan.issues().stream().noneMatch(i -> i.contains("SoundKit #")),
                     plan.issues().toString());
@@ -497,6 +527,28 @@ final class WorldAreaAudioTest {
                             Cancellation.NONE);
             assertEquals(WorldAreaAudio.State.UNAVAILABLE, lone.music().state());
             assertTrue(lone.music().message().contains("#14"), lone.music().message());
+            // The fallback is visible in the selection message, not only in the plan issues.
+            assertTrue(
+                    plan.music().message().contains("from Recorded zone")
+                            && plan.music().message().contains("AreaTable #13"),
+                    plan.music().message());
+            for (long id : new long[] {15, 16}) {
+                var skipped =
+                        WorldAreaAudio.resolve(
+                                tables,
+                                0,
+                                area(id, INDEX),
+                                WorldAreaAudio.Variant.DAY,
+                                Cancellation.NONE);
+                assertEquals(WorldAreaAudio.State.RECORDED, skipped.music().state());
+                assertEquals(10, skipped.music().track().areaId());
+                String message = skipped.music().message();
+                assertTrue(
+                        message.contains("unreadable")
+                                && message.contains(
+                                        id == 15 ? "AreaTable #15 is PROTECTED" : "truncated"),
+                        message);
+            }
         } finally {
             tables.closeAsync().join();
         }
@@ -543,6 +595,75 @@ final class WorldAreaAudioTest {
         } finally {
             gate.complete(null);
             audio.closeAsync().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void anUnreadableRowFrequencyOrVolumeFallsBackForThatKit() {
+        var tables = open(fixture(true));
+        try {
+            var plan =
+                    WorldAreaAudio.resolve(
+                            tables,
+                            0,
+                            area(11, INDEX),
+                            WorldAreaAudio.Variant.NIGHT,
+                            Cancellation.NONE);
+            var ambience = plan.ambience().track();
+            assertEquals(400, ambience.soundKitId());
+            assertEquals(List.of(9401L, 9402L), ambience.fileDataIds());
+            assertEquals(List.of(1, 1), ambience.fileWeights(), "one unreadable row: uniform");
+            assertEquals(List.of(1.0, 1.0), ambience.fileVolumes(), "NaN plays at kit volume");
+            assertEquals(0.75, ambience.volume());
+            assertTrue(
+                    plan.issues().stream()
+                            .anyMatch(i -> i.contains("#400") && i.contains("Frequency")),
+                    plan.issues().toString());
+            assertTrue(
+                    plan.issues().stream()
+                            .anyMatch(i -> i.contains("#400") && i.contains("entry Volume")),
+                    plan.issues().toString());
+        } finally {
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void invalidKitVolumesPlayAtFullVolumeWithAnIssue() {
+        for (String recorded : List.of("NaN", "-0.5", "Infinity", "-Infinity")) {
+            var tables = open(fixture(true, true, true, recorded));
+            try {
+                var plan =
+                        WorldAreaAudio.resolve(
+                                tables,
+                                0,
+                                area(11, INDEX),
+                                WorldAreaAudio.Variant.NIGHT,
+                                Cancellation.NONE);
+                assertEquals(1.0, plan.ambience().track().volume(), recorded);
+                assertTrue(
+                        plan.issues().stream()
+                                .anyMatch(
+                                        i ->
+                                                i.contains("SoundKit #400 has an invalid")
+                                                        && i.contains("full volume")),
+                        recorded + " " + plan.issues());
+            } finally {
+                tables.closeAsync().join();
+            }
+        }
+        var silent = open(fixture(true, true, true, "0"));
+        try {
+            var plan =
+                    WorldAreaAudio.resolve(
+                            silent,
+                            0,
+                            area(11, INDEX),
+                            WorldAreaAudio.Variant.NIGHT,
+                            Cancellation.NONE);
+            assertEquals(0.0, plan.ambience().track().volume(), "a recorded zero is kept");
+        } finally {
+            silent.closeAsync().join();
         }
     }
 }

@@ -27,6 +27,10 @@ final class WorldAudioPlayback implements AutoCloseable {
     static final int MAX_SILENCE_MILLIS = 600_000, MAX_LOOP_BYTES = 16 << 20;
     /** Backoff for a full source queue: grows per attempt up to the maximum, never gives up. */
     static final long BUSY_RETRY_MILLIS = 100, BUSY_RETRY_MAX_MILLIS = 1_000;
+    /** Busy attempts after which the status says the source is busy instead of "Loading". */
+    static final int BUSY_STATUS_ATTEMPTS = 3;
+    /** A new line after a mixed-format switch ramps up this fast, so it starts without a click. */
+    static final double SWITCH_RAMP_SECONDS = 0.005;
     static final String OUTPUT_UNAVAILABLE = "Audio output is unavailable on this machine.",
             OUTPUT_STOPPED = "Audio output stopped accepting audio.";
     @FunctionalInterface
@@ -299,6 +303,10 @@ final class WorldAudioPlayback implements AutoCloseable {
                                 + " is unavailable.";
                         return null;
                     }
+                    if (attempt == BUSY_STATUS_ATTEMPTS) {
+                        report(false, "Waiting for the audio source to load recorded " + label()
+                                + " file #" + fileId + "…");
+                    }
                     if (!pause(expected, Math.min(BUSY_RETRY_MAX_MILLIS,
                             BUSY_RETRY_MILLIS * attempt))) return null;
                 }
@@ -322,7 +330,7 @@ final class WorldAudioPlayback implements AutoCloseable {
         /**
          * Plays one music track, or loops ambience until the desired state changes. Ambience stays
          * on one line while the formats match; a file with another format drains the old line and
-         * continues on a new one at the same gain. Returns a visible problem, or null after a
+         * continues on a new one, ramped up from silence in a few milliseconds. Returns a visible problem, or null after a
          * natural end or a completed fade-out.
          */
         private String play(long expected, WorldAreaAudio.Track playing, Source from,
@@ -342,8 +350,11 @@ final class WorldAudioPlayback implements AutoCloseable {
                 if (out == null) return current(expected) ? OUTPUT_UNAVAILABLE : null;
                 reportPlaying(playing, fileId);
                 double gain = 0;
-                // The recorded kit volume is linear amplitude; gain is squared when applied.
-                double kit = Math.sqrt(playing.volume());
+                // The recorded kit and entry volumes are linear amplitude; gain is squared when
+                // applied.
+                double kit = Math.sqrt(playing.volume(fileId));
+                // True while a switched line ramps up from silence at the quick step.
+                boolean ramping = false;
                 boolean fadingOut = false;
                 // Ambience loops replay a bounded in-memory copy on the same line, without a gap.
                 var loop = kind == WorldAreaAudio.Kind.AMBIENCE && ids.size() == 1
@@ -396,11 +407,15 @@ final class WorldAudioPlayback implements AutoCloseable {
                                     next.close();
                                     return current(expected) ? OUTPUT_UNAVAILABLE : null;
                                 }
+                                // A new line starting at full gain would click.
+                                gain = 0;
+                                ramping = true;
                             }
                             pcm.close();
                             pcm = next;
                             if (!adopt(pcm)) return null;
                             fileId = nextId;
+                            kit = Math.sqrt(playing.volume(fileId));
                             // A reopened file reported "Loading"; report it playing again.
                             if (cached == null) reportPlaying(playing, fileId);
                             continue;
@@ -422,7 +437,9 @@ final class WorldAudioPlayback implements AutoCloseable {
                     fadingOut |= !live;
                     double target = fadingOut ? 0 : volume * kit;
                     int bytes = out.downmix ? AudioOutput.downmix(block, count) : count;
-                    gain = apply(block, bytes, out.channels, gain, target, out.step);
+                    gain = apply(block, bytes, out.channels, gain, target,
+                            ramping ? out.quickStep : out.step);
+                    if (gain >= target) ramping = false;
                     for (int offset = 0; offset < bytes; ) {
                         int written;
                         try {
@@ -447,7 +464,8 @@ final class WorldAudioPlayback implements AutoCloseable {
         private void reportPlaying(WorldAreaAudio.Track playing, long fileId) {
             report(true, "Playing recorded " + label() + " (sound kit #"
                     + playing.soundKitId() + ", file #" + fileId + ") from "
-                    + playing.areaName());
+                    + playing.areaName() + (playing.volume(fileId) == 0
+                            ? "; its recorded volume is 0, so it is silent" : ""));
         }
 
         private static long pick(WorldAreaAudio.Track playing) {
@@ -482,7 +500,7 @@ final class WorldAudioPlayback implements AutoCloseable {
         final SourceDataLine line;
         final int channels, frame;
         final boolean downmix;
-        final double step;
+        final double step, quickStep;
         final byte[] block;
 
         private Output(SourceDataLine line, Pcm pcm, int channels) {
@@ -491,6 +509,7 @@ final class WorldAudioPlayback implements AutoCloseable {
             downmix = channels < pcm.channels();
             frame = pcm.channels() * 2;
             step = 1 / (FADE_SECONDS * pcm.sampleRate());
+            quickStep = 1 / (SWITCH_RAMP_SECONDS * pcm.sampleRate());
             block = new byte[4096 - 4096 % frame];
         }
 
