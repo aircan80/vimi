@@ -79,6 +79,7 @@ final class WorldStreamParentState {
         SESSION,
         CREDIT,
         CAMERA,
+        FRAME,
         INPUT_TILE,
         INPUT_COMMIT,
         STAGED,
@@ -403,6 +404,9 @@ final class WorldStreamParentState {
         }
         if (message instanceof WorldStreamStatus.CameraApplied) {
             return Change.CAMERA;
+        }
+        if (message instanceof WorldStreamStatus.FramePublished) {
+            return Change.FRAME;
         }
         if (message instanceof WorldStreamStatus.InputConsumed value) {
             if (value.kind() == WorldStreamStatus.InputKind.TILE) {
