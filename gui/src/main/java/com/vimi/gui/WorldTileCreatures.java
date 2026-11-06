@@ -36,8 +36,9 @@ import java.util.function.Supplier;
  *
  * <p>Only a spawn with a recorded height whose NPC has a {@link CreatureModelPolicy} QUALIFIED
  * display is drawn. The display's static preview must need no character appearance, and each
- * geoset group draws one variant decided from recorded facts ({@link #visibleGeosets}: the
- * display's own geoset rows, otherwise the group's x00 section); only its opaque and alpha-keyed
+ * geoset group draws one variant decided from recorded facts ({@link #visibleGeosets}: when the
+ * model records geoset data, the display's own geoset rows choose and unchosen groups 1 to 8 are
+ * hidden; otherwise every group draws its x00 section); only its opaque and alpha-keyed
  * (cutout) diffuse surfaces are drawn, with
  * textures reduced to at most {@value #IMAGE_SIDE} pixels a side. Facing is not recorded by the source, so every
  * model faces native north. Each spawn belongs to exactly one tile (the filename-index rule), and
@@ -85,22 +86,29 @@ final class WorldTileCreatures implements AutoCloseable {
 
     /** One tile's creature outcome; immutable. */
     static final class Summary {
-        static final Summary NONE = new Summary(new int[Count.values().length], 0, null, List.of());
+        static final Summary NONE = new Summary(new int[Count.values().length], 0, 0, null, List.of());
 
         private final int[] counts;
-        private final int models;
+        private final int models, restPosed;
         private final String note;
         private final List<WorldObjectPicks.Creature> placed;
 
-        private Summary(int[] counts, int models, String note, List<WorldObjectPicks.Creature> placed) {
+        private Summary(int[] counts, int models, int restPosed, String note,
+                List<WorldObjectPicks.Creature> placed) {
             this.counts = counts.clone();
             this.models = models;
+            this.restPosed = restPosed;
             this.note = note;
             this.placed = List.copyOf(placed);
         }
 
         static Summary failed(String note) {
-            return new Summary(new int[Count.values().length], 0, Objects.requireNonNull(note), List.of());
+            return new Summary(new int[Count.values().length], 0, 0, Objects.requireNonNull(note), List.of());
+        }
+
+        /** Drawn placements whose model is in its rest (bind) pose because no Stand pose was baked. */
+        int restPosed() {
+            return restPosed;
         }
 
         int count(Count count) {
@@ -141,7 +149,8 @@ final class WorldTileCreatures implements AutoCloseable {
         Summary plus(Summary other) {
             var sum = counts.clone();
             for (int i = 0; i < sum.length; i++) sum[i] += other.counts[i];
-            return new Summary(sum, models + other.models, note != null ? note : other.note, List.of());
+            return new Summary(sum, models + other.models, restPosed + other.restPosed,
+                    note != null ? note : other.note, List.of());
         }
     }
 
@@ -160,6 +169,15 @@ final class WorldTileCreatures implements AutoCloseable {
     @FunctionalInterface
     interface Previews {
         DisplayModelTypes.Preview preview(long displayId, Cancellation token) throws Exception;
+
+        /**
+         * The display's Stand sequence over the same rest surface as {@link #preview}. A source
+         * without idle sequences answers UNSUPPORTED, a lasting answer cached with the model.
+         */
+        default DisplayModelTypes.Idle idle(long displayId, Cancellation token) throws Exception {
+            return new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.UNSUPPORTED, null, null,
+                    "Idle animation is not provided by this source.");
+        }
     }
 
     /**
@@ -174,7 +192,17 @@ final class WorldTileCreatures implements AutoCloseable {
      * one material class per range ({@link #OPAQUE} or {@link #CUTOUT}).
      */
     record Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
-            int omittedSurfaces) {
+            int omittedSurfaces, String restPose) {
+        Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
+                int omittedSurfaces) {
+            this(vertices, indices, ranges, blends, images, omittedSurfaces, null);
+        }
+
+        /** The same model with why it stays in its rest pose (null: baked in the Stand pose). */
+        Model withRestPose(String reason) {
+            return new Model(vertices, indices, ranges, blends, images, omittedSurfaces, reason);
+        }
+
         Model {
             images = List.copyOf(images);
             if (blends.length * 3 != ranges.length) throw new IllegalArgumentException("Range classes");
@@ -194,8 +222,16 @@ final class WorldTileCreatures implements AutoCloseable {
         }
     }
 
-    /** A display's conversion: a model, or the bucket that refuses it. */
-    record Converted(Model model, Count refusal, String detail) {
+    /**
+     * A display's conversion: a model, or the bucket that refuses it. {@code transientPose} marks a
+     * model drawn in its rest pose only because its Stand sequence could not be read yet; it is
+     * drawn on this tile but not cached, so a later tile asks again.
+     */
+    record Converted(Model model, Count refusal, String detail, boolean transientPose) {
+        Converted(Model model, Count refusal, String detail) {
+            this(model, refusal, detail, false);
+        }
+
         Converted {
             if ((model == null) == (refusal == null)) throw new IllegalArgumentException("Inconsistent conversion");
         }
@@ -274,7 +310,22 @@ final class WorldTileCreatures implements AutoCloseable {
 
         @Override
         public DisplayModelTypes.Preview preview(long displayId, Cancellation token) {
-            BuildDisplayModels models;
+            var models = component();
+            if (models == null) {
+                return new DisplayModelTypes.Preview(DisplayModelTypes.State.UNAVAILABLE, null, null,
+                        java.util.Set.of(), List.of(), false, "Model files are not open");
+            }
+            return models.preview(displayId, token).join();
+        }
+
+        @Override
+        public DisplayModelTypes.Idle idle(long displayId, Cancellation token) {
+            var models = component();
+            return models == null ? DisplayModelTypes.Idle.unavailable("Model files are not open")
+                    : models.idle(displayId, token).join();
+        }
+
+        private BuildDisplayModels component() {
             synchronized (this) {
                 if (closed) throw new CancellationException("Creature models closed");
                 var now = revision.get();
@@ -283,13 +334,8 @@ final class WorldTileCreatures implements AutoCloseable {
                     current = factory.get();
                     currentRevision = now;
                 }
-                models = current;
+                return current;
             }
-            if (models == null) {
-                return new DisplayModelTypes.Preview(DisplayModelTypes.State.UNAVAILABLE, null, null,
-                        java.util.Set.of(), List.of(), false, "Model files are not open");
-            }
-            return models.preview(displayId, token).join();
         }
 
         @Override
@@ -334,6 +380,9 @@ final class WorldTileCreatures implements AutoCloseable {
         int placements = 0, previewsTried = 0;
         // Displays whose preview was busy on this tile: not asked again for every later spawn.
         var busyDisplays = new HashSet<Long>();
+        // Builder model indices drawn in their rest pose; their placements are disclosed.
+        var restModels = new HashSet<Integer>();
+        int restPosed = 0;
         for (var spawn : nearby.placed()) {
             token.check();
             if (WorldBookmarks.tileIndex(spawn.x()) != tile.x() || WorldBookmarks.tileIndex(spawn.y()) != tile.y()) continue;
@@ -399,6 +448,7 @@ final class WorldTileCreatures implements AutoCloseable {
                 }
                 model = add(builder, m);
                 added.put(display, model);
+                if (m.restPose() != null) restModels.add(model);
             }
             if (builder.drawCost(model) > builder.drawRoom()) {
                 counts[Count.CAPPED.ordinal()]++;
@@ -411,9 +461,10 @@ final class WorldTileCreatures implements AutoCloseable {
                     transform[3], new WorldObjectPicks.Key(model, transform[0], transform[1], transform[2],
                             transform[3])));
             placements++;
+            if (restModels.contains(model)) restPosed++;
             counts[Count.DRAWN.ordinal()]++;
         }
-        return new Summary(counts, added.size(), nearby.omitted() == 0 ? null
+        return new Summary(counts, added.size(), restPosed, nearby.omitted() == 0 ? null
                 : nearby.omitted() + " nearby points beyond the query limit were not considered", placed);
     }
 
@@ -444,7 +495,7 @@ final class WorldTileCreatures implements AutoCloseable {
     private Converted load(long display, Cancellation token) {
         Converted converted;
         try {
-            converted = convert(previews.preview(display, token), token);
+            converted = stand(display, previews.preview(display, token), token);
         } catch (Exception failed) {
             // Only this tile's cancellation propagates; a closed or retired component is a failure.
             token.check();
@@ -454,10 +505,49 @@ final class WorldTileCreatures implements AutoCloseable {
             // Not cached: a failed read may succeed on the next tile.
             return Converted.refused(Count.FAILED, failed.getClass().getSimpleName());
         }
+        if (converted.transientPose()) return converted; // asked again on a later tile
         synchronized (this) {
             if (!closed) models.put(display, converted);
         }
         return converted;
+    }
+
+    /**
+     * Converts the preview in its Stand pose (issue #377): the display's idle sequence evaluated at
+     * its first frame, baked once on the CPU. When there is no qualified Stand sequence for the
+     * same rest surface, the rest pose is converted and the reason recorded on the model. An
+     * UNSUPPORTED sequence or one for another rest surface is a lasting answer and is cached with
+     * the model. An UNAVAILABLE sequence ("could not be read; retry can reassess it") or an idle
+     * read failure draws the rest pose on this tile only: it is not cached. A busy or closed reader
+     * and a cancellation propagate.
+     */
+    Converted stand(long display, DisplayModelTypes.Preview preview, Cancellation token) throws Exception {
+        if (preview == null || preview.appearance() == null) return convert(preview, token);
+        String restPose;
+        boolean retry = false;
+        var appearance = preview.appearance();
+        try {
+            var idle = previews.idle(display, token);
+            token.check();
+            if (idle == null || idle.state() != DisplayModelTypes.IdleState.AVAILABLE) {
+                restPose = idle == null ? "no idle result" : idle.message();
+                retry = idle == null || idle.state() == DisplayModelTypes.IdleState.UNAVAILABLE;
+            } else if (!idle.animation().matches(appearance)) {
+                restPose = "the Stand sequence belongs to another rest surface";
+            } else {
+                appearance = idle.animation().pose(appearance, 0);
+                restPose = null;
+            }
+        } catch (Exception failed) {
+            token.check();
+            if (busy(failed) || failed instanceof CancellationException) throw failed;
+            restPose = "Stand pose failed: " + failed.getClass().getSimpleName();
+            retry = true;
+        }
+        var converted = convert(new DisplayModelTypes.Preview(preview.state(), preview.reference(), appearance,
+                preview.visibleParts(), preview.issues(), preview.restored(), preview.message()), token);
+        return converted.model() == null || restPose == null ? converted
+                : new Converted(converted.model().withRestPose(restPose), null, null, retry);
     }
 
     /** Whether a preview failure is the component's busy or closed refusal, however wrapped. */
@@ -485,8 +575,8 @@ final class WorldTileCreatures implements AutoCloseable {
     /**
      * The tile-independent BASIC conversion of one display's static preview. Refuses character
      * appearance, models without an opaque or alpha-keyed diffuse surface, and every geoset choice
-     * it cannot make from recorded facts ({@link #visibleGeosets}). Each geoset group draws the
-     * display's own choice where it records one, otherwise its x00 section; never a guessed variant.
+     * it cannot make from recorded facts ({@link #visibleGeosets}), including a model whose every
+     * section the display's rows hide. Never a guessed variant.
      */
     static Converted convert(DisplayModelTypes.Preview preview, Cancellation token) {
         if (preview == null || preview.appearance() == null || preview.reference() == null)
@@ -499,6 +589,9 @@ final class WorldTileCreatures implements AutoCloseable {
         var mesh = appearance.mesh();
         var visible = visibleGeosets(reference, mesh);
         if (visible.refusal() != null) return Converted.refused(Count.VISIBILITY_UNRESOLVED, visible.refusal());
+        // Nothing left to draw is a visibility outcome, not a material one.
+        if (mesh.parts().stream().noneMatch(part -> visible.ids().contains(part.id())))
+            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "every geoset is hidden by the display's rows");
         var surfaces = new HashMap<Integer, MeshAppearance.Surface>();
         for (var surface : appearance.surfaces()) surfaces.put(surface.sectionIndex(), surface);
         var cards = new HashSet<Integer>();
@@ -591,41 +684,55 @@ final class WorldTileCreatures implements AutoCloseable {
     record Geosets(Set<Integer> ids, String refusal) {}
 
     /**
-     * Which geoset sections draw (#361). Each group of sections (geoset ID / 100) shows one variant:
-     * the display's own choice when it records one (CreatureDisplayInfoGeosetData, as group =
-     * GeosetIndex + 1 and section = group * 100 + value), otherwise the group's x00 section. A
-     * choice is never guessed: an unreadable CreatureGeosetDataID, unknown or conflicting display
-     * rows, a chosen variant the model does not have, and a group without its x00 default all
-     * refuse. A non-zero CreatureGeosetDataID without rows for this display refuses too. The ID is
-     * recorded per model (CreatureModelData) while the rows are per display, so it does not prove
-     * that this display has rows: a sibling display of the same model may rely on the defaults.
-     * Which rule the client applies there (and whether it defaults creature groups to x00 or x01)
-     * is not settled; until it is, that case is refused rather than guessed.
+     * Which geoset sections draw (#361, #455). Sections are grouped by geoset ID / 100.
+     *
+     * <ul>
+     *   <li>When the model's CreatureGeosetDataID is above 0, the display's own rows
+     *       (CreatureDisplayInfoGeosetData: group = GeosetIndex + 1, section = group * 100 + value)
+     *       choose: each listed group draws its chosen section, and a group from 1 to 8 without a
+     *       row is hidden. Group 0 draws its x00 section (ID 0), and groups 9 and above without a
+     *       row keep the default below.
+     *   <li>When it is 0, display rows are ignored and every group draws its x00 section.
+     * </ul>
+     *
+     * The gating follows wow.export ({@code DBCreatures.js}: rows are used only when the model's ID
+     * is above 0, and then every geoset from 1 to 899 not listed is hidden). That is a viewer's
+     * behaviour, not confirmed client behaviour; the x00 default for an ID of 0 waits for real-data
+     * counts (#455). Nothing is guessed: an unreadable ID, unknown or conflicting rows when they
+     * apply, a chosen section the model does not have, and a default group without its x00 section
+     * all refuse.
      */
     static Geosets visibleGeosets(DisplayModelTypes.Reference reference, com.vibeminer.rendering.models.PreviewMesh mesh) {
         if (reference.creatureGeosetDataId() == null)
             return new Geosets(Set.of(), "creature geoset data could not be read");
+        // A negative ID is treated like 0: only a positive one says the display rows apply.
+        boolean rows = reference.creatureGeosetDataId() > 0;
         var chosen = reference.displayGeosets();
-        if (chosen == null) return new Geosets(Set.of(), "display geoset selections are unknown");
-        if (reference.creatureGeosetDataId() != 0 && chosen.isEmpty())
-            return new Geosets(Set.of(), "the model records geoset data but this display has no geoset rows");
+        if (rows && chosen == null) return new Geosets(Set.of(), "display geoset selections are unknown");
         var present = new java.util.TreeMap<Integer, java.util.TreeSet<Integer>>();
         for (var part : mesh.parts()) present.computeIfAbsent(part.id() / 100, g -> new java.util.TreeSet<>()).add(part.id());
         var ids = new HashSet<Integer>();
-        for (var choice : chosen.entrySet()) {
-            int group = choice.getKey(), value = choice.getValue();
-            if (value == DisplayModelTypes.Reference.CONFLICTING_GEOSET)
-                return new Geosets(Set.of(), "the display's geoset rows conflict for group " + group);
-            if (!present.containsKey(group)) continue; // the model has no such group: nothing to show
-            if (!present.get(group).contains(group * 100 + value))
-                return new Geosets(Set.of(), "geoset " + (group * 100 + value) + " chosen by the display is not in the model");
+        if (rows) {
+            for (var choice : chosen.entrySet()) {
+                int group = choice.getKey(), value = choice.getValue();
+                // Rows key groups GeosetIndex + 1, so never group 0; refuse to read one as such.
+                if (group < 1) continue;
+                if (value == DisplayModelTypes.Reference.CONFLICTING_GEOSET)
+                    return new Geosets(Set.of(), "the display's geoset rows conflict for group " + group);
+                if (!present.containsKey(group)) continue; // the model has no such group: nothing to show
+                if (!present.get(group).contains(group * 100 + value))
+                    return new Geosets(Set.of(), "geoset " + (group * 100 + value) + " chosen by the display is not in the model");
+                ids.add(group * 100 + value);
+            }
         }
         for (var group : present.entrySet()) {
-            Integer value = chosen.get(group.getKey());
-            int id = group.getKey() * 100 + (value == null ? 0 : value);
-            if (!group.getValue().contains(id))
-                return new Geosets(Set.of(), "geoset group " + group.getKey() + " has no default x00 section");
-            ids.add(id);
+            int g = group.getKey();
+            // With rows, a group a row chose draws only that section (added above), and groups
+            // 1 to 8 without a row are hidden.
+            if (rows && g >= 1 && (chosen.containsKey(g) || g <= 8)) continue;
+            if (!group.getValue().contains(g * 100))
+                return new Geosets(Set.of(), "geoset group " + g + " has no default x00 section");
+            ids.add(g * 100);
         }
         return new Geosets(Set.copyOf(ids), null);
     }
