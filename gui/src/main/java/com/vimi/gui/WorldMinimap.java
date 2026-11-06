@@ -72,6 +72,8 @@ final class WorldMinimap extends VBox implements AutoCloseable {
     // The minimap key hides the cluster on purpose; it stays hidden across updates until shown.
     private boolean userHidden;
     private Runnable refocus = () -> {};
+    // Shown by its own state (a valid view) and not hidden by the HUD; see followHud.
+    private boolean ownVisible, hudHidden;
     /** Recorded entrances on the current map; drawn while the tracking layer is on. */
     private List<WorldInstanceLinks.Link> entrances = List.of();
     private final List<double[]> entranceHits = new ArrayList<>();
@@ -261,13 +263,14 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         tracking.refocus(next);
     }
 
-    /** The minimap key: hides the cluster (and its popup), or shows it again. */
+    /**
+     * The minimap key: hides the cluster (and its popup), or shows it again. Ignored while the
+     * HUD is hidden, so nothing changes out of sight.
+     */
     void toggleShown() {
+        if (hudHidden) return;
         userHidden = !userHidden;
-        if (userHidden) tracking.hide();
-        boolean show = !userHidden && view != null;
-        setVisible(show);
-        setManaged(show);
+        applyVisible();
     }
 
     /** True while the minimap key has hidden the cluster. */
@@ -275,9 +278,14 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         return userHidden;
     }
 
-    /** The tracking key: opens or closes the popup (shown cluster only). */
+    /** Whether the cluster shows: it has a view, the minimap key left it on, the HUD shows. */
+    boolean shown() {
+        return ownVisible && view != null && !userHidden && !hudHidden;
+    }
+
+    /** The tracking key: opens or closes the popup, only while the cluster is shown. */
     void toggleTracking() {
-        if (userHidden || view == null) {
+        if (!shown()) {
             tracking.hide();
             return;
         }
@@ -471,8 +479,8 @@ final class WorldMinimap extends VBox implements AutoCloseable {
                         y,
                         yaw,
                         List.copyOf(nearby));
-        setVisible(!userHidden);
-        setManaged(!userHidden);
+        ownVisible = true;
+        applyVisible();
         var key = DrawKey.of(x, y, yaw, view.tiles(), origin, originX, originY,
                 roles == null ? null : roles.paintKey(), scale);
         if (!key.equals(drawn)) {
@@ -745,8 +753,39 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         cancelActive();
         activity.setVisible(false);
         activity.setManaged(false);
-        setVisible(false);
-        setManaged(false);
+        ownVisible = false;
+        applyVisible();
+    }
+
+    /**
+     * Follows the HUD's hidden state (H, Alt+Z) by listening, not binding, since the minimap also
+     * shows and hides itself: it shows while it has a view and the HUD is shown. Hiding the HUD
+     * closes the tracking popup and the role tip; the view and its artwork are kept.
+     */
+    void followHud(javafx.beans.value.ObservableBooleanValue hidden) {
+        java.util.Objects.requireNonNull(hidden);
+        hidden.addListener((o, was, now) -> hudHidden(now));
+        hudHidden(hidden.get());
+    }
+
+    private void hudHidden(boolean hidden) {
+        hudHidden = hidden;
+        if (hidden) {
+            tracking.hide();
+            roleTip.hide();
+        }
+        applyVisible();
+    }
+
+    /** The one visibility rule: a view, not hidden by the minimap key, and the HUD shown. */
+    private void applyVisible() {
+        boolean shown = shown();
+        if (!shown) {
+            tracking.hide();
+            roleTip.hide();
+        }
+        setVisible(shown);
+        setManaged(shown);
     }
 
     private void cancelActive() {

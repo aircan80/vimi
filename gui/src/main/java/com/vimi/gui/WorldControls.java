@@ -40,6 +40,8 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         LOOK_DOWN("Look down"),
         SPRINT("Faster (hold; with the wheel: speed)"),
         WALK("Walk on terrain (toggle)"),
+        MAP_PANEL("Map panel (toggle)", true),
+        HIDE_HUD("Hide or show the HUD (toggle)", true),
         DEV_OVERLAY("Developer overlay (next page)", true),
         SPAWNS("NPC spawn markers on/off", true),
         TRACKING("Tracking popup open/close", true),
@@ -65,8 +67,11 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
 
         final String label;
         /**
-         * A HUD command: it fires once per physical press through {@link
-         * WorldExplorerInput.Host#command} and never drives motion.
+         * A command key: it fires once per fresh press through {@link
+         * WorldExplorerInput.Host#command} and never drives motion. Modifiers are not checked,
+         * so Ctrl or Alt with the key fires it too, as with the walk key. A {@code clear()} while
+         * the key is still held (focus loss, full screen) forgets the press, so its next key
+         * repeat counts as a new press, also as with the walk key.
          */
         final boolean command;
 
@@ -146,6 +151,10 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
             keys.put(KeyCode.DOWN, Action.LOOK_DOWN);
             keys.put(KeyCode.SHIFT, Action.SPRINT);
             keys.put(KeyCode.F, Action.WALK);
+            // M is a letter on both layouts, so the key labelled M opens the map on either.
+            keys.put(KeyCode.M, Action.MAP_PANEL);
+            // H is a letter on both layouts too, and free in both presets.
+            keys.put(KeyCode.H, Action.HIDE_HUD);
             // Function keys sit in the same place on every layout.
             keys.put(KeyCode.F3, Action.DEV_OVERLAY);
             // V, L, N and T sit in the same place on both layouts.
@@ -263,7 +272,8 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
                 + "/" + keysOf.apply(Action.LOOK_UP) + "/" + keysOf.apply(Action.LOOK_DOWN) + " to look · "
                 + keysOf.apply(Action.SPRINT) + " faster · wheel zooms"
                 + (modifier == null ? "" : " · " + modifier.getName() + "+wheel changes speed")
-                + " · " + keysOf.apply(Action.WALK) + " walks · click inspects · "
+                + " · " + keysOf.apply(Action.WALK) + " walks · " + keysOf.apply(Action.MAP_PANEL)
+                + " map · " + keysOf.apply(Action.HIDE_HUD) + " hides the HUD · click inspects · "
                 + keysOf.apply(Action.DEV_OVERLAY) + " developer overlay · Keys… rebinds";
     }
 

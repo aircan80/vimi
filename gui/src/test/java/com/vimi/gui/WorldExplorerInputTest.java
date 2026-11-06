@@ -18,6 +18,7 @@ public final class WorldExplorerInputTest {
     public static void main(String[] args) {
         keysMapToClampedAxes();
         walkToggleIgnoresKeyRepeat();
+        commandKeysFireOncePerPressAndNeverMove();
         devOverlayKeyCommandsOncePerPress();
         hudKeysDefaultWithoutClashes();
         clearDropsHeldKeys();
@@ -95,6 +96,72 @@ public final class WorldExplorerInputTest {
         long count(String call) {
             return calls.stream().filter(call::equals).count();
         }
+    }
+
+    /**
+     * HUD commands (M: map panel, H: hide the HUD) fire once per physical press, in both layouts,
+     * and never move.
+     */
+    private static void commandKeysFireOncePerPressAndNeverMove() {
+        for (var layout : WorldControls.Layout.values()) {
+            require(new java.util.HashSet<>(layout.keys().values())
+                            .equals(java.util.EnumSet.allOf(WorldControls.Action.class)),
+                    layout + ": every action keeps a key, so no preset key clashes: " + layout.keys());
+            for (var command : List.of(
+                    java.util.Map.entry(KeyCode.M, WorldControls.Action.MAP_PANEL),
+                    java.util.Map.entry(KeyCode.H, WorldControls.Action.HIDE_HUD))) {
+                var key = command.getKey();
+                var host = new Host();
+                var input = exact(host);
+                input.controls(WorldControls.DEFAULTS.withKeys(layout.keys()));
+                require(layout.keys().get(key) == command.getValue(), layout + ": " + key + " is " + command.getValue());
+                input.keyPressed(key);
+                for (int i = 0; i < 20; i++) input.keyPressed(key);
+                require(host.commands.equals(List.of(command.getValue())),
+                        layout + ": held " + key + " (key repeat) is one command: " + host.commands);
+                require(input.axes().equals(ExplorerMotion.Input.NONE) && host.toggles == 0,
+                        layout + ": " + key + " never moves or walks");
+                input.keyReleased(key);
+                input.keyPressed(key);
+                require(host.commands.size() == 2, layout + ": a new press is a new command");
+                input.keyReleased(key);
+                input.keyPressed(KeyCode.W);
+                input.keyPressed(KeyCode.F);
+                require(host.commands.size() == 2, layout + ": movement and walk keys are not commands");
+            }
+        }
+        var commands = java.util.EnumSet.of(WorldControls.Action.MAP_PANEL,
+                WorldControls.Action.HIDE_HUD, WorldControls.Action.DEV_OVERLAY);
+        for (var action : WorldControls.Action.values())
+            require(action.command == commands.contains(action),
+                    "Exactly the map panel, hide HUD and developer overlay keys are commands: " + action);
+        var host = new Host();
+        var input = exact(host);
+        input.controls(WorldControls.DEFAULTS.bind(KeyCode.G, WorldControls.Action.MAP_PANEL));
+        input.keyPressed(KeyCode.G);
+        require(host.commands.equals(List.of(WorldControls.Action.MAP_PANEL)), "A rebound map key works");
+        var older = WorldControls.decode("v1;keys=W:FORWARD;actions=FORWARD,BACK,LEFT,RIGHT,UP,DOWN,"
+                + "TURN_LEFT,TURN_RIGHT,LOOK_UP,LOOK_DOWN,SPRINT,WALK");
+        require(older.keys().get(KeyCode.M) == WorldControls.Action.MAP_PANEL,
+                "A value saved before the map panel existed gains its default key: " + older.keys());
+        var taken = WorldControls.decode("v1;keys=M:FORWARD;actions=FORWARD");
+        require(taken.keys().get(KeyCode.M) == WorldControls.Action.FORWARD
+                        && taken.byAction().get(WorldControls.Action.MAP_PANEL).isEmpty(),
+                "A stored binding that already uses M keeps it: " + taken.keys());
+        require(older.keys().get(KeyCode.H) == WorldControls.Action.HIDE_HUD,
+                "A value saved before hide HUD existed gains H: " + older.keys());
+        var takenH = WorldControls.decode("v1;keys=H:WALK;actions=WALK");
+        require(takenH.keys().get(KeyCode.H) == WorldControls.Action.WALK
+                        && takenH.byAction().get(WorldControls.Action.HIDE_HUD).isEmpty(),
+                "A stored binding that already uses H keeps it: " + takenH.keys());
+        var rebound = new Host();
+        var reboundInput = exact(rebound);
+        reboundInput.controls(WorldControls.DEFAULTS.bind(KeyCode.J, WorldControls.Action.HIDE_HUD));
+        reboundInput.keyPressed(KeyCode.J);
+        require(rebound.commands.equals(List.of(WorldControls.Action.HIDE_HUD)), "A rebound hide HUD key works");
+        require(WorldControls.DEFAULTS.help().contains("M map")
+                        && WorldControls.DEFAULTS.help().contains("H hides the HUD"),
+                "Help names the map and hide HUD keys: " + WorldControls.DEFAULTS.help());
     }
 
     private static WorldExplorerInput exact(Host host) {

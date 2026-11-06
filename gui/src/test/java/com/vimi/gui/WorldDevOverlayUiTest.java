@@ -139,7 +139,8 @@ public final class WorldDevOverlayUiTest {
         press(KeyCode.F3);
         require(overlay().page() == WorldDevReport.Page.INPUT && overlay().text().contains("held      W"),
                 "The Input page lists held keys:\n" + overlay().text());
-        view.lookup("#world-maps").requestFocus();
+        // The map list is out of the scene while exploring (HUD step 1); the slim bar takes focus.
+        view.lookup("#world-walk-mode").requestFocus();
         require(!viewport.isFocused() && overlay().text().contains("held      none"),
                 "Focus loss clears the held keys on the Input page:\n" + overlay().text());
         viewport.requestFocus();
