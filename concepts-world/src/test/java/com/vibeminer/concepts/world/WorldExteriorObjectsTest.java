@@ -597,13 +597,14 @@ class WorldExteriorObjectsTest {
 
     @Test
     void doodadsKeepTheirDrawsAheadOfInstanceInteriors() {
-        // One exterior building (1 draw), an interior-only root placed 60 times whose interior
-        // group has 64 batches (3,840 draws) and 300 MDDF doodads (1 draw each): 4,141 draws for a
-        // 4,096 budget. The doodads and the exterior are spent first; the interior is what is
-        // capped, never a doodad.
+        // One exterior building (1 draw), an interior-only root placed 60 times and 300 MDDF
+        // doodads (1 draw each). The interior group's batch count is derived from MAX_DRAWS so
+        // that the interior alone fits but not after the doodads: the doodads and the exterior are
+        // spent first, and the interior is what is capped, never a doodad.
         long interiorRoot = 120;
+        int batchCount = (WorldExteriorObjects.MAX_DRAWS - 1 - 300) / 60 + 1;
         var batches = new ArrayList<Batch>();
-        for (int b = 0; b < 64; b++) {
+        for (int b = 0; b < batchCount; b++) {
             batches.add(new Batch(b * 3, 3, 0, 0));
         }
         var records = new ArrayList<Modf>();
@@ -618,9 +619,10 @@ class WorldExteriorObjectsTest {
         try (var f = new Fixture(records)) {
             putModel(f, MODEL, model());
             f.files.sources.put(interiorRoot, root(INTERIOR));
-            f.files.sources.put(INTERIOR, group(INT, 3, 64, batches));
+            f.files.sources.put(INTERIOR, group(INT, 3, batchCount, batches));
             f.files.sources.put(4L, obj0(records, doodads));
-            assertTrue(1 + 60 * 64 + 300 > WorldExteriorObjects.MAX_DRAWS);
+            assertTrue(1 + 60 * batchCount + 300 > WorldExteriorObjects.MAX_DRAWS);
+            assertTrue(1 + 60 * batchCount <= WorldExteriorObjects.MAX_DRAWS);
             try (var set = f.runInstance()) {
                 assertEquals(300, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
@@ -629,14 +631,16 @@ class WorldExteriorObjectsTest {
                 assertTrue(set.placements().stream().anyMatch(p -> p.rootId() == ROOT));
             }
         }
-        // With 100 doodads the interior fits after them (1 + 3,840 + 100 draws) and draws too.
+        // With only the doodads that fit (no more than MAX_DRAWS leaves), the interior fits after
+        // them and draws too.
         try (var f = new Fixture(records)) {
             putModel(f, MODEL, model());
             f.files.sources.put(interiorRoot, root(INTERIOR));
-            f.files.sources.put(INTERIOR, group(INT, 3, 64, batches));
-            f.files.sources.put(4L, obj0(records, doodads.subList(0, 100)));
+            f.files.sources.put(INTERIOR, group(INT, 3, batchCount, batches));
+            int fitting = WorldExteriorObjects.MAX_DRAWS - 1 - 60 * batchCount;
+            f.files.sources.put(4L, obj0(records, doodads.subList(0, fitting)));
             try (var set = f.runInstance()) {
-                assertEquals(100, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertEquals(fitting, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
                 assertEquals(
                         60,
