@@ -70,7 +70,7 @@
   "format": "vimi-bgfx-shaders-v1",
   "inputs": {
     "bgfx_shader.sh": "5ad79a2ff5d1b1fd1f22d986f2b0b5dc49f89ffd5ce18e57966b6ab894094508",
-    "fs_model.sc": "ccd74c3d54a8760a06a6eb58c0dc40c97d490e1ecc98822242e48a863baad89e",
+    "fs_model.sc": "e115bc1d74be46689f7bfd9dd663116ddaef9d23ea7644e74856673230f92c96",
     "varying.def.sc": "ebd5f2787081e560e011b5bffe94f8d23d86748a22207ab1109f22412ead7d9d",
     "vs_model.sc": "e31059b58be9a0a7bdef6d2b5f729393544f486644a6ec2417b96bc2cca75ffd"
   },

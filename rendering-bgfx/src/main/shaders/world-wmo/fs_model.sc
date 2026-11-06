@@ -8,7 +8,7 @@ uniform vec4 u_wmoMaterial;
 // rgb: sky and fog colour at and below the horizon, 0..255; w: elevation (radians) of u_wmoSkyTop.
 uniform vec4 u_wmoFog;
 // rgb: sky colour at and above u_wmoFog.w, 0..255, equal to u_wmoFog for flat fog; w: 1 adds the
-// vertex colour (MOCV, #375) to the light, 0 ignores it.
+// vertex colour (MOCV, #375) to the light, 0 ignores it. w is reserved for this switch.
 uniform vec4 u_wmoSkyTop;
 // x: fog start depth, y: depth where fog reaches z, z: maximum fog, w: cut depth.
 uniform vec4 u_wmoFogRange;
