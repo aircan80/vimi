@@ -167,6 +167,30 @@ class WorldPresentBudgetTest {
     }
 
     @Test
+    void childWindowStartsHiddenAndHasAreaOnlyOnceShown() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                org.lwjgl.system.Platform.get() == org.lwjgl.system.Platform.WINDOWS);
+        long parent = WorldStreamWindowProof.parentWindow();
+        try (var child = WorldChildWindow.create(parent)) {
+            assertFalse(
+                    org.lwjgl.system.windows.User32.IsWindowVisible(child.hwnd()),
+                    "Created hidden: it never covers the parent before the GUI places it");
+            assertEquals(0, child.clientSize()[0], "Hidden: no area, so nothing is presented");
+            long shown = WorldStreamWindowProof.showChild(parent, 320, 200);
+            assertEquals(child.hwnd(), shown, "The GUI finds it by its class");
+            long until = System.nanoTime() + 2_000_000_000L;
+            while (child.clientSize()[0] == 0 && System.nanoTime() < until) {
+                Thread.sleep(5);
+            }
+            assertEquals(320, child.clientSize()[0], "Shown: the placed width");
+            assertEquals(200, child.clientSize()[1], "Shown: the placed height");
+        } finally {
+            org.lwjgl.system.windows.User32.PostMessage(
+                    null, parent, org.lwjgl.system.windows.User32.WM_CLOSE, 0, 0);
+        }
+    }
+
+    @Test
     void childWindowThreadEndsWhenTheParentIsDestroyed() throws Exception {
         org.junit.jupiter.api.Assumptions.assumeTrue(
                 org.lwjgl.system.Platform.get() == org.lwjgl.system.Platform.WINDOWS);

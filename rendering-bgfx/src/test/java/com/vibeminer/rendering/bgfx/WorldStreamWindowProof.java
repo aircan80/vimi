@@ -74,6 +74,10 @@ public final class WorldStreamWindowProof {
         try {
             session.initialized().get(15, TimeUnit.SECONDS);
             prepared.close();
+            if (!readback) {
+                // The child starts hidden; the GUI places and shows it, so the proof does too.
+                showChild(parent, 1000, 600);
+            }
             WorldStreamTransport.TileReservation reserved = null;
             long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
             while (reserved == null && System.nanoTime() < until) {
@@ -191,6 +195,59 @@ public final class WorldStreamWindowProof {
             session.closeAsync();
             session.terminatedAndDrained().get(7, TimeUnit.SECONDS);
         }
+    }
+
+    /**
+     * Finds the helper's child of {@code parent} and shows it at {@code width} x {@code height},
+     * without activating it, as the GUI's WorldNativePresenter does. FindWindowExW is not bound by
+     * LWJGL, so it goes through java.lang.foreign.
+     */
+    @SuppressWarnings("restricted")
+    static long showChild(long parent, int width, int height) throws Exception {
+        var linker = java.lang.foreign.Linker.nativeLinker();
+        var user32 =
+                java.lang.foreign.SymbolLookup.libraryLookup(
+                        "user32", java.lang.foreign.Arena.global());
+        var find =
+                linker.downcallHandle(
+                        user32.find("FindWindowExW").orElseThrow(),
+                        java.lang.foreign.FunctionDescriptor.of(
+                                java.lang.foreign.ValueLayout.JAVA_LONG,
+                                java.lang.foreign.ValueLayout.JAVA_LONG,
+                                java.lang.foreign.ValueLayout.JAVA_LONG,
+                                java.lang.foreign.ValueLayout.ADDRESS,
+                                java.lang.foreign.ValueLayout.ADDRESS));
+        long child = 0;
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        try (var arena = java.lang.foreign.Arena.ofConfined()) {
+            var name =
+                    arena.allocateFrom(
+                            WorldChildWindow.CLASS_NAME,
+                            java.nio.charset.StandardCharsets.UTF_16LE);
+            while (child == 0 && System.nanoTime() < until) {
+                try {
+                    child =
+                            (long)
+                                    find.invokeExact(
+                                            parent, 0L, name, java.lang.foreign.MemorySegment.NULL);
+                } catch (Throwable unavailable) {
+                    throw new IllegalStateException("FindWindowExW failed", unavailable);
+                }
+                if (child == 0) {
+                    Thread.sleep(5);
+                }
+            }
+        }
+        if (child == 0) {
+            throw new AssertionError("The helper created no child window");
+        }
+        if (User32.IsWindowVisible(child)) {
+            throw new AssertionError("The child must start hidden");
+        }
+        User32.SetWindowPos(
+                null, child, 0, 0, 0, width, height, User32.SWP_NOACTIVATE | User32.SWP_NOZORDER);
+        User32.ShowWindow(child, User32.SW_SHOWNA);
+        return child;
     }
 
     /** A visible top-level Win32 window on its own message thread, standing in for the stage. */
