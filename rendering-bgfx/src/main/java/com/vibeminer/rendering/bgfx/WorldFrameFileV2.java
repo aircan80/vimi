@@ -221,6 +221,11 @@ final class WorldFrameFileV2 implements AutoCloseable {
                         ? FileChannel.open(
                                 path,
                                 StandardOpenOption.CREATE_NEW,
+                                // Slots are laid out for the 2560x1600 cap, but only the bytes of
+                                // frames actually written take disk or memory: a sparse file
+                                // (NTFS honours this at creation; ext4/APFS are sparse anyway),
+                                // and mapped pages commit only when touched.
+                                StandardOpenOption.SPARSE,
                                 StandardOpenOption.READ,
                                 StandardOpenOption.WRITE,
                                 LinkOption.NOFOLLOW_LINKS)
