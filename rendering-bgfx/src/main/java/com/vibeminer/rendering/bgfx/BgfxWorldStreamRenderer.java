@@ -128,6 +128,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     static final String OBJECTS_RGBA8_PROPERTY = "vimi.world.objects.rgba8";
 
     /**
+     * Exterior objects of the last drawn frame: placements tested in the opaque/cutout pass, how
+     * many of them the CPU cull skipped, and object draw submits over both passes.
+     */
+    record FrameCounts(int placements, int culled, int objectSubmits) {}
+
+    /**
      * Most bytes one step call may issue: two geometry chunks plus one atlas step for terrain, or
      * one object step. Exceeding it is a planning bug, so both step paths treat it as fatal.
      */
@@ -233,6 +239,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         /** The current image's chain as uploaded: its packed input, or its RGBA8 decode. */
         private java.nio.ByteBuffer imageData;
 
+        /** The current image's upload format ({@link ObjectTextureFormats}). */
+        private int imageFormat;
+
         private int imageStep;
         private boolean failed;
 
@@ -312,6 +321,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private static final class SlotObjects {
         final int[] models, meshes, ranges, placementModels, images;
         final double[] placements;
+
+        /** Per placement world bounding sphere, tested before any of its draws. */
+        final double[] spheres;
+
         final short[] textures;
 
         /** Per model: whether any of its ranges is alpha blended (drawn in the sorted pass). */
@@ -327,6 +340,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             placementModels = source.placementModels;
             images = source.images;
             placements = source.placements;
+            spheres = source.spheres;
             textures = new short[source.imageCount()];
             java.util.Arrays.fill(textures, INVALID);
             blendedModels = new boolean[models.length / 2];
@@ -397,7 +411,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private LateUpload late;
     private long content, nextTag, liveBytes, peakBytes, maximumStepNanos, objectsRevision;
     private int peakStepBytes;
-    private boolean closed, callbackFreed;
+    private boolean closed, callbackFreed, objectCulling = true;
+    private FrameCounts lastFrame = new FrameCounts(0, 0, 0);
+    private int framePlacements, frameCulled, frameObjectSubmits;
 
     BgfxWorldStreamRenderer(WorldStreamEnvelope.Session session) throws IOException {
         this.session = java.util.Objects.requireNonNull(session);
@@ -698,6 +714,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                                     source.imageOffset(image),
                                     ObjectTextureFormats.chainBytes(format, width, height));
                     build.imageData = chain;
+                    build.imageFormat = format;
                     build.imagePlan =
                             WorldStreamObjectMips.plan(format, width, height, OBJECT_CHUNK);
                     build.imageStep = 0;
@@ -725,7 +742,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                                     width, slice.level()),
                             slice.rows(),
                             bgfx_copy(build.imageData.slice(slice.offset(), slice.bytes())),
-                            slice.pitch());
+                            updatePitch(build.imageFormat, slice));
                     count += slice.bytes();
                 }
                 built.bytes += count;
@@ -846,6 +863,21 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         slots[upload.lease.slot()].objects = upload.build.take();
         objectsRevision++;
         return WorldStreamStatus.LateOutcome.ATTACHED;
+    }
+
+    /** Object counts of the last {@link #draw}. */
+    FrameCounts frameCounts() {
+        requireOwner();
+        return lastFrame;
+    }
+
+    /**
+     * Proof seam: false draws every placement, as before CPU culling, so a proof can compare draw
+     * counts and pixels with culling on and off. Production never turns it off.
+     */
+    void objectCulling(boolean enabled) {
+        requireOwner();
+        objectCulling = enabled;
     }
 
     /** Changes whenever late objects become drawable, so an unchanged camera redraws once. */
@@ -1105,11 +1137,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             // One fixed set of object uniform buffers per frame: per-placement work allocates
             // nothing on the frame's MemoryStack, whatever the number of placements.
             var frame = wmoProgram == INVALID ? null : ObjectFrame.on(stack);
+            var view =
+                    objectCulling ? WorldStreamObjectCulling.View.of(camera, width, height) : null;
+            framePlacements = frameCulled = frameObjectSubmits = 0;
             if (wmoProgram != INVALID) {
                 for (var lease : active) {
                     var objects = slots[lease.slot()].objects;
                     if (objects != null) {
-                        drawObjects(frame, objects, origin, matrix, project);
+                        drawObjects(frame, view, objects, origin, matrix, project);
                     }
                 }
             }
@@ -1142,9 +1177,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
             // Alpha-blended object ranges last, after water, farthest placement first.
             if (!blended.isEmpty()) {
-                drawBlended(frame, blended, origin, matrix, project);
+                drawBlended(frame, view, blended, origin, matrix, project);
             }
         }
+        lastFrame = new FrameCounts(framePlacements, frameCulled, frameObjectSubmits);
         return new Ticket(cameraRevision, content, policy, width, height);
     }
 
@@ -1191,6 +1227,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      */
     private void drawBlended(
             ObjectFrame frame,
+            WorldStreamObjectCulling.View view,
             List<SlotObjects> blended,
             TerrainScene.Origin origin,
             java.nio.FloatBuffer eyeMatrix,
@@ -1200,7 +1237,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         for (int s = 0; s < blended.size(); s++) {
             var objects = blended.get(s);
             for (int p = 0; p < objects.placementModels.length; p++) {
-                if (!objects.blendedModels[objects.placementModels[p]]) {
+                if (!objects.blendedModels[objects.placementModels[p]]
+                        || view != null && !view.visible(objects.spheres, p)) {
                     continue;
                 }
                 int at = p * WorldStreamObjectsFile.PLACEMENT_DOUBLES;
@@ -1237,11 +1275,17 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      */
     private void drawObjects(
             ObjectFrame frame,
+            WorldStreamObjectCulling.View view,
             SlotObjects objects,
             TerrainScene.Origin origin,
             java.nio.FloatBuffer eyeMatrix,
             java.nio.FloatBuffer projectionMatrix) {
         for (int p = 0; p < objects.placementModels.length; p++) {
+            framePlacements++;
+            if (view != null && !view.visible(objects.spheres, p)) {
+                frameCulled++;
+                continue;
+            }
             drawPlacement(frame, objects, p, origin, eyeMatrix, projectionMatrix, false);
         }
     }
@@ -1320,6 +1364,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         OBJECT_SAMPLER_FLAGS);
                 bgfx_set_state(blendedPass ? BLENDED_STATE : BgfxWorldWmoPass.DRAW_STATE, 0);
                 bgfx_submit(0, wmoProgram, 0, BGFX_DISCARD_ALL);
+                frameObjectSubmits++;
             }
         }
     }
@@ -1389,6 +1434,16 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
         }
         return mask;
+    }
+
+    /**
+     * The pitch argument of one upload slice. Compressed slices pass UINT16_MAX, so bgfx derives
+     * the source pitch from the format, its default path, and never sizes a staging copy as texel
+     * rows times a block-row pitch. RGBA8 slices pass their texel-row pitch. The layout ladders of
+     * nativeGpuWorldStreamObjectsProof check every block of every level on Vulkan and D3D11.
+     */
+    static int updatePitch(int format, WorldStreamObjectMips.Slice slice) {
+        return ObjectTextureFormats.compressed(format) ? 0xFFFF : slice.pitch();
     }
 
     /** The bgfx texture format of an object texture format. */

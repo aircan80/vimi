@@ -19,12 +19,13 @@ import java.util.concurrent.atomic.AtomicReference;
  * are all transparent (discarded: terrain stays), an opaque quad (exact texel colour at full light)
  * and an alpha-blended quad (source-alpha over the terrain pixel). Above and below them, layout
  * ladders (issue #374) draw every mip level of three textures at one texel per pixel and check
- * every block. The tile is filled to the placement cap behind the camera, so each frame draws the
- * maximum per-tile placements in both passes. Authored data only.
+ * every block. The tile is filled to the placement cap behind the camera, so each frame tests the
+ * maximum per-tile placements in both passes and the CPU cull skips all but the drawn ones.
+ * Authored data only.
  */
 public final class WorldStreamObjectsMaterialProof {
     private static final int WIDTH = 800, HEIGHT = 500;
-    private static final TerrainCamera VIEW = new TerrainCamera(-20, -2, 20, 0, -.5);
+    static final TerrainCamera VIEW = new TerrainCamera(-20, -2, 20, 0, -.5);
 
     /**
      * Image formats (issue #374): {@code rgba8} (default), {@code bc} (BC1 opaque, BC3 cutout and
@@ -41,10 +42,11 @@ public final class WorldStreamObjectsMaterialProof {
         Path output = Path.of(arguments[0]);
         Files.createDirectories(output);
         var process = new AtomicReference<Process>();
+        // One backend property for every World proof (-PworldProofBackend; -PobjectsProofBackend
+        // is kept as an alias).
         var backend =
-                WorldStreamTransport.Backend.valueOf(
-                        System.getProperty("vimi.proof.backend", "VULKAN")
-                                .toUpperCase(java.util.Locale.ROOT));
+                WorldStreamTransportProof.proofBackend(
+                        System.getProperty("vimi.worldProof.backend", "vulkan"));
         var prepared =
                 WorldStreamTransport.prepare(
                         output, new WorldStreamTransport.Spec("ab".repeat(32), 1, backend, true));
@@ -293,7 +295,8 @@ public final class WorldStreamObjectsMaterialProof {
         builder.placement(
                 1, VIEW.x(), VIEW.y(), VIEW.z(), 1, new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1});
         // Fill the tile to the placement cap behind the camera (looking along +x), so every frame
-        // draws all of them in the opaque/cutout pass and again in the sorted blended pass.
+        // tests all of them in the opaque/cutout pass and again in the sorted blended pass; the
+        // CPU cull skips them (WorldStreamObjectsCullProof compares it with culling off).
         while (builder.placementRoom() > 0) {
             int i = builder.placementCount();
             builder.placement(
@@ -373,13 +376,19 @@ public final class WorldStreamObjectsMaterialProof {
         return chain.flip();
     }
 
-    /** Model 1: one quad per ladder level, each an opaque range over its ladder image. */
-    private static void ladderModel(WorldStreamTileWriter.Exterior.Builder builder) {
-        builder.model();
+    /** Ranges (and submits) of the ladder model: one per level of every ladder. */
+    static int ladderQuads() {
         int quads = 0;
         for (var ladder : LADDERS) {
             quads += ObjectTextureMips.levels(ladder.width, ladder.height);
         }
+        return quads;
+    }
+
+    /** Model 1: one quad per ladder level, each an opaque range over its ladder image. */
+    private static void ladderModel(WorldStreamTileWriter.Exterior.Builder builder) {
+        builder.model();
+        int quads = ladderQuads();
         var vertices = FloatBuffer.allocate(quads * 4 * 8);
         var indices = IntBuffer.allocate(quads * 6);
         var ranges = new int[quads * 3];
