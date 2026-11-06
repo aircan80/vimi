@@ -10,6 +10,8 @@ the real World helper on the native GPU and compares every frame with a stored r
 | Scene | What it covers |
 |---|---|
 | `terrain` | The authored tile 7,19, flat, with all 256 chunks triangulated as the client does (four triangles per cell around its inner vertex). Seen from above: terrain atlas sampling, shading and the sky around it. |
+| `water` | A strip of authored water (16 x 64 cells, 2.5 above the terrain, depths rising across each cell) on the same tile, seen from above: the water pass over terrain. |
+| `fog` | The tile from 400 beyond its edge, looking back and down: the fog rising across the tile toward its far edge. |
 | `objects` | The exterior object material quads over the authored terrain (`WorldStreamObjectsMaterialProof.quads`): a fully transparent cutout (discarded), an opaque quad at full light, and an alpha-blended quad. The tile is filled to the placement cap behind the camera, so culling and both object passes run at the cap. |
 
 ## Running
@@ -30,9 +32,15 @@ A passing run prints one line per scene, then a pass line:
 
 ```
 WORLD_APPEARANCE terrain mean 0.000, outliers 0.0000%, max 0
+WORLD_APPEARANCE water mean 0.000, outliers 0.0000%, max 0
+WORLD_APPEARANCE fog mean 0.000, outliers 0.0000%, max 0
 WORLD_APPEARANCE objects mean 0.000, outliers 0.0000%, max 0
-WORLD_APPEARANCE_PASS backend=VULKAN scenes=[terrain, objects]
+WORLD_APPEARANCE_PASS backend=VULKAN scenes=[terrain, water, fog, objects]
 ```
+
+If the helper exits with "EOF before CLOSED" while draining after the last frame (the known flake
+#431), the proof prints `WORLD_APPEARANCE_DRAIN_WARNING` and still decides on the frames, which
+were all taken before the drain. The session proofs own that failure.
 
 ## Tolerance
 
@@ -72,4 +80,4 @@ these scenes.
 - A frame-rate and camera-to-pixel latency check on a fixed real route. It builds on the
   read-only measurement probe (#353, #423) and will fail on a deliberate regression such as a
   30 fps cap.
-- Fog at the view cut, water, and cross-tile objects drawn once (with #380).
+- Cross-tile objects drawn once (with #380).
