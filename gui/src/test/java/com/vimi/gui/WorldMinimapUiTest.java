@@ -54,6 +54,8 @@ public final class WorldMinimapUiTest {
             cameraForwardCardinalLandmarks();
             delayedLatestSourceAndHide();
             roleMarkersFollowTheMinimapAndHover();
+            redrawsAndScansFollowTheVisibleView();
+            nonMovementChangesStillRedraw();
             synchronousProviderCancellation();
             fx(
                     () -> {
@@ -62,7 +64,8 @@ public final class WorldMinimapUiTest {
                     });
             System.out.println(
                     "WorldMinimapUiTest PASS: axes, artwork, facing, bounded"
-                            + " latest/source/hide/close/cancel, role markers and hover");
+                            + " latest/source/hide/close/cancel, role markers, hover and"
+                            + " per-view redraw/scan gating");
         } finally {
             Platform.exit();
         }
@@ -363,6 +366,115 @@ public final class WorldMinimapUiTest {
                 javafx.scene.input.MouseEvent.MOUSE_MOVED, scene.getX(), scene.getY(),
                 screen.getX(), screen.getY(), javafx.scene.input.MouseButton.NONE, 0,
                 false, false, false, false, false, false, false, false, false, false, null));
+    }
+
+    /** Camera updates every pulse redraw only when the drawn picture changes. */
+    private static void redrawsAndScansFollowTheVisibleView() throws Exception {
+        var source = new Provider();
+        source.immediate = image(0xff335577, 0xff335577, 0xff335577, 0xff335577);
+        var tiles = new ArrayList<WorldFormats.Tile>();
+        for (int x = 18; x <= 22; x++)
+            for (int y = 28; y <= 32; y++) tiles.add(new WorldFormats.Tile(x, y, 0, 0, 200 + x * 10 + y));
+        var grid = inventory(tiles);
+        // Near the origin tile's maximum corner, so four tiles overlap and small moves keep them;
+        // on a quarter-pixel grid point, so sub-pixel moves stay inside one rounding step.
+        double quarter = 1 / (4 * WorldMinimap.DrawKey.PIXELS_PER_YARD);
+        double startX = Math.round((X - .3 * SIDE) / quarter) * quarter, startY = Y - .3 * SIDE;
+        double tiny = .4 * quarter / 200;
+        fx(() -> update(source, grid, startX, startY, .3));
+        await(() -> !busy(), "gating artwork");
+        fx(
+                () -> {
+                    long redraws = map.redraws(), scans = map.scans();
+                    // 200 moves that together stay under half a quarter canvas pixel.
+                    for (int i = 1; i <= 200; i++) update(source, grid, startX + i * tiny, startY, .3);
+                    require(map.redraws() == redraws, "sub-pixel moves never redraw: " + (map.redraws() - redraws));
+                    require(map.scans() == scans, "moves inside a tile never rescan the map");
+                    update(source, grid, startX + 10, startY, .3);
+                    require(map.redraws() == redraws + 1, "a visible move redraws once: " + (map.redraws() - redraws) + " busy " + busy());
+                    update(source, grid, startX + 10, startY, .3 + Math.toRadians(1));
+                    require(map.redraws() == redraws + 2, "a one degree turn redraws");
+                    update(source, grid, startX + 10, startY, .3 + Math.toRadians(1) + 2 * Math.PI);
+                    require(map.redraws() == redraws + 2, "a full turn is the same heading");
+                    require(map.scans() == scans, "still the same tile");
+                    update(source, grid, startX - SIDE, startY, .3);
+                    require(map.scans() == scans + 1, "entering the next tile rescans once");
+                    require(WorldMinimap.playerTile(ORIGIN.x(), X, startX - SIDE) == ORIGIN.x() + 1
+                            && WorldMinimap.playerTile(ORIGIN.x(), X, X) == ORIGIN.x()
+                            && WorldMinimap.playerTile(ORIGIN.x(), X, X + 1) == ORIGIN.x() - 1,
+                            "player tile index follows the falling tile maxima");
+                });
+        await(() -> !busy(), "next tile artwork");
+    }
+
+    /** After the gate is armed, changes that are not player movement still redraw. */
+    private static void nonMovementChangesStillRedraw() throws Exception {
+        var first = new Provider();
+        first.immediate = image(0xff446688, 0xff446688, 0xff446688, 0xff446688);
+        var grid = inventory(List.of(ORIGIN));
+        double px = X - SIDE / 2, py = Y - SIDE / 2;
+        fx(() -> update(first, grid, px, py, 0));
+        await(() -> !busy(), "first artwork");
+        var second = new Provider();
+        second.immediate = image(0xff884422, 0xff884422, 0xff884422, 0xff884422);
+        fx(() -> {
+            long before = map.redraws();
+            update(second, grid, px, py, 0);
+            require(map.redraws() > before, "a new source redraws at the same position");
+        });
+        await(() -> !busy(), "second artwork");
+        fx(() -> require(snapshot().getPixelReader().getArgb(55, 125) == 0xff884422, "late artwork drawn"));
+        fx(() -> {
+            long before = map.redraws();
+            map.hide();
+            update(second, grid, px, py, 0);
+            require(map.redraws() > before && map.isVisible(), "hide then an identical update redraws");
+        });
+        await(() -> !busy(), "artwork after hide");
+        fx(() -> {
+            long before = map.redraws();
+            var orientation = (ChoiceBox<?>) map.lookup("#world-minimap-orientation");
+            orientation.getSelectionModel().select(1);
+            require(map.redraws() > before, "orientation redraws");
+            orientation.getSelectionModel().select(0);
+            before = map.redraws();
+            map.update(second, grid, ORIGIN, X + 1, Y, px + 1, py, 0);
+            require(map.redraws() > before, "a moved origin with the same relative view redraws");
+        });
+        // Role markers whose source becomes available while the player stands still.
+        var available = new java.util.concurrent.atomic.AtomicReference<Object>("unpublished");
+        var placement = MapRoleOverlayTest.placement("v1.0.10", 1429,
+                List.of(MapRoleOverlayTest.npc(2, 4, (List<Object>) null, 25, 25)));
+        var marker = placement.markers(1429, java.util.EnumSet.allOf(
+                com.vibeminer.concepts.locations.MapRoles.Layer.class)).getFirst();
+        var overlay = new WorldRoleOverlay((worldMapId, token) -> {
+            if ("unpublished".equals(available.get()))
+                throw new IllegalStateException("Selected-build map tables are unavailable.");
+            return new WorldRoleOverlay.Loaded(placement.catalog(),
+                    new com.vibeminer.concepts.locations.MapRoles.WorldPlacement(worldMapId,
+                            List.of(new com.vibeminer.concepts.locations.MapRoles.WorldMarker(marker, px + 60, py, 7)),
+                            1, 0, 0, List.of()));
+        }, available::get);
+        fx(() -> {
+            map.attachRoles(overlay);
+            update(second, grid, px, py, 0);
+            overlay.toggle(com.vibeminer.concepts.locations.MapRoles.Layer.VENDOR).setSelected(true);
+        });
+        await(() -> overlay.status().getText().contains("unavailable"), "markers unavailable before publication");
+        fx(() -> {
+            available.set("published");
+            long before = map.redraws();
+            update(second, grid, px, py, 0);
+            require(map.redraws() > before, "a new role source key redraws without moving");
+        });
+        await(() -> overlay.drawn().size() == 1, "markers appear while standing still");
+        fx(() -> {
+            long before = map.redraws();
+            overlay.faction().setValue(MapRoleOverlay.Faction.HORDE);
+            require(map.redraws() > before && overlay.drawn().isEmpty(), "faction filter redraws");
+            overlay.faction().setValue(MapRoleOverlay.Faction.ALL);
+            overlay.toggle(com.vibeminer.concepts.locations.MapRoles.Layer.VENDOR).setSelected(false);
+        });
     }
 
     private static void update(

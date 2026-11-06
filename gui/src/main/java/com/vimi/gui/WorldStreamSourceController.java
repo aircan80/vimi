@@ -97,10 +97,17 @@ final class WorldStreamSourceController {
     static final class Presentation {
         private final WorldStreamTransport.Frame frame;
         private final long generation;
+        // Only the basic sky, drawn while terrain in the viewing direction is still loading.
+        private final boolean skyOnly;
 
-        private Presentation(WorldStreamTransport.Frame frame, long generation) {
+        private Presentation(WorldStreamTransport.Frame frame, long generation, boolean skyOnly) {
             this.frame = frame;
             this.generation = generation;
+            this.skyOnly = skyOnly;
+        }
+
+        boolean skyOnly() {
+            return skyOnly;
         }
 
         long sequence() {
@@ -137,6 +144,12 @@ final class WorldStreamSourceController {
         final WorldStreamTransport.TileReservation reservation;
         final WorldStreamSourceBridge.Producer producer;
         volatile boolean useful = true;
+        /**
+         * Presentation, demand and source-retirement revisions sampled under the lock when this
+         * reservation was issued. A refusal waits for a change since issue, not since processing,
+         * so an FX bump that lands in between still wakes the retry (#305).
+         */
+        long issuedPresentation, issuedDemand, issuedSourceRetirement;
         CompletableFuture<WorldStreamTransport.Resident> result;
         CompletableFuture<Void> cancellation;
 
@@ -247,11 +260,18 @@ final class WorldStreamSourceController {
     private boolean blockedOnMaterialPool;
     private long sourceRetirementRevision, blockedSourceRetirement;
     private long blockedCapacity = -1, blockedPresentation = -1, blockedDemand = -1;
+    /** Presentation and demand revisions as of this step's own reads (worker thread only). */
+    private long stepPresentation, stepDemand;
     private volatile Throwable terminal;
     private volatile String unavailableDetail;
     private CompletableFuture<Void> physicalClosing;
     private boolean initialized;
-    private boolean skySuppressed;
+    // The newest frame drew only sky while wanted terrain is still loading (whether or not that
+    // frame is shown): capacity relief then still needs a useful frame.
+    private boolean skyPending;
+    private static final String LOADING_IN_VIEW = "Loading terrain in viewing direction";
+    private static final String SHOWING_PREVIOUS = "Loading terrain; showing previous view";
+    private static final String LOADING_NEARBY = "Loading nearby terrain";
     private boolean historicalRaster;
     private WorldFormats.Tile creditTarget;
     private boolean retryCommit;
@@ -261,6 +281,9 @@ final class WorldStreamSourceController {
     // Test seam: runs on the worker after a RETRY_LATER tile-preparation refusal, before it is
     // recorded.
     volatile Runnable tileRefusalSeam;
+    // Test seam: runs on the worker after this step read its demand and got a tile reservation,
+    // just before the reservation records its revisions and starts.
+    volatile Runnable tileIssueSeam;
 
     WorldStreamSourceController(
             Request request, GpuStarter starter, Events events, Consumer<Runnable> fxPost) {
@@ -453,10 +476,30 @@ final class WorldStreamSourceController {
                     historicalRaster=false;
                     acceptedSequence = value.sequence();
                     acceptedReceipt = currentReceipt;
-                    presented = List.copyOf(current);
+                    // Sky-only pixels show no resident terrain, so they pin no resident.
+                    presented = value.skyOnly ? List.of() : List.copyOf(current);
                     presentationRevision++;
                 }
             }
+        }
+        // Keep the label true to what is now on screen until the worker's next publication:
+        // live sky is no longer a retained previous view, and terrain is no longer "loading in
+        // the viewing direction".
+        if (accepted) {
+            boolean relabeled = false;
+            synchronized (lock) {
+                String detail = snapshot.detail();
+                String next = value.skyOnly
+                        ? detail.equals(SHOWING_PREVIOUS) ? LOADING_IN_VIEW : null
+                        : detail.equals(LOADING_IN_VIEW) || detail.equals(SHOWING_PREVIOUS)
+                                ? LOADING_NEARBY : null;
+                if (next != null) {
+                    snapshot = new Snapshot(snapshot.phase(), next, snapshot.prepared(),
+                            snapshot.desired(), snapshot.seed(), snapshot.area());
+                    relabeled = true;
+                }
+            }
+            if (relabeled) changed();
         }
         kick();
         return accepted;
@@ -592,6 +635,10 @@ final class WorldStreamSourceController {
     }
 
     private void step() {
+        synchronized (lock) {
+            // Pixels this step decides from; a later FX acceptance must still wake a refusal.
+            stepPresentation = presentationRevision;
+        }
         if (!initialized) {
             if (initialBlocked && clock.getAsLong() - initialRetryAt < RETRY_NANOS) return;
             if(source==null) {
@@ -707,6 +754,9 @@ final class WorldStreamSourceController {
                     int failedTile = key(pending.tile);
                     // Read while the refused reservation is still at hand (#283).
                     long refusedCapacity = pending.reservation.capacityBaseline();
+                    // Revisions as of issue, read before the pending reservation is dropped (#305).
+                    long issuedPresentation = pending.issuedPresentation, issuedDemand = pending.issuedDemand;
+                    long issuedSourceRetirement = pending.issuedSourceRetirement;
                     if(creditTarget!=null && same(creditTarget,pending.tile)
                             && refusal.reason()!=WorldStreamTransport.Refusal.RETRY_LATER) creditTarget=null;
                     pending.producer.close();
@@ -738,7 +788,7 @@ final class WorldStreamSourceController {
                     }
                     // This refusal's own unused-credit ACK is not a source-pool wakeup.
                     blockedOnMaterialPool = origin != null && origin.site().equals("MATERIAL_POOL");
-                    blockedSourceRetirement = sourceRetirementRevision;
+                    blockedSourceRetirement = issuedSourceRetirement;
                     var seam = tileRefusalSeam;
                     if (seam != null) seam.run();
                     blockedAt = clock.getAsLong();
@@ -749,11 +799,11 @@ final class WorldStreamSourceController {
                     // CREDIT arrives as an ordinary capacity change and deliberately wakes one
                     // retry per refusal, as before (polling while the geometry lane is busy is
                     // pre-existing and tracked separately).
+                    // Likewise presentation and demand: both are bumped on the FX thread, so the
+                    // values sampled at issue are compared, never the ones current now (#305).
                     blockedCapacity = refusedCapacity;
-                    synchronized (lock) {
-                        blockedPresentation = presentationRevision;
-                        blockedDemand = demandRevision;
-                    }
+                    blockedPresentation = issuedPresentation;
+                    blockedDemand = issuedDemand;
                     publish(Phase.WAITING_CAPACITY, "Waiting for streaming resource capacity");
                     return;
                 }
@@ -797,8 +847,14 @@ final class WorldStreamSourceController {
             synchronized (lock) {
                 current = committing;
                 currentReceipt = receipt;
-                skySuppressed=false;
+                skyPending=false;
                 committing = List.of();
+                // A queued frame of the old receipt can no longer be presented; release it so
+                // this commit's own first frame is taken at once.
+                if (queued != null && queued.frame.content() != receipt) {
+                    drop(queued.frame, "superseded");
+                    queued = null;
+                }
             }
             commit = null;
             pollFrame();
@@ -851,7 +907,7 @@ final class WorldStreamSourceController {
             // Any missing center needs a source credit, even if never previously presented.
             boolean missingCenter=!wanted.isEmpty() && current.stream().noneMatch(
                     entry->same(wanted.getFirst(),entry.resident()));
-            boolean needsUsefulFrame=missingCenter || skySuppressed;
+            boolean needsUsefulFrame=missingCenter || skyPending;
             var subset=new ArrayList<>(current.stream().filter(
                     entry->containsResident(wanted,entry.resident())).toList());
             boolean releases=current.stream().anyMatch(entry->!subset.contains(entry) && !presented.contains(entry));
@@ -915,8 +971,15 @@ final class WorldStreamSourceController {
                 publish(Phase.WAITING_CAPACITY, "Waiting for GPU upload capacity");
                 return;
             }
+            var issueSeam = tileIssueSeam;
+            if (issueSeam != null) issueSeam.run();
             blockedOnMaterialPool = false;
             pending = new Pending(tile, reservation.orElseThrow(), source, waterReady() ? water : null, scope);
+            // Revisions of the pixels and demand this tile was chosen from, not of now: a bump
+            // landing later in this step must still wake a refusal.
+            pending.issuedPresentation = stepPresentation;
+            pending.issuedDemand = stepDemand;
+            pending.issuedSourceRetirement = sourceRetirementRevision;
             pending.result = pending.reservation.produce(pending.producer);
             pending.result.whenComplete((ignored, failure) -> kick());
             publish(Phase.PREPARING, "Preparing terrain, textures and upload");
@@ -1066,7 +1129,9 @@ final class WorldStreamSourceController {
         var text = new StringBuilder();
         if (creatures.drawn() > 0)
             text.append("; ").append(creatures.drawn()).append(creatures.drawn() == 1 ? " static creature model on " : " static creature models on ").append(tiles)
-                    .append(tiles == 1 ? " tile" : " tiles").append(" (rest pose, facing north)");
+                    .append(tiles == 1 ? " tile" : " tiles").append(creatures.restPosed() == 0 ? " (Stand pose, facing north)"
+                            : creatures.restPosed() == creatures.drawn() ? " (rest pose, facing north)"
+                            : " (" + creatures.restPosed() + " in rest pose, facing north)");
         if (creatures.omitted() > 0) {
             text.append("; spawns not drawn: ");
             String separator = "";
@@ -1211,28 +1276,37 @@ final class WorldStreamSourceController {
             if(hasPresented && latest!=null && latest.view().pitch()<0 && pendingWanted
                     && WorldStreamBackground.matchesBasicSky(candidate.pixels(),candidate.width(),
                             candidate.height(),()->closing)) {
-                skySuppressed=true;
+                // Terrain in the viewing direction is still loading: present the live sky frame
+                // rather than freezing on the previous one, and keep asking for useful terrain.
+                skyPending=true;
                 synchronized(lock) {
                     if(!closing && borrowed==null && queued==null && entries.size()>=maxEntries
                             && !presented.isEmpty() && candidate.content()==currentReceipt) {
-                        // Detached old GUI pixels remain a historical raster, not a live Source borrow.
-                        // No new receipt/sequence is acknowledged and no new pixels are displayed.
+                        // Source pins retire now: should this frame be refused (nearest tile not
+                        // current), the old pixels stay a historical raster, not a live borrow.
                         presented=List.of();
                         historicalRaster=true;
                     }
                 }
-                drop(candidate, "sky");
-                publish(Phase.PREPARING,"Loading terrain in viewing direction");
+                publish(Phase.PREPARING,LOADING_IN_VIEW);
+                queue(candidate,true);
                 return;
             }
-            skySuppressed=false;
-            synchronized (lock) {
-                if (!closing)
-                    queued = new Presentation(candidate, request.viewGeneration());
-                else drop(candidate, "closing");
-            }
-            changed();
+            skyPending=false;
+            queue(candidate,false);
         }
+    }
+
+    private void queue(WorldStreamTransport.Frame candidate, boolean skyOnly) {
+        synchronized (lock) {
+            if (!closing)
+                queued = new Presentation(candidate, request.viewGeneration(), skyOnly);
+            else {
+                drop(candidate, "closing");
+                return;
+            }
+        }
+        changed();
     }
 
     private void seed(WorldStreamSourceBridge.Prepared prepared) {
@@ -1386,6 +1460,8 @@ final class WorldStreamSourceController {
 
     private List<WorldFormats.Tile> demand() {
         synchronized (lock) {
+            // The revision of exactly this demand, read atomically with it (#305).
+            stepDemand = demandRevision;
             return desired;
         }
     }
@@ -1393,7 +1469,7 @@ final class WorldStreamSourceController {
     private void publish(Phase phase, String detail) {
         synchronized (lock) {
             if(historicalRaster && phase!=Phase.FAILED && phase!=Phase.CLOSED
-                    && phase!=Phase.UNAVAILABLE) detail="Loading terrain; showing previous view";
+                    && phase!=Phase.UNAVAILABLE) detail=SHOWING_PREVIOUS;
             else if(historicalRaster && phase==Phase.UNAVAILABLE) detail+="; previous view retained";
             int available=0;
             for(var tile:desired) {

@@ -21,7 +21,7 @@ final class WorldStreamImagePresentation {
         Objects.requireNonNull(pixels);
         Objects.requireNonNull(currentView);
         Objects.requireNonNull(accepted);
-        if (width < 1 || width > 800 || height < 1 || height > 500
+        if (!com.vibeminer.rendering.world.WorldFrameLimits.fits(width, height)
                 || pixels.remaining() != width * height) {
             throw new IllegalArgumentException("World presentation pixel bounds");
         }
