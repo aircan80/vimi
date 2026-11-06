@@ -232,6 +232,69 @@ public final class LocationMapsService implements BuildLocationMaps {
         return submit(token, request -> groupAssignments(worldMapId, request));
     }
 
+    @Override
+    public CompletableFuture<MapTypes.WorldFrames> worldFrames(
+            long worldMapId, Cancellation token) {
+        if (worldMapId < 0 || worldMapId > 0xffff_ffffL) {
+            throw new IllegalArgumentException("Invalid world map identifier");
+        }
+        return submit(token, request -> frames(worldMapId, request));
+    }
+
+    /** Unscoped assignment frames for one world map, from the same index as {@link #resolve}. */
+    private MapTypes.WorldFrames frames(long worldMapId, Cancellation request) {
+        var issues = new ArrayList<String>();
+        var result = new ArrayList<MapTypes.WorldFrame>();
+        try {
+            load("UiMap", 8192, request, issues);
+            var assignments = load("UiMapAssignment", 16_384, request, issues);
+            var data = schemas.get("UiMapAssignment");
+            data.reference("AreaID", "AreaTable");
+            data.reference("UiMapID", "UiMap");
+            data.reference("MapID", "Map");
+            var index = assignmentIndex(assignments, data, request);
+            for (var failure : index.mapFailures()) {
+                MapTable.issue(issues, failure);
+            }
+            for (var row : index.byMap().getOrDefault(worldMapId, List.of())) {
+                request.check();
+                try {
+                    if (!unscoped(data, row)) {
+                        continue;
+                    }
+                    if (result.size() == MapTypes.WorldFrames.MAX_FRAMES) {
+                        MapTable.issue(issues, "World frames for this map exceed the list limit.");
+                        break;
+                    }
+                    result.add(
+                            new MapTypes.WorldFrame(
+                                    row.id(),
+                                    data.number(row, "UiMapID"),
+                                    worldMapId,
+                                    number(data, row, "UiMin[0]"),
+                                    number(data, row, "UiMin[1]"),
+                                    number(data, row, "UiMax[0]"),
+                                    number(data, row, "UiMax[1]"),
+                                    number(data, row, "Region[0]"),
+                                    number(data, row, "Region[1]"),
+                                    number(data, row, "Region[3]"),
+                                    number(data, row, "Region[4]")));
+                } catch (MapTable.Projection failure) {
+                    MapTable.issue(issues, failure.getMessage());
+                }
+            }
+            return new MapTypes.WorldFrames(
+                    state(issues),
+                    worldMapId,
+                    result,
+                    issues,
+                    result.isEmpty() ? "No unscoped UiMap assignment names this map." : null);
+        } catch (MapTable.Projection failure) {
+            return new MapTypes.WorldFrames(
+                    failure.state, worldMapId, List.of(), issues, failure.getMessage());
+        }
+    }
+
     /**
      * Group-scoped rows for one world map, read from the same cached tables and MapID index as
      * {@link #resolve}; {@code unscoped} still keeps them out of every resolution.
@@ -442,14 +505,25 @@ public final class LocationMapsService implements BuildLocationMaps {
                 && (coordinate.z() < minZ || coordinate.z() > maxZ)) {
             return null;
         }
-        double relativeX = (coordinate.x() - minX) / sizeX,
-                relativeY = (coordinate.y() - minY) / sizeY;
-        double uiX =
-                relativeY * number(data, row, "UiMin[0]")
-                        + (1 - relativeY) * number(data, row, "UiMax[0]");
-        double uiY =
-                relativeX * number(data, row, "UiMin[1]")
-                        + (1 - relativeX) * number(data, row, "UiMax[1]");
+        // The same recorded frame MapRoles inverts for world overlays (MapTypes.WorldFrame).
+        var frame =
+                new MapTypes.WorldFrame(
+                        row.id(),
+                        info.id(),
+                        0,
+                        number(data, row, "UiMin[0]"),
+                        number(data, row, "UiMin[1]"),
+                        number(data, row, "UiMax[0]"),
+                        number(data, row, "UiMax[1]"),
+                        minX,
+                        minY,
+                        maxX,
+                        maxY);
+        var ui = frame.toUi(coordinate.x(), coordinate.y());
+        if (ui == null) {
+            return null;
+        }
+        double uiX = ui[0], uiY = ui[1];
         if (!Double.isFinite(uiX)
                 || !Double.isFinite(uiY)
                 || uiX < 0
