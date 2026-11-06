@@ -166,6 +166,8 @@ final class WorldStreamSourceController {
         boolean buildingsFailed;
         WorldTileCreatures.Summary creatures = WorldTileCreatures.Summary.NONE;
         WorldObjectPicks.Tile picks;
+        // Objects release revision when this offer was issued.
+        long releaseRevision;
 
         Exterior(Entry entry) {
             this.entry = entry;
@@ -179,8 +181,9 @@ final class WorldStreamSourceController {
     // Worker-owned: at most one late exterior delivery, and the residents already tried.
     private ExecutorService exteriorWorker;
     private Exterior exterior;
-    // Worker-owned: residents refused for the objects GPU budget, with the demand revision of the
-    // refusal. They are offered again once the demand changes (the camera moved).
+    // Worker-owned: residents refused for the objects GPU budget, with the session's objects
+    // release revision at the refusal. They are offered again only once a drawn objects set was
+    // released (its resident replaced), never just because the camera turned or moved.
     private final IdentityHashMap<Entry, Long> exteriorBudget = new IdentityHashMap<>();
     private final java.util.Set<Entry> exteriorTried =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -936,13 +939,11 @@ final class WorldStreamSourceController {
         }
     }
 
-    /** A budget-refused resident waits until the demand changes after its refusal. */
+    /** A budget-refused resident waits until objects budget was released after its refusal. */
     private boolean budgetDeferred(Entry entry) {
         Long refused = exteriorBudget.get(entry);
         if (refused == null) return false;
-        long revision;
-        synchronized (lock) { revision = demandRevision; }
-        if (refused == revision) return true;
+        if (refused == session.objectsReleaseRevision()) return true;
         exteriorBudget.remove(entry);
         return false;
     }
@@ -983,6 +984,7 @@ final class WorldStreamSourceController {
             work.buildingsFailed = copy.failed();
             work.creatures = copy.creatures();
             work.picks = copy.picks();
+            work.releaseRevision = session.objectsReleaseRevision();
             work.attached = session.attachObjects(work.entry.resident(), copy.exterior());
             work.attached.whenComplete((ignored, failure) -> kick());
             return;
@@ -997,11 +999,10 @@ final class WorldStreamSourceController {
         var outcome = work.attached;
         if (!outcome.isCompletedExceptionally()
                 && outcome.join() == WorldStreamTransport.ObjectsOutcome.BUDGET) {
-            // Not a fault: the shared GPU budget was full. Offer it again after the camera moves,
-            // when the demand order (nearest first) has changed and residents may have retired.
-            long revision;
-            synchronized (lock) { revision = demandRevision; }
-            exteriorBudget.put(work.entry, revision);
+            // Not a fault: the shared GPU budget was full. Offer it again once a drawn set has
+            // been released since this offer was issued (not since the refusal arrived, so a
+            // release landing in between still counts), still nearest first.
+            exteriorBudget.put(work.entry, work.releaseRevision);
             changed();
             return;
         }

@@ -56,7 +56,7 @@ public final class WorldStreamSourceControllerTest {
         closeDuringActualInitialWdtQualificationIsCleanAndWaitsSourceDrain();
         terrainNeverWaitsForBlockedObjectPreparation();
         lateObjectsAttachAfterTerrainAndReportBuildings();
-        budgetRefusedObjectsRetryAfterTheCameraMoves();
+        budgetRefusedObjectsRetryAfterAReleaseOnly();
         lateObjectFailuresStayIsolatedFromTerrain();
         lateObjectsCompletingAfterRetirementAreIgnored();
         fiveByFiveNeighborhoodHoldsTwentyFiveResidentsWithinTheSourceUnion();
@@ -200,38 +200,55 @@ public final class WorldStreamSourceControllerTest {
     }
 
     /**
-     * A BUDGET refusal is not a failure: the resident keeps its terrain, is not retried while the
-     * demand is unchanged, and is offered again (and attaches) once the camera moves.
+     * A BUDGET refusal is not a failure: the resident keeps its terrain and is offered again only
+     * after a drawn objects set was released (its resident replaced in its slot) - never just
+     * because the camera turned or the demand reordered.
      */
-    private static void budgetRefusedObjectsRetryAfterTheCameraMoves() throws Exception {
-        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 3);
+    private static void budgetRefusedObjectsRetryAfterAReleaseOnly() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 6);
         fixture.exteriors = true;
+        fixture.residents = 4;
         WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) ->
                 new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
         Path budget = fixture.directory.resolve("authored-budget-objects");
+        int refusedY = fixture.tiles.get(3).y();
+        java.util.function.Predicate<String> refusedTile = line -> line.startsWith(refusedY + " ");
         try {
-            Files.writeString(budget, "full");
             fixture.start(fixture.gpu::start, () -> {}, preparer);
             fixture.until(() -> fixture.controller.snapshot().seed() != null);
             fixture.camera(1);
             fixture.controller.neighborhood(fixture.tiles.subList(0, 3));
-            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
-                    == WorldStreamSourceController.Phase.READY
-                    && fixture.objectLines().size() == 3);
-            check(fixture.objectLines().stream().allMatch(line -> line.endsWith(" BUDGET")),
-                    "Every set was refused for the budget: " + fixture.objectLines());
-            // Unchanged demand: no retry storm while the budget stays full.
-            for (int i = 0; i < 50; i++) { fixture.pump(); Thread.sleep(2); }
-            check(fixture.objectLines().size() == 3, "No retry before the camera moves");
+            fixture.untilPresented(() -> fixture.objectLines().stream()
+                    .filter(line -> line.endsWith(" ATTACHED")).count() == 3);
+            Files.writeString(budget, "full");
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 4));
+            fixture.untilPresented(() -> fixture.objectLines().stream().anyMatch(
+                    line -> refusedTile.test(line) && line.endsWith(" BUDGET")));
             check(!fixture.controller.snapshot().detail().contains("building objects failed"),
                     "A budget refusal is not reported as a failure: " + fixture.controller.snapshot().detail());
             Files.delete(budget);
-            var moved = new ArrayList<>(fixture.tiles.subList(0, 3));
-            java.util.Collections.reverse(moved);
-            fixture.controller.neighborhood(moved);
+            // Turning in place reorders the demand but releases nothing: no re-offer.
+            var turned = new ArrayList<>(fixture.tiles.subList(0, 4));
+            java.util.Collections.reverse(turned);
+            fixture.controller.neighborhood(turned);
+            fixture.camera(2);
+            for (int i = 0; i < 100; i++) { fixture.pump(); Thread.sleep(2); }
+            check(fixture.objectLines().stream().filter(refusedTile).count() == 1,
+                    "No re-offer without a release: " + fixture.objectLines());
+            // A new tile in a fresh slot releases nothing either.
+            fixture.controller.neighborhood(fixture.tiles.subList(1, 5));
             fixture.untilPresented(() -> fixture.objectLines().stream()
-                    .filter(line -> line.endsWith(" ATTACHED")).count() == 3);
-            check(fixture.objectLines().size() == 6, "Each refused resident was offered exactly once more");
+                    .anyMatch(line -> line.startsWith(fixture.tiles.get(4).y() + " ")));
+            for (int i = 0; i < 50; i++) { fixture.pump(); Thread.sleep(2); }
+            check(fixture.objectLines().stream().filter(refusedTile).count() == 1,
+                    "Still no re-offer without a release: " + fixture.objectLines());
+            // A tile staged into a slot whose objects were drawn releases them: the refused set
+            // is offered once more and attaches.
+            fixture.controller.neighborhood(fixture.tiles.subList(2, 6));
+            fixture.untilPresented(() -> fixture.objectLines().stream().anyMatch(
+                    line -> refusedTile.test(line) && line.endsWith(" ATTACHED")));
+            check(fixture.objectLines().stream().filter(refusedTile).count() == 2,
+                    "Offered exactly once more after the release: " + fixture.objectLines());
         } finally {
             fixture.close();
         }

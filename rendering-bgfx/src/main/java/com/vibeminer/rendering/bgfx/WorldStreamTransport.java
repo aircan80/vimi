@@ -860,6 +860,15 @@ public final class WorldStreamTransport {
             return ViewDistance.of(descriptor.maxActive());
         }
 
+        /**
+         * Revision of objects budget releases: it moves when a resident whose objects were drawn is
+         * replaced in its slot. A set refused with {@link ObjectsOutcome#BUDGET} is worth offering
+         * again only after it moves.
+         */
+        public long objectsReleaseRevision() {
+            return state.objectsReleases();
+        }
+
         /** This session's object texture tier, which sets its shared objects GPU budget. */
         public ObjectTextures objectTextures() {
             return ObjectTextures.of(descriptor.objectTextures());
