@@ -37,7 +37,10 @@ public final class WorldTileCreaturesTest {
         texturesReduceToPowerOfTwoOpaqueImages();
         alphaKeyedSurfacesDrawAsCutoutKeepingAlpha();
         defaultGeosetsDrawWithoutCreatureGeosetData();
+        aDenseNeighbourNoLongerStarvesTheTilesOwnSpawns();
+        busyOrClosedPreviewsCostNoBudget();
         cutoutReductionKeepsThinStrands();
+        displayGeosetRowsChooseEachGroupsVariant();
         appendDrawsOnlyQualifiedSpawnsOfTheTile();
         buildingsKeepTheirBudgetFirst();
         cachesPerRevisionAndRetriesFailures();
@@ -150,12 +153,37 @@ public final class WorldTileCreaturesTest {
         var unreadable = WorldTileCreatures.convert(preview(7, 0L, null, geosets()), Cancellation.NONE);
         require(unreadable.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
                 && unreadable.detail().contains("could not be read"), "An unreadable CreatureGeosetDataID is refused");
-        var own = WorldTileCreatures.convert(preview(7, 0L, 0L, true, geosets()), Cancellation.NONE);
-        require(own.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
-                && own.detail().contains("not evaluated"), "A display with its own geoset rows is refused");
         var unknown = WorldTileCreatures.convert(preview(7, 0L, 0L, null, geosets()), Cancellation.NONE);
         require(unknown.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
                 && unknown.detail().contains("unknown"), "Unknown display geoset rows are refused");
+    }
+
+    private static void displayGeosetRowsChooseEachGroupsVariant() {
+        // Parts 0, 100 and 101 (group 1 has x00 and x01); the display chooses value 1 for group 1
+        // (GeosetIndex 0): parts 0 and 101 draw, 100 is hidden.
+        var chosen = WorldTileCreatures.convert(preview(7, 0L, 0L, Map.of(1, 1), geosets()), Cancellation.NONE);
+        require(chosen.model() != null && java.util.Arrays.equals(chosen.model().ranges(), new int[] {0, 3, 0, 3, 3, 0})
+                && chosen.model().omittedSurfaces() == 0, "The display's chosen variant replaces x00: " + chosen.detail());
+        var hidden = WorldTileCreatures.visibleGeosets(
+                preview(7, 0L, 0L, Map.of(1, 1), geosets()).reference(), geosets().mesh());
+        require(hidden.ids().equals(java.util.Set.of(0, 101)), "Visible sections: " + hidden.ids());
+        // A non-zero CreatureGeosetDataID only says the display has rows; with rows it is evaluated.
+        require(WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(1, 0), geosets()), Cancellation.NONE).model() != null,
+                "Recorded geoset data with display rows draws");
+        require(WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(), geosets()), Cancellation.NONE).detail()
+                .contains("has no geoset rows"), "Recorded geoset data without display rows is refused");
+        // A variant the model lacks, or conflicting rows, is refused rather than guessed.
+        require(WorldTileCreatures.convert(preview(7, 0L, 0L, Map.of(1, 7), geosets()), Cancellation.NONE).detail()
+                .contains("geoset 107 chosen by the display is not in the model"), "A missing chosen variant is refused");
+        require(WorldTileCreatures.convert(preview(7, 0L, 0L,
+                        Map.of(1, DisplayModelTypes.Reference.CONFLICTING_GEOSET), geosets()), Cancellation.NONE)
+                .detail().contains("conflict"), "Conflicting rows are refused");
+        // A row for a group the model does not have changes nothing.
+        require(WorldTileCreatures.visibleGeosets(preview(7, 0L, 0L, Map.of(4, 2), geosets()).reference(),
+                geosets().mesh()).ids().equals(java.util.Set.of(0, 100)), "Rows for absent groups are ignored");
+        // A group with only x01 is drawn when the display chooses it.
+        require(WorldTileCreatures.convert(preview(7, 0L, 0L, Map.of(1, 1), hiddenGeosets()), Cancellation.NONE)
+                .model() != null, "A chosen x01-only group draws");
     }
 
     private static void cutoutReductionKeepsThinStrands() {
@@ -175,6 +203,65 @@ public final class WorldTileCreaturesTest {
         require((opaque.rgba()[3] & 255) == 255, "Opaque images are not rescaled");
     }
 
+
+    private static void aDenseNeighbourNoLongerStarvesTheTilesOwnSpawns() {
+        // 600 points just across the tile's +x edge (tile 31) are nearer the tile centre than the
+        // tile's own corner point; the 512-point query used to fill up with them first.
+        var rows = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < 600; i++) rows.add(WorldSpawnOverlayTest.spawn(2, i + 1, 5 + i * 0.01, -266, 10.0));
+        rows.add(WorldSpawnOverlayTest.spawn(1, 1, -520, -520, 10.0));
+        var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified(7, null), (display, token) -> preview(display, 0L, 0L, appearance(true)));
+        var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(summary.drawn() == 1 && summary.placed().getFirst().spawn().npcId() == 1,
+                "The tile's own point is drawn next to a dense neighbour");
+        require(summary.note() == null, "Neighbour points are not reported as beyond the query limit");
+    }
+
+    private static void busyOrClosedPreviewsCostNoBudget() {
+        // Twenty displays whose previews are all refused busy (bare or wrapped): every point is
+        // counted as busy, none is capped by the 16-preview budget and nothing is cached.
+        var rows = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < 20; i++) rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
+        var calls = new AtomicInteger();
+        var busy = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified((int) npc, null), (display, token) -> {
+                    int call = calls.incrementAndGet();
+                    if (busy.get()) {
+                        var refusal = new DisplayModelTypes.ServiceUnavailable("Display previews busy",
+                                call % 3 == 0, null);
+                        if (call % 2 == 0) throw new java.util.concurrent.CompletionException(refusal);
+                        throw refusal;
+                    }
+                    return preview(display, 0L, 0L, appearance(true));
+                });
+        var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(summary.count(WorldTileCreatures.Count.PREVIEWS_BUSY) == 20
+                        && summary.count(WorldTileCreatures.Count.CAPPED) == 0
+                        && summary.count(WorldTileCreatures.Count.FAILED) == 0,
+                "Busy or closed previews are their own count and take no preview budget");
+        busy.set(false);
+        var later = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(later.drawn() == 8 && calls.get() == 20 + 16,
+                "A busy refusal is not cached: the next tile reads the previews again");
+        require(WorldTileCreatures.busy(new RuntimeException(new java.util.concurrent.CompletionException(
+                new DisplayModelTypes.ServiceUnavailable("closed", true, null))))
+                && !WorldTileCreatures.busy(new IllegalStateException("Display previews busy")),
+                "Only the component's own busy/closed refusal counts as busy");
+        // 300 spawns of one display: a busy preview is asked once per tile, not once per spawn.
+        var same = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < 300; i++) same.add(WorldSpawnOverlayTest.spawn(1, i + 1, -100 - i * 0.5, -120, 10.0));
+        var asked = new AtomicInteger();
+        var one = new WorldTileCreatures(token -> index(same), () -> "r1", (npc, token) -> qualified(7, null),
+                (display, token) -> {
+                    asked.incrementAndGet();
+                    throw new DisplayModelTypes.ServiceUnavailable("Display previews busy", false, null);
+                });
+        var crowded = one.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(asked.get() == 1 && crowded.count(WorldTileCreatures.Count.PREVIEWS_BUSY) == 300,
+                "A busy display is not resubmitted for every spawn: " + asked.get());
+    }
     private static void appendDrawsOnlyQualifiedSpawnsOfTheTile() {
         var previews = new AtomicInteger();
         var creatures = new WorldTileCreatures(token -> index(List.of(
@@ -468,11 +555,12 @@ public final class WorldTileCreaturesTest {
     }
 
     static DisplayModelTypes.Preview preview(long display, Long extended, Long geosets, MeshAppearance appearance) {
-        return preview(display, extended, geosets, false, appearance);
+        return preview(display, extended, geosets, Map.of(), appearance);
     }
 
-    /** {@code displayGeosets}: whether the display has CreatureDisplayInfoGeosetData rows (null unknown). */
-    static DisplayModelTypes.Preview preview(long display, Long extended, Long geosets, Boolean displayGeosets,
+    /** {@code displayGeosets}: the display's geoset group to value choices (null unknown). */
+    static DisplayModelTypes.Preview preview(long display, Long extended, Long geosets,
+            Map<Integer, Integer> displayGeosets,
             MeshAppearance appearance) {
         return new DisplayModelTypes.Preview(DisplayModelTypes.State.PARTIAL,
                 new DisplayModelTypes.Reference(display, 20, 123456, List.of(), extended, geosets, displayGeosets),

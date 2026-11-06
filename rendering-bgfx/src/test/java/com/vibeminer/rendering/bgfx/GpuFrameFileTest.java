@@ -76,6 +76,9 @@ final class GpuFrameFileTest {
             Path file = directory.resolve("bad-" + mutation);
             try (var parent = GpuFrameFile.create(file, 2, 2);
                     var child = GpuFrameFile.open(file)) {
+                // Pixel and revision corruption is caught only by the debug CRC.
+                parent.verify(true);
+                child.verify(true);
                 child.write(1, 1, 1, 1, pixels(0xff112233));
                 long offset;
                 ByteBuffer changed;
@@ -114,10 +117,39 @@ final class GpuFrameFileTest {
     }
 
     @Test
+    void defaultModeSkipsTheCrcButStillRejectsInProgressAndChangedStamps() throws Exception {
+        Path file = directory.resolve("stamp.bin");
+        try (var parent = GpuFrameFile.create(file, 1, 1);
+                var child = GpuFrameFile.open(file)) {
+            parent.verify(false);
+            child.verify(false);
+            child.write(1, 1, 1, 1, pixels(0xff000001));
+            try (var channel = FileChannel.open(file, StandardOpenOption.READ)) {
+                var crc = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
+                channel.read(crc, 64 + 32);
+                assertEquals(0, crc.flip().getInt(), "default writer computes no CRC");
+            }
+            assertEquals(1, parent.readLatest(0).sequence());
+            try (var channel = FileChannel.open(file, StandardOpenOption.WRITE)) {
+                channel.write(
+                        ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(3).flip(),
+                        64);
+            }
+            assertNull(parent.readLatest(0), "odd stamp: write in progress");
+            // A verifying reader accepts an unchecksummed writer's frames.
+            child.write(2, 2, 1, 1, pixels(0xff000002));
+            parent.verify(true);
+            assertEquals(2, parent.readLatest(0).sequence());
+        }
+    }
+
+    @Test
     void corruptedNewestSlotDoesNotHideAnOlderValidUnseenFrame() throws Exception {
         Path file = directory.resolve("recover.bin");
         try (var parent = GpuFrameFile.create(file, 1, 1);
                 var child = GpuFrameFile.open(file)) {
+            parent.verify(true);
+            child.verify(true);
             child.write(1, 1, 1, 1, pixels(0xff000001));
             child.write(2, 2, 1, 1, pixels(0xff000002));
             try (var channel = FileChannel.open(file, StandardOpenOption.WRITE)) {
