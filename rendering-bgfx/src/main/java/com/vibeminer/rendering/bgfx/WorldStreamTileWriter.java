@@ -379,7 +379,8 @@ public final class WorldStreamTileWriter {
 
             /**
              * As {@link #mesh(java.nio.FloatBuffer, java.nio.IntBuffer, int[])}, with one material
-             * class per range: 0 opaque, 1 alpha-key cutout, 2 alpha blended.
+             * class per range: 0 opaque, 1 alpha-key cutout, 2 alpha blended, 3 additive, each
+             * optionally with the unlit flag 0x100 (#367).
              */
             public void mesh(
                     java.nio.FloatBuffer vertexData,
