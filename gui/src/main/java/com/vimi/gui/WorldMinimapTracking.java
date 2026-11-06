@@ -33,6 +33,7 @@ final class WorldMinimapTracking {
     private Runnable refocus = () -> {}, showing = () -> {};
     // Keys bound to HUD commands pass through to the viewport like the layout keys.
     private java.util.function.Predicate<KeyEvent> passes = event -> false;
+    private java.util.function.Consumer<KeyEvent> forward;
 
     WorldMinimapTracking() {
         var title = new Label("TRACKING");
@@ -46,12 +47,25 @@ final class WorldMinimapTracking {
         content.setMaxWidth(380);
         content.setStyle("-fx-background-color: rgba(14,24,31,0.95); -fx-background-radius: 8;"
                 + " -fx-padding: 10; -fx-base: #24343d; -fx-text-fill: white;");
+        // HUD command keys go straight to the viewport's key handling, before any popup control
+        // sees them: a command bound to Space or Enter must not also toggle a focused checkbox.
+        javafx.event.EventHandler<KeyEvent> commands = event -> {
+            if (forward == null || event.getEventType() == KeyEvent.KEY_TYPED || !passes.test(event)) return;
+            event.consume();
+            forward.accept(event);
+        };
         // Handle first, then stop presses (but the layout keys) from reaching the viewport.
-        content.addEventHandler(KeyEvent.ANY, event -> {
+        javafx.event.EventHandler<KeyEvent> keep = event -> {
             if (event.getEventType() == KeyEvent.KEY_RELEASED || layoutKey(event) || passes.test(event)) return;
             if (event.getEventType() == KeyEvent.KEY_PRESSED && event.getCode() == KeyCode.ESCAPE) popup.hide();
             event.consume();
-        });
+        };
+        content.addEventFilter(KeyEvent.ANY, commands);
+        content.addEventHandler(KeyEvent.ANY, keep);
+        // Also on the popup's scene: with no popup node focused, keys target the scene itself and
+        // never pass through the content.
+        popup.getScene().addEventFilter(KeyEvent.ANY, commands);
+        popup.getScene().addEventHandler(KeyEvent.ANY, keep);
         content.addEventHandler(MouseEvent.ANY, MouseEvent::consume);
         content.addEventHandler(ScrollEvent.ANY, ScrollEvent::consume);
         popup.getContent().add(content);
@@ -71,6 +85,14 @@ final class WorldMinimapTracking {
     /** Keys that pass through to the viewport while open (the view's HUD command keys). */
     void passThrough(java.util.function.Predicate<KeyEvent> next) {
         passes = Objects.requireNonNull(next);
+    }
+
+    /**
+     * Where passing keys go: the view's own key handling, called directly. Without it they
+     * still reach the viewport through the owner window, after the popup's controls.
+     */
+    void forward(java.util.function.Consumer<KeyEvent> next) {
+        forward = Objects.requireNonNull(next);
     }
 
     /** Runs when the popup opens, e.g. to drop held flight input. */

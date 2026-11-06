@@ -69,6 +69,8 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         }
     };
     private int zoom = DEFAULT_ZOOM;
+    // The minimap key hides the cluster on purpose; it stays hidden across updates until shown.
+    private boolean userHidden;
     private Runnable refocus = () -> {};
     // Shown by its own state (a valid view) and not hidden by the HUD; see followHud.
     private boolean ownVisible, hudHidden;
@@ -259,6 +261,35 @@ final class WorldMinimap extends VBox implements AutoCloseable {
     void refocus(Runnable next) {
         refocus = java.util.Objects.requireNonNull(next);
         tracking.refocus(next);
+    }
+
+    /**
+     * The minimap key: hides the cluster (and its popup), or shows it again. Ignored while the
+     * HUD is hidden, so nothing changes out of sight.
+     */
+    void toggleShown() {
+        if (hudHidden) return;
+        userHidden = !userHidden;
+        applyVisible();
+    }
+
+    /** True while the minimap key has hidden the cluster. */
+    boolean userHidden() {
+        return userHidden;
+    }
+
+    /** Whether the cluster shows: it has a view, the minimap key left it on, the HUD shows. */
+    boolean shown() {
+        return ownVisible && view != null && !userHidden && !hudHidden;
+    }
+
+    /** The tracking key: opens or closes the popup, only while the cluster is shown. */
+    void toggleTracking() {
+        if (!shown()) {
+            tracking.hide();
+            return;
+        }
+        tracking.toggle(this);
     }
 
     /** The tracking popup; the view mounts the spawn and role controls in it. */
@@ -747,8 +778,13 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         applyVisible();
     }
 
+    /** The one visibility rule: a view, not hidden by the minimap key, and the HUD shown. */
     private void applyVisible() {
-        boolean shown = ownVisible && !hudHidden;
+        boolean shown = shown();
+        if (!shown) {
+            tracking.hide();
+            roleTip.hide();
+        }
         setVisible(shown);
         setManaged(shown);
     }

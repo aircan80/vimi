@@ -44,7 +44,28 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         HIDE_HUD("Hide or show the HUD (toggle)", true),
         DEV_OVERLAY("Developer overlay (next page)", true),
         INSPECT_PIN("Inspect card: pin / unpin, or re-open the last", true),
-        SCREENSHOT("Save a viewport screenshot", true);
+        SCREENSHOT("Save a viewport screenshot", true),
+        SPAWNS("NPC spawn markers on/off", true),
+        TRACKING("Tracking popup open/close", true),
+        MINIMAP("Minimap show/hide", true),
+        DAY_NIGHT("Day/night: clock, day, night", true),
+        SPEED_STROLL("Speed: Stroll", true),
+        SPEED_MOUNT("Speed: Mount", true),
+        SPEED_FLY("Speed: Fly", true),
+        SPEED_FAST("Speed: Fast", true),
+        SPEED_TURBO("Speed: Turbo", true);
+
+        /** The speed preset a speed action selects, or null for other actions. */
+        Speed speed() {
+            return switch (this) {
+                case SPEED_STROLL -> Speed.STROLL;
+                case SPEED_MOUNT -> Speed.MOUNT;
+                case SPEED_FLY -> Speed.FLY;
+                case SPEED_FAST -> Speed.FAST;
+                case SPEED_TURBO -> Speed.TURBO;
+                default -> null;
+            };
+        }
 
         final String label;
         /**
@@ -141,6 +162,19 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
             // I sits in the same place on QWERTY and AZERTY.
             keys.put(KeyCode.I, Action.INSPECT_PIN);
             keys.put(KeyCode.F12, Action.SCREENSHOT);
+            // V, L, N and T sit in the same place on both layouts.
+            keys.put(KeyCode.V, Action.SPAWNS);
+            keys.put(KeyCode.L, Action.TRACKING);
+            keys.put(KeyCode.N, Action.MINIMAP);
+            keys.put(KeyCode.T, Action.DAY_NIGHT);
+            // AZERTY digits need Shift: that preset leaves the speed keys unbound (Shift+wheel).
+            if (this != AZERTY) {
+                keys.put(KeyCode.DIGIT1, Action.SPEED_STROLL);
+                keys.put(KeyCode.DIGIT2, Action.SPEED_MOUNT);
+                keys.put(KeyCode.DIGIT3, Action.SPEED_FLY);
+                keys.put(KeyCode.DIGIT4, Action.SPEED_FAST);
+                keys.put(KeyCode.DIGIT5, Action.SPEED_TURBO);
+            }
             return keys;
         }
     }

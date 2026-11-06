@@ -135,7 +135,7 @@ public final class WorldInspectionTest {
                 new com.vibeminer.concepts.world.WorldInstanceLinks.Entrance(0, 100, 200), null);
         var entrance = WorldInspection.marker(new WorldMinimap.Clicked(null, link, "Authored Depths entrance"));
         require(entrance.kind() == WorldInspection.Kind.ENTRANCE && entrance.title().equals("Authored Depths")
-                        && entrance.subtitle().equals("raid entrance on map 0") && entrance.lines().getFirst().equals("Map #33"),
+                        && entrance.subtitle().equals("raid entrance on map 0") && entrance.lines().getFirst().equals("leads to map #33"),
                 "An entrance card: " + entrance);
     }
 
