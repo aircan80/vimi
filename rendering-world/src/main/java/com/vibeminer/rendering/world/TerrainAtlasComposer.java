@@ -149,7 +149,7 @@ public final class TerrainAtlasComposer {
             }
         }
         byte[] pixels = new byte[TerrainTileAtlas.PIXEL_BYTES];
-        long[] coverage = new long[4];
+        long[] coverage = new long[4], empty = new long[4];
         var mappings = new ArrayList<TerrainTileAtlas.Mapping>(256);
         var diagnostics = new ArrayList<Diagnostic>();
         var masks = ByteBuffer.allocate(WorldTextureFormats.MAX_MASK_SCRATCH);
@@ -169,6 +169,9 @@ public final class TerrainAtlasComposer {
                             chunk.originY(),
                             chunk.originZ()));
             var none = WorldTextureFormats.ChunkIssue.NONE;
+            if (metadata.issue() == WorldTextureFormats.ChunkIssue.NO_LAYERS) {
+                empty[ordinal / 64] |= 1L << (ordinal % 64);
+            }
             if (metadata.issue() != none) {
                 diagnostics.add(new Diagnostic(ordinal, Reason.TEXTURE_METADATA, metadata.issue()));
                 continue;
@@ -201,7 +204,8 @@ public final class TerrainAtlasComposer {
             coverage[ordinal / 64] |= 1L << (ordinal % 64);
         }
         check(canceled);
-        return new Composition(new TerrainTileAtlas(tile, pixels, coverage, mappings), diagnostics);
+        return new Composition(
+                new TerrainTileAtlas(tile, pixels, coverage, empty, mappings), diagnostics);
     }
 
     private static void renderChunk(

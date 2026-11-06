@@ -17,21 +17,40 @@ public final class TerrainTileAtlas {
     private final WorldFormats.Tile tile;
     private final byte[] pixels;
     private final long[] coverage;
+    private final long[] empty;
     private final List<Mapping> mappings;
-    private final int supportedChunks;
+    private final int supportedChunks, emptyChunks;
 
     // Package-private ownership transfer: only the pure composer allocates these arrays.
     TerrainTileAtlas(
             WorldFormats.Tile tile, byte[] pixels, long[] coverage, List<Mapping> mappings) {
+        this(tile, pixels, coverage, new long[4], mappings);
+    }
+
+    TerrainTileAtlas(
+            WorldFormats.Tile tile,
+            byte[] pixels,
+            long[] coverage,
+            long[] empty,
+            List<Mapping> mappings) {
+        if (coverage.length != 4 || empty.length != 4) {
+            throw new IllegalArgumentException("Invalid atlas chunk masks");
+        }
+        int supported = 0, nothing = 0;
+        for (int i = 0; i < 4; i++) {
+            if ((coverage[i] & empty[i]) != 0) {
+                throw new IllegalArgumentException("A chunk cannot be both drawn and empty");
+            }
+            supported += Long.bitCount(coverage[i]);
+            nothing += Long.bitCount(empty[i]);
+        }
         this.tile = tile;
         this.pixels = pixels;
         this.coverage = coverage;
+        this.empty = empty;
         this.mappings = List.copyOf(mappings);
-        int supported = 0;
-        for (long bits : coverage) {
-            supported += Long.bitCount(bits);
-        }
         supportedChunks = supported;
+        emptyChunks = nothing;
     }
 
     public WorldFormats.Tile tile() {
@@ -56,6 +75,26 @@ public final class TerrainTileAtlas {
 
     public int supportedChunks() {
         return supportedChunks;
+    }
+
+    /**
+     * Chunks that declare no texture layers (an empty MCLY). They have nothing to draw, so they are
+     * never covered, but they don't make a tile incomplete either.
+     */
+    public int emptyChunks() {
+        return emptyChunks;
+    }
+
+    public boolean empty(int ordinal) {
+        if (ordinal < 0 || ordinal >= 256) {
+            throw new IllegalArgumentException("Invalid source ordinal");
+        }
+        return (empty[ordinal / 64] & (1L << (ordinal % 64))) != 0;
+    }
+
+    /** Every chunk is either drawn or has nothing to draw. */
+    public boolean complete() {
+        return supportedChunks + emptyChunks == 256;
     }
 
     public List<Mapping> mappings() {

@@ -474,4 +474,54 @@ class TerrainAtlasComposerTest {
                                     new byte[64]));
         }
     }
+
+    @Test
+    void chunksWithNoLayersAreEmptyNotCoveredAndKeepTheAtlasComplete() {
+        var out = new ByteArrayOutputStream();
+        out.writeBytes(part("MVER", ints(18)));
+        out.writeBytes(part("MDID", ints(1)));
+        for (int ordinal = 0; ordinal < 256; ordinal++) {
+            out.writeBytes(
+                    part("MCNK", part("MCLY", ordinal == 7 ? new byte[0] : ints(0, 0, 0, 0))));
+        }
+        try (var textures = WorldTextureFormats.read(out.toByteArray(), () -> false)) {
+            var result =
+                    TerrainAtlasComposer.compose(
+                            TILE,
+                            grid(new byte[0], false, false),
+                            textures,
+                            Map.of(1L, mip(1, 9, 9, 9)),
+                            () -> false);
+            var atlas = result.atlas();
+            assertEquals(255, atlas.supportedChunks());
+            assertEquals(1, atlas.emptyChunks());
+            assertTrue(atlas.complete());
+            assertTrue(atlas.empty(7));
+            assertFalse(atlas.covered(7));
+            assertFalse(atlas.empty(8));
+            assertEquals(
+                    WorldTextureFormats.ChunkIssue.NO_LAYERS,
+                    result.diagnostics().getFirst().maskIssue());
+            // Nothing is painted for the empty chunk.
+            assertEquals(0, channel(atlas, 7 * 32, 0, 3));
+        }
+        // A chunk cannot be both drawn and empty.
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new TerrainTileAtlas(
+                                TILE,
+                                new byte[TerrainTileAtlas.PIXEL_BYTES],
+                                new long[] {1, 0, 0, 0},
+                                new long[] {1, 0, 0, 0},
+                                java.util.List.of()));
+        // Without empty chunks an incomplete atlas stays incomplete.
+        try (var textures = textures(new int[] {128}, false)) {
+            var missing =
+                    TerrainAtlasComposer.compose(
+                            TILE, grid(new byte[0], false, false), textures, Map.of(), () -> false);
+            assertFalse(missing.atlas().complete());
+            assertEquals(0, missing.atlas().emptyChunks());
+        }
+    }
 }

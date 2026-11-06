@@ -1762,4 +1762,66 @@ class WorldTerrainTextureSourceTest {
         }
         assertEquals(files.totalOpens(), files.closed.get());
     }
+
+    /** The authored tile with its last chunk column declaring no layers (an empty MCLY). */
+    private static byte[] textureWithEmptyEdge() {
+        var out = new ByteArrayOutputStream();
+        out.writeBytes(part("MVER", ints(18)));
+        out.writeBytes(part("MDID", ints(10, 11)));
+        for (int i = 0; i < 256; i++) {
+            var chunk = new ByteArrayOutputStream();
+            if (i % 16 == 15) {
+                chunk.writeBytes(part("MCLY", new byte[0]));
+            } else {
+                chunk.writeBytes(part("MCLY", ints(0, 0, 0, 0)));
+            }
+            out.writeBytes(part("MCNK", chunk.toByteArray()));
+        }
+        return out.toByteArray();
+    }
+
+    @Test
+    void chunksWithNoLayersLeaveATileReadyAndCached() throws Exception {
+        var files = new Files();
+        files.sources.put(3L, textureWithEmptyEdge());
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try {
+            try (var result = read(source)) {
+                var tile = result.tiles().getFirst();
+                assertEquals(WorldTerrainTextureSource.State.READY, tile.state());
+                assertEquals(240, tile.supportedChunks());
+                assertEquals(16, tile.issues().size());
+                assertTrue(
+                        tile.issues().stream()
+                                .allMatch(
+                                        issue ->
+                                                issue.maskIssue()
+                                                        == com.vibeminer.formats.world
+                                                                .WorldTextureFormats.ChunkIssue
+                                                                .NO_LAYERS));
+                try (var lease = result.retainAtlas(TILE.x(), TILE.y()).orElseThrow()) {
+                    lease.withAtlas(
+                            atlas -> {
+                                assertTrue(atlas.complete());
+                                assertEquals(16, atlas.emptyChunks());
+                                assertFalse(atlas.covered(15));
+                                assertTrue(atlas.empty(15));
+                            });
+                }
+            }
+            assertEquals(1, pool.stats().cachedEntries());
+            int decodes = files.opens(10);
+            // The second read is an atlas cache hit: no diffuse decode, same drawn count.
+            try (var result = read(source)) {
+                var tile = result.tiles().getFirst();
+                assertEquals(WorldTerrainTextureSource.State.READY, tile.state());
+                assertEquals(240, tile.supportedChunks());
+            }
+            assertEquals(decodes, files.opens(10));
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
 }

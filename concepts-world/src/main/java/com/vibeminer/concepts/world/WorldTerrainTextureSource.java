@@ -258,7 +258,8 @@ public final class WorldTerrainTextureSource {
                     || supportedChunks < 0
                     || supportedChunks > 256
                     || ((state == State.READY || state == State.PARTIAL) != (receipt != null))
-                    || (state == State.READY && supportedChunks != 256)
+                    // READY: every chunk drawn or with nothing to draw (no layers).
+                    || (state == State.READY && supportedChunks == 0)
                     || (state == State.PARTIAL && (supportedChunks == 0 || supportedChunks == 256))
                     || ((state == State.UNAVAILABLE || state == State.POOL_BUSY)
                             && supportedChunks != 0)) {
@@ -989,8 +990,10 @@ public final class WorldTerrainTextureSource {
                         hit.lease().close();
                         throw changed;
                     }
+                    int[] drawn = {0};
+                    hit.lease().withAtlas(atlas -> drawn[0] = atlas.supportedChunks());
                     return new Outcome(
-                            new TileResult(tile, State.READY, hit.receipt(), 256, List.of()),
+                            new TileResult(tile, State.READY, hit.receipt(), drawn[0], List.of()),
                             hit.lease());
                 }
             }
@@ -1056,7 +1059,7 @@ public final class WorldTerrainTextureSource {
                 // decodes no longer revalidate one by one.
                 revalidate(receipt.bindings(), request);
                 request.check();
-                boolean complete = composition.supportedChunks() == 256;
+                boolean complete = composition.atlas().complete();
                 var lease =
                         reserved.publish(
                                 composition.atlas(),
