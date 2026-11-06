@@ -1238,6 +1238,38 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    @Test
+    void theChainReusesTheRegisteredLevelInsteadOfDecodingItAgain() {
+        // A 256^2 file recording 256 and 128: registered at 128 (level 1), allotted 256. With
+        // nothing retained, the relevel needs a second read; the chain's only lower level is the
+        // registered one, so it comes from the first decode and no third read happens.
+        for (int materialClass : new int[] {0, 1}) {
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+                f.files.sources.put(
+                        ROOT,
+                        root(
+                                1,
+                                new long[] {GROUP},
+                                List.of(new Material(materialClass, IMAGE, 0))));
+                f.files.sources.put(GROUP, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+                f.files.sources.put(IMAGE, blp(256, 256, 2, 0x001f));
+                try (var set = retaining(f, 0)) {
+                    var image = set.images().getFirst();
+                    assertEquals(256, image.width(), "allotted level");
+                    assertEquals(2, f.files.opens.get(IMAGE).get(), "class " + materialClass);
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_MIPS_PARTIAL));
+                    // Level 1 is the file's own 128^2 (blue), not a reduction artefact.
+                    var rgba = image.rgba();
+                    int at =
+                            com.vibeminer.rendering.world.ObjectTextureMips.levelOffset(
+                                    256, 256, 1);
+                    assertEquals(0, rgba.get(at) & 255);
+                    assertEquals(255, rgba.get(at + 2) & 255);
+                }
+            }
+        }
+    }
+
     private static WorldExteriorObjects.TileObjects retaining(Fixture f, long limit) {
         return WorldExteriorObjects.prepare(
                 f.engine,

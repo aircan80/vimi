@@ -2156,8 +2156,10 @@ public final class WorldExteriorObjects {
         }
 
         /**
-         * One registered image: its slot, pool, source, level-0 size, recorded mip count and the
-         * level it was first decoded at.
+         * One registered image: its slot, pool, source, level-0 size, recorded mip count, the level
+         * it was first decoded at and that level's pixels. The chain reuses those pixels when the
+         * allotted level lies above the registered one, so no level is decoded twice (opaque pixels
+         * already have alpha 255, which the opaque chain sets anyway).
          */
         private record Demand(
                 int slot,
@@ -2167,7 +2169,8 @@ public final class WorldExteriorObjects {
                 long width,
                 long height,
                 int recorded,
-                int registered) {}
+                int registered,
+                byte[] registeredRgba) {}
 
         /**
          * Reads and decodes one image at the registration side; the uploaded level is chosen later
@@ -2234,7 +2237,16 @@ public final class WorldExteriorObjects {
                     demands.add(null);
                 }
                 demands.add(
-                        new Demand(slot, pool, id, materialClass, width, height, recorded, level));
+                        new Demand(
+                                slot,
+                                pool,
+                                id,
+                                materialClass,
+                                width,
+                                height,
+                                recorded,
+                                level,
+                                image.rgba));
                 local[(building ? Count.IMAGE_DECODED : Count.MODEL_IMAGE_DECODED).ordinal()]++;
                 return slot;
             }
@@ -2348,18 +2360,36 @@ public final class WorldExteriorObjects {
                 token.check();
                 var top = images.get(demand.slot());
                 int level = top.mipLevel();
-                // The file's own mips below the final level, when it records any.
-                byte[] file = level + 1 < demand.recorded() ? source(demand) : null;
+                // The file's own mips below the final level, when it records any: the registered
+                // level from its first decode, the others decoded once each from the source,
+                // which is fetched only when such a level is asked for.
+                var file =
+                        new Object() {
+                            boolean fetched;
+                            byte[] raw;
+
+                            byte[] level(int at, int w, int h) {
+                                if (at >= demand.recorded()) {
+                                    return null;
+                                }
+                                if (at == demand.registered()) {
+                                    byte[] kept = demand.registeredRgba();
+                                    return kept.length == w * h * 4 ? kept : null;
+                                }
+                                if (!fetched) {
+                                    fetched = true;
+                                    raw = source(demand);
+                                }
+                                return raw == null ? null : fileMip(raw, at, w, h);
+                            }
+                        };
                 var chain =
                         ObjectTextureMips.build(
                                 top.width(),
                                 top.height(),
                                 top.rgba,
                                 demand.materialClass(),
-                                (below, w, h) ->
-                                        file == null || level + below >= demand.recorded()
-                                                ? null
-                                                : fileMip(file, level + below, w, h),
+                                (below, w, h) -> file.level(level + below, w, h),
                                 token::isCanceled);
                 switch (chain.source()) {
                     case FILE -> counts[Count.IMAGE_MIPS_FILE.ordinal()]++;
@@ -2397,18 +2427,22 @@ public final class WorldExteriorObjects {
                 return null;
             }
             try (input) {
-                byte[] raw = input.bytes().clone();
+                byte[] raw = input.bytes();
                 retain(demand.id(), raw);
                 return raw;
             }
         }
 
-        /** Keeps one file's source bytes while they fit the bound; counts each file once. */
+        /**
+         * Keeps one file's source bytes while they fit the bound; counts each file once. The array
+         * is kept as read, not copied: every source read allocates its own array, the input only
+         * drops its reference on close, and nothing here writes to source bytes.
+         */
         private void retain(long id, byte[] raw) {
             if (sources.containsKey(id) || retainedSourceBytes + raw.length > retainLimit) {
                 return;
             }
-            sources.put(id, raw.clone());
+            sources.put(id, raw);
             retainedSourceBytes += raw.length;
             peakRetainedSourceBytes = Math.max(peakRetainedSourceBytes, retainedSourceBytes);
         }
