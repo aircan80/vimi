@@ -77,7 +77,11 @@ final class SpellTextsTest {
                     "EffectBasePointsF",
                     "MinDuration",
                     "Speed",
-                    "LaunchDelay");
+                    "LaunchDelay",
+                    "Radius",
+                    "RadiusPerLevel",
+                    "RadiusMin",
+                    "RadiusMax");
 
     private static Db2Types.Row row(long id, String... cells) {
         return new Db2Types.Row(id, false, null, List.of(cells), List.of());
@@ -472,6 +476,211 @@ final class SpellTextsTest {
                 var service = new SpellTexts(tables, "1.60.1.70790")) {
             return service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
                     .join();
+        }
+    }
+
+    private static MemoryTables.FakeTable fullAuraOptions(List<Db2Types.Row> rows) {
+        return layout(
+                table(
+                        5,
+                        "SpellAuraOptions",
+                        List.of(
+                                "ID",
+                                "DifficultyID",
+                                "CumulativeAura",
+                                "ProcChance",
+                                "ProcCharges",
+                                "SpellProcsPerMinuteID",
+                                "SpellID"),
+                        rows,
+                        TableTypes.State.READY),
+                "95F4D5E1");
+    }
+
+    private static SpellTexts.Description auraPreview(
+            String raw,
+            List<Db2Types.Row> effects,
+            List<Db2Types.Row> options,
+            List<Db2Types.Row> radii) {
+        return auraPreview(raw, effects, options, radii, TableTypes.State.READY, List.of());
+    }
+
+    private static SpellTexts.Description auraPreview(
+            String raw,
+            List<Db2Types.Row> effects,
+            List<Db2Types.Row> options,
+            List<Db2Types.Row> radii,
+            TableTypes.State optionsState,
+            List<SpellTexts.EffectOverride> overrides) {
+        var optionsTable = fullAuraOptions(options);
+        var e = optionsTable.entry();
+        optionsTable =
+                new MemoryTables.FakeTable(
+                        new TableTypes.Entry(
+                                e.fileDataId(),
+                                e.name(),
+                                optionsState,
+                                true,
+                                null,
+                                e.counts(),
+                                e.contentKey()),
+                        optionsTable.columns(),
+                        optionsTable.rows(),
+                        optionsTable.schema(),
+                        Map.of(),
+                        true);
+        var world =
+                new MemoryTables()
+                        .add(
+                                BUILD,
+                                "enUS",
+                                List.of(
+                                        table(
+                                                1,
+                                                "Spell",
+                                                List.of("Description_lang"),
+                                                List.of(row(16929, raw)),
+                                                TableTypes.State.READY),
+                                        table(
+                                                2,
+                                                "SpellEffect",
+                                                FIELDS,
+                                                effects,
+                                                TableTypes.State.READY),
+                                        optionsTable,
+                                        layout(
+                                                table(
+                                                        6,
+                                                        "SpellRadius",
+                                                        List.of(
+                                                                "ID",
+                                                                "Radius",
+                                                                "RadiusPerLevel",
+                                                                "RadiusMin",
+                                                                "RadiusMax"),
+                                                        radii,
+                                                        TableTypes.State.READY),
+                                                "F9A913EE")));
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70790")) {
+            return service.description(
+                            16929, overrides, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                    .join();
+        }
+    }
+
+    private static Db2Types.Row areaEffect(long id, String period, String first, String second) {
+        var values = new ArrayList<>(scalar(id, 0, null).values());
+        values.set(FIELDS.indexOf("EffectAuraPeriod"), period);
+        values.set(FIELDS.indexOf("EffectRadiusIndex[0]"), first);
+        values.set(FIELDS.indexOf("EffectRadiusIndex[1]"), second);
+        return new Db2Types.Row(id, false, null, values, List.of());
+    }
+
+    @Test
+    void countsOutOfRangeMissingFieldsPartialLookupsAndRankOverridesStayExact() {
+        var over =
+                auraPreview(
+                        "Next $n swings, up to $u stacks.",
+                        List.of(),
+                        List.of(row(7, "7", "0", "1001", "0", "5000", "0", "16929")),
+                        List.of());
+        assertEquals("Next ? swings, up to ? stacks.", over.display());
+        assertEquals(
+                "SpellAuraOptions records no proc charges (1-1000)",
+                over.substitutions().getFirst().issue());
+        var partial =
+                auraPreview(
+                        "A $h% chance for $n swings.",
+                        List.of(),
+                        List.of(row(7, "7", "0", "5", "30", "3", "0", "16929")),
+                        List.of(),
+                        TableTypes.State.PARTIAL,
+                        List.of());
+        // Like $h, $n uses the readable records of a PARTIAL table, with a notice.
+        assertEquals("A 30% chance for 3 swings.", partial.display());
+        assertTrue(partial.issues().stream().anyMatch(i -> i.contains("PARTIAL")));
+        var missing = procPreview("Next $n swings.", List.of(row(7, "7", "0", "30", "0", "16929")));
+        assertEquals("Next ? swings.", missing.display());
+        assertEquals(
+                "SpellAuraOptions has no verified ProcCharges field",
+                missing.substitutions().getFirst().issue());
+        var none = procPreview("Next $n swings, $h%.", List.of());
+        assertEquals(
+                "SpellAuraOptions records no DifficultyID 0 row for this spell",
+                none.substitutions().getFirst().issue());
+        // A rank override replaces the amount but keeps the effect's radius.
+        var ranked =
+                auraPreview(
+                        "Grants $s1% within $a1 yds.",
+                        List.of(areaEffect(101, "0", "11", "11")),
+                        List.of(),
+                        List.of(row(11, "11", "45", "0", "0", "45")),
+                        TableTypes.State.READY,
+                        List.of(
+                                new SpellTexts.EffectOverride(
+                                        0, new BigDecimal("8"), null, List.of())));
+        assertEquals("Grants 8% within 45 yds.", ranked.display());
+    }
+
+    @Test
+    void chargesStacksPeriodAndRadiusComeFromTheirRecordedFields() {
+        var result =
+                auraPreview(
+                        "Next $n swings, up to $u stacks, every $t1 sec, within $a1 yds.",
+                        List.of(areaEffect(101, "3000", "11", "11")),
+                        List.of(row(7, "7", "0", "5", "0", "3", "0", "16929")),
+                        List.of(row(11, "11", "45", "0", "0", "45")));
+        assertEquals(
+                "Next 3 swings, up to 5 stacks, every 3 sec, within 45 yds.", result.display());
+        assertEquals(SpellTexts.State.RESOLVED, result.state());
+        assertEquals(
+                "Every 1.5 sec.",
+                auraPreview(
+                                "Every $t1 sec.",
+                                List.of(areaEffect(101, "1500", "0", "0")),
+                                List.of(),
+                                List.of())
+                        .display());
+        // Unknown: no charges or stacks, not periodic, a period with thousandths, no radius,
+        // a different second radius, per-level radius and a radius range.
+        assertEquals(
+                "Next ? swings, up to ? stacks.",
+                auraPreview(
+                                "Next $n swings, up to $u stacks.",
+                                List.of(),
+                                List.of(row(7, "7", "0", "0", "0", "0", "0", "16929")),
+                                List.of())
+                        .display());
+        for (var effect :
+                List.of(areaEffect(101, "0", "0", "0"), areaEffect(101, "1234", "0", "0"))) {
+            assertEquals(
+                    "Every ? sec.",
+                    auraPreview("Every $t1 sec.", List.of(effect), List.of(), List.of()).display());
+        }
+        for (var radius :
+                List.of(
+                        List.of(
+                                areaEffect(101, "0", "0", "13"),
+                                row(13, "13", "10", "0", "0", "10")),
+                        List.of(
+                                areaEffect(101, "0", "11", "13"),
+                                row(11, "11", "45", "0", "0", "45")),
+                        List.of(
+                                areaEffect(101, "0", "11", "0"),
+                                row(11, "11", "45", "1", "0", "45")),
+                        List.of(
+                                areaEffect(101, "0", "11", "0"),
+                                row(11, "11", "15", "0", "10", "15")))) {
+            assertEquals(
+                    "Within ? yds.",
+                    auraPreview(
+                                    "Within $a1 yds.",
+                                    List.of(radius.get(0)),
+                                    List.of(),
+                                    List.of(radius.get(1)))
+                            .display(),
+                    radius.toString());
         }
     }
 

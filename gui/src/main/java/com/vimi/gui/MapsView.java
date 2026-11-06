@@ -81,6 +81,10 @@ final class MapsView extends BorderPane implements AutoCloseable {
     private boolean setting;
     private double dragX, dragY;
     private MapRoleOverlay roles;
+    /** Role marker details under the pointer; shown and moved by hand, not installed. */
+    private final javafx.scene.control.Tooltip roleTip = new javafx.scene.control.Tooltip();
+    /** Last pointer over the canvas: canvas x/y and screen x/y; null when outside. */
+    private double[] pointer;
     private final VBox footer = new VBox(8);
 
     MapsView(Supplier<BuildLocationMaps> maps, LongSupplier revision) {
@@ -136,7 +140,14 @@ final class MapsView extends BorderPane implements AutoCloseable {
                     Math.clamp(view.zoom() * (e.getDeltaY() > 0 ? 1.2 : 1 / 1.2), 1, 32)));
             draw(); e.consume();
         });
-        canvas.setOnMousePressed(e -> { dragX = e.getX(); dragY = e.getY(); });
+        canvas.setOnMousePressed(e -> { dragX = e.getX(); dragY = e.getY(); roleTip.hide(); });
+        roleTip.setWrapText(true);
+        roleTip.setMaxWidth(360);
+        canvas.setOnMouseMoved(e -> {
+            pointer = new double[] {e.getX(), e.getY(), e.getScreenX(), e.getScreenY()};
+            hover();
+        });
+        canvas.setOnMouseExited(e -> { pointer = null; roleTip.hide(); });
         canvas.setOnMouseDragged(e -> {
             if (!currentGraph() || history == null) return;
             var view = history.current().view();
@@ -165,8 +176,27 @@ final class MapsView extends BorderPane implements AutoCloseable {
         busy(false); controls(); draw();
     }
 
+    /**
+     * Shows, moves, updates or hides the role tooltip for the last pointer position against the
+     * markers drawn now. Runs after each pointer move and after each paint, so a zoom, filter,
+     * layer or placement change never leaves details of an NPC that is no longer under it.
+     */
+    private void hover() {
+        String text = roles == null || pointer == null ? null : roles.hoverText(pointer[0], pointer[1]);
+        if (text == null) { roleTip.hide(); return; }
+        if (!text.equals(roleTip.getText())) roleTip.setText(text);
+        if (!roleTip.isShowing()) roleTip.show(canvas, pointer[2] + 14, pointer[3] + 14);
+        else { roleTip.setAnchorX(pointer[2] + 14); roleTip.setAnchorY(pointer[3] + 14); }
+    }
+
+    /** The role tooltip's text while it is showing, else null; for tests. */
+    String roleTipText() {
+        return roleTip.isShowing() ? roleTip.getText() : null;
+    }
+
     /** Mounts quest/service overlays; their controls join the footer and markers the canvas. */
     void attachRoles(MapRoleOverlay overlay) {
+        roleTip.hide();
         if (roles != null) {
             footer.getChildren().remove(roles.controls());
             roles.close();
@@ -428,6 +458,7 @@ final class MapsView extends BorderPane implements AutoCloseable {
             }
         }
         if (roles != null) roles.paint(gc, box, image != null && matching ? presented.value() : null);
+        hover();
     }
 
     private void publish(long request, long version, BuildLocationMaps source, Runnable action) {

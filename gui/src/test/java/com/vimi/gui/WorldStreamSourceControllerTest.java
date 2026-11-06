@@ -63,7 +63,7 @@ public final class WorldStreamSourceControllerTest {
     /** One authored building: a quad drawn by one range of one 2x2 image, placed once. */
     private static com.vibeminer.rendering.bgfx.WorldStreamTileWriter.Exterior building() {
         var builder = com.vibeminer.rendering.bgfx.WorldStreamTileWriter.Exterior.builder();
-        builder.image(2, 2, ByteBuffer.wrap(new byte[16]));
+        builder.image(2, 2, ByteBuffer.wrap(new byte[20])); // 2x2 and its 1x1 mip
         builder.model();
         float[] vertices = new float[4 * 8];
         for (int v = 0; v < 4; v++) {

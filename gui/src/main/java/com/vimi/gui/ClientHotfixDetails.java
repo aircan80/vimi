@@ -22,6 +22,9 @@ final class ClientHotfixDetails {
                 case "HOTFIX_BUILD_MISMATCH" -> "The cache belongs to a different client build.";
                 case "HOTFIX_UNSUPPORTED" -> "The cache uses an unsupported format or record profile.";
                 case "HOTFIX_LIMIT" -> "The cache exceeds the supported size or record limits.";
+                case "HOTFIX_RECORD_LIMIT" -> "The cache holds " + format.records()
+                        + " records; vimi reads at most " + format.recordLimit()
+                        + ". Its hotfixes are not applied.";
                 case "HOTFIX_SOURCE_CHANGED" -> "The cache changed while it was being read; import it again.";
                 default -> "The cache could not be verified.";
             };
@@ -180,15 +183,25 @@ final class ClientHotfixDetails {
             case BASE -> info.get().unavailable() == null
                     ? "base DB2 source"
                     : "base DB2 source; " + unavailable(info.get().unavailable());
-            case HOTFIX -> "local hotfix cache, build " + version;
+            case HOTFIX -> "OPTIONAL_KEY_DATA".equals(source.reason())
+                    ? "local hotfix cache, build " + version + " (carried a key, not needed to read this row)"
+                    : "local hotfix cache, build " + version;
             case DELETED -> "removed by local hotfix cache, build " + version;
             case NOT_PUBLIC -> "hidden by local hotfix cache, build " + version;
             // The client hides records its cache marks INVALID; say so rather than "unknown".
             case UNRESOLVED, UNKNOWN -> "INVALID".equals(source.state())
                     ? "hidden by local hotfix cache (INVALID), build " + version
-                    : "client-cache source unresolved; no stale base substitution";
+                    : undecoded(source.reason());
         };
         return label + ": " + origin;
+    }
+
+    /** Fixed text for a cache record that could not be shown; never includes payload bytes. */
+    static String undecoded(String reason) {
+        if (reason != null && reason.matches("TRAILING_BYTES:[0-9]{1,6}"))
+            return "local hotfix cache row has " + reason.substring("TRAILING_BYTES:".length())
+                    + " bytes its layout does not describe; not shown, no stale base substitution";
+        return "client-cache source unresolved; no stale base substitution";
     }
 
     /** Fixed text for why a table reads base rows although a local hotfix cache is loaded. */

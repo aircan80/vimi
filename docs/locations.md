@@ -119,9 +119,24 @@ prepares or substitutes another flavor.
 The status line names the Questie release and flavor and counts each enabled
 layer on the presented map (positions, not distinct NPCs). It also reports role
 NPCs without recorded positions, unplaced and conflicting positions, the first
-source or resolution issue, and the 2,048-marker cap. Faction reaction, phase, quest availability and
-service inventories are not evaluated. Questie `friendlyToFaction` is kept on
-each NPC but not yet used as a filter.
+source or resolution issue, and the 2,048-marker cap. Phase, quest
+availability and service inventories are not evaluated.
+
+A faction choice (All factions, Alliance, Horde) filters the placed markers by
+Questie `friendlyToFaction` without reloading: Alliance shows `A` and `AH` NPCs,
+Horde shows `H` and `AH` (any case). NPCs with a missing or unrecognised faction
+show only under All. Under a faction, the per-map counts say which faction they
+are for, the status line counts the positions hidden as the other faction or as
+unrecognised, and the catalog totals are marked as covering all factions. The
+faction is Questie's record, not an evaluation of the player's reputation.
+
+Hovering a marker lists the drawn markers within 6 px (nearest first, one per
+NPC, at most five): name and subname, NPC ID, roles, recorded faction, the
+recorded Questie position (AreaID and percent) and the QuestieDB release, and
+says when more NPCs are in reach than are listed. Drawn markers are bucketed in a
+16 px grid, so a hover checks only nearby cells. The tooltip is re-checked after
+every repaint (zoom, filter, layer or placement change) and hides when nothing
+drawn is under the pointer any more.
 
 ## Provider boundaries and selection
 

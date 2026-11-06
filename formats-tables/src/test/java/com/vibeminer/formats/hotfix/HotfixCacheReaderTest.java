@@ -81,6 +81,77 @@ final class HotfixCacheReaderTest {
                 "HOTFIX_" + code, assertInstanceOf(HotfixFormatException.class, failure).code());
     }
 
+    /** {@code count} empty records: header plus 32 bytes each, nothing else. */
+    private static byte[] records(int count) {
+        var bytes = ByteBuffer.allocate(44 + 32 * count).order(ByteOrder.LITTLE_ENDIAN);
+        bytes.putInt(0x48544658).putInt(9).putInt(BUILD).put(new byte[32]);
+        for (int i = 0; i < count; i++) {
+            bytes.putInt(0x48544658)
+                    .putInt(70)
+                    .putInt(1)
+                    .putInt(1)
+                    .putInt(0x12345678)
+                    .putInt(i)
+                    .putInt(0)
+                    .put((byte) 2)
+                    .put(new byte[3]);
+        }
+        return bytes.array();
+    }
+
+    private static HotfixFormatException recordRefusal(
+            byte[] bytes, HotfixCacheReader.Limits limits) {
+        var failure =
+                root(
+                        assertThrows(
+                                RuntimeException.class,
+                                () ->
+                                        HotfixCacheReader.inspect(
+                                                        Db2ByteSource.memory(bytes),
+                                                        BUILD,
+                                                        limits,
+                                                        Cancellation.NONE)
+                                                .join()));
+        var format = assertInstanceOf(HotfixFormatException.class, failure);
+        assertEquals("HOTFIX_RECORD_LIMIT", format.code());
+        return format;
+    }
+
+    @Test
+    void recordBoundIsReadUpToItsLimitAndRefusedWithTheActualCountBeyond() {
+        assertEquals(262_144, HotfixCacheReader.Limits.MAX_RECORDS);
+        // Past the old 65,536 bound, well within the new one.
+        assertEquals(
+                65_537,
+                HotfixCacheReader.inspect(
+                                Db2ByteSource.memory(records(65_537)),
+                                BUILD,
+                                new HotfixCacheReader.Limits(),
+                                Cancellation.NONE)
+                        .join()
+                        .entries()
+                        .size());
+        // At a small bound: exactly the bound reads, one more is refused naming both numbers.
+        var small = new HotfixCacheReader.Limits(64L << 20, 1_000, 1 << 20);
+        assertEquals(
+                1_000,
+                HotfixCacheReader.inspect(
+                                Db2ByteSource.memory(records(1_000)),
+                                BUILD,
+                                small,
+                                Cancellation.NONE)
+                        .join()
+                        .entries()
+                        .size());
+        var refused = recordRefusal(records(1_003), small);
+        assertEquals(1_003, refused.records());
+        assertEquals(1_000, refused.recordLimit());
+        // The default bound itself: one record past it is refused with the actual count.
+        var atDefault = recordRefusal(records(262_145), new HotfixCacheReader.Limits());
+        assertEquals(262_145, atDefault.records());
+        assertEquals(262_144, atDefault.recordLimit());
+    }
+
     @Test
     void preservesPhysicalOrderRepeatedIdsStatesAndUnsignedIdentityWithoutApplyingOverlay()
             throws Exception {
@@ -199,7 +270,7 @@ final class HotfixCacheReaderTest {
         entryMagic[44] = 0;
         refuses("INVALID", entryMagic, limits);
         refuses("LIMIT", valid, new HotfixCacheReader.Limits(44, 10, 1));
-        refuses("LIMIT", valid, new HotfixCacheReader.Limits(1000, 0, 1));
+        refuses("RECORD_LIMIT", valid, new HotfixCacheReader.Limits(1000, 0, 1));
         refuses("LIMIT", valid, new HotfixCacheReader.Limits(1000, 10, 0));
         assertEquals(
                 0,
