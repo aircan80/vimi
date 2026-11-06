@@ -36,7 +36,8 @@ public final class AuthoredGlobalSource implements AutoCloseable {
     final java.util.Map<Long, FileTypes.FileOpen> failedOpens = new ConcurrentHashMap<>();
 
     private final AtomicInteger closedStreams = new AtomicInteger(),
-            borrowedClosed = new AtomicInteger();
+            borrowedClosed = new AtomicInteger(),
+            fullStats = new AtomicInteger();
     private final AtomicReference<PendingGate> requested = new AtomicReference<>();
     private volatile ReadGate lastGate;
     private volatile LongConsumer statObserver = ignored -> {};
@@ -80,6 +81,11 @@ public final class AuthoredGlobalSource implements AutoCloseable {
 
     public int stated(long id) {
         return stats.getOrDefault(id, new AtomicInteger()).get();
+    }
+
+    /** Full stats (with names and format) requested; World source reads need index facts only. */
+    public int fullStats() {
+        return fullStats.get();
     }
 
     public int closedStreams() {
@@ -303,12 +309,15 @@ public final class AuthoredGlobalSource implements AutoCloseable {
                                 switch (method.getName()) {
                                     case "build" -> BUILD;
                                     case "locale" -> "enUS";
-                                    case "stat", "statContent" ->
-                                            CompletableFuture.completedFuture(
-                                                    stat(
-                                                            ((FileTypes.FileRef) args[0])
-                                                                    .fileDataId(),
-                                                            (Cancellation) args[1]));
+                                    case "stat", "statContent" -> {
+                                        if (method.getName().equals("stat")) {
+                                            fullStats.incrementAndGet();
+                                        }
+                                        yield CompletableFuture.completedFuture(
+                                                stat(
+                                                        ((FileTypes.FileRef) args[0]).fileDataId(),
+                                                        (Cancellation) args[1]));
+                                    }
                                     case "openRead" -> {
                                         long id = ((FileTypes.FileRef) args[0]).fileDataId();
                                         var failed = failedOpens.get(id);
