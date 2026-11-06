@@ -126,6 +126,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final javafx.scene.control.Slider lookSensitivity = new javafx.scene.control.Slider(
             WorldControls.MIN_SENSITIVITY, WorldControls.MAX_SENSITIVITY, WorldControls.DEFAULT_SENSITIVITY);
     private final CheckBox invertLook = new CheckBox("Invert mouse Y");
+    private final Label lookStatus = new Label();
     // Session-only until the application's library store is installed (bookmarks(...)).
     private WorldControls.Store controlsStore = WorldControls.memory();
     private boolean showingControls, controlsEdited, captureFallbackLogged;
@@ -148,6 +149,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         @Override public void loadNext() { WorldView.this.loadNext(); }
         @Override public void cursorHidden(boolean hidden) {
             viewport.setCursor(hidden ? javafx.scene.Cursor.NONE : null);
+        }
+        @Override public void captureUnavailable() {
+            lookStatus.setText("Mouse look: cursor capture unavailable; looking stays relative");
         }
         @Override public void captureFallback(String reason) {
             if (captureFallbackLogged) return;
@@ -667,6 +671,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         lookSensitivity.valueProperty().addListener((o, a, b) -> {
             if (!lookSensitivity.isValueChanging()) controlsChanged();
         });
+        lookStatus.setId("world-look-status");
         invertLook.setId("world-invert-look");
         invertLook.setFocusTraversable(false);
         invertLook.setOnAction(e -> controlsChanged());
@@ -1119,9 +1124,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
         viewport.requestFocus();
     }
 
+    /** The viewport on screen, clipped to the visible area of the screen holding its centre. */
     private WorldExplorerInput.ViewBox viewBox() {
         var box = viewport.localToScreen(viewport.getLayoutBounds());
-        return box == null ? null : new WorldExplorerInput.ViewBox(box.getMinX(), box.getMinY(), box.getWidth(), box.getHeight());
+        if (box == null) return null;
+        var view = new WorldExplorerInput.ViewBox(box.getMinX(), box.getMinY(), box.getWidth(), box.getHeight());
+        var screens = javafx.stage.Screen.getScreensForRectangle(view.centerX(), view.centerY(), 1, 1);
+        if (screens.isEmpty()) screens = javafx.stage.Screen.getScreensForRectangle(box.getMinX(), box.getMinY(), box.getWidth(), box.getHeight());
+        if (screens.isEmpty()) return view;
+        var visible = screens.getFirst().getVisualBounds();
+        return view.clippedTo(visible.getMinX(), visible.getMinY(), visible.getMaxX(), visible.getMaxY());
     }
 
     private void clearKeys() {
@@ -1801,7 +1813,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 + " arrows to look · Shift faster · wheel zooms · Shift+wheel"
                                                 + " changes speed · F walks · click inspects")),
                         new HBox(10, walkMode, smoothMotion, motionStatus, saveBookmark),
-                        new HBox(8, new Label("Look sensitivity"), lookSensitivity, invertLook),
+                        new HBox(8, new Label("Look sensitivity"), lookSensitivity, invertLook, lookStatus),
                         currentArea,
                         inspection,
                         audio.node(),
