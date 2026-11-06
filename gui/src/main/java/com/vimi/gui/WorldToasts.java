@@ -183,6 +183,15 @@ final class WorldToasts extends VBox {
         return shown.stream().map(each -> each.node.getOpacity()).toList();
     }
 
+    /**
+     * Removes the toasts that carry an action (their Retry belongs to the session that raised
+     * them); plain notices stay until they expire.
+     */
+    void clearActions() {
+        if (shown.removeIf(each -> each.toast.action() != null)) layoutToasts();
+        if (shown.isEmpty()) timer.stop();
+    }
+
     /** Removes every toast, e.g. when the explorer closes. */
     void clear() {
         shown.clear();

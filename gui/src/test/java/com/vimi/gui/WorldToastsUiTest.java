@@ -66,6 +66,7 @@ public final class WorldToastsUiTest {
             fx(() -> ((Button) view.lookup("#world-open")).fire());
             await(() -> get("camera") != null && !(boolean) get("scenePreparing"));
             fx(WorldToastsUiTest::viewShowsHelpAndCaptureToasts);
+            fx(WorldToastsUiTest::toastsFollowFullScreenAndSurviveTheInteriorSwap);
             System.out.println("World toasts PASS: 4 s life and fade, stack of 3 oldest-first, repeat"
                     + " restart, action run/dismiss/refocus, event isolation, click-through backing,"
                     + " first-run help and capture-fallback toasts in the World view");
@@ -189,7 +190,16 @@ public final class WorldToastsUiTest {
         texts = texts(toasts);
         require(texts.size() == 2 && texts.getLast().startsWith("Mouse look: cursor capture unavailable"),
                 "The cursor-capture fallback shows a toast: " + texts);
-        require(toasts.getParent() == view.lookup("#world-viewport"), "Toasts sit over the viewport");
+        require(toasts.getParent() == view.lookup("#world-toast-layer"),
+                "Toasts sit on the layer above the explorer content");
+        view.applyCss();
+        view.layout();
+        var viewport = view.lookup("#world-viewport");
+        var port = viewport.localToScene(viewport.getLayoutBounds());
+        var stack = toasts.localToScene(toasts.getLayoutBounds());
+        require(stack.getMaxY() <= port.getMaxY() + 1 && stack.getMinY() >= port.getMinY()
+                        && Math.abs(stack.getCenterX() - port.getCenterX()) < 2,
+                "The stack sits bottom-centre over the viewport, above the control rows: " + stack + " in " + port);
         // Stream failures toast once per failure episode, not once per snapshot.
         toasts.clear();
         streamStatus(WorldStreamSourceController.Phase.FAILED, "World streaming failed: authored");
@@ -202,6 +212,51 @@ public final class WorldToastsUiTest {
                 "A new failure episode toasts again: " + texts(toasts));
         require(toasts.toasts().stream().allMatch(t -> "Retry".equals(t.action())), "Failures offer Retry");
         toasts.clear();
+    }
+
+    /**
+     * In full screen the toasts move onto the viewport (in its own stage) and back after; an
+     * instance interior replacing the viewport keeps them, so its "Entered" toast is seen.
+     */
+    private static void toastsFollowFullScreenAndSurviveTheInteriorSwap() {
+        var toasts = view.toasts();
+        var viewport = view.lookup("#world-viewport");
+        try {
+            var fullscreen = (WorldFullscreen) get("fullscreen");
+            fullscreen.windowed(true);
+            var toggle = WorldView.class.getDeclaredMethod("toggleFullscreen");
+            toggle.setAccessible(true);
+            toggle.invoke(view);
+            require(fullscreen.active() && toasts.getParent() == viewport,
+                    "Full screen carries the toasts on the viewport");
+            toggle.invoke(view);
+            require(!fullscreen.active() && toasts.getParent() == view.lookup("#world-toast-layer"),
+                    "Leaving full screen puts them back on the content layer");
+
+            Class<?> type = Class.forName("com.vimi.gui.WorldView$InstanceTarget");
+            var make = type.getDeclaredConstructors()[0];
+            make.setAccessible(true);
+            var raid = new WorldService.MapInfo(9, "Authored raid", null, 2, null);
+            Object target = make.newInstance(raid, null, null, -1L, "authored");
+            var hooksField = WorldInstanceSwitch.class.getDeclaredField("hooks");
+            hooksField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            var hooks = (WorldInstanceSwitch.Hooks<Object>) hooksField.get(get("instances"));
+            var interiorNode = new javafx.scene.layout.Pane();
+            hooks.showInterior(target, new WorldInstanceSwitch.Interior() {
+                @Override public javafx.scene.Node node() { return interiorNode; }
+                @Override public CompletableFuture<Void> closeAsync() { return CompletableFuture.completedFuture(null); }
+            });
+            var content = (javafx.scene.layout.BorderPane) get("content");
+            require(content.getCenter() == interiorNode, "The interior replaces the viewport");
+            require(toasts.getScene() != null && toasts.isVisible()
+                            && texts(toasts).contains("Entered Authored raid"),
+                    "The global-interior entry toast is showing: " + texts(toasts));
+            content.setCenter(viewport);
+            toasts.clear();
+        } catch (ReflectiveOperationException error) {
+            throw new AssertionError(error);
+        }
     }
 
     private static void streamStatus(WorldStreamSourceController.Phase phase, String detail) {
