@@ -538,8 +538,17 @@ public final class WorldStreamTransport {
             return content;
         }
 
+        /** Read-only pixels; throws once {@link #release()} returned them for reuse. */
         public java.nio.IntBuffer pixels() {
             return frame.pixels();
+        }
+
+        /**
+         * The one owner calls this when it no longer reads {@link #pixels()}, so a later frame can
+         * reuse the array. Idempotent; an unreleased frame is ordinary garbage.
+         */
+        public void release() {
+            frame.release();
         }
     }
 
@@ -1191,10 +1200,11 @@ public final class WorldStreamTransport {
             synchronized (lock) {
                 var result = latestFrame;
                 latestFrame = null;
-                if (result == null
-                        || closing
-                        || owner.stopping()
-                        || !frames.presented(result.frame.metadata())) {
+                if (result == null) {
+                    return java.util.Optional.empty();
+                }
+                if (closing || owner.stopping() || !frames.presented(result.frame.metadata())) {
+                    result.release();
                     return java.util.Optional.empty();
                 }
                 return java.util.Optional.of(result);
@@ -1231,9 +1241,16 @@ public final class WorldStreamTransport {
                                 && currentReceipt.contentRevision()
                                         == candidate.metadata().content()
                                 && frames.current(candidate.metadata())) {
+                            // An untaken older frame is superseded: its array returns to the pool.
+                            if (latestFrame != null) {
+                                latestFrame.release();
+                            }
                             latestFrame = new Frame(candidate, currentReceipt);
                             offered = true;
                         }
+                    }
+                    if (!offered) {
+                        candidate.release();
                     }
                 }
                 var listener = frameListener;
@@ -1686,6 +1703,9 @@ public final class WorldStreamTransport {
             synchronized (lock) {
                 closing = true;
                 pendingCamera = null;
+                if (latestFrame != null) {
+                    latestFrame.release();
+                }
                 latestFrame = null;
                 lock.notifyAll();
             }
@@ -1934,6 +1954,7 @@ public final class WorldStreamTransport {
                         }
                         case CLOSED -> {
                             closedStatus = true;
+                            handle.closedAcknowledged();
                             requestClose();
                             handle.closeAsync();
                         }

@@ -116,7 +116,8 @@ public final class DisplayModelService implements BuildDisplayModels {
         synchronized (this) {
             if (closing != null) {
                 return CompletableFuture.failedFuture(
-                        new IllegalStateException("Display previews closed"));
+                        new DisplayModelTypes.ServiceUnavailable(
+                                "Display previews closed", true, null));
             }
             try {
                 worker.execute(
@@ -132,7 +133,8 @@ public final class DisplayModelService implements BuildDisplayModels {
                         });
             } catch (java.util.concurrent.RejectedExecutionException full) {
                 result.completeExceptionally(
-                        new IllegalStateException("Display previews busy", full));
+                        new DisplayModelTypes.ServiceUnavailable(
+                                "Display previews busy", false, full));
             }
         }
         var published = new CompletableFuture<T>();
@@ -529,8 +531,26 @@ public final class DisplayModelService implements BuildDisplayModels {
         }
     }
 
+    /**
+     * The display's model and texture references. A table shape outside the reviewed profile is a
+     * stated refusal ({@link IllegalArgumentException}, which every caller turns into an
+     * unavailable result with the reason). A busy table queue or a closed table handle is
+     * transient: it is raised as {@link DisplayModelTypes.ServiceUnavailable} so callers neither
+     * cache it nor count it as a failure. Any other exception propagates unchanged.
+     */
     // Package-private for tests: resolves without reading any model file.
     DisplayModelTypes.Reference resolve(long id, Cancellation token, List<String> issues) {
+        try {
+            return resolveReviewed(id, token, issues);
+        } catch (java.util.concurrent.CompletionException | IllegalStateException failed) {
+            throw tableFailure(failed);
+        } catch (java.util.NoSuchElementException unreviewed) {
+            throw new IllegalArgumentException("Unreviewed display table shape", unreviewed);
+        }
+    }
+
+    private DisplayModelTypes.Reference resolveReviewed(
+            long id, Cancellation token, List<String> issues) {
         var displays = tables.schema("CreatureDisplayInfo", token, issues);
         displays.reference("ModelID", "CreatureModelData");
         var display = tables.get(displays, id, token, issues);
