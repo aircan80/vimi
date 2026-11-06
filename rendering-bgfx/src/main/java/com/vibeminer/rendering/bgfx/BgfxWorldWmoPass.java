@@ -146,8 +146,6 @@ final class BgfxWorldWmoPass implements AutoCloseable {
             program = program(BgfxModelRenderer.shaderProfile(caps.rendererType()));
             eye = valid(bgfx_create_uniform("u_wmoEye", BGFX_UNIFORM_TYPE_MAT4, 1));
             projection = valid(bgfx_create_uniform("u_wmoProjection", BGFX_UNIFORM_TYPE_MAT4, 1));
-            model = valid(bgfx_create_uniform("u_wmoModel", BGFX_UNIFORM_TYPE_MAT4, 1));
-            normal = valid(bgfx_create_uniform("u_wmoNormal", BGFX_UNIFORM_TYPE_MAT4, 1));
             sampler = valid(bgfx_create_uniform("s_wmoDiffuse", BGFX_UNIFORM_TYPE_SAMPLER, 1));
             // Opaque only: no alpha test, output alpha 1 (the shader's opaque material class).
             material = valid(bgfx_create_uniform("u_wmoMaterial", BGFX_UNIFORM_TYPE_VEC4, 1));
@@ -294,8 +292,19 @@ final class BgfxWorldWmoPass implements AutoCloseable {
                     stack.mallocFloat(16)
                             .put(TerrainCamera.reversedProjection(width, height))
                             .flip();
-            var m = stack.mallocFloat(16).put(modelTransform.asReadOnlyBuffer()).flip();
-            var n = stack.mallocFloat(16).put(normalTransform.asReadOnlyBuffer()).flip();
+            // The shared object shaders take the model transform as one instance (#382); its
+            // linear part also turns the normals, which the fragment shader normalises.
+            var instance = org.lwjgl.bgfx.BGFXInstanceDataBuffer.malloc(stack);
+            if (org.lwjgl.bgfx.BGFX.bgfx_get_avail_instance_data_buffer(
+                            1, WorldObjectInstances.STRIDE)
+                    < 1) {
+                return;
+            }
+            org.lwjgl.bgfx.BGFX.bgfx_alloc_instance_data_buffer(
+                    instance, 1, WorldObjectInstances.STRIDE);
+            WorldObjectInstances.putColumnMajor(
+                    modelTransform.asReadOnlyBuffer(),
+                    instance.data().order(java.nio.ByteOrder.nativeOrder()));
             var opaque = stack.floats(0, 0, 0, 0);
             bgfx_set_uniform(fog, stack.floats(WorldFog.LEGACY.fogUniform()), 1);
             bgfx_set_uniform(skyTop, stack.floats(WorldFog.LEGACY.topUniform()), 1);
@@ -304,8 +313,7 @@ final class BgfxWorldWmoPass implements AutoCloseable {
                 bgfx_set_uniform(material, opaque, 1);
                 bgfx_set_uniform(eye, e, 1);
                 bgfx_set_uniform(projection, p, 1);
-                bgfx_set_uniform(model, m, 1);
-                bgfx_set_uniform(normal, n, 1);
+                org.lwjgl.bgfx.BGFX.bgfx_set_instance_data_buffer(instance, 0, 1);
                 bgfx_set_vertex_buffer(0, vertices, 0, vertexCount);
                 bgfx_set_index_buffer(indices, batch.firstIndex(), batch.indexCount());
                 bgfx_set_texture(

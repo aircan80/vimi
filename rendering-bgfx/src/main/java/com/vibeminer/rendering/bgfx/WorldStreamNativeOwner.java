@@ -428,6 +428,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.frameCounts();
     }
 
+    /** Proof seam only: see {@link BgfxWorldStreamRenderer#objectInstancing}. */
+    void objectInstancing(boolean enabled) {
+        requireOpen();
+        renderer.objectInstancing(enabled);
+    }
+
     /** Proof seam only: see {@link BgfxWorldStreamRenderer#objectCulling}. */
     void objectCulling(boolean enabled) {
         requireOpen();
