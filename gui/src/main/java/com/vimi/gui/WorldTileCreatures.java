@@ -455,9 +455,11 @@ final class WorldTileCreatures implements AutoCloseable {
 
     /**
      * The tile-independent BASIC conversion of one display's static preview. Refuses character
-     * appearance, a recorded (unevaluated) CreatureGeosetData and models without an opaque or
-     * alpha-keyed diffuse surface. Without CreatureGeosetData only the default geosets draw: a
-     * section whose geoset ID is 0 or a multiple of 100 (the first variant of each group).
+     * appearance, models without an opaque or alpha-keyed diffuse surface, and every geoset choice
+     * it cannot make from recorded facts: a recorded or unreadable CreatureGeosetDataID, a display
+     * with (or not known to lack) its own CreatureDisplayInfoGeosetData rows, and a geoset group
+     * that has sections but no x00 section. Otherwise only the x00 sections draw (ID 0 or a
+     * multiple of 100: the group's default), never a guessed variant.
      */
     static Converted convert(DisplayModelTypes.Preview preview, Cancellation token) {
         if (preview == null || preview.appearance() == null || preview.reference() == null)
@@ -468,8 +470,22 @@ final class WorldTileCreatures implements AutoCloseable {
             return Converted.refused(Count.CHARACTER_APPEARANCE, "extended display info is not evaluated");
         var appearance = preview.appearance();
         var mesh = appearance.mesh();
-        if (reference.creatureGeosetDataId() != null && reference.creatureGeosetDataId() != 0)
+        if (reference.creatureGeosetDataId() == null)
+            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "creature geoset data could not be read");
+        if (reference.creatureGeosetDataId() != 0)
             return Converted.refused(Count.VISIBILITY_UNRESOLVED, "geoset visibility is not evaluated");
+        if (reference.displayGeosets() == null)
+            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "display geoset selections are unknown");
+        if (reference.displayGeosets())
+            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "display geoset selections are not evaluated");
+        // Each group with sections must have its x00 default; otherwise which variant shows is a guess.
+        var defaults = new java.util.TreeMap<Integer, Boolean>();
+        for (var part : mesh.parts()) defaults.merge(part.id() / 100, part.id() % 100 == 0, Boolean::logicalOr);
+        for (var group : defaults.entrySet()) {
+            if (!group.getValue())
+                return Converted.refused(Count.VISIBILITY_UNRESOLVED,
+                        "geoset group " + group.getKey() + " has no default x00 section");
+        }
         var surfaces = new HashMap<Integer, MeshAppearance.Surface>();
         for (var surface : appearance.surfaces()) surfaces.put(surface.sectionIndex(), surface);
         var cards = new HashSet<Integer>();
@@ -572,6 +588,7 @@ final class WorldTileCreatures implements AutoCloseable {
     static Image reduce(MeshAppearance.Texture texture, int materialClass, Cancellation token) {
         if (materialClass != OPAQUE && materialClass != CUTOUT) throw new IllegalArgumentException("Material class");
         int width = texture.width(), height = texture.height();
+        long sourcePassing = 0;
         int w = Math.min(IMAGE_SIDE, Integer.highestOneBit(width));
         int h = Math.min(IMAGE_SIDE, Integer.highestOneBit(height));
         if (w < 1 || h < 1) return new Image(Math.max(w, 0), Math.max(h, 0), new byte[0]);
@@ -590,6 +607,7 @@ final class WorldTileCreatures implements AutoCloseable {
                         int pixel = argb.get(sy * width + sx);
                         int alpha = pixel >>> 24, red = pixel >>> 16 & 255, green = pixel >>> 8 & 255,
                                 blue = pixel & 255;
+                        if (alpha >= 128) sourcePassing++;
                         r += red;
                         g += green;
                         b += blue;
@@ -613,6 +631,11 @@ final class WorldTileCreatures implements AutoCloseable {
                 rgba[at + 3] = (byte) (opaque ? 255 : (a + n / 2) / n);
             }
         }
+        // Averaging alpha thins strands (manes, feathers) below the cutout reference; the reduced
+        // top level keeps the source's alpha-test coverage, as the chain's lower levels do.
+        if (!opaque && (w != width || h != height))
+            com.vibeminer.rendering.world.ObjectTextureMips.matchCoverage(rgba, 0, w * h,
+                    sourcePassing / ((double) width * height));
         // Creature textures arrive as one level: the chain is generated (issue #265).
         var chain = com.vibeminer.rendering.world.ObjectTextureMips.build(w, h, rgba, materialClass,
                 (below, lw, lh) -> null, token::isCanceled);

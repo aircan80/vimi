@@ -221,29 +221,57 @@ public final class ObjectTextureMips {
             stop(canceled);
             int at = levelOffset(width, height, k);
             int pixels = levelWidth(width, k) * levelWidth(height, k);
-            int[] histogram = new int[256];
-            for (int i = 0; i < pixels; i++) {
-                histogram[chain[at + i * 4 + 3] & 255]++;
-            }
-            int wanted = (int) Math.round(coverage * pixels);
-            if (wanted == 0) {
-                // Nothing passed at the top: keep every texel below the reference.
-                scale(chain, at, pixels, 256);
-                continue;
-            }
-            // The alpha of the wanted-th most opaque texel becomes the new reference. Texels that
-            // tie on it all pass or all fail, whichever lands nearer the wanted count.
-            int seen = 0, threshold = 0;
-            for (int a = 255; a >= 0; a--) {
-                seen += histogram[a];
-                if (seen >= wanted) {
-                    int above = seen - histogram[a];
-                    threshold = wanted - above < seen - wanted ? a + 1 : a;
-                    break;
-                }
-            }
-            scale(chain, at, pixels, threshold);
+            matchCoverage(chain, at, pixels, coverage);
         }
+    }
+
+    /**
+     * Fraction of {@code pixels} RGBA texels from {@code at} whose alpha passes the cutout test.
+     */
+    public static double coverage(byte[] rgba, int at, int pixels) {
+        int passing = 0;
+        for (int i = 0; i < pixels; i++) {
+            if ((rgba[at + i * 4 + 3] & 255) >= CUTOUT_ALPHA) {
+                passing++;
+            }
+        }
+        return pixels == 0 ? 0 : (double) passing / pixels;
+    }
+
+    /**
+     * Rescales the alpha of one level ({@code pixels} RGBA texels from {@code at}) so the fraction
+     * passing the cutout test is {@code coverage}, within one texel's worth of ties. Used for the
+     * chain's lower levels and by callers that reduce a larger source to a cutout top level.
+     */
+    public static void matchCoverage(byte[] rgba, int at, int pixels, double coverage) {
+        if (!(coverage >= 0 && coverage <= 1)
+                || at < 0
+                || pixels < 0
+                || (long) at + (long) pixels * 4 > rgba.length) {
+            throw new IllegalArgumentException("Coverage input");
+        }
+        int[] histogram = new int[256];
+        for (int i = 0; i < pixels; i++) {
+            histogram[rgba[at + i * 4 + 3] & 255]++;
+        }
+        int wanted = (int) Math.round(coverage * pixels);
+        if (wanted == 0) {
+            // Nothing passes: keep every texel below the reference.
+            scale(rgba, at, pixels, 256);
+            return;
+        }
+        // The alpha of the wanted-th most opaque texel becomes the new reference. Texels that tie
+        // on it all pass or all fail, whichever lands nearer the wanted count.
+        int seen = 0, threshold = 0;
+        for (int a = 255; a >= 0; a--) {
+            seen += histogram[a];
+            if (seen >= wanted) {
+                int above = seen - histogram[a];
+                threshold = wanted - above < seen - wanted ? a + 1 : a;
+                break;
+            }
+        }
+        scale(rgba, at, pixels, threshold);
     }
 
     /**

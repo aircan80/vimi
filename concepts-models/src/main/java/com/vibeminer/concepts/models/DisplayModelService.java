@@ -60,6 +60,15 @@ public final class DisplayModelService implements BuildDisplayModels {
                     new ThreadPoolExecutor.AbortPolicy());
     private CompletableFuture<Void> closing;
 
+    /** Bound on CreatureDisplayInfoGeosetData rows read once per component. */
+    static final int GEOSET_ROWS = 262_144;
+
+    /** Displays with CreatureDisplayInfoGeosetData rows; read once on the worker, then reused. */
+    private Set<Long> geosetDisplays;
+
+    /** Why geosetDisplays could not be read, once tried; null when read or not yet tried. */
+    private String geosetDisplaysUnavailable;
+
     public DisplayModelService(BuildTables tables, BuildFiles files, GeneratedStore generated) {
         this.tables = new TableProjection(tables);
         this.files = Objects.requireNonNull(files);
@@ -552,7 +561,47 @@ public final class DisplayModelService implements BuildDisplayModels {
                 fid,
                 textures,
                 optional(displays, display, "ExtendedDisplayInfoID", issues),
-                optional(models, model, "CreatureGeosetDataID", issues));
+                // Only a truly absent column means no geoset data; an unreadable one stays null.
+                models.has("CreatureGeosetDataID")
+                        ? optional(models, model, "CreatureGeosetDataID", issues)
+                        : Long.valueOf(0),
+                displayGeosets(id, token, issues));
+    }
+
+    /**
+     * Whether the display has CreatureDisplayInfoGeosetData rows (its own geoset selections); null
+     * when the table cannot be read completely. The table is read once per component, on the worker
+     * thread, and a failure is not retried within it.
+     */
+    private Boolean displayGeosets(long id, Cancellation token, List<String> issues) {
+        if (geosetDisplays == null && geosetDisplaysUnavailable == null) {
+            try {
+                var data = tables.read("CreatureDisplayInfoGeosetData", GEOSET_ROWS, token, issues);
+                if (data.entry().state() != com.vibeminer.formats.tables.TableTypes.State.READY) {
+                    throw new IllegalArgumentException("CreatureDisplayInfoGeosetData is partial");
+                }
+                var found = new java.util.HashSet<Long>();
+                for (var row : data.rows()) {
+                    found.add(data.number(row, "CreatureDisplayInfoID"));
+                }
+                geosetDisplays = Set.copyOf(found);
+            } catch (java.util.concurrent.CompletionException | IllegalArgumentException failed) {
+                if (failed.getCause()
+                        instanceof java.util.concurrent.CancellationException canceled) {
+                    throw canceled;
+                }
+                geosetDisplaysUnavailable =
+                        failed instanceof IllegalArgumentException
+                                ? failed.getMessage()
+                                : "CreatureDisplayInfoGeosetData could not be read";
+            }
+        }
+        if (geosetDisplays == null) {
+            TableProjection.note(
+                    issues, "Display geoset selections are unknown: " + geosetDisplaysUnavailable);
+            return null;
+        }
+        return geosetDisplays.contains(id);
     }
 
     private static Long optional(
@@ -748,7 +797,10 @@ public final class DisplayModelService implements BuildDisplayModels {
         }
         if (reference.creatureGeosetDataId() == null
                 || reference.creatureGeosetDataId() != 0
+                || !Boolean.FALSE.equals(reference.displayGeosets())
                 || mesh.parts().stream().anyMatch(p -> p.id() != 0)) {
+            // The World explorer differs: it draws only the default x00 geosets when no geoset
+            // data is recorded and refuses the model otherwise (WorldTileCreatures).
             TableProjection.note(
                     issues,
                     "Surface visibility is unresolved; all recorded model surfaces are shown.");

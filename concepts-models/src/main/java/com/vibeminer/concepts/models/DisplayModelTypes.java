@@ -18,15 +18,42 @@ public final class DisplayModelTypes {
         UNAVAILABLE
     }
 
+    /**
+     * A display's model references. {@code creatureGeosetDataId} is 0 when the column is absent and
+     * null when it could not be read; {@code displayGeosets} says whether the display records its
+     * own geoset choices (CreatureDisplayInfoGeosetData rows), null when that is not known.
+     */
     public record Reference(
             long displayId,
             long modelId,
             long modelFileDataId,
             List<Long> textureVariations,
             Long extendedDisplayInfoId,
-            Long creatureGeosetDataId) {
+            Long creatureGeosetDataId,
+            Boolean displayGeosets) {
         public Reference {
             textureVariations = List.copyOf(textureVariations);
+        }
+
+        /**
+         * Without the per-display geoset check: {@code displayGeosets} is null, which callers that
+         * choose geosets must treat as unresolved.
+         */
+        public Reference(
+                long displayId,
+                long modelId,
+                long modelFileDataId,
+                List<Long> textureVariations,
+                Long extendedDisplayInfoId,
+                Long creatureGeosetDataId) {
+            this(
+                    displayId,
+                    modelId,
+                    modelFileDataId,
+                    textureVariations,
+                    extendedDisplayInfoId,
+                    creatureGeosetDataId,
+                    null);
         }
     }
 
