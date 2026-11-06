@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.world;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -164,6 +165,63 @@ class TerrainAtlasComposerTest {
             assertFalse(result.atlas().pixels().hasArray());
             assertTrue(result.atlas().retainedBytes() < (2 << 20));
         }
+    }
+
+    @Test
+    void splatCarriesLayerIdsMasksAndBrightnessForTheSameChunks() {
+        try (var textures = textures(new int[] {128, 64}, false)) {
+            var mips = Map.of(1L, mip(1, 255, 0, 0), 2L, mip(2, 0, 255, 0), 3L, mip(3, 0, 0, 255));
+            var plain =
+                    TerrainAtlasComposer.compose(
+                            TILE, grid(new byte[0], true, true), textures, mips, () -> false);
+            assertEquals(null, plain.splat(), "Splat is opt-in");
+            var result =
+                    TerrainAtlasComposer.compose(
+                            TILE, grid(new byte[0], true, true), textures, mips, true, () -> false);
+            var splat = result.splat();
+            assertArrayEquals(new long[] {1, 2, 3}, splat.diffuseIds());
+            // Every chunk: layers 0, 1, 2 name diffuses 1, 2, 3; the fourth is absent.
+            for (int y = 0; y < 16; y++) {
+                for (int x = 0; x < 16; x++) {
+                    assertEquals(0, splat.layer(x, y, 0));
+                    assertEquals(1, splat.layer(x, y, 1));
+                    assertEquals(2, splat.layer(x, y, 2));
+                    assertEquals(TerrainTileSplat.NONE, splat.layer(x, y, 3));
+                }
+            }
+            var alpha = splat.alpha();
+            for (int texel : new int[] {0, 511, 512 * 300 + 77, 512 * 512 - 1}) {
+                assertEquals(128, alpha.get(texel * 4) & 255, "layer 1 mask");
+                assertEquals(64, alpha.get(texel * 4 + 1) & 255, "layer 2 mask");
+                assertEquals(0, alpha.get(texel * 4 + 2) & 255, "no layer 3");
+                assertEquals(128, alpha.get(texel * 4 + 3) & 255, "no MCCV: brightness 1.0");
+            }
+            assertThrows(ReadOnlyBufferException.class, () -> splat.alpha().put(0, (byte) 1));
+            // The atlas is unchanged by requesting the splat.
+            assertEquals(plain.atlas().pixels(), result.atlas().pixels());
+        }
+    }
+
+    @Test
+    void splatRefusesInvalidShapes() {
+        var layers = new byte[TerrainTileSplat.LAYER_BYTES];
+        var alpha = new byte[TerrainTileSplat.ALPHA_BYTES];
+        new TerrainTileSplat(new long[] {1}, layers, alpha);
+        layers[7] = 1;
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new TerrainTileSplat(new long[] {1}, layers, alpha),
+                "A layer index outside the diffuse list");
+        layers[7] = (byte) TerrainTileSplat.NONE;
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new TerrainTileSplat(new long[] {1, 1}, layers, alpha));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new TerrainTileSplat(new long[] {1}, new byte[10], alpha));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new TerrainTileSplat(new long[65], layers, alpha));
     }
 
     @Test
