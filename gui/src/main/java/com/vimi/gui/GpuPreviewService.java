@@ -1296,6 +1296,21 @@ final class GpuPreviewService {
         return new ProcessBuilder(command).start();
     }
 
+    /** Helper-side table of the opt-in World stage timings; see WorldStageTimingsDump. */
+    static final String STAGE_TIMINGS_FILE = "vimi.world.stageTimings.file";
+
+    /**
+     * The helper JVM options that carry opt-in World measurement: none unless the stage timings
+     * are on, then the switch and, when given, the helper's own table file.
+     */
+    static List<String> measurementArguments(boolean enabled, String file) {
+        if (!enabled) return List.of();
+        var arguments = new ArrayList<String>();
+        arguments.add("-D" + com.vibeminer.formats.world.WorldStageTimings.PROPERTY + "=true");
+        if (file != null && !file.isBlank()) arguments.add("-D" + STAGE_TIMINGS_FILE + "=" + file);
+        return List.copyOf(arguments);
+    }
+
     private static ArrayList<String> nativeCommand() {
         var command = new ArrayList<String>();
         boolean windows =
@@ -1306,6 +1321,10 @@ final class GpuPreviewService {
         if (System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT).contains("mac"))
             command.add("-XstartOnFirstThread");
         command.add("--enable-native-access=ALL-UNNAMED");
+        command.addAll(
+                measurementArguments(
+                        com.vibeminer.formats.world.WorldStageTimings.enabled(),
+                        System.getProperty(STAGE_TIMINGS_FILE)));
         command.add("-cp");
         command.add(System.getProperty("java.class.path"));
         command.add("com.vibeminer.rendering.bgfx.GpuViewerMain");

@@ -24,6 +24,7 @@ import static org.lwjgl.bgfx.BGFX.bgfx_read_texture;
 import static org.lwjgl.bgfx.BGFX.bgfx_set_view_frame_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_shutdown;
 
+import com.vibeminer.formats.world.WorldStageTimings;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.NoSuchAlgorithmException;
@@ -74,6 +75,9 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     private long cameraRevision, policy, submittedCamera, submittedContent = -1, submittedPolicy;
     private long submittedObjects;
     private long publishedCamera, publishedContent, sequence, order;
+    // Opt-in measurement only: the previous publication, 0 while timings are off.
+    private long lastPublished;
+    private boolean renderingSubmitted;
     private int width, height, currentFrame, contextBuffers, contextTextures;
     private long contextGpuHeap;
     private boolean initialized, acquired, closed, renderedThisFrame;
@@ -273,12 +277,14 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         if (order == WorldFrameFileV2.MAX_SEQUENCE) {
             throw new IllegalStateException("Frame order exhausted");
         }
+        long drawing = WorldStageTimings.start();
         var ticket = renderer.draw(command.camera(), cameraRevision, policy, width, height);
         bgfx_blit(1, available.texture, 0, 0, 0, 0, color, 0, 0, 0, 0, width, height, 1);
         available.pixels.clear();
         available.ticket = ticket;
         available.order = ++order;
         available.ready = bgfx_read_texture(available.texture, available.pixels, 0, 0);
+        WorldStageTimings.stop("child.frame.submitCpu", drawing);
         renderedThisFrame = true;
         submittedCamera = cameraRevision;
         submittedContent = ticket.content();
@@ -289,7 +295,20 @@ final class WorldStreamNativeOwner implements AutoCloseable {
 
     boolean advance() throws IOException {
         requireOpen();
+        // Single-threaded bgfx renders the previously submitted frame inside bgfx_frame, so the
+        // call after a submission is the one that renders it and reports its statistics.
+        boolean rendering = renderingSubmitted;
+        renderingSubmitted = renderedThisFrame;
+        long framing = WorldStageTimings.start();
         currentFrame = bgfx_frame(BGFX_FRAME_NONE);
+        if (framing != 0L) {
+            WorldStageTimings.stop(
+                    rendering ? "child.frame.bgfxFrameRender" : "child.frame.bgfxFrameIdle",
+                    framing);
+            if (rendering) {
+                frameStats();
+            }
+        }
         renderedThisFrame = false;
         renderer.pollUploads();
         Readback newest = null;
@@ -324,6 +343,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                                 .limit(sourceRow * stride + length));
             }
             cropped.flip();
+            long writing = WorldStageTimings.start();
             frames.write(
                     new WorldStreamFrameGate.Frame(
                             session.nonce(),
@@ -334,6 +354,14 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                             ticket.width(),
                             ticket.height()),
                     cropped);
+            if (writing != 0L) {
+                WorldStageTimings.stop("child.frame.cropAndPublish", writing);
+                long now = System.nanoTime();
+                if (lastPublished != 0L) {
+                    WorldStageTimings.record("child.frame.publishInterval", now - lastPublished);
+                }
+                lastPublished = now;
+            }
             publishedCamera = ticket.camera();
             publishedContent = ticket.content();
             published = true;
@@ -344,6 +372,39 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             }
         }
         return published;
+    }
+
+    /** bgfx's statistics of the frame just rendered, after a frame that drew (opt-in only). */
+    private static void frameStats() {
+        var stats = bgfx_get_stats();
+        WorldStageTimings.value("child.frame.draws", Integer.toUnsignedLong(stats.numDraw()));
+        WorldStageTimings.value("child.frame.blits", Integer.toUnsignedLong(stats.numBlit()));
+        // Topology 0 and 1 are triangle lists and strips.
+        WorldStageTimings.value(
+                "child.frame.triangles",
+                Integer.toUnsignedLong(stats.numPrims(0))
+                        + Integer.toUnsignedLong(stats.numPrims(1)));
+        long cpuFrequency = stats.cpuTimerFreq(), gpuFrequency = stats.gpuTimerFreq();
+        if (cpuFrequency > 0) {
+            WorldStageTimings.record(
+                    "child.frame.bgfxCpuFrame",
+                    stats.cpuTimeFrame() * 1_000_000_000L / cpuFrequency);
+            WorldStageTimings.record(
+                    "child.frame.bgfxCpuRender",
+                    (stats.cpuTimeEnd() - stats.cpuTimeBegin()) * 1_000_000_000L / cpuFrequency);
+            WorldStageTimings.record(
+                    "child.frame.bgfxWaitRender",
+                    stats.waitRender() * 1_000_000_000L / cpuFrequency);
+        }
+        if (gpuFrequency > 0 && stats.gpuTimeEnd() > stats.gpuTimeBegin()) {
+            WorldStageTimings.record(
+                    "child.frame.bgfxGpu",
+                    (stats.gpuTimeEnd() - stats.gpuTimeBegin()) * 1_000_000_000L / gpuFrequency);
+        }
+        WorldStageTimings.value("child.gpu.textureMemoryMiB", stats.textureMemoryUsed() >> 20);
+        if (stats.gpuMemoryUsed() > 0) {
+            WorldStageTimings.value("child.gpu.memoryUsedMiB", stats.gpuMemoryUsed() >> 20);
+        }
     }
 
     // A readback is scheduled less than 2^31 frames ahead. Modular subtraction remains

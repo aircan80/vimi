@@ -10,6 +10,7 @@ import com.vibeminer.formats.images.Blp2Types;
 import com.vibeminer.formats.images.BlpFormatException;
 import com.vibeminer.formats.world.TerrainGrid;
 import com.vibeminer.formats.world.WorldFormats;
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.formats.world.WorldTextureFormats;
 import com.vibeminer.rendering.world.TerrainAtlasComposer;
 import com.vibeminer.rendering.world.TerrainGeometryFingerprint;
@@ -902,6 +903,7 @@ public final class WorldTerrainTextureSource {
             if (key != null) {
                 var cached = pool.cachedReceipt(key);
                 if (cached.isPresent()) {
+                    WorldStageTimings.add("terrain.material.receiptCacheHits", 1);
                     var hit = cached.get();
                     try {
                         revalidate(hit.receipt().bindings(), request);
@@ -945,8 +947,10 @@ public final class WorldTerrainTextureSource {
                     }
                 }
                 request.report(Stage.COMPOSING, tileIndex, 0);
+                long composing = WorldStageTimings.start();
                 var composition =
                         TerrainAtlasComposer.compose(tile, grid, data, diffuse, request::canceled);
+                WorldStageTimings.stop("terrain.material.atlasCompose", composing);
                 for (var issue : composition.diagnostics()) {
                     issues.add(
                             new Issue(
@@ -993,16 +997,28 @@ public final class WorldTerrainTextureSource {
     }
 
     private static WorldTextureFormats.TextureData readTextureData(byte[] bytes, Request request) {
+        long started = WorldStageTimings.start();
         try {
             return WorldTextureFormats.read(bytes, request::canceled);
         } catch (IllegalArgumentException invalid) {
             throw new SourceFailure(Reason.TEXTURE_PROFILE);
+        } finally {
+            WorldStageTimings.stop("terrain.material.tex0Parse", started);
         }
     }
 
     private record Decoded(TerrainAtlasComposer.DiffuseMip pixels, MipBinding binding) {}
 
     private Decoded decode(FileBinding before, Request request) {
+        long started = WorldStageTimings.start();
+        try {
+            return decodeTimed(before, request);
+        } finally {
+            WorldStageTimings.stop("terrain.material.diffuseReadDecode", started);
+        }
+    }
+
+    private Decoded decodeTimed(FileBinding before, Request request) {
         var opened = files.openRead(FileTypes.FileRef.id(before.fileId()), request.token).join();
         try (var stream = opened.stream()) {
             request.observeOpen(before.fileId(), opened);
@@ -1063,8 +1079,18 @@ public final class WorldTerrainTextureSource {
     TerrainDiffuseDetails.Detail detail(FileBinding before, Request request) {
         var cached = details.get(before.fileId(), before.contentKey());
         if (cached != null) {
+            WorldStageTimings.add("terrain.material.detailCacheHits", 1);
             return cached;
         }
+        long started = WorldStageTimings.start();
+        try {
+            return detailTimed(before, request);
+        } finally {
+            WorldStageTimings.stop("terrain.material.detailReadDecode", started);
+        }
+    }
+
+    private TerrainDiffuseDetails.Detail detailTimed(FileBinding before, Request request) {
         var opened = files.openRead(FileTypes.FileRef.id(before.fileId()), request.token).join();
         try (var stream = opened.stream()) {
             request.observeOpen(before.fileId(), opened);
@@ -1114,6 +1140,15 @@ public final class WorldTerrainTextureSource {
     }
 
     private ReadSource readBytes(long id, int limit, Request request) {
+        long started = WorldStageTimings.start();
+        try {
+            return readBytesTimed(id, limit, request);
+        } finally {
+            WorldStageTimings.stop("terrain.material.read", started);
+        }
+    }
+
+    private ReadSource readBytesTimed(long id, int limit, Request request) {
         var before = stat(id, limit, request);
         var opened = files.openRead(FileTypes.FileRef.id(id), request.token).join();
         try (var stream = opened.stream()) {

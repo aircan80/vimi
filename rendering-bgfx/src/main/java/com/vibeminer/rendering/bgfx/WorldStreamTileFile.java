@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.world.TerrainGeometryFingerprint;
 import com.vibeminer.rendering.world.TerrainScene;
 import com.vibeminer.rendering.world.TerrainTextureBinding;
@@ -411,6 +412,16 @@ final class WorldStreamTileFile {
     private WorldStreamTileFile() {}
 
     static Payload read(Path path, Expected expected, BooleanSupplier canceled) throws IOException {
+        long started = WorldStageTimings.start();
+        try {
+            return readTimed(path, expected, canceled);
+        } finally {
+            WorldStageTimings.stop("child.tileFile.read", started);
+        }
+    }
+
+    private static Payload readTimed(Path path, Expected expected, BooleanSupplier canceled)
+            throws IOException {
         Objects.requireNonNull(expected);
         Objects.requireNonNull(canceled);
         check(canceled);
@@ -500,10 +511,26 @@ final class WorldStreamTileFile {
             ByteBuffer atlas,
             BooleanSupplier canceled)
             throws IOException {
+        long started = WorldStageTimings.start();
+        try {
+            return writeTimed(directory, header, tile, atlas, canceled);
+        } finally {
+            WorldStageTimings.stop("tileFile.write.total", started);
+        }
+    }
+
+    private static Expected writeTimed(
+            Path directory,
+            Header header,
+            TerrainScene.Tile tile,
+            ByteBuffer atlas,
+            BooleanSupplier canceled)
+            throws IOException {
         Objects.requireNonNull(canceled);
         Objects.requireNonNull(header);
         Objects.requireNonNull(tile);
         check(canceled);
+        long fingerprint = WorldStageTimings.start();
         require(
                 tile.x() == header.x()
                         && tile.y() == header.y()
@@ -512,11 +539,13 @@ final class WorldStreamTileFile {
                         && tile.indexCount() == header.indices()
                         && TerrainGeometryFingerprint.sha256(tile).equals(header.geometrySha256()),
                 "Geometry/header mismatch");
+        WorldStageTimings.stop("tileFile.write.geometryFingerprint", fingerprint);
         if (header.outcome() == Outcome.TEXTURED) {
             validateAtlas(header, tile, atlas, canceled);
         } else {
             require(atlas == null, "Height packet atlas");
         }
+        long streaming = WorldStageTimings.start();
         Path target = directory.resolve("tile-" + header.transaction() + ".wst");
         Path part = directory.resolve("tile-" + header.transaction() + ".wst.part");
         var digest = digest();
@@ -561,14 +590,20 @@ final class WorldStreamTileFile {
                     }
                 }
                 output.flush();
+                WorldStageTimings.stop("tileFile.write.encodeDigestWrite", streaming);
+                WorldStageTimings.add("tileFile.write.bytes", channel.size());
+                long forcing = WorldStageTimings.start();
                 channel.force(false);
+                WorldStageTimings.stop("tileFile.write.fsync", forcing);
             }
             check(canceled);
             // No replace-existing option. Private session owner serializes publication per tx.
             if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
                 throw new IOException("Packet exists");
             }
+            long moving = WorldStageTimings.start();
             Files.move(part, target, StandardCopyOption.ATOMIC_MOVE);
+            WorldStageTimings.stop("tileFile.write.rename", moving);
             published = true;
             return new Expected(
                     header.nonce(),
