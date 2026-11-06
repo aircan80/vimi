@@ -1296,6 +1296,14 @@ final class GpuPreviewService {
         return new ProcessBuilder(command).start();
     }
 
+    /**
+     * The helper's own JVM: the low-pause collector of the app (a GC pause stalls its draw loop)
+     * and a bounded heap. Its large buffers are native; heap use is bounded by its capped input
+     * files (the largest, a global scene, is 64 MiB on-heap), so 1 GiB leaves wide headroom
+     * without reserving a quarter of RAM.
+     */
+    static final List<String> HELPER_JVM_OPTIONS = List.of("-XX:+UseZGC", "-Xmx1g");
+
     private static ArrayList<String> nativeCommand() {
         var command = new ArrayList<String>();
         boolean windows =
@@ -1305,6 +1313,7 @@ final class GpuPreviewService {
                         .toString());
         if (System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT).contains("mac"))
             command.add("-XstartOnFirstThread");
+        command.addAll(HELPER_JVM_OPTIONS);
         command.add("--enable-native-access=ALL-UNNAMED");
         // Debug frame verification (CRC32C, opaque alpha) must run on the writing side too.
         if (Boolean.getBoolean("vimi.frameVerify")) command.add("-Dvimi.frameVerify=true");
