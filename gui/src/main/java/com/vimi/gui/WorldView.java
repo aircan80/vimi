@@ -110,6 +110,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // Transient notices over the viewport (HUD step 6); first-run help is shown once per view.
     private final WorldToasts toasts = new WorldToasts();
     private boolean helpToastShown, streamFailedToast, stallToast;
+    // Where viewport screenshots go: the library's screenshots folder; null without a library.
+    private java.nio.file.Path screenshots;
     // An ADT instance entry's toast, raised once its explorer opens (choosing the map clears toasts).
     private String instanceToast;
     /** The first-run help is long: it stays up longer than an event toast. */
@@ -607,6 +609,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
      */
     void bookmarks(WorldBookmarkStore store) {
         travel.store(store);
+        screenshots = store == null ? null : store.screenshots();
         if (store == null) return;
         controls(WorldControls.Store.of(store));
     }
@@ -3280,6 +3283,58 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (roles != null || closed) throw new IllegalStateException("Role overlay already attached");
         roles = java.util.Objects.requireNonNull(overlay);
         minimap.attachRoles(overlay);
+    }
+
+    /** Sets the screenshots folder (the library store sets it; tests use a temporary one). */
+    void screenshots(java.nio.file.Path folder) {
+        screenshots = folder;
+    }
+
+    /**
+     * Saves the presented frame (the World image only, no HUD) as a PNG in the screenshots
+     * folder: pixels are copied on FX, written off it, and a toast says where the file went.
+     */
+    void screenshot() {
+        var folder = screenshots;
+        if (!explorer || !(image.getImage() instanceof javafx.scene.image.Image frame)
+                || frame.getPixelReader() == null) {
+            toasts.show("No World frame to save yet");
+            return;
+        }
+        if (folder == null) {
+            toasts.show("Screenshots need a library folder; this session has none");
+            return;
+        }
+        int width = (int) frame.getWidth(), height = (int) frame.getHeight();
+        var argb = new int[width * height];
+        frame.getPixelReader().getPixels(0, 0, width, height,
+                javafx.scene.image.PixelFormat.getIntArgbInstance(), argb, 0, width);
+        String name = WorldScreenshots.fileName(inventory == null ? null : inventory.map().name(),
+                java.time.ZonedDateTime.now());
+        Thread.ofVirtual().name("world-screenshot").start(() -> {
+            java.nio.file.Path saved = null;
+            Throwable failure = null;
+            try {
+                saved = WorldScreenshots.save(folder, name, width, height, argb);
+            } catch (Throwable failed) {
+                failure = failed;
+            }
+            var file = saved;
+            var problem = failure;
+            Platform.runLater(() -> {
+                if (closed) return;
+                if (problem != null) {
+                    WorldDiagnostics.warn("World screenshot could not be saved", problem);
+                    toasts.show("Screenshot not saved: " + WorldDiagnostics.brief(problem));
+                } else {
+                    toasts.show("Screenshot saved: " + file, "Copy path", () -> {
+                        var content = new javafx.scene.input.ClipboardContent();
+                        content.putString(file.toString());
+                        javafx.scene.input.Clipboard.getSystemClipboard().setContent(content);
+                    });
+                }
+            });
+        });
     }
 
     /** The toasts, for tests. */

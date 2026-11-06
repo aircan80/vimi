@@ -65,6 +65,13 @@ final class WorldBookmarkStore implements AutoCloseable {
         return database != null;
     }
 
+    /** The library's screenshots folder (beside its database), or null for a session-only store. */
+    Path screenshots() {
+        if (database == null) return null;
+        var parent = database.toAbsolutePath().getParent();
+        return parent == null ? null : WorldScreenshots.folder(parent);
+    }
+
     CompletableFuture<Snapshot> load() {
         return submit(this::read);
     }

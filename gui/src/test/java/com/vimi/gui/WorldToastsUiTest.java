@@ -66,9 +66,10 @@ public final class WorldToastsUiTest {
             fx(() -> ((Button) view.lookup("#world-open")).fire());
             await(() -> get("camera") != null && !(boolean) get("scenePreparing"));
             fx(WorldToastsUiTest::viewShowsHelpAndCaptureToasts);
+            screenshotSavesTheFrameOnly();
             System.out.println("World toasts PASS: 4 s life and fade, stack of 3 oldest-first, repeat"
                     + " restart, action run/dismiss/refocus, event isolation, click-through backing,"
-                    + " first-run help and capture-fallback toasts in the World view");
+                    + " first-run help, capture-fallback, failure-episode and screenshot toasts in the World view");
         } finally {
             fx(() -> { if (view != null) view.close(); if (stage != null) stage.close(); });
             Platform.exit();
@@ -202,6 +203,50 @@ public final class WorldToastsUiTest {
                 "A new failure episode toasts again: " + texts(toasts));
         require(toasts.toasts().stream().allMatch(t -> "Retry".equals(t.action())), "Failures offer Retry");
         toasts.clear();
+    }
+
+    /** F12's action: the presented frame, unchanged, as a PNG in the folder, with a toast. */
+    private static void screenshotSavesTheFrameOnly() throws Exception {
+        var root = java.nio.file.Files.createTempDirectory("vimi-world-screenshot-ui");
+        try {
+            fx(() -> {
+                view.toasts().clear();
+                view.screenshots(null);
+                view.screenshot();
+                require(texts(view.toasts()).equals(List.of("Screenshots need a library folder; this session has none")),
+                        "Without a library the toast says so: " + texts(view.toasts()));
+                view.toasts().clear();
+                view.screenshots(WorldScreenshots.folder(root));
+                view.screenshot();
+            });
+            await(() -> texts(view.toasts()).stream().anyMatch(t -> t.startsWith("Screenshot saved: ")));
+            fx(() -> {
+                var toast = view.toasts().toasts().getLast();
+                require("Copy path".equals(toast.action()), "The saved toast offers Copy path");
+                var file = java.nio.file.Path.of(toast.text().substring("Screenshot saved: ".length()));
+                require(file.getParent().equals(WorldScreenshots.folder(root))
+                                && file.getFileName().toString().startsWith("world-authored-"),
+                        "Saved in the screenshots folder under the map's name: " + file);
+                var frame = ((javafx.scene.image.ImageView) get("image")).getImage();
+                try {
+                    var saved = javax.imageio.ImageIO.read(file.toFile());
+                    require(saved.getWidth() == (int) frame.getWidth() && saved.getHeight() == (int) frame.getHeight(),
+                            "The file has the frame's size");
+                    var reader = frame.getPixelReader();
+                    for (int y = 0; y < saved.getHeight(); y += Math.max(1, saved.getHeight() / 7))
+                        for (int x = 0; x < saved.getWidth(); x += Math.max(1, saved.getWidth() / 7))
+                            require(saved.getRGB(x, y) == reader.getArgb(x, y),
+                                    "The file holds the frame's pixels only (no HUD) at " + x + "," + y);
+                } catch (java.io.IOException error) {
+                    throw new AssertionError(error);
+                }
+                view.toasts().clear();
+            });
+        } finally {
+            try (var walk = java.nio.file.Files.walk(root)) {
+                walk.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+            }
+        }
     }
 
     private static void streamStatus(WorldStreamSourceController.Phase phase, String detail) {
