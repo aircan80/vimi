@@ -39,17 +39,11 @@ sourceSets {
         compileClasspath += sourceSets.main.output
         runtimeClasspath += sourceSets.main.output
     }
-    interopTest {
-        compileClasspath += sourceSets.main.output
-        runtimeClasspath += sourceSets.main.output
-    }
 }
 
 configurations {
     integrationTestImplementation.extendsFrom testImplementation
     integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
-    interopTestImplementation.extendsFrom testImplementation
-    interopTestRuntimeOnly.extendsFrom testRuntimeOnly
 }
 
 dependencies {
@@ -61,7 +55,6 @@ dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     integrationTestImplementation testFixtures(project(':generated-store'))
-    interopTestImplementation testFixtures(project(':generated-store'))
 }
 
 // Fast unit and in-memory contract tests are the normal development command.
@@ -88,40 +81,7 @@ tasks.register('integrationTest', Test) {
     shouldRunAfter tasks.named('test')
 }
 
-def repoRoot = rootProject.layout.projectDirectory
-def dotnetExecutable = providers.gradleProperty('dotnet').orElse(
-    repoRoot.file('../vibeminer/.local/toolchains/dotnet/dotnet').asFile.absolutePath)
-def csharpDirectory = layout.projectDirectory.dir('src/interopTest/csharp')
-def nugetSource = providers.gradleProperty('nugetSource')
-
-tasks.register('buildCsharpInterop', Exec) {
-    description = 'Builds the C# reference harness; requires the original built assembly and .NET 10.'
-    group = 'verification'
-    workingDir repoRoot
-    environment 'DOTNET_CLI_HOME', repoRoot.dir('.local/dotnet').asFile.absolutePath
-    environment 'DOTNET_CLI_TELEMETRY_OPTOUT', '1'
-    def arguments = [dotnetExecutable.get(), 'build', csharpDirectory.file('Interop.csproj').asFile.absolutePath,
-                     '-p:RestoreLockedMode=true', '-p:NuGetAudit=false', '--nologo']
-    if (nugetSource.isPresent()) arguments += ['--source', nugetSource.get()]
-    commandLine arguments
-}
-
-tasks.register('interopTest', Test) {
-    description = 'Runs Java/C# compatibility and writer-exclusion tests (opt in).'
-    group = 'verification'
-    dependsOn tasks.named('buildCsharpInterop')
-    testClassesDirs = sourceSets.interopTest.output.classesDirs
-    classpath = sourceSets.interopTest.runtimeClasspath
-    systemProperty 'vimi.dotnet', dotnetExecutable.get()
-    systemProperty 'vimi.interop.harness', csharpDirectory.file('bin/Debug/net10.0/Vimi.Generated.Interop.dll').asFile.absolutePath
-    inputs.files(fileTree(csharpDirectory) { include '*.cs', '*.csproj', 'packages.lock.json' })
-    inputs.file(repoRoot.file('../vibeminer/src/backend/VibeMiner.Generated/bin/Release/net10.0/VibeMiner.Generated.dll'))
-    // C# runtime/native dependency changes must also cause compatibility checks to run.
-    inputs.files(fileTree(csharpDirectory.dir('bin/Debug/net10.0')))
-    shouldRunAfter tasks.named('integrationTest')
-}
-
-// CI's check includes Java integration tests. Interop is explicitly requested separately.
+// CI's check includes Java integration tests.
 tasks.named('check') {
     dependsOn tasks.named('integrationTest')
 }

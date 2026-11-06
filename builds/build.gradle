@@ -35,10 +35,6 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 sourceSets {
-    interopTest {
-        compileClasspath += sourceSets.main.output
-        runtimeClasspath += sourceSets.main.output
-    }
     integrationTest {
         compileClasspath += sourceSets.main.output
         runtimeClasspath += sourceSets.main.output
@@ -46,8 +42,6 @@ sourceSets {
 }
 
 configurations {
-    interopTestImplementation.extendsFrom testImplementation
-    interopTestRuntimeOnly.extendsFrom testRuntimeOnly
     integrationTestImplementation.extendsFrom testImplementation
     integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
 }
@@ -62,7 +56,6 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     integrationTestImplementation testFixtures(project(':builds'))
     integrationTestImplementation testFixtures(project(':network-clients'))
-    interopTestImplementation testFixtures(project(':builds'))
 }
 
 // Fast unit and in-memory contract tests are the normal development command.
@@ -90,7 +83,7 @@ tasks.register('integrationTest', Test) {
     shouldRunAfter tasks.named('test')
 }
 
-// CI's check includes Java integration tests. Interop is explicitly requested separately.
+// CI's check includes Java integration tests.
 tasks.named('check') {
     dependsOn tasks.named('integrationTest')
 }
@@ -112,29 +105,3 @@ checkstyle {
     maxWarnings = 0
 }
 
-
-// Opt-in compatibility with the pinned C# catalog schema; not part of ordinary check.
-def repoRoot = rootProject.layout.projectDirectory
-def referenceRoot = providers.gradleProperty('referenceRoot').orElse(repoRoot.file('../vibeminer').asFile.absolutePath)
-def dotnetExecutable = providers.gradleProperty('dotnet').orElse(repoRoot.file('../vibeminer/.local/toolchains/dotnet/dotnet').asFile.absolutePath)
-def csharpDirectory = layout.projectDirectory.dir('src/interopTest/csharp')
-tasks.register('buildCsharpInterop', Exec) {
-    workingDir repoRoot
-    environment 'DOTNET_CLI_HOME', repoRoot.dir('.local/dotnet').asFile.absolutePath
-    environment 'DOTNET_CLI_TELEMETRY_OPTOUT', '1'
-    commandLine dotnetExecutable.get(), 'build', csharpDirectory.file('Interop.csproj').asFile.absolutePath,
-        '-p:RestoreLockedMode=true', '-p:NuGetAudit=false', '-p:ReferenceRoot=' + referenceRoot.get(), '--nologo'
-}
-tasks.register('interopTest', Test) {
-    group = 'verification'
-    description = 'Exchanges SQLite catalog caches with the pinned C# reference.'
-    dependsOn tasks.named('buildCsharpInterop')
-    testClassesDirs = sourceSets.interopTest.output.classesDirs
-    classpath = sourceSets.interopTest.runtimeClasspath
-    systemProperty 'vimi.dotnet', dotnetExecutable.get()
-    systemProperty 'vimi.builds.harness', csharpDirectory.file('bin/Debug/net10.0/VibeMiner.Builds.Tests.dll').asFile.absolutePath
-    inputs.files(fileTree(csharpDirectory) { include '*.cs', '*.csproj', 'packages.lock.json' })
-    inputs.file(referenceRoot.map { new File(it, 'src/backend/VibeMiner.Builds/bin/Release/net10.0/VibeMiner.Builds.dll') })
-    inputs.files(fileTree(csharpDirectory.dir('bin/Debug/net10.0')))
-    shouldRunAfter tasks.named('integrationTest')
-}

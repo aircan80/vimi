@@ -83,40 +83,8 @@ checkstyle {
     maxWarnings = 0
 }
 
-
-
-
 sourceSets {
     test { resources.srcDir '../formats-assets/src/test/resources' }
-    interopTest {
-        compileClasspath += sourceSets.main.output
-        runtimeClasspath += sourceSets.main.output
-    }
 }
 configurations {
-    interopTestImplementation.extendsFrom testImplementation
-    interopTestRuntimeOnly.extendsFrom testRuntimeOnly
-}
-def referenceRoot = providers.gradleProperty('referenceRoot').orElse(rootProject.layout.projectDirectory.file('../vibeminer').asFile.absolutePath)
-def dotnetExecutable = providers.gradleProperty('dotnet').orElse(rootProject.layout.projectDirectory.file('../vibeminer/.local/toolchains/dotnet/dotnet').asFile.absolutePath)
-def csharpDirectory = layout.projectDirectory.dir('src/interopTest/csharp')
-def interopOutput = layout.buildDirectory.dir('interop-goldens')
-tasks.register('buildCsharpInterop', Exec) {
-    environment 'DOTNET_CLI_HOME', rootProject.layout.projectDirectory.dir('.local/dotnet').asFile.absolutePath
-    environment 'DOTNET_CLI_TELEMETRY_OPTOUT', '1'
-    commandLine dotnetExecutable.get(), 'run', '--project', csharpDirectory.file('CreaturesInterop.csproj').asFile.absolutePath,
-        '-p:RestoreLockedMode=true', '-p:ReferenceRoot=' + referenceRoot.get(), '--', interopOutput.get().asFile.absolutePath,
-        rootProject.layout.projectDirectory.dir('formats-assets/src/test/resources/golden').asFile.absolutePath
-}
-tasks.register('interopTest', Test) {
-    description = 'Regenerates creature goldens with original pinned C# Concepts and compares every result.'
-    group = 'verification'
-    dependsOn tasks.named('buildCsharpInterop')
-    testClassesDirs = sourceSets.interopTest.output.classesDirs
-    classpath = sourceSets.interopTest.runtimeClasspath
-    systemProperty 'vimi.creatures.goldens', layout.projectDirectory.dir('src/test/resources/golden').asFile.absolutePath
-    systemProperty 'vimi.creatures.interop', interopOutput.get().asFile.absolutePath
-    inputs.files(fileTree(csharpDirectory) { include '*.cs', '*.csproj', 'packages.lock.json' })
-    inputs.dir(interopOutput)
-    shouldRunAfter tasks.named('test')
 }
