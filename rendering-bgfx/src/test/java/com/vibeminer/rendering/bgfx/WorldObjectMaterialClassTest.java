@@ -67,4 +67,23 @@ class WorldObjectMaterialClassTest {
                 WorldStreamObjectsFile.CUTOUT,
                 WorldStreamObjectsFile.kind(WorldStreamObjectsFile.CUTOUT | UNLIT));
     }
+
+    @Test
+    void additiveRangesDrawAfterBlendedOnesWithinAPlacement() {
+        // #449: steps run in order, so a placement's additive ranges follow its blended ones
+        // whatever their order in the file.
+        assertEquals(
+                BgfxWorldStreamRenderer.STEP_UNSORTED,
+                BgfxWorldStreamRenderer.step(WorldStreamObjectsFile.OPAQUE | UNLIT));
+        assertEquals(
+                BgfxWorldStreamRenderer.STEP_UNSORTED,
+                BgfxWorldStreamRenderer.step(WorldStreamObjectsFile.CUTOUT));
+        assertEquals(
+                BgfxWorldStreamRenderer.STEP_BLENDED,
+                BgfxWorldStreamRenderer.step(WorldStreamObjectsFile.BLENDED | UNLIT));
+        assertEquals(
+                BgfxWorldStreamRenderer.STEP_ADDITIVE,
+                BgfxWorldStreamRenderer.step(WorldStreamObjectsFile.ADDITIVE));
+        assertTrue(BgfxWorldStreamRenderer.STEP_BLENDED < BgfxWorldStreamRenderer.STEP_ADDITIVE);
+    }
 }
