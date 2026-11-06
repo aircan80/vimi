@@ -117,7 +117,7 @@ final class ReadAdmissionTest {
     }
 
     @Test
-    void closeReleasesWaitingReadsPromptly() throws Exception {
+    void closeFailsWaitingReadsWithoutRunningThem() throws Exception {
         open(1);
         var entered = block(1);
         var running = store.read(key(bytes), NONE);

@@ -1906,6 +1906,11 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                             () -> {
                                 Throwable failure = null;
                                 try {
+                                    // Reads still waiting for a worker fail now, without running
+                                    // their work, rather than one by one behind running reads.
+                                    List<Runnable> waiting = new ArrayList<>();
+                                    readers.getQueue().drainTo(waiting);
+                                    waiting.forEach(Runnable::run);
                                     while (!writer.awaitTermination(1, TimeUnit.SECONDS)) {}
                                     verificationWorkers.shutdown();
                                     while (!verificationWorkers.awaitTermination(

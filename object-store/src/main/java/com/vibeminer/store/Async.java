@@ -69,7 +69,8 @@ final class Async {
     /**
      * Queues {@code work} on {@code pool}; the caller waits asynchronously for a worker. Canceling
      * {@code cancellation} while the work waits completes the result with a {@link
-     * CancellationException} at once and frees its queue slot. A full queue fails with {@link
+     * CancellationException} promptly, on a virtual thread rather than the canceling one, and frees
+     * its queue slot; a worker reaching a canceled task skips it. A full queue fails with {@link
      * #QUEUE_FULL}; a shut-down pool fails with {@code closed}.
      */
     static <T> CompletableFuture<T> admit(
@@ -114,8 +115,16 @@ final class Async {
                 cancellation.onCancel(
                         () -> {
                             if (state.compareAndSet(WAITING, CANCELED)) {
-                                pool.remove(task);
-                                result.completeExceptionally(new CancellationException());
+                                // Off the canceling thread: queue removal is linear and the
+                                // result's callbacks must not run on, say, the FX thread.
+                                Thread.ofVirtual()
+                                        .name("vimi-store-cancel")
+                                        .start(
+                                                () -> {
+                                                    pool.remove(task);
+                                                    result.completeExceptionally(
+                                                            new CancellationException());
+                                                });
                             }
                         });
         registration.set(registered);

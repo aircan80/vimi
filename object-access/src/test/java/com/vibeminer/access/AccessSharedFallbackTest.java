@@ -142,8 +142,9 @@ final class AccessSharedFallbackTest {
                             return CompletableFuture.failedFuture(queueFull());
                         }
                     };
+            MemorySources cdn = network(fixture);
             CachingObjectSource source =
-                    new CachingObjectSource(own, own, own, full, network(fixture), List.of());
+                    new CachingObjectSource(own, own, own, full, cdn, List.of());
             try {
                 var result =
                         source.getKey(
@@ -155,9 +156,103 @@ final class AccessSharedFallbackTest {
                 assertEquals(SourceTypes.ObjectState.UNAVAILABLE, result.state(), "has=" + failHas);
                 assertEquals("OBJECT_STORE_QUEUE_FULL", result.code());
                 assertFalse(own.has(fixture.key()).join(), "the CDN copy was stored");
+                assertTrue(cdn.requested().isEmpty(), cdn.requested().toString());
             } finally {
                 source.closeAsync().join();
             }
+        }
+    }
+
+    /** A large object staged from the shared store: a full queue mid-copy is not a miss. */
+    @Test
+    void sharedQueueFullWhileStagingIsUnavailableNotACdnDownload() {
+        var fixture = fixture((4 << 20) + 100);
+        MemoryStore own = new MemoryStore(), shared = new MemoryStore();
+        put(shared, fixture);
+        AtomicInteger reads = new AtomicInteger();
+        ObjectReader full =
+                new Reader(shared) {
+                    @Override
+                    public CompletableFuture<StoreTypes.ObjectRead> readRange(
+                            ObjectKey key,
+                            long offset,
+                            int length,
+                            com.vibeminer.store.Cancellation token) {
+                        if (reads.incrementAndGet() > 1) {
+                            return CompletableFuture.failedFuture(queueFull());
+                        }
+                        return super.readRange(key, offset, length, token);
+                    }
+                };
+        Writer writer = new Writer(own, false);
+        MemorySources cdn = network(fixture);
+        CachingObjectSource source =
+                new CachingObjectSource(
+                        own,
+                        writer,
+                        own,
+                        full,
+                        cdn,
+                        List.of(),
+                        Verification.CDN,
+                        options(128, 64L << 20));
+        try {
+            var result =
+                    source.getKey(
+                                    new ObjectRequest(fixture.key(), (long) fixture.bytes().length),
+                                    CONTEXT,
+                                    FetchPriority.INTERACTIVE,
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals(SourceTypes.ObjectState.UNAVAILABLE, result.state());
+            assertEquals("OBJECT_STORE_QUEUE_FULL", result.code());
+            assertTrue(writer.abandoned.get(), "the partial shared copy was kept");
+            assertTrue(cdn.requested().isEmpty(), cdn.requested().toString());
+        } finally {
+            source.closeAsync().join();
+        }
+    }
+
+    /** A range read whose shared-store presence check hits a full queue is not a CDN range. */
+    @Test
+    void rangeWithSharedHasQueueFullIsUnavailableNotACdnRange() {
+        var fixture = fixture(4096);
+        MemoryStore own = new MemoryStore(), shared = new MemoryStore();
+        put(shared, fixture);
+        ObjectReader full =
+                new Reader(shared) {
+                    @Override
+                    public CompletableFuture<Boolean> has(
+                            ObjectKey key, com.vibeminer.store.Cancellation token) {
+                        return CompletableFuture.failedFuture(queueFull());
+                    }
+                };
+        MemorySources cdn = network(fixture);
+        CachingObjectSource source =
+                new CachingObjectSource(
+                        own,
+                        own,
+                        own,
+                        full,
+                        cdn,
+                        List.of(),
+                        Verification.CDN,
+                        options(64L << 20, 1));
+        try {
+            var range =
+                    source.getRange(
+                                    new ObjectRequest(fixture.key(), (long) fixture.bytes().length),
+                                    0,
+                                    16,
+                                    CONTEXT,
+                                    FetchPriority.INTERACTIVE,
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals(SourceTypes.ObjectState.UNAVAILABLE, range.state());
+            assertEquals("OBJECT_STORE_QUEUE_FULL", range.code());
+            assertTrue(cdn.requested().isEmpty(), cdn.requested().toString());
+        } finally {
+            source.closeAsync().join();
         }
     }
 
@@ -183,8 +278,8 @@ final class AccessSharedFallbackTest {
                         return CompletableFuture.failedFuture(queueFull());
                     }
                 };
-        CachingObjectSource source =
-                new CachingObjectSource(full, own, own, null, network(fixture), List.of());
+        MemorySources cdn = network(fixture);
+        CachingObjectSource source = new CachingObjectSource(full, own, own, null, cdn, List.of());
         try {
             var whole =
                     source.getKey(
@@ -207,6 +302,7 @@ final class AccessSharedFallbackTest {
             assertEquals(SourceTypes.ObjectState.UNAVAILABLE, range.state());
             assertEquals("OBJECT_STORE_QUEUE_FULL", range.code());
             assertFalse(own.has(fixture.key()).join(), "the CDN copy was stored");
+            assertTrue(cdn.requested().isEmpty(), cdn.requested().toString());
         } finally {
             source.closeAsync().join();
         }

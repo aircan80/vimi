@@ -758,7 +758,18 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                                                                     read.info().origin(),
                                                                     read.info().length(),
                                                                     read.bytes())
-                                                            : result);
+                                                            : result)
+                                    .exceptionally(
+                                            error -> {
+                                                var full = queueFull(error);
+                                                if (full != null) {
+                                                    return busy(request.key(), full);
+                                                }
+                                                throw error instanceof RuntimeException runtime
+                                                        ? runtime
+                                                        : new java.util.concurrent
+                                                                .CompletionException(error);
+                                            });
                         });
     }
 
