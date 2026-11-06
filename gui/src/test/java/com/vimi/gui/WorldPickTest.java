@@ -78,6 +78,11 @@ public final class WorldPickTest {
                 + sq(WorldPick.ray(camera, 800, 500, 800, 500, 13, 77).orElseThrow().dy())
                 + sq(WorldPick.ray(camera, 800, 500, 800, 500, 13, 77).orElseThrow().dz()), 1, 1e-12), "Ray is unit length");
         require(WorldPick.ray(camera, 800, 500, 1600, 1200, 800, 50).isEmpty(), "Letterbox pixels pick nothing");
+        // The frame's horizontal edges are half the shared field of view from forward.
+        var level = new TerrainRenderer.Camera(0, 0, 0, 0, 0);
+        var edge = WorldPick.ray(level, 800, 500, 800, 500, 800, 250).orElseThrow();
+        require(near(Math.atan2(-edge.dy(), edge.dx()), TerrainCamera.HORIZONTAL_FOV / 2, 1e-12)
+                && near(edge.dz(), 0, 1e-12), "Right frame edge picks at half the field of view");
         require(WorldPick.ray(camera, 0, 500, 800, 500, 1, 1).isEmpty(), "Degenerate frames pick nothing");
     }
 
