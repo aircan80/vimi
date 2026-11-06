@@ -78,6 +78,16 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     }
 
     /**
+     * Whether a format can be a multisampled render target: its bgfx format caps must carry
+     * BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA (the primary check; texture validation is not
+     * relied on to test the MSAA bits) and bgfx must accept the texture with those flags.
+     */
+    static boolean multisampled(int formatCaps, boolean textureValid) {
+        return (formatCaps & org.lwjgl.bgfx.BGFX.BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA) != 0
+                && textureValid;
+    }
+
+    /**
      * Colour target flags. A multisampled colour target keeps its resolve texture (not write only):
      * bgfx resolves it when view 0 ends, and the readback blit in view 1 copies the resolved
      * pixels.
@@ -167,10 +177,22 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             renderer = new BgfxWorldStreamRenderer(session);
             samples =
                     targetSamples(
-                            bgfx_is_texture_valid(
-                                    0, false, 1, BGFX_TEXTURE_FORMAT_BGRA8, colourFlags(4)),
-                            bgfx_is_texture_valid(
-                                    0, false, 1, BGFX_TEXTURE_FORMAT_D32F, depthFlags(4)));
+                            multisampled(
+                                    caps.formats(BGFX_TEXTURE_FORMAT_BGRA8),
+                                    bgfx_is_texture_valid(
+                                            0,
+                                            false,
+                                            1,
+                                            BGFX_TEXTURE_FORMAT_BGRA8,
+                                            colourFlags(MSAA_SAMPLES))),
+                            multisampled(
+                                    caps.formats(BGFX_TEXTURE_FORMAT_D32F),
+                                    bgfx_is_texture_valid(
+                                            0,
+                                            false,
+                                            1,
+                                            BGFX_TEXTURE_FORMAT_D32F,
+                                            depthFlags(MSAA_SAMPLES))));
             if (samples == 1) {
                 // A device fact, not a failure: the World draws single-sampled, as before.
                 System.err.println("World render target: multisampling unavailable, 1 sample");

@@ -31,12 +31,20 @@ public final class WorldStreamNativeProof {
      * The proof backend: Vulkan unless the {@code vimi.worldProof.backend} system property is
      * {@code d3d11} (Gradle: {@code -PworldProofBackend=d3d11}).
      */
-    static final int BACKEND = backend(System.getProperty("vimi.worldProof.backend", "vulkan"));
+    static final WorldStreamTransport.Backend PROOF_BACKEND =
+            proofBackend(System.getProperty("vimi.worldProof.backend", "vulkan"));
 
-    static int backend(String name) {
+    /** The bgfx renderer type of {@link #PROOF_BACKEND}, for in-process native owners. */
+    static final int BACKEND =
+            PROOF_BACKEND == WorldStreamTransport.Backend.D3D11
+                    ? BGFX_RENDERER_TYPE_DIRECT3D11
+                    : BGFX_RENDERER_TYPE_VULKAN;
+
+    /** The one parser of the proof backend property, shared by every World GPU proof. */
+    static WorldStreamTransport.Backend proofBackend(String name) {
         return switch (name) {
-            case "vulkan" -> BGFX_RENDERER_TYPE_VULKAN;
-            case "d3d11" -> BGFX_RENDERER_TYPE_DIRECT3D11;
+            case "vulkan" -> WorldStreamTransport.Backend.VULKAN;
+            case "d3d11" -> WorldStreamTransport.Backend.D3D11;
             default -> throw new IllegalArgumentException("Unknown proof backend " + name);
         };
     }

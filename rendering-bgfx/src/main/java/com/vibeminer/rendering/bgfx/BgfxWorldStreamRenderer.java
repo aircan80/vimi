@@ -79,7 +79,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * per slot: up to {@link WorldStreamObjectsFile#MAX_BYTES} of GPU vertices, indices and RGBA8
      * textures with their full mip chains. The version 3 maximum profile, with the HIGH texture
      * tier's chains, is about 27 MB, so the object GPU budget is about 270 MB in the worst case,
-     * charged in Stats.objectBytes; real tiles stay far below it (see WorldStreamObjectsFile).
+     * charged in Stats.objectBytes; real tiles stay far below it (see WorldStreamObjectsFile). The
+     * owner's x4 multisampled colour and depth target adds about 11 MB on top (issue #357).
      */
     static final int SLOT_COUNT = 10, INSTANCE_BYTES = 48;
 
