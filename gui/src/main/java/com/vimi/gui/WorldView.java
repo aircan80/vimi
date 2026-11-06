@@ -2436,8 +2436,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         boolean repeat = bookmarksKeyHeld;
         bookmarksKeyHeld = true;
         if (!menu.shown()) return false;
-        var focus = getScene() == null ? null : getScene().getFocusOwner();
-        if (focus instanceof javafx.scene.control.TextInputControl) return false;
+        // The key's own target, not this window's focus owner: in full screen the menu lives in
+        // the full-screen stage, whose text fields this window's focus owner never is.
+        if (e.getTarget() instanceof javafx.scene.control.TextInputControl) return false;
         if (!repeat) bookmarksKey();
         return true;
     }

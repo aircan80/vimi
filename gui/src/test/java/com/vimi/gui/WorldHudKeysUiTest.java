@@ -170,7 +170,7 @@ public final class WorldHudKeysUiTest {
 
     private static void keysAct() {
         ((AnimationTimer) get("timer")).stop();
-        var viewport = view.lookup("#world-viewport");
+        var viewport = (javafx.scene.Node) get("viewport");
         viewport.requestFocus();
         var input = (WorldExplorerInput) get("input");
         var before = (TerrainRenderer.Camera) get("camera");
@@ -264,6 +264,31 @@ public final class WorldHudKeysUiTest {
         }
         press(KeyCode.B);
         require(!menu.shown(), "B again closes the menu");
+        // Full screen: the menu and its fields live in the full-screen stage; typing b there
+        // still types.
+        try {
+            var fullscreen = (WorldFullscreen) get("fullscreen");
+            fullscreen.windowed(true);
+            var toggle = WorldView.class.getDeclaredMethod("toggleFullscreen");
+            toggle.setAccessible(true);
+            toggle.invoke(view);
+            require(fullscreen.active(), "Full screen on");
+            press(KeyCode.B);
+            require(menu.shown() && menu.current() == WorldGameMenu.Page.BOOKMARKS, "B opens Bookmarks in full screen");
+            var fullField = menu.page(WorldGameMenu.Page.BOOKMARKS).lookup(".text-field");
+            require(fullField.getScene() == fullscreen.stage().getScene(), "The field is in the full-screen stage");
+            fullField.requestFocus();
+            Event.fireEvent(fullField, new KeyEvent(KeyEvent.KEY_PRESSED, "b", "b", KeyCode.B, false, false, false, false));
+            Event.fireEvent(fullField, new KeyEvent(KeyEvent.KEY_RELEASED, "b", "b", KeyCode.B, false, false, false, false));
+            require(menu.shown(), "In full screen, typing b in a bookmarks field does not close the menu");
+            ((javafx.scene.Node) get("viewport")).requestFocus();
+            press(KeyCode.B);
+            require(!menu.shown(), "B closes it in full screen");
+            toggle.invoke(view);
+            require(!fullscreen.active(), "Full screen off");
+        } catch (ReflectiveOperationException error) {
+            throw new AssertionError(error);
+        }
         menu.open();
         press(KeyCode.B);
         require(menu.shown() && menu.current() == WorldGameMenu.Page.BOOKMARKS,
@@ -273,7 +298,7 @@ public final class WorldHudKeysUiTest {
     }
 
     private static void key(KeyCode code, boolean down) {
-        var viewport = view.lookup("#world-viewport");
+        var viewport = (javafx.scene.Node) get("viewport");
         Event.fireEvent(viewport, new KeyEvent(down ? KeyEvent.KEY_PRESSED : KeyEvent.KEY_RELEASED,
                 "", "", code, false, false, false, false));
     }
@@ -286,7 +311,7 @@ public final class WorldHudKeysUiTest {
     }
 
     private static void press(KeyCode code) {
-        var viewport = view.lookup("#world-viewport");
+        var viewport = (javafx.scene.Node) get("viewport");
         Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_PRESSED, "", "", code, false, false, false, false));
         Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_RELEASED, "", "", code, false, false, false, false));
     }
