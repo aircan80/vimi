@@ -146,22 +146,10 @@ public final class WorldAppearanceProof {
             }
             session.camera(new WorldStreamTransport.Camera(4, 4, WIDTH, HEIGHT, view));
             frames.put("objects", frame(session, committed.contentRevision(), 4));
-            try {
-                var receipt = session.closeAsync().get(7, TimeUnit.SECONDS);
-                session.completion().get(2, TimeUnit.SECONDS);
-                if (receipt.exitCode().orElseThrow() != 0 || process.get().isAlive()) {
-                    throw new AssertionError("Actual native process drain disagrees");
-                }
-            } catch (java.util.concurrent.ExecutionException drain) {
-                if (!(drain.getCause() instanceof java.io.IOException)) {
-                    throw drain;
-                }
-                // TODO(#431): remove this tolerance as soon as #437 (the drain fix) merges. Every
-                // frame was already taken; a helper that exits with EOF before CLOSED is the known
-                // drain flake https://github.com/aircan80/vimi/issues/431, owned by the session
-                // proofs. Until then it is reported, and the appearance comparison decides.
-                System.out.println(
-                        "WORLD_APPEARANCE_DRAIN_WARNING " + drain.getCause().getMessage());
+            var receipt = session.closeAsync().get(7, TimeUnit.SECONDS);
+            session.completion().get(2, TimeUnit.SECONDS);
+            if (receipt.exitCode().orElseThrow() != 0 || process.get().isAlive()) {
+                throw new AssertionError("Actual native process drain disagrees");
             }
         } finally {
             session.closeAsync();

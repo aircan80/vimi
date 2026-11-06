@@ -38,10 +38,7 @@ WORLD_APPEARANCE objects mean 0.000, outliers 0.0000%, max 0
 WORLD_APPEARANCE_PASS backend=VULKAN scenes=[terrain, water, fog, objects]
 ```
 
-If the helper exits with "EOF before CLOSED" while draining after the last frame (the known flake
-#431), the proof prints `WORLD_APPEARANCE_DRAIN_WARNING` and still decides on the frames, which
-were all taken before the drain. The session proofs own that failure. This tolerance is temporary:
-it is removed as soon as #437 (the drain fix) merges.
+The helper must also close cleanly after the last frame: a drain failure fails the proof.
 
 ## Tolerance
 
