@@ -250,13 +250,25 @@ public final class WorldStreamTransport {
         private final WorldStreamProducerCancellation.Producer cancellation;
         private volatile boolean active = true;
         private final boolean exteriorObjects;
+        private final TileReservation reservation;
 
+        // Without a reservation (structural tests) there is no shared array: splat keeps the atlas.
         private PacketDestination(
                 WorldStreamEnvelope.Session descriptor,
                 WorldStreamParentState.Ticket ticket,
                 Path path,
                 WorldStreamProducerCancellation.Producer cancellation) {
+            this(descriptor, null, ticket, path, cancellation);
+        }
+
+        private PacketDestination(
+                WorldStreamEnvelope.Session descriptor,
+                TileReservation reservation,
+                WorldStreamParentState.Ticket ticket,
+                Path path,
+                WorldStreamProducerCancellation.Producer cancellation) {
             exteriorObjects = descriptor.exteriorObjects();
+            this.reservation = reservation;
             this.context =
                     new Context(
                             descriptor.nonce(),
@@ -308,6 +320,30 @@ public final class WorldStreamTransport {
             return exteriorObjects;
         }
 
+        /**
+         * Binds this tile's slot to shared splat layers for its diffuse keys (issue #174 step 2).
+         * At most {@link WorldStreamTileFile#MAX_SPLAT_LAYERS} keys get a new layer, which this
+         * packet must upload; further new keys, and keys finding no free layer, resolve to -1 so
+         * their chunks keep the atlas. New layers stay pending until the tile is staged; any other
+         * end of this reservation forgets them, so no later tile reuses a layer never uploaded.
+         */
+        SplatBinding bindSplat(List<WorldStreamDiffuseArray.Key> keys) {
+            requireActive();
+            if (reservation == null) {
+                int[] none = new int[keys.size()];
+                java.util.Arrays.fill(none, -1);
+                return new SplatBinding(none, List.of());
+            }
+            return reservation.session.bindSplat(reservation, keys);
+        }
+
+        void dropSplatUpload(int layer) {
+            requireActive();
+            if (reservation != null) {
+                reservation.session.dropSplatUpload(reservation, layer);
+            }
+        }
+
         // The separately reviewed fixed writer performs MOVE inside the source's pinned resource
         // callback.
         OwnedPacket adopt(
@@ -351,6 +387,9 @@ public final class WorldStreamTransport {
         }
     }
 
+    /** Shared layer per requested key (-1 keeps the atlas) and the new layers to upload. */
+    record SplatBinding(int[] layers, List<Integer> uploads) {}
+
     public static final class TileReservation {
         private final Session session;
         private final WorldStreamParentState.Ticket ticket;
@@ -364,9 +403,20 @@ public final class WorldStreamTransport {
         private long issuedCapacity;
         private int ownCapacityChanges;
 
+        // Splat layers this reservation's packet uploads; forgotten unless the tile is staged.
+        private int[] splatPending = new int[0];
+
         private TileReservation(Session session, WorldStreamParentState.Ticket ticket) {
             this.session = session;
             this.ticket = ticket;
+            result.whenComplete(
+                    (resident, failure) -> {
+                        if (failure != null) {
+                            session.forgetSplat(this);
+                        } else {
+                            session.keepSplat(this);
+                        }
+                    });
         }
 
         /**
@@ -547,6 +597,9 @@ public final class WorldStreamTransport {
         private final Object lock = new Object();
         private final WorldStreamEnvelope.Session descriptor;
         private final WorldStreamParentState state;
+        // Parent-owned shared splat layer array (issue #174 step 2): the only place that decides
+        // which diffuse occupies which GPU layer, so parent and child never disagree.
+        private final WorldStreamDiffuseArray splatLayers = new WorldStreamDiffuseArray();
         private final WorldStreamParentFrameGate frames;
         private final CompletableFuture<Void> initialized = new CompletableFuture<>();
         private final CompletableFuture<Void> completion = new CompletableFuture<>();
@@ -627,6 +680,63 @@ public final class WorldStreamTransport {
                 this.ordered = List.copyOf(ordered);
                 this.metadata = metadata;
                 this.path = path;
+            }
+        }
+
+        SplatBinding bindSplat(
+                TileReservation reservation, List<WorldStreamDiffuseArray.Key> keys) {
+            synchronized (splatLayers) {
+                var resolution = splatLayers.bind(reservation.ticket.lease.slot(), keys);
+                int[] layers = resolution.layers().clone();
+                var uploads = new java.util.ArrayList<Integer>();
+                for (int layer : resolution.uploads()) {
+                    if (uploads.size() < WorldStreamTileFile.MAX_SPLAT_LAYERS) {
+                        uploads.add(layer);
+                    } else {
+                        // Beyond the per-packet cap: never uploaded here, so never resolved.
+                        splatLayers.discard(layer);
+                        for (int i = 0; i < layers.length; i++) {
+                            if (layers[i] == layer) {
+                                layers[i] = -1;
+                            }
+                        }
+                    }
+                }
+                reservation.splatPending = uploads.stream().mapToInt(Integer::intValue).toArray();
+                return new SplatBinding(layers, List.copyOf(uploads));
+            }
+        }
+
+        /** A packet that will not upload one of its new layers releases it before writing. */
+        void dropSplatUpload(TileReservation reservation, int layer) {
+            synchronized (splatLayers) {
+                splatLayers.discard(layer);
+                reservation.splatPending =
+                        java.util.Arrays.stream(reservation.splatPending)
+                                .filter(pending -> pending != layer)
+                                .toArray();
+            }
+        }
+
+        private void keepSplat(TileReservation reservation) {
+            synchronized (splatLayers) {
+                reservation.splatPending = new int[0];
+            }
+        }
+
+        private void forgetSplat(TileReservation reservation) {
+            synchronized (splatLayers) {
+                for (int layer : reservation.splatPending) {
+                    splatLayers.discard(layer);
+                }
+                reservation.splatPending = new int[0];
+            }
+        }
+
+        /** Test observation of the parent-owned splat array. */
+        int splatResident() {
+            synchronized (splatLayers) {
+                return splatLayers.resident();
             }
         }
 
@@ -1323,6 +1433,7 @@ public final class WorldStreamTransport {
             var destination =
                     new PacketDestination(
                             descriptor,
+                            reservation,
                             reservation.ticket,
                             owner.files()
                                     .directory()

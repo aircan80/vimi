@@ -3,6 +3,7 @@ package com.vibeminer.rendering.bgfx;
 import com.vibeminer.rendering.world.TerrainScene;
 import com.vibeminer.rendering.world.TerrainTextureBinding;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -602,13 +603,122 @@ public final class WorldStreamTileWriter {
         }
     }
 
+    /**
+     * One tile's splatting inputs for the writer (issue #174 step 2): its distinct layer diffuses
+     * (file id and content key), the 16 x 16 chunk table of four indices into that list (255 for
+     * none), the 512 x 512 RGBA8 mask map, and a decoder for a diffuse's pixels (square power-of
+     * two RGBA8 within 128), consulted only for layers new to the shared array.
+     */
+    public record SplatInput(
+            long[] fileIds,
+            String[] contentKeys,
+            byte[] table,
+            ByteBuffer alpha,
+            java.util.function.LongFunction<java.util.Optional<Diffuse>> decode) {
+        public SplatInput {
+            Objects.requireNonNull(fileIds);
+            Objects.requireNonNull(contentKeys);
+            Objects.requireNonNull(table);
+            Objects.requireNonNull(alpha);
+            Objects.requireNonNull(decode);
+            if (fileIds.length != contentKeys.length
+                    || fileIds.length > 64
+                    || table.length != WorldStreamTileFile.SPLAT_TABLE_BYTES
+                    || alpha.remaining() != WorldStreamTileFile.SPLAT_ALPHA_BYTES) {
+                throw new IllegalArgumentException("Splat input shape");
+            }
+        }
+    }
+
+    /** A decoded layer diffuse: square power-of-two RGBA8, side 1 to 128. */
+    public record Diffuse(int side, ByteBuffer rgba) {}
+
     /** Source R owns this unadvertised file until its independently pinned one-shot MOVE. */
     public static final class PacketFile implements AutoCloseable {
         private final WorldStreamPacketFile file;
         private final float[] footprint;
         private WorldStreamTransport.PacketDestination destination;
         private WorldStreamTileFile.Header writtenHeader;
+        private WorldStreamTileFile.Splat splat;
         private boolean waterAttached, waterDropped;
+
+        /**
+         * Resolves this textured packet's splatting inputs against the session's shared layer array
+         * and holds the trailer for {@link #move}. Keys without a layer, beyond the per-packet
+         * upload cap, or whose decode fails keep the atlas (255); never fails the tile.
+         */
+        public synchronized void splat(SplatInput input) {
+            Objects.requireNonNull(input);
+            if (destination == null) {
+                throw new IllegalStateException("Packet file already moved or closed");
+            }
+            if (writtenHeader.outcome() != WorldStreamTileFile.Outcome.TEXTURED) {
+                return;
+            }
+            var keys = new java.util.ArrayList<WorldStreamDiffuseArray.Key>();
+            for (int i = 0; i < input.fileIds().length; i++) {
+                keys.add(
+                        new WorldStreamDiffuseArray.Key(
+                                input.fileIds()[i], input.contentKeys()[i]));
+            }
+            var binding = destination.bindSplat(keys);
+            int[] layers = binding.layers().clone();
+            var uploadLayers = new java.util.ArrayList<Integer>();
+            var uploadPixels = new java.util.ArrayList<byte[]>();
+            for (int layer : binding.uploads()) {
+                int index = -1;
+                for (int i = 0; i < layers.length; i++) {
+                    if (layers[i] == layer) {
+                        index = i;
+                    }
+                }
+                byte[] pixels = null;
+                try {
+                    var decoded = input.decode().apply(input.fileIds()[index]);
+                    if (decoded.isPresent()) {
+                        var chain =
+                                WorldStreamDiffuseArray.chain(
+                                        decoded.get().rgba().duplicate(), decoded.get().side());
+                        pixels = new byte[WorldStreamTileFile.SPLAT_LAYER_PIXELS];
+                        chain.get(0, pixels);
+                    }
+                } catch (RuntimeException failed) {
+                    if (failed instanceof java.util.concurrent.CancellationException) {
+                        throw failed;
+                    }
+                    pixels = null;
+                }
+                if (pixels == null) {
+                    destination.dropSplatUpload(layer);
+                    layers[index] = -1;
+                    continue;
+                }
+                uploadLayers.add(layer);
+                uploadPixels.add(pixels);
+            }
+            byte[] table = new byte[WorldStreamTileFile.SPLAT_TABLE_BYTES];
+            for (int i = 0; i < table.length; i++) {
+                int entry = input.table()[i] & 255;
+                table[i] =
+                        (byte)
+                                (entry < layers.length && layers[entry] >= 0
+                                        ? layers[entry]
+                                        : WorldStreamTileFile.SPLAT_NONE);
+            }
+            byte[] alpha = new byte[WorldStreamTileFile.SPLAT_ALPHA_BYTES];
+            input.alpha().duplicate().get(alpha);
+            splat =
+                    new WorldStreamTileFile.Splat(
+                            table,
+                            alpha,
+                            uploadLayers.stream().mapToInt(Integer::intValue).toArray(),
+                            uploadPixels.toArray(byte[][]::new));
+        }
+
+        /** Descriptive: the splat trailer this packet will carry, or null. */
+        synchronized WorldStreamTileFile.Splat splatTrailer() {
+            return splat;
+        }
 
         /** Descriptive: whether the moved packet carries a water trailer. */
         public synchronized boolean waterAttached() {
@@ -651,16 +761,31 @@ public final class WorldStreamTileWriter {
                     throw new IllegalStateException("Packet file already moved or closed");
                 }
                 WorldStreamTileFile.Expected replacement = null;
+                boolean watered = false;
+                if (splat != null) {
+                    try {
+                        replacement =
+                                WorldStreamTileFile.appendSplat(
+                                        file.path(),
+                                        file.expected(),
+                                        writtenHeader,
+                                        splat,
+                                        stopping);
+                    } catch (IOException failed) {
+                        throw new java.io.UncheckedIOException(failed);
+                    }
+                }
                 if (water != null && !WorldStreamTileFile.onFootprint(water.wire, footprint)) {
                     // Every reader check runs here first: off-tile water never costs terrain.
                     waterDropped = true;
                 } else if (water != null) {
-                    var before = file.expected();
+                    var before = replacement != null ? replacement : file.expected();
                     var path = file.path();
                     try {
                         replacement =
                                 WorldStreamTileFile.appendWater(
                                         path, before, writtenHeader, water.wire, stopping);
+                        watered = true;
                     } catch (WorldStreamTileFile.PacketChanged changed) {
                         throw new java.io.UncheckedIOException(changed);
                     } catch (IOException
@@ -673,7 +798,8 @@ public final class WorldStreamTileWriter {
                             canceled.addSuppressed(failed);
                             throw canceled;
                         }
-                        replacement = null;
+                        // The terrain (and splat) file is exact again: keep what preceded water.
+                        replacement = splat != null ? replacement : null;
                         waterDropped = true;
                     }
                 }
@@ -682,7 +808,7 @@ public final class WorldStreamTileWriter {
                 } catch (IOException failed) {
                     throw new java.io.UncheckedIOException(failed);
                 }
-                waterAttached = replacement != null;
+                waterAttached = watered;
                 target = destination;
                 header = writtenHeader;
                 destination = null;
