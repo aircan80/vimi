@@ -759,6 +759,14 @@ tasks.register('clientHotfixDetailsTest', JavaExec) {
     mainClass = 'com.vimi.gui.ClientHotfixDetailsTest'
 }
 tasks.named('check') { dependsOn tasks.named('clientHotfixDetailsTest') }
+
+tasks.register('deliveredKeysTest', JavaExec) {
+    group = 'verification'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.DeliveredKeysTest'
+}
+check.dependsOn deliveredKeysTest
 check.dependsOn clientHotfixStoreTest
 
 tasks.register('nativeHotfixWorkspaceTest', JavaExec) {
