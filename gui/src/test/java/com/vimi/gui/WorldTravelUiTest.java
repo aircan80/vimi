@@ -156,9 +156,103 @@ public final class WorldTravelUiTest {
                 require(text.startsWith("Terrain · map 0 Authored continent · tile 30,40 · x "), "Picked tile: " + text);
                 require(text.contains("Area unknown") && text.contains("water is not picked"),
                         "Uncatalogued area stays unknown: " + text);
+                inspectCard(view, viewport, inspection);
                 next.run();
             });
         });
+    }
+
+    /**
+     * The terrain pick also opens the inspect card: its fields, Copy, click isolation, travel
+     * closing an unpinned card, Pin keeping it, Escape closing it first, and the pin key
+     * re-opening the last card.
+     */
+    private static void inspectCard(WorldView view, javafx.scene.layout.StackPane viewport, Label inspection) {
+        var card = view.inspectCard();
+        var content = card.content();
+        require(card.isVisible() && content != null && content.kind() == WorldInspection.Kind.TERRAIN
+                        && content.title().equals("Terrain") && content.subtitle().startsWith("Area unknown")
+                        && content.lines().getFirst().startsWith("tile 30,40 · x ")
+                        && content.detail().equals(inspection.getText()),
+                "The terrain pick opens its card: " + content);
+        require(((Label) card.lookup("#world-inspect-chip")).getText().equals("Terrain")
+                        && !card.lookup("#world-inspect-file").isVisible(),
+                "Chip shown, no file line for terrain");
+        for (var id : List.of("#world-inspect-pin", "#world-inspect-copy", "#world-inspect-close"))
+            require(!card.lookup(id).isFocusTraversable(), "Not focus traversable: " + id);
+        var copied = new java.util.ArrayList<String>();
+        card.clipboard(copied::add);
+        ((javafx.scene.control.ButtonBase) card.lookup("#world-inspect-copy")).fire();
+        require(copied.equals(List.of(inspection.getText())) && viewport.isFocused(),
+                "Copy puts the full text on the clipboard and focus returns");
+        String before = inspection.getText();
+        var onCard = card.localToScene(20, 20);
+        javafx.event.Event.fireEvent(card, new javafx.scene.input.MouseEvent(
+                javafx.scene.input.MouseEvent.MOUSE_CLICKED, onCard.getX(), onCard.getY(), 0, 0,
+                javafx.scene.input.MouseButton.PRIMARY, 1, false, false, false, false, false, false, false,
+                false, false, true, null));
+        require(inspection.getText().equals(before), "A click on the card never inspects the world behind it");
+        var camera = (TerrainRenderer.Camera) get(view, "camera");
+        double x = camera.x(), y = camera.y(), z = camera.z();
+        var input = (WorldExplorerInput) get(view, "input");
+        java.util.function.Consumer<javafx.scene.input.KeyCode> press = code -> {
+            javafx.event.Event.fireEvent(viewport, new javafx.scene.input.KeyEvent(
+                    javafx.scene.input.KeyEvent.KEY_PRESSED, "", "", code, false, false, false, false));
+            javafx.event.Event.fireEvent(viewport, new javafx.scene.input.KeyEvent(
+                    javafx.scene.input.KeyEvent.KEY_RELEASED, "", "", code, false, false, false, false));
+        };
+        // While the card is open, the toasts keep clear of its column.
+        var toasts = view.toasts();
+        toasts.show("Authored notice");
+        view.applyCss();
+        view.layout();
+        var cardBox = card.localToScene(card.getLayoutBounds());
+        var toastBox = toasts.localToScene(toasts.getLayoutBounds());
+        require(toastBox.getMinX() >= cardBox.getMaxX(),
+                "Toasts never cover the card column: toasts " + toastBox + " card " + cardBox);
+        toasts.clear();
+        card.follow(x + WorldInspectCard.FOLLOW_YARDS / 2, y, z);
+        require(card.isOpen(), "A short move keeps the card");
+        card.follow(x, y, z + WorldInspectCard.FOLLOW_YARDS);
+        require(!card.isOpen(), "Distance is 3D: climbing 40 yd closes an unpinned card");
+        press.accept(javafx.scene.input.KeyCode.I);
+        require(card.isOpen() && card.pinned() && card.content().kind() == WorldInspection.Kind.TERRAIN
+                        && !input.keysHeld(),
+                "With nothing open, I re-opens the last card pinned, holding no key");
+        card.update(WorldInspection.note("Nothing picked · sky"));
+        card.close();
+        press.accept(javafx.scene.input.KeyCode.I);
+        require(card.isOpen() && card.content().kind() == WorldInspection.Kind.TERRAIN,
+                "A note never replaces the card I re-opens");
+        card.follow(x + 500, y, z);
+        require(card.isOpen(), "A pinned card stays while flying");
+        card.hudHidden(true);
+        require(card.isOpen() && !card.isVisible(), "Hiding the HUD hides the card, which stays open");
+        javafx.event.Event.fireEvent(viewport, new javafx.scene.input.KeyEvent(
+                javafx.scene.input.KeyEvent.KEY_PRESSED, "", "", javafx.scene.input.KeyCode.ESCAPE,
+                false, false, false, false));
+        require(!card.isOpen() && !input.keysHeld(), "Escape closes the card first, even hidden, and holds no key");
+        press.accept(javafx.scene.input.KeyCode.I);
+        require(card.isOpen() && !card.isVisible(), "I works while the HUD is hidden");
+        card.hudHidden(false);
+        require(card.isVisible(), "Showing the HUD shows the open card again");
+        press.accept(javafx.scene.input.KeyCode.I);
+        require(!card.pinned(), "I unpins it");
+        // The view hooks the card to the HUD's hidden state: H hides it and keeps it open.
+        require(card.isOpen() && card.isVisible(), "The card is open before H");
+        press.accept(javafx.scene.input.KeyCode.H);
+        require(card.isOpen() && !card.isVisible(), "H hides the card with the HUD; it stays open");
+        press.accept(javafx.scene.input.KeyCode.H);
+        require(card.isOpen() && card.isVisible(), "H again shows the card");
+        card.follow(x + WorldInspectCard.FOLLOW_YARDS, y, z);
+        require(!card.isOpen() && !card.isVisible(), "An unpinned card closes after travelling away");
+        javafx.event.Event.fireEvent(viewport, new javafx.scene.input.KeyEvent(
+                javafx.scene.input.KeyEvent.KEY_PRESSED, "", "", javafx.scene.input.KeyCode.ESCAPE,
+                false, false, false, false));
+        javafx.event.Event.fireEvent(viewport, new javafx.scene.input.KeyEvent(
+                javafx.scene.input.KeyEvent.KEY_RELEASED, "", "", javafx.scene.input.KeyCode.ESCAPE,
+                false, false, false, false));
+        require(!input.keysHeld(), "Escape with no card passes through and releases");
     }
 
     private static void crossMap(WorldView view, TerrainRenderer.Camera saved, double height) {

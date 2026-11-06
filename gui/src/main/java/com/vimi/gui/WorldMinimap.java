@@ -760,7 +760,8 @@ final class WorldMinimap extends VBox implements AutoCloseable {
     /**
      * Follows the HUD's hidden state (H, Alt+Z) by listening, not binding, since the minimap also
      * shows and hides itself: it shows while it has a view and the HUD is shown. Hiding the HUD
-     * closes the tracking popup and the role tip; the view and its artwork are kept.
+     * closes the tracking popup and the role tip; the view and its artwork are kept. Call it once:
+     * each call adds a listener that is never removed (the view does so at construction).
      */
     void followHud(javafx.beans.value.ObservableBooleanValue hidden) {
         java.util.Objects.requireNonNull(hidden);

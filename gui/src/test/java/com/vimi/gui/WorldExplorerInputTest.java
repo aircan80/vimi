@@ -139,7 +139,8 @@ public final class WorldExplorerInputTest {
                 WorldControls.Action.SPAWNS, WorldControls.Action.TRACKING, WorldControls.Action.MINIMAP,
                 WorldControls.Action.DAY_NIGHT, WorldControls.Action.SPEED_STROLL,
                 WorldControls.Action.SPEED_MOUNT, WorldControls.Action.SPEED_FLY,
-                WorldControls.Action.SPEED_FAST, WorldControls.Action.SPEED_TURBO);
+                WorldControls.Action.SPEED_FAST, WorldControls.Action.SPEED_TURBO,
+                WorldControls.Action.INSPECT_PIN, WorldControls.Action.SCREENSHOT);
         for (var action : WorldControls.Action.values())
             require(action.command == commands.contains(action),
                     "Exactly the HUD keys are commands: " + action);
@@ -247,6 +248,26 @@ public final class WorldExplorerInputTest {
         var older = WorldControls.decode("v1;keys=W:FORWARD;actions=FORWARD,BACK,WALK");
         require(older.keys().get(KeyCode.F3) == WorldControls.Action.DEV_OVERLAY,
                 "Stored controls from before the overlay gain its default key: " + older.keys());
+        for (var layout : WorldControls.Layout.values())
+            require(layout.keys().get(KeyCode.I) == WorldControls.Action.INSPECT_PIN,
+                    layout + " binds I to the inspect card pin");
+        var pins = new Host();
+        var pinInput = exact(pins);
+        pinInput.keyPressed(KeyCode.I);
+        pinInput.keyPressed(KeyCode.I);
+        require(pins.commands.equals(List.of(WorldControls.Action.INSPECT_PIN))
+                        && pinInput.axes().equals(ExplorerMotion.Input.NONE),
+                "I commands the card once per press and moves nothing: " + pins.commands);
+        for (var layout : WorldControls.Layout.values())
+            require(layout.keys().get(KeyCode.F12) == WorldControls.Action.SCREENSHOT,
+                    layout + " binds F12 to the screenshot");
+        var shots = new Host();
+        var shotInput = exact(shots);
+        shotInput.keyPressed(KeyCode.F12);
+        shotInput.keyPressed(KeyCode.F12);
+        require(shots.commands.equals(List.of(WorldControls.Action.SCREENSHOT))
+                        && shotInput.axes().equals(ExplorerMotion.Input.NONE),
+                "F12 commands one screenshot per press and moves nothing: " + shots.commands);
         require(WorldControls.DEFAULTS.help().contains("F3 developer overlay"),
                 "Help names the overlay key: " + WorldControls.DEFAULTS.help());
     }

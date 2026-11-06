@@ -175,6 +175,10 @@ public final class WorldInstanceUiTest {
                 require(!hud.panelShown() && !hud.hidden() && !(boolean) get(view, "panelsHidden"),
                         "Inside the instance the map panel is closed and the HUD shown");
                 require(leave.isVisible(), "Leave is offered inside the instance");
+                var toasts = view.toasts();
+                require(toasts.getScene() != null && toasts.isVisible() && toasts.toasts().stream()
+                                .anyMatch(t -> t.text().startsWith("Entering ")),
+                        "Entering an instance shows a visible toast: " + toasts.toasts());
                 leave.fire();
                 await(() -> inventoryMap(view) == HOME.id() && (boolean) get(view, "explorer")
                         && get(view, "camera") != null && !(boolean) get(view, "scenePreparing"), () -> {
@@ -182,6 +186,10 @@ public final class WorldInstanceUiTest {
                     require(camera.x() == saved.x() && camera.y() == saved.y(),
                             "Leave returns to the open-world position of entry: " + camera);
                     require(!leave.isVisible(), "No leave after returning");
+                    var back = view.toasts();
+                    require(back.getScene() != null && back.isVisible() && back.toasts().stream()
+                                    .anyMatch(t -> t.text().startsWith("Left the instance")),
+                            "Leaving shows a visible toast: " + back.toasts());
                     enteringBar(view);
                 });
             });

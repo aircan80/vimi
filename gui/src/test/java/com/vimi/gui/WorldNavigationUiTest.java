@@ -289,7 +289,7 @@ public final class WorldNavigationUiTest {
         for (int i=0;i<30;i++) press(viewport,KeyCode.Z,true);
         require(!content.getBottom().isVisible() && !content.getBottom().isManaged() && !hud.isVisible(),
                 "Alt+Z hides the slim bar and the HUD overlays once, however long it is held");
-        require(split.getItems().size()==1 && split.getItems().getFirst()==content,"The map list stays out");
+        require(split.getItems().size()==1 && split.getItems().getFirst()==content.getParent(),"The map list stays out");
         require(hint.isVisible(),"A hint says how to bring the HUD back");
         release(viewport,KeyCode.Z);
         press(viewport,KeyCode.Z,true);
@@ -395,7 +395,7 @@ public final class WorldNavigationUiTest {
         var content=(javafx.scene.layout.BorderPane)get(view,"content");
         var split=(javafx.scene.control.SplitPane)get(view,"split");
         var sidebar=(Node)get(view,"sidebarPane");
-        require(split.getItems().size()==1 && split.getItems().getFirst()==content && sidebar.getParent()==null,
+        require(split.getItems().size()==1 && split.getItems().getFirst()==content.getParent() && sidebar.getParent()==null,
                 "The map list is not in the split while exploring");
         require(content.getTop()==null && content.getCenter()==viewport,"Nothing sits above the viewport");
         // Acceptance: the view takes at least 80% of the window (it was about 27%). This scene is
@@ -642,7 +642,10 @@ public final class WorldNavigationUiTest {
             // Twice, so the map panel and the hidden state end where they started.
             require(view.command(action) && view.command(action),"WorldView.command routes "+action);
         }
-        require(commands>=3,"The command actions are walked: "+commands);
+        // MAP_PANEL, HIDE_HUD, DEV_OVERLAY, INSPECT_PIN, SCREENSHOT (no data folder here, so it
+        // only toasts), and the step 7 keys: SPAWNS, TRACKING, MINIMAP, DAY_NIGHT and five speeds.
+        require(commands==14,"The command actions are walked: "+commands);
+        view.inspectCard().close();
         view.devOverlay().show(null);
     }
 
@@ -677,7 +680,7 @@ public final class WorldNavigationUiTest {
         var split=(javafx.scene.control.SplitPane)get(view,"split");
         var content=(javafx.scene.layout.BorderPane)get(view,"content");
         require(split.getItems().size()==2 && split.getItems().getFirst()==get(view,"sidebarPane")
-                        && split.getItems().get(1)==content,
+                        && split.getItems().get(1)==content.getParent(),
                 "Leaving the explorer, even with the map panel open, puts the map list back in the split");
         require(!((Node)get(view,"viewport")).lookup("#world-map-panel").isVisible() && content.getTop()!=null
                         && isWithin((Node)get(view,"status"),content.getTop()),
