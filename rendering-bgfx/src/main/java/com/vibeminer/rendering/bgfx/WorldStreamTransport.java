@@ -197,7 +197,12 @@ public final class WorldStreamTransport {
     public enum Refusal {
         RETRY_LATER,
         CAPABILITY_UNAVAILABLE,
-        SOURCE_INVALIDATED
+        SOURCE_INVALIDATED,
+        /**
+         * The helper rejected this tile's packet (for example a header that does not match its
+         * slot); only that tile is affected and the session keeps streaming (issue #365).
+         */
+        PACKET_REJECTED
     }
 
     public static final class PreparationRefusal extends Exception {
@@ -785,6 +790,11 @@ public final class WorldStreamTransport {
         private final java.util.concurrent.atomic.AtomicLong rendererObjectsBudget =
                 new java.util.concurrent.atomic.AtomicLong();
         private final java.util.concurrent.atomic.AtomicLong rendererObjectsFailures =
+                new java.util.concurrent.atomic.AtomicLong();
+        // Per-transaction refusals that leave the session streaming (issue #365).
+        private final java.util.concurrent.atomic.AtomicLong rejectedCameras =
+                new java.util.concurrent.atomic.AtomicLong();
+        private final java.util.concurrent.atomic.AtomicLong rejectedTiles =
                 new java.util.concurrent.atomic.AtomicLong();
         private final CompletableFuture<String> objectsDiagnostic = new CompletableFuture<>();
         // Protocol records from helper stdout; unrelated lines are counted and sampled, never
@@ -1863,8 +1873,14 @@ public final class WorldStreamTransport {
             }
         }
 
-        /** Replaces one pending camera; no pipe I/O or external callback occurs on the caller. */
-        public void camera(Camera camera) {
+        /**
+         * Replaces one pending camera; no pipe I/O or external callback occurs on the caller. A
+         * camera that is not a valid transition from the last accepted one (an older revision, a
+         * lower policy, or a new size without a policy change) is refused and logged, rate limited,
+         * and the session keeps streaming the last accepted camera: false. Only a stopping session
+         * throws.
+         */
+        public boolean camera(Camera camera) {
             Objects.requireNonNull(camera);
             var command =
                     new WorldStreamControl.Camera(
@@ -1878,10 +1894,74 @@ public final class WorldStreamTransport {
                 if (closing || owner != null && owner.stopping()) {
                     throw new IllegalStateException("World session is stopping");
                 }
-                frames.desire(command);
+                if (!frames.tryDesire(command)) {
+                    cameraRejected(camera);
+                    return false;
+                }
                 pendingCamera = command;
                 lock.notifyAll();
+                return true;
             }
+        }
+
+        /** A refused camera transition: logged first, then every 64th; never session-fatal. */
+        private void cameraRejected(Camera camera) {
+            long count = rejectedCameras.incrementAndGet();
+            if (!cadenceLogged(count)) {
+                return;
+            }
+            try {
+                System.getLogger(WorldStreamTransport.class.getName())
+                        .log(
+                                System.Logger.Level.WARNING,
+                                "World camera refused: revision "
+                                        + camera.revision()
+                                        + ", policy "
+                                        + camera.policy()
+                                        + ", "
+                                        + camera.width()
+                                        + "x"
+                                        + camera.height()
+                                        + " is not a valid transition ("
+                                        + count
+                                        + (count == 1 ? " camera" : " cameras")
+                                        + " this session); the last accepted camera stays");
+            } catch (RuntimeException | Error ignored) {
+                // Diagnostic delivery cannot interrupt camera publication.
+            }
+        }
+
+        /**
+         * The helper refused one tile transaction (an invalid packet); the session keeps streaming
+         * and the controller retries or skips that tile. Logged first, then every 64th, with the
+         * helper's redacted stderr tail, which names the helper's reason.
+         */
+        private void tileRejected() {
+            long count = rejectedTiles.incrementAndGet();
+            if (!cadenceLogged(count)) {
+                return;
+            }
+            try {
+                System.getLogger(WorldStreamTransport.class.getName())
+                        .log(
+                                System.Logger.Level.WARNING,
+                                "World helper rejected a tile ("
+                                        + count
+                                        + (count == 1 ? " tile" : " tiles")
+                                        + " this session); streaming continues"
+                                        + stderrSuffix());
+            } catch (RuntimeException | Error ignored) {
+                // Diagnostic delivery cannot interrupt the status reader.
+            }
+        }
+
+        /** Tiles the helper rejected this session (diagnostics and tests). */
+        public long rejectedTiles() {
+            return rejectedTiles.get();
+        }
+
+        long rejectedCameras() {
+            return rejectedCameras.get();
         }
 
         public CompletableFuture<DrainReceipt> closeAsync() {
@@ -2129,11 +2209,16 @@ public final class WorldStreamTransport {
                                 retireReliable();
                                 cancelPending = current.cancelOutstanding;
                             }
-                            var error = new IOException("World packet rejected");
+                            var error =
+                                    new PreparationRefusal(
+                                            Refusal.PACKET_REJECTED,
+                                            "World helper rejected the tile packet",
+                                            null);
                             if (!cancelPending) {
                                 publishCancellation(current);
                             }
                             current.result.completeExceptionally(error);
+                            tileRejected();
                         }
                         case CANCEL_REJECTED -> {
                             TileReservation current = reservationFor(transaction(message));

@@ -129,6 +129,16 @@ final class WorldStreamSourceBridge {
             reason = refused.reason();
             site = refused.site();
         }
+        private RefusalMetadata(WorldTerrainStreaming.Refusal.Reason reason, String site) {
+            this.reason = reason;
+            this.site = site;
+        }
+        /** A tile the World helper kept rejecting (issue #365); its site names it. */
+        static RefusalMetadata helperRejected() {
+            return new RefusalMetadata(
+                    WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE,
+                    WorldStreamSourceController.HELPER_REJECTED);
+        }
         WorldTerrainStreaming.Refusal.Reason reason() { return reason; }
         String site() { return site; }
     }

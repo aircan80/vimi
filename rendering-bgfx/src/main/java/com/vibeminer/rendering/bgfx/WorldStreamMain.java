@@ -151,7 +151,8 @@ final class WorldStreamMain {
                     return success ? 0 : 1;
                 }
             }
-        } catch (Exception | LinkageError failure) {
+        } catch (Exception | Error failure) {
+            // Errors too (an out-of-memory in the helper): one sanitised line, then exit 1.
             String message =
                     failure.getMessage() == null
                             ? failure.getClass().getSimpleName()
