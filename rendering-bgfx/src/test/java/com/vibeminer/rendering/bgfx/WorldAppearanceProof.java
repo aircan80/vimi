@@ -18,9 +18,8 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>Scenes: an authored flat textured terrain tile (every chunk triangulated) seen from above; a
  * strip of authored water on it seen from above; the tile seen from far away, in the fog toward the
- * view cut; and the material proof's view with the exterior object quads (a fully transparent
- * cutout, an opaque quad at full light and an alpha-blended quad, {@link
- * WorldStreamObjectsMaterialProof#quads}).
+ * view cut; and three exterior object quads (a fully transparent cutout, an opaque quad at full
+ * light and an alpha-blended quad, {@link #objects}), a scene frozen in this proof.
  *
  * <p>Arguments: output directory, backend ({@code VULKAN} or {@code D3D11}), reference directory,
  * and {@code update} to write the references instead of comparing. On a mismatch the actual frame
@@ -143,10 +142,8 @@ public final class WorldAppearanceProof {
             var fog = new com.vibeminer.rendering.world.TerrainCamera(400, -266, 150, Math.PI, -.3);
             session.camera(new WorldStreamTransport.Camera(3, 3, WIDTH, HEIGHT, fog));
             frames.put("fog", frame(session, committed.contentRevision(), 3));
-            var view = WorldStreamObjectsMaterialProof.VIEW;
-            var outcome =
-                    session.attachObjects(resident, WorldStreamObjectsMaterialProof.quads())
-                            .get(10, TimeUnit.SECONDS);
+            var view = OBJECTS_VIEW;
+            var outcome = session.attachObjects(resident, objects()).get(10, TimeUnit.SECONDS);
             if (outcome != WorldStreamTransport.ObjectsOutcome.ATTACHED) {
                 throw new AssertionError("Authored objects did not attach: " + outcome);
             }
@@ -162,6 +159,75 @@ public final class WorldAppearanceProof {
             session.terminatedAndDrained().get(7, TimeUnit.SECONDS);
         }
         return frames;
+    }
+
+    /** The objects scene's camera: 20 up, looking along +x and 0.5 rad down at the quads. */
+    static final com.vibeminer.rendering.world.TerrainCamera OBJECTS_VIEW =
+            new com.vibeminer.rendering.world.TerrainCamera(-20, -2, 20, 0, -.5);
+
+    /**
+     * The objects scene, frozen here so a change to another proof's scene cannot move this proof's
+     * references: three quads at eye depth 5, eye-right [-3,-1], [-0.9,0.9] and [1,3], eye-up
+     * [-2,2], with a cutout image whose alpha is 0 (left, discarded), an opaque red one (middle)
+     * and a half-transparent blue one (right). It is the material proof's scene as #459 recorded
+     * it; that proof's scene has since grown (#420) and is no longer used here.
+     */
+    static WorldStreamTileWriter.Exterior objects() {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        builder.image(
+                256,
+                256,
+                WorldStreamObjectsFileTest.chain(256, 256, solid(256, 256, 200, 40, 40, 255)));
+        builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(2, 2, 10, 250, 10, 0)));
+        builder.image(
+                256, 64, WorldStreamObjectsFileTest.chain(256, 64, solid(256, 64, 0, 0, 255, 128)));
+        builder.model();
+        double[][] spans = {{-3, -1}, {-.9, .9}, {1, 3}};
+        var vertices = java.nio.FloatBuffer.allocate(12 * 8);
+        var indices = java.nio.IntBuffer.allocate(18);
+        double cp = Math.cos(OBJECTS_VIEW.pitch()), sp = Math.sin(OBJECTS_VIEW.pitch());
+        for (int q = 0; q < 3; q++) {
+            for (int corner = 0; corner < 4; corner++) {
+                double right = spans[q][corner == 1 || corner == 2 ? 1 : 0];
+                double up = corner < 2 ? -2 : 2, depth = 5;
+                // Inverse of TerrainCamera.eye at yaw 0: right = -dy, (up, depth) rotate (dz, dx).
+                double dx = -sp * up + cp * depth, dy = -right, dz = cp * up + sp * depth;
+                // The normal is the fixed light direction, so the light intensity is exactly 1.
+                vertices.put((float) dx).put((float) dy).put((float) dz);
+                vertices.put(-0.408248290463863f).put(-0.408248290463863f);
+                vertices.put(0.816496580927726f).put(.5f).put(.5f);
+            }
+            int base = q * 4;
+            indices.put(base).put(base + 1).put(base + 2).put(base).put(base + 2).put(base + 3);
+        }
+        vertices.flip();
+        indices.flip();
+        // Left: cutout (image 1); middle: opaque (image 0); right: blended (image 2).
+        builder.mesh(
+                vertices,
+                indices,
+                new int[] {0, 6, 1, 6, 6, 0, 12, 6, 2},
+                new int[] {
+                    WorldStreamObjectsFile.CUTOUT,
+                    WorldStreamObjectsFile.OPAQUE,
+                    WorldStreamObjectsFile.BLENDED
+                });
+        builder.placement(
+                0,
+                OBJECTS_VIEW.x(),
+                OBJECTS_VIEW.y(),
+                OBJECTS_VIEW.z(),
+                1,
+                new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1});
+        return builder.build();
+    }
+
+    private static java.nio.ByteBuffer solid(int width, int height, int r, int g, int b, int a) {
+        var pixels = java.nio.ByteBuffer.allocate(width * height * 4);
+        for (int i = 0; i < width * height; i++) {
+            pixels.put((byte) r).put((byte) g).put((byte) b).put((byte) a);
+        }
+        return pixels.flip();
     }
 
     /**

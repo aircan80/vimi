@@ -12,7 +12,7 @@ the real World helper on the native GPU and compares every frame with a stored r
 | `terrain` | The authored tile 7,19, flat, with all 256 chunks triangulated as the client does (four triangles per cell around its inner vertex). Seen from above: terrain atlas sampling, shading and the sky around it. |
 | `water` | A strip of authored water (16 x 64 cells, 2.5 above the terrain, depths rising across each cell) on the same tile, seen from above: the water pass over terrain. |
 | `fog` | The tile from 400 beyond its edge, looking back and down: the fog rising across the tile toward its far edge. |
-| `objects` | The exterior object material quads over the authored terrain (`WorldStreamObjectsMaterialProof.quads`): a fully transparent cutout (discarded), an opaque quad at full light, and an alpha-blended quad. The tile is filled to the placement cap behind the camera, so culling and both object passes run at the cap. |
+| `objects` | Three exterior object quads over the authored terrain (`WorldAppearanceProof.objects`): a fully transparent cutout (discarded), an opaque quad at full light, and an alpha-blended quad. The scene is frozen in the appearance proof, so a change to another proof's scene (the material proof's grew mip ladders in #420) cannot move this reference. |
 
 ## Running
 
