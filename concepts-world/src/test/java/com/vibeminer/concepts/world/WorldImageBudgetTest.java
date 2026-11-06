@@ -43,19 +43,22 @@ class WorldImageBudgetTest {
 
     @Test
     void aTightBudgetLowersResolutionRoundByRoundInPriorityOrder() {
-        // 20 images of 256^2 in 1 Mi pixels: all reach 128^2 (320 Ki), then the first 14 can
-        // also take 256^2 (14 x 48 Ki more = 992 Ki), the rest stay at 128^2. None is dropped.
+        // Costs are whole chains (#265): 256^2 is 87,381 texels, 128^2 is 21,845. 20 images in
+        // the chain of a 1024^2 texture (1,398,101): all reach 128^2 (436,900), then the first
+        // 14 can also take 256^2 (14 x 65,536 more), the rest stay at 128^2. None is dropped.
+        assertEquals(87_381, WorldImageBudget.cost(256, 256, 0));
+        assertEquals(21_845, WorldImageBudget.cost(256, 256, 1));
         var requests = new ArrayList<WorldImageBudget.Request>();
         for (int i = 0; i < 20; i++) {
             requests.add(square(256));
         }
-        int[] levels = WorldImageBudget.allocate(requests, 1 << 20, SIDES);
+        int[] levels = WorldImageBudget.allocate(requests, 1_398_101, SIDES);
         long total = 0;
         for (int i = 0; i < 20; i++) {
             assertEquals(i < 14 ? 0 : 1, levels[i], "image " + i);
-            total += WorldImageBudget.pixels(256, 256, levels[i]);
+            total += WorldImageBudget.cost(256, 256, levels[i]);
         }
-        assertEquals(14 * 65536 + 6 * 16384, total);
+        assertEquals(14 * 87_381 + 6 * 21_845, total);
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.ObjectTextureMips;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Objects;
@@ -89,7 +90,7 @@ final class WorldStreamPackedObjects implements AutoCloseable {
     int imageOffset(int image) {
         int at = 0;
         for (int i = 0; i < image; i++) {
-            at += images[i * 2] * images[i * 2 + 1] * 4;
+            at += ObjectTextureMips.chainPixels(images[i * 2], images[i * 2 + 1]) * 4;
         }
         return at;
     }

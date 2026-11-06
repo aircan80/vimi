@@ -176,6 +176,9 @@ final class MapRolesTest {
         var all = Set.of(MapRoles.Layer.values());
         assertEquals(1, placement.markers(1411, all).size());
         assertEquals(0.425, placement.markers(1411, all).getFirst().x());
+        // Each marker keeps the recorded location it was placed from, for hover details.
+        assertEquals(locations.get(0), placement.markers(1411, all).getFirst().location());
+        assertEquals(locations.get(1), placement.markers(1412, all).getFirst().location());
         assertEquals(3L, placement.markers(1412, all).getFirst().npc().id());
         assertEquals(1, placement.markers(1412, Set.of(MapRoles.Layer.QUEST_GIVER)).size());
         assertTrue(placement.markers(1412, Set.of(MapRoles.Layer.VENDOR)).isEmpty());
@@ -209,5 +212,18 @@ final class MapRolesTest {
         assertTrue(placement.markers(1411, Set.of(MapRoles.Layer.values())).isEmpty());
         assertEquals(1, placement.unplaced());
         assertTrue(placement.issues().stream().anyMatch(i -> i.contains("outside the map frame")));
+    }
+
+    @Test
+    void friendlyToFactionIgnoresCaseAndTreatsOtherValuesAsUnrecognised() {
+        assertEquals(MapRoles.Friendly.ALLIANCE, MapRoles.friendly("A"));
+        assertEquals(MapRoles.Friendly.ALLIANCE, MapRoles.friendly("a"));
+        assertEquals(MapRoles.Friendly.HORDE, MapRoles.friendly(" h "));
+        assertEquals(MapRoles.Friendly.BOTH, MapRoles.friendly("ah"));
+        assertEquals(MapRoles.Friendly.BOTH, MapRoles.friendly("HA"));
+        for (Object other : java.util.Arrays.asList("X", "", "AHX", "Alliance", 1L, null)) {
+            assertEquals(
+                    MapRoles.Friendly.UNKNOWN, MapRoles.friendly(other), String.valueOf(other));
+        }
     }
 }

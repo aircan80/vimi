@@ -36,7 +36,10 @@ public final class MapRoles {
         FLIGHT_MASTER
     }
 
-    /** Questie {@code friendlyToFaction}: "A", "H", "AH"; anything else stays unknown. */
+    /**
+     * Questie {@code friendlyToFaction}: "A", "H", "AH" (any case); a missing or unrecognised value
+     * is UNKNOWN.
+     */
     public enum Friendly {
         ALLIANCE,
         HORDE,
@@ -268,11 +271,16 @@ public final class MapRoles {
                 LocationAdapters.state(issues), source, releaseTag, result, locations, issues);
     }
 
-    /** One role NPC position on a selected-build UiMap, normalized to the map's 0..1 frame. */
-    public record Marker(Npc npc, double x, double y, MapTypes.Basis basis) {
+    /**
+     * One role NPC position on a selected-build UiMap, normalized to the map's 0..1 frame, with the
+     * recorded Questie location it was placed from.
+     */
+    public record Marker(
+            Npc npc, double x, double y, MapTypes.Basis basis, LocationTypes.Location location) {
         public Marker {
             Objects.requireNonNull(npc);
             Objects.requireNonNull(basis);
+            Objects.requireNonNull(location);
         }
     }
 
@@ -369,7 +377,7 @@ public final class MapRoles {
                         continue;
                     }
                     byUiMap.computeIfAbsent(entry.getKey(), k -> new ArrayList<>())
-                            .add(new Marker(npc, first.x(), first.y(), first.basis()));
+                            .add(new Marker(npc, first.x(), first.y(), first.basis(), location));
                     drawn = true;
                 }
                 if (!drawn) {
@@ -380,11 +388,12 @@ public final class MapRoles {
         return new Placement(catalog, byUiMap, expected.size(), unplaced, ambiguous, issues);
     }
 
-    private static Friendly friendly(Object value) {
-        if (!(value instanceof String text)) {
+    /** Case and surrounding space are ignored; any other value is unrecognised (UNKNOWN). */
+    static Friendly friendly(Object value) {
+        if (!(value instanceof String raw) || raw.length() > 8) {
             return Friendly.UNKNOWN;
         }
-        return switch (text) {
+        return switch (raw.strip().toUpperCase(java.util.Locale.ROOT)) {
             case "A" -> Friendly.ALLIANCE;
             case "H" -> Friendly.HORDE;
             case "AH", "HA" -> Friendly.BOTH;
