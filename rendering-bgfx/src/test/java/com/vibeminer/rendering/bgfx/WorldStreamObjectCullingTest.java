@@ -3,17 +3,20 @@ package com.vibeminer.rendering.bgfx;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.rendering.world.TerrainCamera;
+import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.Test;
 
 /** Bounding spheres and per-placement visibility of exterior objects; GPU- and FX-free. */
 class WorldStreamObjectCullingTest {
     private static final double[] IDENTITY = {1, 0, 0, 0, 1, 0, 0, 0, 1};
     private static final int WIDTH = 800, HEIGHT = 500;
+    private static final double SLACK = WorldStreamObjectCulling.RADIUS_SLACK;
 
-    /** Looks along native +X from the origin, level. */
+    /** Looks along native +X from the origin, level: eye right is -Y, eye up is +Z. */
     private static final TerrainCamera LEVEL = new TerrainCamera(0, 0, 0, 0, 0);
 
     private static float[] vertex(float[] into, int at, double x, double y, double z) {
@@ -36,15 +39,35 @@ class WorldStreamObjectCullingTest {
                         new int[] {0, 3, 0, 3, 0, 1},
                         new int[] {0, 2, 0, WorldStreamObjectsFile.OPAQUE},
                         vertices,
-                        new short[] {0, 1, 0});
+                        new short[] {0, 1, 0},
+                        () -> false);
         assertArrayEquals(new double[] {1, 0, 0, 2}, spheres, 1e-9);
+    }
+
+    @Test
+    void modelSpheresStopWhenCanceled() {
+        assertThrows(
+                CancellationException.class,
+                () ->
+                        WorldStreamObjectCulling.modelSpheres(
+                                new int[] {0, 0},
+                                new int[0],
+                                new int[0],
+                                new float[0],
+                                new short[0],
+                                () -> true));
     }
 
     @Test
     void modelThatDrawsNothingHasNoSphereAndIsNeverVisible() {
         var spheres =
                 WorldStreamObjectCulling.modelSpheres(
-                        new int[] {0, 0}, new int[0], new int[0], new float[0], new short[0]);
+                        new int[] {0, 0},
+                        new int[0],
+                        new int[0],
+                        new float[0],
+                        new short[0],
+                        () -> false);
         assertEquals(-1, spheres[3]);
         var placed =
                 WorldStreamObjectCulling.placementSpheres(
@@ -67,8 +90,8 @@ class WorldStreamObjectCullingTest {
         assertEquals(100, placed[0], 1e-9);
         assertEquals(201.5, placed[1], 1e-9);
         assertEquals(300, placed[2], 1e-9);
-        // Radius is scaled, with a margin for the validated orthonormality tolerance.
-        assertTrue(placed[3] >= 3 && placed[3] < 3.001, "radius " + placed[3]);
+        // Scaled radius plus the orthonormality margin and the absolute float slack.
+        assertTrue(placed[3] >= 3 + SLACK && placed[3] < 3.001 + SLACK, "radius " + placed[3]);
     }
 
     @Test
@@ -85,20 +108,88 @@ class WorldStreamObjectCullingTest {
         assertFalse(view.visible(sphere(-0.8, 0, 0, 1.2), 0));
     }
 
+    /**
+     * The four side planes, independently of the culling code: each frustum edge is where {@link
+     * TerrainCamera#reversedProjection} maps eye space to NDC +-1. A sphere whose tangent point
+     * projects exactly onto that edge is the boundary; just inside it is visible, just outside it
+     * is culled.
+     */
     @Test
-    void sidePlanesFollowTheExplorerProjection() {
+    void sidePlanesAreTheEdgesOfTheExplorerProjection() {
+        var matrix = new float[16];
+        TerrainCamera.reversedProjection(WIDTH, HEIGHT).get(matrix);
+        double depth = 100, r = 2;
         var view = view(LEVEL);
-        // Horizontal half-extent at depth d is d / 1.6 (eye right is native -Y at yaw 0).
-        double edge = 100 / 1.6;
-        assertTrue(view.visible(sphere(100, -(edge + 0.5), 0, 1), 0), "touching right edge");
-        assertFalse(view.visible(sphere(100, -(edge + 3), 0, 1), 0), "beyond right edge");
-        assertTrue(view.visible(sphere(100, edge + 0.5, 0, 1), 0), "touching left edge");
-        assertFalse(view.visible(sphere(100, edge + 3, 0, 1), 0), "beyond left edge");
-        // Vertical half-extent is d * height / (1.6 * width).
-        double top = 100.0 * HEIGHT / (1.6 * WIDTH);
-        assertTrue(view.visible(sphere(100, 0, top + 0.5, 1), 0), "touching top");
-        assertFalse(view.visible(sphere(100, 0, top + 3, 1), 0), "beyond top");
-        assertFalse(view.visible(sphere(100, 0, -(top + 3), 1), 0), "beyond bottom");
+        // Column-major: clip.x = m[0] * right, clip.y = m[5] * up, clip.w = depth.
+        for (boolean horizontal : new boolean[] {true, false}) {
+            double k = 1 / matrix[horizontal ? 0 : 5];
+            double norm = Math.sqrt(1 + k * k);
+            for (int sign : new int[] {1, -1}) {
+                for (double margin : new double[] {-0.05, 0.05}) {
+                    // Center offset from the plane by r + margin along its outward normal.
+                    double lateral = k * depth + (r + SLACK + margin) * norm;
+                    double centerDepth = depth;
+                    // The tangent point (center minus radius along the normal) projects to NDC.
+                    double tangentLateral = lateral - (r + SLACK) / norm;
+                    double tangentDepth = centerDepth + (r + SLACK) * k / norm;
+                    double ndc =
+                            (horizontal ? matrix[0] : matrix[5]) * tangentLateral / tangentDepth;
+                    if (margin < 0) {
+                        assertTrue(ndc < 1, "tangent inside the edge: " + ndc);
+                    } else {
+                        assertTrue(ndc > 1, "tangent outside the edge: " + ndc);
+                    }
+                    double right = horizontal ? sign * lateral : 0;
+                    double up = horizontal ? 0 : sign * lateral;
+                    // Eye right is native -Y, eye up native +Z at the level camera.
+                    boolean visible = view.visible(sphere(centerDepth, -right, up, r), 0);
+                    assertEquals(
+                            margin < 0,
+                            visible,
+                            (horizontal ? "horizontal" : "vertical")
+                                    + " sign "
+                                    + sign
+                                    + " margin "
+                                    + margin);
+                }
+            }
+        }
+    }
+
+    @Test
+    void spheresNearEveryScreenCornerAreCulledOnlyOutside() {
+        var matrix = new float[16];
+        TerrainCamera.reversedProjection(WIDTH, HEIGHT).get(matrix);
+        double depth = 300, r = 1;
+        double kx = 1 / matrix[0], ky = 1 / matrix[5];
+        var view = view(LEVEL);
+        for (int sx : new int[] {1, -1}) {
+            for (int sy : new int[] {1, -1}) {
+                // Just inside both edges of the corner, then just outside one or the other.
+                double right = sx * (kx * depth - 2), up = sy * (ky * depth - 2);
+                assertTrue(view.visible(sphere(depth, -right, up, r), 0), "inside " + sx + sy);
+                double outsideRight = sx * (kx * depth + 3 * Math.sqrt(1 + kx * kx));
+                double outsideUp = sy * (ky * depth + 3 * Math.sqrt(1 + ky * ky));
+                assertFalse(view.visible(sphere(depth, -outsideRight, up, r), 0));
+                assertFalse(view.visible(sphere(depth, -right, outsideUp, r), 0));
+                assertFalse(view.visible(sphere(depth, -outsideRight, outsideUp, r), 0));
+            }
+        }
+    }
+
+    @Test
+    void cameraInsideALargeSphereAlwaysSeesIt() {
+        for (double yaw : new double[] {0, 1, Math.PI, -2.5}) {
+            for (double pitch : new double[] {-1.5, -0.4, 0, 0.7, 1.5}) {
+                var view = view(new TerrainCamera(10, 20, 30, yaw, pitch));
+                assertTrue(view.visible(sphere(12, 18, 31, 40), 0), yaw + " " + pitch);
+                // Also when the center is behind the camera but the camera is inside.
+                double cy = Math.cos(yaw), sy = Math.sin(yaw);
+                assertTrue(
+                        view.visible(sphere(10 - 20 * cy, 20 - 20 * sy, 30, 25), 0),
+                        "center behind " + yaw + " " + pitch);
+            }
+        }
     }
 
     @Test
@@ -111,19 +202,36 @@ class WorldStreamObjectCullingTest {
     }
 
     @Test
-    void smallSpheresAreCulledOnceTheyProjectUnderTheMinimumPixelRadius() {
+    void smallSpheresAreCulledBelowHalfAPixelOfProjectedRadius() {
         var view = view(LEVEL);
-        double focal = 0.8 * WIDTH;
-        // A 1 yd sphere projects to focal / d pixels of radius.
-        double limit = focal / WorldStreamObjectCulling.MIN_PIXEL_RADIUS;
-        assertTrue(view.visible(sphere(limit - 5, 0, 0, 1), 0));
-        assertFalse(view.visible(sphere(limit + 5, 0, 0, 1), 0));
+        double focal = TerrainCamera.focalPixels(WIDTH);
+        double r = 0.25;
+        // Projected radius focal * r / sqrt(depth^2 - r^2) equals the limit at this depth.
+        double limit =
+                Math.sqrt(
+                        Math.pow(focal * r / WorldStreamObjectCulling.MIN_PIXEL_RADIUS, 2) + r * r);
+        // The tested radius includes the slack, so compare against the slackened sphere.
+        double rs = r - SLACK;
+        assertTrue(view.visible(sphere(limit - 2, 0, 0, rs), 0));
+        assertFalse(view.visible(sphere(limit + 2, 0, 0, rs), 0));
         // Twice the size, twice the distance.
-        assertTrue(view.visible(sphere(2 * limit - 10, 0, 0, 2), 0));
-        // The distance is Euclidean, so turning the camera never changes the size decision.
-        var turned = view(new TerrainCamera(0, 0, 0, Math.PI / 2, 0));
-        assertFalse(turned.visible(sphere(0, limit + 5, 0, 1), 0));
-        assertTrue(turned.visible(sphere(0, limit - 5, 0, 1), 0));
+        double r2 = 2 * r - SLACK;
+        assertTrue(view.visible(sphere(2 * limit - 4, 0, 0, r2), 0));
+        assertFalse(view.visible(sphere(2 * limit + 4, 0, 0, r2), 0));
+    }
+
+    @Test
+    void sizeCullUsesEyeDepthSoCornerObjectsAreNotCulledEarly() {
+        var view = view(LEVEL);
+        double focal = TerrainCamera.focalPixels(WIDTH);
+        double r = 0.25;
+        double depth = focal * r / WorldStreamObjectCulling.MIN_PIXEL_RADIUS - 5;
+        double kx = 1 / TerrainCamera.FOCAL, ky = HEIGHT / (TerrainCamera.FOCAL * WIDTH);
+        // Near the screen corner the Euclidean distance is much larger than the eye depth; the
+        // decision follows the depth, as the projection does.
+        double right = 0.95 * kx * depth, up = 0.95 * ky * depth;
+        assertTrue(depth < Math.sqrt(depth * depth + right * right + up * up) - 50);
+        assertTrue(view.visible(sphere(depth, -right, up, r - SLACK), 0));
     }
 
     @Test
@@ -139,16 +247,19 @@ class WorldStreamObjectCullingTest {
     }
 
     @Test
-    void wideFramesWidenTheVerticalCullAndRaiseTheSizeLimit() {
-        var small = WorldStreamObjectCulling.View.of(LEVEL, 400, 400);
-        var large = WorldStreamObjectCulling.View.of(LEVEL, 800, 400);
-        // At 400 x 400 the vertical half-extent at depth 100 is 62.5; at 800 x 400 it is 31.25.
-        assertTrue(small.visible(sphere(100, 0, 50, 1), 0));
-        assertFalse(large.visible(sphere(100, 0, 50, 1), 0));
+    void frameAspectSetsTheVerticalExtentAndWidthTheSizeLimit() {
+        var square = WorldStreamObjectCulling.View.of(LEVEL, 400, 400);
+        var wide = WorldStreamObjectCulling.View.of(LEVEL, 800, 400);
+        double ky = 1 / TerrainCamera.FOCAL;
+        // Square: vertical half-extent at depth 100 equals the horizontal one; wide: half of it.
+        assertTrue(square.visible(sphere(100, 0, 0.8 * ky * 100, 1), 0));
+        assertFalse(wide.visible(sphere(100, 0, 0.8 * ky * 100, 1), 0));
         // Twice the frame width doubles the focal length in pixels.
-        double limit = 0.8 * 400 / WorldStreamObjectCulling.MIN_PIXEL_RADIUS;
-        assertFalse(small.visible(sphere(limit + 5, 0, 0, 1), 0));
-        assertTrue(large.visible(sphere(limit + 5, 0, 0, 1), 0));
+        double r = 0.25 - SLACK;
+        double limit =
+                TerrainCamera.focalPixels(400) * 0.25 / WorldStreamObjectCulling.MIN_PIXEL_RADIUS;
+        assertFalse(square.visible(sphere(limit + 5, 0, 0, r), 0));
+        assertTrue(wide.visible(sphere(limit + 5, 0, 0, r), 0));
     }
 
     @Test
@@ -163,8 +274,9 @@ class WorldStreamObjectCullingTest {
         return WorldStreamObjectCulling.View.of(camera, WIDTH, HEIGHT);
     }
 
+    /** A placement sphere as placementSpheres would build it: the radius includes the slack. */
     private static double[] sphere(double x, double y, double z, double r) {
-        return new double[] {x, y, z, r};
+        return new double[] {x, y, z, r + SLACK};
     }
 
     private static double[] placement(double x, double y, double z, double scale) {

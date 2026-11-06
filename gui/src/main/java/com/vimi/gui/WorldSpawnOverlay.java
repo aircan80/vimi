@@ -339,7 +339,7 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
 
     /**
      * Projects with the same native camera convention as terrain rendering: eye right/up/depth and
-     * a focal length of 0.8 frame widths, then fits the frame centered in the viewport.
+     * {@link TerrainCamera#focalPixels}, then fits the frame centered in the viewport.
      */
     static List<Marker> project(List<WorldSpawns.Spawn> spawns, TerrainRenderer.Camera camera,
             double frameWidth, double frameHeight, double viewWidth, double viewHeight) {
@@ -348,7 +348,7 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
         var eyeCamera = TerrainCamera.from(camera);
         double scale = Math.min(viewWidth / frameWidth, viewHeight / frameHeight);
         double left = (viewWidth - frameWidth * scale) / 2, top = (viewHeight - frameHeight * scale) / 2;
-        double focal = frameWidth * .8;
+        double focal = TerrainCamera.focalPixels(frameWidth);
         var result = new ArrayList<Marker>();
         for (var spawn : spawns) {
             if (spawn.z() == null) continue;
