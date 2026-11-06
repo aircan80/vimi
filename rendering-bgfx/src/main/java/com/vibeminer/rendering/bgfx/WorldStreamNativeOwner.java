@@ -52,6 +52,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     private final boolean staging = Boolean.getBoolean(STAGING_PROPERTY);
     // Time spent publishing frames (the copies this path removes); diagnostics and proofs.
     private long publishNanos, publishedFrames;
+    // Direct readback: the slot holding the newest publication, never reused while it is newest.
+    private int publishedIndex = -1;
+    // Per frame size: advance() wall time on calls that publish (bgfx_frame, which now copies
+    // the readback into the mapping, plus publication), and how many. Diagnostics and proofs.
+    private final java.util.LinkedHashMap<String, long[]> advanceTimings =
+            new java.util.LinkedHashMap<>();
 
     /** Targets grow in these steps, so a window drag reallocates only every few hundred px. */
     static final int TARGET_STEP = 256;
@@ -404,8 +410,13 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         }
         Readback available = null;
         for (var slot : readbacks) {
-            // Least recently used free slot: a just-published frame stays readable longest.
-            if (slot.ticket == null && (available == null || slot.order < available.order)) {
+            // Least recently used free slot. Direct readback never reuses the slot holding the
+            // newest publication: with two readbacks in flight that would mark the parent's only
+            // fresh frame in progress before it could read it, so the draw waits a bgfx frame
+            // for an in-flight readback to retire instead.
+            if (slot.ticket == null
+                    && (staging || slot.index != publishedIndex)
+                    && (available == null || slot.order < available.order)) {
                 available = slot;
             }
         }
@@ -439,6 +450,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
 
     boolean advance() throws IOException {
         requireOpen();
+        long advanceStart = System.nanoTime();
         currentFrame = bgfx_frame(BGFX_FRAME_NONE);
         renderedThisFrame = false;
         renderer.pollUploads();
@@ -489,8 +501,17 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 // The readback already wrote the rows into the slot: publish the header only.
                 frames.publishDirect(newest.index, frame, targetWidth * 4);
             }
-            publishNanos += System.nanoTime() - start;
+            long end = System.nanoTime();
+            publishNanos += end - start;
             publishedFrames++;
+            if (!staging) {
+                publishedIndex = newest.index;
+            }
+            var timing =
+                    advanceTimings.computeIfAbsent(
+                            ticket.width() + "x" + ticket.height(), size -> new long[2]);
+            timing[0] += end - advanceStart;
+            timing[1]++;
             publishedCamera = ticket.camera();
             publishedContent = ticket.content();
             published = true;
@@ -510,6 +531,20 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     /** Mean time to publish one frame, in nanoseconds; 0 before the first. Proofs. */
     long meanPublishNanos() {
         return publishedFrames == 0 ? 0 : publishNanos / publishedFrames;
+    }
+
+    /** "WxH:meanAdvanceMicros/frames" per frame size, for frames advance() published. */
+    String advanceSummary() {
+        var out = new StringBuilder();
+        advanceTimings.forEach(
+                (size, timing) ->
+                        out.append(out.isEmpty() ? "" : " ")
+                                .append(size)
+                                .append(':')
+                                .append(timing[0] / timing[1] / 1000)
+                                .append("us/")
+                                .append(timing[1]));
+        return out.toString();
     }
 
     boolean stagingReadback() {

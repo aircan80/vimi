@@ -53,6 +53,10 @@ public final class WorldStreamCadenceProof {
                                                                     "java")
                                                             .toString(),
                                                     "--enable-native-access=ALL-UNNAMED",
+                                                    "-D"
+                                                            + WorldStreamSession
+                                                                    .FRAME_TIMINGS_PROPERTY
+                                                            + "=true",
                                                     // Compare the old staging readback path.
                                                     "-D"
                                                             + WorldStreamNativeOwner

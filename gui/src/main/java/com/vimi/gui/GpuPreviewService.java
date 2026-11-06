@@ -1341,7 +1341,7 @@ final class GpuPreviewService {
      */
     static final List<String> HELPER_JVM_OPTIONS = List.of("-XX:+UseZGC", "-Xmx1g");
 
-    private static ArrayList<String> nativeCommand() {
+    static ArrayList<String> nativeCommand() { // package-private for tests
         var command = new ArrayList<String>();
         boolean windows =
                 System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT).contains("win");
