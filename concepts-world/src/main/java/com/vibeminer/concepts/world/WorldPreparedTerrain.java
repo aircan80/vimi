@@ -662,6 +662,9 @@ final class WorldPreparedTerrain {
                     || receipt.textures().fileId() != tile.tex0Id()) {
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MATERIAL_BINDING);
             }
+            // With a prepared root both sides come from the geometry cache's single walk, so
+            // this holds by construction; the cache asserts (enabled in tests) that the grid and
+            // the mesh of that walk fingerprint alike, so a parser divergence still fails there.
             if (!receipt.geometrySha256().equals(owned.geometry.fingerprint())) {
                 throw new IllegalStateException(
                         "Material geometry disagrees with the same root source");
