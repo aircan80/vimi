@@ -17,6 +17,21 @@ final class WorldStreamGpuOwner {
     static final boolean EXTERIORS = exteriorsEnabled(System.getProperty("vimi.world.exteriors"));
 
     /**
+     * Resident neighborhood (issue #173). NEAR (3 x 3) is the default, safe on integrated GPUs;
+     * {@code -Dvimi.world.viewDistance=far} opts into the 5 x 5 neighborhood, which needs about
+     * 2.6 times the terrain GPU memory. A settings control is a follow-up.
+     */
+    static final WorldStreamTransport.ViewDistance VIEW_DISTANCE =
+            viewDistance(System.getProperty("vimi.world.viewDistance"));
+
+    /** Only {@code far} (any letter case) selects FAR; anything else, or nothing, is NEAR. */
+    static WorldStreamTransport.ViewDistance viewDistance(String property) {
+        return "far".equalsIgnoreCase(property == null ? null : property.strip())
+                ? WorldStreamTransport.ViewDistance.FAR
+                : WorldStreamTransport.ViewDistance.NEAR;
+    }
+
+    /**
      * Static creature models at declared spawns ride in the same late tile objects, so they need
      * exteriors on. Opt-in until measured on real data: only {@code -Dvimi.world.creatures=true}
      * turns them on.
@@ -52,8 +67,22 @@ final class WorldStreamGpuOwner {
 
     /** The streaming session this owner opens; its profile follows {@link #EXTERIORS}. */
     static WorldStreamTransport.Spec spec(String scopeSha256) {
+        return spec(scopeSha256, IMAGE_DETAIL);
+    }
+
+    /** The session follows the runtime object texture choice, which selects its objects budget. */
+    static WorldStreamTransport.Spec spec(
+            String scopeSha256, com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail) {
         return new WorldStreamTransport.Spec(
-                scopeSha256, 1, configuredBackend(), EXTERIORS);
+                scopeSha256, 1, configuredBackend(), EXTERIORS, VIEW_DISTANCE, objectTextures(detail));
+    }
+
+    /** HIGH image detail selects the HIGH objects budget; anything else is STANDARD. */
+    static WorldStreamTransport.ObjectTextures objectTextures(
+            com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail) {
+        return detail == com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH
+                ? WorldStreamTransport.ObjectTextures.HIGH
+                : WorldStreamTransport.ObjectTextures.STANDARD;
     }
 
     /**
@@ -73,7 +102,8 @@ final class WorldStreamGpuOwner {
             case "metal" -> WorldStreamTransport.Backend.METAL;
             case "d3d11", "direct3d11", "dx11" -> WorldStreamTransport.Backend.D3D11;
             default -> throw new IllegalArgumentException(
-                    "vimi.gpu.backend must be default, vulkan, metal or d3d11");
+                    "vimi.gpu.backend '" + requested.strip()
+                            + "' is not a GPU backend: use default, vulkan, metal or d3d11");
         };
     }
 
@@ -84,14 +114,20 @@ final class WorldStreamGpuOwner {
     private CompletableFuture<Void> closing;
 
     WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256) {
-        this(service, scopeSha256, 0);
+        this(service, scopeSha256, IMAGE_DETAIL, 0);
+    }
+
+    WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256,
+            com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail) {
+        this(service, scopeSha256, detail, 0);
     }
 
     /** #381: {@code presentParent} non-zero asks for native presentation into that window. */
-    WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256, long presentParent) {
+    WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256,
+            com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail, long presentParent) {
         this.service = Objects.requireNonNull(service);
         lifetime = service.openStreaming(owner,
-                spec(scopeSha256),
+                spec(scopeSha256, detail),
                 presentParent,
                 opened::complete,
                 status -> {

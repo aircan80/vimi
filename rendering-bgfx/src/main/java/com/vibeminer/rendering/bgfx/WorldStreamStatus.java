@@ -73,7 +73,12 @@ final class WorldStreamStatus {
         /** Read, validation or upload failed; the tile's terrain is untouched. */
         FAILED,
         /** The slot generation was no longer active (stale or retired); nothing was attached. */
-        DROPPED
+        DROPPED,
+        /**
+         * The session's shared objects GPU budget had no room; nothing was attached and the parent
+         * may offer the same generation again later. Terrain is untouched.
+         */
+        BUDGET
     }
 
     record ObjectsDone(
