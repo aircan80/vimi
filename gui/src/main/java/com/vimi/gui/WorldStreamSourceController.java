@@ -1066,7 +1066,9 @@ final class WorldStreamSourceController {
         var text = new StringBuilder();
         if (creatures.drawn() > 0)
             text.append("; ").append(creatures.drawn()).append(creatures.drawn() == 1 ? " static creature model on " : " static creature models on ").append(tiles)
-                    .append(tiles == 1 ? " tile" : " tiles").append(" (rest pose, facing north)");
+                    .append(tiles == 1 ? " tile" : " tiles").append(creatures.restPosed() == 0 ? " (Stand pose, facing north)"
+                            : creatures.restPosed() == creatures.drawn() ? " (rest pose, facing north)"
+                            : " (" + creatures.restPosed() + " in rest pose, facing north)");
         if (creatures.omitted() > 0) {
             text.append("; spawns not drawn: ");
             String separator = "";
