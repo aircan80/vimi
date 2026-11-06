@@ -89,7 +89,7 @@ final class WorldDevOverlay extends VBox {
         copyReport.setId("world-dev-overlay-copy");
         mirror(retryGpu, gpuRetry);
         mirror(retryTextures, textureRetry);
-        action(copyReport, () -> clipboard.accept(WorldDevReport.report(sources.read().map(WorldDiagnostics::clean))));
+        action(copyReport, () -> clipboard.accept(WorldDevReport.report(sources.read().map(WorldDevOverlay::redact))));
         copyReport.setAccessibleText("Copy every developer overlay page as text");
         var actions = new HBox(6, retryGpu, retryTextures, copyReport);
         actions.setId("world-dev-overlay-actions");
@@ -141,7 +141,7 @@ final class WorldDevOverlay extends VBox {
 
     /** The key name the header names as the next-page key (follows rebinding). */
     void key(String name) {
-        key = name == null || name.isBlank() ? "unbound" : name;
+        key = name == null || name.isBlank() ? "unbound (Keys…)" : name;
         refresh();
     }
 
@@ -170,6 +170,12 @@ final class WorldDevOverlay extends VBox {
         if (!top.equals(header.getText())) header.setText(top);
         if (!text.equals(body.getText())) body.setText(text);
         setAccessibleText("Developer overlay, " + page.label + " page");
+    }
+
+    /** Shared redaction; a text cut to the redactor's input bound is marked as cut. */
+    static String redact(String text) {
+        String clean = WorldDiagnostics.clean(text);
+        return text.length() > WorldDiagnostics.MAX_CLEAN_INPUT_CHARS ? clean + " …(cut)" : clean;
     }
 
     private static void systemClipboard(String text) {

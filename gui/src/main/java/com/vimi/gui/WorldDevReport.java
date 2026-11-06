@@ -121,10 +121,12 @@ final class WorldDevReport {
         return new Line("position", part);
     }
 
+    private static final java.util.regex.Pattern TERRAIN = java.util.regex.Pattern.compile("\\d+ tiles?: .*");
+
     /** A stream-detail part, labelled by its subject. */
     static Line detailLine(String part) {
         String lower = part.toLowerCase(Locale.ROOT);
-        if (lower.matches("\\d+ tiles?: .*")) return new Line("terrain", part);
+        if (TERRAIN.matcher(lower).matches()) return new Line("terrain", part);
         if (lower.contains("water")) return new Line("water", part);
         if (lower.contains("building") || lower.contains("doodad")) return new Line("objects", part);
         if (lower.contains("creature") || lower.contains("spawn")) return new Line("creatures", part);

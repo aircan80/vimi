@@ -183,9 +183,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         @Override public void captureUnavailable() {
             lookStatus.setText("Mouse look: cursor capture unavailable; looking stays relative");
         }
-        @Override public void triggered(WorldControls.Action action) {
-            if (action == WorldControls.Action.DEV_OVERLAY) devOverlay.cycle();
-        }
+        @Override public void command(WorldControls.Action action) { WorldView.this.command(action); }
         @Override public void captureFallback(String reason) {
             if (captureFallbackLogged) return;
             captureFallbackLogged = true;
@@ -1245,6 +1243,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void clearKeys() {
         input.clear();
+        devOverlay.refresh();
+    }
+
+    /** HUD command keys ({@link WorldControls.Action#command}), once per press. */
+    private void command(WorldControls.Action action) {
+        switch (action) {
+            case DEV_OVERLAY -> devOverlay.cycle();
+            default -> {}
+        }
     }
 
     private TerrainGround currentGround() {

@@ -139,7 +139,10 @@ public final class WorldDevOverlayUiTest {
         press(KeyCode.F3);
         require(overlay().page() == WorldDevReport.Page.INPUT && overlay().text().contains("held      W"),
                 "The Input page lists held keys:\n" + overlay().text());
-        key(viewport, KeyCode.W, false);
+        view.lookup("#world-maps").requestFocus();
+        require(!viewport.isFocused() && overlay().text().contains("held      none"),
+                "Focus loss clears the held keys on the Input page:\n" + overlay().text());
+        viewport.requestFocus();
         input().clear();
         set("camera", before);
         overlay().show(WorldDevReport.Page.STREAM);
@@ -247,6 +250,9 @@ public final class WorldDevOverlayUiTest {
                         && redacted.contains("retry the viewer."),
                 "Copy report carries no absolute local path:\n" + redacted);
         gpuStatus.setText(previous);
+        var cut = WorldDevOverlay.redact("x".repeat(WorldDiagnostics.MAX_CLEAN_INPUT_CHARS + 50));
+        require(cut.endsWith(" …(cut)") && WorldDevOverlay.redact("short").equals("short"),
+                "A text cut by the redactor's bound is marked: " + cut.length());
     }
 
     private static void keyFollowsRebinding() {

@@ -44,18 +44,18 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
 
         final String label;
         /**
-         * Fires once per physical press (key repeat ignored) through {@link
-         * WorldExplorerInput.Host#triggered}, instead of being held like a movement key.
+         * A HUD command: it fires once per physical press through {@link
+         * WorldExplorerInput.Host#command} and never drives motion.
          */
-        final boolean trigger;
+        final boolean command;
 
         Action(String label) {
             this(label, false);
         }
 
-        Action(String label, boolean trigger) {
+        Action(String label, boolean command) {
             this.label = label;
-            this.trigger = trigger;
+            this.command = command;
         }
     }
 

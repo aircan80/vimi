@@ -18,7 +18,7 @@ public final class WorldExplorerInputTest {
     public static void main(String[] args) {
         keysMapToClampedAxes();
         walkToggleIgnoresKeyRepeat();
-        devOverlayKeyTriggersOncePerPress();
+        devOverlayKeyCommandsOncePerPress();
         clearDropsHeldKeys();
         lookButtons();
         capturedLookIsRelativeAwayFromTheEdge();
@@ -88,8 +88,8 @@ public final class WorldExplorerInputTest {
         @Override public void captureFallback(String reason) { fallbacks.add(reason); }
         int unavailable;
         @Override public void captureUnavailable() { unavailable++; }
-        final List<WorldControls.Action> triggered = new ArrayList<>();
-        @Override public void triggered(WorldControls.Action action) { triggered.add(action); }
+        final List<WorldControls.Action> commands = new ArrayList<>();
+        @Override public void command(WorldControls.Action action) { commands.add(action); }
 
         long count(String call) {
             return calls.stream().filter(call::equals).count();
@@ -142,7 +142,7 @@ public final class WorldExplorerInputTest {
         require(host.toggles == 2, "A second press toggles again");
     }
 
-    private static void devOverlayKeyTriggersOncePerPress() {
+    private static void devOverlayKeyCommandsOncePerPress() {
         for (var layout : WorldControls.Layout.values()) {
             var keys = layout.keys();
             require(keys.get(KeyCode.F3) == WorldControls.Action.DEV_OVERLAY,
@@ -154,20 +154,20 @@ public final class WorldExplorerInputTest {
         var input = exact(host);
         input.keyPressed(KeyCode.F3);
         input.keyPressed(KeyCode.F3);
-        require(host.triggered.equals(List.of(WorldControls.Action.DEV_OVERLAY)) && host.toggles == 0,
-                "Auto-repeat F3 triggers the overlay once and never walks: " + host.triggered);
+        require(host.commands.equals(List.of(WorldControls.Action.DEV_OVERLAY)) && host.toggles == 0,
+                "Auto-repeat F3 commands the overlay once and never walks: " + host.commands);
         require(input.axes().equals(ExplorerMotion.Input.NONE), "F3 moves nothing");
         input.keyReleased(KeyCode.F3);
         input.keyPressed(KeyCode.F3);
-        require(host.triggered.size() == 2, "A second press triggers again");
+        require(host.commands.size() == 2, "A second press commands again");
         input.keyReleased(KeyCode.F3);
         input.keyPressed(KeyCode.F);
-        require(host.triggered.size() == 2 && host.toggles == 1, "Walk keeps its own toggle hook");
+        require(host.commands.size() == 2 && host.toggles == 1, "Walk keeps its own toggle hook");
         input.controls(WorldControls.DEFAULTS.unbind(WorldControls.Action.DEV_OVERLAY)
                 .bind(KeyCode.F7, WorldControls.Action.DEV_OVERLAY));
         input.keyPressed(KeyCode.F3);
         input.keyPressed(KeyCode.F7);
-        require(host.triggered.size() == 3, "The overlay follows its rebinding: " + host.triggered);
+        require(host.commands.size() == 3, "The overlay follows its rebinding: " + host.commands);
         var older = WorldControls.decode("v1;keys=W:FORWARD;actions=FORWARD,BACK,WALK");
         require(older.keys().get(KeyCode.F3) == WorldControls.Action.DEV_OVERLAY,
                 "Stored controls from before the overlay gain its default key: " + older.keys());
