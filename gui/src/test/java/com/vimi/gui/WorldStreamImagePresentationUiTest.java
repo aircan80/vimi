@@ -30,7 +30,7 @@ public final class WorldStreamImagePresentationUiTest {
 
     private static String run() {
         var view = new ImageView();
-        var presentation = new WorldStreamImagePresentation(view, false);
+        var presentation = new WorldStreamImagePresentation(view, WorldStreamImagePresentation::pixelBufferSurface);
         check(presentation.present(2, 1, pixels(2, 0xffff0000), () -> true, () -> true),
                 "First frame publishes");
         var first = view.getImage();
@@ -64,7 +64,7 @@ public final class WorldStreamImagePresentationUiTest {
         int w = 2560, h = 1440;
         var frame = new int[w * h];
         java.util.Arrays.fill(frame, 0xff336699);
-        var presentation = new WorldStreamImagePresentation(new ImageView(), setPixels);
+        var presentation = new WorldStreamImagePresentation(new ImageView(), setPixels ? WorldStreamImagePresentation::setPixelsSurface : WorldStreamImagePresentation::pixelBufferSurface);
         long total = 0;
         for (int i = 0; i < 80; i++) {
             long start = System.nanoTime();
