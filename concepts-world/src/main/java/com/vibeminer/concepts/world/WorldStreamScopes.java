@@ -1418,10 +1418,6 @@ final class WorldStreamScopes {
         }
     }
 
-    private FileTypes.BuildFile stat(long id, Cancellation token) {
-        return stat(id, token, WorldSourceRefusals.Site.SOURCE_INPUT);
-    }
-
     private FileTypes.BuildFile stat(
             long id, Cancellation token, WorldSourceRefusals.Site unbound) {
         token.check();
@@ -1480,13 +1476,16 @@ final class WorldStreamScopes {
                         : WorldSourceRefusals.Site.SOURCE_INPUT;
         if (classifyUnavailable) {
             token.check();
-            var looked = WorldSourceFutures.await(files.stat(FileTypes.FileRef.id(id), token));
+            var looked =
+                    WorldSourceFutures.await(files.statContent(FileTypes.FileRef.id(id), token));
             token.check();
             if (looked.state() != FileTypes.FileLookupState.FOUND) {
                 throw WorldSourceRefusals.at(unavailable); // missing from this build/locale
             }
         }
-        var before = stat(id, token);
+        // Index facts only: a source read binds file id, size and content key, never names or
+        // a sniffed format, so it skips the listfile lookups and the first-sight format sniff.
+        var before = statContent(id, token, WorldSourceRefusals.Site.SOURCE_INPUT);
         if (before.size() != null && before.size() > limit) {
             throw WorldSourceRefusals.at(unavailable);
         }
@@ -1545,7 +1544,7 @@ final class WorldStreamScopes {
             if (extra != -1) {
                 throw new IllegalStateException("Source EOF result differs");
             }
-            var after = stat(id, token, WorldSourceRefusals.Site.SOURCE_BINDING);
+            var after = statContent(id, token, WorldSourceRefusals.Site.SOURCE_BINDING);
             // Download/local metadata enrichment is allowed; only consumed source identity binds.
             if (before.fileDataId() != after.fileDataId()
                     || !before.contentKey().equals(after.contentKey())
