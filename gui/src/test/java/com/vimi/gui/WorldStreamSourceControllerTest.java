@@ -1223,17 +1223,20 @@ public final class WorldStreamSourceControllerTest {
             // No camera yet: the first staged tile seeds it, and the nearest never stages.
             fixture.controller.neighborhood(fixture.tiles);
             int key = fixture.tiles.get(0).x() * 64 + fixture.tiles.get(0).y();
-            for (int rejection = 1; rejection <= WorldStreamSourceController.MAX_HELPER_REJECTIONS;
-                    rejection++) {
-                int expected = rejection;
-                fixture.until(() -> fixture.controller.helperRejections(key) == expected);
-                fixture.clock.addAndGet(500_000_000L << (rejection - 1));
-                fixture.controller.pulse();
-            }
-            // The neighbour is prepared, seeds the camera and is committed although the nearest
-            // tile is unavailable.
+            // With the controller clock frozen, the nearest tile waits out its first back-off
+            // while its neighbour is prepared and staged; that staged tile seeds the camera.
+            fixture.until(() -> fixture.controller.helperRejections(key) >= 1);
             fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            // Only a camera lets the staged neighbour commit and free its upload credit, so the
+            // nearest tile's retries come after it: advance the clock through its back-offs
+            // until it is given up.
             fixture.camera(1);
+            fixture.until(
+                    () -> {
+                        fixture.clock.addAndGet(250_000_000L);
+                        return fixture.controller.helperRejections(key)
+                                >= WorldStreamSourceController.MAX_HELPER_REJECTIONS;
+                    });
             fixture.untilPresented(
                     () -> fixture.commitLines().stream()
                                     .anyMatch(line -> !line.endsWith(" 0"))
