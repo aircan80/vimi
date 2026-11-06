@@ -1069,6 +1069,15 @@ final class WorldStreamSourceController {
                     .append(tiles == 1 ? " tile" : " tiles").append(creatures.restPosed() == 0 ? " (Stand pose, facing north)"
                             : creatures.restPosed() == creatures.drawn() ? " (rest pose, facing north)"
                             : " (" + creatures.restPosed() + " in rest pose, facing north)");
+        var npcs = creatures.npcs();
+        if (npcs.drawn() > 0) {
+            // Humanoid NPCs (#385): their item models and item records left out are disclosed.
+            text.append(", of which ").append(plural(npcs.drawn(), "humanoid NPC"));
+            var undrawn = new java.util.ArrayList<String>();
+            if (npcs.attachments() > 0) undrawn.add(plural(npcs.attachments(), "item model"));
+            if (npcs.omittedItems() > 0) undrawn.add(plural(npcs.omittedItems(), "item record"));
+            if (!undrawn.isEmpty()) text.append(" (").append(String.join(" and ", undrawn)).append(" not drawn)");
+        }
         if (creatures.omitted() > 0) {
             text.append("; spawns not drawn: ");
             String separator = "";
