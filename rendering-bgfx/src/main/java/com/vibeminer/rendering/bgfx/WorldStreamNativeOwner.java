@@ -127,10 +127,23 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     private int targetWidth, targetHeight, reallocations, failedWidth, failedHeight;
     private long contextGpuHeap;
     private boolean initialized, acquired, closed, renderedThisFrame;
+    // #381 spike: non-null only with --present-parent (native presentation into a child window).
+    private final WorldWindowPresentation window;
 
     WorldStreamNativeOwner(
             WorldStreamEnvelope.Session session, WorldFrameFileV2 frames, int backend)
             throws IOException {
+        this(session, frames, backend, null);
+    }
+
+    /** #381 spike: with {@code window}, frames are presented into it instead of read back. */
+    WorldStreamNativeOwner(
+            WorldStreamEnvelope.Session session,
+            WorldFrameFileV2 frames,
+            int backend,
+            WorldWindowPresentation window)
+            throws IOException {
+        this.window = window;
         this.session = Objects.requireNonNull(session);
         this.frames = Objects.requireNonNull(frames);
         if (!frames.freshFor(session)) {
@@ -153,9 +166,24 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 init.type(backend).fallback(false);
                 // Offscreen context only; one-frame command latency is explicitly qualified by
                 // proof.
-                init.resolution().width(0).height(0).reset(RESET_FLAGS).maxFrameLatency((byte) 1);
+                if (window != null) {
+                    window.configure(init); // #381
+                } else {
+                    init.resolution()
+                            .width(0)
+                            .height(0)
+                            .reset(RESET_FLAGS)
+                            .maxFrameLatency((byte) 1);
+                }
                 BGFXPlatform.bgfx_render_frame(0);
-                if (!bgfx_init(init)) {
+                boolean started = bgfx_init(init);
+                if (started && window != null && !WorldWindowPresentation.depthSupported()) {
+                    // #381: the terrain renderer needs a D32F target; say so plainly.
+                    bgfx_shutdown();
+                    throw new IOException(
+                            "Native World presentation needs a D32F depth target on this GPU");
+                }
+                if (!started) {
                     throw new IOException("Headless World backend unavailable");
                 }
                 initialized = true;
@@ -168,16 +196,18 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             }
             GpuViewerMain.requireHardware(
                     Short.toUnsignedInt(caps.vendorId()), Short.toUnsignedInt(caps.deviceId()));
-            if ((caps.supported() & (BGFX_CAPS_TEXTURE_BLIT | BGFX_CAPS_TEXTURE_READ_BACK))
-                            != (BGFX_CAPS_TEXTURE_BLIT | BGFX_CAPS_TEXTURE_READ_BACK)
-                    || !bgfx_is_texture_valid(
-                            0, false, 1, BGFX_TEXTURE_FORMAT_BGRA8, BGFX_TEXTURE_RT)
-                    || !bgfx_is_texture_valid(
-                            0,
-                            false,
-                            1,
-                            BGFX_TEXTURE_FORMAT_BGRA8,
-                            BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK)) {
+            // Readback capabilities matter only without a window (#381 spike).
+            if (window == null
+                    && ((caps.supported() & (BGFX_CAPS_TEXTURE_BLIT | BGFX_CAPS_TEXTURE_READ_BACK))
+                                    != (BGFX_CAPS_TEXTURE_BLIT | BGFX_CAPS_TEXTURE_READ_BACK)
+                            || !bgfx_is_texture_valid(
+                                    0, false, 1, BGFX_TEXTURE_FORMAT_BGRA8, BGFX_TEXTURE_RT)
+                            || !bgfx_is_texture_valid(
+                                    0,
+                                    false,
+                                    1,
+                                    BGFX_TEXTURE_FORMAT_BGRA8,
+                                    BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK))) {
                 throw new IOException("World readback capabilities unavailable");
             }
             bgfx_frame(BGFX_FRAME_NONE);
@@ -186,6 +216,10 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             contextTextures = Short.toUnsignedInt(bgfx_get_stats().numTextures());
             contextGpuHeap = bgfx_get_stats().gpuMemoryUsed();
             renderer = new BgfxWorldStreamRenderer(session);
+            if (window != null) {
+                // #381: view 0 draws to the child window's backbuffer, single-sampled; no readback.
+                return;
+            }
             samples =
                     targetSamples(
                             multisampled(
@@ -436,6 +470,9 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         policy = command.policy();
         width = command.width();
         height = command.height();
+        if (window != null) {
+            return submitWindow(command);
+        }
         if (submittedCamera == cameraRevision
                 && submittedContent == renderer.contentRevision()
                 && submittedObjects == renderer.objectsRevision()
@@ -483,8 +520,48 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return true;
     }
 
+    /** #381 spike: every presented frame draws the latest camera at the window's size. */
+    private boolean submitWindow(WorldStreamControl.Camera command) {
+        if (renderedThisFrame) {
+            return false;
+        }
+        int[] size = window.frameSize();
+        if (size == null) {
+            return false; // No area (minimised, hidden): nothing to draw into.
+        }
+        renderer.drawWindow(command.camera(), cameraRevision, policy, size[0], size[1]);
+        window.drew();
+        renderedThisFrame = true;
+        submittedCamera = cameraRevision;
+        submittedContent = renderer.contentRevision();
+        submittedObjects = renderer.objectsRevision();
+        submittedPolicy = policy;
+        return true;
+    }
+
+    /** True in native presentation: frames go to the child window, never to the mapping. */
+    boolean presentsToWindow() {
+        return window != null;
+    }
+
     boolean advance() throws IOException {
         requireOpen();
+        if (window != null) {
+            // #381 spike: present (waits for the display), no readback or mapping write.
+            if (!renderedThisFrame) {
+                window.clearUndrawn();
+            }
+            // A covered or minimised window presents without waiting: pace presents instead.
+            long pace = window.paceNanos(System.nanoTime());
+            if (pace > 0) {
+                java.util.concurrent.locks.LockSupport.parkNanos(pace);
+            }
+            currentFrame = bgfx_frame(BGFX_FRAME_NONE);
+            renderedThisFrame = false;
+            renderer.pollUploads();
+            window.presented(System.nanoTime());
+            return false;
+        }
         currentFrame = bgfx_frame(BGFX_FRAME_NONE);
         renderedThisFrame = false;
         renderer.pollUploads();
@@ -583,7 +660,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         var stats = bgfx_get_stats();
         int pending = 0;
         for (var slot : readbacks) {
-            if (slot.ticket != null) {
+            if (slot != null && slot.ticket != null) {
                 pending++;
             }
         }
@@ -660,6 +737,10 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 if (initialized) {
                     bgfx_shutdown();
                     initialized = false;
+                }
+                if (window != null) {
+                    window.afterShutdown();
+                    window.close();
                 }
             } finally {
                 if (renderer != null) {
