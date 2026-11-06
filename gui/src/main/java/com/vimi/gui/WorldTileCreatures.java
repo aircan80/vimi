@@ -35,9 +35,10 @@ import java.util.function.Supplier;
  * the terrain child draws them in its own depth-shared object pass (issue #175, third slice).
  *
  * <p>Only a spawn with a recorded height whose NPC has a {@link CreatureModelPolicy} QUALIFIED
- * display is drawn. The display's static rest-pose preview must need no character appearance and
- * no surface-visibility choice (without CreatureGeosetData, only the default geosets {@code id % 100
- * == 0} are drawn); only its opaque and alpha-keyed (cutout) diffuse surfaces are drawn, with
+ * display is drawn. The display's static preview must need no character appearance, and each
+ * geoset group draws one variant decided from recorded facts ({@link #visibleGeosets}: the
+ * display's own geoset rows, otherwise the group's x00 section); only its opaque and alpha-keyed
+ * (cutout) diffuse surfaces are drawn, with
  * textures reduced to at most {@value #IMAGE_SIDE} pixels a side. Facing is not recorded by the source, so every
  * model faces native north. Each spawn belongs to exactly one tile (the filename-index rule), and
  * selection is nearest to the tile centre first, so it never depends on the camera. Everything
@@ -484,10 +485,8 @@ final class WorldTileCreatures implements AutoCloseable {
     /**
      * The tile-independent BASIC conversion of one display's static preview. Refuses character
      * appearance, models without an opaque or alpha-keyed diffuse surface, and every geoset choice
-     * it cannot make from recorded facts: a recorded or unreadable CreatureGeosetDataID, a display
-     * with (or not known to lack) its own CreatureDisplayInfoGeosetData rows, and a geoset group
-     * that has sections but no x00 section. Otherwise only the x00 sections draw (ID 0 or a
-     * multiple of 100: the group's default), never a guessed variant.
+     * it cannot make from recorded facts ({@link #visibleGeosets}). Each geoset group draws the
+     * display's own choice where it records one, otherwise its x00 section; never a guessed variant.
      */
     static Converted convert(DisplayModelTypes.Preview preview, Cancellation token) {
         if (preview == null || preview.appearance() == null || preview.reference() == null)
@@ -596,8 +595,12 @@ final class WorldTileCreatures implements AutoCloseable {
      * the display's own choice when it records one (CreatureDisplayInfoGeosetData, as group =
      * GeosetIndex + 1 and section = group * 100 + value), otherwise the group's x00 section. A
      * choice is never guessed: an unreadable CreatureGeosetDataID, unknown or conflicting display
-     * rows, a non-zero CreatureGeosetDataID without display rows (the ID only says that rows exist),
-     * a chosen variant the model does not have, and a group without its x00 default all refuse.
+     * rows, a chosen variant the model does not have, and a group without its x00 default all
+     * refuse. A non-zero CreatureGeosetDataID without rows for this display refuses too. The ID is
+     * recorded per model (CreatureModelData) while the rows are per display, so it does not prove
+     * that this display has rows: a sibling display of the same model may rely on the defaults.
+     * Which rule the client applies there (and whether it defaults creature groups to x00 or x01)
+     * is not settled; until it is, that case is refused rather than guessed.
      */
     static Geosets visibleGeosets(DisplayModelTypes.Reference reference, com.vibeminer.rendering.models.PreviewMesh mesh) {
         if (reference.creatureGeosetDataId() == null)
@@ -605,7 +608,7 @@ final class WorldTileCreatures implements AutoCloseable {
         var chosen = reference.displayGeosets();
         if (chosen == null) return new Geosets(Set.of(), "display geoset selections are unknown");
         if (reference.creatureGeosetDataId() != 0 && chosen.isEmpty())
-            return new Geosets(Set.of(), "creature geoset data is recorded but the display has no geoset rows");
+            return new Geosets(Set.of(), "the model records geoset data but this display has no geoset rows");
         var present = new java.util.TreeMap<Integer, java.util.TreeSet<Integer>>();
         for (var part : mesh.parts()) present.computeIfAbsent(part.id() / 100, g -> new java.util.TreeSet<>()).add(part.id());
         var ids = new HashSet<Integer>();

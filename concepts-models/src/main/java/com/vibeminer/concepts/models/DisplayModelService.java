@@ -936,8 +936,8 @@ public final class DisplayModelService implements BuildDisplayModels {
                 || reference.displayGeosets() == null
                 || !reference.displayGeosets().isEmpty()
                 || mesh.parts().stream().anyMatch(p -> p.id() != 0)) {
-            // The World explorer differs: it draws only the default x00 geosets when no geoset
-            // data is recorded and refuses the model otherwise (WorldTileCreatures).
+            // The World explorer differs: it draws one variant per geoset group (the display's own
+            // geoset rows, otherwise x00) and refuses what it cannot decide (WorldTileCreatures).
             TableProjection.note(
                     issues,
                     "Surface visibility is unresolved; all recorded model surfaces are shown.");
