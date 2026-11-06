@@ -100,8 +100,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
     });
     private final Button panelBack = new Button();
     // HUD step 2: zone text and banner top-centre, coordinates pill bottom-right.
-    private final WorldZoneText zoneText = new WorldZoneText(() -> this.leaveInstance.fire(), viewport::requestFocus);
-    private final WorldCoordinatesPill coordinates = new WorldCoordinatesPill(viewport::requestFocus);
+    // Both refocus through the HUD's one refocus, which acts only while exploring.
+    private final WorldZoneText zoneText = new WorldZoneText(() -> this.leaveInstance.fire(), hud::refocus);
+    private final WorldCoordinatesPill coordinates = new WorldCoordinatesPill(hud::refocus);
     // The explorer's one slim bar, and the other control rows behind its "More" toggle.
     private final javafx.scene.control.ToggleButton moreControls = new javafx.scene.control.ToggleButton("More");
     private final VBox moreRows = new VBox(8);
