@@ -516,26 +516,49 @@ public final class DisplayModelService implements BuildDisplayModels {
     }
 
     /**
-     * The display's model and texture references. A table shape outside the reviewed profile or a
-     * failed table read is a stated refusal ({@link IllegalArgumentException}, which every caller
-     * turns into an unavailable result with the reason), never another exception type.
+     * The display's model and texture references. A table shape outside the reviewed profile is a
+     * stated refusal ({@link IllegalArgumentException}, which every caller turns into an
+     * unavailable result with the reason). A busy table queue or a closed table handle is
+     * transient: it is raised as {@link DisplayModelTypes.ServiceUnavailable} so callers neither
+     * cache it nor count it as a failure. Any other exception propagates unchanged.
      */
     private DisplayModelTypes.Reference resolve(long id, Cancellation token, List<String> issues) {
         try {
             return resolveReviewed(id, token, issues);
-        } catch (java.util.concurrent.CompletionException failed) {
-            var cause = failed.getCause() == null ? failed : failed.getCause();
-            if (cause instanceof java.util.concurrent.CancellationException canceled) {
-                throw canceled;
-            }
-            if (cause instanceof IllegalArgumentException refused) {
-                throw refused;
-            }
-            throw new IllegalArgumentException(
-                    "Display tables could not be read: " + cause.getClass().getSimpleName(), cause);
-        } catch (java.util.NoSuchElementException | IllegalStateException unreviewed) {
+        } catch (java.util.concurrent.CompletionException | IllegalStateException failed) {
+            throw tableFailure(failed);
+        } catch (java.util.NoSuchElementException unreviewed) {
             throw new IllegalArgumentException("Unreviewed display table shape", unreviewed);
         }
+    }
+
+    /**
+     * Classifies a table call's failure: cancellation and stated refusals unwrapped, a busy queue
+     * or closed handle as {@link DisplayModelTypes.ServiceUnavailable}, anything else unchanged.
+     */
+    static RuntimeException tableFailure(RuntimeException failure) {
+        Throwable cause =
+                failure instanceof java.util.concurrent.CompletionException
+                                && failure.getCause() != null
+                        ? failure.getCause()
+                        : failure;
+        if (cause instanceof java.util.concurrent.CancellationException canceled) {
+            return canceled;
+        }
+        if (cause instanceof IllegalArgumentException refused) {
+            return refused;
+        }
+        if (cause instanceof com.vibeminer.formats.tables.TableWorkScheduler.BusyException) {
+            return new DisplayModelTypes.ServiceUnavailable("Display tables busy", false, cause);
+        }
+        if (cause instanceof IllegalStateException
+                && "Table handle closed".equals(cause.getMessage())) {
+            return new DisplayModelTypes.ServiceUnavailable("Display tables closed", true, cause);
+        }
+        if (cause instanceof DisplayModelTypes.ServiceUnavailable unavailable) {
+            return unavailable;
+        }
+        return failure;
     }
 
     private DisplayModelTypes.Reference resolveReviewed(
@@ -611,15 +634,15 @@ public final class DisplayModelService implements BuildDisplayModels {
                     found.add(data.number(row, "CreatureDisplayInfoID"));
                 }
                 geosetDisplays = Set.copyOf(found);
-            } catch (java.util.concurrent.CompletionException | IllegalArgumentException failed) {
-                if (failed.getCause()
-                        instanceof java.util.concurrent.CancellationException canceled) {
-                    throw canceled;
+            } catch (java.util.concurrent.CompletionException
+                    | IllegalStateException
+                    | IllegalArgumentException failed) {
+                // Only a stated refusal is kept for the component; busy or closed tables are not.
+                var classified = tableFailure(failed);
+                if (!(classified instanceof IllegalArgumentException refused)) {
+                    throw classified;
                 }
-                geosetDisplaysUnavailable =
-                        failed instanceof IllegalArgumentException
-                                ? failed.getMessage()
-                                : "CreatureDisplayInfoGeosetData could not be read";
+                geosetDisplaysUnavailable = refused.getMessage();
             }
         }
         if (geosetDisplays == null) {

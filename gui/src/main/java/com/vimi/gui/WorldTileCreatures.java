@@ -330,6 +330,8 @@ final class WorldTileCreatures implements AutoCloseable {
         var added = new HashMap<Long, Integer>();
         var placed = new java.util.ArrayList<WorldObjectPicks.Creature>();
         int placements = 0, previewsTried = 0;
+        // Displays whose preview was busy on this tile: not asked again for every later spawn.
+        var busyDisplays = new HashSet<Long>();
         for (var spawn : nearby.placed()) {
             token.check();
             if (WorldBookmarks.tileIndex(spawn.x()) != tile.x() || WorldBookmarks.tileIndex(spawn.y()) != tile.y()) continue;
@@ -364,6 +366,10 @@ final class WorldTileCreatures implements AutoCloseable {
                 synchronized (this) {
                     converted = models.get(display);
                 }
+                if (converted == null && busyDisplays.contains(display)) {
+                    counts[Count.PREVIEWS_BUSY.ordinal()]++;
+                    continue;
+                }
                 if (converted == null) {
                     if (previewsTried == TILE_PREVIEWS) {
                         counts[Count.CAPPED.ordinal()]++;
@@ -372,7 +378,10 @@ final class WorldTileCreatures implements AutoCloseable {
                     previewsTried++;
                     converted = load(display, token);
                     // A busy or closed reader learned nothing: refund the preview it cost.
-                    if (converted.refusal() == Count.PREVIEWS_BUSY) previewsTried--;
+                    if (converted.refusal() == Count.PREVIEWS_BUSY) {
+                        previewsTried--;
+                        busyDisplays.add(display);
+                    }
                 }
                 if (converted.refusal() != null) {
                     counts[converted.refusal().ordinal()]++;

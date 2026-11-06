@@ -223,6 +223,18 @@ public final class WorldTileCreaturesTest {
                 new DisplayModelTypes.ServiceUnavailable("closed", true, null))))
                 && !WorldTileCreatures.busy(new IllegalStateException("Display previews busy")),
                 "Only the component's own busy/closed refusal counts as busy");
+        // 300 spawns of one display: a busy preview is asked once per tile, not once per spawn.
+        var same = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < 300; i++) same.add(WorldSpawnOverlayTest.spawn(1, i + 1, -100 - i * 0.5, -120, 10.0));
+        var asked = new AtomicInteger();
+        var one = new WorldTileCreatures(token -> index(same), () -> "r1", (npc, token) -> qualified(7, null),
+                (display, token) -> {
+                    asked.incrementAndGet();
+                    throw new DisplayModelTypes.ServiceUnavailable("Display previews busy", false, null);
+                });
+        var crowded = one.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(asked.get() == 1 && crowded.count(WorldTileCreatures.Count.PREVIEWS_BUSY) == 300,
+                "A busy display is not resubmitted for every spawn: " + asked.get());
     }
     private static void appendDrawsOnlyQualifiedSpawnsOfTheTile() {
         var previews = new AtomicInteger();
