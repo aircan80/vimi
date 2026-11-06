@@ -201,9 +201,10 @@ final class WorldStreamSourceController {
                     Thread.ofPlatform().daemon().name("world-source-controller").factory());
     private final AtomicBoolean scheduled = new AtomicBoolean(), wake = new AtomicBoolean();
     private final AtomicBoolean frameWake = new AtomicBoolean();
-    // Clock time from which an FX tick wakes the worker: the earliest due timed wait, or never
-    // (MAX_VALUE). Starts due, so the first tick starts the first step.
-    private volatile long pulseAt = Long.MIN_VALUE;
+    // The earliest timed wait's due time on the step clock, valid only while armed: an FX tick
+    // wakes the worker once it is due. Compared by subtraction, so the clock may wrap.
+    private volatile long pulseAt;
+    private volatile boolean pulseArmed;
     // Diagnostics and tests: steps run and ground/area recomputations (#366).
     final java.util.concurrent.atomic.AtomicLong steps = new java.util.concurrent.atomic.AtomicLong(),
             areaScans = new java.util.concurrent.atomic.AtomicLong();
@@ -400,12 +401,13 @@ final class WorldStreamSourceController {
      * wakes a step whose timed wait (a retry timeout) has come due.
      */
     void pulse() {
-        if (clock.getAsLong() >= pulseAt) kick();
+        if (pulseArmed && clock.getAsLong() - pulseAt >= 0) kick();
     }
 
     /** Worker-only: the step returns waiting until {@code deadline}; a tick then wakes it. */
     private void wakeAt(long deadline) {
-        pulseAt = Math.min(pulseAt, deadline);
+        if (!pulseArmed || deadline - pulseAt < 0) pulseAt = deadline;
+        pulseArmed = true;
     }
 
     Snapshot snapshot() {
@@ -641,7 +643,7 @@ final class WorldStreamSourceController {
 
     private void step() {
         steps.incrementAndGet();
-        pulseAt = Long.MAX_VALUE; // no timed wait until this step returns on one
+        pulseArmed = false; // no timed wait until this step returns on one
         if (!initialized) {
             if (initialBlocked && clock.getAsLong() - initialRetryAt < RETRY_NANOS) {
                 wakeAt(initialRetryAt + RETRY_NANOS);
@@ -684,6 +686,8 @@ final class WorldStreamSourceController {
                 initialBlocked = true;
                 initialRetryAt = clock.getAsLong();
                 publish(Phase.WAITING_CAPACITY, "Waiting for source capacity: " + refusal.site());
+                // Re-run the guard now (#366 review): it arms its deadline; nothing else wakes it.
+                wake.set(true);
                 return;
             }
             initialized = true;
@@ -818,6 +822,9 @@ final class WorldStreamSourceController {
                         blockedDemand = demandRevision;
                     }
                     publish(Phase.WAITING_CAPACITY, "Waiting for streaming resource capacity");
+                    // Re-run the guard now (#366 review): it proceeds if capacity, demand or the pool
+                    // already moved in a coalesced kick, or arms its own deadline.
+                    wake.set(true);
                     return;
                 }
                 pending.producer.close();
@@ -859,6 +866,9 @@ final class WorldStreamSourceController {
                 // frozen clock (and in production, 500 ms) waits for a revision already seen.
                 commitRetryCapacity=commitIssuedCapacity;
                 publish(Phase.WAITING_CAPACITY,"Waiting for commit input retirement");
+                // Re-run the guard now (#366 review): it proceeds if the retirement already landed
+                // in a coalesced kick, or arms its own deadline. Nothing else would wake it.
+                wake.set(true);
                 return;
             }
             synchronized (lock) {
@@ -950,12 +960,16 @@ final class WorldStreamSourceController {
             boolean needsUsefulFrame=missingCenter || skySuppressed;
             var subset=new ArrayList<>(current.stream().filter(
                     entry->containsResident(wanted,entry.resident())).toList());
-            boolean releases=current.stream().anyMatch(entry->!subset.contains(entry) && !presented.contains(entry));
+            // A tile the borrowed frame shows is kept like a presented one (#366): dropping it frees
+            // nothing until the borrow ends, so it is never the release a shrink commit counts on.
+            boolean releases=current.stream().anyMatch(entry->!subset.contains(entry) && !presented.contains(entry)
+                    && !borrowedTable.contains(entry));
             if(needsUsefulFrame && !releases) {
                 Entry victim=null;
                 int farthest=-1;
                 for(var entry:current) {
-                    if(presented.contains(entry) || !wanted.isEmpty() && same(wanted.getFirst(),entry.resident())) continue;
+                    if(presented.contains(entry) || borrowedTable.contains(entry)
+                            || !wanted.isEmpty() && same(wanted.getFirst(),entry.resident())) continue;
                     int rank=wanted.size();
                     for(int i=0;i<wanted.size();i++) if(same(wanted.get(i),entry.resident())) { rank=i; break; }
                     if(rank>farthest) { farthest=rank; victim=entry; }
@@ -1605,6 +1619,10 @@ final class WorldStreamSourceController {
         waterTables = null;
         scope = null;
         opening = null;
+        if (session != null) {
+            // Stop the transport calling back into a retired controller (#366 review).
+            session.onCapacity(null);
+        }
         session = null;
         gpu = null;
         if (pending != null) {
