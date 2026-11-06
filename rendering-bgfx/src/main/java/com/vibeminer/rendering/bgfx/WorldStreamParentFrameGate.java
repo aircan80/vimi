@@ -19,23 +19,36 @@ final class WorldStreamParentFrameGate {
     }
 
     synchronized void desire(WorldStreamControl.Camera camera) {
+        if (!tryDesire(camera)) {
+            throw new IllegalArgumentException("Invalid parent camera transition");
+        }
+    }
+
+    /**
+     * Accepts a camera that is a valid transition from the last desired one, else returns false and
+     * keeps the last one (issue #365). A closed gate or another session's camera is not a
+     * transition and still throws.
+     */
+    synchronized boolean tryDesire(WorldStreamControl.Camera camera) {
         Objects.requireNonNull(camera);
-        if (closed
-                || !session.nonce().equals(camera.nonce())
-                || camera.policy() < session.policy()
+        if (closed || !session.nonce().equals(camera.nonce())) {
+            throw new IllegalArgumentException("Camera for a closed or foreign parent gate");
+        }
+        if (camera.policy() < session.policy()
                 || desired != null
                         && (camera.revision() <= desired.revision()
                                 || camera.policy() < desired.policy()
                                 || camera.policy() == desired.policy()
                                         && (camera.width() != desired.width()
                                                 || camera.height() != desired.height()))) {
-            throw new IllegalArgumentException("Invalid parent camera transition");
+            return false;
         }
         if (desired == null || camera.policy() != desired.policy()) {
             policyFloor = camera.revision();
             applied = null;
         }
         desired = camera;
+        return true;
     }
 
     synchronized boolean applied(WorldStreamStatus.CameraApplied acknowledgement) {

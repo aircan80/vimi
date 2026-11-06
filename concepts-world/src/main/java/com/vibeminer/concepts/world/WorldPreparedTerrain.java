@@ -46,15 +46,55 @@ final class WorldPreparedTerrain {
     static final class Borrow {
         private TerrainScene.Tile tile;
         private TerrainTextureBinding texture;
+        private com.vibeminer.rendering.world.TerrainTileSplat splat;
         private WrittenTile<?> owner;
         private final long worker = Thread.currentThread().threadId();
         private boolean active = true;
 
         private Borrow(
-                WrittenTile<?> owner, TerrainScene.Tile tile, TerrainTextureBinding texture) {
+                WrittenTile<?> owner,
+                TerrainScene.Tile tile,
+                TerrainTextureBinding texture,
+                com.vibeminer.rendering.world.TerrainTileSplat splat) {
             this.owner = owner;
             this.tile = tile;
             this.texture = texture;
+            this.splat = splat;
+        }
+
+        /** The atlas's splatting inputs, when composed (issue #174 step 2); null otherwise. */
+        com.vibeminer.rendering.world.TerrainTileSplat splat() {
+            check();
+            return splat;
+        }
+
+        /** Splat layers this source prepared from file blocks and with the lossy encoder. */
+        long[] splatLayerCounts() {
+            check();
+            var details = owner.source.materials.details;
+            return new long[] {details.fileBlockLayers(), details.encodedLayers()};
+        }
+
+        /**
+         * Decodes (or reuses) one of this tile's layer diffuses for splatting, bound to the exact
+         * source tuple the atlas was composed from; null if that diffuse is not in its receipt.
+         */
+        TerrainDiffuseDetails.Detail detail(long fileId, com.vibeminer.access.Cancellation token) {
+            check();
+            var receipt = owner.receipt;
+            if (receipt == null) {
+                return null;
+            }
+            for (var mip : receipt.diffuse()) {
+                if (mip.file().fileId() == fileId) {
+                    var materials = owner.source.materials;
+                    return materials.detail(
+                            mip.file(),
+                            new WorldTerrainTextureSource.Request(
+                                    materials, null, List.of(), token, progress -> {}, false));
+                }
+            }
+            return null;
         }
 
         private void check() {
@@ -132,6 +172,7 @@ final class WorldPreparedTerrain {
             active = false;
             tile = null;
             texture = null;
+            splat = null;
             owner = null;
         }
     }
@@ -313,7 +354,7 @@ final class WorldPreparedTerrain {
                 pinnedGeometry.withTile(
                         tile -> {
                             if (pinnedAtlas == null) {
-                                useBorrow(tile, null, use);
+                                useBorrow(tile, null, null, use);
                             } else {
                                 pinnedAtlas.withAtlas(
                                         pixels ->
@@ -321,6 +362,7 @@ final class WorldPreparedTerrain {
                                                         tile,
                                                         TerrainTextureBinding.borrow(
                                                                 texture, pixels.pixels()),
+                                                        pixels.splat().orElse(null),
                                                         use));
                             }
                         });
@@ -345,8 +387,11 @@ final class WorldPreparedTerrain {
         }
 
         private void useBorrow(
-                TerrainScene.Tile tile, TerrainTextureBinding pixels, Consumer<Borrow> use) {
-            var borrowed = new Borrow(this, tile, pixels);
+                TerrainScene.Tile tile,
+                TerrainTextureBinding pixels,
+                com.vibeminer.rendering.world.TerrainTileSplat splat,
+                Consumer<Borrow> use) {
+            var borrowed = new Borrow(this, tile, pixels, splat);
             try {
                 use.accept(borrowed);
             } finally {
