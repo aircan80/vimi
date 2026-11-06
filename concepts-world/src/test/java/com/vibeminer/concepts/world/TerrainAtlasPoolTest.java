@@ -76,7 +76,7 @@ class TerrainAtlasPoolTest {
         var pool = new TerrainAtlasPool();
         var leases = new ArrayList<TerrainAtlasPool.Lease>();
         var identities = new ArrayList<Integer>();
-        for (int i = 0; i < 18; i++) {
+        for (int i = 0; i < TerrainAtlasPool.MAX_ENTRIES; i++) {
             try (var reservation = pool.reserve().orElseThrow()) {
                 assertEquals(i + 1, pool.stats().entries());
                 assertEquals(1, pool.stats().reservedEntries());
@@ -85,20 +85,22 @@ class TerrainAtlasPoolTest {
                 leases.add(reservation.publish(value, String.format("%064x", i)));
             }
         }
-        assertEquals(18, pool.stats().entries());
+        assertEquals(TerrainAtlasPool.MAX_ENTRIES, pool.stats().entries());
         // Each published entry is charged its own atlas, not the HIGH-splat maximum.
-        assertEquals(18 * atlas().retainedBytes(), pool.stats().chargedBytes());
+        assertEquals(
+                TerrainAtlasPool.MAX_ENTRIES * atlas().retainedBytes(),
+                pool.stats().chargedBytes());
         assertTrue(atlas().retainedBytes() < TerrainAtlasPool.ENTRY_BYTES);
         assertTrue(pool.reserve().isEmpty());
-        assertEquals(18, pool.stats().cachedEntries());
-        for (int i = 0; i < 18; i++) {
+        assertEquals(TerrainAtlasPool.MAX_ENTRIES, pool.stats().cachedEntries());
+        for (int i = 0; i < TerrainAtlasPool.MAX_ENTRIES; i++) {
             int expectedIdentity = identities.get(i);
             try (var hit = pool.cached(String.format("%064x", i)).orElseThrow()) {
                 hit.withAtlas(
                         value -> assertEquals(expectedIdentity, System.identityHashCode(value)));
             }
         }
-        assertEquals(18, pool.stats().cachedEntries());
+        assertEquals(TerrainAtlasPool.MAX_ENTRIES, pool.stats().cachedEntries());
         var closing = pool.closeAsync();
         assertFalse(closing.isDone());
         assertThrows(IllegalStateException.class, pool::reserve);
@@ -115,7 +117,7 @@ class TerrainAtlasPoolTest {
             throws Exception {
         var pool = new TerrainAtlasPool();
         var leases = new ArrayList<TerrainAtlasPool.Lease>();
-        for (int i = 0; i < 18; i++) {
+        for (int i = 0; i < TerrainAtlasPool.MAX_ENTRIES; i++) {
             try (var reservation = pool.reserve().orElseThrow()) {
                 leases.add(reservation.publish(atlas(), i == 0 ? KEY : null));
             }
@@ -146,21 +148,21 @@ class TerrainAtlasPoolTest {
         try {
             assertTrue(entered.await(5, TimeUnit.SECONDS));
             leases.getFirst().close();
-            assertEquals(17, pool.stats().leaseClaims());
+            assertEquals((TerrainAtlasPool.MAX_ENTRIES - 1), pool.stats().leaseClaims());
             assertEquals(1, pool.stats().borrowPins());
-            assertEquals(18, pool.stats().entries());
+            assertEquals(TerrainAtlasPool.MAX_ENTRIES, pool.stats().entries());
             assertTrue(pool.reserve().isEmpty());
             assertEquals(1, pool.stats().cachedEntries());
             assertThrows(IllegalStateException.class, leases.getFirst()::retain);
             release.countDown();
             finished.get(5, TimeUnit.SECONDS);
-            assertEquals(18, pool.stats().entries());
+            assertEquals(TerrainAtlasPool.MAX_ENTRIES, pool.stats().entries());
             assertEquals(1, pool.stats().cachedEntries());
             var replacement = pool.reserve().orElseThrow();
             try {
-                assertEquals(18, pool.stats().entries());
+                assertEquals(TerrainAtlasPool.MAX_ENTRIES, pool.stats().entries());
                 replacement.close();
-                assertEquals(17, pool.stats().entries());
+                assertEquals((TerrainAtlasPool.MAX_ENTRIES - 1), pool.stats().entries());
             } finally {
                 replacement.close();
             }
@@ -195,7 +197,7 @@ class TerrainAtlasPoolTest {
                                     throw new IllegalStateException("Authored failed writer");
                                 }));
         assertEquals(0, pool.stats().borrowPins());
-        for (int i = 1; i < 18; i++) {
+        for (int i = 1; i < TerrainAtlasPool.MAX_ENTRIES; i++) {
             try (var reservation = pool.reserve().orElseThrow()) {
                 var lease = reservation.publish(atlas(), String.format("%064x", i));
                 lease.close();
@@ -208,11 +210,11 @@ class TerrainAtlasPoolTest {
             try (var preserved = pool.cached(KEY).orElseThrow()) {
                 preserved.withAtlas(value -> assertEquals(125, value.pixels().get(0) & 255));
             }
-            assertEquals(18, pool.stats().entries());
-            assertEquals(17, pool.stats().cachedEntries());
+            assertEquals(TerrainAtlasPool.MAX_ENTRIES, pool.stats().entries());
+            assertEquals((TerrainAtlasPool.MAX_ENTRIES - 1), pool.stats().cachedEntries());
             assertEquals(1, pool.stats().leaseClaims());
             replacement.close();
-            assertEquals(17, pool.stats().entries());
+            assertEquals((TerrainAtlasPool.MAX_ENTRIES - 1), pool.stats().entries());
         } finally {
             replacement.close();
         }
