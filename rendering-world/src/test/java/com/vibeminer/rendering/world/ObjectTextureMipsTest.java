@@ -167,6 +167,28 @@ class ObjectTextureMipsTest {
     }
 
     @Test
+    void matchCoverageRescalesOneLevelToAWantedFraction() {
+        // Four texels at alpha 40, 80, 120 and 160: one passes; asking for half makes two pass.
+        byte[] rgba = new byte[16];
+        int[] alpha = {40, 80, 120, 160};
+        for (int i = 0; i < 4; i++) {
+            rgba[i * 4 + 3] = (byte) alpha[i];
+        }
+        assertEquals(0.25, ObjectTextureMips.coverage(rgba, 0, 4));
+        ObjectTextureMips.matchCoverage(rgba, 0, 4, 0.5);
+        assertEquals(0.5, ObjectTextureMips.coverage(rgba, 0, 4));
+        assertTrue((rgba[3] & 255) < 128 && (rgba[11] & 255) >= 128, "order is kept");
+        ObjectTextureMips.matchCoverage(rgba, 0, 4, 0);
+        assertEquals(0, ObjectTextureMips.coverage(rgba, 0, 4));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ObjectTextureMips.matchCoverage(rgba, 0, 5, 0.5));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ObjectTextureMips.matchCoverage(rgba, 0, 4, 1.5));
+    }
+
+    @Test
     void cutoutCoverageStaysNearTheTopLevelWhilePlainAveragingThinsIt() {
         int side = 128;
         byte[] top = leaves(side);

@@ -39,6 +39,7 @@ public final class WorldTileCreaturesTest {
         defaultGeosetsDrawWithoutCreatureGeosetData();
         aDenseNeighbourNoLongerStarvesTheTilesOwnSpawns();
         busyOrClosedPreviewsCostNoBudget();
+        cutoutReductionKeepsThinStrands();
         appendDrawsOnlyQualifiedSpawnsOfTheTile();
         buildingsKeepTheirBudgetFirst();
         cachesPerRevisionAndRetriesFailures();
@@ -79,8 +80,10 @@ public final class WorldTileCreaturesTest {
                 == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED, "Recorded geoset data is still refused");
         require(WorldTileCreatures.convert(preview(7, 0L, 0L, additiveOnly()), Cancellation.NONE).refusal()
                 == WorldTileCreatures.Count.NO_OPAQUE_SURFACE, "No opaque or alpha-keyed surface is refused");
-        require(WorldTileCreatures.convert(preview(7, 0L, 0L, hiddenGeosets()), Cancellation.NONE).refusal()
-                == WorldTileCreatures.Count.NO_OPAQUE_SURFACE, "Only non-default geosets draw nothing");
+        var hidden = WorldTileCreatures.convert(preview(7, 0L, 0L, hiddenGeosets()), Cancellation.NONE);
+        require(hidden.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
+                        && hidden.detail().contains("group 1 has no default"),
+                "A group with only x01 is refused, never drawn as a guessed variant: " + hidden.detail());
         var missing = new DisplayModelTypes.Preview(DisplayModelTypes.State.UNAVAILABLE, null, null, Set.of(),
                 List.of(), false, "Model read is ABSENT");
         var refused = WorldTileCreatures.convert(missing, Cancellation.NONE);
@@ -139,14 +142,39 @@ public final class WorldTileCreaturesTest {
     }
 
     private static void defaultGeosetsDrawWithoutCreatureGeosetData() {
-        for (Long geosets : new Long[] {0L, null}) {
-            var converted = WorldTileCreatures.convert(preview(7, 0L, geosets, geosets()), Cancellation.NONE);
-            var model = converted.model();
-            require(model != null, "Default geosets draw (" + geosets + "): " + converted.detail());
-            // Parts 0 (id 0) and 2 (id 200) draw; part 1 (id 101) is hidden and not counted.
-            require(java.util.Arrays.equals(model.ranges(), new int[] {0, 3, 0, 3, 3, 0})
-                    && model.omittedSurfaces() == 0, "Only id 0 and multiples of 100 draw (" + geosets + ")");
-        }
+        var converted = WorldTileCreatures.convert(preview(7, 0L, 0L, geosets()), Cancellation.NONE);
+        var model = converted.model();
+        require(model != null, "Default geosets draw: " + converted.detail());
+        // Parts 0 (id 0) and 1 (id 100) draw; part 2 (id 101, the x01 variant of group 1) is hidden
+        // and not counted as an omitted surface.
+        require(java.util.Arrays.equals(model.ranges(), new int[] {0, 3, 0, 3, 3, 0})
+                && model.omittedSurfaces() == 0, "Only x00 sections draw");
+        var unreadable = WorldTileCreatures.convert(preview(7, 0L, null, geosets()), Cancellation.NONE);
+        require(unreadable.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
+                && unreadable.detail().contains("could not be read"), "An unreadable CreatureGeosetDataID is refused");
+        var own = WorldTileCreatures.convert(preview(7, 0L, 0L, true, geosets()), Cancellation.NONE);
+        require(own.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
+                && own.detail().contains("not evaluated"), "A display with its own geoset rows is refused");
+        var unknown = WorldTileCreatures.convert(preview(7, 0L, 0L, null, geosets()), Cancellation.NONE);
+        require(unknown.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
+                && unknown.detail().contains("unknown"), "Unknown display geoset rows are refused");
+    }
+
+    private static void cutoutReductionKeepsThinStrands() {
+        // Scattered one-texel opaque strands, 1/8 of the texels, reduced 1024 -> 256: a 4 x 4 box
+        // holds about two of them, alpha about 32, so plain averaging fails almost every texel.
+        int side = 1024;
+        int[] argb = new int[side * side];
+        var random = new java.util.Random(7);
+        for (int i = 0; i < argb.length; i++) if (random.nextInt(8) == 0) argb[i] = 0xff806040;
+        var image = WorldTileCreatures.reduce(new MeshAppearance.Texture(side, side, argb),
+                WorldTileCreatures.CUTOUT, Cancellation.NONE);
+        require(image.width() == 256, "Reduced to 256");
+        double coverage = com.vibeminer.rendering.world.ObjectTextureMips.coverage(image.rgba(), 0, 256 * 256);
+        require(Math.abs(coverage - 0.125) < 0.03, "The top level keeps the source coverage: " + coverage);
+        var opaque = WorldTileCreatures.reduce(new MeshAppearance.Texture(side, side, argb),
+                WorldTileCreatures.OPAQUE, Cancellation.NONE);
+        require((opaque.rgba()[3] & 255) == 255, "Opaque images are not rescaled");
     }
 
 
@@ -489,8 +517,14 @@ public final class WorldTileCreaturesTest {
     }
 
     static DisplayModelTypes.Preview preview(long display, Long extended, Long geosets, MeshAppearance appearance) {
+        return preview(display, extended, geosets, false, appearance);
+    }
+
+    /** {@code displayGeosets}: whether the display has CreatureDisplayInfoGeosetData rows (null unknown). */
+    static DisplayModelTypes.Preview preview(long display, Long extended, Long geosets, Boolean displayGeosets,
+            MeshAppearance appearance) {
         return new DisplayModelTypes.Preview(DisplayModelTypes.State.PARTIAL,
-                new DisplayModelTypes.Reference(display, 20, 123456, List.of(), extended, geosets),
+                new DisplayModelTypes.Reference(display, 20, 123456, List.of(), extended, geosets, displayGeosets),
                 appearance, Set.of(0), List.of(), false, null);
     }
 
@@ -518,11 +552,11 @@ public final class WorldTileCreaturesTest {
                 List.of(texture), cards);
     }
 
-    /** Three one-triangle parts with geoset IDs 0, 101 and 200, all opaque. */
+    /** Three one-triangle parts with geoset IDs 0, 100 and 101 (group 1 has x00 and x01), all opaque. */
     static MeshAppearance geosets() {
         var mesh = new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, new int[] {0, 1, 2, 0, 2, 1, 1, 0, 2},
-                List.of(new PreviewMesh.Part(0, 0, 3), new PreviewMesh.Part(101, 3, 3),
-                        new PreviewMesh.Part(200, 6, 3)));
+                List.of(new PreviewMesh.Part(0, 0, 3), new PreviewMesh.Part(100, 3, 3),
+                        new PreviewMesh.Part(101, 6, 3)));
         return new MeshAppearance(mesh, new float[6], List.of(new MeshAppearance.Surface(0, 0, true, true, false),
                 new MeshAppearance.Surface(1, 0, true, true, false), new MeshAppearance.Surface(2, 0, true, true, false)),
                 List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})));
