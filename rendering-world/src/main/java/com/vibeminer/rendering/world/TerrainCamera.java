@@ -113,7 +113,7 @@ public record TerrainCamera(double x, double y, double z, double yaw, double pit
     }
 
     private static void dimensions(int width, int height) {
-        if (width < 1 || height < 1 || width > 1280 || height > 960) {
+        if (!WorldFrameLimits.fits(width, height)) {
             throw new IllegalArgumentException("Invalid terrain frame dimensions");
         }
     }

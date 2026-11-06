@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -91,7 +92,11 @@ final class WorldStreamEnvelope {
         nonce(out, session.nonce());
         out.put(HexFormat.of().parseHex(session.scope()));
         out.putInt(1).putInt(1).putInt(1).putInt(session.exteriorObjects() ? 2 : 1);
-        out.putLong(session.policy()).putInt(800).putInt(500).putInt(10).putInt(9);
+        out.putLong(session.policy())
+                .putInt(WorldFrameLimits.MAX_WIDTH)
+                .putInt(WorldFrameLimits.MAX_HEIGHT)
+                .putInt(10)
+                .putInt(9);
         out.putInt(MAX_PACKET_BYTES);
         return out.array();
     }
@@ -109,8 +114,8 @@ final class WorldStreamEnvelope {
             require(objects == 1 || objects == 2, "Unsupported session profile");
             long policy = in.getLong();
             require(
-                    in.getInt() == 800
-                            && in.getInt() == 500
+                    in.getInt() == WorldFrameLimits.MAX_WIDTH
+                            && in.getInt() == WorldFrameLimits.MAX_HEIGHT
                             && in.getInt() == 10
                             && in.getInt() == 9
                             && in.getInt() == MAX_PACKET_BYTES,

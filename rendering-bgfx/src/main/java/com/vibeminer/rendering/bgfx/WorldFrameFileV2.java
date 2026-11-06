@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -21,7 +22,8 @@ import java.util.zip.CRC32C;
 
 /** Separate World v2 mapping codec. No renderer, control channel or GUI is wired to it. */
 final class WorldFrameFileV2 implements AutoCloseable {
-    static final int WIDTH = 800, HEIGHT = 500, SLOTS = 3, HEADER_BYTES = 64;
+    static final int WIDTH = WorldFrameLimits.MAX_WIDTH, HEIGHT = WorldFrameLimits.MAX_HEIGHT;
+    static final int SLOTS = 3, HEADER_BYTES = 64;
     static final int PAYLOAD_BYTES = WIDTH * HEIGHT * 4;
     static final int SLOT_BYTES = HEADER_BYTES + PAYLOAD_BYTES;
     static final long FILE_BYTES = HEADER_BYTES + (long) SLOTS * SLOT_BYTES;
@@ -115,7 +117,7 @@ final class WorldFrameFileV2 implements AutoCloseable {
     }
 
     /**
-     * Bounded full-size pixel arrays. Up to three frames are live at once (the read in progress,
+     * Bounded frame-size pixel arrays. Up to three frames are live at once (the read in progress,
      * the transport's latest and the presentation), so three retained arrays keep the steady state
      * allocation-free.
      */
@@ -124,20 +126,26 @@ final class WorldFrameFileV2 implements AutoCloseable {
         private final java.util.ArrayDeque<int[]> free = new java.util.ArrayDeque<>(SLOTS);
         private long allocations;
 
-        int[] take() {
+        /**
+         * An array of at least {@code pixels} ints. Arrays are sized to the frame, not the cap, so
+         * a small viewport holds no 2560x1600 arrays; ones too small after a resize are dropped.
+         */
+        int[] take(int pixels) {
             synchronized (lock) {
-                var reused = free.pollFirst();
-                if (reused != null) {
-                    return reused;
+                int[] reused;
+                while ((reused = free.pollFirst()) != null) {
+                    if (reused.length >= pixels) {
+                        return reused;
+                    }
                 }
                 allocations++;
             }
-            return new int[WIDTH * HEIGHT];
+            return new int[pixels];
         }
 
         void recycle(int[] pixels) {
             synchronized (lock) {
-                if (pixels.length == WIDTH * HEIGHT
+                if (pixels.length <= WIDTH * HEIGHT
                         && free.size() < SLOTS
                         && free.stream().noneMatch(retained -> retained == pixels)) {
                     free.addFirst(pixels);
@@ -401,7 +409,7 @@ final class WorldFrameFileV2 implements AutoCloseable {
             return null;
         }
         int count = width * height;
-        int[] pixels = pool.take();
+        int[] pixels = pool.take(count);
         mapping.asSlice(offset + HEADER_BYTES, length)
                 .asByteBuffer()
                 .order(ByteOrder.LITTLE_ENDIAN)
