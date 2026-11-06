@@ -43,6 +43,7 @@ class AuthoredGlobalSourceTest {
             assertEquals(0, f.payloadCredits());
             assertEquals(1, f.opened(AuthoredGlobalSource.ROOT));
             assertEquals(0, f.borrowedClosed());
+            assertEquals(0, f.fullStats(), "global source reads bind index facts only");
         }
     }
 
