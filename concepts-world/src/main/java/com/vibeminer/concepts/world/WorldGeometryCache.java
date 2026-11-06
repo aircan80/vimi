@@ -9,9 +9,12 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
-/** The service's single twelve-version geometry cache, including pinned retired versions. */
+/**
+ * The service's single geometry cache, including pinned retired versions. Every written World
+ * output pins one version, so the limit follows {@link WorldPreparedTerrain#MAX_OUTPUTS}.
+ */
 final class WorldGeometryCache {
-    private static final int LIMIT = 12;
+    static final int LIMIT = WorldPreparedTerrain.MAX_OUTPUTS;
     private final LinkedHashMap<String, Entry> current = new LinkedHashMap<>(16, .75f, true);
     private final ArrayList<Entry> retained = new ArrayList<>();
     private final ArrayList<Prepared> outputs = new ArrayList<>();

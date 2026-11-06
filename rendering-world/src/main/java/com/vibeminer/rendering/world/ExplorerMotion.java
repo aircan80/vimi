@@ -50,7 +50,8 @@ public final class ExplorerMotion {
     /** Base walk speed in yards per second; an explorer default, not a client parity claim. */
     public static final double WALK_SPEED = 7;
 
-    public static final double WALK_SPRINT = 2, FLY_SPRINT = 4;
+    /** Hold-to-go-faster multipliers; flight speed presets cover large changes. */
+    public static final double WALK_SPRINT = 2, FLY_SPRINT = 2;
 
     /**
      * Keyboard turn and tilt rates in radians per second: half a turn per second, like the game
