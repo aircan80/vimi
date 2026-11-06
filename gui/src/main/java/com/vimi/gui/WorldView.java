@@ -118,10 +118,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private java.nio.file.Path screenshots;
     // Opens a folder in the desktop's file manager; tests replace it.
     private java.util.function.Consumer<java.nio.file.Path> folderOpener = WorldView::openFolder;
-    // One screenshot write at a time; each holds a full-frame copy.
-    private final java.util.concurrent.ExecutorService screenshotWriter =
-            java.util.concurrent.Executors.newSingleThreadExecutor(
-                    Thread.ofVirtual().name("world-screenshot").factory());
+    // One screenshot in flight at a time (each holds a full-frame copy); FX-owned.
+    private boolean screenshotSaving;
     /** The first-run help is long: it stays up longer than an event toast. */
     static final long HELP_TOAST_NANOS = 10_000_000_000L;
     private WorldSpawnOverlay spawns;
@@ -3341,6 +3339,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
      */
     void screenshot() {
         if (closed) return;
+        if (screenshotSaving) {
+            toasts.show("Screenshot still saving");
+            return;
+        }
         var folder = screenshots;
         if (!explorer || !(image.getImage() instanceof javafx.scene.image.Image frame)
                 || frame.getPixelReader() == null) {
@@ -3359,7 +3361,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         for (int i = 0; i < argb.length; i++) argb[i] |= 0xff000000;
         String name = WorldScreenshots.fileName(inventory == null ? null : inventory.map().name(),
                 java.time.ZonedDateTime.now());
-        screenshotWriter.execute(() -> {
+        screenshotSaving = true;
+        Thread.ofVirtual().name("world-screenshot").start(() -> {
             java.nio.file.Path saved = null;
             Throwable failure = null;
             try {
@@ -3370,6 +3373,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             var file = saved;
             var problem = failure;
             Platform.runLater(() -> {
+                screenshotSaving = false;
                 if (closed) return;
                 if (problem != null) {
                     WorldDiagnostics.warn("World screenshot could not be saved", problem);
@@ -3805,7 +3809,6 @@ final class WorldView extends BorderPane implements AutoCloseable {
         streamingImages.clear();
         minimap.close();
         toasts.clear();
-        screenshotWriter.shutdown();
         if (gpu != null) gpu.close();
         invalidate();
         textureLoading.close();

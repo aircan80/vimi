@@ -233,6 +233,10 @@ public final class WorldToastsUiTest {
                 var viewport = view.lookup("#world-viewport");
                 Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.F12, false, false, false, false));
                 Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_RELEASED, "", "", KeyCode.F12, false, false, false, false));
+                // A second press while the first is still writing (same FX turn) does not queue.
+                view.screenshot();
+                require(texts(view.toasts()).contains("Screenshot still saving"),
+                        "One screenshot in flight at a time: " + texts(view.toasts()));
             });
             await(() -> texts(view.toasts()).stream().anyMatch(t -> t.startsWith("Screenshot saved: ")));
             fx(() -> {
@@ -245,6 +249,12 @@ public final class WorldToastsUiTest {
                 require(!input().keysHeld(), "F12 is not a held key");
                 toast.run().run();
                 require(opened.equals(List.of(WorldScreenshots.folder(root))), "Open folder opens the screenshots folder");
+                try (var files = java.nio.file.Files.list(WorldScreenshots.folder(root))) {
+                    require(files.filter(f -> f.toString().endsWith(".png")).count() == 1,
+                            "Only the first press wrote a file");
+                } catch (java.io.IOException error) {
+                    throw new AssertionError(error);
+                }
                 var frame = ((javafx.scene.image.ImageView) get("image")).getImage();
                 try {
                     var saved = javax.imageio.ImageIO.read(file.toFile());
