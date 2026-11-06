@@ -689,11 +689,6 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     // once, so a partly filled chain is destroyed with it. A 256 x 256 RGBA8
                     // chain exceeds one step, so levels are filled in planned row bands; BC
                     // chains are filled in block rows.
-                    if (image == 0) {
-                        // Packing decoded every format this renderer does not sample (#374).
-                        decodedImages += source.decodedImages;
-                        compressedImages += source.compressedImages;
-                    }
                     int format = source.format(image);
                     if (uploadFormat(format, objectFormats) != format) {
                         throw new IllegalStateException("Object texture format not sampled");
@@ -741,6 +736,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 }
                 return count;
             }
+            // Counted once per completed set, however often an earlier build of it restarted:
+            // packing decoded every format this renderer does not sample (#374).
+            decodedImages += source.decodedImages;
+            compressedImages += source.compressedImages;
             // Every slice is a bgfx-owned copy; the packed native input can retire now.
             build.closeSource();
             if (!objectPathsReported) {

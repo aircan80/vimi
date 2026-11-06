@@ -312,6 +312,37 @@ final class WorldStreamObjectsFileTest {
         }
     }
 
+    /**
+     * One opaque triangle drawing one image of {@code format} and side, charged by {@code mask}.
+     */
+    private static WorldStreamObjectsFile.Data oneImage(int mask, int format, int side) {
+        var builder = WorldStreamTileWriter.Exterior.builder(mask);
+        builder.image(
+                side,
+                side,
+                format,
+                ByteBuffer.allocate(ObjectTextureFormats.chainBytes(format, side, side)));
+        builder.model();
+        builder.mesh(
+                FloatBuffer.wrap(new float[24]),
+                IntBuffer.wrap(new int[] {0, 1, 2}),
+                new int[] {0, 3, 0});
+        builder.placement(0, 0, 0, 0, 1, 1, 0);
+        return builder.build().data();
+    }
+
+    @Test
+    void only512ChainsChargedAsBlocksMayExceedTheRgba8Side() {
+        int bc1 = ObjectTextureFormats.BC1;
+        assertEquals(512, oneImage(1 << bc1, bc1, 512).images[0]);
+        assertEquals(256, oneImage(0, ObjectTextureFormats.RGBA8, 256).images[0]);
+        // An RGBA8 512 chain, or blocks the session decodes, would upload past the RGBA8 cap.
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> oneImage(1 << bc1, ObjectTextureFormats.RGBA8, 512));
+        assertThrows(IllegalArgumentException.class, () -> oneImage(0, bc1, 512));
+    }
+
     @Test
     void packingDecodesFormatsTheRendererDoesNotSample() throws Exception {
         // A BC3 image in a session that charged it decoded (mask 0): kept as blocks for a BC3

@@ -63,6 +63,20 @@ public final class WorldImageBudget {
             return WorldImageBudget.cost(width, height, level);
         }
 
+        /**
+         * The largest RGBA8 level, at or below {@code level} and no larger than {@code maxSide},
+         * whose chain costs no more than this request was charged at {@code level}: where a
+         * compressed chain falls back to RGBA8, it stays within what the budget reserved for it.
+         */
+        int rgbaLevelWithin(int level, int maxSide) {
+            long charged = cost(level);
+            int rgba = Math.max(level, levelFor(width, height, maxSide, levels));
+            while (rgba < levels - 1 && WorldImageBudget.cost(width, height, rgba) > charged) {
+                rgba++;
+            }
+            return rgba;
+        }
+
         /** The level this request takes for an allowed {@code side}, within its own cap. */
         int level(int side) {
             return levelFor(width, height, Math.min(side, maxSide), levels);

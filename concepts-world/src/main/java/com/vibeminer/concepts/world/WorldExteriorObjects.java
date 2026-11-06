@@ -409,7 +409,12 @@ public final class WorldExteriorObjects {
          * blended BC2/BC3, whose file records every level from the drawn one down to 1 x 1. They
          * also count in IMAGE_MIPS_FILE.
          */
-        IMAGE_BLOCKS
+        IMAGE_BLOCKS,
+        /**
+         * Chains allotted as sampled blocks whose blocks were not usable (issue #374): decoded to
+         * RGBA8 instead, at the largest level costing no more than the blocks were charged.
+         */
+        IMAGE_BLOCKS_FALLBACK
     }
 
     /** What a placement draws: an outdoor WMO, an MDDF doodad or a WMO doodad-set entry. */
@@ -2528,15 +2533,25 @@ public final class WorldExteriorObjects {
             if (declared.size() < levels) {
                 return -1;
             }
+            var taken = new ArrayList<long[]>();
             for (int k = 0; k < levels; k++) {
                 var mip = declared.get(k);
+                int bytes = ObjectTextureFormats.levelBytes(format, (int) width, (int) height, k);
+                // As blockChain will demand: past the header, inside the file, and no two levels
+                // sharing bytes. Checked up front, so a planned chain rarely falls back (#374).
                 if (mip.level() != k
                         || mip.storage() != Blp2Types.MipStorage.EXACT
-                        || mip.byteLength()
-                                != ObjectTextureFormats.levelBytes(
-                                        format, (int) width, (int) height, k)) {
+                        || mip.byteLength() != bytes
+                        || mip.offset() < Blp2Decoder.HEADER_BYTES
+                        || mip.offset() + bytes > raw.length) {
                     return -1;
                 }
+                for (long[] range : taken) {
+                    if (mip.offset() < range[1] && range[0] < mip.offset() + bytes) {
+                        return -1;
+                    }
+                }
+                taken.add(new long[] {mip.offset(), mip.offset() + bytes});
             }
             return format;
         }
@@ -2692,12 +2707,18 @@ public final class WorldExteriorObjects {
             // demand lets them go now instead of holding them, unbudgeted, until the chains.
             for (int i = 0; i < demands.size(); i++) {
                 var demand = demands.get(i);
-                // A chain to be uploaded as sampled blocks keeps them too: it is the RGBA8 fallback
-                // should the blocks not be usable (64 KiB at the 128 registration side).
-                if (demand != null
-                        && demand.registeredRgba() != null
-                        && !sampled(demand)
-                        && !(images.get(demand.slot()).mipLevel() < demand.registered())) {
+                if (demand == null || demand.registeredRgba() == null) {
+                    continue;
+                }
+                if (sampled(demand)) {
+                    // A chain to be uploaded as sampled blocks keeps them until its blocks are
+                    // read: they are its RGBA8 fallback should the blocks not be usable. Counted
+                    // with the retained sources (at most 64 KiB each, at the 128 registration
+                    // side), so sources yield to them, and dropped as soon as the chain is built.
+                    retainedSourceBytes += demand.registeredRgba().length;
+                    peakRetainedSourceBytes =
+                            Math.max(peakRetainedSourceBytes, retainedSourceBytes);
+                } else if (!(images.get(demand.slot()).mipLevel() < demand.registered())) {
                     demands.set(i, demand.withoutRegisteredRgba());
                 }
             }
@@ -2717,7 +2738,8 @@ public final class WorldExteriorObjects {
                     }
                 }
             }
-            for (var demand : demands) {
+            for (int d = 0; d < demands.size(); d++) {
+                var demand = demands.get(d);
                 if (demand == null || !used[demand.slot()]) {
                     continue;
                 }
@@ -2727,6 +2749,7 @@ public final class WorldExteriorObjects {
                 if (demand.blockFormat() >= 0) {
                     byte[] blocks = blockChain(demand, level, top.width(), top.height());
                     if (blocks != null) {
+                        releaseSampledRgba(d);
                         counts[Count.IMAGE_BLOCKS.ordinal()]++;
                         counts[Count.IMAGE_MIPS_FILE.ordinal()]++;
                         images.set(
@@ -2742,20 +2765,21 @@ public final class WorldExteriorObjects {
                         continue;
                     }
                 }
-                if (top.rgba == null) {
+                if (sampled(demand)) {
                     // The blocks were not usable after all: decode the largest RGBA8 level within
-                    // the RGBA8 cap instead.
-                    int rgbaSide = demand.pool() == Pool.DOODAD ? MODEL_RGBA_SIDE : RGBA_SIDE;
-                    int rgbaLevel =
-                            Math.max(
-                                    level,
-                                    WorldImageBudget.levelFor(
-                                            demand.width(),
-                                            demand.height(),
-                                            rgbaSide,
-                                            levelsDown(demand)));
-                    top = relevelRgba(demand, rgbaLevel);
+                    // the RGBA8 cap whose chain costs no more than the blocks were charged, so the
+                    // fallback never spends past the tile's budget.
+                    top =
+                            relevelRgba(
+                                    demand,
+                                    blockRequest(demand)
+                                            .rgbaLevelWithin(
+                                                    level,
+                                                    demand.pool() == Pool.DOODAD
+                                                            ? MODEL_RGBA_SIDE
+                                                            : RGBA_SIDE));
                     level = top.mipLevel();
+                    counts[Count.IMAGE_BLOCKS_FALLBACK.ordinal()]++;
                 }
                 int chainLevel = level;
                 // The file's own mips below the final level, when it records any: the registered
@@ -2806,6 +2830,26 @@ public final class WorldExteriorObjects {
                                 level,
                                 chain.rgba(),
                                 chain.source()));
+                releaseSampledRgba(d);
+            }
+        }
+
+        /** The budget request a sampled chain was allotted under (its blocks' format). */
+        private WorldImageBudget.Request blockRequest(Demand demand) {
+            return new WorldImageBudget.Request(
+                    demand.width(),
+                    demand.height(),
+                    levelsDown(demand),
+                    demand.blockFormat(),
+                    Integer.MAX_VALUE);
+        }
+
+        /** Drops the registration pixels a sampled demand kept for its fallback, once built. */
+        private void releaseSampledRgba(int index) {
+            var demand = demands.get(index);
+            if (demand.registeredRgba() != null && sampled(demand)) {
+                retainedSourceBytes -= demand.registeredRgba().length;
+                demands.set(index, demand.withoutRegisteredRgba());
             }
         }
 

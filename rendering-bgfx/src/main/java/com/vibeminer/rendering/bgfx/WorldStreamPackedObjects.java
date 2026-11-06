@@ -58,6 +58,11 @@ final class WorldStreamPackedObjects implements AutoCloseable {
      * ObjectTextureFormats} code). A chain in any other compressed format is decoded to RGBA8 here,
      * on the decode worker, so no upload step decodes (issue #374); the file's GPU byte cap already
      * charges such images their decoded size.
+     *
+     * <p>Peak native memory: the packed pixels are what the GPU will hold, at most {@link
+     * WorldStreamObjectsFile#MAX_DECODED_BYTES} per set, not the file's stored bytes. A set whose
+     * BC chains are decoded here can be several times its stored size, so anything sizing how many
+     * packed sets may wait for upload must count this bound, not the file length.
      */
     static WorldStreamPackedObjects pack(
             WorldStreamObjectsFile.Data data, BooleanSupplier canceled, int sampledFormats) {

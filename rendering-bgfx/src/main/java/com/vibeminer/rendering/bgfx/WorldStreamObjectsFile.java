@@ -57,6 +57,9 @@ final class WorldStreamObjectsFile {
      */
     static final int MAX_IMAGE_SIDE = 512, MAX_MESH_VERTICES = 65_536;
 
+    /** Largest side of a chain uploaded as RGBA8, stored so or decoded from unsampled blocks. */
+    static final int MAX_RGBA_SIDE = 256;
+
     /**
      * Texels of whole mip chains (issue #265) at the HIGH texture tier's per-tile budgets (#267),
      * which are themselves the chains of a 2048 x 1024 (buildings), 1024 x 512 (cutout and blended
@@ -348,6 +351,10 @@ final class WorldStreamObjectsFile {
                         !ObjectTextureFormats.compressed(format)
                                 || width >= MIN_COMPRESSED_SIDE && height >= MIN_COMPRESSED_SIDE,
                         "Compressed image size");
+                require(
+                        (compressedFormats & (1 << format)) != 0
+                                || width <= MAX_RGBA_SIDE && height <= MAX_RGBA_SIDE,
+                        "RGBA8 image size");
                 byteSum += ObjectTextureFormats.chainBytes(format, width, height);
                 decodedSum +=
                         (compressedFormats & (1 << format)) != 0
