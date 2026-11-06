@@ -262,7 +262,8 @@ public final class DiskGeneratedStore implements GeneratedStore {
         }
     }
 
-    private static Throwable map(Throwable failure) {
+    // Package-private for the store-code mapping test.
+    static Throwable map(Throwable failure) {
         while (failure instanceof CompletionException && failure.getCause() != null) {
             failure = failure.getCause();
         }
@@ -275,7 +276,7 @@ public final class DiskGeneratedStore implements GeneratedStore {
                     case "OBJECT_STORE_WRITE_FAILED" -> WRITE_FAILED;
                     case "OBJECT_STORE_CLOSED" -> CLOSED;
                     case "OBJECT_STORE_LIMIT" -> LIMIT;
-                    case "OBJECT_STORE_BUSY" -> BUSY;
+                    case "OBJECT_STORE_BUSY", "OBJECT_STORE_QUEUE_FULL" -> BUSY;
                     default -> UNUSABLE;
                 };
         return new GeneratedStoreException(code, e.getMessage(), e);

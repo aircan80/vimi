@@ -22,7 +22,7 @@ import javax.imageio.ImageIO;
 public final class WorldStreamNativeProof {
     static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(123, -456);
     static final String SCOPE = "cd".repeat(32);
-    private static final WorldStreamEnvelope.Session SESSION =
+    static final WorldStreamEnvelope.Session SESSION =
             new WorldStreamEnvelope.Session(NONCE, SCOPE, 1);
     private static final TerrainCamera CAMERA = new TerrainCamera(-100, -10, 50, 0, -.6);
     private static final int WIDTH = 256, HEIGHT = 256;
@@ -49,7 +49,7 @@ public final class WorldStreamNativeProof {
         };
     }
 
-    private static long camera = 1, sequence;
+    static long camera = 1, sequence;
 
     /**
      * The MCCV colour (red, green, blue) every vertex of the next {@link #prepare} carries, or null
@@ -241,7 +241,7 @@ public final class WorldStreamNativeProof {
         return WorldStreamPackedTile.prepare(input, () -> false);
     }
 
-    private static CompletableFuture<WorldStreamPackedTile> prepare(
+    static CompletableFuture<WorldStreamPackedTile> prepare(
             ExecutorService worker,
             Path path,
             long tx,
@@ -261,12 +261,11 @@ public final class WorldStreamNativeProof {
                 worker);
     }
 
-    private static WorldStreamControl.Camera command(
-            long revision, int width, int height, long policy) {
+    static WorldStreamControl.Camera command(long revision, int width, int height, long policy) {
         return new WorldStreamControl.Camera(NONCE, revision, policy, width, height, CAMERA);
     }
 
-    private static WorldFrameFileV2.Frame read(WorldFrameFileV2 reader, long content, long floor)
+    static WorldFrameFileV2.Frame read(WorldFrameFileV2 reader, long content, long floor)
             throws Exception {
         var frame =
                 reader.readLatest(
@@ -279,7 +278,7 @@ public final class WorldStreamNativeProof {
         return frame;
     }
 
-    private static void upload(
+    static void upload(
             WorldStreamNativeOwner owner,
             WorldStreamPackedTile packed,
             WorldFrameFileV2 reader,
@@ -307,7 +306,7 @@ public final class WorldStreamNativeProof {
         require(upload.successful() != cancel, "Upload terminal state");
     }
 
-    private static WorldFrameFileV2.Frame accepted(
+    static WorldFrameFileV2.Frame accepted(
             WorldStreamNativeOwner owner, WorldFrameFileV2 reader, long content) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         // Reuse the same camera revision after COMMIT: standing-still content must produce a frame.
@@ -537,13 +536,14 @@ public final class WorldStreamNativeProof {
                     }
                     var stats = owner.stats();
                     require(
-                            stats.dynamicBuffers() == 10
+                            stats.dynamicBuffers() == SESSION.slots()
                                     && stats.backingBuffers() == backing
                                     && backing > stats.contextBuffers(),
                             "Fixed native buffer counts " + stats);
                     require(
-                            stats.textures() == stats.contextTextures() + 16,
-                            "Ten atlases, five fixed target/readbacks and the splat layer stand-in");
+                            stats.textures() == stats.contextTextures() + SESSION.slots() + 6,
+                            "One atlas per slot, five fixed target/readbacks and the splat layer"
+                                    + " stand-in");
                     require(
                             stats.upload().references() == 0
                                     && stats.upload().liveUploadBytes() == 0,
@@ -642,7 +642,9 @@ public final class WorldStreamNativeProof {
                         WorldFrameFileV2.create(
                                 directory.resolve("frames-successor"), nextNonce, SCOPE);
                 var successor = new WorldStreamNativeOwner(nextSession, nextFrames, BACKEND)) {
-            require(successor.stats().dynamicBuffers() == 10, "Successor context resources");
+            require(
+                    successor.stats().dynamicBuffers() == SESSION.slots(),
+                    "Successor context resources");
         }
         // Exterior object culling on a further fresh context: draw counts and pixels, culled and
         // not.

@@ -311,6 +311,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.splatArrayCreated();
     }
 
+    /** Test seam for native proofs; see {@link BgfxWorldStreamRenderer#objectBudgetForProof}. */
+    void objectBudgetForProof(long bytes) {
+        requireOpen();
+        renderer.objectBudgetForProof(bytes);
+    }
+
     void commit(long expected, long next, List<WorldStreamState.Lease> table) {
         requireOpen();
         renderer.commit(expected, next, table);
