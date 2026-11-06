@@ -33,12 +33,90 @@ class TerrainGridTest {
     }
 
     private static byte[] colors(byte[] source, byte[] colors) {
-        byte[] result = Arrays.copyOf(source, source.length + 8 + colors.length);
+        return sub(source, 0x4d434356, colors);
+    }
+
+    /** Appends one sub-chunk to the first (only) MCNK. */
+    private static byte[] sub(byte[] source, int tag, byte[] payload) {
+        byte[] result = Arrays.copyOf(source, source.length + 8 + payload.length);
         var b = ByteBuffer.wrap(result).order(ByteOrder.LITTLE_ENDIAN);
-        b.putInt(16, b.getInt(16) + 8 + colors.length);
+        b.putInt(16, b.getInt(16) + 8 + payload.length);
         b.position(source.length);
-        b.putInt(0x4d434356).putInt(colors.length).put(colors);
+        b.putInt(tag).putInt(payload.length).put(payload);
         return result;
+    }
+
+    private static final int MCNR = 0x4d434e52;
+
+    @Test
+    void normalsAreCopiedInFileOrderWithPaddingAndBadShapesAreUnsupported() {
+        byte[] padded = new byte[448];
+        for (int i = 0; i < TerrainGrid.NORMAL_BYTES; i++) {
+            padded[i] = (byte) (i % 3 == 1 ? 127 : i % 3 == 0 ? -(i % 100) : i % 50);
+        }
+        Arrays.fill(padded, TerrainGrid.NORMAL_BYTES, 448, (byte) 99);
+        byte[] base = WorldFormatsTest.adt(0, 0, 0);
+        var expected = WorldFormats.adt(base, () -> false);
+        assertEquals(
+                TerrainGrid.NormalState.ABSENT,
+                WorldFormats.adtGrid(base, () -> false).chunks().getFirst().normalState());
+        for (byte[] payload :
+                new byte[][] {padded, Arrays.copyOf(padded, TerrainGrid.NORMAL_BYTES)}) {
+            byte[] raw = sub(base, MCNR, payload);
+            var chunk = WorldFormats.adtGrid(raw, () -> false).chunks().getFirst();
+            assertEquals(TerrainGrid.NormalState.INT8, chunk.normalState());
+            var normals = chunk.normals();
+            assertEquals(TerrainGrid.NORMAL_BYTES, normals.remaining());
+            assertEquals(0, normals.get(0));
+            assertEquals(127, normals.get(1));
+            assertEquals(2, normals.get(2));
+            assertEquals(-3, normals.get(3));
+            assertEquals(payload[434], normals.get(434));
+            Arrays.fill(raw, (byte) 0);
+            assertEquals(127, chunk.normals().get(1));
+            assertThrows(ReadOnlyBufferException.class, () -> chunk.normals().put(0, (byte) 1));
+            assertFalse(chunk.normals().hasArray());
+            assertArrayEquals(
+                    expected.vertices(),
+                    WorldFormats.adt(sub(base, MCNR, payload), () -> false).vertices());
+        }
+        for (byte[] bad :
+                new byte[][] {
+                    sub(base, MCNR, new byte[TerrainGrid.NORMAL_BYTES - 1]),
+                    sub(base, MCNR, new byte[449]),
+                    sub(sub(base, MCNR, padded), MCNR, padded)
+                }) {
+            var chunk = WorldFormats.adtGrid(bad, () -> false).chunks().getFirst();
+            assertEquals(TerrainGrid.NormalState.UNSUPPORTED, chunk.normalState());
+            assertEquals(0, chunk.normals().remaining());
+            assertArrayEquals(expected.vertices(), WorldFormats.adt(bad, () -> false).vertices());
+        }
+        var source = WorldFormats.adtGrid(base, () -> false).chunks().getFirst();
+        for (var shape :
+                new Object[][] {
+                    {TerrainGrid.NormalState.INT8, new byte[0]},
+                    {TerrainGrid.NormalState.INT8, new byte[448]},
+                    {TerrainGrid.NormalState.ABSENT, new byte[TerrainGrid.NORMAL_BYTES]},
+                    {TerrainGrid.NormalState.UNSUPPORTED, new byte[3]}
+                }) {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            new TerrainGrid.Chunk(
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    source.originX(),
+                                    source.originY(),
+                                    source.originZ(),
+                                    new float[145],
+                                    0,
+                                    TerrainGrid.ColorState.ABSENT,
+                                    new byte[0],
+                                    (TerrainGrid.NormalState) shape[0],
+                                    (byte[]) shape[1]));
+        }
     }
 
     @Test

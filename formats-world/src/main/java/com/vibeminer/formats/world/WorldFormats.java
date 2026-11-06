@@ -311,8 +311,8 @@ public final class WorldFormats {
                 float px = input.getFloat(c.start + 104),
                         py = input.getFloat(c.start + 108),
                         pz = input.getFloat(c.start + 112);
-                int height = -1, color = -1;
-                boolean badColors = false;
+                int height = -1, color = -1, normal = -1;
+                boolean badColors = false, badNormals = false;
                 input.position(c.start + 128);
                 while (input.position() < c.end) {
                     var sub = chunk(input, c.end);
@@ -327,6 +327,17 @@ public final class WorldFormats {
                             color = -1;
                         } else {
                             color = sub.start;
+                        }
+                    } else if (captureGrid && sub.tag == 0x4d434e52) {
+                        // 145 x int8[3]; files pad MCNR to 448 bytes.
+                        if (sub.size < TerrainGrid.NORMAL_BYTES
+                                || sub.size > 448
+                                || normal != -1
+                                || badNormals) {
+                            badNormals = true;
+                            normal = -1;
+                        } else {
+                            normal = sub.start;
                         }
                     }
                     input.position(sub.end);
@@ -403,6 +414,17 @@ public final class WorldFormats {
                                     : color < 0
                                             ? TerrainGrid.ColorState.ABSENT
                                             : TerrainGrid.ColorState.BGRA8;
+                    byte[] normals =
+                            normal < 0
+                                    ? new byte[0]
+                                    : java.util.Arrays.copyOfRange(
+                                            bytes, normal, normal + TerrainGrid.NORMAL_BYTES);
+                    var normalState =
+                            badNormals
+                                    ? TerrainGrid.NormalState.UNSUPPORTED
+                                    : normal < 0
+                                            ? TerrainGrid.NormalState.ABSENT
+                                            : TerrainGrid.NormalState.INT8;
                     grids.add(
                             new TerrainGrid.Chunk(
                                     chunks,
@@ -415,7 +437,9 @@ public final class WorldFormats {
                                     heights,
                                     holes,
                                     state,
-                                    colors));
+                                    colors,
+                                    normalState,
+                                    normals));
                 }
                 areas.add(
                         new AreaChunk(

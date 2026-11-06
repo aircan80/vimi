@@ -8,6 +8,10 @@ import java.util.Objects;
 /** Native ADT height-grid facts, not reconstructed from a rendered or reduced mesh. */
 public final class TerrainGrid {
     public static final String REVISION = "adt18-native-grid-v1";
+
+    /** MCNR bytes used: 145 normals of three signed bytes each (files pad the chunk to 448). */
+    public static final int NORMAL_BYTES = 145 * 3;
+
     public static final int MAX_RETAINED_BYTES = 1 << 20;
 
     public enum ColorState {
@@ -18,6 +22,13 @@ public final class TerrainGrid {
 
     public record Vec3(float x, float y, float z) {}
 
+    /** Whether a chunk carries MCNR vertex normals. */
+    public enum NormalState {
+        ABSENT,
+        INT8,
+        UNSUPPORTED
+    }
+
     public static final class Chunk {
         private final int ordinal, x, y;
         private final long flags, holes;
@@ -25,6 +36,8 @@ public final class TerrainGrid {
         private final float[] heights;
         private final ColorState colorState;
         private final byte[] colors;
+        private final NormalState normalState;
+        private final byte[] normals;
 
         public Chunk(
                 int ordinal,
@@ -38,9 +51,46 @@ public final class TerrainGrid {
                 long holes,
                 ColorState colorState,
                 byte[] colors) {
+            this(
+                    ordinal,
+                    x,
+                    y,
+                    flags,
+                    originX,
+                    originY,
+                    originZ,
+                    heights,
+                    holes,
+                    colorState,
+                    colors,
+                    NormalState.ABSENT,
+                    new byte[0]);
+        }
+
+        /**
+         * {@code normals} are the first {@link #NORMAL_BYTES} MCNR bytes in file order: three
+         * signed components per vertex, 127 = 1.0, in the same 9/8 staggered order as the heights.
+         * Axis mapping is left to the renderer.
+         */
+        public Chunk(
+                int ordinal,
+                int x,
+                int y,
+                long flags,
+                float originX,
+                float originY,
+                float originZ,
+                float[] heights,
+                long holes,
+                ColorState colorState,
+                byte[] colors,
+                NormalState normalState,
+                byte[] normals) {
             Objects.requireNonNull(heights);
             this.colorState = Objects.requireNonNull(colorState);
             Objects.requireNonNull(colors);
+            this.normalState = Objects.requireNonNull(normalState);
+            Objects.requireNonNull(normals);
             if (ordinal < 0
                     || ordinal >= 256
                     || x < 0
@@ -50,9 +100,10 @@ public final class TerrainGrid {
                     || flags < 0
                     || flags > 0xffff_ffffL
                     || heights.length != 145
-                    || (colorState == ColorState.BGRA8
-                            ? colors.length != 580
-                            : colors.length != 0)) {
+                    || (colorState == ColorState.BGRA8 ? colors.length != 580 : colors.length != 0)
+                    || (normalState == NormalState.INT8
+                            ? normals.length != NORMAL_BYTES
+                            : normals.length != 0)) {
                 throw new IllegalArgumentException("Invalid native grid chunk shape");
             }
             for (float value : new float[] {originX, originY, originZ}) {
@@ -74,6 +125,7 @@ public final class TerrainGrid {
             this.originZ = originZ;
             this.heights = heights.clone();
             this.colors = colors.clone();
+            this.normals = normals.clone();
             this.holes = holes;
             // Validate source positions with exactly the legacy geometry arithmetic.
             for (int row = 0; row < 17; row++) {
@@ -127,6 +179,15 @@ public final class TerrainGrid {
             return colorState;
         }
 
+        public NormalState normalState() {
+            return normalState;
+        }
+
+        /** Raw MCNR components in file order; empty unless {@link NormalState#INT8}. */
+        public ByteBuffer normals() {
+            return ByteBuffer.wrap(normals).asReadOnlyBuffer();
+        }
+
         public FloatBuffer heights() {
             return FloatBuffer.wrap(heights).asReadOnlyBuffer();
         }
@@ -157,7 +218,7 @@ public final class TerrainGrid {
         }
 
         long retainedBytes() {
-            return 128L + 4L * heights.length + colors.length;
+            return 128L + 4L * heights.length + colors.length + normals.length;
         }
     }
 
