@@ -339,6 +339,13 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return true;
     }
 
+    /** #381: camera revision of the latest scene frame presented into the window; 0 before. */
+    long presentedCamera() {
+        return presentedCamera;
+    }
+
+    private long presentedCamera;
+
     /** True in native presentation: frames go to the child window, never to the mapping. */
     boolean presentsToWindow() {
         return window != null;
@@ -356,10 +363,14 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             if (pace > 0) {
                 java.util.concurrent.locks.LockSupport.parkNanos(pace);
             }
+            boolean drew = renderedThisFrame;
             currentFrame = bgfx_frame(BGFX_FRAME_NONE);
             renderedThisFrame = false;
             renderer.pollUploads();
             window.presented(System.nanoTime());
+            if (drew) {
+                presentedCamera = submittedCamera;
+            }
             return false;
         }
         currentFrame = bgfx_frame(BGFX_FRAME_NONE);

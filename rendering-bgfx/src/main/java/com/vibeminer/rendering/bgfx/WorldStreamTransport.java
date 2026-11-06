@@ -583,6 +583,7 @@ public final class WorldStreamTransport {
         // so a lost or absent hint costs at most the old poll interval.
         private final WorldFrameSignal frameSignal = new WorldFrameSignal();
         private volatile Runnable frameListener;
+        private volatile java.util.function.LongConsumer presentedListener;
         // Test seams: the reader's fallback wait, and completion when the reader has returned.
         volatile long framePollMillis = FRAME_POLL_MILLIS;
         final CompletableFuture<Void> framesReaderDone = new CompletableFuture<>();
@@ -1116,6 +1117,14 @@ public final class WorldStreamTransport {
          */
         public void onFrame(Runnable listener) {
             frameListener = listener;
+        }
+
+        /**
+         * #381, native presentation: runs on the status reader with the camera revision of each
+         * frame the helper presented into its child window. It must not block.
+         */
+        public void onPresented(java.util.function.LongConsumer listener) {
+            presentedListener = listener;
         }
 
         private void pollFrames(WorldStreamLaunchOwner.Handle handle) throws Exception {
@@ -1675,6 +1684,12 @@ public final class WorldStreamTransport {
                         }
                         case CAMERA -> frames.applied((WorldStreamStatus.CameraApplied) message);
                         case FRAME -> frameSignaled();
+                        case PRESENTED -> {
+                            var listener = presentedListener;
+                            if (listener != null) {
+                                listener.accept(((WorldStreamStatus.Presented) message).camera());
+                            }
+                        }
                         case INPUT_COMMIT -> {
                             CommitOperation operation;
                             synchronized (lock) {

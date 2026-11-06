@@ -132,6 +132,7 @@ final class WorldStreamSession {
     // #381 spike: native presentation (null: the readback loop, unchanged).
     private WorldWindowPresentation window;
     private final WorldPresentBudget budget = new WorldPresentBudget();
+    private long announcedPresent;
 
     private void runOwner(
             InputStream input, WorldFrameFileV2 frames, int backend, Runnable terminate)
@@ -195,6 +196,11 @@ final class WorldStreamSession {
                     if (owner.advance()) {
                         // Wake the parent's frame reader; the mapping write already completed.
                         status.framePublished(owner.publishedSequence());
+                    }
+                    if (window != null && owner.presentedCamera() > announcedPresent) {
+                        // #381: tell the parent which camera the window now shows.
+                        announcedPresent = owner.presentedCamera();
+                        status.presented(announcedPresent);
                     }
                     reconcile();
                     finishUpload();

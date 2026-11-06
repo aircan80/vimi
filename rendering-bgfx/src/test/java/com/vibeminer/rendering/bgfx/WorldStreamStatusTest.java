@@ -46,6 +46,7 @@ class WorldStreamStatusTest {
         assertEquals(9, ((WorldStreamStatus.Canceled) parse("CANCELED 9 12 9 18")).transaction());
         assertInstanceOf(WorldStreamStatus.Closed.class, parse("CLOSED"));
         assertEquals(7, ((WorldStreamStatus.FramePublished) parse("FRAME 7")).sequence());
+        assertEquals(42, ((WorldStreamStatus.Presented) parse("PRESENTED 42")).camera());
         assertEquals(
                 WorldFrameFileV2.MAX_SEQUENCE,
                 ((WorldStreamStatus.FramePublished) parse("FRAME " + WorldFrameFileV2.MAX_SEQUENCE))
@@ -80,6 +81,10 @@ class WorldStreamStatusTest {
                         "CAMERA_APPLIED 1 1 501",
                         "CAMERA_APPLIED 1 0 1",
                         "CAMERA_APPLIED 1 1 -1",
+                        "PRESENTED",
+                        "PRESENTED 0",
+                        "PRESENTED 01",
+                        "PRESENTED 1 2",
                         "FRAME",
                         "FRAME 0",
                         "FRAME 01",

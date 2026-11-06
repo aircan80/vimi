@@ -84,9 +84,15 @@ final class WorldStreamGpuOwner {
     private CompletableFuture<Void> closing;
 
     WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256) {
+        this(service, scopeSha256, 0);
+    }
+
+    /** #381: {@code presentParent} non-zero asks for native presentation into that window. */
+    WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256, long presentParent) {
         this.service = Objects.requireNonNull(service);
         lifetime = service.openStreaming(owner,
                 spec(scopeSha256),
+                presentParent,
                 opened::complete,
                 status -> {
                     if (status.state() == GpuPreviewService.State.FAILED) {

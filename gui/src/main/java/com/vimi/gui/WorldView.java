@@ -90,6 +90,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final BorderPane content = new BorderPane();
     private final ImageView image = new ImageView();
     private final StackPane viewport = new StackPane(image);
+    // #381: native presentation into a child window, opt-in (-Dvimi.world.nativePresent=true,
+    // Windows). Readback stays the default and the fallback: any failure turns it off for the view.
+    private final boolean nativeRequested = WorldNativePresenter.requested();
+    private boolean nativeStream, nativeFailed;
+    private long nativeSequence;
+    private final WorldNativeSurface nativeSurface = new WorldNativeSurface(viewport, image,
+            node -> {
+                if (this.explorer) this.content.setCenter(node);
+            }, new WorldNativePresenter(WorldNativePresenter.user32()));
     private final WorldMinimap minimap = new WorldMinimap();
     private WorldSpawnOverlay spawns;
     private WorldRoleOverlay roles;
@@ -1028,6 +1037,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 else switchStreamingRendering();
                             }
                             if (streaming != null) streaming.pulse();
+                            if (nativeSurface.attached()) nativeSurface.pulse(viewportActive());
                             pollStall(now);
                         }
                         if (camera == null) {
@@ -1346,6 +1356,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     void deactivate() {
+        nativeSurface.detach();
         active = false;
         // An entry still waiting for the open world to drain must not open the interior, take
         // the GPU or play instance audio in a hidden tab: cancel it. An open interior stays.
@@ -1726,6 +1737,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void showInventory() {
+        nativeSurface.detach();
         if (spawns != null) spawns.suspend();
         resumeCamera = null;
         minimap.hide();
@@ -2561,8 +2573,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         (builder, owned, token) -> creatureSource.append(builder, creatureMap, owned, token),
                         detail);
         stallWatchdog.reset();
+        // #381: native presentation when asked for, on Windows, unless it already failed here.
+        long presentParent = nativeRequested && !nativeFailed
+                ? WorldNativeSurface.parentHandle(getScene() == null ? null : getScene().getWindow()) : 0;
+        nativeStream = presentParent != 0;
+        nativeSequence = 0;
         streaming = new WorldStreamSourceController(request, scope -> {
-            var owner = new WorldStreamGpuOwner(gpuService, scope);
+            var owner = new WorldStreamGpuOwner(gpuService, scope, presentParent);
             return new WorldStreamSourceController.GpuOwner() {
                 public CompletableFuture<com.vibeminer.rendering.bgfx.WorldStreamTransport.Session> session() {
                     return owner.session();
@@ -2570,11 +2587,43 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 public CompletableFuture<Void> closeAsync() { return owner.closeAsync(); }
             };
         }, streamingEvents, Platform::runLater, System::nanoTime, preparer);
+        if (nativeStream) {
+            var controller = streaming;
+            controller.onPresented(revision -> nativePresented(controller, revision));
+        }
         if (camera != null) {
             streamCamera();
             streamNeighborhood();
         }
         streamChanged();
+    }
+
+    /**
+     * #381: the helper presented a frame for {@code revision} into its child window. The first one
+     * moves the viewport onto the overlay stage; each counts as a presented frame for the stall
+     * watchdog, as a streamed frame does on the readback path.
+     */
+    private void nativePresented(WorldStreamSourceController controller, long revision) {
+        if (controller != streaming || !nativeStream || closed || stale(selection) || !explorer) return;
+        if (!nativeSurface.attached()) {
+            content.setCenter(nativeSurface.placeholder());
+            nativeSurface.attach(getScene() == null ? null : getScene().getWindow());
+            nativeSurface.pulse(viewportActive());
+        }
+        if (stallWatchdog.presented(revision, ++nativeSequence, System.nanoTime())) {
+            streamStatus(controller.snapshot());
+        }
+        show(firstFrameActivity, false);
+    }
+
+    /** #381: native presentation failed; this view goes back to readback for good. */
+    private void nativeFallback(String reason) {
+        WorldDiagnostics.warn("Native World presentation stopped",
+                new IllegalStateException(reason + "; using the compatible path"));
+        nativeFailed = true;
+        retireStreaming();
+        gpuStatus.setText("Native presentation stopped (" + reason + "); using the compatible path.");
+        if (active && explorer && streamingMode) startStreaming();
     }
 
     private void streamingUnavailable(Throwable failure) {
@@ -2587,6 +2636,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void retireStreaming() {
+        nativeSurface.detach();
+        nativeStream = false;
         var previous = streaming;
         streaming = null;
         stallWatchdog.reset();
@@ -2597,6 +2648,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var controller = streaming;
         if (controller == null || !streamingMode || stale(selection) || !explorer) return;
         var snapshot = controller.snapshot();
+        if (nativeStream && snapshot.phase() == WorldStreamSourceController.Phase.FAILED) {
+            nativeFallback("the native stream failed");
+            return;
+        }
         if (snapshot.phase() == WorldStreamSourceController.Phase.UNAVAILABLE
                 && snapshot.seed() == null) {
             gpuEnabled.setSelected(false);
@@ -2687,6 +2742,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         boolean shown = stallWatchdog.alerted();
         var stall = stallWatchdog.poll(now, eligible,
                 phase == WorldStreamSourceController.Phase.PRESENTING);
+        if (stall != null && nativeStream) {
+            nativeFallback("no frame was presented in time");
+            return;
+        }
         if (stall != null) {
             // Redaction may wait up to 250 ms once per process for the host name; one stall
             // record per episode on FX is an accepted cost.
@@ -3424,6 +3483,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     @Override
     public void close() {
+        nativeSurface.detach();
         instances.abandon();
         cancelInstanceLookups();
         closed = true;

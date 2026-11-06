@@ -16,7 +16,7 @@ final class WorldStreamStatusWriter {
     private final String prefix;
     private final ArrayDeque<byte[]> reliable = new ArrayDeque<>(16);
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
-    private byte[] camera, frame;
+    private byte[] camera, frame, presented;
     private boolean finishing, quiet;
     private volatile Throwable failure;
 
@@ -82,6 +82,25 @@ final class WorldStreamStatusWriter {
     }
 
     /**
+     * #381: latest-value hint that the child window presented a frame drawn for {@code camera}.
+     * Replaces any unwritten older one; never reserves reliable credit.
+     */
+    boolean presented(long camera) {
+        if (camera < 1) {
+            throw new IllegalArgumentException("Invalid presented camera");
+        }
+        byte[] bytes = line("PRESENTED " + camera);
+        synchronized (lock) {
+            if (finishing || quiet) {
+                return false;
+            }
+            presented = bytes;
+            lock.notifyAll();
+            return true;
+        }
+    }
+
+    /**
      * Drops pending latest-value statuses and refuses new ones, so none can follow a terminal
      * reliable status enqueued afterwards.
      */
@@ -90,6 +109,7 @@ final class WorldStreamStatusWriter {
             quiet = true;
             camera = null;
             frame = null;
+            presented = null;
         }
     }
 
@@ -99,6 +119,7 @@ final class WorldStreamStatusWriter {
             finishing = true;
             camera = null;
             frame = null;
+            presented = null;
             lock.notifyAll();
         }
         return drained.copy();
@@ -136,7 +157,11 @@ final class WorldStreamStatusWriter {
                 byte[] bytes;
                 boolean counted;
                 synchronized (lock) {
-                    while (reliable.isEmpty() && camera == null && frame == null && !finishing) {
+                    while (reliable.isEmpty()
+                            && camera == null
+                            && frame == null
+                            && presented == null
+                            && !finishing) {
                         lock.wait();
                     }
                     if (!reliable.isEmpty()) {
@@ -148,9 +173,13 @@ final class WorldStreamStatusWriter {
                         bytes = camera;
                         camera = null;
                         counted = false;
-                    } else {
+                    } else if (frame != null) {
                         bytes = frame;
                         frame = null;
+                        counted = false;
+                    } else {
+                        bytes = presented;
+                        presented = null;
                         counted = false;
                     }
                 }
@@ -168,6 +197,7 @@ final class WorldStreamStatusWriter {
                 reliable.clear();
                 camera = null;
                 frame = null;
+                presented = null;
             }
             drained.completeExceptionally(error);
         }

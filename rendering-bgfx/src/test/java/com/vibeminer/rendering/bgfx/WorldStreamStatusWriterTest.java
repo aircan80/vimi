@@ -66,6 +66,32 @@ class WorldStreamStatusWriterTest {
     }
 
     @Test
+    void presentedHintsCoalesceToLatestAndNeverFollowQuietTerminal() throws Exception {
+        var output = new HeldOutput();
+        var clock = new WorldStatusDeadline();
+        var writer = new WorldStreamStatusWriter(NONCE, output, clock);
+        writer.reliable("SESSION TERRAIN_BASIC_V1");
+        assertTrue(output.entered.await(2, TimeUnit.SECONDS));
+        for (int i = 1; i <= 500; i++) {
+            assertTrue(writer.presented(i));
+        }
+        assertEquals(1, clock.outstanding(), "Presented hints never take reliable credit");
+        output.release.countDown();
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (output.lines().size() < 2 && System.nanoTime() < until) {
+            Thread.sleep(1);
+        }
+        assertEquals(
+                java.util.List.of("SESSION TERRAIN_BASIC_V1", "PRESENTED 500"), output.lines());
+        writer.quiet();
+        assertFalse(writer.presented(501));
+        writer.reliable("CLOSED");
+        writer.finish().get(3, TimeUnit.SECONDS);
+        assertEquals("CLOSED", output.lines().getLast());
+        assertThrows(IllegalArgumentException.class, () -> writer.presented(0));
+    }
+
+    @Test
     void frameHintsCoalesceToLatestAndNeverFollowQuietTerminal() throws Exception {
         var output = new HeldOutput();
         var clock = new WorldStatusDeadline();

@@ -357,6 +357,22 @@ tasks.register('worldPickTest', JavaExec) {
 }
 check.dependsOn worldPickTest
 
+// #381: native-present gating, placement and user32 binding; no display.
+tasks.register('worldNativePresenterTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldNativePresenterTest'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+check.dependsOn worldNativePresenterTest
+
+// #381: the native-presentation surface on a real window, recording user32; requires a display.
+tasks.register('worldNativeSurfaceUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldNativeSurfaceUiTest'
+}
+
 // Explorer key/mouse/wheel mapping and pulse cadence against a recording host; no display.
 tasks.register('worldExplorerInputTest', JavaExec) {
     dependsOn testClasses

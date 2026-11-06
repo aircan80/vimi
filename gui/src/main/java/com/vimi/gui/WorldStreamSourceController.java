@@ -65,6 +65,16 @@ final class WorldStreamSourceController {
         void changed();
     }
 
+    private volatile java.util.function.LongConsumer presentedListener;
+
+    /**
+     * #381, native presentation: {@code listener} runs on the FX thread with the camera revision
+     * of each frame the helper presented into its window.
+     */
+    void onPresented(java.util.function.LongConsumer listener) {
+        presentedListener = listener;
+    }
+
     enum Phase {
         QUALIFYING,
         STARTING,
@@ -617,6 +627,11 @@ final class WorldStreamSourceController {
                 if(camera!=null && !closing) opened.camera(camera);
             }
             session.onFrame(this::frameArrived);
+            // #381: native presentation reports presented camera revisions instead of frames.
+            session.onPresented(revision -> {
+                var listener = presentedListener;
+                if (listener != null) fxPost.accept(() -> listener.accept(revision));
+            });
             session.initialized().whenComplete((ignored, failure) -> kick());
             session.completion()
                     .whenComplete(
