@@ -92,9 +92,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final ImageView image = new ImageView();
     private final StackPane viewport = new StackPane(image);
     // Viewport-only full screen (F11 / Alt+Enter) and the in-window "hide panels" toggle (Alt+Z).
+    private final Label fullscreenStatus = new Label();
     private final WorldFullscreen fullscreen = new WorldFullscreen(viewport, node -> {
-        if (this.explorer) content.setCenter(node);
-    });
+        // During an instance switch the switch owns the layout: never put the world back over it.
+        if (this.explorer && !this.instances.engaged()) content.setCenter(node);
+    }, this::layoutKeys, fullscreenStatus);
+    // Layout toggles fire once per physical press: held keys repeat KEY_PRESSED.
+    private boolean fullscreenKeyHeld, panelsKeyHeld;
     private final Button fullscreenButton = new Button("Full screen (F11)");
     private final Button panelsButton = new Button("Hide panels (Alt+Z)");
     private final Label panelsHint = new Label("Alt+Z shows the panels · F11 full screen");
@@ -795,6 +799,21 @@ final class WorldView extends BorderPane implements AutoCloseable {
         split = new SplitPane(sidebar, content);
         split.setDividerPositions(sidebarDivider);
         setCenter(split);
+        sceneProperty().addListener((o, was, now) -> {
+            if (was != null) was.removeEventFilter(javafx.scene.input.KeyEvent.ANY, layoutKeysFilter);
+            if (now != null) now.addEventFilter(javafx.scene.input.KeyEvent.ANY, layoutKeysFilter);
+        });
+        fullscreenStatus.setId("world-fullscreen-status");
+        fullscreenStatus.setMouseTransparent(true);
+        fullscreenStatus.setVisible(false);
+        fullscreenStatus.setMaxWidth(560);
+        fullscreenStatus.setWrapText(true);
+        fullscreenStatus.setStyle("-fx-background-color: rgba(16,24,28,.6); -fx-text-fill: #e8eeee;"
+                + " -fx-padding: 4 8; -fx-background-radius: 4;");
+        fullscreenStatus.textProperty().bind(javafx.beans.binding.Bindings.createStringBinding(
+                () -> String.join("\n", java.util.stream.Stream.of(status.getText(), inspection.getText())
+                        .filter(t -> t != null && !t.isBlank()).toList()),
+                status.textProperty(), inspection.textProperty()));
         fullscreenButton.setId("world-fullscreen");
         fullscreenButton.setFocusTraversable(false);
         fullscreenButton.setOnAction(e -> toggleFullscreen());
@@ -851,11 +870,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         image.setPreserveRatio(true);
         viewport.setOnKeyPressed(
                 e -> {
-                    if (e.getCode() == KeyCode.F11 || e.getCode() == KeyCode.ENTER && e.isAltDown()) {
-                        toggleFullscreen();
-                    } else if (e.getCode() == KeyCode.Z && e.isAltDown()) {
-                        if (!fullscreen.active()) panels(!panelsHidden);
-                    } else if (e.getCode() == KeyCode.F && keys.add(KeyCode.F)) {
+                    if (e.getCode() == KeyCode.F && keys.add(KeyCode.F)) {
                         walkMode.setSelected(!walkMode.isSelected());
                         motionChanged();
                     } else {
@@ -1279,6 +1294,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     void deactivate() {
+        fullscreen.exit();
         active = false;
         // An entry still waiting for the open world to drain must not open the interior, take
         // the GPU or play instance audio in a hidden tab: cancel it. An open interior stays.
@@ -1796,8 +1812,39 @@ final class WorldView extends BorderPane implements AutoCloseable {
         applyPanels();
     }
 
+    /**
+     * F11 / Alt+Enter (full screen) and Alt+Z (panels), as a key filter on the application scene
+     * and the full-screen scene, so they work whatever has focus while the explorer shows. Each
+     * fires once per press; the keys never reach flight input.
+     */
+    void layoutKeys(javafx.scene.input.KeyEvent e) {
+        var code = e.getCode();
+        boolean full = code == KeyCode.F11 || code == KeyCode.ENTER && e.isAltDown();
+        boolean panel = code == KeyCode.Z && e.isAltDown();
+        if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_RELEASED) {
+            if (code == KeyCode.F11 || code == KeyCode.ENTER) fullscreenKeyHeld = false;
+            if (code == KeyCode.Z) panelsKeyHeld = false;
+            return;
+        }
+        if (e.getEventType() != javafx.scene.input.KeyEvent.KEY_PRESSED || !(full || panel)) return;
+        if (!explorer && !fullscreen.active()) return;
+        e.consume();
+        if (full) {
+            if (!fullscreenKeyHeld) toggleFullscreen();
+            fullscreenKeyHeld = true;
+        } else {
+            if (!panelsKeyHeld && !fullscreen.active()) panels(!panelsHidden);
+            panelsKeyHeld = true;
+        }
+    }
+
+    // One method reference instance, so the filter can be removed again.
+    private final javafx.event.EventHandler<javafx.scene.input.KeyEvent> layoutKeysFilter = this::layoutKeys;
+
     private void toggleFullscreen() {
         if (!explorer && !fullscreen.active()) return;
+        // An instance switch (drain or interior) owns the layout; only leaving is allowed.
+        if (instances.engaged() && !fullscreen.active()) return;
         fullscreen.toggle(getScene() == null ? null : getScene().getWindow(),
                 "World explorer" + (inventory == null ? "" : " · " + inventory.map()));
         clearKeys();
@@ -1805,7 +1852,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     /** Hides or shows the map list and the explorer's control rows; only the viewport stays. */
     private void panels(boolean hidden) {
-        if (hidden && !explorer) return;
+        if (hidden && (!explorer || instances.engaged())) return;
         if (hidden == panelsHidden) return;
         if (hidden && split.getItems().contains(sidebarPane) && split.getDividers().size() == 1)
             sidebarDivider = split.getDividerPositions()[0];
@@ -1825,7 +1872,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             node.setVisible(!panelsHidden);
             node.setManaged(!panelsHidden);
         }
-        panelsHint.setVisible(panelsHidden);
+        panelsHint.setVisible(panelsHidden && !fullscreen.active());
     }
 
     private void loadTile(WorldFormats.Tile tile, boolean initial) {
@@ -2708,6 +2755,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (closed || !active || !explorer || scene == null
                 || scene.getWindow() == null || !scene.getWindow().isShowing()) return false;
         if (scene.getWindow() instanceof javafx.stage.Stage stage && stage.isIconified()) return false;
+        if (getScene() != null && getScene().getWindow() instanceof javafx.stage.Stage main && main.isIconified())
+            return false;
         for (javafx.scene.Node node = viewport; node != null; node = node.getParent()) {
             if (!node.isVisible()) return false;
         }

@@ -211,8 +211,18 @@ public final class WorldNavigationUiTest {
                 require(!view.lookup("#world-minimap").isVisible(),"Retired source cannot reveal minimap after resize");
                 require(((javafx.scene.control.Label)view.lookup("#world-current-area")).getText().equals("Terrain area unavailable"),"Retired source cannot retain current-area name");
                 require(fixture.minimapCalls.get()==before,"Retired source cannot request artwork after resize");
+                showInventoryEndsFullscreen(view);
                 DONE.complete(null);
             });
+    }
+
+    /** F11 / Alt+Enter move the viewport to its own stage and back; Alt+Z hides the panels. */
+    private static void press(Node target, KeyCode code, boolean alt) {
+        Event.fireEvent(target, new KeyEvent(KeyEvent.KEY_PRESSED, "", "", code, false, false, alt, false));
+    }
+
+    private static void release(Node target, KeyCode code) {
+        Event.fireEvent(target, new KeyEvent(KeyEvent.KEY_RELEASED, "", "", code, false, false, false, false));
     }
 
     /** F11 / Alt+Enter move the viewport to its own stage and back; Alt+Z hides the panels. */
@@ -222,37 +232,79 @@ public final class WorldNavigationUiTest {
         full.windowed(true);
         var home=viewport.getScene();
         var content=(javafx.scene.layout.BorderPane)get(view,"content");
-        key(viewport,KeyCode.F11,true);
+        press(viewport,KeyCode.F11,false);
         require(full.active() && viewport.getScene()==full.stage().getScene() && viewport.getScene()!=home,
                 "F11 moves the viewport onto the full-screen stage");
         require(content.getCenter()!=viewport,"The explorer layout no longer holds the viewport");
         require(viewportActive(view),"The viewport stays active on the full-screen stage");
         require(WorldFullscreen.EXIT_HINT.equals(full.stage().getFullScreenExitHint()),"Exit hint names the keys");
         require(!((Set<?>)get(view,"keys")).contains(KeyCode.F11),"F11 is never a held flight key");
-        key(viewport,KeyCode.F11,false);
-        key(viewport,KeyCode.F11,true);
+        var overlay=view.lookup("#world-fullscreen-status");
+        require(overlay==null,"The status overlay is not in the window");
+        var shown=full.stage().getScene().getRoot().lookup("#world-fullscreen-status");
+        require(shown!=null && shown.isVisible(),"Full screen shows a status line");
+        require(full.stage().getScene().getStylesheets().equals(home.getStylesheets()),"Full screen keeps the app's styles");
+        for (int i=0;i<30;i++) press(full.stage().getScene().getRoot(),KeyCode.F11,false);
+        require(full.active(),"Holding F11 (key repeat) never toggles back");
+        release(full.stage().getScene().getRoot(),KeyCode.F11);
+        press(full.stage().getScene().getRoot(),KeyCode.F11,false);
         require(!full.active() && viewport.getScene()==home && content.getCenter()==viewport,
-                "F11 again returns the viewport to the explorer");
-        Event.fireEvent(viewport,new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.ENTER,false,false,true,false));
+                "F11 again, on the full-screen scene, returns the viewport to the explorer");
+        release(viewport,KeyCode.F11);
+        press(viewport,KeyCode.ENTER,true);
         require(full.active(),"Alt+Enter enters full screen");
         var stage=full.stage();
         stage.fireEvent(new javafx.stage.WindowEvent(stage,javafx.stage.WindowEvent.WINDOW_CLOSE_REQUEST));
         require(!full.active() && !stage.isShowing() && content.getCenter()==viewport,
                 "Closing the full-screen stage returns the viewport");
+        release(viewport,KeyCode.ENTER);
+        press(viewport,KeyCode.F11,false);
+        release(viewport,KeyCode.F11);
+        require(full.active(),"Entered again");
+        view.deactivate();
+        require(!full.active() && content.getCenter()==viewport,"Hiding the tab ends full screen");
+        view.activate();
         var split=(javafx.scene.control.SplitPane)get(view,"split");
         var hint=view.lookup("#world-panels-hint");
         require(split.getItems().size()==2 && content.getBottom().isVisible() && !hint.isVisible(),"Panels start shown");
-        Event.fireEvent(viewport,new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.Z,false,false,true,false));
-        require(split.getItems().size()==1 && split.getItems().getFirst()==content,"Alt+Z hides the map list");
+        for (int i=0;i<30;i++) press(viewport,KeyCode.Z,true);
+        require(split.getItems().size()==1 && split.getItems().getFirst()==content,"Alt+Z hides the map list once, however long it is held");
         require(!content.getBottom().isVisible() && !content.getBottom().isManaged(),"Alt+Z hides the control rows");
         require(hint.isVisible(),"A hint says how to bring the panels back");
-        Event.fireEvent(viewport,new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.Z,false,false,true,false));
+        release(viewport,KeyCode.Z);
+        press(viewport,KeyCode.Z,true);
+        release(viewport,KeyCode.Z);
         require(split.getItems().size()==2 && content.getBottom().isVisible() && !hint.isVisible(),"Alt+Z shows them again");
         ((javafx.scene.control.Button)view.lookup("#world-hide-panels")).fire();
         require(split.getItems().size()==1,"The Hide panels button hides them");
-        Event.fireEvent(viewport,new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.Z,false,false,true,false));
+        press(viewport,KeyCode.Z,true);
+        release(viewport,KeyCode.Z);
         require(split.getItems().size()==2,"Alt+Z restores after the button");
-        for (var code : List.of(KeyCode.Z, KeyCode.ENTER, KeyCode.ALT)) key(viewport,code,false);
+        key(viewport,KeyCode.ALT,false);
+        closeEndsFullscreen();
+    }
+
+    /** A view closed while full screen returns nothing and closes its stage. */
+    private static void closeEndsFullscreen() {
+        var other=new WorldView(() -> null, () -> 0);
+        set(other,"explorer",true);
+        var full=(WorldFullscreen)get(other,"fullscreen");
+        full.windowed(true);
+        invoke(other,"toggleFullscreen");
+        require(full.active(),"Throwaway view in full screen");
+        var stage=full.stage();
+        other.close();
+        require(!full.active() && !stage.isShowing(),"close() ends full screen and closes its stage");
+    }
+
+    /** Leaving the explorer while full screen ends it first; run last (the view leaves the explorer). */
+    private static void showInventoryEndsFullscreen(WorldView view) {
+        var full=(WorldFullscreen)get(view,"fullscreen");
+        invoke(view,"toggleFullscreen");
+        require(full.active(),"Full screen before leaving");
+        var stage=full.stage();
+        invoke(view,"showInventory");
+        require(!full.active() && !stage.isShowing(),"Leaving the explorer ends full screen");
     }
 
     private static boolean viewportActive(WorldView view) {

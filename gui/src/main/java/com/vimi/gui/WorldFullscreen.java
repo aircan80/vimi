@@ -2,7 +2,10 @@ package com.vimi.gui;
 
 import java.util.Objects;
 import java.util.function.Consumer;
+import javafx.event.EventHandler;
+import javafx.scene.Node;
 import javafx.scene.Scene;
+import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.stage.Stage;
@@ -19,13 +22,21 @@ final class WorldFullscreen {
 
     private final Region viewport;
     private final Consumer<Region> restore;
+    private final EventHandler<KeyEvent> keys;
+    private final Node overlay;
     private Stage stage;
     private boolean windowed;
 
-    /** {@code restore} puts the viewport back into the explorer layout. */
-    WorldFullscreen(Region viewport, Consumer<Region> restore) {
+    /**
+     * {@code restore} puts the viewport back into the explorer layout; {@code keys} is the view's
+     * full-screen key filter, installed on the full-screen scene too; {@code overlay} is a small
+     * status line shown over the viewport while full screen.
+     */
+    WorldFullscreen(Region viewport, Consumer<Region> restore, EventHandler<KeyEvent> keys, Node overlay) {
         this.viewport = Objects.requireNonNull(viewport);
         this.restore = Objects.requireNonNull(restore);
+        this.keys = Objects.requireNonNull(keys);
+        this.overlay = Objects.requireNonNull(overlay);
     }
 
     /** Tests: show the stage as an ordinary window instead of taking over the screen. */
@@ -54,10 +65,17 @@ final class WorldFullscreen {
         var next = new Stage();
         if (owner != null) next.initOwner(owner);
         next.setTitle(title);
-        next.setScene(new Scene(root));
+        var scene = new Scene(root);
+        if (owner != null && owner.getScene() != null)
+            scene.getStylesheets().setAll(owner.getScene().getStylesheets());
+        scene.addEventFilter(KeyEvent.ANY, keys);
+        next.setScene(scene);
         next.setFullScreenExitHint(EXIT_HINT);
         stage = next;
-        root.getChildren().add(viewport);
+        root.getChildren().addAll(viewport, overlay);
+        StackPane.setAlignment(overlay, javafx.geometry.Pos.BOTTOM_LEFT);
+        StackPane.setMargin(overlay, new javafx.geometry.Insets(8));
+        overlay.setVisible(true);
         next.fullScreenProperty().addListener((o, was, full) -> {
             if (!full && stage == next) exit();
         });
@@ -79,7 +97,8 @@ final class WorldFullscreen {
         var current = stage;
         if (current == null) return;
         stage = null;
-        if (current.getScene().getRoot() instanceof StackPane root) root.getChildren().remove(viewport);
+        if (current.getScene().getRoot() instanceof StackPane root) root.getChildren().removeAll(viewport, overlay);
+        overlay.setVisible(false);
         restore.accept(viewport);
         current.close();
         viewport.requestFocus();
