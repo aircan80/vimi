@@ -9,7 +9,7 @@ import java.util.List;
 public final class TerrainTileAtlas {
     public static final int SIDE = 512;
     public static final int PIXEL_BYTES = SIDE * SIDE * 4;
-    public static final String RECIPE = "basic-coverage-preview-512-v1";
+    public static final String RECIPE = "basic-coverage-preview-512-v2";
 
     /** Header coordinates select atlas rectangles; native anchors retain original source floats. */
     public record Mapping(int ordinal, int x, int y, float nativeX, float nativeY, float nativeZ) {}

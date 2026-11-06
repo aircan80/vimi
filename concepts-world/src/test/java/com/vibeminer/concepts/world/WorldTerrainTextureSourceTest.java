@@ -978,7 +978,8 @@ class WorldTerrainTextureSourceTest {
         for (int mode = 0; mode < 6; mode++) {
             var files = new Files();
             if (mode == 0) {
-                files.sources.put(1L, wdt(0x3ca ^ 0x80));
+                // A WDT without MAID names no tex0 companions.
+                files.sources.put(1L, java.util.Arrays.copyOf(wdt(0x3ca), 12 + 40 + 8 + 4096 * 8));
             }
             if (mode == 1) {
                 files.protectedId = 2;
@@ -1192,6 +1193,38 @@ class WorldTerrainTextureSourceTest {
             pool.closeAsync().get(5, TimeUnit.SECONDS);
         }
         assertEquals(files.totalOpens(), files.closed.get());
+    }
+
+    @Test
+    void mapsWithoutBigAlphaFlagsReadFourBitAlphaMapsAndAnyOtherFlags() throws Exception {
+        for (int flags : new int[] {0, 0x2, 0x3ca ^ 0x80}) {
+            var files = new Files();
+            files.sources.put(1L, wdt(flags));
+            var out = new ByteArrayOutputStream();
+            out.writeBytes(part("MVER", ints(18)));
+            out.writeBytes(part("MDID", ints(10, 11)));
+            for (int i = 0; i < 256; i++) {
+                var chunk = new ByteArrayOutputStream();
+                chunk.writeBytes(part("MCLY", ints(0, 0, 0, 0, 1, 0x100, 0, 0)));
+                byte[] alpha = new byte[2048];
+                java.util.Arrays.fill(alpha, (byte) 0x88);
+                chunk.writeBytes(part("MCAL", alpha));
+                chunk.writeBytes(part("MCSH", new byte[512]));
+                out.writeBytes(part("MCNK", chunk.toByteArray()));
+            }
+            files.sources.put(3L, out.toByteArray());
+            var pool = new TerrainAtlasPool();
+            var source = new WorldTerrainTextureSource(files.files(), pool);
+            try (var result = read(source)) {
+                var tile = result.tiles().getFirst();
+                assertEquals(WorldTerrainTextureSource.State.READY, tile.state());
+                assertEquals(256, tile.supportedChunks());
+            } finally {
+                source.closeAsync().get(5, TimeUnit.SECONDS);
+                pool.closeAsync().get(5, TimeUnit.SECONDS);
+            }
+            assertEquals(files.totalOpens(), files.closed.get());
+        }
     }
 
     @Test

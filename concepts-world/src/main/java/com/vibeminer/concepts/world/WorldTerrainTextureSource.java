@@ -818,7 +818,7 @@ public final class WorldTerrainTextureSource {
                 }
                 Outcome loaded;
                 try {
-                    loaded = loadTile(request, i, tile, wdt.binding());
+                    loaded = loadTile(request, i, tile, wdt.binding(), inventory.alphaFormat());
                 } catch (RuntimeException unavailable) {
                     propagateCancellation(request, unavailable);
                     loaded =
@@ -866,7 +866,11 @@ public final class WorldTerrainTextureSource {
     }
 
     private Outcome loadTile(
-            Request request, int tileIndex, WorldFormats.Tile tile, FileBinding wdt) {
+            Request request,
+            int tileIndex,
+            WorldFormats.Tile tile,
+            FileBinding wdt,
+            WorldTextureFormats.AlphaFormat alphaFormat) {
         if (tile.rootId() <= 0 || tile.tex0Id() <= 0) {
             throw new SourceFailure(Reason.ABSENT);
         }
@@ -882,7 +886,7 @@ public final class WorldTerrainTextureSource {
         }
         request.report(Stage.TEXTURES, tileIndex, 0);
         var texture = readBytes(tile.tex0Id(), WorldTextureFormats.MAX_SOURCE_BYTES, request);
-        try (var data = readTextureData(texture.bytes(), request)) {
+        try (var data = readTextureData(texture.bytes(), alphaFormat, request)) {
             boolean[] used = new boolean[data.diffuseIds().size()];
             for (var chunk : data.chunks()) {
                 if (chunk.issue() == WorldTextureFormats.ChunkIssue.NONE) {
@@ -1014,9 +1018,10 @@ public final class WorldTerrainTextureSource {
         }
     }
 
-    private static WorldTextureFormats.TextureData readTextureData(byte[] bytes, Request request) {
+    private static WorldTextureFormats.TextureData readTextureData(
+            byte[] bytes, WorldTextureFormats.AlphaFormat alphaFormat, Request request) {
         try {
-            return WorldTextureFormats.read(bytes, request::canceled);
+            return WorldTextureFormats.read(bytes, alphaFormat, request::canceled);
         } catch (IllegalArgumentException invalid) {
             throw new SourceFailure(Reason.TEXTURE_PROFILE);
         }

@@ -90,8 +90,7 @@ public final class TerrainAtlasComposer {
         TEXTURE_METADATA,
         MASK_DATA,
         MISSING_DIFFUSE,
-        COLOR_SHAPE,
-        COLOR_ALPHA
+        COLOR_SHAPE
     }
 
     public record Diagnostic(int ordinal, Reason reason, WorldTextureFormats.ChunkIssue maskIssue) {
@@ -223,15 +222,8 @@ public final class TerrainAtlasComposer {
                 diagnostics.add(new Diagnostic(ordinal, Reason.COLOR_SHAPE, none));
                 continue;
             }
+            // MCCV alpha is not a coverage input; only its RGB tint is applied.
             var colors = chunk.colors();
-            boolean opaque = true;
-            for (int at = 3; at < colors.limit(); at += 4) {
-                opaque &= (colors.get(at) & 255) == 255;
-            }
-            if (!opaque) {
-                diagnostics.add(new Diagnostic(ordinal, Reason.COLOR_ALPHA, none));
-                continue;
-            }
             var layers = metadata.layers();
             var mips = new DiffuseMip[layers.size()];
             boolean complete = true;
@@ -245,7 +237,7 @@ public final class TerrainAtlasComposer {
                 continue;
             }
             masks.clear();
-            var decoded = textures.decodeAlphas(ordinal, masks, canceled);
+            var decoded = textures.decodeAlphas(ordinal, chunk.flags(), masks, canceled);
             if (!decoded.admitted()) {
                 diagnostics.add(new Diagnostic(ordinal, Reason.MASK_DATA, decoded.issue()));
                 continue;
@@ -302,27 +294,46 @@ public final class TerrainAtlasComposer {
             ByteBuffer colors,
             byte[] pixels,
             BooleanSupplier canceled) {
+        int[] weights = new int[mips.length];
         for (int py = 0; py < 32; py++) {
             check(canceled);
             for (int px = 0; px < 32; px++) {
-                int maskPixel = (2 * py + 1) * 64 + 2 * px + 1;
+                // Each atlas pixel covers a 2x2 block of the 64x64 masks; average it.
+                int maskPixel = 2 * py * 64 + 2 * px;
+                for (int layer = 1; layer < mips.length; layer++) {
+                    int at = (layer - 1) * 4096 + maskPixel;
+                    weights[layer] =
+                            ((masks.get(at) & 255)
+                                            + (masks.get(at + 1) & 255)
+                                            + (masks.get(at + 64) & 255)
+                                            + (masks.get(at + 65) & 255)
+                                            + 2)
+                                    / 4;
+                }
                 int sum = 0;
                 for (int layer = 1; layer < mips.length; layer++) {
-                    sum += masks.get((layer - 1) * 4096 + maskPixel) & 255;
+                    sum += weights[layer];
                 }
+                // Base layer takes what the overlays leave, clamped at zero. Overlays summing past
+                // 255 are normalized so the blend stays a weighted average.
+                weights[0] = Math.max(0, 255 - sum);
+                int total = Math.max(255, weights[0] + sum);
                 // Eight repeats * four texels / 32 atlas pixels: exactly px/py mod4.
                 int texel = ((py % 4) * 4 + px % 4) * 4;
                 int output = ((chunk.y() * 32 + py) * 512 + chunk.x() * 32 + px) * 4;
                 for (int channel = 0; channel < 3; channel++) {
-                    int weighted = (mips[0].pixels[texel + channel] & 255) * (255 - sum);
-                    for (int layer = 1; layer < mips.length; layer++) {
-                        weighted +=
-                                (mips[layer].pixels[texel + channel] & 255)
-                                        * (masks.get((layer - 1) * 4096 + maskPixel) & 255);
+                    int weighted = 0;
+                    for (int layer = 0; layer < mips.length; layer++) {
+                        weighted += (mips[layer].pixels[texel + channel] & 255) * weights[layer];
                     }
                     double tint = colors.hasRemaining() ? tint(colors, px, py, channel) : 1;
                     pixels[output + channel] =
-                            (byte) Math.max(0, Math.min(255, Math.round(weighted / 255.0 * tint)));
+                            (byte)
+                                    Math.max(
+                                            0,
+                                            Math.min(
+                                                    255,
+                                                    Math.round((double) weighted / total * tint)));
                 }
                 pixels[output + 3] = (byte) 255;
             }

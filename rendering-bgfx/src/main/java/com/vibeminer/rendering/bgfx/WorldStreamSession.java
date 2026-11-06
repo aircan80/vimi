@@ -27,7 +27,9 @@ final class WorldStreamSession {
 
     private record LateDecoded(WorldStreamPackedObjects objects, Throwable error) {}
 
-    private static final long DRAW_INTERVAL = TimeUnit.SECONDS.toNanos(1) / 30;
+    // Display rate. Three readback slots keep up: each completes within two bgfx frames, and the
+    // owner loop advances bgfx every ~1 ms.
+    static final long DRAW_INTERVAL = TimeUnit.SECONDS.toNanos(1) / 60;
     private final WorldStreamEnvelope.Session session;
     private final Path directory;
     private final long parentPid;
@@ -113,8 +115,10 @@ final class WorldStreamSession {
                 advertiseCredit();
                 while (!closing.get()) {
                     if (mailbox.closing() || status.failure() != null) {
-                        if (mailbox.failed() || status.failure() != null) {
-                            failed = true;
+                        if (mailbox.failed()) {
+                            fail("control mailbox failed");
+                        } else if (status.failure() != null) {
+                            fail("status write failed: " + describe(status.failure()));
                         }
                         requestClose();
                         break;
@@ -150,10 +154,13 @@ final class WorldStreamSession {
                     // GPU mutations must precede draw submission in the same bgfx frame.
                     long now = System.nanoTime();
                     if (camera != null && now - lastDraw >= DRAW_INTERVAL && owner.submit(camera)) {
-                        lastDraw = now;
+                        lastDraw = nextDrawBase(lastDraw, now);
                         status.cameraApplied(camera.policy(), camera.width(), camera.height());
                     }
-                    owner.advance();
+                    if (owner.advance()) {
+                        // Wake the parent's frame reader; the mapping write already completed.
+                        status.framePublished(owner.publishedSequence());
+                    }
                     reconcile();
                     finishUpload();
                     finishLate(owner);
@@ -177,12 +184,12 @@ final class WorldStreamSession {
                 }
                 state.close();
             } catch (Throwable error) {
-                failed = true;
+                fail("native owner: " + describe(error));
                 requestClose(); // Arm the independent deadline BEFORE native close can block.
                 throw error;
             }
         } catch (Throwable error) {
-            failed = true;
+            fail("session: " + describe(error));
             requestClose();
             throw error;
         } finally {
@@ -215,16 +222,34 @@ final class WorldStreamSession {
             reconcile();
             state.close();
             if (!state.drained()) {
-                failed = true;
+                fail("state not drained at close: " + state.drainSummary());
             }
+            status.quiet();
             if (!failed && status.failure() == null) {
                 send("CLOSED");
             }
             status.finish().handle((ignored, error) -> null).join();
+            if (failed) {
+                System.err.println(
+                        "World v2 session failed: "
+                                + String.valueOf(failure).replaceAll("[\\p{Cntrl}]", " "));
+                System.err.flush();
+            }
             if (!failed && status.failure() == null) {
                 allDrained.set(true);
             }
         }
+    }
+
+    /**
+     * Keeps a steady display-rate phase while drawing continuously, so the ~1 ms loop park does not
+     * stretch every interval; restarts the phase after an idle gap.
+     */
+    // Past this lateness the phase restarts: a stalled loop gets no wasted catch-up draw.
+    static final long CATCH_UP_LIMIT = DRAW_INTERVAL * 5 / 4;
+
+    static long nextDrawBase(long previous, long now) {
+        return now - previous < CATCH_UP_LIMIT ? previous + DRAW_INTERVAL : now;
     }
 
     private void readControls(InputStream input) {
@@ -243,13 +268,13 @@ final class WorldStreamSession {
                 }
                 if (result == WorldControlMailbox.Result.OVERFLOW) {
                     send("REJECTED 0 STATUS_OVERFLOW");
-                    failed = true;
+                    fail("control overflow");
                     requestClose();
                 }
             }
         } catch (IOException | RuntimeException error) {
             send("REJECTED 0 PROTOCOL_ERROR");
-            failed = true;
+            fail("control stream: " + describe(error));
             requestClose();
         }
     }
@@ -261,7 +286,7 @@ final class WorldStreamSession {
             }
             var action = deadline.poll(allDrained.get());
             if (action == WorldStatusDeadline.Action.REQUEST_CLOSE) {
-                failed = true;
+                fail("status deadline expired");
                 requestClose();
             }
             if (action == WorldStatusDeadline.Action.TERMINATE
@@ -758,9 +783,27 @@ final class WorldStreamSession {
         send("REJECTED " + transaction + " " + code);
     }
 
+    private volatile String failure;
+
+    /** Class name and a capped, single-line message, like WorldStreamMain's failure line. */
+    static String describe(Throwable error) {
+        String message = error.getMessage() == null ? "" : error.getMessage();
+        message = message.replaceAll("[\\p{Cntrl}]", " ");
+        message = message.substring(0, Math.min(160, message.length()));
+        return error.getClass().getSimpleName() + (message.isEmpty() ? "" : ": " + message);
+    }
+
+    /** Marks the session failed; the first reason goes to stderr when the session ends. */
+    private void fail(String reason) {
+        if (failure == null) {
+            failure = reason;
+        }
+        failed = true;
+    }
+
     private void send(String line) {
         if (!status.reliable(line)) {
-            failed = true;
+            fail("status not accepted: " + line);
             requestClose();
         }
     }
