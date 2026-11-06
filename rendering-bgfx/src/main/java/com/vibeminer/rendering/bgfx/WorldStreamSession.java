@@ -116,7 +116,7 @@ final class WorldStreamSession {
                         if (mailbox.failed()) {
                             fail("control mailbox failed");
                         } else if (status.failure() != null) {
-                            fail("status write failed: " + status.failure());
+                            fail("status write failed: " + describe(status.failure()));
                         }
                         requestClose();
                         break;
@@ -179,12 +179,12 @@ final class WorldStreamSession {
                 }
                 state.close();
             } catch (Throwable error) {
-                fail("native owner: " + error);
+                fail("native owner: " + describe(error));
                 requestClose(); // Arm the independent deadline BEFORE native close can block.
                 throw error;
             }
         } catch (Throwable error) {
-            fail("session: " + error);
+            fail("session: " + describe(error));
             requestClose();
             throw error;
         } finally {
@@ -257,7 +257,7 @@ final class WorldStreamSession {
             }
         } catch (IOException | RuntimeException error) {
             send("REJECTED 0 PROTOCOL_ERROR");
-            fail("control stream: " + error);
+            fail("control stream: " + describe(error));
             requestClose();
         }
     }
@@ -767,6 +767,14 @@ final class WorldStreamSession {
     }
 
     private volatile String failure;
+
+    /** Class name and a capped, single-line message, like WorldStreamMain's failure line. */
+    static String describe(Throwable error) {
+        String message = error.getMessage() == null ? "" : error.getMessage();
+        message = message.replaceAll("[\\p{Cntrl}]", " ");
+        message = message.substring(0, Math.min(160, message.length()));
+        return error.getClass().getSimpleName() + (message.isEmpty() ? "" : ": " + message);
+    }
 
     /** Marks the session failed; the first reason goes to stderr when the session ends. */
     private void fail(String reason) {

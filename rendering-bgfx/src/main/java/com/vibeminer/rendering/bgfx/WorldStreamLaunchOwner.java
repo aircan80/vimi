@@ -134,9 +134,7 @@ final class WorldStreamLaunchOwner {
          */
         static long exitWaitMillis(
                 boolean acknowledged, long sinceCloseMillis, long graceMillis, long drainMillis) {
-            return acknowledged
-                    ? graceMillis
-                    : Math.max(graceMillis, drainMillis - sinceCloseMillis);
+            return acknowledged ? graceMillis : drainMillis - sinceCloseMillis;
         }
 
         /** Metadata acknowledgement only; never a callback or a source readiness claim. */
@@ -420,7 +418,6 @@ final class WorldStreamLaunchOwner {
                 boolean acknowledged = closedAcknowledged.isDone();
                 long wait = exitWaitMillis(acknowledged, since, graceMillis, drainMillis);
                 if (!acknowledged) {
-                    wait = Math.min(wait, drainMillis - since);
                     if (wait <= 0) {
                         return exit.isDone();
                     }
@@ -440,8 +437,11 @@ final class WorldStreamLaunchOwner {
             }
         }
 
-        /** Kept for the signal steps after the orderly wait (250 ms + 2 s) inside the deadline. */
-        static final long SIGNAL_RESERVE_MILLIS = 2500;
+        /**
+         * Kept for the exit grace and the signal steps after the orderly wait, inside the deadline.
+         */
+        // 250 ms exit grace + 250 ms after destroy + 2 s after destroyForcibly, plus headroom.
+        static final long SIGNAL_RESERVE_MILLIS = 3000;
 
         private static boolean await(CompletableFuture<Process> exit, long millis)
                 throws Exception {

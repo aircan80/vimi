@@ -435,7 +435,8 @@ class WorldStreamTransportTest {
                             return process;
                         },
                         WorldStreamTestChildren.STARTUP_GUARD_MILLIS,
-                        5000);
+                        5000,
+                        600); // exit grace for a JVM child on a loaded runner
         try {
             session.initialized()
                     .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);
@@ -451,8 +452,107 @@ class WorldStreamTransportTest {
 
     @Test
     void exitWaitGivesADrainingChildItsBudgetAndAnAcknowledgedOneOnlyTheGrace() {
-        assertEquals(250, WorldStreamLaunchOwner.Handle.exitWaitMillis(true, 100, 250, 2500));
-        assertEquals(2400, WorldStreamLaunchOwner.Handle.exitWaitMillis(false, 100, 250, 2500));
-        assertEquals(250, WorldStreamLaunchOwner.Handle.exitWaitMillis(false, 2400, 250, 2500));
+        assertEquals(250, WorldStreamLaunchOwner.Handle.exitWaitMillis(true, 100, 250, 2000));
+        assertEquals(1900, WorldStreamLaunchOwner.Handle.exitWaitMillis(false, 100, 250, 2000));
+        assertEquals(0, WorldStreamLaunchOwner.Handle.exitWaitMillis(false, 2000, 250, 2000));
+        // Worst case after CLOSED at the end of the drain budget still fits the 5 s deadline:
+        // drain + exit grace + destroy wait + destroyForcibly wait.
+        assertTrue(
+                5000 - WorldStreamLaunchOwner.Handle.SIGNAL_RESERVE_MILLIS + 250 + 250 + 2000
+                        < 5000);
+    }
+
+    /**
+     * A hung child that never reports CLOSED is still signalled and drained within the deadline.
+     */
+    @Test
+    void hungChildIsSignalledAndDrainedInsideTheCloseDeadline() throws Exception {
+        Path source = directory.resolve("Hung.java");
+        Files.writeString(
+                source,
+                """
+            class Hung {
+              public static void main(String[] a) throws Exception {
+                String prefix="WS2 "+a[0]+" ";
+                System.out.print(prefix+"SESSION TERRAIN_BASIC_V1\\n"+prefix+"CREDIT 1 0 1\\n");
+                System.out.flush();
+                Thread.sleep(600_000); // never reads CLOSE, never reports CLOSED
+              }
+            }
+            """);
+        var child = new AtomicReference<Process>();
+        var prepared = WorldStreamTransport.prepare(directory, spec);
+        var session =
+                prepared.launch(
+                        arguments -> {
+                            Path own = Path.of(arguments.get(1));
+                            var descriptor =
+                                    WorldStreamEnvelope.decodeSession(
+                                            Files.readAllBytes(own.resolve("session.wss")),
+                                            arguments.get(3));
+                            String nonce =
+                                    HexFormat.of().toHexDigits(descriptor.nonce().high())
+                                            + HexFormat.of().toHexDigits(descriptor.nonce().low());
+                            var process =
+                                    new ProcessBuilder(
+                                                    Path.of(
+                                                                    System.getProperty("java.home"),
+                                                                    "bin",
+                                                                    "java")
+                                                            .toString(),
+                                                    source.toString(),
+                                                    nonce)
+                                            .start();
+                            child.set(process);
+                            return process;
+                        },
+                        WorldStreamTestChildren.STARTUP_GUARD_MILLIS,
+                        5000);
+        try {
+            session.initialized()
+                    .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);
+            prepared.close();
+            long start = System.nanoTime();
+            var receipt = session.closeAsync().get(6, TimeUnit.SECONDS);
+            long millis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+            System.out.println("hung child signalled and drained in " + millis + " ms");
+            assertFalse(child.get().isAlive(), "signalled");
+            assertTrue(receipt.exitCode().orElseThrow() != 0, "terminated, not an orderly exit");
+            assertTrue(millis >= 1500, "the drain budget was given first: " + millis);
+            assertTrue(millis < 5000, "inside the close deadline: " + millis);
+        } finally {
+            session.closeAsync();
+            child.get().destroyForcibly();
+            try {
+                session.terminatedAndDrained().get(8, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.ExecutionException expected) {
+                // A signalled child ends the session abnormally.
+            }
+        }
+    }
+
+    @Test
+    void proofBackendNamesAreValidated() {
+        assertEquals(
+                WorldStreamTransport.Backend.D3D11,
+                WorldStreamTransportProof.proofBackend("D3D11"));
+        assertEquals(
+                WorldStreamTransport.Backend.VULKAN,
+                WorldStreamTransportProof.proofBackend(" vulkan "));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldStreamTransportProof.proofBackend("opengl"));
+    }
+
+    @Test
+    void failureReasonsAreClassNameAndCappedSingleLineMessage() {
+        assertEquals(
+                "IOException: a b",
+                WorldStreamSession.describe(new java.io.IOException("a" + (char) 10 + "b")));
+        assertEquals(
+                "IllegalStateException", WorldStreamSession.describe(new IllegalStateException()));
+        assertEquals(
+                "RuntimeException: ".length() + 160,
+                WorldStreamSession.describe(new RuntimeException("x".repeat(500))).length());
     }
 }

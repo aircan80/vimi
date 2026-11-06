@@ -34,9 +34,8 @@ public final class WorldStreamObjectsMaterialProof {
                         new WorldStreamTransport.Spec(
                                 "ab".repeat(32),
                                 1,
-                                WorldStreamTransport.Backend.valueOf(
-                                        System.getProperty("vimi.proof.backend", "VULKAN")
-                                                .toUpperCase(java.util.Locale.ROOT)),
+                                WorldStreamTransportProof.proofBackend(
+                                        System.getProperty("vimi.worldProof.backend", "vulkan")),
                                 true));
         var session =
                 prepared.launch(
