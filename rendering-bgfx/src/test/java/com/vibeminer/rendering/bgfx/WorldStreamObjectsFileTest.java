@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.vibeminer.rendering.world.ObjectTextureMips;
 import com.vibeminer.rendering.world.TerrainScene;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -34,8 +35,8 @@ final class WorldStreamObjectsFileTest {
     /** One model with a single quad mesh drawn by two ranges, two images and two placements. */
     static WorldStreamTileWriter.Exterior small() {
         var builder = WorldStreamTileWriter.Exterior.builder();
-        builder.image(2, 2, rgba(4, 10));
-        builder.image(4, 1, rgba(4, 20));
+        builder.image(2, 2, chain(2, 2, rgba(4, 10)));
+        builder.image(4, 1, chain(4, 1, rgba(4, 20)));
         builder.model();
         float[] vertices = new float[4 * 8];
         for (int v = 0; v < 4; v++) {
@@ -53,6 +54,21 @@ final class WorldStreamObjectsFileTest {
         builder.placement(0, -100.25, -200.5, 12, 1, 1, 0);
         builder.placement(0, -110.25, -205.5, 13, 1.5, 0, 1);
         return builder.build();
+    }
+
+    /** The packed mip chain of a top level, generated as the World producers do. */
+    static ByteBuffer chain(int width, int height, ByteBuffer top) {
+        byte[] bytes = new byte[top.remaining()];
+        top.duplicate().get(bytes);
+        return ByteBuffer.wrap(
+                ObjectTextureMips.build(
+                                width,
+                                height,
+                                bytes,
+                                ObjectTextureMips.BLENDED,
+                                (below, w, h) -> null,
+                                () -> false)
+                        .rgba());
     }
 
     private static ByteBuffer rgba(int pixels, int seed) {
@@ -111,11 +127,19 @@ final class WorldStreamObjectsFileTest {
 
     @Test
     void aHighTierSetAtExactlyTheObjectPixelCapWritesAndReads() throws Exception {
-        // 56 images of 256^2 are exactly MAX_PIXELS (7 << 19), the HIGH tier's total.
+        // 56 chains of 256^2 (87,381 texels each) leave 19 of MAX_PIXELS, the HIGH tier's chain
+        // total; three 2x2 chains (5), a 2x1 (3) and a 1x1 (1) fill it exactly.
         var builder = WorldStreamTileWriter.Exterior.builder();
+        int chain = ObjectTextureMips.chainPixels(256, 256);
         for (int i = 0; i < 56; i++) {
-            builder.image(256, 256, ByteBuffer.allocate(256 * 256 * 4));
+            builder.image(256, 256, ByteBuffer.allocate(chain * 4));
         }
+        assertEquals(19, WorldStreamObjectsFile.MAX_PIXELS - 56 * chain);
+        for (int i = 0; i < 3; i++) {
+            builder.image(2, 2, ByteBuffer.allocate(5 * 4));
+        }
+        builder.image(2, 1, ByteBuffer.allocate(3 * 4));
+        builder.image(1, 1, ByteBuffer.allocate(4));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> builder.image(1, 1, ByteBuffer.allocate(4)),
@@ -136,8 +160,10 @@ final class WorldStreamObjectsFileTest {
     @Test
     void maximumProfileFitsUnderTheObjectsFileCeiling() throws Exception {
         var builder = WorldStreamTileWriter.Exterior.builder();
+        int chain = ObjectTextureMips.chainPixels(256, 256);
+        assertEquals(87_381, chain);
         for (int i = 0; i < 24; i++) {
-            builder.image(256, 256, ByteBuffer.allocate(256 * 256 * 4));
+            builder.image(256, 256, ByteBuffer.allocate(chain * 4));
         }
         builder.model();
         // Ten meshes of 16,384 vertices and 49,152 indices reach the vertex and index caps.
@@ -154,7 +180,7 @@ final class WorldStreamObjectsFileTest {
         var maximum = builder.build();
         assertTrue(maximum.bytes() <= WorldStreamObjectsFile.MAX_BYTES);
         assertEquals(
-                WorldStreamObjectsFile.length(1, 10, 10, 1, 24, 163_840, 491_520, 3 << 19),
+                WorldStreamObjectsFile.length(1, 10, 10, 1, 24, 163_840, 491_520, 24 * chain),
                 maximum.bytes());
         // Every table at its cap still fits the ceiling.
         assertTrue(
@@ -172,7 +198,21 @@ final class WorldStreamObjectsFileTest {
         var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
         assertEquals(163_840, read.vertexCount());
         assertEquals(491_520, read.indexCount());
-        assertEquals(3 << 19, read.pixelCount());
+        assertEquals(24 * chain, read.pixelCount());
+        // The pixel cap is the HIGH tier's chain budgets: 2,796,203 + 699,051 + 1,398,101.
+        assertEquals(4_893_355, WorldStreamObjectsFile.MAX_PIXELS);
+        // Every table at its cap needs about 27 MB, under the 28 MiB ceiling with headroom.
+        long caps =
+                WorldStreamObjectsFile.length(
+                        WorldStreamObjectsFile.MAX_MODELS,
+                        WorldStreamObjectsFile.MAX_MESHES,
+                        WorldStreamObjectsFile.MAX_RANGES,
+                        WorldStreamObjectsFile.MAX_PLACEMENTS,
+                        WorldStreamObjectsFile.MAX_IMAGES,
+                        WorldStreamObjectsFile.MAX_VERTICES,
+                        WorldStreamObjectsFile.MAX_INDICES,
+                        WorldStreamObjectsFile.MAX_PIXELS);
+        assertTrue(caps > (25 << 20) && caps <= WorldStreamObjectsFile.MAX_BYTES, "caps " + caps);
         // The ceiling itself is enforced by the reference and by the tile header.
         assertThrows(
                 IllegalArgumentException.class,
@@ -227,7 +267,7 @@ final class WorldStreamObjectsFileTest {
         assertFalse(builder.fits(0, 0, 2, 3, 3, 1), "Every mesh needs a range");
         assertEquals(WorldStreamObjectsFile.MAX_PLACEMENTS, builder.placementRoom());
         assertEquals(WorldStreamTileWriter.Exterior.MAX_DRAWS, builder.drawRoom());
-        builder.image(2, 2, rgba(4, 1));
+        builder.image(2, 2, chain(2, 2, rgba(4, 1)));
         builder.model();
         builder.mesh(
                 FloatBuffer.wrap(new float[24]),
@@ -298,7 +338,7 @@ final class WorldStreamObjectsFileTest {
     @Test
     void builderRefusesInvalidIndicesRangesAndTransforms() {
         var builder = WorldStreamTileWriter.Exterior.builder();
-        builder.image(2, 2, ByteBuffer.allocate(16));
+        builder.image(2, 2, ByteBuffer.allocate(20));
         builder.model();
         assertThrows(
                 IllegalArgumentException.class,
@@ -308,7 +348,7 @@ final class WorldStreamObjectsFileTest {
                                 IntBuffer.wrap(new int[] {0, 1, 3}),
                                 new int[] {0, 3, 0}));
         var image = WorldStreamTileWriter.Exterior.builder();
-        image.image(3, 2, ByteBuffer.allocate(24));
+        image.image(3, 2, ByteBuffer.allocate(28));
         image.model();
         image.mesh(
                 FloatBuffer.wrap(new float[24]),
@@ -319,7 +359,7 @@ final class WorldStreamObjectsFileTest {
                 "Image size",
                 assertThrows(IllegalArgumentException.class, image::build).getMessage());
         var transform = WorldStreamTileWriter.Exterior.builder();
-        transform.image(2, 2, ByteBuffer.allocate(16));
+        transform.image(2, 2, ByteBuffer.allocate(20));
         transform.model();
         transform.mesh(
                 FloatBuffer.wrap(new float[24]),

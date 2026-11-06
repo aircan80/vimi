@@ -91,6 +91,10 @@ public final class WorldTileCreaturesTest {
         var small = WorldTileCreatures.reduce(new MeshAppearance.Texture(2, 2,
                 new int[] {0xff000000, 0xffffffff, 0xff000000, 0xffffffff}), Cancellation.NONE);
         require(small.width() == 2 && (small.rgba()[4] & 255) == 255, "Small images are kept exactly");
+        require(image.rgba().length
+                        == com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(128, 4) * 4
+                        && small.rgba().length == (4 + 1) * 4,
+                "Creature images carry their generated mip chain");
     }
 
     private static void appendDrawsOnlyQualifiedSpawnsOfTheTile() {
