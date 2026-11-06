@@ -1779,6 +1779,7 @@ class WorldExteriorObjectsTest {
                         WorldExteriorObjects.MAX_DOODADS,
                         set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
                 assertEquals(3, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
+                assertEquals(3, set.count(WorldExteriorObjects.Count.DOODAD_CAP_PLACEMENTS));
                 assertEquals(
                         WorldExteriorObjects.MAX_DOODADS - 1, set.placements().getLast().ordinal());
             }
@@ -1797,6 +1798,7 @@ class WorldExteriorObjectsTest {
                         set.count(WorldExteriorObjects.Count.MODEL_DRAWN));
                 assertEquals(2, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
                 assertEquals(WorldExteriorObjects.MAX_MODELS, set.models().size());
+                assertEquals(2, set.count(WorldExteriorObjects.Count.DOODAD_CAP_MODELS));
             }
         }
     }

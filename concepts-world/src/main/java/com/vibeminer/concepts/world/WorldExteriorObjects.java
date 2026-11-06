@@ -317,7 +317,18 @@ public final class WorldExteriorObjects {
          */
         IMAGE_MIPS_FILE,
         IMAGE_MIPS_PARTIAL,
-        IMAGE_MIPS_GENERATED
+        IMAGE_MIPS_GENERATED,
+        /**
+         * Why capped doodads were left out (#308), over MDDF and set doodads together: these four
+         * sum to DOODAD_CAPPED + SET_DOODAD_CAPPED. The tile's doodad placements were full
+         * (MAX_DOODADS), its distinct doodad models were all read (MAX_MODELS), the doodad's model
+         * was over the remaining doodad vertex, index or range budget (MODEL_CAPPED), or its draws
+         * were over the tile's remaining draw budget (MAX_DRAWS).
+         */
+        DOODAD_CAP_PLACEMENTS,
+        DOODAD_CAP_MODELS,
+        DOODAD_CAP_MODEL_SIZE,
+        DOODAD_CAP_DRAWS
     }
 
     /** What a placement draws: an outdoor WMO, an MDDF doodad or a WMO doodad-set entry. */
@@ -1471,21 +1482,27 @@ public final class WorldExteriorObjects {
                 double sin,
                 Rotation rotation) {
             if (doodads >= MAX_DOODADS) {
+                count(Count.DOODAD_CAP_PLACEMENTS);
                 return RootState.CAPPED;
             }
             var state = doodadStates.get(modelId);
             if (state == null) {
                 if (modelsRead >= MAX_MODELS) {
+                    count(Count.DOODAD_CAP_MODELS);
                     return RootState.CAPPED;
                 }
                 state = readModel(modelId);
                 doodadStates.put(modelId, state);
             }
             if (state != RootState.DRAWN) {
+                if (state == RootState.CAPPED) {
+                    count(Count.DOODAD_CAP_MODEL_SIZE);
+                }
                 return state;
             }
             int model = doodadSlots.get(modelId), cost = modelDraws(model);
             if (cost > MAX_DRAWS - draws) {
+                count(Count.DOODAD_CAP_DRAWS);
                 return RootState.CAPPED;
             }
             draws += cost;
