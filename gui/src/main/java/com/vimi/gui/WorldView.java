@@ -855,6 +855,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 devOverlay);
         StackPane.setAlignment(minimap, Pos.TOP_RIGHT);
         StackPane.setMargin(minimap, new Insets(12));
+        minimap.refocus(() -> {
+            if (explorer) viewport.requestFocus();
+        });
+        minimap.tracking().onShowing(this::clearKeys);
         StackPane.setAlignment(devOverlay, Pos.TOP_LEFT);
         // Below the top-left panels hint (and the Map button that takes its place).
         StackPane.setMargin(devOverlay, new Insets(40, 12, 12, 12));
@@ -1947,8 +1951,6 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         new HBox(8, textureActivity, textureStatus, retryTextures),
                         new HBox(8, new Label("Instances"), entrances, enterInstance, leaveInstance,
                                 instanceStatus)));
-        if (spawns != null) ((VBox) content.getBottom()).getChildren().add(spawns.controls());
-        if (roles != null) ((VBox) content.getBottom()).getChildren().add(roles.controls());
         applyPanels();
     }
 
@@ -2786,6 +2788,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             audio.area(inventory == null ? null : handle,
                     inventory == null ? -1 : inventory.map().id(), snapshot.area());
         }
+        minimap.progress(snapshot.prepared(), snapshot.desired());
         if (camera != null) position.setText(String.format(java.util.Locale.ROOT,
                 "Tile %d,%d · x %.1f / y %.1f / altitude %.1f · %.0f yards/s · %d / %d tiles",
                 tileX(), tileY(), camera.x(), camera.y(), camera.z(),
@@ -3256,6 +3259,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (roles != null || closed) throw new IllegalStateException("Role overlay already attached");
         roles = java.util.Objects.requireNonNull(overlay);
         minimap.attachRoles(overlay);
+        minimap.tracking().roles(overlay.controls());
     }
 
     /** The developer overlay, for tests. */
@@ -3273,6 +3277,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (spawns != null || closed) throw new IllegalStateException("Spawn overlay already attached");
         spawns = java.util.Objects.requireNonNull(overlay);
         viewport.getChildren().add(viewport.getChildren().indexOf(image) + 1, overlay);
+        minimap.tracking().spawns(overlay.controls());
         // A clicked marker whose model outcome was still resolving is re-described once it arrives.
         overlay.models().ifPresent(models -> models.listen(npcId -> {
             var pending = inspectedSpawn;
@@ -3335,6 +3340,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var map = inventory == null ? null : inventory.map();
         if (links == null || map == null) {
             entrances.getItems().clear();
+            minimap.entrances(java.util.List.of());
             instanceStatus.setText(links == null ? "Reading recorded instance entrances…" : "");
             return;
         }
@@ -3345,6 +3351,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var previous = entrances.getValue();
         var found = links.entrancesOn(map.id(), entranceX, entranceY);
         entrances.getItems().setAll(found);
+        minimap.entrances(found);
         if (previous != null) {
             found.stream().filter(l -> l.mapId() == previous.mapId()).findFirst()
                     .ifPresent(entrances::setValue);
