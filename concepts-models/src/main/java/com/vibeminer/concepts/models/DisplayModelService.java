@@ -865,7 +865,7 @@ public final class DisplayModelService implements BuildDisplayModels {
             }
             pixels += count;
             int index = textures.size();
-            textures.add(new MeshAppearance.Texture(image.width(), image.height(), argb));
+            textures.add(MeshAppearance.Texture.adopt(image.width(), image.height(), argb));
             decoded.put(fid, index);
             receipts.put(fid, stat.file().contentKey());
             return index;
