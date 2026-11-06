@@ -496,6 +496,13 @@ class WorldPlacementSourceTest {
                             BuildFiles.class.getClassLoader(),
                             new Class<?>[] {BuildFiles.class},
                             (proxy, method, args) -> {
+                                if (method.getName().equals("stat")) {
+                                    // Full stats are not needed: answer as if the file were
+                                    // unknown.
+                                    return CompletableFuture.completedFuture(
+                                            new FileTypes.FileStat(
+                                                    FileTypes.FileLookupState.UNKNOWN_FILE, null));
+                                }
                                 if (method.getName().equals("build")) {
                                     return BUILD;
                                 }
