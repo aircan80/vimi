@@ -1782,7 +1782,7 @@ final class WorldStreamScopesTest {
                                     cache::prepare);
             long start = cache.releaseRevision();
             var original = files.sources.get(2L);
-            for (int i = 0; i < 12; i++) {
+            for (int i = 0; i < WorldGeometryCache.LIMIT; i++) {
                 var changed = original.clone();
                 java.nio.ByteBuffer.wrap(changed)
                         .order(java.nio.ByteOrder.LITTLE_ENDIAN)
