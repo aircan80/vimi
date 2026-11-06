@@ -1791,6 +1791,7 @@ class WorldTerrainTextureSourceTest {
                 var tile = result.tiles().getFirst();
                 assertEquals(WorldTerrainTextureSource.State.READY, tile.state());
                 assertEquals(240, tile.supportedChunks());
+                assertEquals(16, tile.emptyChunks());
                 assertEquals(16, tile.issues().size());
                 assertTrue(
                         tile.issues().stream()
@@ -1812,13 +1813,56 @@ class WorldTerrainTextureSourceTest {
             }
             assertEquals(1, pool.stats().cachedEntries());
             int decodes = files.opens(10);
-            // The second read is an atlas cache hit: no diffuse decode, same drawn count.
+            // The second read is an atlas cache hit: no diffuse decode, the same drawn and empty
+            // counts, and the same NO_LAYERS issues for diagnostics.
             try (var result = read(source)) {
                 var tile = result.tiles().getFirst();
                 assertEquals(WorldTerrainTextureSource.State.READY, tile.state());
                 assertEquals(240, tile.supportedChunks());
+                assertEquals(16, tile.emptyChunks());
+                assertEquals(16, tile.issues().size());
+                assertTrue(
+                        tile.issues().stream()
+                                .allMatch(
+                                        issue ->
+                                                issue.ordinal() % 16 == 15
+                                                        && issue.maskIssue()
+                                                                == com.vibeminer.formats.world
+                                                                        .WorldTextureFormats
+                                                                        .ChunkIssue.NO_LAYERS));
             }
             assertEquals(decodes, files.opens(10));
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void readyMeansEveryChunkDrawnOrEmpty() throws Exception {
+        var files = new Files();
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try (var result = read(source)) {
+            var receipt = result.tiles().getFirst().receipt();
+            var ready = WorldTerrainTextureSource.State.READY;
+            var partial = WorldTerrainTextureSource.State.PARTIAL;
+            new WorldTerrainTextureSource.TileResult(TILE, ready, receipt, 256, 0, List.of());
+            new WorldTerrainTextureSource.TileResult(TILE, ready, receipt, 240, 16, List.of());
+            new WorldTerrainTextureSource.TileResult(TILE, partial, receipt, 240, 0, List.of());
+            for (int[] bad : new int[][] {{240, 0}, {0, 256}, {200, 57}, {240, -1}}) {
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () ->
+                                new WorldTerrainTextureSource.TileResult(
+                                        TILE, ready, receipt, bad[0], bad[1], List.of()),
+                        java.util.Arrays.toString(bad));
+            }
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            new WorldTerrainTextureSource.TileResult(
+                                    TILE, partial, receipt, 240, 16, List.of()));
         } finally {
             source.closeAsync().get(5, TimeUnit.SECONDS);
             pool.closeAsync().get(5, TimeUnit.SECONDS);
