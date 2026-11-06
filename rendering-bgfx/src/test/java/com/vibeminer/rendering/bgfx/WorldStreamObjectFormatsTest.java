@@ -61,6 +61,15 @@ final class WorldStreamObjectFormatsTest {
                         .endsWith("(" + BgfxWorldStreamRenderer.OBJECTS_RGBA8_PROPERTY + ")"));
     }
 
+    @Test
+    void compressedSlicesLetBgfxDeriveThePitch() {
+        var bc =
+                WorldStreamObjectMips.plan(ObjectTextureFormats.BC3, 64, 64, 1 << 20).get(0).get(0);
+        assertEquals(0xFFFF, BgfxWorldStreamRenderer.updatePitch(ObjectTextureFormats.BC3, bc));
+        var rgba = WorldStreamObjectMips.plan(64, 64, 1 << 20).get(0).get(0);
+        assertEquals(256, BgfxWorldStreamRenderer.updatePitch(ObjectTextureFormats.RGBA8, rgba));
+    }
+
     /**
      * The fallback decoder agrees with the BLP decoder the producer uses, block for block, for the
      * alpha settings a producer may carry as blocks: BC1 with 1-bit alpha, BC2 and BC3.
