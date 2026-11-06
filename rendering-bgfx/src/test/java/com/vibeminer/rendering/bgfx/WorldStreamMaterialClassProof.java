@@ -21,7 +21,8 @@ import java.util.concurrent.TimeUnit;
  *   <li>Right, an unlit additive quad of blue (0, 0, 200) at alpha 128: the frame's pixel becomes
  *       the pixel without it plus 200 x 128 / 255 blue, red and green unchanged.
  *   <li>Centre, a lit opaque quad facing away from the light (a third of its texel colour) with the
- *       vertex colour (128, 64, 0): each channel is its texel times a third plus the colour.
+ *       vertex colour (128, 64, 0): with vertex colours on, each channel is its texel times a third
+ *       plus the colour; with them off (the default), a third only, and every other pixel equal.
  * </ul>
  *
  * Authored data only.
@@ -94,7 +95,10 @@ final class WorldStreamMaterialClassProof {
         return pixels.flip();
     }
 
-    /** Returns "unlit=<argb> additive=<before>-><after> coloured=<argb>" for the pass line. */
+    /**
+     * Returns "unlit=<argb> additive=<before>-><after> coloured=<argb> colouredOff=<argb>" for the
+     * pass line.
+     */
     @SuppressWarnings("try")
     static String run(Path base) throws Exception {
         Path directory = Files.createDirectories(base.resolve("objects-material-classes"));
@@ -140,7 +144,10 @@ final class WorldStreamMaterialClassProof {
             require(
                     owner.finishLate(late, true) == WorldStreamStatus.LateOutcome.ATTACHED,
                     "Late objects attach");
+            owner.vertexColours(true);
             var after = frame(owner, reader, 2, new long[] {0});
+            owner.vertexColours(false);
+            var off = frame(owner, reader, 3, new long[] {0});
             double focal = TerrainCamera.focalPixels(WIDTH);
             int row = HEIGHT / 2;
             int unlitX = (int) (WIDTH / 2.0 + focal * -1.2 / 5);
@@ -178,6 +185,19 @@ final class WorldStreamMaterialClassProof {
                                 + " expected "
                                 + expected);
             }
+            // Off: the same frame without the vertex colour term; nothing else moves.
+            int plain = off[row * WIDTH + WIDTH / 2];
+            for (int c = 0; c < 3; c++) {
+                int expected = (int) Math.floor(texel[c] / 3.0);
+                require(
+                        Math.abs((plain >>> shift[c] & 255) - expected) <= 1,
+                        "Vertex colours off draw the light alone: " + Integer.toHexString(plain));
+            }
+            for (int x : new int[] {unlitX, additiveX}) {
+                require(
+                        off[row * WIDTH + x] == after[row * WIDTH + x],
+                        "Vertex colours off change only the coloured surface");
+            }
             return "unlit="
                     + Integer.toHexString(unlit)
                     + " additive="
@@ -185,7 +205,9 @@ final class WorldStreamMaterialClassProof {
                     + "->"
                     + Integer.toHexString(now)
                     + " coloured="
-                    + Integer.toHexString(coloured);
+                    + Integer.toHexString(coloured)
+                    + " colouredOff="
+                    + Integer.toHexString(plain);
         }
     }
 

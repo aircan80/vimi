@@ -798,9 +798,7 @@ final class WorldStreamSourceBridge {
                     ranges[r * 3 + 2] = range.image();
                     blends[r] = range.blend();
                 }
-                // WMO vertex colours stay zero unless -Dvimi.world.wmoVertexColours=true (#375).
-                builder.mesh(mesh.vertices(), mesh.indices(), ranges, blends,
-                        WorldStreamGpuOwner.WMO_VERTEX_COLOURS ? mesh.colours() : java.nio.IntBuffer.allocate(0));
+                builder.mesh(mesh.vertices(), mesh.indices(), ranges, blends, mesh.colours());
             }
         }
     }

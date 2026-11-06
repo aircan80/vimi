@@ -7,7 +7,8 @@ SAMPLER2D(s_wmoDiffuse, 0);
 uniform vec4 u_wmoMaterial;
 // rgb: sky and fog colour at and below the horizon, 0..255; w: elevation (radians) of u_wmoSkyTop.
 uniform vec4 u_wmoFog;
-// rgb: sky colour at and above u_wmoFog.w, 0..255; w unused. Equal to u_wmoFog for flat fog.
+// rgb: sky colour at and above u_wmoFog.w, 0..255, equal to u_wmoFog for flat fog; w: 1 adds the
+// vertex colour (MOCV, #375) to the light, 0 ignores it.
 uniform vec4 u_wmoSkyTop;
 // x: fog start depth, y: depth where fog reaches z, z: maximum fog, w: cut depth.
 uniform vec4 u_wmoFogRange;
@@ -38,8 +39,8 @@ void main()
     float unlit = step(0.5, u_wmoMaterial.w - 2.0 * additive);
     float intensity = mix((1.0 / 3.0) + (2.0 / 3.0) * diffuse, 1.0, unlit);
     // Exterior groups start from the world light and add the texture times the vertex colour
-    // (MOCV, #375); a vertex without a colour adds nothing.
-    vec3 light = vec3_splat(intensity) + v_wmoColour;
+    // (MOCV, #375) when u_wmoSkyTop.w is 1; a vertex without a colour adds nothing.
+    vec3 light = vec3_splat(intensity) + v_wmoColour * u_wmoSkyTop.w;
     float fog = clamp((v_wmoDepth - u_wmoFogRange.x) / (u_wmoFogRange.y - u_wmoFogRange.x), 0.0, u_wmoFogRange.z);
     // Fog toward the sky at this fragment's own elevation above the camera.
     float elevation = atan2(v_wmoRelative.z, max(length(v_wmoRelative.xy), 1e-6));

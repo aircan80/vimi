@@ -42,8 +42,9 @@ final class WorldStreamGpuOwner {
 
     /**
      * WMO vertex colours (MOCV, #375) added to the building light. Off by default until compared
-     * with the client: only {@code -Dvimi.world.wmoVertexColours=true} turns them on. Off, every
-     * object vertex carries a zero colour, which adds nothing.
+     * with the client: only {@code -Dvimi.world.wmoVertexColours=true} turns them on. The colours
+     * are always written; the World helper, which draws them, receives the switch on its command
+     * line ({@link GpuPreviewService}).
      */
     static final boolean WMO_VERTEX_COLOURS =
             vertexColoursEnabled(System.getProperty("vimi.world.wmoVertexColours"));

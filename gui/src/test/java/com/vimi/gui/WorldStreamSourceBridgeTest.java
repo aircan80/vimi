@@ -77,6 +77,9 @@ public final class WorldStreamSourceBridgeTest {
         check(!WorldStreamGpuOwner.vertexColoursEnabled(null), "WMO vertex colours are off without the property");
         check(!WorldStreamGpuOwner.vertexColoursEnabled("yes"), "Only true turns WMO vertex colours on");
         check(WorldStreamGpuOwner.vertexColoursEnabled("TRUE"), "true turns WMO vertex colours on");
+        check(GpuPreviewService.forwardedProperties(false).isEmpty(), "Off forwards nothing to the helper");
+        check(GpuPreviewService.forwardedProperties(true).equals(java.util.List.of("-Dvimi.world.wmoVertexColours=true")),
+                "On is forwarded to the helper");
         check(!WorldStreamGpuOwner.exteriorsEnabled("FALSE"), "The opt-out ignores letter case");
         check(WorldStreamGpuOwner.exteriorsEnabled("no"), "Only false opts out");
         check(!WorldStreamGpuOwner.creaturesEnabled(null), "Creature models are off without the property");

@@ -404,6 +404,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private long content, nextTag, liveBytes, peakBytes, maximumStepNanos, objectsRevision;
     private int peakStepBytes;
     private boolean closed, callbackFreed, objectCulling = true;
+    private boolean vertexColours = VERTEX_COLOURS;
     private FrameCounts lastFrame = new FrameCounts(0, 0, 0, 0);
     private int framePlacements, frameCulled, frameObjectSubmits, frameCameraUniforms;
     // The u_wmoMaterial class last set this frame, or -1.
@@ -878,6 +879,33 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         objectCulling = enabled;
     }
 
+    /**
+     * WMO vertex colours (MOCV, #375) added to the building light. Off by default until compared
+     * with the client: only {@code -Dvimi.world.wmoVertexColours=true}, which the application
+     * forwards to this helper, turns them on. The colours are always uploaded; the flag only
+     * reaches the shader (u_wmoSkyTop.w), so turning it on needs no other shader.
+     */
+    static final boolean VERTEX_COLOURS =
+            vertexColoursEnabled(System.getProperty("vimi.world.wmoVertexColours"));
+
+    /** Only {@code true} (any letter case) turns WMO vertex colours on. */
+    static boolean vertexColoursEnabled(String property) {
+        return "true".equalsIgnoreCase(property);
+    }
+
+    /** Proof seam: overrides {@link #VERTEX_COLOURS} for this renderer. */
+    void vertexColours(boolean enabled) {
+        requireOwner();
+        vertexColours = enabled;
+    }
+
+    /** The object sky top uniform: the fog's top colour, with w the vertex colour switch. */
+    static float[] wmoSkyTop(WorldFog fog, boolean vertexColours) {
+        float[] value = fog.topUniform();
+        value[3] = vertexColours ? 1 : 0;
+        return value;
+    }
+
     /** Changes whenever late objects become drawable, so an unchanged camera redraws once. */
     long objectsRevision() {
         return objectsRevision;
@@ -1111,7 +1139,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 frameUniform(wmoEye, matrix);
                 frameUniform(wmoProjection, project);
                 bgfx_set_uniform(wmoFog, stack.floats(fog.fogUniform()), 1);
-                bgfx_set_uniform(wmoSkyTop, stack.floats(fog.topUniform()), 1);
+                bgfx_set_uniform(wmoSkyTop, stack.floats(wmoSkyTop(fog, vertexColours)), 1);
                 bgfx_set_uniform(wmoFogRange, stack.floats(fog.rangeUniform()), 1);
             }
             bgfx_set_uniform(worldFog, stack.floats(fog.fogUniform()), 1);
