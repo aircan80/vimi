@@ -34,13 +34,22 @@ public final class WmoFormats {
             MODS = 0x4d4f4453,
             MODN = 0x4d4f444e,
             MODI = 0x4d4f4449,
-            MODD = 0x4d4f4444;
+            MODD = 0x4d4f4444,
+            MOPV = 0x4d4f5056,
+            MOPT = 0x4d4f5054,
+            MOPR = 0x4d4f5052;
 
     /** Doodad declaration ceilings; larger or over-budget declarations are not retained. */
     public static final int MAX_DOODAD_SETS = 256, MAX_DOODAD_DEFS = 32768;
 
+    /**
+     * Portal declaration ceilings; larger or over-budget declarations are not retained. MOPT and
+     * MOPR index with 16-bit fields, so no valid file needs more than 65,535 of either.
+     */
+    public static final int MAX_PORTALS = 4096, MAX_PORTAL_VERTICES = 16384, MAX_PORTAL_REFS = 8192;
+
     private static final Set<Integer> ROOT_TAGS =
-            Set.of(MVER, MOHD, MOMT, GFID, MOTX, MOGN, MODS, MODN, MODI, MODD);
+            Set.of(MVER, MOHD, MOMT, GFID, MOTX, MOGN, MODS, MODN, MODI, MODD, MOPV, MOPT, MOPR);
     private static final Set<Integer> GROUP_TAGS = Set.of(MVER, MOGP);
     private static final Set<Integer> MESH_TAGS = Set.of(MOVT, MONR, MOVI, MOTV, MOBA, MOPY);
 
@@ -174,6 +183,7 @@ public final class WmoFormats {
         private final boolean gfidPresent, namesPresent;
         private final GroupNames groupNames;
         private final Doodads doodads;
+        private final Portals portals;
 
         private Root(
                 RootHeader h,
@@ -184,9 +194,11 @@ public final class WmoFormats {
                 boolean gp,
                 boolean np,
                 GroupNames gn,
-                Doodads d) {
+                Doodads d,
+                Portals p) {
             groupNames = gn;
             doodads = d;
+            portals = p;
             header = h;
             materials = List.copyOf(m);
             gfids = g;
@@ -236,6 +248,85 @@ public final class WmoFormats {
         /** Recorded doodad sets, definitions and MODI FileDataIDs; see {@link Doodads}. */
         public Doodads doodads() {
             return doodads;
+        }
+
+        /** Recorded MOPV, MOPT and MOPR portal declarations; see {@link Portals}. */
+        public Portals portals() {
+            return portals;
+        }
+    }
+
+    /**
+     * One MOPT portal: a polygon of {@code vertexCount} MOPV vertices from {@code firstVertex}, in
+     * WMO-local axes, and its recorded plane {@code normal . p + distance = 0}. The plane is not
+     * recomputed from the vertices or normalized.
+     */
+    public record Portal(int firstVertex, int vertexCount, Vec3 normal, float distance) {}
+
+    /**
+     * One MOPR reference, read from a group's MOGP range ({@code firstPortal}, {@code
+     * portalCount}): the portal leads from that group to {@code group}. {@code side} is the raw
+     * signed 16-bit word; its sign says on which side of the portal plane the referencing group
+     * lies, which the traversal interprets (this reader does not).
+     */
+    public record PortalRef(int portal, int group, int side) {}
+
+    /**
+     * Recorded portal declarations (wowdev.wiki WMO: MOPV C3Vector[], MOPT 20-byte SMOPortal
+     * {uint16 startVertex, uint16 count, C4Plane plane}, MOPR 8-byte SMOPortalRef {uint16
+     * portalIndex, uint16 groupIndex, int16 side, uint16 filler}). {@code retained} is false when
+     * any of the three is absent, duplicated or has a partial record; when one exceeds {@link
+     * #MAX_PORTALS}, {@link #MAX_PORTAL_VERTICES} or {@link #MAX_PORTAL_REFS}; when a portal has
+     * fewer than three vertices, a vertex range outside MOPV or a non-finite vertex or plane; when
+     * a reference names a portal outside MOPT or a group outside the MOHD group count; or when they
+     * do not fit the root fact budget. A root that qualifies without its portals is never declined
+     * because of them.
+     */
+    public static final class Portals {
+        private static final Portals ABSENT =
+                new Portals(false, false, new float[0], List.of(), List.of());
+        private final boolean declared, retained;
+        private final float[] vertices;
+        private final List<Portal> portals;
+        private final List<PortalRef> refs;
+
+        private Portals(
+                boolean declared,
+                boolean retained,
+                float[] vertices,
+                List<Portal> portals,
+                List<PortalRef> refs) {
+            this.declared = declared;
+            this.retained = retained;
+            this.vertices = vertices;
+            this.portals = List.copyOf(portals);
+            this.refs = List.copyOf(refs);
+        }
+
+        /** Any portal chunk (MOPV, MOPT or MOPR) was declared. */
+        public boolean declared() {
+            return declared;
+        }
+
+        public boolean retained() {
+            return retained;
+        }
+
+        public int vertexCount() {
+            return vertices.length / 3;
+        }
+
+        public Vec3 vertex(int ordinal) {
+            return new Vec3(
+                    vertices[ordinal * 3], vertices[ordinal * 3 + 1], vertices[ordinal * 3 + 2]);
+        }
+
+        public List<Portal> portals() {
+            return portals;
+        }
+
+        public List<PortalRef> refs() {
+            return refs;
         }
     }
 
@@ -546,7 +637,9 @@ public final class WmoFormats {
         GroupNames groupNames = GroupNames.absent();
         int namesAt = -1, namesBytes = 0;
         int setsAt = -1, setsBytes = 0, defsAt = -1, defsBytes = 0, idsAt = -1, idsBytes = 0;
-        boolean doodadNames = false, doodadDuplicate = false;
+        boolean doodadNames = false, doodadDuplicate = false, portalDuplicate = false;
+        int vertsAt = -1, vertsBytes = 0, portalsAt = -1, portalsBytes = 0, refsAt = -1;
+        int refsBytes = 0;
         while (input.hasRemaining()) {
             check(canceled);
             var chunk = chunk(input, input.limit(), chunks, budget, ROOT_TAGS);
@@ -647,6 +740,23 @@ public final class WmoFormats {
                     defsAt = at;
                     defsBytes = chunk.bytes();
                 }
+                case MOPV -> {
+                    // Like doodads, a duplicate portal declaration leaves the portals not
+                    // retained; it never declines the root.
+                    portalDuplicate |= !seen.add(MOPV);
+                    vertsAt = at;
+                    vertsBytes = chunk.bytes();
+                }
+                case MOPT -> {
+                    portalDuplicate |= !seen.add(MOPT);
+                    portalsAt = at;
+                    portalsBytes = chunk.bytes();
+                }
+                case MOPR -> {
+                    portalDuplicate |= !seen.add(MOPR);
+                    refsAt = at;
+                    refsBytes = chunk.bytes();
+                }
                 default -> {
                     /* All unparsed declarations remain in chunks, never inferred empty. */
                 }
@@ -682,6 +792,19 @@ public final class WmoFormats {
                         setsBytes,
                         defsAt,
                         defsBytes);
+        var portals =
+                portals(
+                        input,
+                        budget,
+                        canceled,
+                        header.groupCount(),
+                        portalDuplicate,
+                        vertsAt,
+                        vertsBytes,
+                        portalsAt,
+                        portalsBytes,
+                        refsAt,
+                        refsBytes);
         return new Root(
                 header,
                 materials,
@@ -691,7 +814,87 @@ public final class WmoFormats {
                 seen.contains(GFID),
                 seen.contains(MOTX),
                 groupNames,
-                doodads);
+                doodads,
+                portals);
+    }
+
+    /** Portal declarations, claimed after doodads; see {@link Portals} for what is not retained. */
+    private static Portals portals(
+            ByteBuffer input,
+            Budget budget,
+            BooleanSupplier canceled,
+            long groupCount,
+            boolean duplicate,
+            int vertsAt,
+            int vertsBytes,
+            int portalsAt,
+            int portalsBytes,
+            int refsAt,
+            int refsBytes) {
+        boolean declared = vertsAt >= 0 || portalsAt >= 0 || refsAt >= 0;
+        if (!declared) {
+            return Portals.ABSENT;
+        }
+        var notRetained = new Portals(true, false, new float[0], List.of(), List.of());
+        int vertexCount = vertsBytes / 12, portalCount = portalsBytes / 20;
+        int refCount = refsBytes / 8;
+        if (duplicate
+                || vertsAt < 0
+                || portalsAt < 0
+                || refsAt < 0
+                || vertsBytes % 12 != 0
+                || portalsBytes % 20 != 0
+                || refsBytes % 8 != 0
+                || vertexCount > MAX_PORTAL_VERTICES
+                || portalCount > MAX_PORTALS
+                || refCount > MAX_PORTAL_REFS
+                || !budget.tryClaim(
+                        192L + 12L * vertexCount + 48L * portalCount + 32L * refCount)) {
+            return notRetained;
+        }
+        var vertices = new float[vertexCount * 3];
+        for (int i = 0; i < vertices.length; i++) {
+            if ((i & 1023) == 0) {
+                check(canceled);
+            }
+            vertices[i] = input.getFloat(vertsAt + i * 4);
+            if (!Float.isFinite(vertices[i])) {
+                return notRetained;
+            }
+        }
+        var portals = new ArrayList<Portal>(portalCount);
+        for (int i = 0; i < portalCount; i++) {
+            check(canceled);
+            int at = portalsAt + i * 20;
+            int first = Short.toUnsignedInt(input.getShort(at));
+            int count = Short.toUnsignedInt(input.getShort(at + 2));
+            float nx = input.getFloat(at + 4), ny = input.getFloat(at + 8);
+            float nz = input.getFloat(at + 12), distance = input.getFloat(at + 16);
+            if (count < 3
+                    || first + count > vertexCount
+                    || !Float.isFinite(nx)
+                    || !Float.isFinite(ny)
+                    || !Float.isFinite(nz)
+                    || !Float.isFinite(distance)) {
+                return notRetained;
+            }
+            portals.add(new Portal(first, count, new Vec3(nx, ny, nz), distance));
+        }
+        var refs = new ArrayList<PortalRef>(refCount);
+        for (int i = 0; i < refCount; i++) {
+            if ((i & 1023) == 0) {
+                check(canceled);
+            }
+            int at = refsAt + i * 8;
+            int portal = Short.toUnsignedInt(input.getShort(at));
+            int group = Short.toUnsignedInt(input.getShort(at + 2));
+            int side = input.getShort(at + 4);
+            if (portal >= portalCount || group >= groupCount) {
+                return notRetained;
+            }
+            refs.add(new PortalRef(portal, group, side));
+        }
+        return new Portals(true, true, vertices, portals, refs);
     }
 
     /**
