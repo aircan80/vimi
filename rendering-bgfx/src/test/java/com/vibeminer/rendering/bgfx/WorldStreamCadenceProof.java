@@ -25,6 +25,11 @@ public final class WorldStreamCadenceProof {
     public static void main(String[] arguments) throws Exception {
         Path output = Path.of(arguments[0]);
         Files.createDirectories(output);
+        System.out.printf(
+                Locale.ROOT,
+                "WORLD_FRAME_READ 800x500 mean ms: default %.3f, debug-verify %.3f%n",
+                readMillis(output, false),
+                readMillis(output, true));
         var prepared =
                 WorldStreamTransport.prepare(
                         output,
@@ -100,6 +105,7 @@ public final class WorldStreamCadenceProof {
             var intervals = new ArrayList<Long>();
             var latencies = new ArrayList<Long>();
             long last = 0, firstSequence = -1, lastSequence = 0;
+            long sampleAllocations = 0, sampleCollections = 0;
             int frames = 0;
             while (System.nanoTime() < end) {
                 var frame = next(session, 1_000_000_000L);
@@ -118,6 +124,8 @@ public final class WorldStreamCadenceProof {
                     continue;
                 }
                 if (firstSequence < 0) {
+                    sampleAllocations = poolAllocations(session);
+                    sampleCollections = collections();
                     firstSequence = frame.sequence();
                 }
                 lastSequence = frame.sequence();
@@ -132,15 +140,20 @@ public final class WorldStreamCadenceProof {
             }
             running.set(false);
             driver.join();
+            long frameArrays = poolAllocations(session) - sampleAllocations;
+            long gcs = collections() - sampleCollections;
             double seconds = SAMPLE_NANOS / 1e9;
             System.out.printf(
                     Locale.ROOT,
                     "WORLD_STREAM_CADENCE frames=%d fps=%.1f publishedSpan=%d"
-                            + " cameras=%d%n  interval ms %s%n  camera->taken ms %s%n",
+                            + " cameras=%d frameArraysAllocated=%d gcs=%d%n"
+                            + "  interval ms %s%n  camera->taken ms %s%n",
                     frames,
                     frames / seconds,
                     lastSequence - firstSequence + 1,
                     revision.get(),
+                    frameArrays,
+                    gcs,
                     summary(intervals),
                     summary(latencies));
             session.closeAsync().get(7, TimeUnit.SECONDS);
@@ -170,7 +183,52 @@ public final class WorldStreamCadenceProof {
         return null;
     }
 
-    private static void done(WorldStreamTransport.Frame frame) {}
+    /** Mean parent read of one full frame (copy, checks), released after each read. */
+    private static double readMillis(Path output, boolean verify) throws Exception {
+        var nonce = new WorldStreamState.Nonce(5, 6);
+        Path path = output.resolve("read-" + verify + ".wsf");
+        Files.deleteIfExists(path);
+        try (var file = WorldFrameFileV2.open(path, nonce, "ef".repeat(32), true, verify)) {
+            var bgra =
+                    java.nio.ByteBuffer.allocate(WorldFrameFileV2.PAYLOAD_BYTES)
+                            .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            while (bgra.hasRemaining()) {
+                bgra.putInt(0xff336699);
+            }
+            file.write(new WorldStreamFrameGate.Frame(nonce, 1, 1, 0, 1, 800, 500), bgra.flip());
+            var bounds = new WorldFrameFileV2.Barrier(1, 800, 500, 1, 1, 0, 0);
+            for (int i = 0; i < 50; i++) {
+                file.readLatest(0, bounds).release();
+            }
+            int reads = 300;
+            long start = System.nanoTime();
+            for (int i = 0; i < reads; i++) {
+                file.readLatest(0, bounds).release();
+            }
+            return (System.nanoTime() - start) / 1e6 / reads;
+        } finally {
+            Files.deleteIfExists(path);
+        }
+    }
+
+    private static void done(WorldStreamTransport.Frame frame) {
+        frame.release();
+    }
+
+    private static long poolAllocations(WorldStreamTransport.Session session) throws Exception {
+        var field = WorldStreamTransport.Session.class.getDeclaredField("owner");
+        field.setAccessible(true);
+        var owner = (WorldStreamLaunchOwner.Handle) field.get(session);
+        return owner.files().frames().pool().allocations();
+    }
+
+    private static long collections() {
+        long total = 0;
+        for (var gc : java.lang.management.ManagementFactory.getGarbageCollectorMXBeans()) {
+            total += Math.max(0, gc.getCollectionCount());
+        }
+        return total;
+    }
 
     private static TerrainCamera view(long revision) {
         double t = revision * 0.002;
