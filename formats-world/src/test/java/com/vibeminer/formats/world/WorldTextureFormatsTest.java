@@ -617,4 +617,33 @@ class WorldTextureFormatsTest {
             }
         }
     }
+
+    @Test
+    void shadowStateIsUnsupportedWhenTheSubChunkWalkStopsEarlyAndSitsBesideEightBitMaps() {
+        var many = new ByteArrayOutputStream();
+        many.writeBytes(chunk(1, false));
+        for (int i = 0; i < 16; i++) {
+            many.writeBytes(part("MCMT", new byte[4]));
+        }
+        many.writeBytes(part("MCSH", new byte[WorldTextureFormats.SHADOW_BYTES]));
+        try (var data = WorldTextureFormats.read(texture(many.toByteArray()), () -> false)) {
+            assertEquals(WorldTextureFormats.ShadowState.UNSUPPORTED, data.shadowState(0));
+            assertEquals(
+                    WorldTextureFormats.ChunkIssue.CHUNK_SHAPE, data.chunks().getFirst().issue());
+        }
+        byte[] bits = new byte[WorldTextureFormats.SHADOW_BYTES];
+        bits[1] = 1;
+        try (var data =
+                WorldTextureFormats.read(
+                        texture(join(chunk(2, true), part("MCSH", bits))), () -> false)) {
+            assertEquals(WorldTextureFormats.ShadowState.BITS, data.shadowState(0));
+            var masks = ByteBuffer.allocate(8192);
+            assertTrue(data.decodeAlphas(0, masks, () -> false).admitted());
+            assertEquals(2, masks.get(4096));
+            var shadow = ByteBuffer.allocate(4096);
+            assertTrue(data.decodeShadow(0, 0, shadow, () -> false));
+            assertEquals(255, shadow.get(8) & 255);
+            assertEquals(0, shadow.get(7) & 255);
+        }
+    }
 }

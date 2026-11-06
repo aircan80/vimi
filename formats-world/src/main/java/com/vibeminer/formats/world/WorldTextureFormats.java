@@ -310,8 +310,10 @@ public final class WorldTextureFormats {
         /**
          * Writes the chunk's 64x64 MCSH shadow map, one byte per texel: 255 shadowed, 0 lit. Bits
          * are read least significant first. Without {@link #DO_NOT_FIX_ALPHA_MAP} in the root MCNK
-         * flags, the last row and column repeat the ones before them, as for alpha maps. Returns
-         * false, writing nothing, when the chunk has no supported shadow map.
+         * flags, the last row and column repeat the ones before them, as for alpha maps. That edge
+         * fix is inferred, not verified: it follows the client's alpha rule and Noggit, which
+         * applies it to shadows too; check it against client frames in #373. Returns false, writing
+         * nothing, when the chunk has no supported shadow map.
          */
         public synchronized boolean decodeShadow(
                 int ordinal, long rootChunkFlags, ByteBuffer target, BooleanSupplier canceled) {
@@ -450,6 +452,7 @@ public final class WorldTextureFormats {
             while (input.position() < bounds.end()) {
                 if (++count > 16) {
                     issue = ChunkIssue.CHUNK_SHAPE;
+                    shadow = shadow == ShadowState.BITS ? shadow : ShadowState.UNSUPPORTED;
                     break;
                 }
                 var p = part(input, bounds.end());
@@ -477,6 +480,8 @@ public final class WorldTextureFormats {
             }
         } catch (IllegalArgumentException invalid) {
             issue = ChunkIssue.CHUNK_SHAPE;
+            // The walk stopped early, so a later MCSH cannot be ruled out.
+            shadow = shadow == ShadowState.BITS ? shadow : ShadowState.UNSUPPORTED;
         }
         var entries = new ArrayList<Layer>();
         if (alpha == null && layers != null && layers.length() == 16) {

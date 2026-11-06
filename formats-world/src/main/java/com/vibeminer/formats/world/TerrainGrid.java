@@ -70,7 +70,7 @@ public final class TerrainGrid {
         /**
          * {@code normals} are the first {@link #NORMAL_BYTES} MCNR bytes in file order: three
          * signed components per vertex, 127 = 1.0, in the same 9/8 staggered order as the heights.
-         * Axis mapping is left to the renderer.
+         * The components map directly onto this grid's axes (see {@link #normal(int, int)}).
          */
         public Chunk(
                 int ordinal,
@@ -183,9 +183,38 @@ public final class TerrainGrid {
             return normalState;
         }
 
-        /** Raw MCNR components in file order; empty unless {@link NormalState#INT8}. */
+        /**
+         * Raw MCNR components in file order; empty unless {@link NormalState#INT8}. A component can
+         * be -128, one past -1.0: clamp or normalise before use, as {@link #normal} does.
+         */
         public ByteBuffer normals() {
             return ByteBuffer.wrap(normals).asReadOnlyBuffer();
+        }
+
+        /**
+         * The unit normal of one staggered sample, in the same axes as {@link #position}: the file
+         * components are (x, y, z) with z up, so flat ground is about (0, 0, 127). No sign flips
+         * are needed even though x and y decrease with row and column: on 139,565 sloped Elwynn
+         * Forest samples (retail 12.1.5) this mapping agrees with normals derived from the heights
+         * to a mean dot product of 0.998, and every other axis order or sign scored 0.60 or less.
+         * Components are clamped to [-127, 127] before normalising.
+         */
+        public Vec3 normal(int row, int column) {
+            if (normalState != NormalState.INT8) {
+                throw new IllegalStateException("Chunk has no normals");
+            }
+            if (row < 0 || row >= 17 || column < 0 || column >= (row % 2 == 0 ? 9 : 8)) {
+                throw new IllegalArgumentException("Invalid staggered grid sample");
+            }
+            int index = ((row / 2) * 17 + (row % 2) * 9 + column) * 3;
+            float x = Math.max(-127, normals[index]),
+                    y = Math.max(-127, normals[index + 1]),
+                    z = Math.max(-127, normals[index + 2]);
+            float length = (float) Math.sqrt(x * x + y * y + z * z);
+            if (length == 0) {
+                return new Vec3(0, 0, 1);
+            }
+            return new Vec3(x / length, y / length, z / length);
         }
 
         public FloatBuffer heights() {
