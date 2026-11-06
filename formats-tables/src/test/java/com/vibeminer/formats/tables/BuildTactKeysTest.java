@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.db2.Db2Types;
@@ -129,8 +130,86 @@ final class BuildTactKeysTest {
         }
     }
 
+    private static com.vibeminer.formats.hotfix.HotfixRowDecoder.OptionalKey block(
+            long name, int first) {
+        byte[] key = new byte[16];
+        key[0] = (byte) first;
+        return new com.vibeminer.formats.hotfix.HotfixRowDecoder.OptionalKey(name, key);
+    }
+
+    private static MemoryTables keyTables(List<Db2Types.Row> keys, List<Db2Types.Row> lookups) {
+        return new MemoryTables()
+                .add(
+                        TablesContract.BUILD,
+                        "enUS",
+                        List.of(
+                                table(
+                                        BuildTactKeys.TACT_KEY_FILE_DATA_ID,
+                                        "TactKey",
+                                        columns("Key", 16, false),
+                                        keys),
+                                table(
+                                        BuildTactKeys.TACT_KEY_LOOKUP_FILE_DATA_ID,
+                                        "TactKeyLookup",
+                                        columns("TACTID", 8, false),
+                                        lookups)));
+    }
+
+    private static BuildTactKeys.KeySet load(MemoryTables memory) {
+        try (var handle =
+                memory.forBuild(TablesContract.BUILD, "enUS", Cancellation.NONE).join().tables()) {
+            return BuildTactKeys.load(handle, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                    .join();
+        }
+    }
+
     @Test
     void deliveredKeysJoinUnderTheSameConflictRule() {
+        // Build key 9 = 1; build rows 3 and 4 make name 8 a build conflict.
+        var found =
+                load(
+                        keyTables(
+                                List.of(
+                                        row(7, 1, 16, false),
+                                        row(3, 1, 16, false),
+                                        row(4, 2, 16, false)),
+                                List.of(
+                                        row(7, 9, 8, false),
+                                        row(3, 8, 8, false),
+                                        row(4, 8, 8, false))));
+        assertEquals(List.of("0000000000000008"), found.conflicts());
+        assertSame(found, BuildTactKeys.withDelivered(found, List.of()));
+
+        var identical = BuildTactKeys.withDelivered(found, List.of(block(9, 1), block(10, 5)));
+        assertEquals(List.of("0000000000000009", "000000000000000A"), identical.names());
+        assertEquals(5, identical.find(10)[0]);
+        assertEquals(List.of("0000000000000008"), identical.conflicts());
+
+        var differing = BuildTactKeys.withDelivered(found, List.of(block(9, 2)));
+        assertNull(differing.find(9), "a different key under a build name is dropped");
+        assertEquals(
+                List.of("0000000000000008", "0000000000000009"),
+                differing.conflicts(),
+                "and listed, as the join lists it");
+
+        var withinCache = BuildTactKeys.withDelivered(found, List.of(block(11, 1), block(11, 2)));
+        assertNull(withinCache.find(11));
+        assertEquals(
+                List.of("0000000000000008", "000000000000000B"),
+                withinCache.conflicts(),
+                "two differing blocks for one name conflict and are listed");
+
+        var zeroFirst = BuildTactKeys.withDelivered(found, List.of(block(12, 0), block(12, 6)));
+        assertEquals(6, zeroFirst.find(12)[0], "a zero block does not drop a kept key");
+        assertEquals(found.skippedZero() + 1, zeroFirst.skippedZero());
+
+        var alreadyConflicting = BuildTactKeys.withDelivered(found, List.of(block(8, 1)));
+        assertNull(alreadyConflicting.find(8), "a name in conflict stays out");
+        assertEquals(List.of("0000000000000008"), alreadyConflicting.conflicts());
+    }
+
+    @Test
+    void deliveredKeysDoNotExtendAKeySetWhoseTablesWereNotRead() {
         var memory =
                 new MemoryTables()
                         .add(
@@ -141,33 +220,9 @@ final class BuildTactKeysTest {
                                                 BuildTactKeys.TACT_KEY_FILE_DATA_ID,
                                                 "TactKey",
                                                 columns("Key", 16, false),
-                                                List.of(row(7, 1, 16, false))),
-                                        table(
-                                                BuildTactKeys.TACT_KEY_LOOKUP_FILE_DATA_ID,
-                                                "TactKeyLookup",
-                                                columns("TACTID", 8, false),
-                                                List.of(row(7, 9, 8, false)))));
-        try (var handle =
-                memory.forBuild(TablesContract.BUILD, "enUS", Cancellation.NONE).join().tables()) {
-            var found =
-                    BuildTactKeys.load(handle, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
-                            .join();
-            byte[] same = found.find(9);
-            byte[] other = new byte[16];
-            other[0] = 2;
-            byte[] fresh = new byte[16];
-            fresh[3] = 5;
-            assertSame(found, BuildTactKeys.withDelivered(found, Map.of()));
-            var identical = BuildTactKeys.withDelivered(found, Map.of(9L, same, 10L, fresh));
-            assertEquals(List.of("0000000000000009", "000000000000000A"), identical.names());
-            assertArrayEquals(fresh, identical.find(10));
-            assertEquals(List.of(), identical.conflicts());
-            var conflicting =
-                    BuildTactKeys.withDelivered(found, Map.of(9L, other, 11L, new byte[16]));
-            assertNull(conflicting.find(9), "a different key under a known name is dropped");
-            assertEquals(List.of("0000000000000009"), conflicting.conflicts());
-            assertEquals(found.skippedZero() + 1, conflicting.skippedZero());
-            assertEquals(0, conflicting.count());
-        }
+                                                List.of(row(7, 1, 16, false)))));
+        var found = load(memory);
+        assertTrue(found.lookupTable().outcome() != BuildTactKeys.Outcome.READ);
+        assertSame(found, BuildTactKeys.withDelivered(found, List.of(block(10, 5))));
     }
 }

@@ -77,13 +77,14 @@ public interface BuildTables extends AutoCloseable {
     }
 
     /**
-     * Keys a client hotfix cache delivered in optional-data blocks, by key name, for key loading
-     * only. Empty without a cache overlay.
+     * TactKey blocks the effective rows of a client hotfix cache carry, for key loading only (see
+     * {@link BuildTactKeys#withDelivered}). Empty without a cache overlay.
      */
-    default CompletableFuture<java.util.Map<Long, byte[]>> deliveredKeys(
-            TableTypes.Priority priority, Cancellation token) {
+    default CompletableFuture<
+                    java.util.List<com.vibeminer.formats.hotfix.HotfixRowDecoder.OptionalKey>>
+            deliveredKeys(TableTypes.Priority priority, Cancellation token) {
         token.check();
-        return CompletableFuture.completedFuture(java.util.Map.of());
+        return CompletableFuture.completedFuture(java.util.List.of());
     }
 
     /** Last compiled effective-view metadata only; never decodes/prepares/acquires a table. */

@@ -39,10 +39,54 @@ public final class HotfixRowDecoder {
     }
 
     /** Table hash of TactKey, which opens a server's optional key data block. */
-    private static final int TACT_KEY_HASH = 0xDF2F53CF;
+    public static final int TACT_KEY_HASH = 0xDF2F53CF;
 
     /** Optional key data: table hash (4) + key name (8) + key (16). */
-    private static final int OPTIONAL_KEY_BYTES = 28;
+    public static final int OPTIONAL_KEY_BYTES = 28;
+
+    /**
+     * A TactKey delivered in an optional-data block, for key loading only. The key is copied in and
+     * out, and {@code toString} renders neither the name nor the key.
+     */
+    public record OptionalKey(long name, byte[] key) {
+        public OptionalKey {
+            if (key == null || key.length != 16) {
+                throw new IllegalArgumentException("TactKey must be 16 bytes");
+            }
+            key = key.clone();
+        }
+
+        @Override
+        public byte[] key() {
+            return key.clone();
+        }
+
+        @Override
+        public String toString() {
+            return "OptionalKey[redacted]";
+        }
+    }
+
+    /**
+     * The TactKey block a hotfix body ends in, or null. Only meaningful for a body whose decode set
+     * {@link Decoded#optionalKeyData()}: the decoder decides that the block is not part of the row.
+     */
+    public static OptionalKey optionalKey(byte[] payload) {
+        if (payload.length < OPTIONAL_KEY_BYTES) {
+            return null;
+        }
+        var input = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
+        int at = payload.length - OPTIONAL_KEY_BYTES;
+        if (input.getInt(at) != TACT_KEY_HASH) {
+            return null;
+        }
+        byte[] key = java.util.Arrays.copyOfRange(payload, at + 12, at + OPTIONAL_KEY_BYTES);
+        try {
+            return new OptionalKey(input.getLong(at + 4), key);
+        } finally {
+            java.util.Arrays.fill(key, (byte) 0);
+        }
+    }
 
     public static final class Invalid extends IllegalArgumentException {
         private static final long serialVersionUID = 1L;
@@ -182,25 +226,13 @@ public final class HotfixRowDecoder {
      * TactKey table (table hash, 8-byte key name, 16-byte key). The row is fully described without
      * it; the block is stripped and never part of the row.
      */
-    public record Decoded(
-            Db2Types.Row row,
-            int consumedBytes,
-            boolean optionalKeyData,
-            long optionalKeyName,
-            byte[] optionalKey) {
+    public record Decoded(Db2Types.Row row, int consumedBytes, boolean optionalKeyData) {
         public Decoded {
             Objects.requireNonNull(row);
-            optionalKey = optionalKey == null ? null : optionalKey.clone();
         }
 
         public Decoded(Db2Types.Row row, int consumedBytes) {
-            this(row, consumedBytes, false, 0, null);
-        }
-
-        /** The delivered 16-byte key, or null; a copy, never logged or rendered. */
-        @Override
-        public byte[] optionalKey() {
-            return optionalKey == null ? null : optionalKey.clone();
+            this(row, consumedBytes, false);
         }
 
         @Override
@@ -293,34 +325,21 @@ public final class HotfixRowDecoder {
         }
         token.check();
         boolean optionalKeyData = false;
-        long keyName = 0;
-        byte[] key = null;
         if (input.hasRemaining()) {
             int rest = input.remaining();
             if (rest == OPTIONAL_KEY_BYTES && input.getInt(input.position()) == TACT_KEY_HASH) {
                 // A recognized optional key block after a fully described row: the row reads
-                // the same without it, so it is stripped. Its bytes never reach the row; the
-                // key itself is handed to key loading only.
+                // the same without it, so it is stripped. Its bytes never reach the row.
                 optionalKeyData = true;
-                keyName = input.getLong(input.position() + 4);
-                key = new byte[16];
-                input.get(input.position() + 12, key);
             } else {
                 // Zero padding included: extra bytes mean the layout may not describe this row.
                 throw new Invalid(Reason.TRAILING_BYTES, rest);
             }
         }
-        var decoded =
-                new Decoded(
-                        new Db2Types.Row(recordId, false, null, values, List.of()),
-                        input.position(),
-                        optionalKeyData,
-                        keyName,
-                        key);
-        if (key != null) {
-            java.util.Arrays.fill(key, (byte) 0);
-        }
-        return decoded;
+        return new Decoded(
+                new Db2Types.Row(recordId, false, null, values, List.of()),
+                input.position(),
+                optionalKeyData);
     }
 
     private static void validate(Layout layout, long tableHash, Limits limits, Cancellation token) {

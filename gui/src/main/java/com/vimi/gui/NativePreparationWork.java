@@ -659,18 +659,26 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         }
         try (var bootstrap = openTables(tablesService(token, TableRole.PREPARATION), token)) {
             var found = BuildTactKeys.load(bootstrap, TableTypes.Priority.BACKGROUND, token).join();
-            // Keys the client cache delivered after its rows join under the same conflict rule;
-            // a failure to read them only means fewer keys, never a key-loading error.
-            java.util.Map<Long, byte[]> delivered;
-            try {
-                delivered = bootstrap.deliveredKeys(TableTypes.Priority.BACKGROUND, token).join();
-            } catch (java.util.concurrent.CompletionException | IllegalStateException e) {
-                token.check();
-                delivered = java.util.Map.of();
-            }
-            applyBuildKeys(BuildTactKeys.withDelivered(found, delivered), issues, token);
+            applyBuildKeys(withDeliveredKeys(bootstrap, found, token), issues, token);
         }
         return List.copyOf(issues);
+    }
+
+    /**
+     * Joins the TactKey blocks the effective client-cache rows delivered into {@code found} under
+     * the TactKey join rule. A failure to read them only means fewer keys, never a key-loading
+     * error; cancellation still propagates.
+     */
+    static BuildTactKeys.KeySet withDeliveredKeys(
+            BuildTables tables, BuildTactKeys.KeySet found, Cancellation token) {
+        List<com.vibeminer.formats.hotfix.HotfixRowDecoder.OptionalKey> delivered;
+        try {
+            delivered = tables.deliveredKeys(TableTypes.Priority.BACKGROUND, token).join();
+        } catch (java.util.concurrent.CompletionException | IllegalStateException e) {
+            token.check();
+            return found;
+        }
+        return BuildTactKeys.withDelivered(found, delivered);
     }
 
     /** Cached generated key graphs only; never invokes normal table preparation or source refresh. */

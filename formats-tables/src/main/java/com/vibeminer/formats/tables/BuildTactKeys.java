@@ -161,12 +161,15 @@ public final class BuildTactKeys {
     }
 
     /**
-     * Adds keys a client hotfix cache delivered in optional-data blocks, under the same rule as
-     * keys joined from the TactKey tables: a name already present with different bytes is a
-     * conflict and is dropped, and all-zero keys are skipped. Only a fully read key set is
-     * extended. Never logs key bytes.
+     * Joins TactKey blocks a client hotfix cache delivered (in order) into a fully read key set
+     * under exactly the TactKey join rule: all-zero keys are skipped first, a name already in
+     * conflict stays out, and a name seen with different bytes, whether from the TactKey tables or
+     * another block, is dropped and listed in {@link KeySet#conflicts()}. A key set whose TactKey
+     * tables were not read is returned unchanged. Never logs key bytes.
      */
-    public static KeySet withDelivered(KeySet found, java.util.Map<Long, byte[]> delivered) {
+    public static KeySet withDelivered(
+            KeySet found,
+            List<com.vibeminer.formats.hotfix.HotfixRowDecoder.OptionalKey> delivered) {
         if (delivered.isEmpty()
                 || found.keyTable().outcome() != Outcome.READ
                 || found.lookupTable().outcome() != Outcome.READ) {
@@ -175,11 +178,8 @@ public final class BuildTactKeys {
         var keys = new HashMap<Long, byte[]>(found.keys);
         var conflicts = new HashSet<String>(found.conflicts());
         int skipped = found.skippedZero();
-        for (var entry : delivered.entrySet()) {
-            byte[] key = entry.getValue();
-            if (key == null || key.length != 16) {
-                continue;
-            }
+        for (var block : delivered) {
+            byte[] key = block.key();
             boolean zero = true;
             for (byte b : key) {
                 zero &= b == 0;
@@ -188,13 +188,13 @@ public final class BuildTactKeys {
                 skipped++;
                 continue;
             }
-            String name = nameOf(entry.getKey());
+            String name = nameOf(block.name());
             if (conflicts.contains(name)) {
                 continue;
             }
-            byte[] existing = keys.putIfAbsent(entry.getKey(), key);
+            byte[] existing = keys.putIfAbsent(block.name(), key);
             if (existing != null && !Arrays.equals(existing, key)) {
-                keys.remove(entry.getKey());
+                keys.remove(block.name());
                 conflicts.add(name);
             }
         }

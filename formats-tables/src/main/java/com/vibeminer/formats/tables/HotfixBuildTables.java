@@ -41,6 +41,8 @@ public final class HotfixBuildTables implements BuildTables {
         UNKNOWN
     }
 
+    private static final String OPTIONAL_KEY_DATA = "OPTIONAL_KEY_DATA";
+
     private record Change(
             HotfixCacheReader.Entry entry, Kind kind, Db2Types.Row row, String reason) {
         private Change(HotfixCacheReader.Entry entry, Kind kind, Db2Types.Row row) {
@@ -58,9 +60,6 @@ public final class HotfixBuildTables implements BuildTables {
         final Map<Long, Integer> additionIndex;
         final long bytes;
         final int added, replaced, deleted, protectedRows, unknownRows, ignored;
-        // Keys delivered in optional-data blocks of this table's rows, by key name; names that
-        // were delivered with different bytes are left out. Never rendered or logged.
-        Map<Long, byte[]> deliveredKeys = Map.of();
         // Non-zero when a raw-column fit scan was inconclusive: the view is rebuilt (and the scan
         // retried) by the first operation at or after this time, instead of staying cached
         // without its raw columns until eviction.
@@ -658,8 +657,6 @@ public final class HotfixBuildTables implements BuildTables {
             // Selected IDs remain masked UNKNOWN; never fall back to stale base values.
         }
         var changes = new HashMap<Long, Change>();
-        var deliveredKeys = new HashMap<Long, byte[]>();
-        var conflictingKeys = new HashSet<Long>();
         var regions = new HashMap<Long, Integer>();
         var regionConflicts = new HashSet<Long>();
         long bytes = 256 << 10;
@@ -709,25 +706,26 @@ public final class HotfixBuildTables implements BuildTables {
                                         entry.ordinal(),
                                         64 << 10,
                                         token);
-                        var decoded =
-                                HotfixRowDecoder.decode(
-                                        layout,
-                                        hash,
-                                        entry.recordId(),
-                                        ByteBuffer.wrap(payload),
-                                        new HotfixRowDecoder.Limits(),
-                                        token);
+                        HotfixRowDecoder.Decoded decoded;
+                        try {
+                            decoded =
+                                    HotfixRowDecoder.decode(
+                                            layout,
+                                            hash,
+                                            entry.recordId(),
+                                            ByteBuffer.wrap(payload),
+                                            new HotfixRowDecoder.Limits(),
+                                            token);
+                        } finally {
+                            // The body may end in a key block; the row holds only decoded text.
+                            Arrays.fill(payload, (byte) 0);
+                        }
                         row = decoded.row();
                         kind = Kind.ADD;
                         if (decoded.optionalKeyData()) {
-                            long name = decoded.optionalKeyName();
-                            byte[] key = decoded.optionalKey();
-                            byte[] earlier = deliveredKeys.putIfAbsent(name, key);
-                            if (earlier != null && !Arrays.equals(earlier, key)) {
-                                conflictingKeys.add(name);
-                            }
                             // Shown as a hotfix row; hotfixInfo notes the stripped key block.
-                            undecoded = "OPTIONAL_KEY_DATA";
+                            // Key loading re-reads the block of effective rows only.
+                            undecoded = OPTIONAL_KEY_DATA;
                         }
                     }
                 } catch (com.vibeminer.formats.hotfix.HotfixRowDecoder.Invalid invalid) {
@@ -834,10 +832,6 @@ public final class HotfixBuildTables implements BuildTables {
         } else {
             fitFailures.remove(id);
         }
-        for (long name : conflictingKeys) {
-            deliveredKeys.remove(name);
-        }
-        result.deliveredKeys = Map.copyOf(deliveredKeys);
         views.put(id, result);
         pinned.add(id);
         return result;
@@ -1382,68 +1376,78 @@ public final class HotfixBuildTables implements BuildTables {
     }
 
     /**
-     * Keys the cache delivered in optional-data blocks after its rows (by key name), for key
-     * loading only. Only tables with a row whose body ends in such a block are compiled; a name
-     * delivered with different bytes is left out. A table whose overlay is refused contributes
-     * nothing. Never logged or rendered.
+     * TactKey blocks the effective hotfix rows carry, in table hash then record ID order, for key
+     * loading only: superseded pushes, deleted records, region conflicts and refused rows never
+     * contribute, and a table whose overlay is refused contributes nothing. Every block is
+     * returned, zero and repeated ones included, so the caller applies one join rule to all key
+     * sources. Never logged or rendered.
      */
     @Override
-    public CompletableFuture<Map<Long, byte[]>> deliveredKeys(
+    public CompletableFuture<List<HotfixRowDecoder.OptionalKey>> deliveredKeys(
             TableTypes.Priority priority, Cancellation token) {
         return operation(
                 token,
                 t -> {
+                    // Candidate tables: a VALID decodable body whose last 28 bytes open with the
+                    // TactKey hash. Only those 4 bytes are read; decoding decides what counts.
                     var tables = new java.util.TreeSet<Long>();
+                    var tail = ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN);
                     for (var entry : binding.index().entries()) {
                         t.check();
                         if (entry.state() != HotfixCacheReader.State.VALID
-                                || entry.payloadBytes() < 28
+                                || entry.payloadBytes() <= HotfixRowDecoder.OPTIONAL_KEY_BYTES
                                 || entry.payloadBytes() > 64 << 10
                                 || tables.contains(entry.tableHash())) {
                             continue;
                         }
-                        byte[] payload =
-                                HotfixCacheReader.readPayloadBlocking(
-                                        binding.source(),
-                                        binding.index(),
-                                        entry.ordinal(),
-                                        64 << 10,
-                                        t);
-                        int tail =
-                                ByteBuffer.wrap(payload)
-                                        .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                                        .getInt(payload.length - 28);
-                        Arrays.fill(payload, (byte) 0);
-                        if (tail == 0xDF2F53CF) {
+                        tail.clear();
+                        await(
+                                binding.source()
+                                        .readRange(
+                                                entry.payloadOffset()
+                                                        + entry.payloadBytes()
+                                                        - HotfixRowDecoder.OPTIONAL_KEY_BYTES,
+                                                tail,
+                                                t));
+                        if (tail.position() == 4
+                                && tail.getInt(0) == HotfixRowDecoder.TACT_KEY_HASH) {
                             tables.add(entry.tableHash());
                         }
                     }
-                    var keys = new HashMap<Long, byte[]>();
-                    var conflicts = new HashSet<Long>();
+                    var delivered = new ArrayList<HotfixRowDecoder.OptionalKey>();
                     for (long hash : tables) {
                         Long id = base.fileDataIdForHash(hash);
                         if (id == null) {
                             continue;
                         }
-                        // Decoding decides: only a body that ends exactly in the block counts.
                         var view = view(TableTypes.Ref.id(id), priority, t);
                         if (view == null) {
                             continue;
                         }
-                        for (var delivered : view.deliveredKeys.entrySet()) {
-                            byte[] earlier =
-                                    keys.putIfAbsent(delivered.getKey(), delivered.getValue());
-                            if (earlier != null && !Arrays.equals(earlier, delivered.getValue())) {
-                                conflicts.add(delivered.getKey());
+                        for (var change : new TreeMap<>(view.changes).values()) {
+                            t.check();
+                            if (change.kind() != Kind.ADD
+                                    || !OPTIONAL_KEY_DATA.equals(change.reason())) {
+                                continue;
+                            }
+                            byte[] payload =
+                                    HotfixCacheReader.readPayloadBlocking(
+                                            binding.source(),
+                                            binding.index(),
+                                            change.entry().ordinal(),
+                                            64 << 10,
+                                            t);
+                            try {
+                                var key = HotfixRowDecoder.optionalKey(payload);
+                                if (key != null) {
+                                    delivered.add(key);
+                                }
+                            } finally {
+                                Arrays.fill(payload, (byte) 0);
                             }
                         }
                     }
-                    for (long name : conflicts) {
-                        keys.remove(name);
-                    }
-                    var copy = new HashMap<Long, byte[]>();
-                    keys.forEach((name, key) -> copy.put(name, key.clone()));
-                    return copy;
+                    return List.copyOf(delivered);
                 });
     }
 
