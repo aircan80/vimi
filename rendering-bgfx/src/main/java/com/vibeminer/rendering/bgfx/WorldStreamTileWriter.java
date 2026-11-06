@@ -641,6 +641,19 @@ public final class WorldStreamTileWriter {
         public int cells() {
             return wire.cells();
         }
+
+        /** Copies: native x north, y west, z up per vertex. */
+        public float[] positions() {
+            return wire.positions().clone();
+        }
+
+        public byte[] depths() {
+            return wire.depths().clone();
+        }
+
+        public int[] indices() {
+            return wire.indices().clone();
+        }
     }
 
     /** Source R owns this unadvertised file until its independently pinned one-shot MOVE. */
