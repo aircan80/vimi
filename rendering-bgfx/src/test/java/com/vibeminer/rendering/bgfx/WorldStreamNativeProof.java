@@ -596,6 +596,10 @@ public final class WorldStreamNativeProof {
                                 + nativeSizes.toString().strip()
                                 + " edges="
                                 + edges.toString().strip()
+                                + " readback="
+                                + (owner.stagingReadback() ? "staging" : "direct")
+                                + " meanPublishMicros="
+                                + owner.meanPublishNanos() / 1000
                                 + " reallocations="
                                 + owner.reallocations()
                                 + " stats="

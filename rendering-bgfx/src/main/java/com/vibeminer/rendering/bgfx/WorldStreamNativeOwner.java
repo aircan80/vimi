@@ -42,12 +42,24 @@ import org.lwjgl.system.MemoryUtil;
 final class WorldStreamNativeOwner implements AutoCloseable {
     private static final short INVALID = -1;
 
+    /**
+     * Diagnostic: {@code -Dvimi.world.readbackStaging=true} keeps the old path (readback into a
+     * private buffer, crop copy, then a copy into the frame mapping) for comparison. By default
+     * each readback writes straight into its own mapping slot and is published in place.
+     */
+    static final String STAGING_PROPERTY = "vimi.world.readbackStaging";
+
+    private final boolean staging = Boolean.getBoolean(STAGING_PROPERTY);
+    // Time spent publishing frames (the copies this path removes); diagnostics and proofs.
+    private long publishNanos, publishedFrames;
+
     /** Targets grow in these steps, so a window drag reallocates only every few hundred px. */
     static final int TARGET_STEP = 256;
 
     private static final AtomicBoolean CONTEXT = new AtomicBoolean();
 
     private static final class Readback {
+        int index;
         short texture = INVALID;
         ByteBuffer pixels;
         BgfxWorldStreamRenderer.Ticket ticket;
@@ -148,6 +160,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             renderer = new BgfxWorldStreamRenderer(session);
             for (int i = 0; i < readbacks.length; i++) {
                 readbacks[i] = new Readback();
+                // Direct readback: readback i writes mapping slot i (both have three).
+                readbacks[i].index = i;
             }
             // The render target is allocated by the first camera, at its size.
         } catch (IOException | RuntimeException | Error failure) {
@@ -213,7 +227,9 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 slot.texture = INVALID;
             }
             if (slot.pixels != null) {
-                MemoryUtil.memFree(slot.pixels);
+                if (staging) {
+                    MemoryUtil.memFree(slot.pixels);
+                } // else: a view of the frame mapping, owned by the mapping
                 slot.pixels = null;
             }
         }
@@ -282,7 +298,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                                 0));
         target = valid(bgfx_create_frame_buffer_from_handles(new short[] {color, depth}, false));
         for (var slot : readbacks) {
-            slot.pixels = MemoryUtil.memAlloc(bytes);
+            slot.pixels = staging ? MemoryUtil.memAlloc(bytes) : null;
             slot.texture =
                     valid(
                             bgfx_create_texture_2d(
@@ -295,7 +311,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                                     null,
                                     0));
         }
-        cropped = MemoryUtil.memAlloc(bytes);
+        cropped = staging ? MemoryUtil.memAlloc(bytes) : null;
         bgfx_set_view_frame_buffer(0, target);
         targetWidth = newWidth;
         targetHeight = newHeight;
@@ -388,9 +404,9 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         }
         Readback available = null;
         for (var slot : readbacks) {
-            if (slot.ticket == null) {
+            // Least recently used free slot: a just-published frame stays readable longest.
+            if (slot.ticket == null && (available == null || slot.order < available.order)) {
                 available = slot;
-                break;
             }
         }
         if (available == null) {
@@ -401,6 +417,14 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         }
         var ticket = renderer.draw(command.camera(), cameraRevision, policy, width, height);
         bgfx_blit(1, available.texture, 0, 0, 0, 0, color, 0, 0, 0, 0, width, height, 1);
+        if (!staging) {
+            try {
+                available.pixels =
+                        frames.beginDirect(available.index, targetWidth * targetHeight * 4);
+            } catch (IOException failure) {
+                throw new java.io.UncheckedIOException(failure);
+            }
+        }
         available.pixels.clear();
         available.ticket = ticket;
         available.order = ++order;
@@ -438,18 +462,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 throw new IOException("Frame sequence exhausted");
             }
             var ticket = newest.ticket;
-            cropped.clear();
-            int stride = targetWidth * 4, length = ticket.width() * 4;
-            for (int row = 0; row < ticket.height(); row++) {
-                int sourceRow = row; // top-left origin (checked at init)
-                cropped.put(
-                        newest.pixels
-                                .duplicate()
-                                .position(sourceRow * stride)
-                                .limit(sourceRow * stride + length));
-            }
-            cropped.flip();
-            frames.write(
+            long start = System.nanoTime();
+            var frame =
                     new WorldStreamFrameGate.Frame(
                             session.nonce(),
                             ++sequence,
@@ -457,18 +471,49 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                             ticket.content(),
                             ticket.policy(),
                             ticket.width(),
-                            ticket.height()),
-                    cropped);
+                            ticket.height());
+            if (staging) {
+                cropped.clear();
+                int stride = targetWidth * 4, length = ticket.width() * 4;
+                for (int row = 0; row < ticket.height(); row++) {
+                    int sourceRow = row; // top-left origin (checked at init)
+                    cropped.put(
+                            newest.pixels
+                                    .duplicate()
+                                    .position(sourceRow * stride)
+                                    .limit(sourceRow * stride + length));
+                }
+                cropped.flip();
+                frames.write(frame, cropped);
+            } else {
+                // The readback already wrote the rows into the slot: publish the header only.
+                frames.publishDirect(newest.index, frame, targetWidth * 4);
+            }
+            publishNanos += System.nanoTime() - start;
+            publishedFrames++;
             publishedCamera = ticket.camera();
             publishedContent = ticket.content();
             published = true;
         }
         for (var slot : readbacks) {
             if (slot.ticket != null && readbackReady(currentFrame, slot.ready)) {
+                if (!staging && slot != newest) {
+                    // A superseded or stale readback: its slot holds no frame to publish.
+                    frames.abandonDirect(slot.index);
+                }
                 slot.ticket = null;
             }
         }
         return published;
+    }
+
+    /** Mean time to publish one frame, in nanoseconds; 0 before the first. Proofs. */
+    long meanPublishNanos() {
+        return publishedFrames == 0 ? 0 : publishNanos / publishedFrames;
+    }
+
+    boolean stagingReadback() {
+        return staging;
     }
 
     /** Current render-target allocation and how often it was (re)made; proofs and tests. */
@@ -596,7 +641,9 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 }
                 for (var slot : readbacks) {
                     if (slot != null && slot.pixels != null) {
-                        MemoryUtil.memFree(slot.pixels);
+                        if (staging) {
+                            MemoryUtil.memFree(slot.pixels);
+                        } // else: a view of the frame mapping, owned by the mapping
                         slot.pixels = null;
                     }
                 }
