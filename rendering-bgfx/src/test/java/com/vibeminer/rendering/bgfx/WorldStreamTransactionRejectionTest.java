@@ -86,7 +86,7 @@ class WorldStreamTransactionRejectionTest {
                 IllegalStateException.class,
                 () ->
                         WorldStreamSession.<String, String>admit(
-                                state(1, 7, 19),
+                                offered(1, 7, 19),
                                 lease,
                                 7,
                                 19,
@@ -94,10 +94,6 @@ class WorldStreamTransactionRejectionTest {
                                     throw new IllegalStateException("Renderer closed");
                                 },
                                 "tile"));
-    }
-
-    private WorldStreamState state(long transaction, int x, int y) {
-        return offered(transaction, x, y);
     }
 
     @Test

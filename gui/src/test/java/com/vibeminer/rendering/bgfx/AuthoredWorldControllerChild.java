@@ -77,8 +77,17 @@ public final class AuthoredWorldControllerChild {
                                     h.y() + System.lineSeparator(),
                                     java.nio.file.StandardOpenOption.CREATE,
                                     java.nio.file.StandardOpenOption.APPEND);
+                            // An authored hold delays the rejection, so a cancel can cross it.
+                            var holdReject = directory.getParent().resolve("authored-hold-reject");
+                            if (Files.exists(holdReject)) {
+                                Files.writeString(
+                                        directory.getParent().resolve("authored-held-reject"),
+                                        "held");
+                                while (Files.exists(holdReject)) Thread.sleep(2);
+                            }
                             state.send("INPUT_CONSUMED " + offer.transaction() + " TILE");
                             state.send("REJECTED " + offer.transaction() + " INVALID_PACKET");
+                            state.rejected.add(offer.transaction());
                             state.grant();
                             continue;
                         }
@@ -146,6 +155,11 @@ public final class AuthoredWorldControllerChild {
                     }
                     state.canceled(cancel.transaction(), cancel.lease());
                 } else if (command instanceof WorldStreamControl.Cancel cancel) {
+                    if (state.rejected.contains(cancel.transaction())) {
+                        // As the real helper: a cancel of a rejected transaction is stale.
+                        state.send("REJECTED " + cancel.transaction() + " STALE_TRANSACTION");
+                        continue;
+                    }
                     state.canceled(cancel.transaction(), state.lease);
                 } else if (command instanceof WorldStreamControl.LateObjects late) {
                     // Reads the actual objects file for its resident tile; attaches only while
@@ -255,6 +269,7 @@ public final class AuthoredWorldControllerChild {
         final java.util.Map<Integer,WorldStreamState.Lease> leases=new java.util.HashMap<>();
         final java.util.Map<Integer,Long> transactions=new java.util.HashMap<>();
         final Set<Integer> objects = new HashSet<>();
+        final Set<Long> rejected = new HashSet<>();
         final long[] generations = new long[10];
         long serial;
         boolean available;

@@ -49,6 +49,8 @@ public final class WorldStreamSourceControllerTest {
         missingRootIsFinitePerDemandAndDoesNotInvalidateCurrentScope();
         missingNearestIsFiniteUnavailableWithoutFillingOutputUnion();
         helperRejectedTileRetriesWithBackoffThenBecomesUnavailable();
+        helperRejectionCrossingACancelIsTerminalNotAFailure();
+        rejectedNearestTileDoesNotStallItsNeighbours();
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
@@ -1103,8 +1105,111 @@ public final class WorldStreamSourceControllerTest {
         }
     }
 
-    private static int lines(Path log) throws java.io.IOException {
-        return Files.exists(log) ? Files.readAllLines(log).size() : 0;
+    /**
+     * Issue #365: the rejected tile leaves demand while its rejection is in flight, so the
+     * controller cancels a reservation the helper has already rejected (the cancel is refused as
+     * PACKET_REJECTED). That is terminal, not a session failure.
+     */
+    private static void helperRejectionCrossingACancelIsTerminalNotAFailure() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        Path reject = fixture.directory.resolve("authored-reject-tile");
+        Path hold = fixture.directory.resolve("authored-hold-reject");
+        Path held = fixture.directory.resolve("authored-held-reject");
+        try {
+            Files.writeString(reject, Integer.toString(fixture.tiles.get(1).y()));
+            Files.writeString(hold, "hold");
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(
+                    () -> fixture.controller.snapshot().phase()
+                            == WorldStreamSourceController.Phase.READY);
+            fixture.controller.neighborhood(fixture.tiles);
+            fixture.until(() -> Files.exists(held));
+            // The rejected tile leaves demand before its rejection arrives: the controller
+            // cancels it, then the helper rejects the packet and refuses the stale cancel.
+            fixture.controller.neighborhood(List.of(fixture.tiles.get(0)));
+            for (int i = 0; i < 20; i++) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            Files.delete(hold);
+            fixture.until(
+                    () -> lines(fixture.directory.resolve("authored-rejections.log")) == 1);
+            fixture.untilPresented(
+                    () -> fixture.controller.snapshot().phase()
+                            == WorldStreamSourceController.Phase.READY);
+            for (int i = 0; i < 30; i++) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            check(
+                    fixture.controller.snapshot().phase()
+                            != WorldStreamSourceController.Phase.FAILED,
+                    "A rejection crossing a cancel never ends the World session");
+            int key = fixture.tiles.get(1).x() * 64 + fixture.tiles.get(1).y();
+            check(
+                    fixture.controller.helperRejections(key) == 0,
+                    "A tile that left demand keeps no rejection count");
+        } finally {
+            Files.deleteIfExists(hold);
+            Files.deleteIfExists(reject);
+            fixture.close();
+        }
+    }
+
+    /**
+     * Issue #365: the nearest tile is the one the helper keeps rejecting. Its neighbour still
+     * streams and commits, and the status names HELPER_REJECTED.
+     */
+    private static void rejectedNearestTileDoesNotStallItsNeighbours() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        Path reject = fixture.directory.resolve("authored-reject-tile");
+        Path log = fixture.directory.resolve("authored-rejections.log");
+        try {
+            Files.writeString(reject, Integer.toString(fixture.tiles.get(0).y()));
+            fixture.start();
+            // No camera yet: the first staged tile seeds it, and the nearest never stages.
+            fixture.controller.neighborhood(fixture.tiles);
+            int key = fixture.tiles.get(0).x() * 64 + fixture.tiles.get(0).y();
+            for (int rejection = 1; rejection <= WorldStreamSourceController.MAX_HELPER_REJECTIONS;
+                    rejection++) {
+                int expected = rejection;
+                fixture.until(() -> fixture.controller.helperRejections(key) == expected);
+                fixture.clock.addAndGet(500_000_000L << (rejection - 1));
+                fixture.controller.pulse();
+            }
+            // The neighbour is prepared, seeds the camera and is committed although the nearest
+            // tile is unavailable.
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(
+                    () -> fixture.commitLines().stream()
+                                    .anyMatch(line -> !line.endsWith(" 0"))
+                            && fixture.controller.snapshot().phase()
+                                    == WorldStreamSourceController.Phase.READY);
+            check(
+                    fixture.controller.snapshot().detail().contains("HELPER_REJECTED"),
+                    "The rejected nearest tile's reason is visible: "
+                            + fixture.controller.snapshot().detail());
+            check(lines(log) == WorldStreamSourceController.MAX_HELPER_REJECTIONS,
+                    "The nearest tile is given up after its rejections");
+            check(
+                    fixture.controller.snapshot().phase()
+                            != WorldStreamSourceController.Phase.FAILED,
+                    "A rejected nearest tile never ends the World session");
+        } finally {
+            Files.deleteIfExists(reject);
+            fixture.close();
+        }
+    }
+
+    private static int lines(Path log) {
+        try {
+            return Files.exists(log) ? Files.readAllLines(log).size() : 0;
+        } catch (java.io.IOException error) {
+            throw new java.io.UncheckedIOException(error);
+        }
     }
 
     private static void missingRootIsFinitePerDemandAndDoesNotInvalidateCurrentScope()

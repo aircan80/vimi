@@ -650,8 +650,20 @@ final class WorldStreamSession {
                 if (result.tile() != null) {
                     result.tile().close();
                 }
+                // An Error (out of memory, a broken JVM) is not a packet problem: session-fatal.
+                if (result.error() instanceof Error fatal) {
+                    throw fatal;
+                }
                 state.decoded(offer.lease(), false);
                 if (!decoderCanceled.get() && !closing.get()) {
+                    rejections.reject(
+                            offer.transaction(),
+                            "invalid packet: "
+                                    + (result.error() == null
+                                            ? "unknown"
+                                            : result.error().getClass().getSimpleName()
+                                                    + ": "
+                                                    + result.error().getMessage()));
                     send("REJECTED " + offer.transaction() + " INVALID_PACKET");
                 }
             } else {

@@ -457,7 +457,10 @@ final class WorldStreamSourceController {
                 || currentReceipt != value.frame.content()) return false;
         // A valid receipt can still draw only sky after motion beyond its resident neighborhood.
         // Keep the last readable pixels until the nearest requested recorded tile is GPU-current.
-        if(!desired.isEmpty() && current.stream().noneMatch(entry->same(desired.getFirst(),entry.resident()))) return false;
+        // A nearest tile the helper keeps rejecting will not become current (#365): show the
+        // neighbours instead of holding the last pixels forever.
+        if(!desired.isEmpty() && current.stream().noneMatch(entry->same(desired.getFirst(),entry.resident()))
+                && helperRejections.getOrDefault(key(desired.getFirst()),0) < MAX_HELPER_REJECTIONS) return false;
         for (var entry : current) if (!entry.source().isOpen()) return false;
         return true;
     }
@@ -626,7 +629,9 @@ final class WorldStreamSourceController {
         helperRejections.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
         helperRetryAt.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
         if (pending != null) {
-            if (!contains(wanted, pending.tile) && pending.cancellation == null) {
+            // A preparation that already ended in a helper rejection is terminal: nothing to cancel.
+            if (!contains(wanted, pending.tile) && pending.cancellation == null
+                    && !rejectedByHelper(pending.result)) {
                 // Parent's explicit stop MUST precede the bridge's latest=false cancellation.
                 pending.cancellation = pending.reservation.cancel();
                 pending.useful = false;
@@ -634,7 +639,15 @@ final class WorldStreamSourceController {
             }
             if (pending.cancellation != null) {
                 if (!pending.cancellation.isDone()) return;
-                pending.cancellation.join();
+                try {
+                    pending.cancellation.join();
+                } catch (CompletionException failure) {
+                    // The helper rejected the packet before the cancel reached it (#365): the
+                    // reservation already ended; the tile left demand, so nothing is retried.
+                    if (!(failure.getCause() instanceof WorldStreamTransport.CancellationRefusal refused)
+                            || refused.reason() != WorldStreamTransport.CancellationReason.PACKET_REJECTED)
+                        throw failure;
+                }
                 pending.producer.close();
                 pending = null;
             } else {
@@ -642,6 +655,9 @@ final class WorldStreamSourceController {
                 try {
                     var resident = pending.result.join();
                     var prepared = pending.producer.takePrepared();
+                    // A tile that stages again starts its rejection count afresh.
+                    helperRejections.remove(key(pending.tile));
+                    helperRetryAt.remove(key(pending.tile));
                     if(creditTarget!=null && same(creditTarget,pending.tile)) creditTarget=null;
                     staged = new Entry(resident, prepared);
                     entries.put(resident, staged);
@@ -788,8 +804,10 @@ final class WorldStreamSourceController {
         updateArea();
         if(!wanted.isEmpty() && unavailable.containsKey(key(wanted.getFirst()))
                 && current.stream().noneMatch(entry->same(wanted.getFirst(),entry.resident()))) {
-            publish(Phase.UNAVAILABLE,"Nearest terrain unavailable: "+unavailable.get(key(wanted.getFirst())).site());
-            return;
+            var site=unavailable.get(key(wanted.getFirst())).site();
+            publish(Phase.UNAVAILABLE,"Nearest terrain unavailable: "+site);
+            // A tile the helper keeps rejecting does not stall its neighbours (#365).
+            if(!site.equals(HELPER_REJECTED)) return;
         }
         synchronized (lock) {
             if ((blockedOnMaterialPool || blockedCapacity == session.capacityRevision())
@@ -890,8 +908,7 @@ final class WorldStreamSourceController {
                 wanted.isEmpty()
                         ? "No recorded terrain near this camera"
                         : current.isEmpty() && !unavailable.isEmpty()
-                                ? "Terrain unavailable: "
-                                        + unavailable.values().iterator().next().site()
+                                ? "Terrain unavailable: " + unavailableSites()
                                 : acceptedReceipt == currentReceipt && currentReceipt != null
                                         ? readyDetail()
                                         : "Waiting for accepted viewport pixels");
@@ -1113,7 +1130,7 @@ final class WorldStreamSourceController {
                         : "; "
                                 + unavailable.size()
                                 + " unavailable ("
-                                + unavailable.values().iterator().next().site()
+                                + unavailableSites()
                                 + ")");
     }
 
@@ -1456,7 +1473,7 @@ final class WorldStreamSourceController {
         if (count >= MAX_HELPER_REJECTIONS) {
             helperRetryAt.remove(tile);
             unavailable.put(tile, WorldStreamSourceBridge.RefusalMetadata.helperRejected());
-            publish(Phase.UNAVAILABLE, "Terrain unavailable: HELPER_REJECTED");
+            publish(Phase.UNAVAILABLE, "Terrain unavailable: " + HELPER_REJECTED);
             wake.set(true);
             return;
         }
@@ -1466,6 +1483,29 @@ final class WorldStreamSourceController {
         wake.set(true);
         CompletableFuture.delayedExecutor(delay, java.util.concurrent.TimeUnit.NANOSECONDS)
                 .execute(this::kick);
+    }
+
+    static final String HELPER_REJECTED = "HELPER_REJECTED";
+
+    /** The distinct sites of the unavailable tiles, in first-seen order, e.g. "SOURCE_INPUT, HELPER_REJECTED". */
+    private String unavailableSites() {
+        var sites = new java.util.LinkedHashSet<String>();
+        for (var origin : unavailable.values()) sites.add(origin.site());
+        return String.join(", ", sites);
+    }
+
+    /** Whether a tile preparation already ended in a helper packet rejection. */
+    private static boolean rejectedByHelper(CompletableFuture<?> result) {
+        if (result == null || !result.isCompletedExceptionally()) return false;
+        try {
+            result.join();
+            return false;
+        } catch (CompletionException failure) {
+            return failure.getCause() instanceof WorldStreamTransport.PreparationRefusal refusal
+                    && refusal.reason() == WorldStreamTransport.Refusal.PACKET_REJECTED;
+        } catch (java.util.concurrent.CancellationException canceled) {
+            return false;
+        }
     }
 
     /** Test observation: helper rejections per tile key. */
