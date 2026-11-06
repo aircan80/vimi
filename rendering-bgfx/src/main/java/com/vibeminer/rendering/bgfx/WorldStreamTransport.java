@@ -2109,6 +2109,11 @@ public final class WorldStreamTransport {
             return drain.exitCode().isEmpty() ? "" : " (exit " + drain.exitCode().getAsInt() + ")";
         }
 
+        /** Test observation of the bounded helper stderr tail so far. */
+        String stderrSnapshot() {
+            return stderrTail.snapshot();
+        }
+
         /** Test observation of the single abnormal-end record; empty after a clean end. */
         CompletableFuture<String> diagnosticReport() {
             return diagnosticReport.copy();

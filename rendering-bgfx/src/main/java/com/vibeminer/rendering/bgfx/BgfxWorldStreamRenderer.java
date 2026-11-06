@@ -16,6 +16,9 @@ import static org.lwjgl.bgfx.BGFX.BGFX_STATE_DEPTH_TEST_GREATER;
 import static org.lwjgl.bgfx.BGFX.BGFX_STATE_WRITE_A;
 import static org.lwjgl.bgfx.BGFX.BGFX_STATE_WRITE_RGB;
 import static org.lwjgl.bgfx.BGFX.BGFX_STATE_WRITE_Z;
+import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_BC1;
+import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_BC2;
+import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_BC3;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_D32F;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_RGBA8;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_NONE;
@@ -59,6 +62,7 @@ import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_add;
 import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_begin;
 import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_end;
 
+import com.vibeminer.rendering.world.ObjectTextureFormats;
 import com.vibeminer.rendering.world.TerrainCamera;
 import com.vibeminer.rendering.world.TerrainScene;
 import java.io.IOException;
@@ -101,7 +105,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     record Ticket(long camera, long content, long policy, int width, int height) {}
 
-    /** objectBytes: issued GPU bytes of all resident and building exterior object sets. */
+    /**
+     * objectBytes: issued GPU bytes of all resident and building exterior object sets;
+     * compressedImages and decodedImages: object textures uploaded as their own BC blocks, and
+     * compressed ones decoded to RGBA8 because this backend does not sample their format.
+     */
     record Stats(
             long callbacks,
             int references,
@@ -109,7 +117,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             long peakUploadBytes,
             int peakStepBytes,
             long maximumStepNanos,
-            long objectBytes) {}
+            long objectBytes,
+            long compressedImages,
+            long decodedImages) {}
+
+    /**
+     * Diagnostic override: when this system property is {@code true}, every compressed object
+     * texture takes the RGBA8 decode path, as on a backend without BC sampling.
+     */
+    static final String OBJECTS_RGBA8_PROPERTY = "vimi.world.objects.rgba8";
 
     /**
      * Most bytes one step call may issue: two geometry chunks plus one atlas step for terrain, or
@@ -217,6 +233,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         /** The current image's upload plan, or null before its texture is created. */
         private List<List<WorldStreamObjectMips.Slice>> imagePlan;
 
+        /** The current image's chain as uploaded: its packed input, or its RGBA8 decode. */
+        private java.nio.ByteBuffer imageData;
+
         private int imageStep;
         private boolean failed;
 
@@ -237,6 +256,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
 
         void closeSource() {
+            imageData = null; // may slice the packed native input freed below
             if (source != null) {
                 source.close();
                 source = null;
@@ -366,6 +386,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     // Relative shader family and profile of the objects pass, named in its stderr diagnostics.
     private String wmoFamily = "world-wmo/";
     private final ObjectsFailureLog objectsFailures = new ObjectsFailureLog();
+
+    /** Per object texture format: whether it is uploaded as stored (RGBA8 always is). */
+    private final boolean[] objectFormats = new boolean[ObjectTextureFormats.BC3 + 1];
+
+    private long compressedImages, decodedImages;
+
+    /** Whether the first completed object set's texture paths have been reported. */
+    private boolean objectPathsReported;
+
     private List<WorldStreamState.Lease> active = List.of();
     private WorldStreamState.Lease staged;
     private LateUpload late;
@@ -383,10 +412,20 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
                             0, false, 1, BGFX_TEXTURE_FORMAT_D32F, BGFX_TEXTURE_RT));
             if (!org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
-                    0, true, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
+                    0, false, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
                 throw new IOException("World terrain needs mipmapped RGBA8 textures");
             }
             String profile = BgfxModelRenderer.shaderProfile(caps.rendererType());
+            boolean forced = Boolean.getBoolean(OBJECTS_RGBA8_PROPERTY);
+            objectFormats[ObjectTextureFormats.RGBA8] = true;
+            for (int f = ObjectTextureFormats.BC1; f <= ObjectTextureFormats.BC3; f++) {
+                objectFormats[f] =
+                        !forced
+                                && org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
+                                        0, false, 1, bgfxFormat(f), BGFX_TEXTURE_NONE);
+            }
+            System.err.println(objectFormatsReport(objectFormats, forced));
+            System.err.flush();
             for (int i = 0; i < slots.length; i++) {
                 slots[i] = new Slot();
             }
@@ -441,7 +480,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         String step = "RGBA8 textures";
         try {
             if (!org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
-                    0, true, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
+                    0, false, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
                 throw new IOException("Exterior objects need mipmapped RGBA8 textures");
             }
             step = "program";
@@ -815,12 +854,30 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             step = "textures";
             if (build.image < source.imageCount()) {
                 int image = build.image;
-                int width = source.images[image * 2], height = source.images[image * 2 + 1];
+                int width = source.width(image), height = source.height(image);
                 if (build.imagePlan == null) {
                     // One mipmapped texture per image, created empty and owned by the build at
-                    // once, so a partly filled chain is destroyed with it. A 256 x 256 chain
-                    // exceeds one step, so levels are filled in planned row bands.
-                    build.imagePlan = WorldStreamObjectMips.plan(width, height, OBJECT_CHUNK);
+                    // once, so a partly filled chain is destroyed with it. A 256 x 256 RGBA8
+                    // chain exceeds one step, so levels are filled in planned row bands; BC
+                    // chains are filled in block rows.
+                    int stored = source.format(image);
+                    int format = uploadFormat(stored, objectFormats);
+                    var chain =
+                            source.pixels.slice(
+                                    source.imageOffset(image),
+                                    ObjectTextureFormats.chainBytes(stored, width, height));
+                    if (format != stored) {
+                        // This backend does not sample the stored blocks: decode the chain.
+                        byte[] rgba =
+                                ObjectTextureFormats.decodeChain(stored, width, height, chain, 0);
+                        chain = java.nio.ByteBuffer.allocateDirect(rgba.length).put(rgba).flip();
+                        decodedImages++;
+                    } else if (ObjectTextureFormats.compressed(format)) {
+                        compressedImages++;
+                    }
+                    build.imageData = chain;
+                    build.imagePlan =
+                            WorldStreamObjectMips.plan(format, width, height, OBJECT_CHUNK);
                     build.imageStep = 0;
                     built.textures[image] =
                             valid(
@@ -829,37 +886,47 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                                             height,
                                             true,
                                             1,
-                                            BGFX_TEXTURE_FORMAT_RGBA8,
+                                            bgfxFormat(format),
                                             BGFX_TEXTURE_NONE,
                                             null,
                                             0));
                 }
-                int chain = source.imageOffset(image), count = 0;
+                int count = 0;
                 for (var slice : build.imagePlan.get(build.imageStep)) {
-                    int levelWidth =
-                            com.vibeminer.rendering.world.ObjectTextureMips.levelWidth(
-                                    width, slice.level());
                     bgfx_update_texture_2d(
                             built.textures[image],
                             0,
                             slice.level(),
                             0,
                             slice.row(),
-                            levelWidth,
+                            com.vibeminer.rendering.world.ObjectTextureMips.levelWidth(
+                                    width, slice.level()),
                             slice.rows(),
-                            bgfx_copy(source.pixels.slice(chain + slice.offset(), slice.bytes())),
-                            levelWidth * 4);
+                            bgfx_copy(build.imageData.slice(slice.offset(), slice.bytes())),
+                            slice.pitch());
                     count += slice.bytes();
                 }
                 built.bytes += count;
                 if (++build.imageStep == build.imagePlan.size()) {
                     build.imagePlan = null;
+                    build.imageData = null;
                     build.image++;
                 }
                 return count;
             }
             // Every slice is a bgfx-owned copy; the packed native input can retire now.
             build.closeSource();
+            if (!objectPathsReported) {
+                // Once per session: how the first complete set's textures reached the GPU.
+                objectPathsReported = true;
+                System.err.println(
+                        "World object textures uploaded: "
+                                + compressedImages
+                                + " compressed, "
+                                + decodedImages
+                                + " decoded to RGBA8");
+                System.err.flush();
+            }
             return 0;
         } catch (IOException | RuntimeException failed) {
             build.fail();
@@ -1480,7 +1547,44 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 peakBytes,
                 peakStepBytes,
                 maximumStepNanos,
-                objectBytes(upload));
+                objectBytes(upload),
+                compressedImages,
+                decodedImages);
+    }
+
+    /** The bgfx texture format of an object texture format. */
+    static int bgfxFormat(int format) {
+        return switch (format) {
+            case ObjectTextureFormats.RGBA8 -> BGFX_TEXTURE_FORMAT_RGBA8;
+            case ObjectTextureFormats.BC1 -> BGFX_TEXTURE_FORMAT_BC1;
+            case ObjectTextureFormats.BC2 -> BGFX_TEXTURE_FORMAT_BC2;
+            case ObjectTextureFormats.BC3 -> BGFX_TEXTURE_FORMAT_BC3;
+            default -> throw new IllegalArgumentException("Object texture format");
+        };
+    }
+
+    /** The stored format when this backend samples it, otherwise RGBA8 (the decode fallback). */
+    static int uploadFormat(int stored, boolean[] supported) {
+        if (!ObjectTextureFormats.valid(stored)) {
+            throw new IllegalArgumentException("Object texture format");
+        }
+        return supported[stored] ? stored : ObjectTextureFormats.RGBA8;
+    }
+
+    /** One stderr line naming the upload path of each compressed object texture format. */
+    static String objectFormatsReport(boolean[] supported, boolean forced) {
+        var line = new StringBuilder("World object textures:");
+        String[] names = {"RGBA8", "BC1", "BC2", "BC3"};
+        for (int f = ObjectTextureFormats.BC1; f <= ObjectTextureFormats.BC3; f++) {
+            line.append(' ')
+                    .append(names[f])
+                    .append(supported[f] ? " compressed" : " decoded to RGBA8")
+                    .append(f < ObjectTextureFormats.BC3 ? "," : "");
+        }
+        if (forced) {
+            line.append(" (").append(OBJECTS_RGBA8_PROPERTY).append(")");
+        }
+        return line.toString();
     }
 
     private long objectBytes(Upload upload) {

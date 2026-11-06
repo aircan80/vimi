@@ -391,6 +391,9 @@ tasks.register('nativeGpuWorldStreamObjectsProof', JavaExec) {
     mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamObjectsMaterialProof'
     timeout = java.time.Duration.ofMinutes(1)
     jvmArgs '--enable-native-access=ALL-UNNAMED'
+    // -PobjectsProofBackend=vulkan|d3d11|metal, -PobjectsProofImages=rgba8|bc|bc-fallback (#374).
+    systemProperty 'vimi.proof.backend', providers.gradleProperty('objectsProofBackend').getOrElse('vulkan')
+    systemProperty 'vimi.proof.objectImages', providers.gradleProperty('objectsProofImages').getOrElse('rgba8')
     args layout.buildDirectory.dir('native-world-stream-objects').get().asFile.absolutePath
 }
 
