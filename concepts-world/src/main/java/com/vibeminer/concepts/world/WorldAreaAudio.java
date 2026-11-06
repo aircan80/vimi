@@ -580,7 +580,7 @@ public final class WorldAreaAudio {
         }
         try {
             var ref = FileTypes.FileRef.id(fileDataId);
-            var stat = files.stat(ref, token).join();
+            var stat = files.statContent(ref, token).join();
             if (stat.state() != FileTypes.FileLookupState.FOUND
                     || stat.file() == null
                     || stat.file().size() == null) {
