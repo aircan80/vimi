@@ -1109,7 +1109,7 @@ public final class WorldTerrainTextureSource {
                     request);
             return details.put(
                     new TerrainDiffuseDetails.Detail(
-                            before.fileId(), before.contentKey(), side, image.rgba().clone()));
+                            before.fileId(), before.contentKey(), side, image.rgba()));
         }
     }
 

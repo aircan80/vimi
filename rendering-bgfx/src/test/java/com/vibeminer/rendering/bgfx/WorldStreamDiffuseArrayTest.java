@@ -80,13 +80,39 @@ final class WorldStreamDiffuseArrayTest {
         array.bind(1, keys(1, WorldStreamDiffuseArray.CAPACITY));
         var kept = array.bind(0, List.of(key(9999)));
         array.release(1);
-        // Rebind slot 0 to its kept key plus many new ones: the kept layer must survive.
-        var wanted = new ArrayList<>(List.of(key(9999)));
-        wanted.addAll(keys(20_000, 20_000 + WorldStreamDiffuseArray.CAPACITY - 1));
+        // Rebind slot 0 to a full array's worth of new keys with the kept key listed last. A
+        // release-first rebind would let the new keys evict the kept layer, leaving it -1.
+        var wanted = new ArrayList<>(keys(20_000, 20_000 + WorldStreamDiffuseArray.CAPACITY));
+        wanted.add(key(9999));
         var rebound = array.bind(0, wanted);
-        assertEquals(kept.layers()[0], rebound.layers()[0]);
+        assertEquals(kept.layers()[0], rebound.layers()[wanted.size() - 1]);
         assertEquals(WorldStreamDiffuseArray.CAPACITY - 1, rebound.uploads().size());
-        assertTrue(java.util.Arrays.stream(rebound.layers()).noneMatch(layer -> layer < 0));
+        assertEquals(
+                1,
+                java.util.Arrays.stream(rebound.layers()).filter(layer -> layer < 0).count(),
+                "One new key finds no layer; never the kept one");
+    }
+
+    @Test
+    void idleLayersAreEvictedLeastRecentlyReleasedFirst() {
+        var array = new WorldStreamDiffuseArray();
+        int a = array.bind(0, List.of(key(1))).layers()[0];
+        int b = array.bind(1, List.of(key(2))).layers()[0];
+        int c = array.bind(2, List.of(key(3))).layers()[0];
+        array.bind(3, keys(100, 100 + WorldStreamDiffuseArray.CAPACITY - 3));
+        // Release order B, A, C: B is the least recently released.
+        array.release(1);
+        array.release(0);
+        array.release(2);
+        assertEquals(b, array.bind(4, List.of(key(500))).layers()[0], "B evicted first");
+        assertEquals(key(500), array.key(b));
+        assertEquals(a, array.bind(5, List.of(key(501))).layers()[0], "then A");
+        assertEquals(c, array.bind(6, List.of(key(502))).layers()[0], "then C");
+        assertArrayEquals(new int[] {-1}, array.bind(7, List.of(key(503))).layers(), "then none");
+        // A re-referenced idle layer leaves the eviction queue.
+        array.release(6);
+        array.bind(8, List.of(key(502)));
+        assertArrayEquals(new int[] {-1}, array.bind(9, List.of(key(504))).layers());
     }
 
     @Test

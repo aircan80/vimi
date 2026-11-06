@@ -33,6 +33,13 @@ final class TerrainDiffuseDetails {
                     || rgba.length != side * side * 4) {
                 throw new IllegalArgumentException("Invalid terrain diffuse detail");
             }
+            rgba = rgba.clone();
+        }
+
+        /** A copy: the cached pixels stay immutable. */
+        @Override
+        public byte[] rgba() {
+            return rgba.clone();
         }
 
         /** Read-only view; the array is owned by this immutable entry. */

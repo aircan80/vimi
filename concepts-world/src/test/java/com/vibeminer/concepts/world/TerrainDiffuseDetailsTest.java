@@ -99,6 +99,95 @@ final class TerrainDiffuseDetailsTest {
         }
     }
 
+    /** BC2 BLP2 with standard mips from {@code base} down to 1; level 0 blue, the rest red. */
+    static byte[] blpChain(int base) {
+        int levels = Integer.numberOfTrailingZeros(base) + 1;
+        int bytes = 0;
+        for (int level = 0; level < levels; level++) {
+            int side = Math.max(4, base >> level);
+            bytes += (side / 4) * (side / 4) * 16;
+        }
+        var data = ByteBuffer.allocate(148 + bytes).order(ByteOrder.LITTLE_ENDIAN);
+        data.put(new byte[] {'B', 'L', 'P', '2'})
+                .putInt(1)
+                .put((byte) 2)
+                .put((byte) 8)
+                .put((byte) 1)
+                .put((byte) 1)
+                .putInt(base)
+                .putInt(base);
+        int at = 148;
+        for (int level = 0; level < levels; level++) {
+            int side = Math.max(4, base >> level);
+            int length = (side / 4) * (side / 4) * 16;
+            data.putInt(20 + level * 4, at).putInt(84 + level * 4, length);
+            short color = (short) (level == 0 ? 0x001f : 0xf800);
+            for (int block = 0; block < length / 16; block++) {
+                data.position(at + block * 16);
+                data.putLong(-1).putShort(color).putShort((short) 0).putInt(0);
+            }
+            at += length;
+        }
+        return data.array();
+    }
+
+    private static WorldTerrainTextureSource.FileBinding bound(
+            WorldTerrainTextureSourceTest.Files files, long id) {
+        long length = files.sources.get(id).length;
+        return new WorldTerrainTextureSource.FileBinding(id, key(id), length, length, 1 << 20);
+    }
+
+    @Test
+    void aBaseAbove128SelectsTheLargestLowerMip() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        long id = 11;
+        files.sources.put(id, blpChain(256));
+        var source = new WorldTerrainTextureSource(files.files(), new TerrainAtlasPool());
+        try {
+            var request =
+                    new WorldTerrainTextureSource.Request(
+                            source, null, List.of(), Cancellation.NONE, progress -> {}, false);
+            var detail = source.detail(bound(files, id), request);
+            assertEquals(128, detail.side(), "256 base: level 1 is the largest within 128");
+            var pixels = detail.pixels();
+            // Level 1 is red; level 0 (blue) was not selected.
+            assertEquals((byte) 0xff, pixels.get(0));
+            assertEquals(0, pixels.get(2));
+            assertEquals(128 * 128 * 4, pixels.remaining());
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void aContentKeyChangeDuringTheReadFailsAndCachesNothing() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        long id = 10;
+        files.sources.put(id, WorldTerrainTextureSourceTest.blpForDetail(0xf800));
+        files.changedId = id;
+        files.changeAfterRead = true;
+        var source = new WorldTerrainTextureSource(files.files(), new TerrainAtlasPool());
+        try {
+            var request =
+                    new WorldTerrainTextureSource.Request(
+                            source, null, List.of(), Cancellation.NONE, progress -> {}, false);
+            assertThrows(RuntimeException.class, () -> source.detail(bound(files, id), request));
+            assertEquals(0, source.details.size(), "A changed source is never cached");
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void detailPixelsCannotBeMutatedThroughTheRecord() {
+        byte[] input = new byte[4 * 4 * 4];
+        var value = new TerrainDiffuseDetails.Detail(7, key(7), 4, input);
+        input[0] = 9;
+        assertEquals(0, value.rgba()[0], "The constructor copies its input");
+        value.rgba()[0] = 9;
+        assertEquals(0, value.rgba()[0], "The accessor returns a copy");
+    }
+
     @Test
     void absentDiffuseIsASourceFailureAndCachesNothing() throws Exception {
         var files = new WorldTerrainTextureSourceTest.Files();
