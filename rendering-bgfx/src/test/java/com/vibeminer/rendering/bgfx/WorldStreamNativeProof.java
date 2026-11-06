@@ -51,6 +51,10 @@ public final class WorldStreamNativeProof {
     }
 
     static long camera = 1, sequence;
+
+    /** A splat trailer the next textured {@link #prepare} appends (splat upload proof). */
+    static volatile WorldStreamTileFile.Splat splatForNextPrepare;
+
     private static int framesDuringUploads;
 
     /**
@@ -170,6 +174,17 @@ public final class WorldStreamNativeProof {
             atlas = atlas.asReadOnlyBuffer();
         }
         var receipt = WorldStreamTileFile.write(directory, header, tile, atlas, () -> false);
+        var splat = splatForNextPrepare;
+        splatForNextPrepare = null;
+        if (splat != null && textured) {
+            receipt =
+                    WorldStreamTileFile.appendSplat(
+                            directory.resolve("tile-" + tx + ".wst"),
+                            receipt,
+                            header,
+                            splat,
+                            () -> false);
+        }
         var input =
                 WorldStreamTileFile.read(
                         directory.resolve("tile-" + tx + ".wst"), receipt, () -> false);

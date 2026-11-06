@@ -460,6 +460,22 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.finishLate(upload, live);
     }
 
+    /** Proof observation of the renderer's splat state. */
+    boolean splatted(int slot) {
+        requireOpen();
+        return renderer.splatted(slot);
+    }
+
+    boolean splatBlocks() {
+        requireOpen();
+        return renderer.splatBlocks();
+    }
+
+    boolean splatArrayCreated() {
+        requireOpen();
+        return renderer.splatArrayCreated();
+    }
+
     /** Test seam for native proofs; see {@link BgfxWorldStreamRenderer#objectBudgetForProof}. */
     void objectBudgetForProof(long bytes) {
         requireOpen();

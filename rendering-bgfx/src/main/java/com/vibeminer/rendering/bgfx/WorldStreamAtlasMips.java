@@ -70,6 +70,41 @@ final class WorldStreamAtlasMips {
         }
     }
 
+    /**
+     * Fills levels 1 to 9 of a splat mask chain by a plain 2 x 2 box filter: masks carry no
+     * coverage. Levels 1 to 5 stay inside one 32-texel chunk; the shader never samples beyond.
+     */
+    static void box(ByteBuffer chain, BooleanSupplier canceled) {
+        if (chain.capacity() != CHAIN_BYTES) {
+            throw new IllegalArgumentException("Splat mask chain size");
+        }
+        for (int level = 1; level < LEVELS; level++) {
+            check(canceled);
+            int side = side(level), child = side * 2, from = offset(level - 1), to = offset(level);
+            for (int y = 0; y < side; y++) {
+                for (int x = 0; x < side; x++) {
+                    for (int c = 0; c < 4; c++) {
+                        int sum = 0;
+                        for (int dy = 0; dy < 2; dy++) {
+                            for (int dx = 0; dx < 2; dx++) {
+                                sum +=
+                                        chain.get(
+                                                        from
+                                                                + ((2 * y + dy) * child
+                                                                                + 2 * x
+                                                                                + dx)
+                                                                        * 4
+                                                                + c)
+                                                & 255;
+                            }
+                        }
+                        chain.put(to + (y * side + x) * 4 + c, (byte) ((sum + 2) / 4));
+                    }
+                }
+            }
+        }
+    }
+
     private static void pull(ByteBuffer chain, int level) {
         int side = side(level), childSide = side * 2;
         int from = offset(level - 1), to = offset(level);
