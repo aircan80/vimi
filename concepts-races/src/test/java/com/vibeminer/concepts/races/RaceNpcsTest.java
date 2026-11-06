@@ -125,7 +125,12 @@ final class RaceNpcsTest {
                                 reference("ItemDisplayInfoID", "ItemDisplayInfo"),
                                 number("ItemSlot"),
                                 reference("NpcModelID", "CreatureDisplayInfoExtra")),
-                        List.of(row(1, 400, 4, 50), row(2, 410, 10, 50))),
+                        List.of(
+                                row(1, 400, 4, 50),
+                                row(2, 410, 10, 50),
+                                row(3, 420, 300, 50),
+                                row(4, 430, 6, 50),
+                                row(5, 431, 6, 50))),
                 table(
                         4,
                         "TextureFileData",
@@ -165,23 +170,24 @@ final class RaceNpcsTest {
         assertEquals(List.of(new RaceNpcs.Item(4, 400), new RaceNpcs.Item(10, 410)), spec.items());
         assertEquals(900, spec.bakeMaterialResourcesId());
         assertEquals(9000, spec.bakeFileDataId());
+        // Slot 300 is outside the profile and slot 6 records two items: left out and counted.
+        assertEquals(2, spec.omittedItems());
     }
 
     @Test
-    void everyShapeItCannotResolveExactlyIsAStatedRefusal() {
+    void onlyAMissingTextureModelOrChoiceIsAStatedRefusal() {
         assertEquals(
                 "the extended display info is not recorded", resolve(99, List.of(MALE)).refusal());
         assertEquals("there is no pre-baked NPC texture", resolve(51, List.of(MALE)).refusal());
+        assertEquals("the customization choices are unknown", resolve(52, List.of(MALE)).refusal());
         assertEquals(
-                "the customization choices conflict or are incomplete",
-                resolve(52, List.of(MALE)).refusal());
-        assertEquals(
-                "the race has no model for the recorded sex", resolve(53, List.of(MALE)).refusal());
+                "there is no race model for the recorded race and sex",
+                resolve(53, List.of(MALE)).refusal());
         var female = new RaceMediaTypes.Variant(2, 1, 59, 159, 1590);
         assertEquals(
-                "the pre-baked texture is not one file", resolve(53, List.of(female)).refusal());
+                "there is no single pre-baked NPC texture", resolve(53, List.of(female)).refusal());
         assertEquals(
-                "the race has more than one model for the sex",
+                "there is no single race model for the recorded sex",
                 resolve(54, List.of(female, new RaceMediaTypes.Variant(3, 1, 69, 169, 1690)))
                         .refusal());
     }

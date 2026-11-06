@@ -15,7 +15,10 @@ import java.util.function.LongFunction;
  * ({@code CreatureDisplayInfoOption}), the equipped item displays ({@code
  * NPCModelItemSlotDisplayInfo}) and the client's own pre-baked texture ({@code
  * BakeMaterialResourcesID} through {@code TextureFileData}), which already composites skin, face
- * and armour. Every shape it cannot resolve exactly is a stated refusal; nothing is guessed.
+ * and armour. It refuses, with a stated reason, only what drawing cannot do without: the pre-baked
+ * texture, the race model (ChrModel) and known customization choices. Item records it cannot use
+ * exactly are left out and counted ({@link Spec#omittedItems}); the bake already shows their
+ * texture, only their geometry is missing. Nothing is guessed.
  */
 public final class RaceNpcs {
     /** One equipped item display in an NPC item slot. */
@@ -31,7 +34,8 @@ public final class RaceNpcs {
             Map<Long, Long> choices,
             List<Item> items,
             long bakeMaterialResourcesId,
-            long bakeFileDataId) {
+            long bakeFileDataId,
+            int omittedItems) {
         public Spec {
             Objects.requireNonNull(variant);
             choices = Map.copyOf(choices);
@@ -81,13 +85,15 @@ public final class RaceNpcs {
         long classId = extras.has("DisplayClassID") ? extras.number(extra, "DisplayClassID") : 0;
         long bake = extras.number(extra, "BakeMaterialResourcesID");
         if (race <= 0 || sex < 0 || sex > 1) {
-            return Resolution.refused("the race or sex is outside the reviewed profile");
+            return Resolution.refused("there is no race model for the recorded race and sex");
         }
         if (bake <= 0) {
             return Resolution.refused("there is no pre-baked NPC texture");
         }
+        int omitted = 0;
         if (extras.has("NPCItemDisplay")) {
-            // Older layouts list items inline; only the separate slot table is reviewed.
+            // Older layouts list items inline; only the separate slot table is reviewed, so inline
+            // items are left out and counted.
             int length =
                     extras.schema.columns().stream()
                             .filter(column -> column.name().equals("NPCItemDisplay"))
@@ -98,7 +104,7 @@ public final class RaceNpcs {
             for (int i = 0; i < length; i++) {
                 String column = length == 1 ? "NPCItemDisplay" : "NPCItemDisplay[" + i + "]";
                 if (extras.number(extra, column) != 0) {
-                    return Resolution.refused("inline NPC item displays are not reviewed");
+                    omitted++;
                 }
             }
         }
@@ -106,13 +112,13 @@ public final class RaceNpcs {
         for (var candidate : variants.apply(race)) {
             if (candidate.sex() == sex) {
                 if (variant != null) {
-                    return Resolution.refused("the race has more than one model for the sex");
+                    return Resolution.refused("there is no single race model for the recorded sex");
                 }
                 variant = candidate;
             }
         }
         if (variant == null) {
-            return Resolution.refused("the race has no model for the recorded sex");
+            return Resolution.refused("there is no race model for the recorded race and sex");
         }
         // Customization choices: one per option; two different choices for one option refuse.
         var options =
@@ -134,7 +140,7 @@ public final class RaceNpcs {
             long choice = options.number(row, "ChrCustomizationChoiceID");
             Long before = choices.put(option, choice);
             if (option <= 0 || choice <= 0 || before != null && before != choice) {
-                return Resolution.refused("the customization choices conflict or are incomplete");
+                return Resolution.refused("the customization choices are unknown");
             }
         }
         // Equipped items: one display per slot.
@@ -156,15 +162,23 @@ public final class RaceNpcs {
             long slot = slots.number(row, "ItemSlot");
             long display = slots.number(row, "ItemDisplayInfoID");
             if (slot < 0 || slot > 255 || display <= 0) {
-                return Resolution.refused("an item slot is outside the reviewed profile");
+                omitted++; // an item slot outside the reviewed profile
+                continue;
             }
-            Long before = bySlot.put((int) slot, display);
+            Long before = bySlot.putIfAbsent((int) slot, display);
             if (before != null && before != display) {
-                return Resolution.refused("two items are recorded for one slot");
+                // Two different items for one slot: neither is chosen; counted once below.
+                bySlot.put((int) slot, -1L);
             }
         }
         var items = new ArrayList<Item>();
-        bySlot.forEach((slot, display) -> items.add(new Item(slot, display)));
+        for (var entry : bySlot.entrySet()) {
+            if (entry.getValue() > 0) {
+                items.add(new Item(entry.getKey(), entry.getValue()));
+            } else {
+                omitted++;
+            }
+        }
         // The pre-baked texture: exactly one file for the material resource.
         var bakes =
                 tables.read(
@@ -182,12 +196,12 @@ public final class RaceNpcs {
             }
             long candidate = bakes.number(row, "FileDataID");
             if (candidate <= 0 || file != 0 && file != candidate) {
-                return Resolution.refused("the pre-baked texture is not one file");
+                return Resolution.refused("there is no single pre-baked NPC texture");
             }
             file = candidate;
         }
         if (file == 0) {
-            return Resolution.refused("the pre-baked texture file is not recorded");
+            return Resolution.refused("there is no pre-baked NPC texture");
         }
         return new Resolution(
                 new Spec(
@@ -199,7 +213,8 @@ public final class RaceNpcs {
                         choices,
                         items,
                         bake,
-                        file),
+                        file,
+                        omitted),
                 null);
     }
 
