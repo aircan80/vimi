@@ -75,7 +75,7 @@ final class WorldZoneText {
         out.setToValue(0);
         bannerAnimation = new SequentialTransition(in, new PauseTransition(HOLD), out);
         bannerAnimation.setOnFinished(e -> banner.setVisible(false));
-        area(List.of());
+        clearLine();
     }
 
     /** The top-centre zone line (zone, leave chip and sub-area). */
@@ -99,18 +99,21 @@ final class WorldZoneText {
 
     /**
      * The recorded area chain, outermost first (e.g. zone, then sub-area), or empty when the area
-     * is unknown. The line updates now; a new most specific area also plays the banner.
+     * is unknown. The line updates now; a new most specific area also plays the banner. An unknown
+     * area keeps the last known one, on the line and as the banner's memory: tiles not loaded yet
+     * or a tab switch report "unknown" for a moment, and coming back to the same area must not
+     * replay the banner. Only {@link #reset()} forgets it.
      */
     void area(List<String> chain) {
         var names = chain == null ? List.<String>of()
                 : chain.stream().filter(n -> n != null && !n.isBlank()).toList();
-        zone.setText(names.isEmpty() ? "" : names.getFirst());
+        if (names.isEmpty()) return;
+        zone.setText(names.getFirst());
         subzone.setText(names.size() < 2 ? "" : names.getLast());
         subzone.setVisible(names.size() >= 2);
-        String specific = names.isEmpty() ? "" : names.getLast();
+        String specific = names.getLast();
         if (specific.equals(shown)) return;
         shown = specific;
-        if (specific.isEmpty()) return;
         banner.setText(specific);
         banner.setVisible(true);
         bannerAnimation.playFromStart();
@@ -121,12 +124,21 @@ final class WorldZoneText {
         return tooltip;
     }
 
-    /** Stops the banner, e.g. when the explorer closes; the next area plays it again. */
+    /**
+     * Stops the banner and forgets the area, e.g. when the explorer closes or the map changes; the
+     * next area plays the banner again.
+     */
     void reset() {
         bannerAnimation.stop();
         banner.setOpacity(0);
         banner.setVisible(false);
         shown = "";
-        area(List.of());
+        clearLine();
+    }
+
+    private void clearLine() {
+        zone.setText("");
+        subzone.setText("");
+        subzone.setVisible(false);
     }
 }

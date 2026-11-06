@@ -78,9 +78,16 @@ public final class WorldHudUiTest {
                         && banner.getText().equals("Elwynn Forest") && animation.getStatus() == Animation.Status.RUNNING,
                 "A zone without a sub-area: one line, and a banner for the zone");
         animation.stop();
+        // A, unknown, A: an unknown area (tiles not loaded yet, a tab switch) keeps the last area,
+        // so coming back to it replays nothing and the line never blanks.
         zone.area(List.of());
-        require(!zone.line().isVisible() && animation.getStatus() == Animation.Status.STOPPED,
-                "An unknown area clears the line and plays nothing");
+        require(zone.line().isVisible() && text(zone, "#world-zone-name").equals("Elwynn Forest")
+                        && animation.getStatus() == Animation.Status.STOPPED,
+                "An unknown area keeps the last one on the line and plays nothing");
+        zone.area(List.of("Elwynn Forest"));
+        require(animation.getStatus() == Animation.Status.STOPPED, "A, unknown, A: no replay");
+        zone.reset();
+        require(!zone.line().isVisible(), "Only a reset clears the line");
         zone.leave().setVisible(true);
         require(zone.line().isVisible() && zone.leave().getText().equals("Leave"), "The leave chip keeps the line shown");
         zone.leave().fire();
