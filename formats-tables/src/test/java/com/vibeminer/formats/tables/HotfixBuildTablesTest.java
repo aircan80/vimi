@@ -999,6 +999,8 @@ class HotfixBuildTablesTest {
     void shortScanAndChangedBaseAreInconclusiveAndRefused() {
         try (var tables = rawByte(9, entry(0x11223344L, 1, 7, 1, u8(255)))) {
             var hot = (HotfixBuildTables) tables;
+            var now = new java.util.concurrent.atomic.AtomicLong(1);
+            hot.clock = now::get;
             // The base reports two rows; a scan that sees only one checked nothing conclusive.
             hot.rawScanProbe =
                     page ->
@@ -1012,11 +1014,19 @@ class HotfixBuildTablesTest {
                                     page.code(),
                                     page.message());
             assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables), "short scan");
+            now.addAndGet(java.util.concurrent.TimeUnit.SECONDS.toNanos(6));
+            assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables));
+            assertEquals(2, hot.fitScans, "a short scan is not cached: it is re-scanned");
         }
         try (var tables = rawByte(9, entry(0x11223344L, 1, 7, 1, u8(255)))) {
             var hot = (HotfixBuildTables) tables;
+            var now = new java.util.concurrent.atomic.AtomicLong(1);
+            hot.clock = now::get;
             hot.rawScanIdentityProbe = identity -> identity + "-changed";
             assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables), "base changed during scan");
+            now.addAndGet(java.util.concurrent.TimeUnit.SECONDS.toNanos(6));
+            assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables));
+            assertEquals(2, hot.fitScans, "a changed base is not cached: it is re-scanned");
         }
     }
 
@@ -1048,25 +1058,152 @@ class HotfixBuildTablesTest {
     }
 
     @Test
-    void completedScanSurvivesViewEviction() throws Exception {
+    void completedScanSurvivesViewEviction() {
         try (var tables = rawByte(9, entry(0x11223344L, 1, 7, 1, u8(255)))) {
             var hot = (HotfixBuildTables) tables;
             assertEquals(TableTypes.RowOutcome.FOUND, rawRow(tables));
             assertEquals(1, hot.fitScans);
-            // Evict the compiled view the way a full cache would.
-            var viewsField = HotfixBuildTables.class.getDeclaredField("views");
-            viewsField.setAccessible(true);
-            var chargeField = HotfixBuildTables.class.getDeclaredField("charge");
-            chargeField.setAccessible(true);
-            var views = (java.util.Map<?, ?>) viewsField.get(hot);
-            var view = views.remove(100L);
-            var bytesField = view.getClass().getDeclaredField("bytes");
-            bytesField.setAccessible(true);
-            var release = chargeField.get(hot).getClass().getDeclaredMethod("release", long.class);
-            release.setAccessible(true);
-            release.invoke(chargeField.get(hot), bytesField.getLong(view));
+            assertEquals(1, hot.compiles);
+            hot.evictUnpinnedViews().join();
             assertEquals(TableTypes.RowOutcome.FOUND, rawRow(tables), "rebuilt after eviction");
+            assertEquals(2, hot.compiles, "the view was evicted and rebuilt");
             assertEquals(1, hot.fitScans, "the fit result for this base was reused");
+        }
+    }
+
+    @Test
+    void backOffDoublesToItsCapThenGivesUpAndACompletedScanClearsIt() {
+        try (var tables = rawByte(9, entry(0x11223344L, 1, 7, 1, u8(255)))) {
+            var hot = (HotfixBuildTables) tables;
+            var now = new java.util.concurrent.atomic.AtomicLong(1);
+            hot.clock = now::get;
+            hot.rawScanProbe =
+                    page -> {
+                        throw new IllegalStateException("authored damaged base");
+                    };
+            assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables));
+            assertEquals(1, hot.fitScans);
+            long second = java.util.concurrent.TimeUnit.SECONDS.toNanos(1);
+            for (int scans = 1; scans < HotfixBuildTables.FIT_SCANS_MAX; scans++) {
+                // 5 s, doubling: 10, 20, 40, 80, 160, then capped at 300 instead of 320.
+                long delay = Math.min(300 * second, (5 * second) << (scans - 1));
+                now.addAndGet(delay - 1);
+                assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables));
+                assertEquals(scans, hot.fitScans, "still backing off after scan " + scans);
+                now.incrementAndGet();
+                assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables));
+                assertEquals(scans + 1, hot.fitScans, "re-scanned when due after scan " + scans);
+            }
+            now.addAndGet(java.util.concurrent.TimeUnit.HOURS.toNanos(1));
+            assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables));
+            hot.evictUnpinnedViews().join();
+            assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables));
+            assertEquals(
+                    HotfixBuildTables.FIT_SCANS_MAX,
+                    hot.fitScans,
+                    "given up on this base, even after its view is rebuilt");
+            assertEquals(1, hot.fitBackOffs());
+        }
+        try (var tables = rawByte(9, entry(0x11223344L, 1, 7, 1, u8(255)))) {
+            var hot = (HotfixBuildTables) tables;
+            var now = new java.util.concurrent.atomic.AtomicLong(1);
+            hot.clock = now::get;
+            hot.rawScanProbe =
+                    page -> {
+                        throw new IllegalStateException("authored damaged base");
+                    };
+            assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables));
+            assertEquals(1, hot.fitBackOffs());
+            hot.rawScanProbe = page -> page;
+            now.addAndGet(java.util.concurrent.TimeUnit.SECONDS.toNanos(5));
+            assertEquals(TableTypes.RowOutcome.FOUND, rawRow(tables));
+            assertEquals(0, hot.fitBackOffs(), "a completed scan clears the back-off");
+        }
+    }
+
+    @Test
+    void refusedRebuildKeepsThePreviousWorkingOverlay() {
+        // Row 8 is deleted by the cache; row 7 needs the raw column.
+        try (var tables =
+                rawByte(
+                        9,
+                        entry(0x11223344L, 1, 7, 1, u8(255)),
+                        entry(0x11223344L, 1, 8, 2, new byte[0]))) {
+            var hot = (HotfixBuildTables) tables;
+            var now = new java.util.concurrent.atomic.AtomicLong(1);
+            hot.clock = now::get;
+            hot.rawScanProbe =
+                    page -> {
+                        throw new IllegalStateException("authored damaged base");
+                    };
+            assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables));
+            assertEquals(TableTypes.RowOutcome.ABSENT, row8(tables), "overlaid");
+            // The re-scan is due, but the rebuild is refused before it scans.
+            now.addAndGet(java.util.concurrent.TimeUnit.SECONDS.toNanos(6));
+            hot.ordinalsProbe = found -> null;
+            assertEquals(TableTypes.RowOutcome.ABSENT, row8(tables), "previous overlay kept");
+            assertEquals(1, hot.fitScans);
+            assertTrue(
+                    tables.hotfixInfo(TableTypes.Ref.id(100), null, P, Cancellation.NONE)
+                                    .join()
+                                    .orElseThrow()
+                                    .unavailable()
+                            == null,
+                    "no refusal is reported while the previous overlay applies");
+            // Refused again only after the back-off, then rebuilt once the base reads.
+            hot.ordinalsProbe = found -> found;
+            hot.rawScanProbe = page -> page;
+            assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables), "still backing off");
+            now.addAndGet(java.util.concurrent.TimeUnit.SECONDS.toNanos(6));
+            assertEquals(TableTypes.RowOutcome.FOUND, rawRow(tables));
+            assertEquals(TableTypes.RowOutcome.ABSENT, row8(tables));
+            assertEquals(2, hot.fitScans);
+        }
+    }
+
+    private static TableTypes.RowOutcome row8(BuildTables tables) {
+        return tables.get(TableTypes.Ref.id(100), 8, P, Cancellation.NONE).join().outcome();
+    }
+
+    @Test
+    void closeDuringTheScanIsNotTakenForAnInconclusiveBase() {
+        try (var tables = rawByte(9, entry(0x11223344L, 1, 7, 1, u8(255)))) {
+            var hot = (HotfixBuildTables) tables;
+            hot.rawScanProbe =
+                    page -> {
+                        hot.closeAsync();
+                        throw new IllegalStateException("authored failure while closing");
+                    };
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    RuntimeException.class, () -> rawRow(tables));
+            assertEquals(1, hot.fitScans);
+            assertEquals(0, hot.fitBackOffs(), "closing is no verdict about the base");
+        }
+    }
+
+    @Test
+    void dueRescanNeverRebuildsAViewTheOperationAlreadyUsed() {
+        try (var tables = rawByte(9, entry(0x11223344L, 1, 7, 1, u8(255)))) {
+            var hot = (HotfixBuildTables) tables;
+            // Each clock read lands an hour later, so every re-scan is due as soon as it is set.
+            var now = new java.util.concurrent.atomic.AtomicLong(1);
+            hot.clock = () -> now.addAndGet(java.util.concurrent.TimeUnit.HOURS.toNanos(1));
+            hot.rawScanProbe =
+                    page -> {
+                        throw new IllegalStateException("authored damaged base");
+                    };
+            // One operation that reads table 100 several times: the row, then the table itself.
+            var references =
+                    tables.referencedBy(
+                                    new TableTypes.ReferencesRequest(TableTypes.Ref.id(100), 8),
+                                    P,
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals(TableTypes.RowOutcome.FOUND, references.row().outcome());
+            assertEquals(1, hot.compiles, "not rebuilt within the operation");
+            assertEquals(1, hot.fitScans);
+            assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables));
+            assertEquals(2, hot.compiles, "the next operation rebuilds it");
         }
     }
 
