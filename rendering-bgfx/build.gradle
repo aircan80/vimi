@@ -437,3 +437,14 @@ tasks.named('processResources', ProcessResources) {
         into 'com/vibeminer/rendering/bgfx/shaders/global-candidate'
     }
 }
+
+tasks.register('nativeGpuWorldStreamCadenceProof', JavaExec) {
+    group = 'verification'
+    description = 'Measures World v2 transport frame interval and camera-to-frame latency with one authored tile.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamCadenceProof'
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-cadence').get().asFile.absolutePath
+}

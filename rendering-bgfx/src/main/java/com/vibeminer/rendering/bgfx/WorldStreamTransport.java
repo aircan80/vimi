@@ -15,6 +15,9 @@ import java.util.concurrent.CompletableFuture;
  * and retains its permit until terminatedAndDrained completes successfully.
  */
 public final class WorldStreamTransport {
+    /** Fallback frame poll when no FRAME hint arrives; hints normally wake the reader first. */
+    static final long FRAME_POLL_MILLIS = 33;
+
     public enum Backend {
         DEFAULT,
         VULKAN,
@@ -576,6 +579,13 @@ public final class WorldStreamTransport {
         private CommitOperation commitOperation;
         private CommitReceipt currentReceipt;
         private Frame latestFrame;
+        // Child FRAME hints wake the frame reader at once. The bounded wait remains the fallback,
+        // so a lost or absent hint costs at most the old poll interval.
+        private final WorldFrameSignal frameSignal = new WorldFrameSignal();
+        private volatile Runnable frameListener;
+        // Test seams: the reader's fallback wait, and completion when the reader has returned.
+        volatile long framePollMillis = FRAME_POLL_MILLIS;
+        final CompletableFuture<Void> framesReaderDone = new CompletableFuture<>();
         // Diagnostics only: bounded helper stderr, logged on abnormal end and with renderer
         // objects failures; never protocol.
         private final HelperStderrTail stderrTail = new HelperStderrTail();
@@ -649,6 +659,8 @@ public final class WorldStreamTransport {
 
         private void launched(WorldStreamLaunchOwner.Handle handle) {
             owner = handle;
+            // Every stop (close, child exit, worker failure) wakes a parked frame reader.
+            handle.onStopping(this::frameSignaled);
             handle.childExited().thenRun(this::childExited);
             handle.boundedClose()
                     .whenComplete(
@@ -1098,10 +1110,27 @@ public final class WorldStreamTransport {
             }
         }
 
+        /**
+         * Runs on the transport's frame reader, without any lock, each time a new frame becomes
+         * available to {@link #takeLatestFrame}. It must not block; replaced by a later call.
+         */
+        public void onFrame(Runnable listener) {
+            frameListener = listener;
+        }
+
         private void pollFrames(WorldStreamLaunchOwner.Handle handle) throws Exception {
+            try {
+                readFrames(handle);
+            } finally {
+                framesReaderDone.complete(null);
+            }
+        }
+
+        private void readFrames(WorldStreamLaunchOwner.Handle handle) throws Exception {
             long after = 0;
-            while (!handle.stopping()) {
+            while (!handle.stopping() && !closing) {
                 var candidate = frames.readLatest(handle.files().frames(), after);
+                boolean offered = false;
                 if (candidate != null) {
                     after = candidate.metadata().sequence();
                     synchronized (lock) {
@@ -1112,12 +1141,29 @@ public final class WorldStreamTransport {
                                         == candidate.metadata().content()
                                 && frames.current(candidate.metadata())) {
                             latestFrame = new Frame(candidate, currentReceipt);
+                            offered = true;
                         }
                     }
                 }
-                java.util.concurrent.locks.LockSupport.parkNanos(
-                        java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(33));
+                var listener = frameListener;
+                if (offered && listener != null) {
+                    try {
+                        listener.run();
+                    } catch (RuntimeException failure) {
+                        // A consumer's fault must not end the frame reader or the session.
+                        System.getLogger(WorldStreamTransport.class.getName())
+                                .log(
+                                        System.Logger.Level.WARNING,
+                                        "World frame listener failed",
+                                        failure);
+                    }
+                }
+                frameSignal.await(framePollMillis);
             }
+        }
+
+        private void frameSignaled() {
+            frameSignal.signal();
         }
 
         private void deleteCommit(CommitOperation operation) {
@@ -1551,6 +1597,7 @@ public final class WorldStreamTransport {
                 latestFrame = null;
                 lock.notifyAll();
             }
+            frameSignaled();
             frames.close();
             cancellation.stopSession();
         }
@@ -1627,6 +1674,7 @@ public final class WorldStreamTransport {
                             }
                         }
                         case CAMERA -> frames.applied((WorldStreamStatus.CameraApplied) message);
+                        case FRAME -> frameSignaled();
                         case INPUT_COMMIT -> {
                             CommitOperation operation;
                             synchronized (lock) {
