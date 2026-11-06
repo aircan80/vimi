@@ -1270,6 +1270,45 @@ class WorldTerrainTextureSourceTest {
     }
 
     @Test
+    void splattingInputsRideTheAtlasOnlyWhenEnabledAndWideChunksKeepTheAtlas() throws Exception {
+        for (boolean enabled : new boolean[] {false, true}) {
+            var files = new Files();
+            files.sources.put(3L, eightLayers());
+            for (long id = 10; id <= 17; id++) {
+                files.sources.put(id, blp(0xf800));
+            }
+            var pool = new TerrainAtlasPool();
+            var source = new WorldTerrainTextureSource(files.files(), pool);
+            WorldTerrainTextureSource.splat = enabled;
+            try (var result =
+                    source.read(MAP, List.of(TILE), Cancellation.NONE, p -> {})
+                            .get(10, TimeUnit.SECONDS)) {
+                var lease = result.retainAtlas(TILE.x(), TILE.y()).orElseThrow();
+                try (lease) {
+                    lease.withAtlas(
+                            atlas -> {
+                                assertEquals(enabled, atlas.splat().isPresent());
+                                atlas.splat()
+                                        .ifPresent(
+                                                splat -> {
+                                                    // Eight layers per chunk: no splat layer.
+                                                    assertEquals(0, splat.diffuseCount());
+                                                    assertEquals(
+                                                            com.vibeminer.rendering.world
+                                                                    .TerrainTileSplat.NONE,
+                                                            splat.layer(3, 4, 0));
+                                                });
+                            });
+                }
+            } finally {
+                WorldTerrainTextureSource.splat = false;
+                source.closeAsync().get(5, TimeUnit.SECONDS);
+                pool.closeAsync().get(5, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    @Test
     void finalBatchRevalidationRejectsAnEarlierPublishedTileAfterSourceChange() throws Exception {
         var files = new Files();
         var pool = new TerrainAtlasPool();
