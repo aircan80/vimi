@@ -83,6 +83,11 @@ final class WorldAudioControls implements AutoCloseable {
         return slider;
     }
 
+    /** The audio status text, e.g. for the developer overlay. */
+    javafx.beans.property.ReadOnlyStringProperty statusText() {
+        return status.textProperty();
+    }
+
     HBox node() {
         return node;
     }

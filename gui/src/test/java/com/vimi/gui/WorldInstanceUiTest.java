@@ -177,6 +177,10 @@ public final class WorldInstanceUiTest {
                         "Inside the instance the map panel is closed and the HUD shown");
                 require(leave.isVisible(), "Leave is offered inside the instance");
                 require(view.lookup("#world-menu-leave").isVisible(), "The Escape menu offers Leave instance inside it");
+                var toasts = view.toasts();
+                require(toasts.getScene() != null && toasts.isVisible() && toasts.toasts().stream()
+                                .anyMatch(t -> t.text().startsWith("Entering ")),
+                        "Entering an instance shows a visible toast: " + toasts.toasts());
                 var chip = view.lookup("#world-zone-leave");
                 require(chip != null && chip.isVisible(), "The zone text offers Leave next to the zone");
                 ((Button) chip).fire();
@@ -188,6 +192,10 @@ public final class WorldInstanceUiTest {
                     require(!leave.isVisible(), "No leave after returning");
                     require(!view.lookup("#world-menu-leave").isVisible(), "No menu Leave instance after returning");
                     require(!view.lookup("#world-zone-leave").isVisible(), "No leave chip after returning");
+                    var back = view.toasts();
+                    require(back.getScene() != null && back.isVisible() && back.toasts().stream()
+                                    .anyMatch(t -> t.text().startsWith("Left the instance")),
+                            "Leaving shows a visible toast: " + back.toasts());
                     enteringBar(view);
                 });
             });
