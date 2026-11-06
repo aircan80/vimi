@@ -835,7 +835,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                             com.vibeminer.rendering.world.TerrainLayerBlocks.side(slice.level()),
                             slice.rows(),
                             copyHeap(chain.slice(slice.offset(), slice.bytes())),
-                            slice.pitch());
+                            updatePitch(ObjectTextureFormats.BC1, slice));
                     bytes += slice.bytes();
                 }
             }
