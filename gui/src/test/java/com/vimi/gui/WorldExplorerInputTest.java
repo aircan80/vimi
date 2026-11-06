@@ -185,8 +185,10 @@ public final class WorldExplorerInputTest {
         for (var layout : WorldControls.Layout.values()) {
             var keys = layout.keys();
             require(keys.get(KeyCode.V) == WorldControls.Action.SPAWNS
-                            && keys.get(KeyCode.T) == WorldControls.Action.DAY_NIGHT,
-                    layout + " binds V and T: " + keys);
+                            && keys.get(KeyCode.T) == WorldControls.Action.DAY_NIGHT
+                            && keys.get(KeyCode.L) == WorldControls.Action.TRACKING
+                            && keys.get(KeyCode.N) == WorldControls.Action.MINIMAP,
+                    layout + " binds V, L, N and T: " + keys);
             var controls = WorldControls.DEFAULTS.withKeys(keys);
             var bound = controls.byAction();
             for (var action : movement)

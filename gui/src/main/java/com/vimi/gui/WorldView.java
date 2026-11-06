@@ -859,6 +859,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (explorer) viewport.requestFocus();
         });
         minimap.tracking().onShowing(this::clearKeys);
+        minimap.tracking().passThrough(event -> {
+            var action = input.controls().keys().get(event.getCode());
+            return action != null && action.command;
+        });
         StackPane.setAlignment(devOverlay, Pos.TOP_LEFT);
         // Below the top-left panels hint (and the Map button that takes its place).
         StackPane.setMargin(devOverlay, new Insets(40, 12, 12, 12));
@@ -1258,6 +1262,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 if (spawns != null && !spawns.toggle().isDisabled()) spawns.toggle().fire();
             }
             case DAY_NIGHT -> audio.cycleSlot();
+            case TRACKING -> minimap.toggleTracking();
+            case MINIMAP -> minimap.toggleShown();
             case SPEED_STROLL, SPEED_MOUNT, SPEED_FLY, SPEED_FAST, SPEED_TURBO -> {
                 flightSpeed.setValue(action.speed());
                 controlsChanged();

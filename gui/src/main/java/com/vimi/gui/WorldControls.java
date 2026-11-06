@@ -42,6 +42,8 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         WALK("Walk on terrain (toggle)"),
         DEV_OVERLAY("Developer overlay (next page)", true),
         SPAWNS("NPC spawn markers on/off", true),
+        TRACKING("Tracking popup open/close", true),
+        MINIMAP("Minimap show/hide", true),
         DAY_NIGHT("Day/night: clock, day, night", true),
         SPEED_STROLL("Speed: Stroll", true),
         SPEED_MOUNT("Speed: Mount", true),
@@ -146,8 +148,10 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
             keys.put(KeyCode.F, Action.WALK);
             // Function keys sit in the same place on every layout.
             keys.put(KeyCode.F3, Action.DEV_OVERLAY);
-            // V and T sit in the same place on both layouts.
+            // V, L, N and T sit in the same place on both layouts.
             keys.put(KeyCode.V, Action.SPAWNS);
+            keys.put(KeyCode.L, Action.TRACKING);
+            keys.put(KeyCode.N, Action.MINIMAP);
             keys.put(KeyCode.T, Action.DAY_NIGHT);
             // AZERTY digits need Shift: that preset leaves the speed keys unbound (Shift+wheel).
             if (this != AZERTY) {

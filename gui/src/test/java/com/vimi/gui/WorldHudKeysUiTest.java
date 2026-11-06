@@ -58,8 +58,32 @@ public final class WorldHudKeysUiTest {
             fx(() -> ((Button) view.lookup("#world-open")).fire());
             await(() -> get("camera") != null && !(boolean) get("scenePreparing"));
             fx(WorldHudKeysUiTest::keysAct);
+            await(() -> view.lookup("#world-minimap").isVisible());
+            fx(WorldHudKeysUiTest::minimapKey);
+            fx(() -> {
+                stage.toFront();
+                stage.requestFocus();
+            });
+            await(stage::isFocused);
+            fx(() -> {
+                view.lookup("#world-viewport").requestFocus();
+                press(KeyCode.L);
+            });
+            await(() -> view.minimap().tracking().showing());
+            fx(() -> {
+                // Keys reach the open popup through the owner window; bound HUD keys pass on.
+                var overlay = view.devOverlay();
+                var page = overlay.page();
+                press(KeyCode.F3);
+                require(overlay.page() != page, "F3 still works while the tracking popup is open");
+                press(KeyCode.W);
+                require(!((WorldExplorerInput) get("input")).keysHeld(), "Movement keys stay in the popup");
+                press(KeyCode.L);
+            });
+            await(() -> !view.minimap().tracking().showing());
             System.out.println("World HUD keys PASS: V spawns toggle, T day/night cycle, 1-5 speed presets"
-                    + " persisted, no held keys or motion");
+                    + " persisted, N minimap hide/show, L tracking popup open/close, HUD keys through the"
+                    + " popup, no held keys or motion");
         } finally {
             fx(() -> { if (view != null) view.close(); if (stage != null) stage.close(); });
             Platform.exit();
@@ -99,6 +123,22 @@ public final class WorldHudKeysUiTest {
                 "The chosen preset is saved with the controls");
         press(KeyCode.DIGIT3);
         require(!input.keysHeld() && before.equals(get("camera")), "HUD keys never move or stay held");
+    }
+
+    private static void minimapKey() {
+        var minimap = view.minimap();
+        require(minimap.isVisible() && !minimap.userHidden(), "The minimap starts shown");
+        press(KeyCode.N);
+        require(!minimap.isVisible() && minimap.userHidden(), "N hides the minimap");
+        var camera = (TerrainRenderer.Camera) get("camera");
+        minimap.update((BuildWorld) get("handle"), (WorldService.Inventory) get("inventory"),
+                (WorldFormats.Tile) get("origin"), (double) get("originX"), (double) get("originY"),
+                camera.x(), camera.y(), camera.yaw());
+        require(!minimap.isVisible(), "It stays hidden across updates");
+        press(KeyCode.L);
+        require(!minimap.tracking().showing(), "L does nothing while the minimap is hidden");
+        press(KeyCode.N);
+        require(minimap.userHidden() == false, "N shows it again");
     }
 
     private static void press(KeyCode code) {

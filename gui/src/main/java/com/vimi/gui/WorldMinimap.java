@@ -69,6 +69,8 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         }
     };
     private int zoom = DEFAULT_ZOOM;
+    // The minimap key hides the cluster on purpose; it stays hidden across updates until shown.
+    private boolean userHidden;
     private Runnable refocus = () -> {};
     /** Recorded entrances on the current map; drawn while the tracking layer is on. */
     private List<WorldInstanceLinks.Link> entrances = List.of();
@@ -259,6 +261,29 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         tracking.refocus(next);
     }
 
+    /** The minimap key: hides the cluster (and its popup), or shows it again. */
+    void toggleShown() {
+        userHidden = !userHidden;
+        if (userHidden) tracking.hide();
+        boolean show = !userHidden && view != null;
+        setVisible(show);
+        setManaged(show);
+    }
+
+    /** True while the minimap key has hidden the cluster. */
+    boolean userHidden() {
+        return userHidden;
+    }
+
+    /** The tracking key: opens or closes the popup (shown cluster only). */
+    void toggleTracking() {
+        if (userHidden || view == null) {
+            tracking.hide();
+            return;
+        }
+        tracking.toggle(this);
+    }
+
     /** The tracking popup; the view mounts the spawn and role controls in it. */
     WorldMinimapTracking tracking() {
         return tracking;
@@ -446,8 +471,8 @@ final class WorldMinimap extends VBox implements AutoCloseable {
                         y,
                         yaw,
                         List.copyOf(nearby));
-        setVisible(true);
-        setManaged(true);
+        setVisible(!userHidden);
+        setManaged(!userHidden);
         var key = DrawKey.of(x, y, yaw, view.tiles(), origin, originX, originY,
                 roles == null ? null : roles.paintKey(), scale);
         if (!key.equals(drawn)) {
