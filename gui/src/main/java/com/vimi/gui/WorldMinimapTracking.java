@@ -49,17 +49,23 @@ final class WorldMinimapTracking {
                 + " -fx-padding: 10; -fx-base: #24343d; -fx-text-fill: white;");
         // HUD command keys go straight to the viewport's key handling, before any popup control
         // sees them: a command bound to Space or Enter must not also toggle a focused checkbox.
-        content.addEventFilter(KeyEvent.ANY, event -> {
+        javafx.event.EventHandler<KeyEvent> commands = event -> {
             if (forward == null || event.getEventType() == KeyEvent.KEY_TYPED || !passes.test(event)) return;
             event.consume();
             forward.accept(event);
-        });
+        };
         // Handle first, then stop presses (but the layout keys) from reaching the viewport.
-        content.addEventHandler(KeyEvent.ANY, event -> {
+        javafx.event.EventHandler<KeyEvent> keep = event -> {
             if (event.getEventType() == KeyEvent.KEY_RELEASED || layoutKey(event) || passes.test(event)) return;
             if (event.getEventType() == KeyEvent.KEY_PRESSED && event.getCode() == KeyCode.ESCAPE) popup.hide();
             event.consume();
-        });
+        };
+        content.addEventFilter(KeyEvent.ANY, commands);
+        content.addEventHandler(KeyEvent.ANY, keep);
+        // Also on the popup's scene: with no popup node focused, keys target the scene itself and
+        // never pass through the content.
+        popup.getScene().addEventFilter(KeyEvent.ANY, commands);
+        popup.getScene().addEventHandler(KeyEvent.ANY, keep);
         content.addEventHandler(MouseEvent.ANY, MouseEvent::consume);
         content.addEventHandler(ScrollEvent.ANY, ScrollEvent::consume);
         popup.getContent().add(content);

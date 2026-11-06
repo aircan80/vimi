@@ -107,6 +107,28 @@ public final class WorldHudKeysUiTest {
                         "Space bound to a command runs it and leaves the popup's checkbox alone");
                 view.showControls(WorldControls.DEFAULTS);
                 require(!input.keysHeld(), "Nothing stays held");
+                // With no popup node focused, keys target the popup's scene itself: it keeps
+                // movement keys and still forwards HUD commands.
+                var popup = view.minimap().tracking().popup();
+                boolean[] leaked = {false};
+                javafx.event.EventHandler<KeyEvent> spy = e -> leaked[0] = true;
+                popup.addEventHandler(KeyEvent.KEY_PRESSED, spy);
+                try {
+                    Event.fireEvent(popup.getScene(), new KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.W,
+                            false, false, false, false));
+                    require(!leaked[0] && !input.keysHeld(), "A movement key at the popup's scene goes nowhere");
+                    var before = audio.slot();
+                    Event.fireEvent(popup.getScene(), new KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.T,
+                            false, false, false, false));
+                    Event.fireEvent(popup.getScene(), new KeyEvent(KeyEvent.KEY_RELEASED, "", "", KeyCode.T,
+                            false, false, false, false));
+                    require(audio.slot() != before && !leaked[0], "A command key at the popup's scene is forwarded");
+                } finally {
+                    popup.removeEventHandler(KeyEvent.KEY_PRESSED, spy);
+                    Event.fireEvent(popup.getScene(), new KeyEvent(KeyEvent.KEY_RELEASED, "", "", KeyCode.W,
+                            false, false, false, false));
+                }
+                require(!input.keysHeld(), "Nothing stays held after the scene keys");
                 press(KeyCode.L);
             });
             await(() -> !view.minimap().tracking().showing());
