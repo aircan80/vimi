@@ -76,14 +76,36 @@ public final class WorldHudKeysUiTest {
                 var page = overlay.page();
                 press(KeyCode.F3);
                 require(overlay.page() != page, "F3 still works while the tracking popup is open");
-                press(KeyCode.W);
-                require(!((WorldExplorerInput) get("input")).keysHeld(), "Movement keys stay in the popup");
+                // Movement keys stay in the popup: pressed (not yet released), nothing is held and
+                // a pulse moves nothing.
+                var input = (WorldExplorerInput) get("input");
+                var camera = (TerrainRenderer.Camera) get("camera");
+                key(KeyCode.W, true);
+                tick();
+                require(!input.keysHeld() && camera.equals(get("camera")),
+                        "A movement key pressed in the open popup is not held and does not fly");
+                key(KeyCode.W, false);
+                // A command bound to Space goes to the view before the focused checkbox sees it.
+                var spawns = (WorldSpawnOverlay) get("spawns");
+                var box = spawns.toggle();
+                boolean ticked = box.isSelected();
+                var audio = (WorldAudioControls) get("audio");
+                var slot = audio.slot();
+                view.showControls(WorldControls.DEFAULTS.unbind(WorldControls.Action.DAY_NIGHT)
+                        .bind(KeyCode.SPACE, WorldControls.Action.DAY_NIGHT));
+                Event.fireEvent(box, new KeyEvent(KeyEvent.KEY_PRESSED, " ", " ", KeyCode.SPACE, false, false, false, false));
+                Event.fireEvent(box, new KeyEvent(KeyEvent.KEY_RELEASED, " ", " ", KeyCode.SPACE, false, false, false, false));
+                require(audio.slot() != slot && box.isSelected() == ticked,
+                        "Space bound to a command runs it and leaves the popup's checkbox alone");
+                view.showControls(WorldControls.DEFAULTS);
+                require(!input.keysHeld(), "Nothing stays held");
                 press(KeyCode.L);
             });
             await(() -> !view.minimap().tracking().showing());
             System.out.println("World HUD keys PASS: V spawns toggle, T day/night cycle, 1-5 speed presets"
-                    + " persisted, N minimap hide/show, L tracking popup open/close, HUD keys through the"
-                    + " popup, no held keys or motion");
+                    + " persisted, N minimap hide/show (ignored with the HUD hidden), L tracking popup open/close,"
+                    + " HUD keys through the popup before its controls, movement kept in the popup, no"
+                    + " held keys or motion");
         } finally {
             fx(() -> { if (view != null) view.close(); if (stage != null) stage.close(); });
             Platform.exit();
@@ -138,7 +160,29 @@ public final class WorldHudKeysUiTest {
         press(KeyCode.L);
         require(!minimap.tracking().showing(), "L does nothing while the minimap is hidden");
         press(KeyCode.N);
-        require(minimap.userHidden() == false, "N shows it again");
+        require(!minimap.userHidden() && minimap.isVisible(), "N shows it again");
+        // While the HUD is hidden, N changes nothing out of sight.
+        press(KeyCode.H);
+        require(!minimap.isVisible(), "Hiding the HUD hides the minimap");
+        press(KeyCode.N);
+        require(!minimap.userHidden(), "N is ignored while the HUD is hidden");
+        press(KeyCode.L);
+        require(!minimap.tracking().showing(), "L is ignored while the HUD is hidden");
+        press(KeyCode.H);
+        require(minimap.isVisible(), "Showing the HUD shows the minimap again");
+    }
+
+    private static void key(KeyCode code, boolean down) {
+        var viewport = view.lookup("#world-viewport");
+        Event.fireEvent(viewport, new KeyEvent(down ? KeyEvent.KEY_PRESSED : KeyEvent.KEY_RELEASED,
+                "", "", code, false, false, false, false));
+    }
+
+    private static void tick() {
+        ((WorldExplorerInput) get("input")).idle();
+        var timer = (AnimationTimer) get("timer");
+        timer.handle(1_000_000_000L);
+        timer.handle(1_100_000_000L);
     }
 
     private static void press(KeyCode code) {

@@ -104,8 +104,12 @@ public final class WorldExplorerInputTest {
      */
     private static void commandKeysFireOncePerPressAndNeverMove() {
         for (var layout : WorldControls.Layout.values()) {
-            require(new java.util.HashSet<>(layout.keys().values())
-                            .equals(java.util.EnumSet.allOf(WorldControls.Action.class)),
+            // Every action keeps a key, so no preset key clashes; only the AZERTY preset leaves
+            // the speed digits unbound (its digits need Shift).
+            var expected = java.util.EnumSet.allOf(WorldControls.Action.class);
+            if (layout == WorldControls.Layout.AZERTY)
+                expected.removeIf(action -> action.speed() != null);
+            require(new java.util.HashSet<>(layout.keys().values()).equals(expected),
                     layout + ": every action keeps a key, so no preset key clashes: " + layout.keys());
             for (var command : List.of(
                     java.util.Map.entry(KeyCode.M, WorldControls.Action.MAP_PANEL),
@@ -131,10 +135,14 @@ public final class WorldExplorerInputTest {
             }
         }
         var commands = java.util.EnumSet.of(WorldControls.Action.MAP_PANEL,
-                WorldControls.Action.HIDE_HUD, WorldControls.Action.DEV_OVERLAY);
+                WorldControls.Action.HIDE_HUD, WorldControls.Action.DEV_OVERLAY,
+                WorldControls.Action.SPAWNS, WorldControls.Action.TRACKING, WorldControls.Action.MINIMAP,
+                WorldControls.Action.DAY_NIGHT, WorldControls.Action.SPEED_STROLL,
+                WorldControls.Action.SPEED_MOUNT, WorldControls.Action.SPEED_FLY,
+                WorldControls.Action.SPEED_FAST, WorldControls.Action.SPEED_TURBO);
         for (var action : WorldControls.Action.values())
             require(action.command == commands.contains(action),
-                    "Exactly the map panel, hide HUD and developer overlay keys are commands: " + action);
+                    "Exactly the HUD keys are commands: " + action);
         var host = new Host();
         var input = exact(host);
         input.controls(WorldControls.DEFAULTS.bind(KeyCode.G, WorldControls.Action.MAP_PANEL));
