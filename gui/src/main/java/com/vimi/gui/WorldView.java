@@ -126,6 +126,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final javafx.scene.control.Slider lookSensitivity = new javafx.scene.control.Slider(
             WorldControls.MIN_SENSITIVITY, WorldControls.MAX_SENSITIVITY, WorldControls.DEFAULT_SENSITIVITY);
     private final CheckBox invertLook = new CheckBox("Invert mouse Y");
+    private final javafx.scene.control.ChoiceBox<WorldControls.Speed> flightSpeed =
+            new javafx.scene.control.ChoiceBox<>(javafx.collections.FXCollections.observableArrayList(
+                    WorldControls.Speed.values()));
+    private final Button keyBindings = new Button("Keys…");
+    private final Label keyHelp = new Label(WorldControls.DEFAULTS.help());
     private final Label lookStatus = new Label();
     // Session-only until the application's library store is installed (bookmarks(...)).
     private WorldControls.Store controlsStore = WorldControls.memory();
@@ -149,6 +154,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         @Override public void loadNext() { WorldView.this.loadNext(); }
         @Override public void cursorHidden(boolean hidden) {
             viewport.setCursor(hidden ? javafx.scene.Cursor.NONE : null);
+        }
+        @Override public void controlsChanged(WorldControls controls) {
+            showControls(controls);
+            controlsStore.save(controls.encode());
         }
         @Override public void captureUnavailable() {
             lookStatus.setText("Mouse look: cursor capture unavailable; looking stays relative");
@@ -535,7 +544,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         showingControls = true;
         try {
             input.controls(controls);
+            keyHelp.setText(controls.help());
             invertLook.setSelected(controls.invertY());
+            flightSpeed.setValue(controls.speed());
             lookSensitivity.setValue(controls.sensitivity());
         } finally {
             showingControls = false;
@@ -544,8 +555,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void controlsChanged() {
         if (showingControls) return;
+        var speed = flightSpeed.getValue();
         var next = input.controls().withSensitivity(lookSensitivity.getValue())
-                .withInvertY(invertLook.isSelected());
+                .withInvertY(invertLook.isSelected())
+                .withSpeed(speed == null ? input.controls().speed() : speed);
         if (next.equals(input.controls())) return;
         controlsEdited = true;
         input.controls(next);
@@ -675,6 +688,28 @@ final class WorldView extends BorderPane implements AutoCloseable {
         invertLook.setId("world-invert-look");
         invertLook.setFocusTraversable(false);
         invertLook.setOnAction(e -> controlsChanged());
+        flightSpeed.setId("world-flight-speed");
+        flightSpeed.setFocusTraversable(false);
+        flightSpeed.setAccessibleText("Flight speed preset");
+        flightSpeed.setValue(WorldControls.DEFAULTS.speed());
+        flightSpeed.setOnAction(e -> {
+            controlsChanged();
+            if (explorer) viewport.requestFocus();
+        });
+        keyBindings.setId("world-key-bindings-open");
+        keyBindings.setFocusTraversable(false);
+        keyBindings.setOnAction(e -> {
+            clearKeys();
+            new WorldKeyBindings(input.controls())
+                    .edit(getScene() == null ? null : getScene().getWindow())
+                    .ifPresent(edited -> {
+                        if (!edited.equals(input.controls())) {
+                            showControls(edited);
+                            controlsStore.save(edited.encode());
+                        }
+                    });
+            if (explorer) viewport.requestFocus();
+        });
         motionStatus.setId("world-motion-status");
         saveBookmark.setId("world-save-bookmark");
         saveBookmark.setFocusTraversable(false);
@@ -964,7 +999,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         // The view box is taken per move, so a window moved or resized mid-look warps to its centre.
         viewport.setOnMouseDragged(e -> input.lookMoved(e.getScreenX(), e.getScreenY(), viewBox()));
         viewport.setOnScroll(e -> {
-            input.scroll(e.getDeltaY(), e.isShiftDown());
+            input.scroll(e.getDeltaY(), e.isShiftDown(), e.isControlDown());
             e.consume();
         });
         viewport.widthProperty().addListener((o, a, b) -> requestFrame());
@@ -1808,12 +1843,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         new HBox(
                                 10,
                                 back,
-                                new Label(
-                                        "WASD move · Space/E up · Q/X down · hold the right mouse button or"
-                                                + " arrows to look · Shift faster · wheel zooms · Shift+wheel"
-                                                + " changes speed · F walks · click inspects")),
+                                keyHelp),
                         new HBox(10, walkMode, smoothMotion, motionStatus, saveBookmark),
-                        new HBox(8, new Label("Look sensitivity"), lookSensitivity, invertLook, lookStatus),
+                        new HBox(8, new Label("Speed"), flightSpeed, new Label("Look sensitivity"),
+                                lookSensitivity, invertLook, keyBindings, lookStatus),
                         currentArea,
                         inspection,
                         audio.node(),
