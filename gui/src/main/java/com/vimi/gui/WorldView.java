@@ -126,14 +126,17 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final javafx.scene.control.Slider lookSensitivity = new javafx.scene.control.Slider(
             WorldControls.MIN_SENSITIVITY, WorldControls.MAX_SENSITIVITY, WorldControls.DEFAULT_SENSITIVITY);
     private final CheckBox invertLook = new CheckBox("Invert mouse Y");
-    // Session-only unless the application view installs the user's preferences.
+    // Session-only until the application's library store is installed (bookmarks(...)).
     private WorldControls.Store controlsStore = WorldControls.memory();
+    private boolean showingControls, controlsEdited, captureFallbackLogged;
     private final Label motionStatus = new Label("Free flight · no collision");
     private final WorldExplorerInput input = new WorldExplorerInput(new WorldExplorerInput.Host() {
         @Override public TerrainRenderer.Camera camera() { return camera; }
         @Override public void camera(TerrainRenderer.Camera next) { camera = next; }
         @Override public TerrainGround ground() { return currentGround(); }
-        @Override public boolean wheelReady() { return terrainScene != null; }
+        @Override public boolean wheelReady() {
+            return WorldExplorerInput.wheelReady(terrainScene != null, streamingMode, streaming != null);
+        }
         @Override public boolean fastCadence() { return streamingMode || gpu != null && gpu.ready(); }
         @Override public void groundStatus(ExplorerMotion.Ground ground) { WorldView.this.groundStatus(ground); }
         @Override public void toggleWalk() {
@@ -145,6 +148,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         @Override public void loadNext() { WorldView.this.loadNext(); }
         @Override public void cursorHidden(boolean hidden) {
             viewport.setCursor(hidden ? javafx.scene.Cursor.NONE : null);
+        }
+        @Override public void captureFallback(String reason) {
+            if (captureFallbackLogged) return;
+            captureFallbackLogged = true;
+            WorldDiagnostics.warn("Mouse-look cursor capture", new IllegalStateException(reason));
         }
     });
     private final WorldTravelPanel travel = new WorldTravelPanel(this::goToBookmark, this::goToCoordinates);
@@ -490,55 +498,76 @@ final class WorldView extends BorderPane implements AutoCloseable {
         buildLabel = job.build().version() + " · " + job.locale();
         locationMaps =
                 () -> job.work() instanceof NativePreparationWork w ? w.locationMapsHandle() : null;
-        controlsStore = WorldControls.preferences();
-        showControls(WorldControls.decode(controlsStore.load()));
         input.pointer(robotPointer());
     }
 
     /**
-     * Places the system cursor with the JavaFX robot for mouse-look capture. A platform that
-     * cannot (no robot, or the cursor does not land where asked, as on some Wayland sessions)
-     * reports false and mouse look falls back to relative movement.
+     * Places the system cursor with the JavaFX robot for mouse-look capture and reports where it
+     * actually is afterwards (the platform rounds to a physical pixel). Null when the robot is
+     * unavailable; the input then keeps that look relative.
      */
     private static WorldExplorerInput.Pointer robotPointer() {
         return new WorldExplorerInput.Pointer() {
             private javafx.scene.robot.Robot robot;
             private boolean unavailable;
 
-            @Override public boolean warp(double screenX, double screenY) {
-                if (unavailable) return false;
+            @Override public double[] warp(double screenX, double screenY) {
+                if (unavailable) return null;
                 try {
                     if (robot == null) robot = new javafx.scene.robot.Robot();
                     robot.mouseMove(screenX, screenY);
                     var at = robot.getMousePosition();
-                    if (Math.abs(at.getX() - screenX) <= 1 && Math.abs(at.getY() - screenY) <= 1) return true;
+                    return new double[] {at.getX(), at.getY()};
                 } catch (RuntimeException failed) {
+                    unavailable = true;
                     WorldDiagnostics.warn("Mouse-look cursor capture is unavailable", failed);
+                    return null;
                 }
-                unavailable = true;
-                return false;
             }
         };
     }
 
     /** Shows and applies control preferences without saving them again. */
-    private void showControls(WorldControls controls) {
-        input.controls(controls);
-        lookSensitivity.setValue(controls.sensitivity());
-        invertLook.setSelected(controls.invertY());
+    void showControls(WorldControls controls) {
+        showingControls = true;
+        try {
+            input.controls(controls);
+            invertLook.setSelected(controls.invertY());
+            lookSensitivity.setValue(controls.sensitivity());
+        } finally {
+            showingControls = false;
+        }
     }
 
     private void controlsChanged() {
+        if (showingControls) return;
         var next = input.controls().withSensitivity(lookSensitivity.getValue())
                 .withInvertY(invertLook.isSelected());
         if (next.equals(input.controls())) return;
+        controlsEdited = true;
         input.controls(next);
         controlsStore.save(next.encode());
     }
 
-    /** Uses the application's bookmark store; the view's own session store is replaced. */
+    /**
+     * Uses the application's World store for bookmarks and controls; the view's own session
+     * stores are replaced. Stored controls load off the FX thread and apply unless the user has
+     * already changed a control in this view.
+     */
     void bookmarks(WorldBookmarkStore store) {
         travel.store(store);
+        if (store == null) return;
+        controls(WorldControls.Store.of(store));
+    }
+
+    void controls(WorldControls.Store store) {
+        controlsStore = java.util.Objects.requireNonNull(store);
+        controlsEdited = false;
+        store.load().whenComplete((text, failure) -> Platform.runLater(() -> {
+            if (closed || controlsStore != store || controlsEdited) return;
+            if (failure != null) WorldDiagnostics.warn("World controls could not be loaded", failure);
+            else showControls(WorldControls.decode(text));
+        }));
     }
 
     WorldView(
@@ -631,6 +660,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         lookSensitivity.setId("world-look-sensitivity");
         lookSensitivity.setFocusTraversable(false);
         lookSensitivity.setPrefWidth(110);
+        lookSensitivity.setBlockIncrement(.001);
         lookSensitivity.setAccessibleText("Mouse-look sensitivity");
         lookSensitivity.valueChangingProperty().addListener((o, was, changing) -> {
             if (!changing) controlsChanged();
@@ -919,21 +949,21 @@ final class WorldView extends BorderPane implements AutoCloseable {
         viewport.setOnMousePressed(
                 e -> {
                     viewport.requestFocus();
-                    if (WorldExplorerInput.looks(e.getButton())) {
-                        var center = viewport.localToScreen(viewport.getWidth() / 2, viewport.getHeight() / 2);
-                        if (center != null) input.lookPressed(e.getScreenX(), e.getScreenY(), center.getX(), center.getY());
-                    }
+                    var center = viewCenter();
+                    if (center != null)
+                        input.lookPressed(e.getButton(), e.getScreenX(), e.getScreenY(), center.getX(), center.getY());
                 });
-        viewport.setOnMouseReleased(
-                e -> {
-                    if (WorldExplorerInput.looks(e.getButton())) input.lookReleased();
-                });
+        viewport.setOnMouseReleased(e -> input.lookReleased(e.getButton()));
         viewport.setOnMouseClicked(
                 e -> {
                     if (WorldExplorerInput.inspects(e.getButton(), e.isStillSincePress()))
                         inspect(e.getSceneX(), e.getSceneY());
                 });
-        viewport.setOnMouseDragged(e -> input.lookMoved(e.getScreenX(), e.getScreenY()));
+        // The centre is recomputed per move, so a window moved or resized mid-look re-centres there.
+        viewport.setOnMouseDragged(e -> {
+            var center = viewCenter();
+            if (center != null) input.lookMoved(e.getScreenX(), e.getScreenY(), center.getX(), center.getY());
+        });
         viewport.setOnScroll(e -> {
             input.scroll(e.getDeltaY(), e.isShiftDown());
             e.consume();
@@ -965,7 +995,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
                             if (streaming != null) streaming.pulse();
                             pollStall(now);
                         }
-                        if (camera == null) return;
+                        if (camera == null) {
+                            input.idle();
+                            return;
+                        }
                         if (gpu != null && !viewportActive()) {
                             minimap.hide();
                             retireTextures();
@@ -1089,6 +1122,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 tx, ty, camera.x(), camera.y(), camera.z(), yaw, camera.pitch(), buildLabel));
         status.setText("Saved bookmark " + name + " · see Bookmarks & travel on the map page");
         viewport.requestFocus();
+    }
+
+    private javafx.geometry.Point2D viewCenter() {
+        return viewport.localToScreen(viewport.getWidth() / 2, viewport.getHeight() / 2);
     }
 
     private void clearKeys() {
@@ -1292,11 +1329,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (streamingMode && streaming == null) {
                 if (gpuEnabled.isSelected()) {
                     startStreaming();
+                    input.idle(); // owed look movement never lands as one jump on restart
                     timer.start();
                 } else switchStreamingRendering();
             } else if (camera == null) openExplorer();
             else {
-                input.idle();
+                input.idle(); // also drops owed look movement
                 timer.start();
                 requestFrame();
                 loadNext();
@@ -1734,6 +1772,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         status.setText("Loading terrain tile " + selected.key() + "…");
         if (spawns != null) spawns.resume();
         show(firstFrameActivity, true);
+        input.idle(); // owed look movement never lands as one jump on restart
         timer.start();
         streamingMode = gpuEnabled.isSelected() && gpuService != null
                 && handle instanceof WorldService && handle.terrainStreaming().isPresent();
@@ -2422,6 +2461,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             }
             if (gpuEnabled.isSelected()) {
                 startStreaming();
+                input.idle(); // owed look movement never lands as one jump on restart
                 timer.start();
             } else {
                 var previous = image.getImage();
@@ -3327,6 +3367,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             status.setText("Back in " + inventory.map() + " · the open world resumes where you entered");
             input.idle();
             if (!active) return;
+            input.idle(); // owed look movement never lands as one jump on restart
             timer.start();
             startStreaming();
             viewport.requestFocus();

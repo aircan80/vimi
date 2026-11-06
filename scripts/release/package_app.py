@@ -18,7 +18,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 TAG = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(alpha|beta|rc)\.([1-9]\d*)\Z")
 UPGRADE_UUID = "0ec41097-39e4-44d1-a12c-c93c20f9ca74"
-MODULES = "java.base,java.desktop,java.logging,java.net.http,java.prefs,java.xml,java.sql,java.management,java.naming,jdk.unsupported,jdk.crypto.ec,jdk.zipfs,jdk.localedata"
+MODULES = "java.base,java.desktop,java.logging,java.net.http,java.xml,java.sql,java.management,java.naming,jdk.unsupported,jdk.crypto.ec,jdk.zipfs,jdk.localedata"
 
 
 def version(tag):

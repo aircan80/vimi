@@ -2,12 +2,12 @@ package com.vimi.gui;
 
 import java.util.Locale;
 import java.util.Objects;
-import java.util.prefs.Preferences;
+import java.util.concurrent.CompletableFuture;
 
 /**
- * World explorer control preferences: mouse-look sensitivity and invert-Y. They belong to the
- * user, not to a library, so they persist in the per-user {@link Preferences} tree as one
- * versioned text value. Decoding is lenient: an unknown key is ignored, and a missing or malformed
+ * World explorer control preferences: mouse-look sensitivity and invert-Y. They persist with the
+ * other World settings in the library database ({@link WorldBookmarkStore}) as one versioned
+ * text value. Decoding is lenient: an unknown key is ignored, and a missing or malformed
  * value falls back to its default, so a damaged entry never blocks the explorer.
  */
 record WorldControls(double sensitivity, boolean invertY) {
@@ -64,55 +64,46 @@ record WorldControls(double sensitivity, boolean invertY) {
         return new WorldControls(sensitivity, invertY);
     }
 
-    /** Where the encoded value lives. Failures are swallowed: controls are a convenience. */
+    /** Where the encoded value lives. Failures are logged, never thrown: controls are a convenience. */
     interface Store {
-        String load();
+        /** The stored value, or null when none was saved; completes on any thread. */
+        CompletableFuture<String> load();
 
         void save(String value);
+
+        /** The World store of the library (or its session-only store). */
+        static Store of(WorldBookmarkStore store) {
+            Objects.requireNonNull(store);
+            return new Store() {
+                @Override
+                public CompletableFuture<String> load() {
+                    return store.loadControls();
+                }
+
+                @Override
+                public void save(String value) {
+                    store.saveControls(value).exceptionally(failure -> {
+                        WorldDiagnostics.warn("World controls could not be saved", failure);
+                        return null;
+                    });
+                }
+            };
+        }
     }
 
-    /** Session-only storage, used by tests and when no user preferences are available. */
+    /** Session-only storage, used by views without a library and by tests. */
     static Store memory() {
         return new Store() {
             private String value;
 
             @Override
-            public String load() {
-                return value;
+            public CompletableFuture<String> load() {
+                return CompletableFuture.completedFuture(value);
             }
 
             @Override
             public void save(String next) {
                 value = Objects.requireNonNull(next);
-            }
-        };
-    }
-
-    /** The per-user preferences node {@code vimi/world-controls}. */
-    static Store preferences() {
-        return new Store() {
-            private static final String KEY = "controls";
-
-            @Override
-            public String load() {
-                try {
-                    return node().get(KEY, null);
-                } catch (RuntimeException unavailable) {
-                    return null;
-                }
-            }
-
-            @Override
-            public void save(String value) {
-                try {
-                    node().put(KEY, value);
-                } catch (RuntimeException unavailable) {
-                    WorldDiagnostics.warn("World controls could not be saved", unavailable);
-                }
-            }
-
-            private Preferences node() {
-                return Preferences.userRoot().node("vimi/world-controls");
             }
         };
     }

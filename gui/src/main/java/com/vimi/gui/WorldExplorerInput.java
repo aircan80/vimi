@@ -15,11 +15,13 @@ import javafx.scene.input.MouseButton;
  * capture, flight speed and the {@link ExplorerMotion} integrator; the view forwards raw event
  * values and supplies the camera, ground and frame/discovery hooks through {@link Host}.
  *
- * <p>Mouse look follows the game client: it is active only while the right button is held, the
- * cursor is hidden, and when the {@link Pointer} can warp it is re-centred after every move so
- * it never leaves the view; on release it returns to where the look began. Movement is summed
- * between pulses and applied once per pulse, so a burst of mouse events costs one camera update
- * and at most one frame request.
+ * <p>Mouse look follows the game client. Holding the right button captures the cursor: it is
+ * hidden and, when the {@link Pointer} can warp, re-centred after every move so it never leaves
+ * the view; on release it returns to where the look began. Holding the left button looks without
+ * capture (the cursor stays visible and moves), which suits touchpads; a left click without a drag
+ * still inspects. Movement is summed between pulses and applied once per pulse, so a burst of
+ * mouse events costs one camera update and at most one frame request. Movement owed while no
+ * pulse runs is dropped, never applied later as one jump.
  */
 final class WorldExplorerInput {
     /** View hooks; every method is called on the FX thread from an input event or pulse. */
@@ -30,11 +32,7 @@ final class WorldExplorerInput {
 
         TerrainGround ground();
 
-        /**
-         * True when the wheel may dolly. The view answers {@code terrainScene != null}, which is
-         * set only on the legacy CPU explorer path, so in GPU streaming mode the plain wheel
-         * currently does nothing (as before this extraction; fixed in the #355 controls work).
-         */
+        /** True when the wheel may dolly; see {@link WorldExplorerInput#wheelReady}. */
         boolean wheelReady();
 
         /** True when frames are cheap enough for the 16 ms movement cadence. */
@@ -52,15 +50,37 @@ final class WorldExplorerInput {
 
         /** Hides the cursor over the view while mouse look is held; shows it again after. */
         void cursorHidden(boolean hidden);
+
+        /** Cursor capture fell back to relative movement; the view logs the first one. */
+        void captureFallback(String reason);
     }
 
-    /** Moves the system cursor; false when this platform cannot place it (e.g. no robot). */
+    /**
+     * Moves the system cursor and reports where it actually is afterwards, in the same screen
+     * units as mouse events. That can differ from the request: the platform puts the cursor on a
+     * physical pixel (fractional output scales, odd view sizes), or the move is still in flight.
+     */
     @FunctionalInterface
     interface Pointer {
-        boolean warp(double screenX, double screenY);
+        /** The cursor's position after the move ({x, y}), or null when it cannot be placed. */
+        double[] warp(double screenX, double screenY);
 
         /** No cursor placement: mouse look then uses relative movement without re-centring. */
-        Pointer NONE = (x, y) -> false;
+        Pointer NONE = (x, y) -> null;
+    }
+
+    /** A reported position farther than this from the request means the move has not landed. */
+    static final double LANDED = 2;
+
+    /** Consecutive looks whose first warp fails before capture is turned off for good. */
+    static final int CAPTURE_FAILURES = 3;
+
+    /**
+     * Whether the plain wheel may dolly: on the legacy CPU path a terrain scene is loaded; in
+     * GPU streaming mode a stream controller (and its ground) is present.
+     */
+    static boolean wheelReady(boolean legacyScene, boolean streamingMode, boolean streamPresent) {
+        return legacyScene || streamingMode && streamPresent;
     }
 
     /** Default, minimum and maximum flight speed in yards per second. */
@@ -79,7 +99,9 @@ final class WorldExplorerInput {
     private Pointer pointer = Pointer.NONE;
     // Mouse look: reference point for the next delta (the warp centre, or the last position when
     // the cursor cannot be warped), where the look began, and pixels owed to the next pulse.
-    private boolean looking, warping;
+    private boolean looking, warping, captureOff;
+    private MouseButton lookButton;
+    private int captureFailures;
     private double lookX, lookY, anchorX, anchorY, pendingX, pendingY;
     // The camera moved since the last frame this input requested (cadence held it back).
     private boolean unshown;
@@ -144,56 +166,98 @@ final class WorldExplorerInput {
     /** Forgets the previous pulse time so the next pulse integrates zero seconds. */
     void idle() {
         lastTick = 0;
+        pendingX = pendingY = 0;
     }
 
     boolean looking() {
         return looking;
     }
 
-    /** Whether a press of {@code button} starts mouse look: only the right (secondary) button. */
+    /** Whether a press of {@code button} starts mouse look: the right or the left button. */
     static boolean looks(MouseButton button) {
+        return button == MouseButton.SECONDARY || button == MouseButton.PRIMARY;
+    }
+
+    /** Whether a look with {@code button} captures the cursor: only the right button. */
+    static boolean captures(MouseButton button) {
         return button == MouseButton.SECONDARY;
     }
 
     /**
-     * Right button pressed at a screen position: hide the cursor and, when possible, move it to
-     * the view centre so that every later move is measured from there.
+     * A look button pressed at a screen position. The right button hides the cursor and, when
+     * possible, moves it to the view centre so every later move is measured from where it lands;
+     * the left button looks with relative movement. A second button during a look is ignored.
      */
-    void lookPressed(double screenX, double screenY, double centerX, double centerY) {
-        if (looking) return;
+    void lookPressed(MouseButton button, double screenX, double screenY, double centerX, double centerY) {
+        if (looking || !looks(button)) return;
         looking = true;
-        anchorX = screenX;
-        anchorY = screenY;
-        warping = pointer.warp(centerX, centerY);
-        lookX = warping ? centerX : screenX;
-        lookY = warping ? centerY : screenY;
+        lookButton = button;
+        anchorX = lookX = screenX;
+        anchorY = lookY = screenY;
+        warping = false;
+        if (!captures(button)) return;
         host.cursorHidden(true);
+        if (captureOff) return;
+        var landed = pointer.warp(centerX, centerY);
+        if (landed != null && near(landed, centerX, centerY)) {
+            captureFailures = 0;
+            warping = true;
+            lookX = landed[0];
+            lookY = landed[1];
+        } else if (++captureFailures >= CAPTURE_FAILURES) {
+            captureOff = true;
+            host.captureFallback("the cursor could not be placed for " + CAPTURE_FAILURES
+                    + " looks in a row; mouse look stays relative");
+        } else {
+            host.captureFallback("the cursor could not be placed; this look is relative");
+        }
     }
 
     /**
-     * A move while looking. A move to the reference point itself is the event our own warp
-     * produced and is ignored. When a warp fails the look continues with relative movement.
+     * A move while looking, with the view centre now (the window may have moved). A move to the
+     * reference point is the event our own warp produced and is ignored. After each counted move
+     * a capturing look re-centres and measures from where the cursor lands; a warp the platform
+     * refuses ends re-centring for this look, and one still in flight is assumed to land.
      */
-    void lookMoved(double screenX, double screenY) {
+    void lookMoved(double screenX, double screenY, double centerX, double centerY) {
         if (!looking) return;
         double dx = screenX - lookX, dy = screenY - lookY;
         if (!Double.isFinite(dx) || !Double.isFinite(dy) || dx == 0 && dy == 0) return;
         pendingX += dx;
         pendingY += dy;
-        if (!warping || !pointer.warp(lookX, lookY)) {
+        lookX = screenX;
+        lookY = screenY;
+        if (!warping) return;
+        var landed = pointer.warp(centerX, centerY);
+        if (landed == null) {
             warping = false;
-            lookX = screenX;
-            lookY = screenY;
+            host.captureFallback("the cursor could not be re-centred; this look is relative");
+        } else if (near(landed, centerX, centerY)) {
+            lookX = landed[0];
+            lookY = landed[1];
+        } else {
+            lookX = centerX;
+            lookY = centerY;
         }
     }
 
-    /** Right button released (or focus lost): restore the cursor where the look began. */
+    /** The look button released (or focus lost): restore the cursor where the look began. */
+    void lookReleased(MouseButton button) {
+        if (looking && button == lookButton) lookReleased();
+    }
+
     void lookReleased() {
         if (!looking) return;
         looking = false;
+        boolean captured = captures(lookButton);
         if (warping) pointer.warp(anchorX, anchorY);
         warping = false;
-        host.cursorHidden(false);
+        lookButton = null;
+        if (captured) host.cursorHidden(false);
+    }
+
+    private static boolean near(double[] at, double x, double y) {
+        return at.length == 2 && Math.abs(at[0] - x) <= LANDED && Math.abs(at[1] - y) <= LANDED;
     }
 
     /** True when a click should inspect: primary button released without movement. */
@@ -248,7 +312,10 @@ final class WorldExplorerInput {
      */
     void pulse(long now) {
         var camera = host.camera();
-        if (camera == null) return;
+        if (camera == null) {
+            pendingX = pendingY = 0;
+            return;
+        }
         double dt = lastTick == 0 ? 0 : Math.min(.1, (now - lastTick) / 1e9);
         lastTick = now;
         boolean looked = pendingX != 0 || pendingY != 0;
