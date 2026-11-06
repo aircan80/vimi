@@ -259,7 +259,17 @@ public final class WorldStreamWindowProof {
                 .start(
                         () -> {
                             try (var stack = MemoryStack.stackPush()) {
-                                var proc = WindowProc.create(User32::DefWindowProc);
+                                // A destroyed parent ends its thread (WM_QUIT), so tests leave no
+                                // pumping thread.
+                                var proc =
+                                        WindowProc.create(
+                                                (window, message, w, l) -> {
+                                                    if (message == User32.WM_DESTROY) {
+                                                        WorldChildWindow.postQuitMessage();
+                                                    }
+                                                    return User32.DefWindowProc(
+                                                            window, message, w, l);
+                                                });
                                 var cls =
                                         WNDCLASSEX
                                                 .calloc(stack)
