@@ -16,9 +16,10 @@ import org.lwjgl.system.windows.WindowProc;
  * #381 (Windows only, opt-in): the World helper's child window inside the application window,
  * created on its own thread that only pumps messages. Cross-process parenting attaches the two
  * processes' input queues, so the render loop never owns a window and cannot stall the GUI. The
- * child is disabled (never takes focus or input) and starts the size of the parent; the GUI then
- * places it over the viewport. The render loop reads the size each frame: a minimised, hidden or
- * destroyed window reports no area, and the loop then neither draws nor resizes.
+ * child is disabled (never takes focus or input). It is created hidden, the size of the parent, so
+ * it never covers the application window before the GUI has placed it over the viewport and shown
+ * it. The render loop reads the size each frame: a minimised, hidden (not shown yet) or destroyed
+ * window reports no area, and the loop then neither draws nor resizes.
  */
 final class WorldChildWindow implements WorldWindowPresentation.Surface {
     /** The class name the GUI looks the child up by (WorldNativePresenter.CHILD_CLASS). */
@@ -89,8 +90,7 @@ final class WorldChildWindow implements WorldWindowPresentation.Surface {
                                                         "",
                                                         User32.WS_CHILD
                                                                 | User32.WS_CLIPSIBLINGS
-                                                                | User32.WS_DISABLED
-                                                                | User32.WS_VISIBLE,
+                                                                | User32.WS_DISABLED,
                                                         0,
                                                         0,
                                                         Math.max(1, area.right() - area.left()),
