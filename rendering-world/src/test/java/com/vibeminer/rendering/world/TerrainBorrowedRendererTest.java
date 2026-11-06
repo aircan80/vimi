@@ -36,13 +36,14 @@ class TerrainBorrowedRendererTest {
                         new TerrainRenderer.Camera(0, 0, 0, 0, 0),
                         new TerrainRenderer.Camera(-500, -10, 80, .2, -.1),
                         new TerrainRenderer.Camera(1300, 0, 40, Math.PI, -.2));
-        // Captured at integration38acbe5. Reflect the corrected output before comparison:
-        // the geographic fix must change only horizontal handedness, not shading/depth/holes.
+        // First captured at integration38acbe5 (reflected: the geographic fix changed only
+        // horizontal handedness, not shading/depth/holes). Recaptured for the shared 90 degree
+        // field of view (TerrainCamera.HORIZONTAL_FOV); the triangle counts are unchanged.
         var hashes =
                 List.of(
-                        "e2bd3dd7761c53d4f8339258511fed89a0fb1e57370d447d028bbd260544c3e1",
-                        "40c4052af98b0bf00bd834a316714e1ee91c9da18a7d8cd029bb7b1008d8394a",
-                        "fc664647b2eb600ea91c41f68d0ceaefdc57182669d2b32dd9468962b6d6085a");
+                        "a2f7d4a7141b28df957f23d41a190605b72adb208a9e10e3ee89fb90dc8ff102",
+                        "57b5b9f09d24924f0a7de36bb9d377690de374932cd071d531b5494470de259a",
+                        "9a900eb38de78eb06f377b3185d56c17f31350822c0ad9b31b66fe0cc47677fa");
         int[] triangles = {10, 7, 6};
         var scene = new TerrainRenderer.Scene(raw);
         for (int i = 0; i < cameras.size(); i++) {
