@@ -25,8 +25,10 @@ public final class WorldBookmarkStoreTest {
             session();
             library(directory.resolve("library"));
             foreignDatabase(directory.resolve("plain.sqlite3"));
+            controls(directory.resolve("controls-library"));
             System.out.println("World bookmarks: session, persisted order/removal, unreadable rows,"
-                    + " limit and schema gates passed");
+                    + " limit and schema gates passed; World controls: session, persisted upsert,"
+                    + " version and library gates passed");
         } finally {
             try (var paths = Files.walk(directory)) {
                 for (Path file : paths.sorted(Comparator.reverseOrder()).toList()) Files.delete(file);
@@ -105,6 +107,66 @@ public final class WorldBookmarkStoreTest {
         try (var connection = DerivedSqliteConnection.openReadOnly(path)) {
             long tables = connection.run(Cancellation.NONE, false, sql -> ((Number) sql.query(
                     "SELECT count(*) FROM sqlite_master WHERE name LIKE 'world_bookmarks%'")
+                    .getFirst()[0]).longValue());
+            require(tables == 0, "Refused database is not modified");
+        }
+    }
+
+    /** Explorer controls: one encoded row beside the bookmarks, with the same gates. */
+    private static void controls(Path root) throws Exception {
+        try (var session = WorldBookmarkStore.session()) {
+            require(session.loadControls().join() == null, "Session store starts without controls");
+            session.saveControls("v1;invertY=true").join();
+            require("v1;invertY=true".equals(session.loadControls().join()), "Session controls kept");
+        }
+        var library = ObjectStore.openLibrary(root).join();
+        try {
+            Path database = library.databasePath();
+            var custom = WorldControls.DEFAULTS.withSensitivity(.011).withInvertY(true);
+            try (var store = WorldBookmarkStore.forLibrary(database)) {
+                require(store.loadControls().join() == null, "A new library has no controls");
+                store.saveControls(WorldControls.DEFAULTS.encode()).join();
+                store.saveControls(custom.encode()).join();
+                store.add(bookmark("Beside the controls")).join();
+            }
+            try (var store = WorldBookmarkStore.forLibrary(database)) {
+                require(WorldControls.decode(store.loadControls().join()).equals(custom),
+                        "The last saved controls survive reopening");
+                require(store.load().join().entries().size() == 1, "Bookmarks are untouched");
+                var loaded = WorldControls.Store.of(store).load().join();
+                require(WorldControls.decode(loaded).equals(custom), "The view's store adapter reads the same row");
+            }
+            try (var connection = DerivedSqliteConnection.openReadOnly(database)) {
+                long rows = connection.run(Cancellation.NONE, false, sql -> ((Number) sql.query(
+                        "SELECT count(*) FROM world_controls").getFirst()[0]).longValue());
+                require(rows == 1, "Saving replaces the single row: " + rows);
+            }
+            write(database, "UPDATE world_controls_metadata SET version=2");
+            try (var store = WorldBookmarkStore.forLibrary(database)) {
+                try {
+                    store.loadControls().join();
+                    throw new AssertionError("A newer controls schema is refused");
+                } catch (CompletionException expected) {
+                    require(expected.getCause() instanceof IllegalArgumentException, "Version gate");
+                }
+                require(store.load().join().entries().size() == 1, "Bookmarks still load");
+            }
+        } finally {
+            library.closeAsync().join();
+        }
+        var plain = root.resolveSibling("plain-controls.sqlite3");
+        write(plain, "CREATE TABLE unrelated(x)");
+        try (var store = WorldBookmarkStore.forLibrary(plain)) {
+            try {
+                store.saveControls("v1").join();
+                throw new AssertionError("Non-library database is refused");
+            } catch (CompletionException expected) {
+                require(expected.getCause() instanceof IllegalArgumentException, "Library gate");
+            }
+        }
+        try (var connection = DerivedSqliteConnection.openReadOnly(plain)) {
+            long tables = connection.run(Cancellation.NONE, false, sql -> ((Number) sql.query(
+                    "SELECT count(*) FROM sqlite_master WHERE name LIKE 'world_controls%'")
                     .getFirst()[0]).longValue());
             require(tables == 0, "Refused database is not modified");
         }
