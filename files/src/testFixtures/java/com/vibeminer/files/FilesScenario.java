@@ -170,7 +170,29 @@ public final class FilesScenario {
                     FileFixtures.zlib(
                             java.util.Arrays.copyOfRange(decoded, (int) at, decoded.length)));
         }
-        var body = FileFixtures.chunked(chunks);
+        return add(id, path, decoded, stored, holes, localeFlags, FileFixtures.chunked(chunks));
+    }
+
+    /** Adds a stored, unencrypted file whose BLTE body has exactly {@code chunks}. */
+    public FilesScenario addChunks(long id, List<FileFixtures.Chunk> chunks, byte[] decoded) {
+        return add(
+                id,
+                null,
+                decoded,
+                true,
+                List.of(),
+                FileLocales.bitOf("enUS"),
+                FileFixtures.chunked(chunks));
+    }
+
+    private FilesScenario add(
+            long id,
+            String path,
+            byte[] decoded,
+            boolean stored,
+            List<FileHole> holes,
+            long localeFlags,
+            FileFixtures.Encoded body) {
         encoded.put(id, body);
         var variant =
                 new FileVariant(
