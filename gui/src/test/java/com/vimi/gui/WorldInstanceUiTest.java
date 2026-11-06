@@ -179,6 +179,18 @@ public final class WorldInstanceUiTest {
         require(leave.isVisible() && leave.getText().equals("Cancel"), "Cancel is offered");
         require(view.lookup("#world-gpu-enabled") == null && view.lookup("#world-instance-enter") == null,
                 "Explorer controls are not reachable while entering");
+        var full = (WorldFullscreen) get(view, "fullscreen");
+        full.windowed(true);
+        javafx.event.Event.fireEvent(leave, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_PRESSED,
+                "", "", javafx.scene.input.KeyCode.F11, false, false, false, false));
+        javafx.event.Event.fireEvent(leave, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_RELEASED,
+                "", "", javafx.scene.input.KeyCode.F11, false, false, false, false));
+        javafx.event.Event.fireEvent(leave, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_PRESSED,
+                "", "", javafx.scene.input.KeyCode.Z, false, false, true, false));
+        javafx.event.Event.fireEvent(leave, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_RELEASED,
+                "", "", javafx.scene.input.KeyCode.Z, false, false, false, false));
+        require(!full.active() && leave.isVisible() && content.getBottom().isVisible(),
+                "F11 and Alt+Z are refused while the open world drains: Cancel stays reachable");
         var area = (Label) get(view, "currentArea");
         area.setText("marker");
         invoke(view, "switchStreamingRendering");
