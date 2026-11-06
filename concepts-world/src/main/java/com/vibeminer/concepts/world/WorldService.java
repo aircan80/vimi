@@ -112,6 +112,7 @@ public final class WorldService implements BuildWorld {
     private final WorldMinimaps minimaps;
     private final BuildTables tables;
     private final BuildFiles files;
+    private final WorldHorizon horizon;
     private final ThreadPoolExecutor worker =
             new ThreadPoolExecutor(
                     1,
@@ -143,6 +144,7 @@ public final class WorldService implements BuildWorld {
         this.tables = java.util.Objects.requireNonNull(tables);
         this.files = files;
         this.minimaps = new WorldMinimaps(files);
+        this.horizon = new WorldHorizon(files);
     }
 
     private WorldWaterPreview waterFacade;
@@ -715,6 +717,18 @@ public final class WorldService implements BuildWorld {
     }
 
     @Override
+    public CompletableFuture<WorldHorizon.Result> horizon(MapInfo map, Cancellation token) {
+        synchronized (this) {
+            if (closing != null) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("World workspace closed"));
+            }
+        }
+        return horizon.load(
+                java.util.Objects.requireNonNull(map), java.util.Objects.requireNonNull(token));
+    }
+
+    @Override
     public CompletableFuture<Minimap> minimap(WorldFormats.Tile tile, Cancellation token) {
         synchronized (this) {
             if (closing != null) {
@@ -854,6 +868,7 @@ public final class WorldService implements BuildWorld {
                     var closes =
                             List.<java.util.function.Supplier<CompletableFuture<Void>>>of(
                                     minimaps::closeAsync,
+                                    horizon::closeAsync,
                                     () ->
                                             navigation == null
                                                     ? CompletableFuture.completedFuture(null)
