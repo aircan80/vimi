@@ -12,21 +12,67 @@ import java.util.Set;
 public final class DisplayModelTypes {
     private DisplayModelTypes() {}
 
+    /**
+     * The preview component cannot take the request now: its queue is full ({@code closed} false)
+     * or it is closed. Nothing about the display was learned.
+     */
+    public static final class ServiceUnavailable extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
+        private final boolean closed;
+
+        public ServiceUnavailable(String message, boolean closed, Throwable cause) {
+            super(message, cause);
+            this.closed = closed;
+        }
+
+        public boolean closed() {
+            return closed;
+        }
+    }
+
     public enum State {
         READY,
         PARTIAL,
         UNAVAILABLE
     }
 
+    /**
+     * A display's model references. {@code creatureGeosetDataId} is 0 when the column is absent and
+     * null when it could not be read; {@code displayGeosets} says whether the display records its
+     * own geoset choices (CreatureDisplayInfoGeosetData rows), null when that is not known.
+     */
     public record Reference(
             long displayId,
             long modelId,
             long modelFileDataId,
             List<Long> textureVariations,
             Long extendedDisplayInfoId,
-            Long creatureGeosetDataId) {
+            Long creatureGeosetDataId,
+            Boolean displayGeosets) {
         public Reference {
             textureVariations = List.copyOf(textureVariations);
+        }
+
+        /**
+         * Without the per-display geoset check: {@code displayGeosets} is null, which callers that
+         * choose geosets must treat as unresolved.
+         */
+        public Reference(
+                long displayId,
+                long modelId,
+                long modelFileDataId,
+                List<Long> textureVariations,
+                Long extendedDisplayInfoId,
+                Long creatureGeosetDataId) {
+            this(
+                    displayId,
+                    modelId,
+                    modelFileDataId,
+                    textureVariations,
+                    extendedDisplayInfoId,
+                    creatureGeosetDataId,
+                    null);
         }
     }
 
