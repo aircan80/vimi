@@ -25,9 +25,12 @@ class WorldObjectPickingTest {
 
     static final short[] TWO_TRIANGLES = {0, 1, 2, 0, 2, 3};
 
-    /** 2x2 RGBA: alpha 0 in column 0 and 255 in column 1. */
+    /**
+     * 2x2 RGBA: alpha 0 in column 0 and 255 in column 1, then its 1x1 mip level with alpha 0, which
+     * picking must ignore: it tests the top level only.
+     */
     static final byte[] HALF_ALPHA = {
-        1, 2, 3, 0, 1, 2, 3, (byte) 255, 1, 2, 3, 0, 1, 2, 3, (byte) 255
+        1, 2, 3, 0, 1, 2, 3, (byte) 255, 1, 2, 3, 0, 1, 2, 3, (byte) 255, 1, 2, 3, 0
     };
 
     /** One model of one quad mesh drawn by one range of {@code kind} over {@code indexCount}. */

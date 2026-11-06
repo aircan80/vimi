@@ -34,7 +34,7 @@ required. Secret values and per-key fingerprints are excluded from this evidence
 ## Parser first slice
 
 HotfixCacheReader is a source-neutral structural reader only. Default bounds:
-64MiB source,65536 physical records,1MiB per body, one64KiB streaming buffer.
+64MiB source,262144 physical records (raised from65536: about200 bytes of index per record, measured on a real60275-record cache, so at most about53MB; exceeding it refuses with HOTFIX_RECORD_LIMIT naming the actual count and the bound),1MiB per body, one64KiB streaming buffer.
 It reads exactly44 bytes before matching the expected build, rejects unsupported
 versions/states/reserved bytes and malformed intervals, hashes the whole actual
 read stream and each body, preserves every physical ordinal/duplicate/region/push,

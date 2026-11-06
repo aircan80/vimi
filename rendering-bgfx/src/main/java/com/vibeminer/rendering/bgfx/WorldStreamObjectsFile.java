@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.ObjectTextureMips;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
@@ -27,27 +28,37 @@ import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
 /**
- * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 2. Structural
+ * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 3. Structural
  * only: the application's closed source bridge is its sole producer, and the OBJECTS command (or
  * the terrain tile header) names its exact length and SHA-256.
  *
  * <p>Little-endian layout: a 256-byte header, then the model, mesh, range (first index, index
  * count, image, material class), placement (model, translation, scale and a row-major rotation) and
  * image tables, then 32-byte vertices (position, normal, uv floats), u16 mesh-relative indices
- * padded to four bytes, and RGBA8 pixels. Every count, offset, index and float is validated;
- * reserved bytes must be zero.
+ * padded to four bytes, and RGBA8 pixels. Each image's pixels are its full mip chain, top level
+ * down to 1 x 1 and tightly packed ({@link ObjectTextureMips}, issue #265). Every count, offset,
+ * index and float is validated; reserved bytes must be zero.
  */
 final class WorldStreamObjectsFile {
-    static final int VERSION = 2, HEADER_BYTES = 256, MAX_BYTES = 24 << 20;
+    static final int VERSION = 3, HEADER_BYTES = 256, MAX_BYTES = 28 << 20;
     // Opaque buildings (24 roots, 256 meshes, 1,024 ranges, 64 placements, 64 images, 98,304
-    // vertices, 294,912 indices, 1 Mi pixels, 2 Mi on the HIGH texture tier), plus cutout and
-    // blended building surfaces (256 ranges, 32 images, 32,768 vertices, 98,304 indices, 256 Ki
-    // pixels, 512 Ki on HIGH), plus BASIC doodads (96 models and meshes, 512 ranges and
-    // placements, 96 images, 65,536 vertices, 196,608 indices, 512 Ki pixels, 1 Mi on HIGH).
-    // Creature models share whatever room remains. Every table at its cap is about 22.2 MB.
+    // vertices, 294,912 indices), plus cutout and blended building surfaces (256 ranges, 32
+    // images, 32,768 vertices, 98,304 indices), plus BASIC doodads (96 models and meshes, 512
+    // ranges and placements, 96 images, 65,536 vertices, 196,608 indices). Creature models share
+    // whatever room remains. Every table at its cap is about 27 MB.
     static final int MAX_MODELS = 120, MAX_MESHES = 352, MAX_RANGES = 1792, MAX_PLACEMENTS = 576;
     static final int MAX_IMAGES = 192, MAX_VERTICES = 196_608, MAX_INDICES = 589_824;
-    static final int MAX_PIXELS = 7 << 19, MAX_IMAGE_SIDE = 256, MAX_MESH_VERTICES = 65_536;
+    static final int MAX_IMAGE_SIDE = 256, MAX_MESH_VERTICES = 65_536;
+
+    /**
+     * Texels of whole mip chains (issue #265) at the HIGH texture tier's per-tile budgets (#267),
+     * which are themselves the chains of a 2048 x 1024 (buildings), 1024 x 512 (cutout and blended
+     * surfaces) and 1024 x 1024 (doodads) texture: 4,893,355 texels, about 18.7 MiB.
+     */
+    static final int MAX_PIXELS =
+            ObjectTextureMips.chainPixels(2048, 1024)
+                    + ObjectTextureMips.chainPixels(1024, 512)
+                    + ObjectTextureMips.chainPixels(1024, 1024);
 
     /** Range material classes: depth-writing opaque, alpha-tested cutout, sorted alpha blend. */
     static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2;
@@ -271,7 +282,7 @@ final class WorldStreamObjectsFile {
             for (int i = 0; i < imageCount; i++) {
                 int width = images[i * 2], height = images[i * 2 + 1];
                 require(side(width) && side(height), "Image size");
-                pixelSum += (long) width * height;
+                pixelSum += ObjectTextureMips.chainPixels(width, height);
             }
             require(pixelSum == pixelCount, "Image pixels");
             require(bytes() <= MAX_BYTES, "Objects file ceiling");

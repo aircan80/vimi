@@ -73,15 +73,24 @@ other effect with it shows `?`. `$o1` multiplies a fixed tick by the whole numbe
 of ticks in a fixed duration; spells that also tick on application
 (`SpellMisc` Attributes[5] 0x200), or whose attribute is unreadable, show `?`, and
 `$h` reads the single DifficultyID 0 `SpellAuraOptions.ProcChance` (1–100, not
-procs per minute). A tokenizer keeps all readable prose: each
+procs per minute). From the same SpellAuraOptions row, `$n` reads ProcCharges
+and `$u` reads CumulativeAura (1–1000). `$t1` is the effect's `EffectAuraPeriod`
+in seconds (exact, at most two decimals), and `$a1` is the radius of its
+`EffectRadiusIndex[0]` `SpellRadius` row when the second index is unset or the
+same row, it does not grow per level, and its min/max are unset or equal to it.
+A tokenizer keeps all readable prose: each
 value it cannot resolve shows `?` in place, with its cause in Source details.
 Tokens are case-insensitive (`$S1`, `$D`). Colour, link and newline markup is
 rendered as text. `$lsingular:plural;` follows the preceding resolved amount and
 shows both forms otherwise; `$gmale:female;` always shows both. `$/N;s1` and
 `$*N;s1` scale a resolved amount (at most two decimals). `$<spell>s1` and
-`$<spell>d` read up to eight other spells' rows. Expressions (`${...}`),
-conditionals (`$?...[...]`), `$@` references and named variables are never
-evaluated and show `?`. Raw templates and exact substitution provenance remain
+`$<spell>d` read up to eight other spells' rows. `${...}` expressions are
+evaluated only when they use numbers, `+ - * /`, parentheses and fixed effect
+amounts (`$s1`, `$m2`, `$123s1`); the result must be non-negative and a whole
+number, or exact at the `.N` decimal places the template gives, otherwise it
+shows `?`. Expressions with any other variable, conditionals
+(`$?...[...]`), `$@` references and named variables are never evaluated and
+show `?`. Raw templates and exact substitution provenance remain
 in collapsed Source details, not the styled tooltip. SpellEffect and SpellMisc
 reverse indexes have separate budgets.
 
