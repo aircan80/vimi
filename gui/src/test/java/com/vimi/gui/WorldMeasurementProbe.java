@@ -39,21 +39,15 @@ import javax.management.openmbean.CompositeData;
  * exterior preparation per tile, no helper or FX); {@code refusals} counts terrain texture
  * refusals over whole maps. All report per-stage timings ({@code -Dvimi.world.stageTimings=true}).
  *
- * <p>What it touches. It opens the library at {@code vimi.dataDirectory} (Gradle {@code
- * -PdataDirectory=...}; default the application's own) with {@link BuildApplication#open}, which
- * takes the store's writer lock and may run the library's own idempotent migration and owner
- * retention, exactly as starting the application does. It never starts, runs or publishes a
- * preparation job: it refuses a build that was never prepared, and opens one local-only work (no
- * network sources) for that build: metadata, resolution indexes and file handle without the file
- * catalog pass, the build's cached key graphs, and a World over its own workspace tables (no
- * known-table pass or warmup). Streaming writes only the helper's private packet files in the
- * probe's own temporary directory. Run it alone, with the application closed, under the shared
- * real-data lock.
+ * <p>What it touches: see {@link WorldMeasurementOpen} and docs/world-measurement-baseline.md. It
+ * runs only on a copy of the library ({@code -PdataDirectory}), never prepares anything, and
+ * starts no background downloads or provider checks.
  *
- * <p>Bounds. {@code probe.deadlineSeconds} (default 540 s) stops new work; the run then closes
- * the controller, helper, World and library normally. Only when closing itself overruns by {@code
- * probe.graceSeconds} (default 45 s), and never while the library is opening or closing, does the
- * watchdog halt the JVM. Exit codes: 0 complete, 2 failed, 3 deadline or incomplete.
+ * <p>Bounds. {@code probe.deadlineSeconds} (default and maximum 480 s, below the task's 10-minute
+ * timeout) stops new work; the run then closes the controller, helper, World and library
+ * normally. The watchdog acts only after a further {@value #GRACE_SECONDS} s, never while the
+ * library opens or anything closes, and then exits without halting. Exit codes ({@link
+ * #exitCode}): 0 complete, 2 failed, 3 deadline or incomplete.
  *
  * <p>Other properties: {@code probe.build} (default 70790); {@code probe.scenarios} = name:map:x:y
  * list (vimi tile coordinates; default Elwynn around Goldshire 49,31 and Stormwind City 48,30);
@@ -62,18 +56,26 @@ import javax.management.openmbean.CompositeData;
  * file the task writes.
  */
 public final class WorldMeasurementProbe {
+    static final long MAX_DEADLINE_SECONDS = 480, GRACE_SECONDS = 40;
     private static final long START = System.nanoTime();
     private static final long DEADLINE =
-            START + TimeUnit.SECONDS.toNanos(Long.getLong("probe.deadlineSeconds", 540));
-    private static final long GRACE =
-            TimeUnit.SECONDS.toNanos(Long.getLong("probe.graceSeconds", 45));
+            START
+                    + TimeUnit.SECONDS.toNanos(
+                            Math.min(
+                                    MAX_DEADLINE_SECONDS,
+                                    Long.getLong("probe.deadlineSeconds", MAX_DEADLINE_SECONDS)));
     private static final StringBuilder REPORT = new StringBuilder();
-    // Library open and close are never halted; the watchdog waits for them.
-    private static final java.util.concurrent.atomic.AtomicInteger LIBRARY_WRITES =
+    // Opening the library and every close: the watchdog never acts while one is running.
+    private static final java.util.concurrent.atomic.AtomicInteger BUSY =
             new java.util.concurrent.atomic.AtomicInteger();
     private static volatile boolean incomplete;
 
     private WorldMeasurementProbe() {}
+
+    /** 2 when the run failed, otherwise 3 when it is incomplete or overran, otherwise 0. */
+    static int exitCode(boolean failed, boolean incomplete, boolean overran) {
+        return failed ? 2 : incomplete || overran ? 3 : 0;
+    }
 
     public static void main(String[] args) {
         var watchdog =
@@ -82,30 +84,33 @@ public final class WorldMeasurementProbe {
                         .start(
                                 () -> {
                                     try {
-                                        long left = DEADLINE + GRACE - System.nanoTime();
+                                        long left =
+                                                DEADLINE
+                                                        + TimeUnit.SECONDS.toNanos(GRACE_SECONDS)
+                                                        - System.nanoTime();
                                         if (left > 0) TimeUnit.NANOSECONDS.sleep(left);
-                                        while (LIBRARY_WRITES.get() > 0) Thread.sleep(100);
-                                        say("PROBE closing overran the deadline; halting");
+                                        while (BUSY.get() > 0) Thread.sleep(100);
+                                        say("PROBE overran its deadline outside any open or close");
                                         finish(3);
                                     } catch (InterruptedException ignored) {
                                         // Normal end.
                                     }
                                 });
-        int code = 0;
+        boolean failed = false;
         try {
             run();
             gcSummary();
-            if (incomplete || System.nanoTime() > DEADLINE) {
-                say("PROBE incomplete: deadline reached or a scenario did not finish");
-                code = 3;
-            }
         } catch (Throwable failure) {
             say("PROBE failed: " + failure);
             failure.printStackTrace(System.out);
-            code = 2;
+            failed = true;
+        }
+        boolean overran = System.nanoTime() > DEADLINE;
+        if (!failed && (incomplete || overran)) {
+            say("PROBE incomplete: deadline reached or a scenario did not finish");
         }
         watchdog.interrupt();
-        finish(code);
+        finish(exitCode(failed, incomplete, overran));
     }
 
     private static synchronized void finish(int code) {
@@ -119,8 +124,18 @@ public final class WorldMeasurementProbe {
             // Report is also on stdout.
         }
         System.out.flush();
-        // Every owner is closed on the normal path; halt only skips JavaFX and AWT exit hooks.
-        Runtime.getRuntime().halt(code);
+        // A normal exit: shutdown hooks run, nothing is halted mid-write.
+        System.exit(code);
+    }
+
+    /** Runs one open or close; the watchdog waits for it. */
+    static <T> T busy(java.util.concurrent.Callable<T> action) throws Exception {
+        BUSY.incrementAndGet();
+        try {
+            return action.call();
+        } finally {
+            BUSY.decrementAndGet();
+        }
     }
 
     static synchronized void say(String line) {
@@ -134,78 +149,48 @@ public final class WorldMeasurementProbe {
             throw new IllegalStateException("Run with -D" + WorldStageTimings.PROPERTY + "=true");
         }
         listenToGc();
+        String refused =
+                WorldMeasurementOpen.libraryRefusal(
+                        System.getProperty("vimi.dataDirectory"),
+                        BuildApplication.applicationDataDirectory());
+        if (refused != null) throw new IllegalStateException(refused);
         long opening = System.nanoTime();
-        BackendBuildService service;
-        LIBRARY_WRITES.incrementAndGet();
+        var opened =
+                busy(
+                        () ->
+                                WorldMeasurementOpen.open(
+                                        BuildApplication.defaultDataDirectory(),
+                                        System.getProperty("probe.build", "70790"),
+                                        null,
+                                        issue -> say("PROBE " + issue)));
         try {
-            service = BuildApplication.open(BuildApplication.defaultDataDirectory()).join();
-        } finally {
-            LIBRARY_WRITES.decrementAndGet();
-        }
-        try {
-            BuildInfo build = null;
-            String locale = null;
-            String wanted = System.getProperty("probe.build", "70790");
-            for (var candidate : service.listBuilds().get(2, TimeUnit.MINUTES)) {
-                String summary = service.historicalPreparation(candidate);
-                if (summary != null
-                        && candidate.version().contains(wanted)
-                        && !candidate.observations().isEmpty()) {
-                    build = candidate;
-                    locale = summary.substring(summary.lastIndexOf(" · ") + 3).strip();
-                }
-            }
-            if (build == null) {
-                throw new IllegalStateException(
-                        "No build matching "
-                                + wanted
-                                + " was ever prepared in this library; prepare it in the"
-                                + " application first (the probe never does)");
-            }
-            var region = build.observations().getFirst();
-            var contexts = (NativePreparationContexts) service.preparation().factory();
-            NativePreparationWork work =
-                    contexts.createLocalComparison(
-                            build, region, locale, true, com.vibeminer.files.keys.TactKeys.EMPTY);
-            NativePreparationWork.MeasurementWorld measured = null;
-            try {
-                var token = Cancellation.NONE;
-                work.metadata(token);
-                work.openFilesForMeasurement(token);
-                for (String issue : work.keysPreparedLocal(token)) say("PROBE key issue: " + issue);
-                measured = work.openWorldForMeasurement(token);
-                BuildWorld handle = measured.world();
-                var catalog = handle.catalog(Cancellation.NONE).get(5, TimeUnit.MINUTES);
-                say(
-                        String.format(
-                                Locale.ROOT,
-                                "PROBE build %s opened in %.1f s (local-only work, no preparation job); java %s; %d processors; max heap %d MiB; backend %s",
-                                build.version(),
-                                seconds(System.nanoTime() - opening),
-                                System.getProperty("java.version"),
-                                Runtime.getRuntime().availableProcessors(),
-                                Runtime.getRuntime().maxMemory() >> 20,
-                                WorldStreamGpuOwner.configuredBackend()));
-                switch (System.getProperty("probe.mode", "stream")) {
-                    case "refusals" -> refusals(handle, catalog);
-                    case "prep" -> prep(handle, catalog);
-                    default -> stream(handle, catalog);
-                }
-            } finally {
-                try {
-                    if (measured != null) measured.close();
-                } finally {
-                    work.abortPending();
-                    work.close();
-                }
+            BuildWorld handle = opened.world();
+            var catalog = handle.catalog(Cancellation.NONE).get(5, TimeUnit.MINUTES);
+            say(
+                    String.format(
+                            Locale.ROOT,
+                            "PROBE build %s (%s, %s) opened in %.1f s on a library copy; local-only"
+                                    + " work, no preparation, no background work; java %s; %d"
+                                    + " processors; max heap %d MiB; backend %s",
+                            opened.build.version(),
+                            opened.receipt.region(),
+                            opened.receipt.locale(),
+                            seconds(System.nanoTime() - opening),
+                            System.getProperty("java.version"),
+                            Runtime.getRuntime().availableProcessors(),
+                            Runtime.getRuntime().maxMemory() >> 20,
+                            WorldStreamGpuOwner.configuredBackend()));
+            switch (System.getProperty("probe.mode", "stream")) {
+                case "refusals" -> refusals(handle, catalog);
+                case "prep" -> prep(handle, catalog);
+                default -> stream(handle, catalog);
             }
         } finally {
-            LIBRARY_WRITES.incrementAndGet();
-            try {
-                service.closeAsync().get(2, TimeUnit.MINUTES);
-            } finally {
-                LIBRARY_WRITES.decrementAndGet();
-            }
+            busy(
+                    () -> {
+                        opened.close();
+                        return null;
+                    });
         }
     }
 
@@ -347,7 +332,7 @@ public final class WorldMeasurementProbe {
                 new StreamRun(scenario, handle, catalog, map, inventory, origin, gpu).run();
             }
         } finally {
-            gpu.closeAsync().get(30, TimeUnit.SECONDS);
+            busy(() -> gpu.closeAsync().get(30, TimeUnit.SECONDS));
             Platform.exit();
         }
     }
@@ -460,7 +445,7 @@ public final class WorldMeasurementProbe {
                             timer.stop();
                             return null;
                         });
-                controller.closeAsync().get(60, TimeUnit.SECONDS);
+                busy(() -> controller.closeAsync().get(60, TimeUnit.SECONDS));
             }
         }
 

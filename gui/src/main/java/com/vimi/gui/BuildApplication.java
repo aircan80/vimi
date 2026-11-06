@@ -30,6 +30,11 @@ public final class BuildApplication {
         String configured = System.getProperty("vimi.dataDirectory");
         if (configured != null && !configured.isBlank())
             return Path.of(configured).toAbsolutePath();
+        return applicationDataDirectory();
+    }
+
+    /** The application's own data directory, ignoring any {@code vimi.dataDirectory} override. */
+    static Path applicationDataDirectory() {
         Path home = Path.of(System.getProperty("user.home"));
         String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
         if (os.contains("mac")) return home.resolve("Library/Application Support/vimi");
@@ -59,6 +64,25 @@ public final class BuildApplication {
 
     static CompletableFuture<BackendBuildService> open(Path directory,
             com.vibeminer.network.TactKeyClient keyClient, TransferObserver observer) {
+        return open(directory, keyClient, observer, true);
+    }
+
+    /**
+     * For measurement probes: the same library open without background work, so no persisted
+     * download resumes and no startup or daily provider check is scheduled.
+     */
+    static CompletableFuture<BackendBuildService> openWithoutBackgroundWork(Path directory) {
+        return openWithoutBackgroundWork(directory, null);
+    }
+
+    static CompletableFuture<BackendBuildService> openWithoutBackgroundWork(
+            Path directory, com.vibeminer.network.TactKeyClient keyClient) {
+        return open(directory, keyClient, TransferObserver.NONE, false);
+    }
+
+    private static CompletableFuture<BackendBuildService> open(Path directory,
+            com.vibeminer.network.TactKeyClient keyClient, TransferObserver observer,
+            boolean background) {
         java.util.Objects.requireNonNull(directory);
         java.util.Objects.requireNonNull(observer);
         // The data/library root names the account; World diagnostics redact it literally.
@@ -212,7 +236,7 @@ public final class BuildApplication {
                                 "source", LibraryCatalog.Role.ORIGINAL);
                         ownership.retainOwner("provider:tact-keys", LibraryCatalog.Scope.GLOBAL).join();
                         var dataSources = DataSourcesService.open(library.databasePath(), directory.resolve("questie"),
-                                fullContexts.communityNames(), ownership, keyClient == null ? network : keyClient, tactOwner, tactOwner, network, network, observer);
+                                fullContexts.communityNames(), ownership, keyClient == null ? network : keyClient, tactOwner, tactOwner, network, network, observer, background);
                         cleanup.addFirst(dataSources::closeAsync);
                         fullContexts.withSources(dataSources);
                         var worldBookmarks = WorldBookmarkStore.forLibrary(library.databasePath());
@@ -241,7 +265,8 @@ public final class BuildApplication {
                                                 network,
                                                 migration.legacyObjects(),
                                                 accounting,
-                                                directory));
+                                                directory),
+                                        background);
                         cleanup.addFirst(downloads::closeAsync);
                         var opening = new BuildOpening(contexts::open, state);
                         cleanup.addFirst(opening::closeAsync);

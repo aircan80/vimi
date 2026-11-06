@@ -18,16 +18,29 @@ inherits it and writes its own table (`WorldStageTimingsDump`) to
 
 ### What the probe touches
 
-The probe opens the library at `-PdataDirectory=<dir>`, or the application's own library by
-default, with `BuildApplication.open`. That is the same call the application makes at start:
-- it takes the store's writer lock;
-- it may run the library's own idempotent migration and owner retention.
+**It only runs on a copy of the library.** It refuses to start without `-PdataDirectory=<copy>`.
+It also refuses a directory that is, or resolves to, the application's own data directory, and a
+directory with no `library` folder.
 
-To leave the real library alone, point `-PdataDirectory` at a copy.
+To make the copy, close the application and copy its whole data directory (it holds `library`,
+`derived`, `questie` and so on) to a scratch folder. On Windows the data directory is
+`%LOCALAPPDATA%\vimi`. For example, with robocopy:
 
-**It never starts, runs or publishes a preparation job.** It refuses a build that was never
-prepared in that library. For a prepared build, it opens one local-only work, with no network
-sources, and uses only:
+```bat
+robocopy "%LOCALAPPDATA%\vimi" D:\scratch\vimi-copy /E
+```
+
+The copy must contain the build already prepared to Tables-ready.
+
+**It never prepares anything.** It opens the library with
+`BuildApplication.openWithoutBackgroundWork`, which is the application's open with two
+differences:
+- persisted downloads are not resumed;
+- no startup or daily provider check (Questie, listfile, keys, EG link, Polestar) is scheduled.
+
+It then needs a Tables-ready preparation receipt for the build, which supplies the region, CDN
+configuration and locale. It refuses a build without one. It starts no preparation job. It opens
+one local-only work, with no network sources, and uses only:
 - the build metadata;
 - the resolution indexes and file handle, without the file catalog pass;
 - the build's cached key graphs;
@@ -35,32 +48,46 @@ sources, and uses only:
 
 That is why it starts within seconds (#422).
 
-**Writes.** Streaming writes only the helper's private packet files, under
-`gui/build/world-measurement/tmp`. The deadline (default 540 s) stops new work, and the run then
-closes the controller, helper, World and library normally. The watchdog halts the JVM only if
-closing itself overruns the deadline by a further 45 s, and never while the library is opening or
-closing.
+**Every write it can make, all inside the copy or the probe's build folder:**
+- **Opening the library:** the store's writer lock, the library's idempotent migration check, and
+  provider owner retention in the library catalog. These are the same as an application start.
+- **Creating the work:** the work registers its expected build owner (`ownership.expect`).
+- **Opening the build:** if the build's resolution projection is missing for the receipt's region,
+  opening it may store that projection.
+- **Reading tables:** a workspace table with no cached generated form is generated and stored on
+  first read.
+- **Streaming:** the helper's private packet files go under `gui/build/world-measurement/tmp`,
+  which is cleared at task start.
+- **Reports:** `report.txt`, `gc.log` and `helper-timings.txt` go under
+  `gui/build/world-measurement`.
 
-**Exit codes:** 0 complete, 2 failed, 3 deadline or incomplete.
+`worldMeasurementLibraryTest` checks this over an authored offline library. It refuses an
+unprepared build, and the open adds no stored object and changes no payload file.
+
+**Bounds.** The deadline is at most 480 s, below the task's 10-minute timeout. It stops new work,
+and the run then closes the controller, helper, World and library normally. The watchdog acts
+only 40 s after the deadline. It never acts while the library is opening or anything is closing,
+and then it exits normally with `System.exit`; nothing is halted.
+
+**Exit codes:** 0 complete, 2 failed (including a refusal), 3 deadline or incomplete.
 
 ### Commands
 
-Close the app first, and take the shared real-data lock. Remove the lock only if your own
-`mkdir` succeeded:
+Take the shared real-data lock. Remove it only if your own `mkdir` succeeded:
 
 ```sh
 mkdir ../.realdata-lock && {    # shared real-data lock, next to the worktrees
   trap 'rmdir ../.realdata-lock' EXIT
   ./gradlew :gui:worldMeasurementProbe --max-workers=2 "-PsqliteLibrary=<sqlite3.dll>" \
-      -Pprobe.scenarios=elwynn:0:49:31,stormwind:0:48:30        # stream, about 4 minutes
+      -PdataDirectory=<copy> -Pprobe.scenarios=elwynn:0:49:31,stormwind:0:48:30   # about 4 min
   ./gradlew :gui:worldMeasurementProbe --max-workers=2 "-PsqliteLibrary=<sqlite3.dll>" \
-      -Pprobe.mode=prep                                         # tile prep only, about 3 minutes
+      -PdataDirectory=<copy> -Pprobe.mode=prep                                     # about 3 min
   ./gradlew :gui:worldMeasurementProbe --max-workers=2 "-PsqliteLibrary=<sqlite3.dll>" \
-      -Pprobe.mode=refusals -Pprobe.maps=0,1                    # whole-map texture refusals
+      -PdataDirectory=<copy> -Pprobe.mode=refusals -Pprobe.maps=0,1
 }
 ```
 
-The task timeout is 10 minutes. The report goes to stdout and to
+The report goes to stdout and to
 `gui/build/world-measurement/report.txt`. The task also writes
 `gui/build/world-measurement/gc.log` (`-Xlog:gc*`) and the helper's table.
 

@@ -695,6 +695,14 @@ tasks.register('worldMeasurementTest', JavaExec) {
 }
 check.dependsOn worldMeasurementTest
 
+// The probe's open path over an authored offline library: refusals and no stored-object writes.
+tasks.register('worldMeasurementLibraryTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldMeasurementLibraryTest'
+}
+check.dependsOn worldMeasurementLibraryTest
+
 // Phase 0 real-data World measurement (docs/world-measurement-baseline.md). Opt-in, never part
 // of check: opens the library at -PdataDirectory (default the app's own; holds the store's
 // writer lock, so close the app) and a build already prepared there, never a preparation job;
@@ -706,6 +714,7 @@ tasks.register('worldMeasurementProbe', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldMeasurementProbe'
+    // The probe's own deadline (at most 480 s) plus its close grace stays inside this.
     timeout = java.time.Duration.ofMinutes(10)
     def out = layout.buildDirectory.dir('world-measurement').get().asFile
     doFirst { out.mkdirs() }
@@ -720,7 +729,7 @@ tasks.register('worldMeasurementProbe', JavaExec) {
     systemProperty 'probe.gcLog', new File(out, 'gc.log').absolutePath
     ['probe.mode', 'probe.build', 'probe.scenarios', 'probe.maps', 'probe.fillSeconds',
      'probe.rotateSeconds', 'probe.flySeconds', 'probe.settleSeconds', 'probe.mapSeconds',
-     'probe.deadlineSeconds', 'probe.graceSeconds', 'probe.size', 'probe.passes', 'probe.objects',
+     'probe.deadlineSeconds', 'probe.size', 'probe.passes', 'probe.objects',
      'vimi.world.objectTextures', 'vimi.world.creatures',
      'vimi.gpu.backend'].each { name ->
         def value = providers.gradleProperty(name)
