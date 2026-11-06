@@ -287,14 +287,21 @@ final class WorldStreamSourceController {
 
     void camera(WorldStreamTransport.Camera next) {
         Objects.requireNonNull(next);
+        // The sky lookup runs outside the lock, and a failing one only leaves the camera's sky
+        // unchanged: camera() must not fail every frame because of it.
+        var feed=sky;
+        if(feed!=null) {
+            try { next=feed.attach(next); }
+            catch(RuntimeException failure) {
+                WorldDiagnostics.degraded("sky", "World sky lookup failed; the explorer's sky stays", failure);
+            }
+        }
         RuntimeException problem=null;
         synchronized (lock) {
             if (closing) return;
             if (camera != null && next.revision() <= camera.revision()) {
                 throw new IllegalArgumentException("Camera revision must advance");
             }
-            var feed=sky;
-            if(feed!=null) next=feed.attach(next);
             camera=next;
             // Actual final Session.camera only replaces metadata; no IO/external callback.
             // Use the same gate as initial publication so an older initial camera cannot follow.

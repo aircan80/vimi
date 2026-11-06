@@ -125,38 +125,61 @@ final class WorldStreamControl {
 
     private WorldStreamControl() {}
 
+    /**
+     * The optional sky tail, bounded so a camera line always fits: {@code SKY} then the six colours
+     * as one 12-digit hex token (horizon then top, red-green-blue), the fog weight in thousandths
+     * (0..1000) and the recorded start and end in whole yards. Sky values are already quantized to
+     * exactly these steps.
+     */
     private static String sky(WorldStreamTransport.Sky sky) {
         if (sky == null) {
             return "";
         }
-        float[] h = sky.horizon(), t = sky.top();
+        var colours = new StringBuilder(12);
+        for (float[] rgb : new float[][] {sky.horizon(), sky.top()}) {
+            for (float channel : rgb) {
+                colours.append(HexFormat.of().toHexDigits((byte) (int) channel));
+            }
+        }
         return " SKY "
-                + h[0]
+                + colours
                 + " "
-                + h[1]
+                + Math.round(sky.fogWeight() * 1000)
                 + " "
-                + h[2]
+                + (long) sky.recordedStart()
                 + " "
-                + t[0]
-                + " "
-                + t[1]
-                + " "
-                + t[2]
-                + " "
-                + sky.fogWeight()
-                + " "
-                + sky.recordedStart()
-                + " "
-                + sky.recordedEnd();
+                + (long) sky.recordedEnd();
     }
 
     private static WorldStreamTransport.Sky sky(String[] parts) {
-        float[] v = new float[9];
-        for (int i = 0; i < 9; i++) {
-            v[i] = (float) decimal(parts[13 + i]);
+        if (!parts[13].matches("[0-9a-f]{12}")) {
+            throw new IllegalArgumentException("Invalid sky colours");
         }
+        float[] channels = new float[6];
+        for (int i = 0; i < 6; i++) {
+            channels[i] = Integer.parseInt(parts[13].substring(2 * i, 2 * i + 2), 16);
+        }
+        long weight = bounded(parts[14], 1000);
+        long start = bounded(parts[15], WorldStreamTransport.Sky.MAX_YARDS);
+        long end = bounded(parts[16], WorldStreamTransport.Sky.MAX_YARDS);
         return new WorldStreamTransport.Sky(
-                new float[] {v[0], v[1], v[2]}, new float[] {v[3], v[4], v[5]}, v[6], v[7], v[8]);
+                new float[] {channels[0], channels[1], channels[2]},
+                new float[] {channels[3], channels[4], channels[5]},
+                weight / 1000.0,
+                start,
+                end);
+    }
+
+    /** A canonical decimal integer in 0..max. */
+    private static long bounded(String text, long max) {
+        if (!text.matches("0|[1-9][0-9]{0,6}")) {
+            throw new IllegalArgumentException("Invalid sky number");
+        }
+        long value = Long.parseLong(text);
+        if (value > max) {
+            throw new IllegalArgumentException("Sky number out of range");
+        }
+        return value;
     }
 
     static byte[] encode(Command command) {
@@ -295,9 +318,9 @@ final class WorldStreamControl {
             Command result =
                     switch (parts[2]) {
                         case "CAM" -> {
-                            // An optional sky tail: SKY h0 h1 h2 t0 t1 t2 weight start end.
+                            // An optional sky tail: SKY colours weight start end.
                             if (parts.length != 12) {
-                                arity(parts, 22);
+                                arity(parts, 17);
                                 if (!parts[12].equals("SKY")) {
                                     throw new IllegalArgumentException("Invalid camera sky");
                                 }

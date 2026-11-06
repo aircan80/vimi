@@ -57,24 +57,38 @@ public final class WorldStreamTransport {
         /** The explorer's own sky, with no recorded fog. */
         public static final Sky EXPLORER = new Sky(WorldFog.FOG_COLOUR, WorldFog.SKY_TOP, 0, 0, 0);
 
+        /** Recorded fog distances are whole yards up to this bound. */
+        public static final int MAX_YARDS = 1_000_000;
+
+        /**
+         * Values are quantized as the control line carries them, so every Sky round-trips exactly:
+         * colours to whole 0..255 steps, the weight to thousandths, distances to whole yards. Every
+         * value must be finite and in range, whatever the weight.
+         */
         public Sky {
             if (horizon.length != 3 || top.length != 3) {
                 throw new IllegalArgumentException("Invalid sky colours");
             }
+            horizon = horizon.clone();
+            top = top.clone();
             for (int i = 0; i < 3; i++) {
                 if (!(horizon[i] >= 0 && horizon[i] <= 255 && top[i] >= 0 && top[i] <= 255)) {
                     throw new IllegalArgumentException("Invalid sky colours");
                 }
+                horizon[i] = Math.round(horizon[i]);
+                top[i] = Math.round(top[i]);
             }
             if (!(fogWeight >= 0 && fogWeight <= 1)
-                    || fogWeight > 0
-                            && !(recordedStart >= 0
-                                    && recordedEnd > recordedStart
-                                    && Float.isFinite(recordedEnd))) {
+                    || !(recordedStart >= 0 && recordedStart <= MAX_YARDS)
+                    || !(recordedEnd >= 0 && recordedEnd <= MAX_YARDS)) {
                 throw new IllegalArgumentException("Invalid recorded fog");
             }
-            horizon = horizon.clone();
-            top = top.clone();
+            fogWeight = Math.round(fogWeight * 1000) / 1000.0;
+            recordedStart = Math.round(recordedStart);
+            recordedEnd = Math.round(recordedEnd);
+            if (fogWeight > 0 && !(recordedEnd > recordedStart)) {
+                throw new IllegalArgumentException("Invalid recorded fog");
+            }
         }
 
         @Override

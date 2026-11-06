@@ -163,7 +163,11 @@ public final class WorldService implements BuildWorld {
         return java.util.Optional.of(waterFacade);
     }
 
-    /** Loads the light tables once, off the caller's thread; later calls share the result. */
+    /**
+     * Loads the light tables once, off the caller's thread, under this workspace's own lifetime:
+     * one caller's cancellation never fails the shared load. Later calls share a successful load; a
+     * failed or cancelled one is dropped, so the next call tries again.
+     */
     public synchronized CompletableFuture<WorldSky.Index> skyIndex(Cancellation token) {
         java.util.Objects.requireNonNull(token);
         if (closing != null) {
@@ -178,8 +182,13 @@ public final class WorldService implements BuildWorld {
                     .start(
                             () -> {
                                 try {
-                                    result.complete(WorldSky.load(tables, token));
+                                    result.complete(WorldSky.load(tables, lifetime));
                                 } catch (Throwable failure) {
+                                    synchronized (WorldService.this) {
+                                        if (skyIndex == result) {
+                                            skyIndex = null;
+                                        }
+                                    }
                                     result.completeExceptionally(failure);
                                 }
                             });

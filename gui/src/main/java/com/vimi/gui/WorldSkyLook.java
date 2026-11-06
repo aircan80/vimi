@@ -36,11 +36,14 @@ final class WorldSkyLook {
         if (!(fog > 0 && sample.fogEnd() > 0)) {
             return new WorldStreamTransport.Sky(horizon, top, 0, 0, 0);
         }
-        float end = (float) sample.fogEnd();
-        float start = (float) (sample.fogEnd() * Math.clamp(sample.fogScaler(), 0, 1));
-        if (!(end > start)) {
-            start = end * 0.99f;
+        // Whole yards, as the camera line carries them; the start stays at least a yard before
+        // the end so the fog remains a ramp, and an end under a yard is no fog.
+        long end = Math.min(Math.round(sample.fogEnd()), WorldStreamTransport.Sky.MAX_YARDS);
+        if (end < 1) {
+            return new WorldStreamTransport.Sky(horizon, top, 0, 0, 0);
         }
+        long start =
+                Math.min(Math.round(end * Math.clamp(sample.fogScaler(), 0, 1)), end - 1);
         return new WorldStreamTransport.Sky(horizon, top, Math.min(1, fog), start, end);
     }
 

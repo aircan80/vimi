@@ -69,8 +69,15 @@ public final class WorldSkyLookTest {
 
     private static void clampsTheFogScaler() {
         var above = WorldSkyLook.of(result(1, 1000, 3, 1), EXPLORER);
-        check(above.recordedEnd() == 1000 && above.recordedStart() < 1000
-                && above.recordedStart() >= 989, "scaler above 1 " + above);
+        check(above.recordedEnd() == 1000 && above.recordedStart() == 999,
+                "scaler above 1 keeps a yard of ramp " + above);
+        // Short and huge recorded ends stay valid whole yards.
+        var tiny = WorldSkyLook.of(result(1, 1.4, 1, 1), EXPLORER);
+        check(tiny.recordedEnd() == 1 && tiny.recordedStart() == 0, "a one-yard fog " + tiny);
+        check(WorldSkyLook.of(result(1, 0.4, 1, 1), EXPLORER).fogWeight() == 0,
+                "under a yard is no fog");
+        var huge = WorldSkyLook.of(result(1, 5e6, 0.5, 1), EXPLORER);
+        check(huge.recordedEnd() == WorldStreamTransport.Sky.MAX_YARDS, "huge end " + huge);
         var below = WorldSkyLook.of(result(1, 1000, -3, 1), EXPLORER);
         check(below.recordedStart() == 0, "negative scaler " + below);
     }

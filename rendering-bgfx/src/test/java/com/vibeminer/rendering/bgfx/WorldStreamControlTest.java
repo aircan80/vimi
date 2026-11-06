@@ -85,10 +85,15 @@ class WorldStreamControlTest {
                         "COMMIT 1 commit-1.wsc " + "A".repeat(64),
                         "COMMIT 1 commit-01.wsc " + "a".repeat(64),
                         "CAM 1 1 801 500 0.0 0.0 0.0 0.0 0.0",
-                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 SKX 1 1 1 1 1 1 0 0 0",
-                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 SKY 1 1 1 1 1 1 0.5 9 3",
-                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 SKY 1 1 1 1 1 300 0 0 0",
-                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 SKY 1 1 1 1 1 1",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 SKX 0a141e324664 0 0 0",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 SKY 0a141e324664 500 9 3",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 SKY 0a141e32466 0 0 0",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 SKY 0A141E324664 0 0 0",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 SKY 0a141e324664 1001 0 0",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 SKY 0a141e324664 0 0 1000001",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 SKY 0a141e324664 0 1e300 0",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 SKY 0a141e324664 0 01 0",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 SKY 0a141e324664 0 0",
                         "CAM 1 1 800 500 NaN 0.0 0.0 0.0 0.0",
                         "CAM 1 1 800 500 0 0.0 0.0 0.0 0.0",
                         "CAM 1 1 800 500 0.0 0.0 0.0 0.0 1.6",
@@ -147,5 +152,59 @@ class WorldStreamControlTest {
                                 -0.00000000000000012345678901234567,
                                 -0.00000000000000012345678901234567));
         assertTrue(WorldStreamControl.encode(camera).length <= 256);
+    }
+
+    /**
+     * The longest possible camera line, every field at its longest text and the sky tail at its
+     * widest, still fits the control line bound (#177).
+     */
+    @Test
+    void theLongestCameraWithASkyFitsTheLine() throws IOException {
+        double longest = -1.2345678901234567E-300;
+        assertEquals(24, Double.toString(longest).length());
+        var sky =
+                new WorldStreamTransport.Sky(
+                        new float[] {255, 255, 255},
+                        new float[] {255, 255, 255},
+                        0.999,
+                        WorldStreamTransport.Sky.MAX_YARDS - 1,
+                        WorldStreamTransport.Sky.MAX_YARDS);
+        var worst =
+                new WorldStreamControl.Camera(
+                        NONCE,
+                        Long.MAX_VALUE,
+                        Long.MAX_VALUE,
+                        800,
+                        500,
+                        new TerrainCamera(longest, longest, longest, longest, longest),
+                        sky);
+        byte[] encoded = WorldStreamControl.encode(worst);
+        assertTrue(
+                encoded.length <= WorldStreamControl.MAX_LINE_BYTES,
+                "camera line is " + encoded.length + " bytes");
+        assertEquals(worst, WorldStreamControl.decode(encoded, encoded.length));
+    }
+
+    /** Sky values are checked whatever the weight, and quantized to what the line carries. */
+    @Test
+    void skyValuesAreValidatedAndQuantized() {
+        float[] grey = {10, 10, 10};
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorldStreamTransport.Sky(grey, grey, 0, 1e30f, 0));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorldStreamTransport.Sky(grey, grey, 0, 0, Float.NaN));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorldStreamTransport.Sky(grey, new float[] {0, 0, 256}, 0, 0, 0));
+        var quantized =
+                new WorldStreamTransport.Sky(
+                        new float[] {10.4f, 10.6f, 0}, grey, 0.12345, 250.4f, 999.6f);
+        assertEquals(10, quantized.horizon()[0]);
+        assertEquals(11, quantized.horizon()[1]);
+        assertEquals(0.123, quantized.fogWeight());
+        assertEquals(250, quantized.recordedStart());
+        assertEquals(1000, quantized.recordedEnd());
     }
 }
