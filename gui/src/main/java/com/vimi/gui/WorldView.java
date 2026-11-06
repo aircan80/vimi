@@ -956,10 +956,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         // its clicks hand focus back through the HUD's one refocus.
         minimap.refocus(hud::refocus);
         minimap.followHud(hud.hiddenProperty());
-        // Interim placement until the HUD layout's slots land: bottom-left of the viewport.
-        viewport.getChildren().add(inspectCard);
-        StackPane.setAlignment(inspectCard, Pos.BOTTOM_LEFT);
-        StackPane.setMargin(inspectCard, new Insets(12, 12, 48, 12));
+        // Above the status icon row in the HUD's bottom-left stack; the map panel ends above it.
+        hud.inspectCard(inspectCard);
         inspectCard.refocus(() -> {
             if (explorer) viewport.requestFocus();
         });

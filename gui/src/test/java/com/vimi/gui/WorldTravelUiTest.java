@@ -244,6 +244,27 @@ public final class WorldTravelUiTest {
         require(card.isOpen() && !card.isVisible(), "H hides the card with the HUD; it stays open");
         press.accept(javafx.scene.input.KeyCode.H);
         require(card.isOpen() && card.isVisible(), "H again shows the card");
+        // The card sits above the status icon row, and an open map panel ends above both.
+        var icons = view.lookup("#world-status-icons");
+        var panel = view.lookup("#world-map-panel");
+        view.applyCss();
+        view.layout();
+        var cardAt = card.localToScene(card.getLayoutBounds());
+        var iconAt = icons.localToScene(icons.getLayoutBounds());
+        require(icons.isVisible() && !cardAt.intersects(iconAt) && cardAt.getMaxY() <= iconAt.getMinY(),
+                "The card is above the icon row: card " + cardAt + " icons " + iconAt);
+        press.accept(javafx.scene.input.KeyCode.M);
+        view.applyCss();
+        view.layout();
+        cardAt = card.localToScene(card.getLayoutBounds());
+        iconAt = icons.localToScene(icons.getLayoutBounds());
+        var panelBox = panel.localToScene(panel.getLayoutBounds());
+        require(panel.isVisible() && card.isVisible() && panelBox.getHeight() > 0
+                        && !panelBox.intersects(cardAt) && !panelBox.intersects(iconAt),
+                "An open map panel covers neither the card nor the icon row: panel " + panelBox
+                        + " card " + cardAt + " icons " + iconAt);
+        press.accept(javafx.scene.input.KeyCode.M);
+        require(!panel.isVisible() && card.isOpen(), "M closes the panel; the card stays");
         card.follow(x + WorldInspectCard.FOLLOW_YARDS, y, z);
         require(!card.isOpen() && !card.isVisible(), "An unpinned card closes after travelling away");
         javafx.event.Event.fireEvent(viewport, new javafx.scene.input.KeyEvent(
