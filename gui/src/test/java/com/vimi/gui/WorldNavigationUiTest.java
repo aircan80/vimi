@@ -738,13 +738,29 @@ public final class WorldNavigationUiTest {
         var gpuStatus=(javafx.scene.control.Label)get(view,"gpuStatus");
         var render=(Button)view.lookup("#world-icon-render");
         require(icons.render()==WorldStatusIcons.render(((Node)get(view,"gpuActivity")).isVisible(),
-                        ((javafx.scene.control.CheckBox)get(view,"gpuEnabled")).isSelected(),gpuStatus.getText())
+                        ((javafx.scene.control.CheckBox)get(view,"gpuEnabled")).isSelected(),
+                        (WorldStatusIcons.Render)get(view,"renderHealth"))
                         && render.getTooltip().getText().equals(gpuStatus.getText().strip()),
                 "The render chip follows the GPU line: "+icons.render()+" · "+gpuStatus.getText());
         var textureStatus=(javafx.scene.control.Label)get(view,"textureStatus");
-        require(icons.texture()==WorldStatusIcons.texture(((Node)get(view,"textureActivity")).isVisible(),textureStatus.getText())
+        require(icons.texture()==WorldStatusIcons.texture(((Node)get(view,"textureActivity")).isVisible(),
+                        (WorldStatusIcons.Texture)get(view,"textureHealth"))
                         && ((Button)view.lookup("#world-icon-texture")).getTooltip().getText().equals(textureStatus.getText().strip()),
                 "The texture chip follows the texture line: "+icons.texture()+" · "+textureStatus.getText());
+        // The chips read typed health, not the text: a stream detail full of "unavailable" and
+        // "failed on" words leaves them as they were.
+        var renderBefore=icons.render();
+        var textureBefore=icons.texture();
+        String gpuWas=gpuStatus.getText(), textureWas=textureStatus.getText();
+        String partial=WorldDevReportTest.DETAIL+"; water tables unavailable; building objects failed on 2";
+        gpuStatus.setText(partial);
+        textureStatus.setText(partial);
+        require(icons.render()==renderBefore && icons.texture()==textureBefore
+                        && icons.render()!=WorldStatusIcons.Render.FAILED && icons.texture()!=WorldStatusIcons.Texture.FAILED
+                        && render.getTooltip().getText().equals(partial),
+                "Detail text never turns a chip red: "+icons.render()+" / "+icons.texture());
+        gpuStatus.setText(gpuWas);
+        textureStatus.setText(textureWas);
         var more=(javafx.scene.control.ToggleButton)view.lookup("#world-hud-more");
         render.fire();
         require(more.isSelected(),"Until the developer overlay lands, the render chip opens the rows under More");

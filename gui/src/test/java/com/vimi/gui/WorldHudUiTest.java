@@ -129,18 +129,44 @@ public final class WorldHudUiTest {
             require(pseudo(render, WorldStatusIcons.RED) && !amber(render), "Render failed: red");
             icons.render(WorldStatusIcons.Render.BUSY, "Waiting for previous World resources to retire…");
             require(spinning(render) && !pseudo(render, WorldStatusIcons.RED), "Render busy: spinning ring");
-            require(WorldStatusIcons.render(true, true, "") == WorldStatusIcons.Render.BUSY
-                            && WorldStatusIcons.render(false, false, "9 tiles") == WorldStatusIcons.Render.SOFTWARE
-                            && WorldStatusIcons.render(false, true, "GPU terrain unavailable; using software rendering.")
-                                    == WorldStatusIcons.Render.SOFTWARE
-                            && WorldStatusIcons.render(false, true, "GPU World frame upload failed; retry the viewer.")
-                                    == WorldStatusIcons.Render.FAILED
-                            && WorldStatusIcons.render(false, true, WorldView.STALL_HINT) == WorldStatusIcons.Render.FAILED
-                            && WorldStatusIcons.render(false, true, "World resources could not be confirmed retired (x)")
-                                    == WorldStatusIcons.Render.FAILED
-                            && WorldStatusIcons.render(false, true, "9 tiles: 9 textured · 40 surfaces")
-                                    == WorldStatusIcons.Render.GPU,
-                    "Render state from the GPU controls");
+            icons.render(WorldStatusIcons.Render.PARTIAL, WorldDevReportTest.DETAIL);
+            require(render.getText().equals("GPU") && amber(render) && !pseudo(render, WorldStatusIcons.RED),
+                    "Render partial (some wanted tiles missing): amber GPU, not red");
+            // Typed state, never the text: failure wins over software, software over partial.
+
+            require(WorldStatusIcons.render(true, true, WorldStatusIcons.Render.FAILED) == WorldStatusIcons.Render.BUSY
+                            && WorldStatusIcons.render(false, false, WorldStatusIcons.Render.GPU) == WorldStatusIcons.Render.SOFTWARE
+                            && WorldStatusIcons.render(false, false, WorldStatusIcons.Render.FAILED) == WorldStatusIcons.Render.FAILED
+                            && WorldStatusIcons.render(false, true, WorldStatusIcons.Render.SOFTWARE) == WorldStatusIcons.Render.SOFTWARE
+                            && WorldStatusIcons.render(false, true, WorldStatusIcons.Render.PARTIAL) == WorldStatusIcons.Render.PARTIAL
+                            && WorldStatusIcons.render(false, true, WorldStatusIcons.Render.GPU) == WorldStatusIcons.Render.GPU,
+                    "Render state from typed health");
+            var phase = WorldStreamSourceController.Phase.class.getEnumConstants();
+            for (var each : phase) {
+                var health = WorldStatusIcons.streamHealth(each, false, 9, 9);
+                require(health == (each == WorldStreamSourceController.Phase.FAILED ? WorldStatusIcons.Render.FAILED
+                                : each == WorldStreamSourceController.Phase.UNAVAILABLE ? WorldStatusIcons.Render.SOFTWARE
+                                : WorldStatusIcons.Render.GPU),
+                        "Stream phase " + each + " -> " + health);
+            }
+            require(WorldStatusIcons.streamHealth(WorldStreamSourceController.Phase.READY, true, 9, 9)
+                            == WorldStatusIcons.Render.FAILED,
+                    "A stall alert is a failure");
+            require(WorldStatusIcons.streamHealth(WorldStreamSourceController.Phase.READY, false, 8, 9)
+                            == WorldStatusIcons.Render.PARTIAL,
+                    "Settled with a wanted tile missing is partial (amber), not a failure");
+            // A healthy but partial stream: its detail names "1 unavailable (28_31: missing)", yet
+            // the chips stay white or amber, never red.
+            icons.render(WorldStatusIcons.render(false, true,
+                    WorldStatusIcons.streamHealth(WorldStreamSourceController.Phase.READY, false, 8, 9)),
+                    WorldDevReportTest.DETAIL);
+            require(!pseudo(render, WorldStatusIcons.RED) && render.getTooltip().getText().contains("1 unavailable"),
+                    "A partial stream's detail never turns the render chip red");
+            icons.render(WorldStatusIcons.render(false, true,
+                    WorldStatusIcons.streamHealth(WorldStreamSourceController.Phase.READY, false, 9, 9)),
+                    WorldDevReportTest.DETAIL + "; water tables unavailable; building objects failed on 2");
+            require(icons.render() == WorldStatusIcons.Render.GPU && !pseudo(render, WorldStatusIcons.RED) && !amber(render),
+                    "A complete stream whose detail mentions failed objects stays white");
             // Texture: ready, loading (ring), failed (red).
             var texture = button(row, "texture");
             icons.texture(WorldStatusIcons.Texture.READY, "Basic terrain textures · 256/256 regions");
@@ -151,11 +177,16 @@ public final class WorldHudUiTest {
             require(pseudo(texture, WorldStatusIcons.RED)
                             && texture.getTooltip().getText().equals("Terrain texture loading unavailable"),
                     "Texture failed: red");
-            require(WorldStatusIcons.texture(true, "") == WorldStatusIcons.Texture.LOADING
-                            && WorldStatusIcons.texture(false, "Terrain texture frame unavailable · previous preview retained")
-                                    == WorldStatusIcons.Texture.FAILED
-                            && WorldStatusIcons.texture(false, "Height shading") == WorldStatusIcons.Texture.READY,
-                    "Texture state from the texture line");
+            icons.texture(WorldStatusIcons.Texture.FALLBACK, "Terrain textures unavailable · height shading");
+            require(amber(texture) && !pseudo(texture, WorldStatusIcons.RED), "Texture fallback (height shading): amber");
+            require(WorldStatusIcons.texture(true, WorldStatusIcons.Texture.FAILED) == WorldStatusIcons.Texture.LOADING
+                            && WorldStatusIcons.texture(false, WorldStatusIcons.Texture.FAILED) == WorldStatusIcons.Texture.FAILED
+                            && WorldStatusIcons.texture(false, WorldStatusIcons.Texture.FALLBACK) == WorldStatusIcons.Texture.FALLBACK
+                            && WorldStatusIcons.texture(false, WorldStatusIcons.Texture.READY) == WorldStatusIcons.Texture.READY,
+                    "Texture state from the typed texture outcome");
+            icons.texture(WorldStatusIcons.texture(false, WorldStatusIcons.Texture.READY), WorldDevReportTest.DETAIL);
+            require(!pseudo(texture, WorldStatusIcons.RED) && !amber(texture),
+                    "A healthy stream's texture detail never turns the texture chip red");
             // Mouse: slashed when cursor capture is unavailable.
             var mouse = button(row, "mouse");
             icons.mouse(false, "Mouse look: hold a mouse button and move the mouse");

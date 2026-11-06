@@ -129,6 +129,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // swap of the centre never hides them; in full screen they move onto the viewport.
     private final StackPane toastLayer = new StackPane();
     private boolean helpToastShown, streamFailedToast, stallToast;
+    // Typed render and texture health for the status chips (never parsed from the status text).
+    private WorldStatusIcons.Render renderHealth = WorldStatusIcons.Render.GPU;
+    private WorldStatusIcons.Texture textureHealth = WorldStatusIcons.Texture.READY;
     // Where viewport screenshots go: the data directory's screenshots folder; null without one.
     private java.nio.file.Path screenshots;
     // Opens a folder in the desktop's file manager; tests replace it.
@@ -694,6 +697,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         gpu = gpuService == null ? null : new TerrainGpuPreview(gpuService, Platform::runLater,
                 update -> {
                     show(gpuActivity, update.busy());
+                    // The legacy preview: ready is fine; settled but not ready is a failure.
+                    if (!update.busy()) renderHealth = update.ready() ? WorldStatusIcons.Render.GPU
+                            : WorldStatusIcons.Render.FAILED;
                     gpuStatus.setText(update.message());
                     retryGpu.setDisable(update.busy() || update.ready());
                     acceptedGpuStatus(update);
@@ -843,6 +849,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (gpu != null && !gpuEnabled.isSelected()) {
                 gpu.hide();
                 show(gpuActivity, false);
+                renderHealth = WorldStatusIcons.Render.SOFTWARE;
                 gpuStatus.setText("Software terrain");
             } else if (gpu != null) {
                 gpu.retry();
@@ -2513,11 +2520,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
         geometryPreparationWaiting = loadedRevision != publishedLoadedRevision;
         texturePendingFrame = gpuScene != null;
         show(textureActivity, texturePendingFrame);
+        if (!texturePendingFrame) textureHealth = WorldStatusIcons.Texture.FALLBACK;
         textureStatus.setText(texturePendingFrame ? "Presenting prepared terrain…"
                 : "Terrain texture loading unavailable");
         retryTextures.setDisable(true);
         if (gpuScene == null && gpu != null) {
             retireGpu();
+            renderHealth = WorldStatusIcons.Render.SOFTWARE;
             gpuStatus.setText("Software terrain · no loaded nearby tiles");
         }
         if (prepared.camera() != null) {
@@ -2629,6 +2638,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (textureSnapshot != null) textureSnapshot.close();
         textureSnapshot = null;
         show(textureActivity, false);
+        textureHealth = WorldStatusIcons.Texture.READY;
         textureStatus.setText("Terrain textures not loaded");
         retryTextures.setDisable(true);
     }
@@ -2759,6 +2769,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (prepared == null && currentMaterialsReady) {
             // A retry failure does not discard an already qualified current appearance.
             show(textureActivity, texturePendingFrame);
+            if (result.issue() != null) textureHealth = WorldStatusIcons.Texture.FAILED;
             textureStatus.setText(result.issue());
             retryTextures.setDisable(texturePendingFrame);
             if (result.issue() != null) toasts.show(result.issue(), "Retry", retryTextures::fire);
@@ -2800,6 +2811,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         texturePendingFrame = false;
         show(textureActivity, false);
         retryTextures.setDisable(gpuScene == null);
+        textureHealth = textures == null ? (currentMaterialIssue == null ? WorldStatusIcons.Texture.READY
+                        : WorldStatusIcons.Texture.FALLBACK)
+                : textures.coveredRects() == 0 ? WorldStatusIcons.Texture.FALLBACK : WorldStatusIcons.Texture.READY;
         textureStatus.setText(textures == null
                 ? (currentMaterialIssue == null ? "Height shading" : currentMaterialIssue)
                 : textures.coveredRects() == 0
@@ -2812,6 +2826,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         texturePendingFrame = false;
         show(textureActivity, false);
         retryTextures.setDisable(gpuScene == null);
+        textureHealth = textureSnapshot == null && currentMaterialIssue != null
+                ? WorldStatusIcons.Texture.FALLBACK : WorldStatusIcons.Texture.READY;
         textureStatus.setText(textureSnapshot == null
                 ? (currentMaterialIssue == null ? "Height shading" : currentMaterialIssue)
                 : "Basic terrain textures · " + textureSnapshot.coveredChunks() + "/"
@@ -2845,9 +2861,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         icons.time(slot == WorldAudioDirector.Slot.DAY ? WorldStatusIcons.Time.DAY
                 : slot == WorldAudioDirector.Slot.NIGHT ? WorldStatusIcons.Time.NIGHT : WorldStatusIcons.Time.CLOCK,
                 (slot == null ? WorldAudioDirector.Slot.CLOCK : slot) + "; click for the next day/night slot");
-        icons.render(WorldStatusIcons.render(gpuActivity.isVisible(), gpuEnabled.isSelected(), gpuStatus.getText()),
+        icons.render(WorldStatusIcons.render(gpuActivity.isVisible(), gpuEnabled.isSelected(), renderHealth),
                 gpuStatus.getText());
-        icons.texture(WorldStatusIcons.texture(textureActivity.isVisible(), textureStatus.getText()),
+        icons.texture(WorldStatusIcons.texture(textureActivity.isVisible(), textureHealth),
                 textureStatus.getText());
         boolean capture = lookStatus.getText() != null && !lookStatus.getText().isBlank();
         icons.mouse(capture, capture ? lookStatus.getText() : "Mouse look: hold a mouse button and move the mouse");
@@ -2934,6 +2950,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 WorldDiagnostics.warn("GPU terrain request failed; using software rendering", invalid);
                 gpu.hide();
                 show(gpuActivity, false);
+                renderHealth = WorldStatusIcons.Render.SOFTWARE;
                 gpuStatus.setText("GPU terrain unavailable; using software rendering.");
             }
         }
@@ -3042,6 +3059,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         WorldDiagnostics.warn("World resources could not be confirmed retired", failure);
         show(gpuActivity, false);
         show(firstFrameActivity, false);
+        renderHealth = WorldStatusIcons.Render.FAILED;
         gpuStatus.setText("World resources could not be confirmed retired ("
                 + WorldDiagnostics.brief(failure) + "); reload the workspace.");
         toasts.show(gpuStatus.getText());
@@ -3081,6 +3099,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         show(textureActivity, busy);
         show(firstFrameActivity, busy && image.getImage() == null);
         streamStatus(snapshot);
+        // Streamed textures ride with the stream: only a failed stream is a texture failure.
+        textureHealth = snapshot.phase() == WorldStreamSourceController.Phase.FAILED
+                ? WorldStatusIcons.Texture.FAILED : WorldStatusIcons.Texture.READY;
         textureStatus.setText(snapshot.detail());
         retryTextures.setDisable(true);
         if (snapshot.area() != null) {
@@ -3116,6 +3137,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             show(firstFrameActivity, false);
             show(textureActivity, false);
             show(gpuActivity, false);
+            renderHealth = WorldStatusIcons.Render.FAILED;
             gpuStatus.setText("GPU World frame upload failed; retry the viewer.");
             retryGpu.setDisable(false);
             toasts.show(gpuStatus.getText(), "Retry", retryGpu::fire);
@@ -3208,6 +3230,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             default -> true;
         };
         boolean hint = stallWatchdog.alerted() && stallPhase(snapshot.phase());
+        renderHealth = WorldStatusIcons.streamHealth(snapshot.phase(), hint, snapshot.prepared(), snapshot.desired());
         gpuStatus.setText(hint ? STALL_HINT : snapshot.detail());
         retryGpu.setDisable(busy && !hint);
         // One toast per failure or stall episode, not per snapshot.
@@ -3216,6 +3239,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (hint && !stallToast) toasts.show(STALL_HINT, "Retry", retryGpu::fire);
         streamFailedToast = failed;
         stallToast = hint;
+        // The health can change while the text stays the same (for example the tile counts).
+        refreshIcons();
     }
 
     private void streamNeighborhood() {
@@ -3284,6 +3309,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (!textureSourceBusy) {
                 texturePendingFrame = false;
                 show(textureActivity, false);
+                textureHealth = WorldStatusIcons.Texture.FAILED;
                 textureStatus.setText("Terrain texture frame unavailable · previous preview retained");
                 retryTextures.setDisable(gpuScene == null);
             }
