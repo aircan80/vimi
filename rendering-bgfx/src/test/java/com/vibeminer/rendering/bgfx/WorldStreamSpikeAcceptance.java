@@ -65,6 +65,12 @@ public final class WorldStreamSpikeAcceptance {
         return result.flip();
     }
 
+    // Analytic sample window: .47 focal lengths around the center, inside the authored walls
+    // whatever the shared field of view (96 px each way at the original 64 degrees).
+    private static final double FOCAL = TerrainCamera.focalPixels(256);
+    private static final int WINDOW_LOW = (int) Math.ceil(128 - .47 * FOCAL),
+            WINDOW_HIGH = (int) Math.floor(128 + .47 * FOCAL);
+
     private static WorldStreamSpike.Resident upload(
             WorldStreamSpike.Harness gpu,
             int slot,
@@ -132,10 +138,10 @@ public final class WorldStreamSpikeAcceptance {
                         new TerrainCamera(
                                 origin + offset, origin + offset, origin + offset, .08, -.04);
                 var pixels = render(gpu, camera);
-                for (int y = 32; y <= 224; y++) {
-                    for (int x = 32; x <= 224; x++) {
+                for (int y = WINDOW_LOW; y <= WINDOW_HIGH; y++) {
+                    for (int x = WINDOW_LOW; x <= WINDOW_HIGH; x++) {
                         // Ray in world coordinates: forward + right*screenX + up*screenY.
-                        double right = (x + .5 - 128) / 204.8, up = (128 - y - .5) / 204.8;
+                        double right = (x + .5 - 128) / FOCAL, up = (128 - y - .5) / FOCAL;
                         double cy = Math.cos(.08),
                                 sy = Math.sin(.08),
                                 cp = Math.cos(-.04),
@@ -194,9 +200,9 @@ public final class WorldStreamSpikeAcceptance {
                         new TerrainCamera(
                                 origin + offset, origin - offset, origin + offset, .08, -.04);
                 var pixels = render(gpu, camera);
-                for (int y = 32; y <= 224; y++) {
-                    for (int x = 32; x <= 224; x++) {
-                        double right = (x + .5 - 128) / 204.8, up = (128 - y - .5) / 204.8;
+                for (int y = WINDOW_LOW; y <= WINDOW_HIGH; y++) {
+                    for (int x = WINDOW_LOW; x <= WINDOW_HIGH; x++) {
+                        double right = (x + .5 - 128) / FOCAL, up = (128 - y - .5) / FOCAL;
                         double cy = Math.cos(.08),
                                 sy = Math.sin(.08),
                                 cp = Math.cos(-.04),

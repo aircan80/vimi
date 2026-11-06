@@ -88,7 +88,8 @@ public final class WorldWmoNativeProof {
                         image[128 * SIDE + 128] == base[128 * SIDE + 128],
                         "Terrain foreground depth was cleared/overwritten");
                 rgb(
-                        image[160 * SIDE + 180],
+                        // 52 px right and 32 px down at the original 204.8 px focal length.
+                        image[at(.156) * SIDE + at(.254)],
                         223,
                         0,
                         0,
@@ -275,6 +276,11 @@ public final class WorldWmoNativeProof {
                 Short.toUnsignedInt(s.numUniforms()),
                 Short.toUnsignedInt(s.numPrograms()),
                 Short.toUnsignedInt(s.numShaders()));
+    }
+
+    /** Pixel {@code offset} focal lengths from the frame center (the authored rays). */
+    private static int at(double offset) {
+        return (int) Math.round(SIDE * .5 + offset * TerrainCamera.focalPixels(SIDE));
     }
 
     private static void rgb(int pixel, int r, int g, int b, int tolerance, String reason) {

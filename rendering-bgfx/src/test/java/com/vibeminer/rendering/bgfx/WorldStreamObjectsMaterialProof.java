@@ -16,12 +16,12 @@ import java.util.concurrent.atomic.AtomicReference;
  * tile, then late objects with three camera-facing quads side by side, a cutout quad whose texels
  * are all transparent (discarded: terrain stays), an opaque quad (exact texel colour at full light)
  * and an alpha-blended quad (source-alpha over the terrain pixel). The tile is filled to the
- * placement cap behind the camera, so each frame draws the maximum per-tile placements in both
- * passes. Authored data only.
+ * placement cap behind the camera, so each frame tests the maximum per-tile placements in both
+ * passes and the CPU cull skips all but the first. Authored data only.
  */
 public final class WorldStreamObjectsMaterialProof {
     private static final int WIDTH = 800, HEIGHT = 500;
-    private static final TerrainCamera VIEW = new TerrainCamera(-20, -2, 20, 0, -.5);
+    static final TerrainCamera VIEW = new TerrainCamera(-20, -2, 20, 0, -.5);
 
     @SuppressWarnings("try")
     public static void main(String[] arguments) throws Exception {
@@ -69,9 +69,12 @@ public final class WorldStreamObjectsMaterialProof {
             session.camera(new WorldStreamTransport.Camera(2, 2, WIDTH, HEIGHT, VIEW));
             var after = frame(session, committed.contentRevision(), 2);
             int row = HEIGHT / 2;
-            int left = pixel(after, 144, row), baseLeft = pixel(before, 144, row);
-            int middle = pixel(after, 400, row);
-            int right = pixel(after, 656, row), baseRight = pixel(before, 656, row);
+            // Quad centers (right = -2, 0, 2 at depth 5) and the gap between the cutout and
+            // opaque quads (right = -.95) as rays, so they stay put at any field of view.
+            int cutoutX = at(-.4), opaqueX = WIDTH / 2, blendedX = at(.4);
+            int left = pixel(after, cutoutX, row), baseLeft = pixel(before, cutoutX, row);
+            int middle = pixel(after, opaqueX, row);
+            int right = pixel(after, blendedX, row), baseRight = pixel(before, blendedX, row);
             // Cutout: every texel is below the reference, so the terrain pixel is untouched.
             for (int shift : new int[] {0, 8, 16}) {
                 near(channel(left, shift), channel(baseLeft, shift), 1, "cutout discards");
@@ -94,14 +97,14 @@ public final class WorldStreamObjectsMaterialProof {
                     (int) Math.round(channel(baseRight, r) * (1 - a)),
                     3,
                     "blended red");
-            if ((after.pixels().get(row * WIDTH + 656) >>> 24) != 255) {
+            if ((after.pixels().get(row * WIDTH + blendedX) >>> 24) != 255) {
                 throw new AssertionError("Blending must keep the opaque output alpha");
             }
             // CPU picking of the same uploaded tables agrees with these pixels: the transparent
             // cutout and the gap between quads (inside the model's bounds) pick nothing, and the
             // gap pixel is the terrain pixel; the opaque and blended quads pick their ranges.
             var picks = objects.pickTile();
-            int gap = 278;
+            int gap = at(-.19);
             for (int shift : new int[] {0, 8, 16}) {
                 near(
                         channel(pixel(after, gap, row), shift),
@@ -109,11 +112,11 @@ public final class WorldStreamObjectsMaterialProof {
                         1,
                         "gap between quads draws terrain");
             }
-            if (pickAt(picks, 144, row).isPresent() || pickAt(picks, gap, row).isPresent()) {
+            if (pickAt(picks, cutoutX, row).isPresent() || pickAt(picks, gap, row).isPresent()) {
                 throw new AssertionError("A discarded or undrawn pixel must not pick an object");
             }
-            var opaque = pickAt(picks, 400, row).orElseThrow();
-            var blended = pickAt(picks, 656, row).orElseThrow();
+            var opaque = pickAt(picks, opaqueX, row).orElseThrow();
+            var blended = pickAt(picks, blendedX, row).orElseThrow();
             if (opaque.placement() != 0
                     || opaque.range() != 1
                     || opaque.material() != WorldStreamObjectsFile.OPAQUE
@@ -191,7 +194,8 @@ public final class WorldStreamObjectsMaterialProof {
         builder.placement(
                 0, VIEW.x(), VIEW.y(), VIEW.z(), 1, new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1});
         // Fill the tile to the placement cap behind the camera (looking along +x), so every frame
-        // draws all of them in the opaque/cutout pass and again in the sorted blended pass.
+        // tests all of them in the opaque/cutout pass and again in the sorted blended pass; the
+        // CPU cull skips them (WorldStreamObjectsCullProof compares it with culling off).
         while (builder.placementRoom() > 0) {
             int i = builder.placementCount();
             builder.placement(
@@ -207,11 +211,11 @@ public final class WorldStreamObjectsMaterialProof {
 
     /**
      * Picks through the center of frame pixel (x, y) with the explorer's projection: eye right/up
-     * over a focal length of 0.8 frame widths, inverted through {@link TerrainCamera#eye}.
+     * over {@link TerrainCamera#focalPixels}, inverted through {@link TerrainCamera#eye}.
      */
     static java.util.Optional<com.vibeminer.rendering.world.WorldObjectPicking.Hit> pickAt(
             com.vibeminer.rendering.world.WorldObjectPicking.Tile tile, int x, int y) {
-        double focal = WIDTH * .8;
+        double focal = TerrainCamera.focalPixels(WIDTH);
         double right = (x + .5 - WIDTH * .5) / focal, up = (HEIGHT * .5 - (y + .5)) / focal;
         double cy = Math.cos(VIEW.yaw()), sy = Math.sin(VIEW.yaw());
         double cp = Math.cos(VIEW.pitch()), sp = Math.sin(VIEW.pitch());
@@ -226,6 +230,11 @@ public final class WorldStreamObjectsMaterialProof {
             pixels.put((byte) r).put((byte) g).put((byte) b).put((byte) a);
         }
         return pixels.flip();
+    }
+
+    /** Frame column {@code offset} focal lengths from the center. */
+    private static int at(double offset) {
+        return (int) Math.round(WIDTH * .5 + offset * TerrainCamera.focalPixels(WIDTH));
     }
 
     private static int pixel(WorldStreamTransport.Frame frame, int x, int y) {
