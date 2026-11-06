@@ -162,7 +162,9 @@ public final class WorldHudKeysUiTest {
         require(audio.slot() == WorldAudioDirector.Slot.NIGHT, "T: night");
         press(KeyCode.T);
         require(audio.slot() == WorldAudioDirector.Slot.CLOCK, "T: back to the clock");
-        var speed = (javafx.scene.control.ChoiceBox<?>) view.lookup("#world-flight-speed");
+        // The speed preset control left the scene with the slim bar (its status icon replaces it);
+        // the view's control is still the model.
+        var speed = (javafx.scene.control.ChoiceBox<?>) get("flightSpeed");
         var codes = List.of(KeyCode.DIGIT1, KeyCode.DIGIT2, KeyCode.DIGIT3, KeyCode.DIGIT4, KeyCode.DIGIT5);
         for (int i = 0; i < codes.size(); i++) {
             press(codes.get(i));
