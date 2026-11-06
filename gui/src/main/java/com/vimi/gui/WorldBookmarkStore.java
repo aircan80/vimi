@@ -65,6 +65,11 @@ final class WorldBookmarkStore implements AutoCloseable {
         return database != null;
     }
 
+    /** The library folder holding the database, or null for session-only bookmarks. */
+    Path directory() {
+        return database == null ? null : database.toAbsolutePath().getParent();
+    }
+
     CompletableFuture<Snapshot> load() {
         return submit(this::read);
     }

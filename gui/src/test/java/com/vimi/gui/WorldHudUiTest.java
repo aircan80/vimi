@@ -29,6 +29,8 @@ public final class WorldHudUiTest {
                 coordinatesPillCopiesAndStopsInput();
                 statusIconStates();
                 audioSilenceFollowsPlaybackStatus();
+                toastsTimeStackAndAct();
+                screenshotIsAPngOfTheFrame();
                 DONE.complete(null);
             } catch (Throwable error) {
                 DONE.completeExceptionally(error);
@@ -40,7 +42,80 @@ public final class WorldHudUiTest {
             Platform.exit();
         }
         System.out.println("World HUD UI: zone line, banner 400 ms in / 1.5 s hold / fade out, leave chip,"
-                + " coordinates pill copy, every status icon state, click and input isolation, audio silence passed");
+                + " coordinates pill copy, every status icon state, click and input isolation, audio silence,"
+                + " toasts (4 s, 3 stacked, actions) and PNG screenshots passed");
+    }
+
+    /** Toasts: 4 s each, at most 3 (the oldest leaves first), one optional action, no duplicates. */
+    private static void toastsTimeStackAndAct() {
+        var focus = new ArrayList<String>();
+        var toasts = new WorldToasts(() -> focus.add("focus"));
+        var column = toasts.node();
+        require(WorldToasts.LIFETIME.equals(Duration.seconds(4)) && WorldToasts.LIMIT == 3, "4 s, 3 at most");
+        var first = toasts.show("Bookmark saved: Goldshire");
+        require(first.timer.getDuration().equals(Duration.seconds(4)) && first.timer.getStatus() == Animation.Status.RUNNING
+                        && column.getChildren().equals(List.of(first.node)),
+                "A toast shows and its 4 s timer runs");
+        first.timer.getOnFinished().handle(null);
+        require(toasts.shown().isEmpty() && column.getChildren().isEmpty(), "Its time up, it leaves");
+        var a = toasts.show("one");
+        var b = toasts.show("two");
+        var c = toasts.show("three");
+        var d = toasts.show("four");
+        require(toasts.shown().equals(List.of(b, c, d)) && column.getChildren().equals(List.of(b.node, c.node, d.node))
+                        && a.timer.getStatus() == Animation.Status.STOPPED,
+                "A fourth pushes the oldest out");
+        require(toasts.show("three") == c && toasts.shown().size() == 3, "The same notice again restarts, it does not stack");
+        toasts.clear();
+        var ran = new ArrayList<String>();
+        var retry = toasts.show("GPU World frame upload failed; retry the viewer.", "Retry", () -> ran.add("retry"));
+        var button = (javafx.scene.control.Button) retry.node.getChildren().get(1);
+        require(button.getText().equals("Retry") && !button.isFocusTraversable(), "The action button, never focused");
+        button.fire();
+        require(ran.equals(List.of("retry")) && focus.equals(List.of("focus")) && toasts.shown().isEmpty(),
+                "The action runs, the toast leaves and focus goes back to the world");
+        try {
+            toasts.show("x", "Retry", null);
+            throw new AssertionError("An action label needs an action");
+        } catch (IllegalArgumentException expected) {
+            // both or neither
+        }
+        var bubbled = new ArrayList<String>();
+        var parent = new StackPane(column);
+        parent.addEventHandler(MouseEvent.ANY, e -> bubbled.add("mouse"));
+        var plain = toasts.show("plain");
+        click(plain.node);
+        require(bubbled.isEmpty() && !column.isFocusTraversable(), "Clicks on a toast never reach the world");
+        toasts.clear();
+    }
+
+    /** F12's encoder: a valid PNG of the frame's own pixels, saved under the library's screenshots folder. */
+    private static void screenshotIsAPngOfTheFrame() {
+        var frame = new javafx.scene.image.WritableImage(3, 2);
+        int[] colours = {0xFFFF0000, 0xFF00FF00, 0xFF0000FF, 0x80FFFFFF, 0xFF000000, 0xFF123456};
+        for (int i = 0; i < colours.length; i++) frame.getPixelWriter().setArgb(i % 3, i / 3, colours[i]);
+        var pixels = WorldScreenshot.read(frame);
+        var bytes = WorldScreenshot.png(pixels);
+        require(bytes[1] == 'P' && bytes[2] == 'N' && bytes[3] == 'G', "PNG signature");
+        var decoded = new javafx.scene.image.Image(new java.io.ByteArrayInputStream(bytes));
+        require(!decoded.isError() && decoded.getWidth() == 3 && decoded.getHeight() == 2, "JavaFX reads it back: " + decoded.getException());
+        for (int i = 0; i < colours.length; i++)
+            require(decoded.getPixelReader().getArgb(i % 3, i / 3) == colours[i],
+                    "Pixel " + i + ": " + Integer.toHexString(decoded.getPixelReader().getArgb(i % 3, i / 3)));
+        try {
+            var library = java.nio.file.Files.createTempDirectory("world-screenshot-test");
+            var when = java.time.LocalDateTime.of(2026, 11, 6, 15, 4, 5);
+            var file = WorldScreenshot.save(pixels, library, "Eastern Kingdoms · Map #0", when);
+            require(file.getParent().equals(library.resolve("screenshots"))
+                            && file.getFileName().toString().equals("world_Eastern-Kingdoms-Map-0_2026-11-06_15-04-05.png"),
+                    "Named by map and time in the library's screenshots folder: " + file);
+            var again = WorldScreenshot.save(pixels, library, "Eastern Kingdoms · Map #0", when);
+            require(!again.equals(file) && again.getFileName().toString().endsWith("_2.png"), "Never overwrites: " + again);
+            require(java.util.Arrays.equals(java.nio.file.Files.readAllBytes(file), bytes), "The file is the PNG");
+            for (var each : List.of(again, file, file.getParent(), library)) java.nio.file.Files.delete(each);
+        } catch (java.io.IOException failure) {
+            throw new java.io.UncheckedIOException(failure);
+        }
     }
 
     /** Every icon state from #507's table: the icon's look, its tooltip, its click and its input rules. */

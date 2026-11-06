@@ -40,7 +40,9 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         LOOK_DOWN("Look down"),
         SPRINT("Faster (hold; with the wheel: speed)"),
         WALK("Walk on terrain (toggle)"),
-        MAP_PANEL("Map panel (toggle)", true);
+        MAP_PANEL("Map panel (toggle)", true),
+        HIDE_HUD("Hide or show the HUD (toggle)", true),
+        SCREENSHOT("Screenshot of the view", true);
 
         final String label;
         /**
@@ -130,6 +132,8 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
             keys.put(KeyCode.F, Action.WALK);
             // M is a letter on both layouts, so the key labelled M opens the map on either.
             keys.put(KeyCode.M, Action.MAP_PANEL);
+            keys.put(KeyCode.H, Action.HIDE_HUD);
+            keys.put(KeyCode.F12, Action.SCREENSHOT);
             return keys;
         }
     }

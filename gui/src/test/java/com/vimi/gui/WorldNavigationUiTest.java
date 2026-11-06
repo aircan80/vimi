@@ -230,7 +230,10 @@ public final class WorldNavigationUiTest {
                 require(((javafx.scene.control.Label)get(view,"currentArea")).getText().equals("Terrain area unavailable"),"Retired source cannot retain current-area name");
                 require(fixture.minimapCalls.get()==before,"Retired source cannot request artwork after resize");
                 showInventoryEndsFullscreen(view);
-                await(fixture,RACE_CHECKED::get,() -> DONE.complete(null));
+                await(fixture,() -> RACE_CHECKED.get() && get(view,"lastScreenshot")!=null,() -> {
+                    screenshotWritten(view);
+                    DONE.complete(null);
+                });
             });
     }
 
@@ -491,6 +494,7 @@ public final class WorldNavigationUiTest {
             } catch (ReflectiveOperationException error) { throw new AssertionError(error); }
         }
         gameMenu(view,viewport);
+        hideHudKeyAndScreenshot(view,viewport);
         // M toggles the map panel; the map list moves into it and back out.
         var panel=view.lookup("#world-map-panel");
         require(panel!=null && !panel.isVisible(),"Map panel starts closed");
@@ -702,6 +706,68 @@ public final class WorldNavigationUiTest {
         key(viewport,KeyCode.W,true);
         require(input(view).keysHeld(),"WASD works after the menu closes");
         key(viewport,KeyCode.W,false);
+    }
+
+    /** HUD step 6: H hides the HUD like Alt+Z (toasts stay); F12 saves the frame, never the HUD. */
+    private static void hideHudKeyAndScreenshot(WorldView view, Node viewport) {
+        var hud=(WorldHud)get(view,"hud");
+        var toasts=(WorldToasts)get(view,"toasts");
+        var notice=toasts.show("A notice");
+        for (int i=0;i<5;i++) key(viewport,KeyCode.H,true);
+        require(hud.hidden() && !hud.isVisible() && notice.node.isVisible() && toasts.node().isVisible()
+                        && toasts.node().getParent()==viewport,
+                "H hides the HUD once however long it is held; notices stay (they are not in the HUD)");
+        require(input(view).axes().equals(com.vibeminer.rendering.world.ExplorerMotion.Input.NONE),
+                "H is not movement");
+        key(viewport,KeyCode.H,false);
+        key(viewport,KeyCode.H,true);
+        key(viewport,KeyCode.H,false);
+        require(!hud.hidden() && hud.isVisible(),"H again shows it");
+        toasts.clear();
+        require((boolean)get(view,"keyHelpShown"),"The first explorer of the session showed the key help notice");
+        var textureLine=(javafx.scene.control.Label)get(view,"textureStatus");
+        var retry=(Button)get(view,"retryTextures");
+        String statusBefore=textureLine.getText();
+        boolean retryBefore=retry.isDisabled();
+        retry.setDisable(false);
+        textureLine.setText("Terrain texture loading unavailable");
+        require(toasts.shown().stream().anyMatch(t -> t.text.equals(textureLine.getText()) && t.node.getChildren().size()==2),
+                "A texture failure shows a notice with Retry (no GPU here, so the render chip is software): "+toasts.shown().stream().map(t -> t.text).toList());
+        textureLine.setText(statusBefore);
+        retry.setDisable(retryBefore);
+        toasts.clear();
+        // F12 with a library folder: the frame is written off the FX thread; checked at the end.
+        try {
+            var folder=java.nio.file.Files.createTempDirectory("world-nav-screenshot");
+            set(view,"screenshotFolder",folder);
+        } catch (java.io.IOException error) { throw new java.io.UncheckedIOException(error); }
+        require(((javafx.scene.image.ImageView)get(view,"image")).getImage()!=null,"A frame is presented");
+        key(viewport,KeyCode.F12,true);
+        key(viewport,KeyCode.F12,false);
+        require(!input(view).keysHeld(),"F12 is not a held key once released");
+    }
+
+    /** The F12 file is a PNG of the presented frame, and a notice names it. */
+    private static void screenshotWritten(WorldView view) {
+        var file=(java.nio.file.Path)get(view,"lastScreenshot");
+        var frame=((javafx.scene.image.ImageView)get(view,"image")).getImage();
+        try {
+            var saved=new javafx.scene.image.Image(file.toUri().toString());
+            require(file.getParent().getFileName().toString().equals("screenshots") && !saved.isError()
+                            && saved.getWidth()>0 && saved.getHeight()>0,
+                    "F12 wrote a PNG into the library's screenshots folder: "+file);
+            require(frame==null || saved.getWidth()==frame.getWidth() && saved.getHeight()==frame.getHeight(),
+                    "The screenshot is the frame's size (the view only, no HUD): "+saved.getWidth()+"x"+saved.getHeight());
+            var toasts=(WorldToasts)get(view,"toasts");
+            require(toasts.shown().stream().anyMatch(t -> t.text.equals("Screenshot saved: screenshots/"+file.getFileName())),
+                    "A notice names the file");
+            var folder=file.getParent().getParent();
+            try (var files=java.nio.file.Files.list(file.getParent())) {
+                for (var each : files.toList()) java.nio.file.Files.delete(each);
+            }
+            java.nio.file.Files.delete(file.getParent());
+            java.nio.file.Files.delete(folder);
+        } catch (java.io.IOException error) { throw new java.io.UncheckedIOException(error); }
     }
 
     private static boolean isWithin(Node node, Node ancestor) {

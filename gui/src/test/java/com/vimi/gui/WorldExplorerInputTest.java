@@ -119,8 +119,24 @@ public final class WorldExplorerInputTest {
             require(host.commands.size() == 2, layout + ": movement and walk keys are not commands");
         }
         for (var action : WorldControls.Action.values())
-            require(action.command == (action == WorldControls.Action.MAP_PANEL),
-                    "Only HUD toggles are commands: " + action);
+            require(action.command == java.util.EnumSet.of(WorldControls.Action.MAP_PANEL,
+                            WorldControls.Action.HIDE_HUD, WorldControls.Action.SCREENSHOT).contains(action),
+                    "Exactly the HUD commands are commands: " + action);
+        for (var layout : WorldControls.Layout.values()) {
+            var keys = layout.keys();
+            require(keys.get(KeyCode.H) == WorldControls.Action.HIDE_HUD && keys.get(KeyCode.F12) == WorldControls.Action.SCREENSHOT,
+                    layout + ": H hides the HUD and F12 takes a screenshot");
+            var host = new Host();
+            var input = exact(host);
+            input.controls(WorldControls.DEFAULTS.withKeys(keys));
+            for (var code : List.of(KeyCode.H, KeyCode.F12)) {
+                for (int i = 0; i < 5; i++) input.keyPressed(code);
+                input.keyReleased(code);
+            }
+            require(host.commands.equals(List.of(WorldControls.Action.HIDE_HUD, WorldControls.Action.SCREENSHOT))
+                            && input.axes().equals(ExplorerMotion.Input.NONE),
+                    layout + ": H and F12 fire once per press and never move: " + host.commands);
+        }
         var host = new Host();
         var input = exact(host);
         input.controls(WorldControls.DEFAULTS.bind(KeyCode.G, WorldControls.Action.MAP_PANEL));

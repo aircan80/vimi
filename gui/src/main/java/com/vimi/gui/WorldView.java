@@ -108,6 +108,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
             WorldControls.Layout.AZERTY.label);
     private final CheckBox showCoordinates = new CheckBox("Show coordinates");
     private boolean escapeKeyHeld;
+    // HUD step 6: notices, the F12 screenshot folder (the library's; null without one).
+    private final WorldToasts toasts = new WorldToasts(viewport::requestFocus);
+    private java.nio.file.Path screenshotFolder;
+    private boolean keyHelpShown;
+    private WorldStatusIcons.Render noticedRender = WorldStatusIcons.Render.GPU;
+    private WorldStatusIcons.Texture noticedTexture = WorldStatusIcons.Texture.READY;
     private final WorldFullscreen fullscreen = new WorldFullscreen(viewport, node -> {
         // During an instance switch the switch owns the layout: never put the world back over it.
         if (this.explorer && !this.instances.engaged()) content.setCenter(node);
@@ -199,6 +205,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
         @Override public void captureUnavailable() {
             lookStatus.setText("Mouse look: cursor capture unavailable; looking stays relative");
+            toasts.show(lookStatus.getText());
         }
         @Override public void captureFallback(String reason) {
             if (captureFallbackLogged) return;
@@ -638,6 +645,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
      */
     void bookmarks(WorldBookmarkStore store) {
         travel.store(store);
+        screenshotFolder = store == null ? null : store.directory();
         if (store == null) return;
         controls(WorldControls.Store.of(store));
     }
@@ -1294,6 +1302,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 map.directory() == null ? "" : map.directory(), map.name() == null ? "" : map.name(),
                 tx, ty, camera.x(), camera.y(), camera.z(), yaw, camera.pitch(), buildLabel));
         status.setText("Saved bookmark " + name + " · see Bookmarks & travel on the map page");
+        toasts.show("Bookmark saved: " + name);
         viewport.requestFocus();
     }
 
@@ -1936,6 +1945,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void openExplorer() {
         if (stale(selection) || inventory == null || instances.engaged()) return;
+        // First explorer of this session: the key help, once, as a notice.
+        if (!keyHelpShown) {
+            keyHelpShown = true;
+            toasts.show(input.controls().help());
+        }
         if (globalOnly(inventory)) {
             enterGlobal(inventory.map(), false);
             return;
@@ -2032,6 +2046,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void menuSetup() {
+        // Notices sit outside the HUD (hiding the HUD keeps them), above the icon row.
+        viewport.getChildren().add(toasts.node());
+        StackPane.setAlignment(toasts.node(), Pos.BOTTOM_CENTER);
+        StackPane.setMargin(toasts.node(), new Insets(0, 0, 56, 0));
         viewport.getChildren().add(menu);
         menu.leaveEntry().visibleProperty().bind(leaveInstance.visibleProperty()
                 .and(leaveInstance.textProperty().isEqualTo("Leave instance")));
@@ -2151,10 +2169,75 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void command(WorldControls.Action action) {
         switch (action) {
             case MAP_PANEL -> toggleMapPanel();
+            case HIDE_HUD -> panels(!panelsHidden);
+            case SCREENSHOT -> screenshot();
             default -> WorldDiagnostics.warn("World command key", new IllegalStateException(
                     "No route for command action " + action));
         }
     }
+
+    /** A GPU or texture failure, once per failure: a notice with Retry when retrying is offered. */
+    private void failureNotices() {
+        var render = icons.render();
+        if (render == WorldStatusIcons.Render.FAILED && noticedRender != render)
+            notice(gpuStatus.getText(), retryGpu);
+        noticedRender = render;
+        var texture = icons.texture();
+        if (texture == WorldStatusIcons.Texture.FAILED && noticedTexture != texture)
+            notice(textureStatus.getText(), retryTextures);
+        noticedTexture = texture;
+    }
+
+    private void notice(String text, Button retry) {
+        if (text == null || text.isBlank() || !explorer) return;
+        if (retry.isDisabled()) toasts.show(text);
+        else toasts.show(text, "Retry", retry::fire);
+    }
+
+    /**
+     * F12: the presented frame (never the HUD over it) as a PNG in the library's screenshots
+     * folder. Pixels are copied here; encoding and writing run off the FX thread.
+     */
+    private void screenshot() {
+        var frame = image.getImage();
+        var folder = screenshotFolder;
+        if (frame == null) {
+            toasts.show("No frame to save yet");
+            return;
+        }
+        if (folder == null) {
+            toasts.show("Screenshots need a library folder; this view has none");
+            return;
+        }
+        WorldScreenshot.Pixels pixels;
+        try {
+            pixels = WorldScreenshot.read(frame);
+        } catch (IllegalArgumentException empty) {
+            toasts.show("No frame to save yet");
+            return;
+        }
+        String map = inventory == null ? "" : inventory.map().toString();
+        var when = java.time.LocalDateTime.now();
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                return WorldScreenshot.save(pixels, folder, map, when);
+            } catch (java.io.IOException failure) {
+                throw new java.io.UncheckedIOException(failure);
+            }
+        }).whenComplete((file, failure) -> Platform.runLater(() -> {
+            if (closed) return;
+            if (failure != null) {
+                WorldDiagnostics.warn("World screenshot", failure);
+                toasts.show("Screenshot not saved: " + failure.getCause().getMessage());
+            } else {
+                lastScreenshot = file;
+                toasts.show("Screenshot saved: screenshots/" + file.getFileName());
+            }
+        }));
+    }
+
+    // The last saved screenshot; for tests.
+    private java.nio.file.Path lastScreenshot;
 
     /** The keys bound to the map panel, for the Map button; null when unbound. */
     private static String mapKey(WorldControls controls) {
@@ -2839,6 +2922,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 gpuStatus.getText());
         icons.texture(WorldStatusIcons.texture(textureActivity.isVisible(), textureStatus.getText()),
                 textureStatus.getText());
+        failureNotices();
         boolean capture = lookStatus.getText() != null && !lookStatus.getText().isBlank();
         icons.mouse(capture, capture ? lookStatus.getText() : "Mouse look: hold a mouse button and move the mouse");
         var layers = new java.util.ArrayList<javafx.scene.paint.Color>();
@@ -3911,6 +3995,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             showExplorerLayout();
             if (spawns != null) spawns.resume();
             status.setText("Back in " + inventory.map() + " · the open world resumes where you entered");
+            toasts.show("Left the instance · back in " + inventory.map());
             input.idle();
             if (!active) return;
             input.idle(); // owed look movement never lands as one jump on restart
