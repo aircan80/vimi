@@ -39,8 +39,12 @@ public final class DisplayModelTypes {
 
     /**
      * A display's model references. {@code creatureGeosetDataId} is 0 when the column is absent and
-     * null when it could not be read; {@code displayGeosets} says whether the display records its
-     * own geoset choices (CreatureDisplayInfoGeosetData rows), null when that is not known.
+     * null when it could not be read. {@code displayGeosets} holds the display's own geoset choices
+     * (CreatureDisplayInfoGeosetData rows) as geoset group to value, where the group is the row's
+     * GeosetIndex + 1 and the chosen section is {@code group * 100 + value} (wowdev
+     * DB/CreatureDisplayInfoGeosetData: meshId = (geosetIndex + 1) * 100 + geosetValue). It is
+     * empty when the display records none, null when that is not known, and a group that two rows
+     * set to different values maps to {@link #CONFLICTING_GEOSET}.
      */
     public record Reference(
             long displayId,
@@ -49,9 +53,13 @@ public final class DisplayModelTypes {
             List<Long> textureVariations,
             Long extendedDisplayInfoId,
             Long creatureGeosetDataId,
-            Boolean displayGeosets) {
+            java.util.Map<Integer, Integer> displayGeosets) {
+        /** A geoset group that two of the display's rows set to different values. */
+        public static final int CONFLICTING_GEOSET = -1;
+
         public Reference {
             textureVariations = List.copyOf(textureVariations);
+            displayGeosets = displayGeosets == null ? null : java.util.Map.copyOf(displayGeosets);
         }
 
         /**

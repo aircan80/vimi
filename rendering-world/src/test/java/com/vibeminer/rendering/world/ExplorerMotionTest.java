@@ -36,7 +36,8 @@ class ExplorerMotionTest {
         assertEquals(ExplorerMotion.Ground.FREE, up.ground());
         var sprint =
                 motion.step(start, new ExplorerMotion.Input(1, 0, 0, 0, 0, true), .1, 80, GROUND);
-        assertEquals(10 + 32, sprint.camera().x(), 1e-9);
+        // Shift doubles flight speed: 160 yd/s for 0.1 s.
+        assertEquals(10 + 16, sprint.camera().x(), 1e-9);
         var clampedDt = motion.step(start, FORWARD, 3, 80, GROUND);
         assertEquals(18, clampedDt.camera().x(), 1e-9);
         var still = motion.step(start, ExplorerMotion.Input.NONE, .1, 80, GROUND);
