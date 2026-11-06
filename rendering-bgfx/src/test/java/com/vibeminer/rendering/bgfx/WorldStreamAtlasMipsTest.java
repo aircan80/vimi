@@ -86,7 +86,7 @@ final class WorldStreamAtlasMipsTest {
         // A step adds at most one atlas step to two geometry chunks: the 256 KiB slice bound.
         assertTrue(
                 2 * BgfxWorldStreamRenderer.GEOMETRY_CHUNK + WorldStreamAtlasMips.STEP_BYTES
-                        <= 262144);
+                        <= BgfxWorldStreamRenderer.STEP_BOUND);
     }
 
     @Test
