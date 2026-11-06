@@ -1200,9 +1200,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             bgfx_set_vertex_buffer(0, template, 0, 3);
             bgfx_set_state(SKY_STATE, 0);
             bgfx_submit(0, skyProgram, 0, BGFX_DISCARD_ALL);
-            // Static diagnostic water after ALL opaque terrain: nearest flat surface wins under
-            // strict reversed depth, so coincident duplicates cannot blend twice. RGB only keeps
-            // the opaque output alpha.
+            // Static diagnostic water after ALL opaque terrain: the nearest surface wins under
+            // strict reversed depth, so coincident duplicates (shared chunk edges, or two source
+            // layers at one height) cannot blend twice. RGB only keeps the opaque output alpha.
             for (var lease : active) {
                 var slot = slots[lease.slot()];
                 if (slot.water == 0) {

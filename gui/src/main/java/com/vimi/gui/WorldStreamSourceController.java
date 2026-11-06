@@ -1186,13 +1186,19 @@ final class WorldStreamSourceController {
     }
 
     private String readyDetail() {
-        int textured = 0, partial = 0, height = 0, watered = 0;
+        int textured = 0, partial = 0, height = 0, watered = 0, waterNoted = 0;
+        String waterIssue = "";
         int buildingTiles = 0, buildingFailures = 0, creatureTiles = 0;
         var objects = WorldStreamSourceBridge.ExteriorSummary.NONE;
         var creatures = WorldTileCreatures.Summary.NONE;
         String reason = "";
         for (var entry : current) {
             if (entry.source().waterCells() > 0) watered++;
+            var issues = entry.source().waterIssues();
+            if (!issues.isEmpty()) {
+                waterNoted++;
+                if (waterIssue.isEmpty()) waterIssue = issues.getFirst();
+            }
             var tileCreatures = entry.source().creatures();
             if (tileCreatures.drawn() > 0) creatureTiles++;
             creatures = creatures.plus(tileCreatures);
@@ -1231,6 +1237,8 @@ final class WorldStreamSourceController {
                 + " height fallback"
                 + (reason.isEmpty() ? "" : "; " + reason)
                 + (watered == 0 ? "" : "; static diagnostic water on " + watered)
+                + (waterNoted == 0 ? "" : "; water source notes on " + plural(waterNoted, "tile")
+                        + " (" + waterIssue + ")")
                 + (buildingTiles == 0 ? "" : objectsDetail(objects, buildingTiles))
                 + (buildingFailures == 0 ? "" : "; building objects failed on " + buildingFailures)
                 + creatureDetail(creatures, creatureTiles)
