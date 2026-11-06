@@ -321,7 +321,9 @@ final class ReadConnectionPoolTest {
 
     private static void waitForNoIdle(ObjectStore target) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        while (target.readConnections.idle() > 0) {
+        // held(), not idle(): an expired connection leaves the idle list before its close
+        // finishes, and until then its handle still blocks a delete on Windows (#458).
+        while (target.readConnections.held() > 0) {
             if (System.nanoTime() > deadline) {
                 throw new AssertionError("Idle connections never expired");
             }

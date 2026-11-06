@@ -51,6 +51,8 @@ final class ReadConnections {
     volatile long idleTtlNanos = DEFAULT_IDLE_TTL_NANOS;
     private long generation;
     private boolean closed, sweeping;
+    // Connections taken out of the pool to be closed whose close has not finished yet.
+    private int closing;
 
     ReadConnections(int capacity) {
         this(capacity, System::nanoTime);
@@ -86,6 +88,7 @@ final class ReadConnections {
                     found = next;
                 }
             }
+            closing += stale.size();
         }
         closeAll(stale);
         return found;
@@ -114,6 +117,7 @@ final class ReadConnections {
                 }
                 return;
             }
+            closing++;
         }
         closeAll(List.of(connection));
     }
@@ -146,12 +150,21 @@ final class ReadConnections {
             } else {
                 sweepLater(next);
             }
+            closing += expired.size();
         }
         closeAll(expired);
     }
 
     synchronized int idle() {
         return idle.size();
+    }
+
+    /**
+     * Connections the pool still holds open: idle ones plus those taken out to be closed whose
+     * close has not finished. Zero means the pool holds no handle on the index files.
+     */
+    synchronized int held() {
+        return idle.size() + closing;
     }
 
     /**
@@ -164,6 +177,7 @@ final class ReadConnections {
             generation++;
             all = new ArrayList<>(idle);
             idle.clear();
+            closing += all.size();
         }
         closeAll(all);
     }
@@ -181,13 +195,17 @@ final class ReadConnections {
      * logged rather than thrown: it must never skip a store's clean-close mark or the closing of
      * its writer connection and lock.
      */
-    private static void closeAll(List<Pooled> connections) {
+    private void closeAll(List<Pooled> connections) {
         for (Pooled pooled : connections) {
             try {
                 pooled.db.close();
             } catch (RuntimeException error) {
                 System.getLogger(ReadConnections.class.getName())
                         .log(System.Logger.Level.WARNING, "Read connection close failed", error);
+            } finally {
+                synchronized (this) {
+                    closing--;
+                }
             }
         }
     }
