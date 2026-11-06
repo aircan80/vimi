@@ -215,6 +215,92 @@ final class AudioStreamDecoderTest {
         }
     }
 
+    private static byte[] ascii(String text) {
+        return text.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    }
+
+    /** Lyrics3 v1: LYRICSBEGIN, lyrics holding sync-like bytes, LYRICSEND; no size field. */
+    private static byte[] lyrics3v1() {
+        return concat(ascii("LYRICSBEGIN"), ascii("la "), SYNC_TEXT, ascii("LYRICSEND"));
+    }
+
+    /**
+     * Lyrics3 v2: LYRICSBEGIN, fields, a six-digit size counting from LYRICSBEGIN to the size, then
+     * LYRICS200. {@code misstated} is added to the recorded size.
+     */
+    private static byte[] lyrics3v2(int misstated) {
+        byte[] body =
+                concat(
+                        ascii("LYRICSBEGIN"),
+                        ascii("IND00002"),
+                        ascii("11"),
+                        ascii("LYR00007"),
+                        ascii("la "),
+                        SYNC_TEXT);
+        return concat(
+                body, ascii(String.format("%06d", body.length + misstated)), ascii("LYRICS200"));
+    }
+
+    /** Enhanced ID3v1: "TAG+" and 223 bytes of text, before the 128-byte ID3v1 block. */
+    private static byte[] enhancedId3v1() {
+        byte[] block = new byte[227];
+        System.arraycopy(ascii("TAG+"), 0, block, 0, 4);
+        System.arraycopy(SYNC_TEXT, 0, block, 4, SYNC_TEXT.length);
+        System.arraycopy(SYNC_TEXT, 0, block, 223, SYNC_TEXT.length);
+        return concat(block, id3v1());
+    }
+
+    /**
+     * Lyrics3 (v1 and v2, before ID3v1 or last) and enhanced ID3v1 trailers can hold sync-like
+     * bytes; they are excluded as far as their recorded sizes allow, and the track plays whole.
+     */
+    @Test
+    void ignoresLyrics3AndEnhancedId3v1Trailers() throws IOException {
+        byte[] audio = fixture("authored-tone.mp3");
+        byte[] expected = decode(audio);
+        var trailers =
+                java.util.Map.of(
+                        "Lyrics3 v1 and ID3v1", concat(lyrics3v1(), id3v1()),
+                        "Lyrics3 v1", lyrics3v1(),
+                        "Lyrics3 v2 and ID3v1", concat(lyrics3v2(0), id3v1()),
+                        "Lyrics3 v2", lyrics3v2(0),
+                        "TAG+ and ID3v1", enhancedId3v1(),
+                        "APEv2, Lyrics3 v2 and ID3v1", concat(apev2(), lyrics3v2(0), id3v1()));
+        for (var trailer : trailers.entrySet()) {
+            byte[] tagged = concat(audio, trailer.getValue());
+            assertEquals(audio.length, AudioStreamDecoder.mpegEnd(tagged, 20), trailer.getKey());
+            assertArrayEquals(expected, decode(tagged), trailer.getKey());
+        }
+    }
+
+    /** A Lyrics3 size that does not reach exactly to its LYRICSBEGIN cuts nothing. */
+    @Test
+    void keepsAudioWhenALyrics3SizeIsMalformed() {
+        byte[] audio = new byte[4096];
+        int recorded = lyrics3v2(0).length - 15;
+        for (int misstated : new int[] {-1, 1, 1000, 999_999 - recorded}) {
+            byte[] lyrics = lyrics3v2(misstated);
+            byte[] tagged = concat(audio, lyrics, id3v1());
+            assertEquals(
+                    audio.length + lyrics.length,
+                    AudioStreamDecoder.mpegEnd(tagged, 20),
+                    "misstated by " + misstated);
+        }
+        byte[] digits = lyrics3v2(0);
+        digits[digits.length - 12] = 'x'; // not a decimal size
+        assertEquals(
+                audio.length + digits.length,
+                AudioStreamDecoder.mpegEnd(concat(audio, digits), 20));
+        // A v1 tag whose LYRICSBEGIN is further than the 5100-byte lyrics limit is refused.
+        byte[] far = concat(ascii("LYRICSBEGIN"), new byte[5101], ascii("LYRICSEND"));
+        assertEquals(audio.length + far.length, AudioStreamDecoder.mpegEnd(concat(audio, far), 20));
+        byte[] limit = concat(ascii("LYRICSBEGIN"), new byte[5100], ascii("LYRICSEND"));
+        assertEquals(audio.length, AudioStreamDecoder.mpegEnd(concat(audio, limit), 20));
+        // A lone TAG+ block without its ID3v1 block is not a tag.
+        byte[] lone = java.util.Arrays.copyOf(enhancedId3v1(), 227);
+        assertEquals(audio.length + 227, AudioStreamDecoder.mpegEnd(concat(audio, lone), 20));
+    }
+
     /** A trailing tag whose declared size reaches into the audio must not cut any of it. */
     @Test
     void keepsAudioWhenAnApeFooterOverstatesItsSize() throws IOException {

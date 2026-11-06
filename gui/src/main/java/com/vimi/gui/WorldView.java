@@ -93,6 +93,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final StackPane viewport = new StackPane(image);
     private final WorldMinimap minimap = new WorldMinimap();
     private WorldSpawnOverlay spawns;
+    private WorldRoleOverlay roles;
     // Highlight of the picked object; FX overlay only, cleared by terrain, sky and marker clicks.
     private final WorldSelectionOverlay objectSelection = new WorldSelectionOverlay();
     // Metadata-only listfile names for picked objects; read on the pick worker, null when unknown.
@@ -1758,6 +1759,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         new HBox(8, new Label("Instances"), entrances, enterInstance, leaveInstance,
                                 instanceStatus)));
         if (spawns != null) ((VBox) content.getBottom()).getChildren().add(spawns.controls());
+        if (roles != null) ((VBox) content.getBottom()).getChildren().add(roles.controls());
     }
 
     private void loadTile(WorldFormats.Tile tile, boolean initial) {
@@ -2944,6 +2946,21 @@ final class WorldView extends BorderPane implements AutoCloseable {
     void attachCreatures(WorldTileCreatures source) {
         if (creatures != null || closed) throw new IllegalStateException("Creature models already attached");
         creatures = java.util.Objects.requireNonNull(source);
+    }
+
+    /**
+     * Mounts quest/service role markers on the minimap (never the 3D viewport: Questie records no
+     * height). FX thread.
+     */
+    void attachRoles(WorldRoleOverlay overlay) {
+        if (roles != null || closed) throw new IllegalStateException("Role overlay already attached");
+        roles = java.util.Objects.requireNonNull(overlay);
+        minimap.attachRoles(overlay);
+    }
+
+    /** The minimap, for tests. */
+    WorldMinimap minimap() {
+        return minimap;
     }
 
     /** Mounts declared NPC spawn markers over the presented explorer frame. FX thread. */

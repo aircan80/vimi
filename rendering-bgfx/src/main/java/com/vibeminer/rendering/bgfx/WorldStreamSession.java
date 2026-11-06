@@ -27,7 +27,9 @@ final class WorldStreamSession {
 
     private record LateDecoded(WorldStreamPackedObjects objects, Throwable error) {}
 
-    private static final long DRAW_INTERVAL = TimeUnit.SECONDS.toNanos(1) / 30;
+    // Display rate. Three readback slots keep up: each completes within two bgfx frames, and the
+    // owner loop advances bgfx every ~1 ms.
+    static final long DRAW_INTERVAL = TimeUnit.SECONDS.toNanos(1) / 60;
     private final WorldStreamEnvelope.Session session;
     private final Path directory;
     private final long parentPid;
@@ -150,10 +152,13 @@ final class WorldStreamSession {
                     // GPU mutations must precede draw submission in the same bgfx frame.
                     long now = System.nanoTime();
                     if (camera != null && now - lastDraw >= DRAW_INTERVAL && owner.submit(camera)) {
-                        lastDraw = now;
+                        lastDraw = nextDrawBase(lastDraw, now);
                         status.cameraApplied(camera.policy(), camera.width(), camera.height());
                     }
-                    owner.advance();
+                    if (owner.advance()) {
+                        // Wake the parent's frame reader; the mapping write already completed.
+                        status.framePublished(owner.publishedSequence());
+                    }
                     reconcile();
                     finishUpload();
                     finishLate(owner);
@@ -217,6 +222,7 @@ final class WorldStreamSession {
             if (!state.drained()) {
                 failed = true;
             }
+            status.quiet();
             if (!failed && status.failure() == null) {
                 send("CLOSED");
             }
@@ -225,6 +231,17 @@ final class WorldStreamSession {
                 allDrained.set(true);
             }
         }
+    }
+
+    /**
+     * Keeps a steady display-rate phase while drawing continuously, so the ~1 ms loop park does not
+     * stretch every interval; restarts the phase after an idle gap.
+     */
+    // Past this lateness the phase restarts: a stalled loop gets no wasted catch-up draw.
+    static final long CATCH_UP_LIMIT = DRAW_INTERVAL * 5 / 4;
+
+    static long nextDrawBase(long previous, long now) {
+        return now - previous < CATCH_UP_LIMIT ? previous + DRAW_INTERVAL : now;
     }
 
     private void readControls(InputStream input) {

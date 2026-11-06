@@ -154,6 +154,11 @@ class WorldTerrainTextureSourceTest {
         return out.toByteArray();
     }
 
+    /** The same authored BLP2 the coverage tests use, for the splatting detail decode. */
+    static byte[] blpForDetail(int color) {
+        return blp(color);
+    }
+
     private static byte[] blp(int color) {
         // Exact BC2 handmade8->4->2->1 chain, all block selectors0 and sourcealpha15.
         var data = ByteBuffer.allocate(148 + 7 * 16).order(ByteOrder.LITTLE_ENDIAN);

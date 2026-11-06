@@ -3,6 +3,7 @@ package com.vibeminer.rendering.bgfx;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import com.vibeminer.rendering.world.TerrainCamera;
 import org.junit.jupiter.api.Test;
 
 class GlobalWmoNativeContractTest {
@@ -40,7 +41,8 @@ class GlobalWmoNativeContractTest {
         assertEquals(-1, camera.modelToEye().get(4));
         assertEquals(.5f, GlobalWmoCamera.projection(800, 500).get(14));
         assertEquals(0, GlobalWmoCamera.projection(800, 500).get(10));
-        assertEquals(3.2f, GlobalWmoCamera.projection(320, 160).get(5));
+        assertEquals(
+                (float) (2 * TerrainCamera.FOCAL), GlobalWmoCamera.projection(320, 160).get(5));
         assertThrows(IllegalArgumentException.class, () -> GlobalWmoCamera.projection(801, 500));
         assertThrows(IllegalArgumentException.class, () -> GlobalWmoCamera.projection(800, 0));
         assertThrows(IllegalArgumentException.class, () -> camera.move(8193, 0, 0));
@@ -54,6 +56,11 @@ class GlobalWmoNativeContractTest {
         assertEquals(-8192, camera.x());
         assertEquals(0, camera.y());
         assertEquals(0, camera.z());
+        // A 10 x 10 x 10 box backs off until its height (scaled to the 800x500 aspect) fits
+        // the shared field of view: .5 * FOCAL * max(10, 16) yards from its near face.
+        var small = GlobalWmoCamera.initial(0, 0, 0, 10, 10, 10);
+        assertEquals(-.5 * TerrainCamera.FOCAL * 16, small.x(), 1e-9);
+        assertEquals(5, small.y());
         assertThrows(
                 IllegalArgumentException.class, () -> GlobalWmoCamera.initial(2, 0, 0, 1, 0, 0));
         assertThrows(
