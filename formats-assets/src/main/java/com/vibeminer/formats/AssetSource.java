@@ -22,8 +22,22 @@ public interface AssetSource {
         return false;
     }
 
+    /** A source over a private copy of {@code source}: later changes to the array are not seen. */
     static AssetSource bytes(byte[] source) {
-        byte[] owned = source.clone();
+        return over(source.clone());
+    }
+
+    /**
+     * A source over {@code source} itself, without copying it (#403). The caller must not change
+     * the array while the source is in use: decoding a file one level at a time then costs no copy
+     * of the whole file per level. Reads still return fresh arrays, so nothing reached through the
+     * source can change the caller's bytes.
+     */
+    static AssetSource borrowed(byte[] source) {
+        return over(java.util.Objects.requireNonNull(source));
+    }
+
+    private static AssetSource over(byte[] owned) {
         return new AssetSource() {
             public long length() {
                 return owned.length;
