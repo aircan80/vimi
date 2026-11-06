@@ -76,7 +76,8 @@ final class WorldFrameFileV2Test {
         WorldFrameFileV2.Frame last;
         try (var writer = WorldFrameFileV2.create(path, NONCE, SCOPE);
                 var reader = WorldFrameFileV2.open(path, NONCE, SCOPE)) {
-            assertEquals(4_800_256, Files.size(path));
+            // Three slots sized to the shared 2560x1600 cap, each with a 64-byte header.
+            assertEquals(64L + 3L * (64 + 2560L * 1600 * 4), Files.size(path));
             assertNull(reader.readLatest(0, barrier(1, 20)));
             for (int i = 1; i <= 20; i++) {
                 writer.write(ticket(i, i, i, 1, 1, 1), pixels(0xff000000 | i));
@@ -201,6 +202,26 @@ final class WorldFrameFileV2Test {
             overwrite(path, 64L + 2L * WorldFrameFileV2.SLOT_BYTES + 64, pixels(0x7f112233));
             assertNull(writer.readLatest(2, barrier(1, 1)), "checksummed slot alpha changed");
         }
+    }
+
+    @Test
+    void poolTakeWithMixedSizesReusesFittingArraysAndDropsTheRest() {
+        var pool = new WorldFrameFileV2.Pool();
+        int[] small = pool.take(100), large = pool.take(1000);
+        assertEquals(2, pool.allocations());
+        pool.recycle(large);
+        pool.recycle(small); // most recent first: polled, too small, dropped
+        // A 600-pixel frame: the large array fits (<= 2x); the small one is dropped on the way.
+        assertTrue(pool.take(600) == large, "fitting array reused");
+        assertEquals(0, pool.retained(), "too-small array dropped");
+        pool.recycle(large);
+        // A 300-pixel frame: 1000 is more than twice 300, so it is dropped and a new one made.
+        int[] fresh = pool.take(300);
+        assertEquals(300, fresh.length);
+        assertEquals(3, pool.allocations());
+        assertEquals(0, pool.retained(), "oversized array dropped after a shrink");
+        pool.recycle(fresh);
+        assertTrue(pool.take(150) == fresh, "exactly twice is still reused");
     }
 
     @Test
@@ -405,14 +426,14 @@ final class WorldFrameFileV2Test {
             }
             bgra.flip().position(4);
             long sequence = WorldFrameFileV2.MAX_SEQUENCE;
-            file.write(ticket(sequence, 1, 0, 1, 800, 500), bgra);
+            file.write(ticket(sequence, 1, 0, 1, 2560, 1600), bgra);
             assertEquals(4, bgra.position());
-            var bounds = new WorldFrameFileV2.Barrier(1, 800, 500, 1, 1, 0, 0);
+            var bounds = new WorldFrameFileV2.Barrier(1, 2560, 1600, 1, 1, 0, 0);
             var frame = file.readLatest(0, bounds);
             assertNotNull(frame);
             assertEquals(sequence, frame.metadata().sequence());
-            assertEquals(400000, frame.pixels().remaining());
-            assertEquals(0xff123456, frame.pixels().get(399999));
+            assertEquals(2560 * 1600, frame.pixels().remaining());
+            assertEquals(0xff123456, frame.pixels().get(2560 * 1600 - 1));
             assertNull(file.readLatest(sequence, bounds));
             assertThrows(
                     IllegalArgumentException.class,
