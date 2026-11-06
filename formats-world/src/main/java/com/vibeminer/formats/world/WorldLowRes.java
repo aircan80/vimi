@@ -23,6 +23,10 @@ public final class WorldLowRes {
     public static final int MAX_SOURCE_BYTES = 8 << 20;
     public static final int CORNERS = 17, CENTRES = 16;
     public static final int HEIGHTS = CORNERS * CORNERS + CENTRES * CENTRES;
+
+    /** Chunks walked before MVER and MAOF must both have appeared. */
+    static final int HEADER_CHUNKS = 64;
+
     private static final int MVER = 0x4d564552,
             MAOF = 0x4d414f46,
             MARE = 0x4d415245,
@@ -32,9 +36,12 @@ public final class WorldLowRes {
 
     /** Why a declared tile was not read. */
     public enum TileIssue {
-        /** The offset, or the chunk it points at, runs past the end of the file. */
+        /**
+         * The offset or its MARE runs past the end of the file (the tile is refused), or its MAHO
+         * is truncated or the wrong size (the tile is kept, without holes).
+         */
         TRUNCATED,
-        /** The offset does not point at a 1090-byte MARE, or a following MAHO is malformed. */
+        /** The offset does not point at a 1090-byte MARE; the tile is refused. */
         BAD_CHUNK
     }
 
@@ -101,7 +108,10 @@ public final class WorldLowRes {
         }
     }
 
-    /** All readable tiles of one WDL, ordered by MAOF index, and the declared tiles refused. */
+    /**
+     * All readable tiles of one WDL, ordered by MAOF index, and per-tile problems: tiles refused,
+     * or kept without holes.
+     */
     public static final class LowRes {
         private final Tile[] byIndex;
         private final List<Tile> tiles;
@@ -145,10 +155,12 @@ public final class WorldLowRes {
         var input = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
         boolean version = false;
         int offsets = -1, count = 0;
-        while (input.remaining() >= 8) {
+        // Only the header is walked: tiles are reached through MAOF's offsets, so the walk stops
+        // once MVER and MAOF are found, however many per-tile chunks follow.
+        while (input.remaining() >= 8 && !(version && offsets >= 0)) {
             check(canceled);
-            if (++count > 4096 * 2 + 64) {
-                throw invalid("WDL chunk count");
+            if (++count > HEADER_CHUNKS) {
+                throw invalid("WDL header chunk count");
             }
             int tag = input.getInt(), size = input.getInt(), start = input.position();
             if (size < 0 || size > input.limit() - start) {
@@ -201,17 +213,10 @@ public final class WorldLowRes {
             int next = at + 8 + HEIGHTS * 2;
             if (next <= bytes.length - 8 && input.getInt(next) == MAHO) {
                 if (input.getInt(next + 4) != 32 || next + 8 + 32 > bytes.length) {
-                    problems.add(new Problem(x, y, TileIssue.BAD_CHUNK));
-                    continue;
-                }
-                for (int row = 0; row < CENTRES; row++) {
-                    int mask = Short.toUnsignedInt(input.getShort(next + 8 + row * 2));
-                    for (int column = 0; column < CENTRES; column++) {
-                        if ((mask & 1 << column) != 0) {
-                            int bit = row * CENTRES + column;
-                            holes[bit / 64] |= 1L << (bit % 64);
-                        }
-                    }
+                    // The heights are sound; draw the tile without holes and say so.
+                    problems.add(new Problem(x, y, TileIssue.TRUNCATED));
+                } else {
+                    readHoles(input, next + 8, holes);
                 }
             }
             var tile = new Tile(x, y, heights, holes);
@@ -219,6 +224,19 @@ public final class WorldLowRes {
             tiles.add(tile);
         }
         return new LowRes(byIndex, tiles, problems);
+    }
+
+    /** Bit {@code column} of row {@code row}: an inferred order, unconfirmed on real data. */
+    private static void readHoles(ByteBuffer input, int at, long[] holes) {
+        for (int row = 0; row < CENTRES; row++) {
+            int mask = Short.toUnsignedInt(input.getShort(at + row * 2));
+            for (int column = 0; column < CENTRES; column++) {
+                if ((mask & 1 << column) != 0) {
+                    int bit = row * CENTRES + column;
+                    holes[bit / 64] |= 1L << (bit % 64);
+                }
+            }
+        }
     }
 
     private static void check(BooleanSupplier canceled) {

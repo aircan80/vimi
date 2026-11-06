@@ -18,10 +18,13 @@ import java.util.function.BooleanSupplier;
  * 16 spacing. Each 16 x 16 cell is the ADT chunk's four-triangle fan (corner, centre, corner) with
  * the same winding. Hole cells are left out.
  *
- * <p>The whole horizon sits {@link #SINK} lower than its source heights, so where it overlaps
- * full-detail terrain the full tile wins the depth test. Along an edge shared with a hidden
- * (full-detail) tile, a skirt drops {@link #SKIRT} further to close the gap left by the coarser
- * spacing.
+ * <p>Tiles drawn at full detail are left out, so the two never overlap; they meet along tile edges.
+ * There the full tile's edge follows every ADT sample while the horizon's follows only every chunk
+ * corner, so the horizon sits {@link #SINK} lower than its source heights to stay under the full
+ * edge, and along an edge shared with a full-detail tile a skirt, facing that tile, drops {@link
+ * #SKIRT} further to close the gap. Known limit: where the full tile's edge dips more than {@code
+ * SINK + SKIRT} below the horizon's (a cliff between chunk corners), a gap can still show; fog
+ * hides it at distance.
  */
 public final class HorizonMesh {
     public static final int MAX_RADIUS = 8;
@@ -134,12 +137,14 @@ public final class HorizonMesh {
                     }
                 }
                 // Skirts on edges shared with a full-detail tile: {neighbour dx, dy, corner of
-                // the edge's first sample, row step, column step}.
+                // the edge's first sample, row step, column step, flip}. Walking the edge in
+                // that order gives faces toward +X along a row edge and toward -Y along a column
+                // edge; flip reverses them so every skirt faces its full-detail neighbour.
                 int[][] edges = {
-                    {-1, 0, 0, 0, 0, 1},
-                    {1, 0, 16, 0, 0, 1},
-                    {0, -1, 0, 0, 1, 0},
-                    {0, 1, 0, 16, 1, 0}
+                    {-1, 0, 0, 0, 0, 1, 0},
+                    {1, 0, 16, 0, 0, 1, 1},
+                    {0, -1, 0, 0, 1, 0, 1},
+                    {0, 1, 0, 16, 1, 0, 0}
                 };
                 for (int[] edge : edges) {
                     int nx = x + edge[0], ny = y + edge[1];
@@ -160,8 +165,13 @@ public final class HorizonMesh {
                         int row = edge[2] + i * edge[4], column = edge[3] + i * edge[5];
                         int top = base + row * 17 + column;
                         int next = base + (row + edge[4]) * 17 + column + edge[5];
-                        index = triangle(indices, index, top, next, skirt + i);
-                        index = triangle(indices, index, next, skirt + i + 1, skirt + i);
+                        if (edge[6] == 0) {
+                            index = triangle(indices, index, top, next, skirt + i);
+                            index = triangle(indices, index, next, skirt + i + 1, skirt + i);
+                        } else {
+                            index = triangle(indices, index, top, skirt + i, next);
+                            index = triangle(indices, index, next, skirt + i, skirt + i + 1);
+                        }
                     }
                 }
             }
