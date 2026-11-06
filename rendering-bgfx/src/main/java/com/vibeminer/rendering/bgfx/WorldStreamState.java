@@ -98,6 +98,18 @@ final class WorldStreamState {
         return phase == Phase.CLOSED;
     }
 
+    /** What still holds the close open; diagnostics only. */
+    String drainSummary() {
+        return "phase="
+                + phase
+                + " decoderOwned="
+                + decoderOwned
+                + " references="
+                + references
+                + " reservedCommit="
+                + reservedCommit;
+    }
+
     Result offer(Nonce session, long tx, Lease lease) {
         return offer(session, tx, lease, -1, -1, false);
     }
