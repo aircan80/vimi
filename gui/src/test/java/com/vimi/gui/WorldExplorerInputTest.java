@@ -131,10 +131,10 @@ public final class WorldExplorerInputTest {
         }
         var commands = java.util.EnumSet.of(WorldControls.Action.MAP_PANEL,
                 WorldControls.Action.HIDE_HUD, WorldControls.Action.DEV_OVERLAY,
-                WorldControls.Action.SCREENSHOT);
+                WorldControls.Action.INSPECT_PIN, WorldControls.Action.SCREENSHOT);
         for (var action : WorldControls.Action.values())
             require(action.command == commands.contains(action),
-                    "Exactly the map panel, hide HUD, developer overlay and screenshot keys are commands: "
+                    "Exactly the map panel, hide HUD, developer overlay, inspect pin and screenshot keys are commands: "
                             + action);
         var host = new Host();
         var input = exact(host);
@@ -240,6 +240,16 @@ public final class WorldExplorerInputTest {
         var older = WorldControls.decode("v1;keys=W:FORWARD;actions=FORWARD,BACK,WALK");
         require(older.keys().get(KeyCode.F3) == WorldControls.Action.DEV_OVERLAY,
                 "Stored controls from before the overlay gain its default key: " + older.keys());
+        for (var layout : WorldControls.Layout.values())
+            require(layout.keys().get(KeyCode.I) == WorldControls.Action.INSPECT_PIN,
+                    layout + " binds I to the inspect card pin");
+        var pins = new Host();
+        var pinInput = exact(pins);
+        pinInput.keyPressed(KeyCode.I);
+        pinInput.keyPressed(KeyCode.I);
+        require(pins.commands.equals(List.of(WorldControls.Action.INSPECT_PIN))
+                        && pinInput.axes().equals(ExplorerMotion.Input.NONE),
+                "I commands the card once per press and moves nothing: " + pins.commands);
         for (var layout : WorldControls.Layout.values())
             require(layout.keys().get(KeyCode.F12) == WorldControls.Action.SCREENSHOT,
                     layout + " binds F12 to the screenshot");

@@ -67,6 +67,7 @@ public final class WorldMinimapInputUiTest {
                 clicksActAndReturnFocus();
             });
             trackingPopupHoldsLayersAndKeepsKeys();
+            fx(WorldMinimapInputUiTest::markerClickOpensTheCard);
             fx(WorldMinimapInputUiTest::viewportStillAcceptsFlightInput);
             System.out.println("World minimap input PASS: actual mouse/key/scroll on the cluster buttons,"
                     + " toggle and zoom clicks with focus returned, tracking popup layers and key"
@@ -181,7 +182,14 @@ public final class WorldMinimapInputUiTest {
             entrances.fire();
             require(entrances.isSelected(), "The entrances layer toggles in the popup");
             entrances.fire();
-            key(viewport, KeyCode.ESCAPE, true);
+            // Bound HUD command keys pass through the open popup to the viewport.
+            var overlay = view.devOverlay();
+            var page = overlay.page();
+            key(viewport, KeyCode.F3, true);
+            key(viewport, KeyCode.F3, false);
+            require(overlay.page() != page, "F3 still works while the tracking popup is open");
+            overlay.show(page);
+                        key(viewport, KeyCode.ESCAPE, true);
         });
         await(() -> !view.minimap().tracking().showing());
         fx(() -> {
@@ -233,6 +241,36 @@ public final class WorldMinimapInputUiTest {
             require(!view.minimap().tracking().showing(), "The tracking chip closes it again");
             view.lookup("#world-viewport").requestFocus();
         });
+    }
+
+    /**
+     * The view wires minimap marker clicks to the inspect card. (The authored camera lies outside
+     * the recorded-entrance range, so the click itself is covered by WorldMinimapUiTest; here the
+     * view's callback gets the clicked marker.)
+     */
+    @SuppressWarnings("unchecked")
+    private static void markerClickOpensTheCard() {
+        var link = new com.vibeminer.concepts.world.WorldInstanceLinks.Link(33, "Authored Depths",
+                com.vibeminer.concepts.world.WorldInstanceLinks.Kind.DUNGEON, null,
+                new com.vibeminer.concepts.world.WorldInstanceLinks.Entrance(0, 100, 200), null);
+        java.util.function.Consumer<WorldMinimap.Clicked> callback;
+        try {
+            var field = WorldMinimap.class.getDeclaredField("clicked");
+            field.setAccessible(true);
+            callback = (java.util.function.Consumer<WorldMinimap.Clicked>) field.get(view.minimap());
+        } catch (ReflectiveOperationException error) {
+            throw new AssertionError(error);
+        }
+        require(callback != null, "The view listens to minimap marker clicks");
+        long generation = (long) get("pickGeneration");
+        callback.accept(new WorldMinimap.Clicked(null, link, "Authored Depths entrance"));
+        require((long) get("pickGeneration") > generation,
+                "A marker click supersedes any world pick still in flight");
+        var card = view.inspectCard();
+        require(card.isOpen() && card.content().kind() == WorldInspection.Kind.ENTRANCE
+                        && card.content().title().equals("Authored Depths"),
+                "A minimap marker click opens its inspect card: " + card.content());
+        card.close();
     }
 
     private static void altZ(Node node) {
