@@ -333,12 +333,27 @@ public final class GlobalWmoNativeProof {
                             decoded(scratch, "max", GlobalWmoAuthoredData.maximum()),
                             () -> false)) {
                 var stats = scene.stats();
+                // Expected sizes follow the layout constants: position and UV floats per vertex,
+                // WorldGlobalLayout.INDEX_BYTES per index (32-bit since #281), RGBA8 texels.
+                var counts = GlobalWmoAuthoredData.maximum().counts();
+                long mesh =
+                        counts.vertices() * 20L
+                                + (long) counts.indices() * WorldGlobalLayout.INDEX_BYTES;
+                long image = counts.pixels() * 4L;
                 require(
-                        stats.meshBytes() == 851968 && stats.imageBytes() == 4718592,
-                        "Exact maximum uploaded bytes");
+                        stats.meshBytes() == mesh && stats.imageBytes() == image,
+                        "Exact maximum uploaded bytes: mesh="
+                                + stats.meshBytes()
+                                + " expected "
+                                + mesh
+                                + ", image="
+                                + stats.imageBytes()
+                                + " expected "
+                                + image);
                 require(
-                        stats.peakMeshStagingBytes() == 851968
-                                && stats.peakImageStagingBytes() == 262144
+                        stats.peakMeshStagingBytes() == mesh
+                                && stats.peakImageStagingBytes()
+                                        == GlobalWmoNativeScene.DIRECT_IMAGE
                                 && stats.liveStagingBytes() == 0,
                         "Actual maximum staging ownership");
                 require(
