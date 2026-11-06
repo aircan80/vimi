@@ -209,6 +209,7 @@ final class WorldStreamSourceBridge {
                             set,
                             WorldExteriorObjects.Count.BATCH_UNSUPPORTED,
                             WorldExteriorObjects.Count.BATCH_MISSING_IMAGE,
+                            WorldExteriorObjects.Count.BATCH_IMAGE_CAPPED,
                             WorldExteriorObjects.Count.BATCH_CAPPED,
                             WorldExteriorObjects.Count.BATCH_UNREADABLE,
                             WorldExteriorObjects.Count.MODEL_BATCH_UNSUPPORTED,

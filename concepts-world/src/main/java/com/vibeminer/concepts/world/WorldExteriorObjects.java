@@ -262,6 +262,11 @@ public final class WorldExteriorObjects {
         BATCH_BLENDED,
         BATCH_UNSUPPORTED,
         BATCH_MISSING_IMAGE,
+        /**
+         * A building batch whose image did not fit the per-tile image count cap (IMAGE_CAPPED); a
+         * budget, not a data problem.
+         */
+        BATCH_IMAGE_CAPPED,
         /** A cutout or blended batch over the separate material budget. */
         BATCH_CAPPED,
         /**
@@ -845,7 +850,7 @@ public final class WorldExteriorObjects {
     }
 
     /** image() results that are not slots. */
-    private static final int MISSING = -1, UNREADABLE = -2;
+    private static final int MISSING = -1, UNREADABLE = -2, IMAGE_FULL = -3;
 
     private static final class Builder {
         private final WorldStreamScopes.TileAdmission admission;
@@ -1632,25 +1637,26 @@ public final class WorldExteriorObjects {
         }
 
         /**
-         * Keeps a root's interior meshes for the interior pass while the tile could still draw
-         * them; past both budgets together a mesh is counted GROUP_INTERIOR_CAPPED and dropped, so
-         * held copies stay bounded.
+         * Holds one interior mesh for the interior pass while the tile could still draw it: false,
+         * and nothing held, past both budgets together. Bounds held copies across all roots.
          */
-        private List<PendingMesh> holdInteriors(List<PendingMesh> interiors) {
-            var held = new ArrayList<PendingMesh>();
-            for (var mesh : interiors) {
-                long meshVertices = mesh.vertices().length / VERTEX_FLOATS;
-                if (heldVertices + meshVertices > MAX_VERTICES + MAX_MATERIAL_VERTICES
-                        || heldIndices + mesh.indices().length
-                                > MAX_INDICES + MAX_MATERIAL_INDICES) {
-                    count(Count.GROUP_INTERIOR_CAPPED);
-                    continue;
-                }
-                heldVertices += meshVertices;
-                heldIndices += mesh.indices().length;
-                held.add(mesh);
+        private boolean holdInterior(PendingMesh mesh) {
+            long meshVertices = mesh.vertices().length / VERTEX_FLOATS;
+            if (heldVertices + meshVertices > MAX_VERTICES + MAX_MATERIAL_VERTICES
+                    || heldIndices + mesh.indices().length > MAX_INDICES + MAX_MATERIAL_INDICES) {
+                return false;
             }
-            return held;
+            heldVertices += meshVertices;
+            heldIndices += mesh.indices().length;
+            return true;
+        }
+
+        /** Returns a capped root's held interior copies to the bound. */
+        private void releaseInteriors(List<PendingMesh> interiors) {
+            for (var mesh : interiors) {
+                heldVertices -= mesh.vertices().length / VERTEX_FLOATS;
+                heldIndices -= mesh.indices().length;
+            }
         }
 
         /**
@@ -1670,8 +1676,12 @@ public final class WorldExteriorObjects {
                 uses[placement.model()]++;
             }
             int meshes = 0;
-            for (var model : models) {
-                meshes += model.meshes().size();
+            // Every exterior draw is reserved first, opaque, cutout and blended alike, so admitting
+            // an interior never makes fitMaterialDraws trim an exterior's glass or foliage.
+            long reserved = 0;
+            for (int m = 0; m < models.size(); m++) {
+                meshes += models.get(m).meshes().size();
+                reserved += (long) uses[m] * modelDraws(m);
             }
             int[] local = new int[counts.length];
             boolean[] removed = new boolean[models.size()];
@@ -1681,12 +1691,29 @@ public final class WorldExteriorObjects {
                 if (held == null) {
                     continue;
                 }
+                // A model without opaque draws (an interior-only root) holds no building slot
+                // yet; its placements need free slots before an interior can give it one.
+                boolean needsSlots = admissionDraws(m) == 0;
+                if (needsSlots && uses[m] > MAX_PLACEMENTS - opaquePlacements) {
+                    local[Count.GROUP_INTERIOR_CAPPED.ordinal()] += held.size();
+                    if (model.meshes().isEmpty()) {
+                        removed[m] = true;
+                        counts[Count.PLACEMENT_DRAWN.ordinal()] -= uses[m];
+                        counts[Count.PLACEMENT_CAPPED.ordinal()] += uses[m];
+                        counts[Count.ROOT_DRAWN.ordinal()]--;
+                        count(Count.ROOT_CAPPED);
+                        rootStates.put(model.rootId(), RootState.CAPPED);
+                        rootDoodads.remove(model.rootId());
+                    }
+                    continue;
+                }
                 var kept = new ArrayList<>(model.meshes());
+                boolean slotsTaken = false;
                 for (var mesh : held) {
                     token.check();
                     int candidateRanges = mesh.ranges().size();
                     if (meshes >= MAX_MESHES
-                            || (long) uses[m] * candidateRanges > MAX_DRAWS - draws) {
+                            || (long) uses[m] * candidateRanges > MAX_DRAWS - reserved) {
                         local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
                         continue;
                     }
@@ -1714,6 +1741,11 @@ public final class WorldExteriorObjects {
                         }
                     }
                     draws += uses[m] * opaque;
+                    reserved += (long) uses[m] * mapped.ranges().size();
+                    if (needsSlots && opaque > 0 && !slotsTaken) {
+                        opaquePlacements += uses[m];
+                        slotsTaken = true;
+                    }
                     local[Count.GROUP_DRAWN.ordinal()]++;
                     kept.add(mapped);
                     meshes++;
@@ -1789,13 +1821,20 @@ public final class WorldExteriorObjects {
                     continue;
                 }
                 if ((mesh.flags() & INTERIOR) != 0) {
-                    interiors.add(mesh);
+                    // Bounded as it is read: past what both budgets could draw, a copy is never
+                    // held (GROUP_INTERIOR_CAPPED). Released again if this root is capped.
+                    if (!holdInterior(mesh)) {
+                        local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
+                    } else {
+                        interiors.add(mesh);
+                    }
                     continue;
                 }
                 switch (budget.admit(mesh, local)) {
                     case ADMITTED -> pending.add(mesh);
                     case DROPPED -> {}
                     case OVER -> {
+                        releaseInteriors(interiors);
                         count(Count.ROOT_CAPPED);
                         return RootState.CAPPED;
                     }
@@ -1822,7 +1861,7 @@ public final class WorldExteriorObjects {
             for (int i = 0; i < counts.length; i++) {
                 counts[i] += local[i];
             }
-            var held = holdInteriors(interiors);
+            var held = interiors;
             if (built.isEmpty() && held.isEmpty()) {
                 count(Count.ROOT_EMPTY);
                 return RootState.EMPTY;
@@ -1856,7 +1895,11 @@ public final class WorldExteriorObjects {
                 }
                 int slot = image(range.image(), OPAQUE, Pool.BUILDING, local);
                 if (slot < 0) {
-                    local[Count.BATCH_MISSING_IMAGE.ordinal()]++;
+                    local[
+                            (slot == IMAGE_FULL
+                                            ? Count.BATCH_IMAGE_CAPPED
+                                            : Count.BATCH_MISSING_IMAGE)
+                                    .ordinal()]++;
                     continue;
                 }
                 System.arraycopy(
@@ -1888,7 +1931,9 @@ public final class WorldExteriorObjects {
                     local[
                             (slot == UNREADABLE
                                             ? Count.BATCH_UNREADABLE
-                                            : Count.BATCH_MISSING_IMAGE)
+                                            : slot == IMAGE_FULL
+                                                    ? Count.BATCH_IMAGE_CAPPED
+                                                    : Count.BATCH_MISSING_IMAGE)
                                     .ordinal()]++;
                     continue;
                 }
@@ -2352,6 +2397,9 @@ public final class WorldExteriorObjects {
                 local[
                         (pool == Pool.DOODAD ? Count.MODEL_IMAGE_CAPPED : Count.IMAGE_CAPPED)
                                 .ordinal()]++;
+                // Building batches report the budget, not a data problem; doodad batches keep
+                // their missing-image count.
+                slot = pool == Pool.DOODAD ? MISSING : IMAGE_FULL;
             } else {
                 switch (pool) {
                     case BUILDING -> imagesRead++;
