@@ -5,6 +5,7 @@ import com.vibeminer.files.BuildFiles;
 import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.AssetSources;
 import com.vibeminer.formats.images.Blp2Decoder;
+import com.vibeminer.formats.images.BlpImageTypes;
 import com.vibeminer.formats.images.BlpImages;
 import com.vibeminer.formats.models.BuildModelTypes;
 import com.vibeminer.formats.models.BuildModels;
@@ -200,8 +201,43 @@ final class RaceAppearance {
             long modelId,
             Cancellation token,
             java.util.Map<Long, Long> requested) {
+        return prepare(raceId, classId, modelId, token, requested, null);
+    }
+
+    /**
+     * A humanoid NPC's appearance (#385): its race model with its recorded customization choices,
+     * its slot items as clothing geometry and its pre-baked body texture ({@link
+     * RaceAppearancePlan.Npc}). What its items leave undrawn is counted by {@link #npcOmissions}.
+     */
+    Prepared prepareNpc(RaceNpcs.Spec spec, Cancellation token) {
+        return prepare(
+                spec.raceId(),
+                spec.classId(),
+                spec.variant().chrModelId(),
+                token,
+                spec.choices(),
+                new RaceAppearancePlan.Npc(spec.items(), spec.bakeFileDataId()));
+    }
+
+    /** What the NPC's items leave undrawn (item models and unread displays). */
+    RaceAppearancePlan.NpcOmissions npcOmissions(RaceNpcs.Spec spec, Cancellation token) {
+        return plans.npcOmissions(
+                new RaceAppearancePlan.Npc(spec.items(), spec.bakeFileDataId()),
+                token,
+                new ArrayList<>());
+    }
+
+    private Prepared prepare(
+            long raceId,
+            long classId,
+            long modelId,
+            Cancellation token,
+            java.util.Map<Long, Long> requested,
+            RaceAppearancePlan.Npc npc) {
         var issues = new ArrayList<String>();
-        String request = request(raceId, classId, modelId, requested);
+        String request =
+                request(raceId, classId, modelId, requested)
+                        + (npc == null ? "" : ":npc:" + npc.bakeFileDataId() + ":" + npc.items());
         try {
             if (files == null || generated == null) {
                 return prepareFailure(
@@ -216,25 +252,34 @@ final class RaceAppearance {
                 return new Prepared(null, null, null, issues, known, request, null);
             }
             var selection =
-                    new RaceCustomization(media)
-                            .select(raceId, classId, modelId, token, issues, requested);
+                    npc == null
+                            ? new RaceCustomization(media)
+                                    .select(raceId, classId, modelId, token, issues, requested)
+                            : new RaceCustomization(media)
+                                    .npc(raceId, classId, modelId, requested, token, issues);
             var base = media.preview(raceId, classId, modelId, token, selection);
             boolean unread = media.unreadParts();
             base.issues().stream()
                     .filter(issue -> !issue.startsWith("Static native rest positions"))
                     .filter(issue -> requested.isEmpty() || !issue.startsWith("Sample look uses"))
                     .forEach(issues::add);
-            if (!requested.isEmpty()) {
+            if (npc != null) {
+                issues.add("The NPC's recorded customization choices are shown.");
+            } else if (!requested.isEmpty()) {
                 issues.add(
                         "Requested known eligible choices and recorded defaults are shown; unknown unlock requirements are omitted.");
             }
             if (base.mesh() == null || base.variant() == null) {
                 return prepareFailure(issues, base.message());
             }
-            var plan = plans.build(raceId, classId, base.variant(), token, issues, selection);
+            var plan = plans.build(raceId, classId, base.variant(), token, issues, selection, npc);
             // A plan or sample that skipped a source only because it could not be read now is
             // shown but not remembered: without recorded sources the next request prepares again.
             unread |= plans.unsettled();
+            if (npc != null && unread) {
+                // An NPC is drawn whole or asked for again; never with what could not be read.
+                throw new RacesService.Unreadable("Some NPC appearance rows cannot be read yet.");
+            }
             base =
                     new RaceMediaTypes.Preview(
                             base.state(),
@@ -254,7 +299,10 @@ final class RaceAppearance {
             var sources = new java.util.TreeMap<Long, String>();
             sources.put(base.variant().modelFileDataId(), stat.file().contentKey());
             StringBuilder identity =
-                    new StringBuilder("race-static-appearance-v1\n")
+                    new StringBuilder(
+                                    npc == null
+                                            ? "race-static-appearance-v1\n"
+                                            : "npc-baked-appearance-v1\n")
                             .append(MeshAppearanceCodec.REVISION)
                             .append('\n')
                             .append(M2RestDrawSkinReader.REVISION)
@@ -295,6 +343,9 @@ final class RaceAppearance {
             var key = GeneratedKey.hash(identity.toString().getBytes(StandardCharsets.UTF_8));
             return new Prepared(base, plan, key, issues, null, request, unread ? null : sources);
         } catch (RacesService.Projection unavailable) {
+            if (npc != null && unavailable instanceof RacesService.Unreadable unreadable) {
+                throw unreadable; // asked for again (RaceNpcs.Appearance#retry), not refused
+            }
             return prepareFailure(issues, unavailable.getMessage());
         }
     }
@@ -330,8 +381,28 @@ final class RaceAppearance {
                             .toList()) {
                 token.check();
                 var read =
-                        images.decodeLargestWithin(files, FileTypes.FileRef.id(fid), 2048, token)
+                        images.decodeLargestWithin(
+                                        files,
+                                        FileTypes.FileRef.id(fid),
+                                        plan.npc() ? RaceAppearancePlan.NPC_TEXTURE_SIDE : 2048,
+                                        token)
                                 .join();
+                if (read.image() == null && plan.npc()) {
+                    // An NPC without its bake (or any of its layers) would draw an untextured body.
+                    String state =
+                            read.state() + (read.fileState() == null ? "" : " " + read.fileState());
+                    if (retryable(read)) {
+                        throw new RacesService.Unreadable(
+                                "NPC texture #" + fid + " cannot be read yet (" + state + ").");
+                    }
+                    return failed(
+                            issues,
+                            "NPC texture #"
+                                    + fid
+                                    + " is "
+                                    + state
+                                    + "; no incomplete NPC is drawn.");
+                }
                 if (read.image() == null) {
                     complete = false;
                     note(
@@ -346,6 +417,9 @@ final class RaceAppearance {
                 var image = read.image();
                 long imagePixels = (long) image.width() * image.height();
                 if (imagePixels > 8_388_608L - decodedPixels) {
+                    if (plan.npc()) {
+                        return failed(issues, "NPC textures exceed the bounded texture budget.");
+                    }
                     complete = false;
                     note(
                             issues,
@@ -367,7 +441,8 @@ final class RaceAppearance {
                 }
                 decoded.put(fid, new MeshAppearance.Texture(image.width(), image.height(), argb));
             }
-            if (RaceAppearanceProfiles.nightElf(plan.profile())
+            if (!plan.npc()
+                    && RaceAppearanceProfiles.nightElf(plan.profile())
                     && plan.layers().stream()
                             .noneMatch(
                                     layer ->
@@ -504,8 +579,24 @@ final class RaceAppearance {
             }
             return result;
         } catch (RacesService.Projection unavailable) {
+            if (plan.npc() && unavailable instanceof RacesService.Unreadable unreadable) {
+                throw unreadable;
+            }
             return failed(issues, unavailable.getMessage());
         }
+    }
+
+    /**
+     * A texture that cannot be read now but may be later (the store failed or is unavailable, or
+     * the file needs a download), as opposed to one this build does not have or cannot decode.
+     */
+    static boolean retryable(BlpImageTypes.Result read) {
+        return read.state() == BlpImageTypes.State.FILE_FAILED
+                && read.fileState() != null
+                && switch (read.fileState()) {
+                    case NEEDS_NETWORK, UNAVAILABLE, STORE_FAILED -> true;
+                    default -> false;
+                };
     }
 
     private static RaceAppearanceTypes.Result result(

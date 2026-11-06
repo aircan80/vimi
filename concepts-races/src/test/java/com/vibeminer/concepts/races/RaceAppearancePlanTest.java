@@ -18,14 +18,13 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 final class RaceAppearancePlanTest {
-    private static final BuildRef BUILD =
-            new BuildRef("wowf", "a".repeat(32), "b".repeat(32), "us");
+    static final BuildRef BUILD = new BuildRef("wowf", "a".repeat(32), "b".repeat(32), "us");
 
-    private static Db2Types.Row row(long id, String... values) {
+    static Db2Types.Row row(long id, String... values) {
         return new Db2Types.Row(id, false, null, List.of(values), List.of());
     }
 
-    private static MemoryTables.FakeTable table(
+    static MemoryTables.FakeTable table(
             String name, String layout, String fields, Db2Types.Row... rows) {
         var columns = new ArrayList<Db2Types.Column>();
         var schema = new ArrayList<TableSchema.SchemaColumn>();
@@ -91,7 +90,7 @@ final class RaceAppearancePlanTest {
                 true);
     }
 
-    private static List<MemoryTables.FakeTable> fixture(boolean ambiguous, int purpose) {
+    static List<MemoryTables.FakeTable> fixture(boolean ambiguous, int purpose) {
         var textures =
                 new ArrayList<Db2Types.Row>(
                         List.of(
@@ -187,7 +186,7 @@ final class RaceAppearancePlanTest {
                         components.toArray(Db2Types.Row[]::new)));
     }
 
-    private static List<MemoryTables.FakeTable> orcFixture(int model, int layout) {
+    static List<MemoryTables.FakeTable> orcFixture(int model, int layout) {
         var seed = new ArrayList<>(fixture(false, 9));
         replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(2, "1")));
         replace(
@@ -386,7 +385,7 @@ final class RaceAppearancePlanTest {
         return seed;
     }
 
-    private static List<MemoryTables.FakeTable> nightElfFixture(
+    static List<MemoryTables.FakeTable> nightElfFixture(
             int model, int layout, int sex, String fallback, boolean base) {
         var seed = new ArrayList<>(dwarfFixture(model, layout, sex, fallback));
         replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(4, "3")));
@@ -1048,8 +1047,7 @@ final class RaceAppearancePlanTest {
         }
     }
 
-    private static void replace(
-            List<MemoryTables.FakeTable> values, MemoryTables.FakeTable replacement) {
+    static void replace(List<MemoryTables.FakeTable> values, MemoryTables.FakeTable replacement) {
         for (int i = 0; i < values.size(); i++) {
             if (values.get(i).entry().name().equals(replacement.entry().name())) {
                 values.set(i, replacement);

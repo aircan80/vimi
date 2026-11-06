@@ -119,6 +119,117 @@ public final class RacesService implements BuildRaces {
     }
 
     @Override
+    public CompletableFuture<RaceNpcs.Appearance> npcAppearance(
+            long extendedDisplayInfoId, Cancellation token) {
+        if (extendedDisplayInfoId <= 0 || extendedDisplayInfoId > 0xffffffffL) {
+            throw new IllegalArgumentException("Invalid extended display info ID");
+        }
+        record Planned(
+                RaceAppearance.Prepared prepared,
+                int omittedItems,
+                int attachments,
+                RaceNpcs.Appearance answer) {}
+        return submit(
+                        token,
+                        request -> {
+                            if (!appearance.available()) {
+                                return new Planned(
+                                        null,
+                                        0,
+                                        0,
+                                        RaceNpcs.Appearance.refused(
+                                                "Appearance preparation is unavailable for this"
+                                                        + " workspace."));
+                            }
+                            var issues = new ArrayList<String>();
+                            try {
+                                var resolution =
+                                        RaceNpcs.resolve(
+                                                this,
+                                                relations,
+                                                extendedDisplayInfoId,
+                                                race -> media.variants(race, request).variants(),
+                                                request,
+                                                issues);
+                                if (resolution.refusal() != null) {
+                                    return new Planned(
+                                            null,
+                                            0,
+                                            0,
+                                            RaceNpcs.Appearance.refused(resolution.refusal()));
+                                }
+                                var spec = resolution.spec();
+                                var omissions = appearance.npcOmissions(spec, request);
+                                var prepared = appearance.prepareNpc(spec, request);
+                                return new Planned(
+                                        prepared,
+                                        spec.omittedItems()
+                                                + omissions.missing()
+                                                + omissions.undrawn(),
+                                        omissions.attachments(),
+                                        null);
+                            } catch (Unreadable unreadable) {
+                                return new Planned(
+                                        null,
+                                        0,
+                                        0,
+                                        RaceNpcs.Appearance.unreadable(unreadable.getMessage()));
+                            } catch (Projection unsupported) {
+                                return new Planned(
+                                        null,
+                                        0,
+                                        0,
+                                        RaceNpcs.Appearance.refused(unsupported.getMessage()));
+                            }
+                        })
+                .thenCompose(
+                        planned -> {
+                            if (planned.answer() != null) {
+                                return CompletableFuture.completedFuture(planned.answer());
+                            }
+                            var prepared = planned.prepared();
+                            var finished =
+                                    prepared.finished() != null
+                                            ? CompletableFuture.completedFuture(prepared.finished())
+                                            : submit(
+                                                    appearanceWorker,
+                                                    token,
+                                                    request ->
+                                                            appearance.render(prepared, request));
+                            return finished.thenApply(
+                                            result ->
+                                                    result.appearance() == null
+                                                            ? RaceNpcs.Appearance.refused(
+                                                                    result.message() == null
+                                                                            ? "the NPC appearance could not"
+                                                                                    + " be built"
+                                                                            : result.message())
+                                                            : new RaceNpcs.Appearance(
+                                                                    result,
+                                                                    planned.omittedItems(),
+                                                                    planned.attachments(),
+                                                                    null,
+                                                                    false))
+                                    .exceptionally(RacesService::npcRetry);
+                        });
+    }
+
+    /** A texture or row the render could not read now: asked for again, never refused. */
+    private static RaceNpcs.Appearance npcRetry(Throwable failure) {
+        var cause =
+                failure instanceof java.util.concurrent.CompletionException
+                                && failure.getCause() != null
+                        ? failure.getCause()
+                        : failure;
+        if (cause instanceof Unreadable unreadable) {
+            return RaceNpcs.Appearance.unreadable(unreadable.getMessage());
+        }
+        throw failure instanceof java.util.concurrent.CompletionException completion
+                ? completion
+                : new java.util.concurrent.CompletionException(cause);
+    }
+
+    @Override
     public CompletableFuture<RaceCustomizationTypes.Catalog> customizations(
             long raceId, long classId, long modelId, Cancellation token) {
         return submit(
