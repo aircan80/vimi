@@ -64,7 +64,7 @@ public final class BuildApplication {
 
     static CompletableFuture<BackendBuildService> open(Path directory,
             com.vibeminer.network.TactKeyClient keyClient, TransferObserver observer) {
-        return open(directory, keyClient, observer, true);
+        return open(directory, keyClient, observer, true, new CompletableFuture<>());
     }
 
     /**
@@ -77,13 +77,26 @@ public final class BuildApplication {
 
     static CompletableFuture<BackendBuildService> openWithoutBackgroundWork(
             Path directory, com.vibeminer.network.TactKeyClient keyClient) {
-        return open(directory, keyClient, TransferObserver.NONE, false);
+        return openWithoutBackgroundWork(directory, keyClient, new CompletableFuture<>());
+    }
+
+    /**
+     * As above; {@code settled} completes once the opening thread has finished, after it handed
+     * over the service or, when the result was canceled or failed, closed everything it opened.
+     * A caller that cancels a late open waits on it before exiting.
+     */
+    static CompletableFuture<BackendBuildService> openWithoutBackgroundWork(
+            Path directory,
+            com.vibeminer.network.TactKeyClient keyClient,
+            CompletableFuture<Void> settled) {
+        return open(directory, keyClient, TransferObserver.NONE, false, settled);
     }
 
     private static CompletableFuture<BackendBuildService> open(Path directory,
             com.vibeminer.network.TactKeyClient keyClient, TransferObserver observer,
-            boolean background) {
+            boolean background, CompletableFuture<Void> settled) {
         java.util.Objects.requireNonNull(directory);
+        java.util.Objects.requireNonNull(settled);
         java.util.Objects.requireNonNull(observer);
         // The data/library root names the account; World diagnostics redact it literally.
         com.vibeminer.rendering.bgfx.HelperStderrTail.addSensitiveRoot(directory);
@@ -295,6 +308,8 @@ public final class BuildApplication {
                             failure.addSuppressed(closeFailure);
                         }
                         result.completeExceptionally(failure);
+                    } finally {
+                        settled.complete(null);
                     }
                 });
         return result;

@@ -704,9 +704,10 @@ tasks.register('worldMeasurementLibraryTest', JavaExec) {
 check.dependsOn worldMeasurementLibraryTest
 
 // Phase 0 real-data World measurement (docs/world-measurement-baseline.md). Opt-in, never part
-// of check: opens the library at -PdataDirectory (default the app's own; holds the store's
-// writer lock, so close the app) and a build already prepared there, never a preparation job;
-// starts the GPU helper and a JavaFX toolkit, and ends within ten minutes. -Pprobe.mode=refusals
+// of check: runs only on a measurement copy of the library (-PdataDirectory=<copy> with a
+// MEASUREMENT_COPY marker; it refuses the app's own library), opens it without background work
+// and a build already prepared there, never a preparation job; starts the GPU helper and a
+// JavaFX toolkit, and ends within ten minutes. -Pprobe.mode=refusals
 // counts terrain texture refusals over whole maps; -Pprobe.mode=prep times tile prep alone (#422).
 tasks.register('worldMeasurementProbe', JavaExec) {
     group = 'verification'
@@ -714,7 +715,7 @@ tasks.register('worldMeasurementProbe', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldMeasurementProbe'
-    // The probe's own deadline (at most 480 s) plus its close grace stays inside this.
+    // The probe's deadline (at most 400 s) plus every close timeout (125 s) stays inside this.
     timeout = java.time.Duration.ofMinutes(10)
     def out = layout.buildDirectory.dir('world-measurement').get().asFile
     doFirst { out.mkdirs() }

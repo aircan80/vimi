@@ -43,10 +43,13 @@ import javax.management.openmbean.CompositeData;
  * runs only on a copy of the library ({@code -PdataDirectory}), never prepares anything, and
  * starts no background downloads or provider checks.
  *
- * <p>Bounds. {@code probe.deadlineSeconds} (default and maximum 480 s, below the task's 10-minute
- * timeout) stops new work; the run then closes the controller, helper, World and library
- * normally. The watchdog acts only after a further {@value #GRACE_SECONDS} s, never while the
- * library opens or anything closes, and then exits without halting. Exit codes ({@link
+ * <p>Bounds. {@code probe.deadlineSeconds} (default and maximum {@value #MAX_DEADLINE_SECONDS} s)
+ * stops new work, and bounds the library open too; the run then closes the controller ({@value
+ * #CONTROLLER_CLOSE_SECONDS} s), helper ({@value #HELPER_CLOSE_SECONDS} s) and library ({@link
+ * WorldMeasurementOpen#CLOSE_SECONDS} s) normally. Deadline plus every close timeout stays inside
+ * the task's 10-minute timeout. The main thread holds the watchdog off at all times except while
+ * measuring, so the watchdog (after a further {@value #GRACE_SECONDS} s) can only end a stuck
+ * measurement, never an open or a close, and it exits without halting. Exit codes ({@link
  * #exitCode}): 0 complete, 2 failed, 3 deadline or incomplete.
  *
  * <p>Other properties: {@code probe.build} (default 70790); {@code probe.scenarios} = name:map:x:y
@@ -56,7 +59,8 @@ import javax.management.openmbean.CompositeData;
  * file the task writes.
  */
 public final class WorldMeasurementProbe {
-    static final long MAX_DEADLINE_SECONDS = 480, GRACE_SECONDS = 40;
+    static final long MAX_DEADLINE_SECONDS = 400, GRACE_SECONDS = 150;
+    static final long CONTROLLER_CLOSE_SECONDS = 45, HELPER_CLOSE_SECONDS = 20;
     private static final long START = System.nanoTime();
     private static final long DEADLINE =
             START
@@ -65,9 +69,13 @@ public final class WorldMeasurementProbe {
                                     MAX_DEADLINE_SECONDS,
                                     Long.getLong("probe.deadlineSeconds", MAX_DEADLINE_SECONDS)));
     private static final StringBuilder REPORT = new StringBuilder();
-    // Opening the library and every close: the watchdog never acts while one is running.
+    // Held by the main thread except while it measures, and by every open and close: the
+    // watchdog never acts while it is non-zero.
     private static final java.util.concurrent.atomic.AtomicInteger BUSY =
-            new java.util.concurrent.atomic.AtomicInteger();
+            new java.util.concurrent.atomic.AtomicInteger(1);
+    // Whoever sets it first (main thread or watchdog) is the only one that exits.
+    private static final java.util.concurrent.atomic.AtomicBoolean EXITING =
+            new java.util.concurrent.atomic.AtomicBoolean();
     private static volatile boolean incomplete;
 
     private WorldMeasurementProbe() {}
@@ -90,7 +98,8 @@ public final class WorldMeasurementProbe {
                                                         - System.nanoTime();
                                         if (left > 0) TimeUnit.NANOSECONDS.sleep(left);
                                         while (BUSY.get() > 0) Thread.sleep(100);
-                                        say("PROBE overran its deadline outside any open or close");
+                                        if (!EXITING.compareAndSet(false, true)) return;
+                                        say("PROBE measurement stuck past its deadline; exiting");
                                         finish(3);
                                     } catch (InterruptedException ignored) {
                                         // Normal end.
@@ -109,6 +118,10 @@ public final class WorldMeasurementProbe {
         if (!failed && (incomplete || overran)) {
             say("PROBE incomplete: deadline reached or a scenario did not finish");
         }
+        if (!EXITING.compareAndSet(false, true)) {
+            // The watchdog is already exiting; it never does so while this thread holds BUSY.
+            return;
+        }
         watchdog.interrupt();
         finish(exitCode(failed, incomplete, overran));
     }
@@ -126,6 +139,16 @@ public final class WorldMeasurementProbe {
         System.out.flush();
         // A normal exit: shutdown hooks run, nothing is halted mid-write.
         System.exit(code);
+    }
+
+    /** Measures with the watchdog armed: the only time the main thread releases BUSY. */
+    static void measuring(java.util.concurrent.Callable<?> action) throws Exception {
+        BUSY.decrementAndGet();
+        try {
+            action.call();
+        } finally {
+            BUSY.incrementAndGet();
+        }
     }
 
     /** Runs one open or close; the watchdog waits for it. */
@@ -162,10 +185,13 @@ public final class WorldMeasurementProbe {
                                         BuildApplication.defaultDataDirectory(),
                                         System.getProperty("probe.build", "70790"),
                                         null,
-                                        issue -> say("PROBE " + issue)));
+                                        issue -> say("PROBE " + issue),
+                                        DEADLINE - System.nanoTime()));
         try {
             BuildWorld handle = opened.world();
-            var catalog = handle.catalog(Cancellation.NONE).get(5, TimeUnit.MINUTES);
+            var catalog =
+                    handle.catalog(Cancellation.NONE)
+                            .get(Math.max(1, DEADLINE - System.nanoTime()), TimeUnit.NANOSECONDS);
             say(
                     String.format(
                             Locale.ROOT,
@@ -180,11 +206,15 @@ public final class WorldMeasurementProbe {
                             Runtime.getRuntime().availableProcessors(),
                             Runtime.getRuntime().maxMemory() >> 20,
                             WorldStreamGpuOwner.configuredBackend()));
-            switch (System.getProperty("probe.mode", "stream")) {
-                case "refusals" -> refusals(handle, catalog);
-                case "prep" -> prep(handle, catalog);
-                default -> stream(handle, catalog);
-            }
+            measuring(
+                    () -> {
+                        switch (System.getProperty("probe.mode", "stream")) {
+                            case "refusals" -> refusals(handle, catalog);
+                            case "prep" -> prep(handle, catalog);
+                            default -> stream(handle, catalog);
+                        }
+                        return null;
+                    });
         } finally {
             busy(
                     () -> {
@@ -332,7 +362,7 @@ public final class WorldMeasurementProbe {
                 new StreamRun(scenario, handle, catalog, map, inventory, origin, gpu).run();
             }
         } finally {
-            busy(() -> gpu.closeAsync().get(30, TimeUnit.SECONDS));
+            busy(() -> gpu.closeAsync().get(HELPER_CLOSE_SECONDS, TimeUnit.SECONDS));
             Platform.exit();
         }
     }
@@ -445,7 +475,11 @@ public final class WorldMeasurementProbe {
                             timer.stop();
                             return null;
                         });
-                busy(() -> controller.closeAsync().get(60, TimeUnit.SECONDS));
+                busy(
+                        () ->
+                                controller
+                                        .closeAsync()
+                                        .get(CONTROLLER_CLOSE_SECONDS, TimeUnit.SECONDS));
             }
         }
 

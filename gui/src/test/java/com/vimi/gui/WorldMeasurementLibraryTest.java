@@ -24,6 +24,7 @@ public final class WorldMeasurementLibraryTest {
         Throwable primary = null;
         try {
             var fixture = FullPreparationLibraryIntegrationTest.seed(directory);
+            Files.writeString(directory.resolve(WorldMeasurementOpen.MARKER), "");
             String version;
             var service =
                     BuildApplication.open(directory, OfflineSourceFixtures::publicKeys)
@@ -40,7 +41,11 @@ public final class WorldMeasurementLibraryTest {
             }
             try {
                 WorldMeasurementOpen.open(
-                                directory, version, OfflineSourceFixtures::publicKeys, ignored -> {})
+                                directory,
+                                version,
+                                OfflineSourceFixtures::publicKeys,
+                                ignored -> {},
+                                TimeUnit.MINUTES.toNanos(1))
                         .close();
                 throw new AssertionError("Opened a build with no Tables-ready receipt");
             } catch (IllegalStateException expected) {
@@ -69,7 +74,11 @@ public final class WorldMeasurementLibraryTest {
             long objectsBefore = storedObjects(directory);
             try (var opened =
                     WorldMeasurementOpen.open(
-                            directory, version, OfflineSourceFixtures::publicKeys, ignored -> {})) {
+                            directory,
+                                version,
+                                OfflineSourceFixtures::publicKeys,
+                                ignored -> {},
+                                TimeUnit.MINUTES.toNanos(1))) {
                 require(opened.receipt.locale().equals("enUS"), "Receipt supplies the locale");
                 opened.world().catalog(Cancellation.NONE).get(20, TimeUnit.SECONDS);
             }
@@ -96,37 +105,85 @@ public final class WorldMeasurementLibraryTest {
 
     private static void refusesMissingDefaultAndUnseededLibraries() throws Exception {
         Path own = Files.createTempDirectory("vimi-world-measurement-own-");
+        Path copy = Files.createTempDirectory("vimi-world-measurement-copy-");
+        Path linked = Files.createTempDirectory("vimi-world-measurement-linked-");
         try {
             Files.createDirectories(own.resolve("library"));
             require(
                     WorldMeasurementOpen.libraryRefusal(null, own) != null
                             && WorldMeasurementOpen.libraryRefusal(" ", own) != null,
                     "A missing -PdataDirectory is refused");
+            Files.writeString(own.resolve(WorldMeasurementOpen.MARKER), "");
             require(
                     WorldMeasurementOpen.libraryRefusal(own.toString(), own) != null,
-                    "The application's own library is refused");
+                    "The application's own library is refused, even with a marker");
             require(
                     WorldMeasurementOpen.libraryRefusal(own.resolve(".").toString(), own) != null,
                     "The application's own library is refused through another spelling");
-            Path copy = Files.createTempDirectory("vimi-world-measurement-copy-");
-            try {
+            Files.createDirectories(copy.resolve("library"));
+            require(
+                    WorldMeasurementOpen.libraryRefusal(copy.toString(), own).contains("MEASUREMENT_COPY"),
+                    "A library without the marker is refused");
+            Files.writeString(copy.resolve(WorldMeasurementOpen.MARKER), "");
+            require(
+                    WorldMeasurementOpen.libraryRefusal(copy.toString(), own) == null,
+                    "A marked copy is accepted");
+            Files.writeString(linked.resolve(WorldMeasurementOpen.MARKER), "");
+            require(
+                    WorldMeasurementOpen.libraryRefusal(linked.toString(), own) != null,
+                    "A marked folder without a library is refused");
+            if (link(linked.resolve("library"), own.resolve("library"))) {
                 require(
-                        WorldMeasurementOpen.libraryRefusal(copy.toString(), own) != null,
-                        "A directory without a library folder is refused");
-                Files.createDirectories(copy.resolve("library"));
-                require(
-                        WorldMeasurementOpen.libraryRefusal(copy.toString(), own) == null,
-                        "A copy is accepted");
-            } finally {
-                TestCleanup.deleteTree(null, copy);
+                        WorldMeasurementOpen.libraryRefusal(linked.toString(), own) != null,
+                        "A marked copy whose library links to the real one is refused");
+            } else {
+                System.out.println("World measurement open: no link or junction support here;"
+                        + " linked-library refusal not exercised");
             }
         } finally {
+            TestCleanup.deleteTree(null, linked);
+            TestCleanup.deleteTree(null, copy);
             TestCleanup.deleteTree(null, own);
         }
         require(WorldMeasurementProbe.exitCode(false, false, false) == 0, "complete exits 0");
         require(WorldMeasurementProbe.exitCode(false, true, false) == 3, "incomplete exits 3");
         require(WorldMeasurementProbe.exitCode(false, false, true) == 3, "overrun exits 3");
         require(WorldMeasurementProbe.exitCode(true, true, true) == 2, "failure exits 2");
+        require(
+                WorldMeasurementProbe.MAX_DEADLINE_SECONDS
+                                + WorldMeasurementProbe.CONTROLLER_CLOSE_SECONDS
+                                + WorldMeasurementProbe.HELPER_CLOSE_SECONDS
+                                + WorldMeasurementOpen.CLOSE_SECONDS
+                        < 600
+                        && WorldMeasurementProbe.MAX_DEADLINE_SECONDS
+                                        + WorldMeasurementProbe.GRACE_SECONDS
+                                < 600,
+                "Deadline plus every close timeout fits the ten-minute task timeout");
+    }
+
+    /** A symbolic link, or on Windows a directory junction; false when neither can be made. */
+    private static boolean link(Path link, Path target) {
+        try {
+            Files.createSymbolicLink(link, target);
+            return true;
+        } catch (Exception unsupported) {
+            // Windows without the symlink privilege: a junction needs none.
+        }
+        if (!System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win")) {
+            return false;
+        }
+        try {
+            var process =
+                    new ProcessBuilder("cmd", "/c", "mklink", "/J", link.toString(), target.toString())
+                            .redirectErrorStream(true)
+                            .start();
+            process.getInputStream().readAllBytes();
+            return process.waitFor(30, TimeUnit.SECONDS)
+                    && process.exitValue() == 0
+                    && Files.exists(link);
+        } catch (Exception unavailable) {
+            return false;
+        }
     }
 
     /** Every non-SQLite file under the library, by relative path, with its SHA-256. */

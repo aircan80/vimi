@@ -4,7 +4,9 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.world.BuildWorld;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
@@ -48,31 +50,56 @@ final class WorldMeasurementOpen implements AutoCloseable {
         return measured.world();
     }
 
+    /** The marker a measurement copy must carry at its root; a real library never has it. */
+    static final String MARKER = "MEASUREMENT_COPY";
+
+    /** Seconds the library close may take; part of the probe's time budget. */
+    static final long CLOSE_SECONDS = 60;
+
     /**
-     * Why {@code configured} must not be measured on, or null when it may: it has to be given and
-     * must not be the application's own library ({@code application}), by path or by real path.
+     * Why {@code configured} must not be measured on, or null when it may. It has to be given,
+     * carry the {@value #MARKER} file at its root, hold a real (not linked) {@code library}
+     * folder, and be neither the application's own data directory ({@code application}) nor share
+     * its {@code library}, by path or by real path.
      */
     static String libraryRefusal(String configured, Path application) {
         if (configured == null || configured.isBlank()) {
-            return "Pass -PdataDirectory=<a copy of the library>; the probe never runs on the"
-                    + " application's own library";
+            return "Pass -PdataDirectory=<a measurement copy of the library>; the probe never runs"
+                    + " on the application's own library";
         }
         Path given = Path.of(configured).toAbsolutePath().normalize();
         Path own = application.toAbsolutePath().normalize();
         if (given.equals(own)) {
             return "-PdataDirectory names the application's own library; pass a copy";
         }
+        Path library = given.resolve("library");
         try {
-            if (Files.exists(given)
-                    && Files.exists(own)
+            if (Files.exists(own) && Files.exists(given)
                     && Files.isSameFile(given.toRealPath(), own.toRealPath())) {
                 return "-PdataDirectory resolves to the application's own library; pass a copy";
             }
+            if (!Files.isRegularFile(given.resolve(MARKER), LinkOption.NOFOLLOW_LINKS)) {
+                return "-PdataDirectory has no " + MARKER + " file at its root; only a copy made"
+                        + " for measurement may be used";
+            }
+            if (!Files.exists(library, LinkOption.NOFOLLOW_LINKS)) {
+                return "-PdataDirectory has no library folder; copy the whole data directory";
+            }
+            var attributes =
+                    Files.readAttributes(
+                            library, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (attributes.isSymbolicLink()
+                    || attributes.isOther()
+                    || !attributes.isDirectory()
+                    || !library.toRealPath().equals(given.toRealPath().resolve("library"))) {
+                return "The copy's library folder is a link or junction; copy it, do not link it";
+            }
+            Path ownLibrary = own.resolve("library");
+            if (Files.exists(ownLibrary) && Files.isSameFile(library, ownLibrary)) {
+                return "The copy's library folder is the application's own; copy it";
+            }
         } catch (IOException unreadable) {
-            return "Cannot compare -PdataDirectory with the application's library: " + unreadable;
-        }
-        if (!Files.isDirectory(given.resolve("library"))) {
-            return "-PdataDirectory has no library folder; copy the whole data directory";
+            return "Cannot check -PdataDirectory against the application's library: " + unreadable;
         }
         return null;
     }
@@ -104,21 +131,35 @@ final class WorldMeasurementOpen implements AutoCloseable {
 
     record Selection(BuildInfo build, PreparationHistory.Receipt receipt) {}
 
-    /** Opens the build at {@code directory}; refuses (throws) rather than prepare anything. */
+    /**
+     * Opens the build at {@code directory}; refuses (throws) rather than prepare anything. An
+     * open that takes longer than {@code openNanos} is canceled, and this waits up to {@link
+     * #CLOSE_SECONDS} for the opening thread to close what it opened before throwing.
+     */
     static WorldMeasurementOpen open(
             Path directory,
             String wanted,
             com.vibeminer.network.TactKeyClient keys,
-            Consumer<String> say)
+            Consumer<String> say,
+            long openNanos)
             throws Exception {
-        var service =
-                BuildApplication.openWithoutBackgroundWork(directory, keys)
-                        .get(5, TimeUnit.MINUTES);
+        long until = System.nanoTime() + Math.max(1, openNanos);
+        var settled = new java.util.concurrent.CompletableFuture<Void>();
+        var opening = BuildApplication.openWithoutBackgroundWork(directory, keys, settled);
+        BackendBuildService service;
+        try {
+            service = opening.get(Math.max(1, openNanos), TimeUnit.NANOSECONDS);
+        } catch (java.util.concurrent.TimeoutException late) {
+            opening.cancel(true);
+            settled.get(CLOSE_SECONDS, TimeUnit.SECONDS);
+            throw new IllegalStateException("Library open overran its budget; canceled", late);
+        }
         NativePreparationWork work = null;
         try {
             var selection =
                     select(
-                            service.listBuilds().get(2, TimeUnit.MINUTES),
+                            service.listBuilds()
+                                    .get(Math.max(1, until - System.nanoTime()), TimeUnit.NANOSECONDS),
                             service.preparedReceipts(),
                             wanted);
             if (selection == null) {
@@ -153,7 +194,7 @@ final class WorldMeasurementOpen implements AutoCloseable {
                     work.close();
                 }
             } finally {
-                service.closeAsync().get(2, TimeUnit.MINUTES);
+                service.closeAsync().get(CLOSE_SECONDS, TimeUnit.SECONDS);
             }
             throw failure;
         }
@@ -169,7 +210,7 @@ final class WorldMeasurementOpen implements AutoCloseable {
                 work.close();
             } finally {
                 try {
-                    service.closeAsync().get(2, TimeUnit.MINUTES);
+                    service.closeAsync().get(CLOSE_SECONDS, TimeUnit.SECONDS);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     throw new IllegalStateException("Library close interrupted", interrupted);

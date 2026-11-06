@@ -18,16 +18,23 @@ inherits it and writes its own table (`WorldStageTimingsDump`) to
 
 ### What the probe touches
 
-**It only runs on a copy of the library.** It refuses to start without `-PdataDirectory=<copy>`.
-It also refuses a directory that is, or resolves to, the application's own data directory, and a
-directory with no `library` folder.
+**It only runs on a measurement copy of the library.** It refuses to start without
+`-PdataDirectory=<copy>`. It also refuses a directory that:
+- has no `MEASUREMENT_COPY` file at its root. A real library never has one, so a real library
+  at a custom location is refused too;
+- is, or resolves to, the application's own data directory, whether through a junction, a
+  different case or a short name;
+- has a `library` folder that is a link, junction or reparse point, or the same folder as the
+  application's own `library`;
+- has no `library` folder at all.
 
 To make the copy, close the application and copy its whole data directory (it holds `library`,
-`derived`, `questie` and so on) to a scratch folder. On Windows the data directory is
-`%LOCALAPPDATA%\vimi`. For example, with robocopy:
+`derived`, `questie` and so on) to a scratch folder. Do not link it. Then mark it. On Windows the
+data directory is `%LOCALAPPDATA%\vimi`:
 
 ```bat
-robocopy "%LOCALAPPDATA%\vimi" D:\scratch\vimi-copy /E
+robocopy "%LOCALAPPDATA%\vimi" <scratch>\vimi-copy /E
+type nul > <scratch>\vimi-copy\MEASUREMENT_COPY
 ```
 
 The copy must contain the build already prepared to Tables-ready.
@@ -64,10 +71,18 @@ That is why it starts within seconds (#422).
 `worldMeasurementLibraryTest` checks this over an authored offline library. It refuses an
 unprepared build, and the open adds no stored object and changes no payload file.
 
-**Bounds.** The deadline is at most 480 s, below the task's 10-minute timeout. It stops new work,
-and the run then closes the controller, helper, World and library normally. The watchdog acts
-only 40 s after the deadline. It never acts while the library is opening or anything is closing,
-and then it exits normally with `System.exit`; nothing is halted.
+**Bounds.** The deadline is at most 400 s. It also bounds the library open: an open that overruns
+is canceled, and the probe waits up to 60 s for it to close what it opened. After the deadline
+the run closes everything normally, each step with its own timeout:
+- the controller, 45 s;
+- the helper, 20 s;
+- the library, 60 s.
+
+Deadline plus every close timeout, 525 s, stays inside the task's 10-minute timeout.
+
+The main thread holds the watchdog off at all times except while it measures. The watchdog acts
+only 150 s after the deadline, so it can end a stuck measurement but never an open or a close.
+Even then it exits normally with `System.exit`; nothing is halted.
 
 **Exit codes:** 0 complete, 2 failed (including a refusal), 3 deadline or incomplete.
 
