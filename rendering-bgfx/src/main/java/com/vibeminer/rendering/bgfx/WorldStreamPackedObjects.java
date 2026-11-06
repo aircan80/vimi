@@ -15,6 +15,10 @@ import org.lwjgl.system.MemoryUtil;
 final class WorldStreamPackedObjects implements AutoCloseable {
     final int[] models, meshes, ranges, placementModels, images;
     final double[] placements;
+
+    /** Per placement world bounding sphere (x, y, z, radius), see WorldStreamObjectCulling. */
+    final double[] spheres;
+
     final int draws;
     ByteBuffer vertices, indices, pixels;
 
@@ -22,13 +26,20 @@ final class WorldStreamPackedObjects implements AutoCloseable {
             WorldStreamObjectsFile.Data data,
             ByteBuffer vertices,
             ByteBuffer indices,
-            ByteBuffer pixels) {
+            ByteBuffer pixels,
+            BooleanSupplier canceled) {
         models = data.models.clone();
         meshes = data.meshes.clone();
         ranges = data.ranges.clone();
         placementModels = data.placementModels.clone();
         images = data.images.clone();
         placements = data.placements.clone();
+        spheres =
+                WorldStreamObjectCulling.placementSpheres(
+                        placementModels,
+                        placements,
+                        WorldStreamObjectCulling.modelSpheres(
+                                models, meshes, ranges, data.vertices, data.indices, canceled));
         draws = data.draws;
         this.vertices = vertices;
         this.indices = indices;
@@ -57,7 +68,7 @@ final class WorldStreamPackedObjects implements AutoCloseable {
                 pixels.put(data.pixels, at, Math.min(64 << 10, data.pixels.length - at));
             }
             pixels.flip();
-            var result = new WorldStreamPackedObjects(data, vertices, indices, pixels);
+            var result = new WorldStreamPackedObjects(data, vertices, indices, pixels, canceled);
             vertices = indices = pixels = null;
             return result;
         } finally {

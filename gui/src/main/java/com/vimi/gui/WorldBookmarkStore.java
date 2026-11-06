@@ -16,9 +16,11 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Saved World camera bookmarks. With a library database they persist in two versioned
- * {@code world_bookmarks*} tables; without one they last for the session. All SQL runs on one
- * bounded daemon worker, never on the JavaFX thread. Unreadable rows are counted, not repaired.
+ * Saved World camera bookmarks and the World explorer's control preferences. With a library
+ * database bookmarks persist in two versioned {@code world_bookmarks*} tables and controls in two
+ * versioned {@code world_controls*} tables (one encoded {@link WorldControls} row); without one
+ * both last for the session. All SQL runs on one bounded daemon worker, never on the JavaFX
+ * thread. Unreadable rows are counted, not repaired.
  */
 final class WorldBookmarkStore implements AutoCloseable {
     record Entry(long id, WorldBookmarks.Bookmark bookmark) {
@@ -42,7 +44,8 @@ final class WorldBookmarkStore implements AutoCloseable {
     // Worker-confined state.
     private final List<Entry> session = new ArrayList<>();
     private long nextSessionId = 1;
-    private boolean prepared;
+    private boolean prepared, controlsPrepared;
+    private String sessionControls;
 
     private WorldBookmarkStore(Path database) {
         this.database = database;
@@ -90,9 +93,78 @@ final class WorldBookmarkStore implements AutoCloseable {
         });
     }
 
+    /** The stored encoded controls, or null when none were saved. */
+    CompletableFuture<String> loadControls() {
+        return submit(() -> {
+            if (database == null) return sessionControls;
+            prepareControls();
+            try (var connection = DerivedSqliteConnection.openReadOnly(database)) {
+                return connection.run(Cancellation.NONE, false, sql -> {
+                    var rows = sql.query("SELECT record FROM world_controls WHERE id=1");
+                    return rows.isEmpty() ? null : (String) rows.getFirst()[0];
+                });
+            }
+        });
+    }
+
+    /** Replaces the stored encoded controls. */
+    CompletableFuture<Void> saveControls(String record) {
+        Objects.requireNonNull(record);
+        return submit(() -> {
+            if (database == null) {
+                sessionControls = record;
+                return null;
+            }
+            prepareControls();
+            try (var connection = new DerivedSqliteConnection(database)) {
+                connection.run(Cancellation.NONE, true, sql -> {
+                    sql.execute("INSERT INTO world_controls(id,record) VALUES(1,?)"
+                            + " ON CONFLICT(id) DO UPDATE SET record=excluded.record", record);
+                    return null;
+                });
+            }
+            return null;
+        });
+    }
+
     @Override
     public void close() {
         worker.shutdown();
+    }
+
+    /** The same library and versioned-schema gate as the bookmarks, for the controls tables. */
+    private void prepareControls() throws Exception {
+        if (controlsPrepared) return;
+        try (var connection = DerivedSqliteConnection.openReadOnly(database)) {
+            connection.run(Cancellation.NONE, false, sql -> {
+                if (((Number) sql.query("PRAGMA application_id").getFirst()[0]).intValue() != 2
+                        || ((Number) sql.query("PRAGMA user_version").getFirst()[0]).intValue() != 1)
+                    throw new IllegalArgumentException("World controls require a unified library");
+                long tables = ((Number) sql.query("SELECT count(*) FROM sqlite_master WHERE"
+                        + " type='table' AND name IN ('world_controls_metadata','world_controls')")
+                        .getFirst()[0]).longValue();
+                if (tables != 0 && tables != 2)
+                    throw new IllegalArgumentException("Incomplete world controls schema");
+                if (tables == 2) {
+                    var versions = sql.query("SELECT version FROM world_controls_metadata");
+                    if (versions.size() != 1 || ((Number) versions.getFirst()[0]).intValue() != 1)
+                        throw new IllegalArgumentException("Unsupported world controls schema");
+                    sql.query("SELECT id,record FROM world_controls LIMIT 0");
+                }
+                return null;
+            });
+        }
+        try (var connection = new DerivedSqliteConnection(database)) {
+            connection.run(Cancellation.NONE, true, sql -> {
+                sql.execute("CREATE TABLE IF NOT EXISTS world_controls_metadata(version INTEGER NOT NULL)");
+                if (sql.query("SELECT version FROM world_controls_metadata").isEmpty())
+                    sql.execute("INSERT INTO world_controls_metadata VALUES(1)");
+                sql.execute("CREATE TABLE IF NOT EXISTS world_controls(id INTEGER PRIMARY KEY"
+                        + " CHECK(id=1), record TEXT NOT NULL)");
+                return null;
+            });
+        }
+        controlsPrepared = true;
     }
 
     private <T> CompletableFuture<T> submit(Callable<T> work) {
