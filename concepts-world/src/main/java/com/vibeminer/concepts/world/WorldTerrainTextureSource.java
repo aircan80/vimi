@@ -625,6 +625,8 @@ public final class WorldTerrainTextureSource {
 
     private final BuildFiles files;
     private final TerrainAtlasPool pool;
+    // Layer diffuses decoded for shader-side splatting, shared by every tile of this source.
+    final TerrainDiffuseDetails details = new TerrainDiffuseDetails();
     private final TerrainTextureTasks tasks;
     private final BuildRef build;
     private final String locale;
@@ -1050,6 +1052,64 @@ public final class WorldTerrainTextureSource {
                             image.encoding().name(),
                             image.alphaDepth(),
                             image.alphaEncoding()));
+        }
+    }
+
+    /**
+     * The largest declared mip of one layer diffuse within {@link TerrainDiffuseDetails#MAX_SIDE},
+     * for shader-side splatting (issue #174 step 2). Same file bounds and revalidation as the
+     * coverage preview's 4 x 4 mip; a decoded detail is cached by file id and content key.
+     */
+    TerrainDiffuseDetails.Detail detail(FileBinding before, Request request) {
+        var cached = details.get(before.fileId(), before.contentKey());
+        if (cached != null) {
+            return cached;
+        }
+        var opened = files.openRead(FileTypes.FileRef.id(before.fileId()), request.token).join();
+        try (var stream = opened.stream()) {
+            request.observeOpen(before.fileId(), opened);
+            if (stream == null) {
+                throw new SourceFailure(Reason.ABSENT);
+            }
+            validateStream(opened, stream.length(), before, 1 << 20, !stream.holes().isEmpty());
+            var image =
+                    Blp2Decoder.decodeLargestWithin(
+                                    AssetSources.file(stream),
+                                    TerrainDiffuseDetails.MAX_SIDE,
+                                    // Decoded pixels and bytes bounded by one 128 x 128 layer.
+                                    new Blp2Types.Limits(
+                                            1 << 20,
+                                            16384,
+                                            TerrainDiffuseDetails.MAX_SIDE
+                                                    * TerrainDiffuseDetails.MAX_SIDE,
+                                            1 << 20,
+                                            TerrainDiffuseDetails.MAX_SIDE
+                                                    * TerrainDiffuseDetails.MAX_SIDE
+                                                    * 4L),
+                                    request.token,
+                                    Blp2Types.MipProfile.DECLARED_HANDMADE_V1)
+                            .join();
+            request.check();
+            int side = image.width();
+            if (side != image.height()
+                    || side > TerrainDiffuseDetails.MAX_SIDE
+                    || Integer.bitCount(side) != 1
+                    || image.baseWidth() != image.baseHeight()
+                    || image.rowStride() != side * 4) {
+                throw new SourceFailure(Reason.DIFFUSE_PROFILE);
+            }
+            revalidate(
+                    List.of(
+                            new FileBinding(
+                                    before.fileId(),
+                                    before.contentKey(),
+                                    stream.length(),
+                                    before.declaredSize(),
+                                    before.sourceLimit())),
+                    request);
+            return details.put(
+                    new TerrainDiffuseDetails.Detail(
+                            before.fileId(), before.contentKey(), side, image.rgba()));
         }
     }
 
