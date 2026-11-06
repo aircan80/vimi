@@ -81,7 +81,7 @@ final class WorldMinimaps {
             return WorldService.Minimap.unavailable("No recorded minimap artwork");
         }
         var ref = FileTypes.FileRef.id(tile.minimapId());
-        var stat = files.stat(ref, token).join();
+        var stat = files.statContent(ref, token).join();
         token.check();
         if (stat.file() == null
                 || stat.file().size() != null && stat.file().size() > SOURCE_LIMIT) {
@@ -140,7 +140,7 @@ final class WorldMinimaps {
                                     | rgba[p + 2] & 255;
                 }
             }
-            var current = files.stat(ref, token).join();
+            var current = files.statContent(ref, token).join();
             token.check();
             if (current.file() == null || !contentKey.equals(current.file().contentKey())) {
                 return WorldService.Minimap.unavailable("Minimap source changed during read");

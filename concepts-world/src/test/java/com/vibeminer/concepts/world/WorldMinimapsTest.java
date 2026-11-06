@@ -156,6 +156,13 @@ class WorldMinimapsTest {
                             BuildFiles.class.getClassLoader(),
                             new Class<?>[] {BuildFiles.class},
                             (proxy, method, args) -> {
+                                if (method.getName().equals("stat")) {
+                                    // Full stats are not needed: answer as if the file were
+                                    // unknown.
+                                    return CompletableFuture.completedFuture(
+                                            new FileTypes.FileStat(
+                                                    FileTypes.FileLookupState.UNKNOWN_FILE, null));
+                                }
                                 calls.incrementAndGet();
                                 assertEquals(FileTypes.FileRef.id(91), args[0]);
                                 byte[] data = blp(side, gradient);

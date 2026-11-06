@@ -1,8 +1,8 @@
 package com.vibeminer.rendering.bgfx;
 
-import static org.lwjgl.bgfx.BGFX.BGFX_RENDERER_TYPE_VULKAN;
 import static org.lwjgl.bgfx.BGFX.bgfx_get_stats;
 
+import com.vibeminer.rendering.world.TerrainCamera;
 import java.nio.IntBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -11,11 +11,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Actual Vulkan proof of CPU exterior object culling on the production native owner: one authored
- * terrain tile with the material proof's late objects (three camera-facing quads in placement 0,
- * then the tile filled to the placement cap behind the camera). With culling on, only placement 0
- * is drawn; with it off, every placement is. Both frames must have identical pixels, and the bgfx
- * draw counts must drop by the culled placements' submits. Authored data only.
+ * Actual GPU proof (Vulkan, or D3D11 on request; see WorldStreamNativeProof.BACKEND) of CPU
+ * exterior object culling on the production native owner: one authored terrain tile with the
+ * material proof's late objects (three camera-facing quads in placement 0, then the tile filled to
+ * the placement cap behind the camera). With culling on, only placement 0 is drawn; with it off,
+ * every placement is. Both frames must have identical pixels, and the bgfx draw counts must drop by
+ * the culled placements' submits. Authored data only.
  */
 final class WorldStreamObjectsCullProof {
     private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(321, -654);
@@ -57,7 +58,8 @@ final class WorldStreamObjectsCullProof {
         try (var frames = WorldFrameFileV2.create(mapping, NONCE, WorldStreamNativeProof.SCOPE);
                 var reader = WorldFrameFileV2.open(mapping, NONCE, WorldStreamNativeProof.SCOPE);
                 var owner =
-                        new WorldStreamNativeOwner(session, frames, BGFX_RENDERER_TYPE_VULKAN)) {
+                        new WorldStreamNativeOwner(
+                                session, frames, WorldStreamNativeProof.BACKEND)) {
             var upload = owner.begin(tile);
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
             while (!upload.finished()) {
@@ -126,8 +128,39 @@ final class WorldStreamObjectsCullProof {
             require(
                     (sky & 0xffffff) == 0x5b8db1 || (sky & 0xffffff) == 0xb18d5b,
                     "Sky top row " + Integer.toHexString(sky));
+            // MSAA resolve: moving the camera 0.01 yd west puts the opaque quad's left edge (eye
+            // right -0.9 at depth 5) at x = 400 + focal * -0.89 / 5 = 328.8 for the 90 degree
+            // field of view, so pixel 328 is partly covered. Single-sampled, its centre misses the
+            // quad and it is the gap's pixel (324); resolved x4 it mixes the gap and quad red.
+            var shifted =
+                    new TerrainCamera(
+                            VIEW.x(), VIEW.y() + 0.01, VIEW.z(), VIEW.yaw(), VIEW.pitch());
+            var edgeFrame = frame(owner, reader, shifted).pixels;
+            double edgeX = WIDTH / 2.0 + TerrainCamera.focalPixels(WIDTH) * -0.89 / 5;
+            int edgePixel = (int) Math.floor(edgeX);
+            require(edgeX - edgePixel > 0.6 && edgeX - edgePixel < 0.95, "Edge position " + edgeX);
+            int samples = owner.stats().msaaSamples();
+            int row = HEIGHT / 2;
+            int edge = channel(edgeFrame.get(row * WIDTH + edgePixel), red16(middle));
+            int gap = channel(edgeFrame.get(row * WIDTH + edgePixel - 4), red16(middle));
+            int inside = channel(edgeFrame.get(row * WIDTH + edgePixel + 6), red16(middle));
+            if (samples == 4) {
+                require(
+                        edge > Math.min(gap, inside) + 8 && edge < Math.max(gap, inside) - 8,
+                        "Resolved MSAA edge " + gap + " " + edge + " " + inside);
+            } else {
+                require(samples == 1 && Math.abs(edge - gap) <= 1, "Single-sampled edge");
+            }
             System.out.println(
-                    "WORLD_OBJECT_CULL_PASS placements="
+                    "WORLD_OBJECT_CULL_PASS samples="
+                            + samples
+                            + " edgeRed="
+                            + gap
+                            + "/"
+                            + edge
+                            + "/"
+                            + inside
+                            + " placements="
                             + placements
                             + " culled="
                             + culled.culled()
@@ -145,16 +178,31 @@ final class WorldStreamObjectsCullProof {
         }
     }
 
+    /** The shift of the red channel, from a pixel known to be the opaque quad's red. */
+    private static int red16(int quad) {
+        return Math.abs((quad >>> 16 & 255) - 200) <= 1 ? 16 : 0;
+    }
+
+    private static int channel(int pixel, int shift) {
+        return pixel >>> shift & 255;
+    }
+
     private record Drawn(int draws, IntBuffer pixels) {}
 
     /** Submits one new camera revision and returns its bgfx draw count and published pixels. */
     private static Drawn frame(WorldStreamNativeOwner owner, WorldFrameFileV2 reader)
             throws Exception {
+        return frame(owner, reader, VIEW);
+    }
+
+    private static final TerrainCamera VIEW = WorldStreamObjectsMaterialProof.VIEW;
+
+    private static Drawn frame(
+            WorldStreamNativeOwner owner, WorldFrameFileV2 reader, TerrainCamera view)
+            throws Exception {
         long revision = ++camera;
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        var command =
-                new WorldStreamControl.Camera(
-                        NONCE, revision, 1, WIDTH, HEIGHT, WorldStreamObjectsMaterialProof.VIEW);
+        var command = new WorldStreamControl.Camera(NONCE, revision, 1, WIDTH, HEIGHT, view);
         while (!owner.submit(command)) {
             owner.advance();
             require(System.nanoTime() < deadline, "Camera submit");
