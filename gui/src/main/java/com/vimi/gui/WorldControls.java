@@ -45,6 +45,7 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         DEV_OVERLAY("Developer overlay (next page)", true),
         INSPECT_PIN("Inspect card: pin / unpin, or re-open the last", true),
         SCREENSHOT("Save a viewport screenshot", true),
+        BOOKMARKS("Bookmarks (menu page; again closes)", true),
         SPAWNS("NPC spawn markers on/off", true),
         TRACKING("Tracking popup open/close", true),
         MINIMAP("Minimap show/hide", true),
@@ -162,6 +163,8 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
             // I sits in the same place on QWERTY and AZERTY.
             keys.put(KeyCode.I, Action.INSPECT_PIN);
             keys.put(KeyCode.F12, Action.SCREENSHOT);
+            // B sits in the same place on QWERTY and AZERTY.
+            keys.put(KeyCode.B, Action.BOOKMARKS);
             // V, L, N and T sit in the same place on both layouts.
             keys.put(KeyCode.V, Action.SPAWNS);
             keys.put(KeyCode.L, Action.TRACKING);
@@ -279,7 +282,21 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
                 + (modifier == null ? "" : " · " + modifier.getName() + "+wheel changes speed")
                 + " · " + keysOf.apply(Action.WALK) + " walks · " + keysOf.apply(Action.MAP_PANEL)
                 + " map · " + keysOf.apply(Action.HIDE_HUD) + " hides the HUD · click inspects · "
+                + keysOf.apply(Action.INSPECT_PIN) + " pins the card · "
+                + keysOf.apply(Action.BOOKMARKS) + " bookmarks · "
+                + keysOf.apply(Action.SPAWNS) + " NPC spawns · " + keysOf.apply(Action.TRACKING)
+                + " tracking · " + keysOf.apply(Action.MINIMAP) + " minimap · "
+                + keysOf.apply(Action.DAY_NIGHT) + " day/night · " + speedKeys(bound) + " speed · "
+                + keysOf.apply(Action.SCREENSHOT) + " screenshot · "
                 + keysOf.apply(Action.DEV_OVERLAY) + " developer overlay · Keys… rebinds";
+    }
+
+    /** The speed preset keys for the help: "1/2/3/4/5", or "unbound" when none is bound. */
+    private static String speedKeys(Map<Action, java.util.List<KeyCode>> bound) {
+        var names = new java.util.ArrayList<String>();
+        for (var action : Action.values())
+            if (action.speed() != null && !bound.get(action).isEmpty()) names.add(bound.get(action).getFirst().getName());
+        return names.isEmpty() ? "unbound" : String.join("/", names);
     }
 
     String encode() {

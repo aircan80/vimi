@@ -2350,6 +2350,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 if (camera != null) inspectCard.togglePin(camera.x(), camera.y(), camera.z());
             }
             case SCREENSHOT -> screenshot();
+            case BOOKMARKS -> bookmarksKey();
             default -> {
                 WorldDiagnostics.warn("World command key", new IllegalStateException(
                         "No route for command action " + action));
@@ -2378,6 +2379,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
      */
     void layoutKeys(javafx.scene.input.KeyEvent e) {
         var code = e.getCode();
+        if (bookmarksKeyFilter(e)) {
+            e.consume();
+            return;
+        }
         if (code == KeyCode.ESCAPE) {
             if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_RELEASED) escapeKeyHeld = false;
             else if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_PRESSED) {
@@ -2408,6 +2413,36 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     // One method reference instance, so the filter can be removed again.
     private final javafx.event.EventHandler<javafx.scene.input.KeyEvent> layoutKeysFilter = this::layoutKeys;
+
+    /** The bookmarks key: opens the menu on its Bookmarks page, or closes it from there. */
+    private void bookmarksKey() {
+        if (!explorer || instances.engaged()) return;
+        if (menu.shown() && menu.current() == WorldGameMenu.Page.BOOKMARKS) menu.close();
+        else menu.open(WorldGameMenu.Page.BOOKMARKS);
+    }
+
+    /**
+     * The bookmarks key while the menu shows: the viewport takes no presses then, so this scene
+     * filter handles it, once per press, unless a text field has focus (typing a "b" in a name or
+     * coordinates field stays typing). True when the key was handled here.
+     */
+    private boolean bookmarksKeyFilter(javafx.scene.input.KeyEvent e) {
+        if (input.controls().keys().get(e.getCode()) != WorldControls.Action.BOOKMARKS) return false;
+        if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_RELEASED) {
+            bookmarksKeyHeld = false;
+            return false;
+        }
+        if (e.getEventType() != javafx.scene.input.KeyEvent.KEY_PRESSED) return false;
+        boolean repeat = bookmarksKeyHeld;
+        bookmarksKeyHeld = true;
+        if (!menu.shown()) return false;
+        var focus = getScene() == null ? null : getScene().getFocusOwner();
+        if (focus instanceof javafx.scene.control.TextInputControl) return false;
+        if (!repeat) bookmarksKey();
+        return true;
+    }
+
+    private boolean bookmarksKeyHeld;
 
     private void toggleFullscreen() {
         if (!explorer && !fullscreen.active()) return;
