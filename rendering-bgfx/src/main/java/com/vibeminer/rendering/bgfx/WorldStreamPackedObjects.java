@@ -15,6 +15,10 @@ import org.lwjgl.system.MemoryUtil;
 final class WorldStreamPackedObjects implements AutoCloseable {
     final int[] models, meshes, ranges, placementModels, images;
     final double[] placements;
+
+    /** Per placement world bounding sphere (x, y, z, radius), see WorldStreamObjectCulling. */
+    final double[] spheres;
+
     final int draws;
     ByteBuffer vertices, indices, pixels;
 
@@ -29,6 +33,12 @@ final class WorldStreamPackedObjects implements AutoCloseable {
         placementModels = data.placementModels.clone();
         images = data.images.clone();
         placements = data.placements.clone();
+        spheres =
+                WorldStreamObjectCulling.placementSpheres(
+                        placementModels,
+                        placements,
+                        WorldStreamObjectCulling.modelSpheres(
+                                models, meshes, ranges, data.vertices, data.indices));
         draws = data.draws;
         this.vertices = vertices;
         this.indices = indices;
