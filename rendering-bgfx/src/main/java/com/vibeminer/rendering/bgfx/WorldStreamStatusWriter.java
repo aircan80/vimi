@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -48,7 +49,7 @@ final class WorldStreamStatusWriter {
 
     /** Camera replacement never reserves reliable credit or refreshes reliable write progress. */
     boolean cameraApplied(long policy, int width, int height) {
-        if (policy <= 0 || width < 1 || width > 800 || height < 1 || height > 500) {
+        if (policy <= 0 || !WorldFrameLimits.fits(width, height)) {
             throw new IllegalArgumentException("Invalid camera acknowledgement");
         }
         byte[] bytes = line("CAMERA_APPLIED " + policy + " " + width + " " + height);
