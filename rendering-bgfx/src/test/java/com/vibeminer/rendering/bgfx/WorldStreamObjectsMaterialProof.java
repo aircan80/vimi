@@ -369,13 +369,19 @@ public final class WorldStreamObjectsMaterialProof {
         return chain.flip();
     }
 
-    /** Model 1: one quad per ladder level, each an opaque range over its ladder image. */
-    private static void ladderModel(WorldStreamTileWriter.Exterior.Builder builder) {
-        builder.model();
+    /** Ranges (and submits) of the ladder model: one per level of every ladder. */
+    static int ladderQuads() {
         int quads = 0;
         for (var ladder : LADDERS) {
             quads += ObjectTextureMips.levels(ladder.width, ladder.height);
         }
+        return quads;
+    }
+
+    /** Model 1: one quad per ladder level, each an opaque range over its ladder image. */
+    private static void ladderModel(WorldStreamTileWriter.Exterior.Builder builder) {
+        builder.model();
+        int quads = ladderQuads();
         var vertices = FloatBuffer.allocate(quads * 4 * 8);
         var indices = IntBuffer.allocate(quads * 6);
         var ranges = new int[quads * 3];

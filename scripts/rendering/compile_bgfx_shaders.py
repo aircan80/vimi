@@ -83,7 +83,8 @@ def tools(directory, target):
 
 
 def inputs():
-    names = ("vs_model.sc", "fs_model.sc", "varying.def.sc")
+    # Local includes (*.sh beside the sources) are inputs too: a change to one must rebuild.
+    names = ("vs_model.sc", "fs_model.sc", "varying.def.sc", *sorted(p.name for p in SOURCES.glob("*.sh")))
     return {name: digest((SOURCES / name).read_bytes()) for name in names} | INCLUDES
 
 

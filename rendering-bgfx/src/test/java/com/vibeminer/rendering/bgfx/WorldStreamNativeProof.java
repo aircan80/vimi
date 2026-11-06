@@ -464,8 +464,8 @@ public final class WorldStreamNativeProof {
                                     && backing > stats.contextBuffers(),
                             "Fixed native buffer counts " + stats);
                     require(
-                            stats.textures() == stats.contextTextures() + 15,
-                            "Ten atlases plus five fixed target/readbacks");
+                            stats.textures() == stats.contextTextures() + 16,
+                            "Ten atlases, five fixed target/readbacks and the splat layer stand-in");
                     require(
                             stats.upload().references() == 0
                                     && stats.upload().liveUploadBytes() == 0,
