@@ -258,6 +258,15 @@ final class WorldStreamObjectsFileTest {
         var bytes = Files.readAllBytes(objectsPath());
         assertEquals(WorldStreamObjectsFile.VERSION, bytes[8]);
         assertEquals(4, WorldStreamObjectsFile.VERSION);
+        bytes[8] = 3;
+        Files.write(objectsPath(), bytes);
+        var refused =
+                assertThrows(
+                        IOException.class,
+                        () ->
+                                WorldStreamObjectsFile.read(
+                                        objectsPath(), IDENTITY, reference, () -> false));
+        assertEquals("Objects header identity", refused.getCause().getMessage());
     }
 
     @Test
