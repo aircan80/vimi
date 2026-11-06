@@ -184,6 +184,11 @@ final class WorldExplorerInput {
         return motion.speed(speed(), held(WorldControls.Action.SPRINT));
     }
 
+    /** True while the sprint key is held (the HUD speed chip brightens). */
+    boolean sprinting() {
+        return held(WorldControls.Action.SPRINT);
+    }
+
     boolean keysHeld() {
         return !keys.isEmpty();
     }

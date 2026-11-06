@@ -350,13 +350,16 @@ public final class WorldNavigationUiTest {
         require(mapName.getText().equals(heading.getText()) && !mapName.getText().isBlank(),"The map name is the former heading: "+mapName.getText());
         var status=(Node)get(view,"status");
         require(isWithin(status,hud),"The status line floats in the HUD");
-        // One slim bar; the rest folds behind More.
-        var bar=view.lookup("#world-hud-bar");
+        // HUD step 2: the status icons replace the slim bar; the rows left fold behind More.
+        var row=view.lookup("#world-status-icons");
         var more=(javafx.scene.control.ToggleButton)view.lookup("#world-hud-more");
         var rows=view.lookup("#world-hud-more-rows");
-        require(isWithin(bar,content.getBottom()) && isWithin(rows,content.getBottom()),"Slim bar and More rows are the bottom");
-        for (var id : new String[] {"#world-walk-mode","#world-flight-speed"})
-            require(isWithin(view.lookup(id),bar),"In the slim bar: "+id);
+        require(view.lookup("#world-hud-bar")==null && isWithin(row,hud) && isWithin(more,row),
+                "No slim bar: the icon row holds the More toggle");
+        require(isWithin(rows,content.getBottom()),"The More rows are the only bottom");
+        for (var id : new String[] {"#world-walk-mode","#world-flight-speed","#world-audio"})
+            require(view.lookup(id)==null,"Its icon replaced the row control: "+id);
+        statusIcons(view,viewport);
         // HUD step 2: the area and position lines leave the bar; the zone text and the coordinates
         // pill show them over the view and keep the full lines as their tooltips.
         require(view.lookup("#world-current-area")==null && view.lookup("#world-position")==null,
@@ -385,7 +388,7 @@ public final class WorldNavigationUiTest {
         require(!more.isSelected() && !rows.isVisible() && !rows.isManaged() && !more.isFocusTraversable(),"More starts collapsed");
         for (var id : new String[] {"#world-smooth-motion","#world-motion-status","#world-save-bookmark",
                 "#world-hide-panels","#world-fullscreen","#world-look-sensitivity","#world-invert-look",
-                "#world-key-bindings-open","#world-look-status","#world-audio","#world-gpu-enabled",
+                "#world-key-bindings-open","#world-look-status","#world-gpu-enabled",
                 "#world-object-textures","#world-gpu-retry","#world-gpu-status","#world-texture-status",
                 "#world-texture-retry","#world-instance-entrances","#world-instance-enter","#world-instance-leave",
                 "#world-instance-status","#world-back"})
@@ -427,6 +430,73 @@ public final class WorldNavigationUiTest {
         require(panel.isVisible() && view.getScene().getFocusOwner()==viewport,"The Map button opens it; focus stays on the world");
         mapButton.fire();
         require(!panel.isVisible(),"The Map button closes it");
+    }
+
+    /** HUD step 2: the status icons show the view's own controls and drive them; focus stays on the world. */
+    private static void statusIcons(WorldView view, Node viewport) {
+        var icons=(WorldStatusIcons)get(view,"icons");
+        for (var name : new String[] {"mode","speed","smooth","music","ambience","time","render","texture","mouse"}) {
+            var icon=view.lookup("#world-icon-"+name);
+            require(icon!=null && !icon.isFocusTraversable(),"Icon "+name+" is in the row and never focused");
+        }
+        var walk=(javafx.scene.control.CheckBox)get(view,"walkMode");
+        var motion=(javafx.scene.control.Label)get(view,"motionStatus");
+        var mode=(Button)view.lookup("#world-icon-mode");
+        require(icons.mode()==WorldStatusIcons.Mode.FLY && mode.getTooltip().getText().startsWith(motion.getText()),
+                "The mode icon shows flight and the motion line: "+mode.getTooltip().getText());
+        mode.fire();
+        require(walk.isSelected() && icons.mode()!=WorldStatusIcons.Mode.FLY && mode.getTooltip().getText().startsWith(motion.getText()),
+                "Clicking the mode icon walks: "+icons.mode()+" · "+motion.getText());
+        require(view.getScene().getFocusOwner()==viewport,"Focus stays on the viewport after an icon click");
+        mode.fire();
+        require(!walk.isSelected() && icons.mode()==WorldStatusIcons.Mode.FLY,"And flies again");
+        @SuppressWarnings("unchecked")
+        var speed=(javafx.scene.control.ChoiceBox<WorldControls.Speed>)get(view,"flightSpeed");
+        var chip=(Button)view.lookup("#world-icon-speed");
+        var before=speed.getValue();
+        chip.fire();
+        var after=speed.getValue();
+        require(after==WorldControls.Speed.values()[(before.ordinal()+1)%WorldControls.Speed.values().length],
+                "The speed chip steps to the next preset: "+before+" -> "+after);
+        require(chip.getText().equals(String.format(java.util.Locale.ROOT,"%.0f",input(view).effectiveSpeed()))
+                        && chip.getTooltip().getText().startsWith(after+" preset"),
+                "The chip shows the live speed: "+chip.getText()+" · "+chip.getTooltip().getText());
+        for (int i=1;i<WorldControls.Speed.values().length;i++) chip.fire();
+        require(speed.getValue()==before,"Five clicks come back to the first preset");
+        var smooth=(javafx.scene.control.CheckBox)get(view,"smoothMotion");
+        var tilde=view.lookup("#world-icon-smooth");
+        require(smooth.isSelected()==tilde.isVisible(),"The smooth icon shows only while smoothing is on");
+        boolean smoothBefore=smooth.isSelected();
+        smooth.fire();
+        require(tilde.isVisible()==!smoothBefore,"Turning smoothing over flips the icon");
+        smooth.fire();
+        var variant=((WorldAudioControls)get(view,"audio")).variant();
+        var time=(Button)view.lookup("#world-icon-time");
+        require(icons.time()==WorldStatusIcons.Time.CLOCK && variant.getValue()==WorldAudioDirector.Slot.CLOCK,"By clock at first");
+        time.fire();
+        require(variant.getValue()==WorldAudioDirector.Slot.DAY && icons.time()==WorldStatusIcons.Time.DAY,"Clicking the time icon picks day");
+        time.fire();
+        require(icons.time()==WorldStatusIcons.Time.NIGHT,"Then night");
+        time.fire();
+        require(icons.time()==WorldStatusIcons.Time.CLOCK && variant.getValue()==WorldAudioDirector.Slot.CLOCK,"Then the clock again");
+        var gpuStatus=(javafx.scene.control.Label)get(view,"gpuStatus");
+        var render=(Button)view.lookup("#world-icon-render");
+        require(icons.render()==WorldStatusIcons.render(((Node)get(view,"gpuActivity")).isVisible(),
+                        ((javafx.scene.control.CheckBox)get(view,"gpuEnabled")).isSelected(),gpuStatus.getText())
+                        && render.getTooltip().getText().equals(gpuStatus.getText().strip()),
+                "The render chip follows the GPU line: "+icons.render()+" · "+gpuStatus.getText());
+        var textureStatus=(javafx.scene.control.Label)get(view,"textureStatus");
+        require(icons.texture()==WorldStatusIcons.texture(((Node)get(view,"textureActivity")).isVisible(),textureStatus.getText())
+                        && ((Button)view.lookup("#world-icon-texture")).getTooltip().getText().equals(textureStatus.getText().strip()),
+                "The texture chip follows the texture line: "+icons.texture()+" · "+textureStatus.getText());
+        var more=(javafx.scene.control.ToggleButton)view.lookup("#world-hud-more");
+        render.fire();
+        require(more.isSelected(),"Until the developer overlay lands, the render chip opens the rows under More");
+        more.fire();
+        require(!more.isSelected() && view.getScene().getFocusOwner()==viewport,"More closes again; focus on the world");
+        key(viewport,KeyCode.W,true);
+        require(input(view).keysHeld(),"WASD works straight after icon clicks");
+        key(viewport,KeyCode.W,false);
     }
 
     private static boolean isWithin(Node node, Node ancestor) {
@@ -533,7 +603,7 @@ public final class WorldNavigationUiTest {
                 "Stored invert-Y and sensitivity both apply");
         require(slider.getBlockIncrement()==.001,"Slider steps suit its range");
         @SuppressWarnings("unchecked")
-        var speed=(javafx.scene.control.ChoiceBox<WorldControls.Speed>)view.lookup("#world-flight-speed");
+        var speed=(javafx.scene.control.ChoiceBox<WorldControls.Speed>)get(view,"flightSpeed");
         require(speed.getValue()==WorldControls.Speed.TURBO,"The stored speed preset shows");
         require(view.lookupAll(".label").stream().anyMatch(n -> n instanceof javafx.scene.control.Label l
                 && l.getText().startsWith("Z Q S D move")),"The key help follows the stored bindings");
@@ -670,7 +740,7 @@ public final class WorldNavigationUiTest {
         require(restored.equals(get(view,"camera")),"Shift+wheel does not zoom");
         require(input(view).speed()>originalSpeed,"Shift+wheel adjusts flight speed");
         @SuppressWarnings("unchecked")
-        var speedChoice=(javafx.scene.control.ChoiceBox<WorldControls.Speed>)view.lookup("#world-flight-speed");
+        var speedChoice=(javafx.scene.control.ChoiceBox<WorldControls.Speed>)get(view,"flightSpeed");
         require(speedChoice.getValue()==input(view).controls().speed(),"The speed control shows the Shift+wheel preset");
         speedChoice.setValue(WorldControls.Speed.TURBO);
         require(input(view).speed()==200,"Choosing a preset sets the flight speed");
@@ -712,7 +782,7 @@ public final class WorldNavigationUiTest {
 
     /** Walk mode over an authored qualified ADT18 surface and over the unqualified fixture mesh. */
     private static void walk(WorldView view,AnimationTimer timer,Node viewport) {
-        var walk=(javafx.scene.control.CheckBox)view.lookup("#world-walk-mode");
+        var walk=(javafx.scene.control.CheckBox)get(view,"walkMode");
         var status=(javafx.scene.control.Label)view.lookup("#world-motion-status");
         require(!walk.isSelected(),"Free flight is the default");
         key(viewport,KeyCode.F,true);

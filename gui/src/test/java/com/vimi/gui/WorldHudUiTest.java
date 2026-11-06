@@ -13,6 +13,7 @@ import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.input.PickResult;
+import javafx.scene.input.ScrollEvent;
 import javafx.scene.layout.StackPane;
 import javafx.stage.Stage;
 import javafx.util.Duration;
@@ -26,6 +27,8 @@ public final class WorldHudUiTest {
             try {
                 zoneLineAndBannerTiming();
                 coordinatesPillCopiesAndStopsInput();
+                statusIconStates();
+                audioSilenceFollowsPlaybackStatus();
                 DONE.complete(null);
             } catch (Throwable error) {
                 DONE.completeExceptionally(error);
@@ -37,7 +40,215 @@ public final class WorldHudUiTest {
             Platform.exit();
         }
         System.out.println("World HUD UI: zone line, banner 400 ms in / 1.5 s hold / fade out, leave chip,"
-                + " coordinates pill copy and input isolation passed");
+                + " coordinates pill copy, every status icon state, click and input isolation, audio silence passed");
+    }
+
+    /** Every icon state from #507's table: the icon's look, its tooltip, its click and its input rules. */
+    private static void statusIconStates() {
+        var calls = new ArrayList<String>();
+        var icons = new WorldStatusIcons(new WorldStatusIcons.Actions() {
+            @Override public void toggleWalk() { calls.add("walk"); }
+            @Override public void nextSpeed() { calls.add("speed"); }
+            @Override public void toggleSmooth() { calls.add("smooth"); }
+            @Override public void toggleMusic() { calls.add("music"); }
+            @Override public void toggleAmbience() { calls.add("ambience"); }
+            @Override public void volume(boolean music, int steps) { calls.add((music ? "music" : "ambience") + steps); }
+            @Override public void nextTime() { calls.add("time"); }
+            @Override public void details(String icon) { calls.add("details:" + icon); }
+        }, () -> calls.add("focus"));
+        var viewport = new StackPane(icons.node());
+        var bubbled = new ArrayList<String>();
+        viewport.addEventHandler(MouseEvent.ANY, e -> bubbled.add(e.getEventType().getName()));
+        viewport.addEventHandler(KeyEvent.ANY, e -> bubbled.add(e.getEventType().getName()));
+        viewport.addEventHandler(ScrollEvent.ANY, e -> bubbled.add("scroll"));
+        var stage = new Stage();
+        stage.setScene(new Scene(viewport, 600, 120));
+        stage.show();
+        try {
+            var row = icons.node();
+            // Mode: wings for flight, boots for walking, amber when walking has no terrain.
+            var mode = button(row, "mode");
+            icons.mode(WorldStatusIcons.Mode.FLY, "Free flight · no collision");
+            require(icons.mode() == WorldStatusIcons.Mode.FLY && !amber(mode)
+                            && mode.getTooltip().getText().startsWith("Free flight · no collision")
+                            && mode.getTooltip().getText().endsWith("to walk"),
+                    "Fly: " + mode.getTooltip().getText());
+            var wings = glyph(mode);
+            icons.mode(WorldStatusIcons.Mode.WALK, "Walking · eye 2 yd above rendered terrain · no collision");
+            require(!amber(mode) && !glyph(mode).equals(wings) && mode.getTooltip().getText().endsWith("to fly"),
+                    "Walk: boots, white");
+            icons.mode(WorldStatusIcons.Mode.WALK_NO_TERRAIN, "Walking · no rendered terrain here; altitude held");
+            require(amber(mode) && mode.getTooltip().getText().contains("altitude held"), "Walk with no terrain: amber");
+            // Speed chip: the live number, brighter while sprinting.
+            var speed = button(row, "speed");
+            icons.speed(20, false, "Fly · 20 yd/s preset");
+            require(speed.getText().equals("20") && !pseudo(speed, WorldStatusIcons.BRIGHT)
+                    && speed.getTooltip().getText().equals("Fly · 20 yd/s preset"), "Speed chip");
+            icons.speed(60.4, true, "Fly · 20 yd/s preset");
+            require(speed.getText().equals("60") && pseudo(speed, WorldStatusIcons.BRIGHT), "Sprinting brightens the chip");
+            // Smooth: only while on.
+            var smooth = button(row, "smooth");
+            icons.smooth(true);
+            require(smooth.isVisible() && smooth.getText().equals("~"), "Smooth icon while on");
+            icons.smooth(false);
+            require(!smooth.isVisible() && !smooth.isManaged(), "Hidden while off");
+            // Music and ambience: on, muted (slashed), nothing recorded (dimmed).
+            for (var name : List.of("music", "ambience")) {
+                var icon = button(row, name);
+                for (var state : WorldStatusIcons.Sound.values()) {
+                    if (name.equals("music")) icons.music(state, "Music · Recorded silence before the next track");
+                    else icons.ambience(state, "Ambience · Ruins of Lordaeron");
+                    var shown = name.equals("music") ? icons.music() : icons.ambience();
+                    require(shown == state && slashed(icon) == (state == WorldStatusIcons.Sound.MUTED)
+                                    && pseudo(icon, WorldStatusIcons.DIM) == (state != WorldStatusIcons.Sound.ON)
+                                    && icon.getTooltip().getText().contains(name.equals("music") ? "Recorded silence" : "Ruins")
+                                    && icon.getTooltip().getText().contains(
+                                            state == WorldStatusIcons.Sound.MUTED ? "turn it on" : "to mute"),
+                            name + " " + state + ": " + icon.getTooltip().getText());
+                }
+            }
+            // Time: sun, moon, clock.
+            var time = button(row, "time");
+            var shapes = new java.util.HashSet<String>();
+            for (var state : WorldStatusIcons.Time.values()) {
+                icons.time(state, state + " slot");
+                require(icons.time() == state && time.getTooltip().getText().equals(state + " slot"), "Time " + state);
+                shapes.add(glyph(time));
+            }
+            require(shapes.size() == 3, "Clock, sun and moon are different glyphs");
+            // Render: GPU white, software amber, failed red, busy spinning.
+            var render = button(row, "render");
+            icons.render(WorldStatusIcons.Render.GPU, "9 tiles: 9 textured");
+            require(render.getText().equals("GPU") && !amber(render) && !pseudo(render, WorldStatusIcons.RED)
+                    && !spinning(render) && render.getTooltip().getText().equals("9 tiles: 9 textured"), "Render GPU");
+            icons.render(WorldStatusIcons.Render.SOFTWARE, "Software terrain");
+            require(render.getText().equals("CPU") && amber(render), "Render software: amber");
+            icons.render(WorldStatusIcons.Render.FAILED, "GPU World frame upload failed; retry the viewer.");
+            require(pseudo(render, WorldStatusIcons.RED) && !amber(render), "Render failed: red");
+            icons.render(WorldStatusIcons.Render.BUSY, "Waiting for previous World resources to retire…");
+            require(spinning(render) && !pseudo(render, WorldStatusIcons.RED), "Render busy: spinning ring");
+            require(WorldStatusIcons.render(true, true, "") == WorldStatusIcons.Render.BUSY
+                            && WorldStatusIcons.render(false, false, "9 tiles") == WorldStatusIcons.Render.SOFTWARE
+                            && WorldStatusIcons.render(false, true, "GPU terrain unavailable; using software rendering.")
+                                    == WorldStatusIcons.Render.SOFTWARE
+                            && WorldStatusIcons.render(false, true, "GPU World frame upload failed; retry the viewer.")
+                                    == WorldStatusIcons.Render.FAILED
+                            && WorldStatusIcons.render(false, true, WorldView.STALL_HINT) == WorldStatusIcons.Render.FAILED
+                            && WorldStatusIcons.render(false, true, "World resources could not be confirmed retired (x)")
+                                    == WorldStatusIcons.Render.FAILED
+                            && WorldStatusIcons.render(false, true, "9 tiles: 9 textured · 40 surfaces")
+                                    == WorldStatusIcons.Render.GPU,
+                    "Render state from the GPU controls");
+            // Texture: ready, loading (ring), failed (red).
+            var texture = button(row, "texture");
+            icons.texture(WorldStatusIcons.Texture.READY, "Basic terrain textures · 256/256 regions");
+            require(!spinning(texture) && !pseudo(texture, WorldStatusIcons.RED), "Texture ready");
+            icons.texture(WorldStatusIcons.Texture.LOADING, "Presenting prepared terrain…");
+            require(spinning(texture), "Texture loading: ring");
+            icons.texture(WorldStatusIcons.Texture.FAILED, "Terrain texture loading unavailable");
+            require(pseudo(texture, WorldStatusIcons.RED)
+                            && texture.getTooltip().getText().equals("Terrain texture loading unavailable"),
+                    "Texture failed: red");
+            require(WorldStatusIcons.texture(true, "") == WorldStatusIcons.Texture.LOADING
+                            && WorldStatusIcons.texture(false, "Terrain texture frame unavailable · previous preview retained")
+                                    == WorldStatusIcons.Texture.FAILED
+                            && WorldStatusIcons.texture(false, "Height shading") == WorldStatusIcons.Texture.READY,
+                    "Texture state from the texture line");
+            // Mouse: slashed when cursor capture is unavailable.
+            var mouse = button(row, "mouse");
+            icons.mouse(false, "Mouse look: hold a mouse button and move the mouse");
+            require(!slashed(mouse) && !icons.mouseUnavailable(), "Mouse normal");
+            icons.mouse(true, "Mouse look: cursor capture unavailable; looking stays relative");
+            require(slashed(mouse) && icons.mouseUnavailable() && mouse.getTooltip().getText().contains("unavailable"),
+                    "Mouse slashed without capture");
+            // Tracking: one dot per active layer, in its colour.
+            var tracking = button(row, "tracking");
+            icons.tracking(List.of());
+            require(!tracking.isVisible(), "No tracking layer, no dots");
+            icons.tracking(List.of(javafx.scene.paint.Color.GOLD, javafx.scene.paint.Color.CORNFLOWERBLUE));
+            var dots = ((javafx.scene.layout.HBox) tracking.getGraphic()).getChildren();
+            require(tracking.isVisible() && dots.size() == 2
+                            && ((javafx.scene.shape.Circle) dots.get(1)).getFill()
+                                    .equals(javafx.scene.paint.Color.CORNFLOWERBLUE)
+                            && tracking.getTooltip().getText().startsWith("2 tracking layers"),
+                    "Two layers, two coloured dots");
+            // Clicks: each runs its action, then gives focus back to the viewport.
+            icons.smooth(true);
+            calls.clear();
+            for (var name : List.of("mode", "speed", "smooth", "music", "ambience", "time", "render", "texture",
+                    "mouse", "tracking"))
+                button(row, name).fire();
+            require(calls.equals(List.of("walk", "focus", "speed", "focus", "smooth", "focus", "music", "focus",
+                            "ambience", "focus", "time", "focus", "details:render", "focus", "details:texture",
+                            "focus", "details:mouse", "focus", "details:tracking", "focus")),
+                    "Every icon click runs its action and refocuses: " + calls);
+            calls.clear();
+            wheel(button(row, "music"), 40);
+            wheel(button(row, "ambience"), -40);
+            require(calls.equals(List.of("music1", "ambience-1")),
+                    "The wheel over a sound icon changes its volume: " + calls);
+            for (var node : row.getChildren())
+                require(!node.isFocusTraversable(), "Never focus-traversable: " + node.getId());
+            click(mode);
+            Event.fireEvent(mode, new KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.W, false, false, false, false));
+            wheel(button(row, "music"), 40);
+            require(bubbled.isEmpty(), "No pointer, key or wheel event bubbles to the viewport: " + bubbled);
+        } finally {
+            stage.close();
+        }
+    }
+
+    /** "Nothing recorded" (the dimmed sound icon) comes from the playback's own status per channel. */
+    private static void audioSilenceFollowsPlaybackStatus() {
+        var audio = new WorldAudioControls();
+        try {
+            var music = com.vibeminer.concepts.world.WorldAreaAudio.Kind.MUSIC;
+            var ambience = com.vibeminer.concepts.world.WorldAreaAudio.Kind.AMBIENCE;
+            require(!audio.silent(music).get() && !audio.silent(ambience).get(), "Not silent before any status");
+            audio.silent(new WorldAudioPlayback.Status(music, false, "No recorded music here"));
+            require(audio.silent(music).get() && !audio.silent(ambience).get(), "No recorded music: music is silent");
+            audio.silent(new WorldAudioPlayback.Status(ambience, false, "No recorded ambience here"));
+            require(audio.silent(ambience).get(), "No recorded ambience: ambience is silent");
+            audio.silent(new WorldAudioPlayback.Status(music, true, "Playing recorded music"));
+            audio.silent(new WorldAudioPlayback.Status(ambience, false, "Ambience off"));
+            require(!audio.silent(music).get() && !audio.silent(ambience).get(), "Playing or off is not silence");
+        } finally {
+            audio.close();
+        }
+    }
+
+    private static javafx.scene.control.Button button(javafx.scene.Parent row, String name) {
+        return (javafx.scene.control.Button) row.lookup("#world-icon-" + name);
+    }
+
+    private static boolean pseudo(javafx.scene.Node node, javafx.css.PseudoClass state) {
+        return node.getPseudoClassStates().contains(state);
+    }
+
+    private static boolean amber(javafx.scene.Node node) {
+        return pseudo(node, WorldStatusIcons.AMBER);
+    }
+
+    private static String glyph(javafx.scene.control.Button icon) {
+        var graphic = (StackPane) icon.getGraphic();
+        return ((javafx.scene.shape.SVGPath) graphic.getChildren().getFirst()).getContent();
+    }
+
+    private static boolean slashed(javafx.scene.control.Button icon) {
+        return ((StackPane) icon.getGraphic()).getChildren().stream()
+                .anyMatch(node -> node instanceof javafx.scene.shape.Line && node.isVisible());
+    }
+
+    private static boolean spinning(javafx.scene.control.Button icon) {
+        var spinner = ((StackPane) icon.getGraphic()).getChildren().getFirst();
+        return spinner instanceof javafx.scene.control.ProgressIndicator && spinner.isVisible()
+                && icon.getContentDisplay() != javafx.scene.control.ContentDisplay.TEXT_ONLY;
+    }
+
+    private static void wheel(javafx.scene.Node node, double delta) {
+        Event.fireEvent(node, new ScrollEvent(ScrollEvent.SCROLL, 4, 4, 4, 4, false, false, false, false, false,
+                false, 0, delta, 0, delta, ScrollEvent.HorizontalTextScrollUnits.NONE, 0,
+                ScrollEvent.VerticalTextScrollUnits.NONE, 0, 0, new PickResult(node, 4, 4)));
     }
 
     private static void zoneLineAndBannerTiming() {

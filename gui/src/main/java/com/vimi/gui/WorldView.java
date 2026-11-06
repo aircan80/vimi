@@ -200,6 +200,31 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
     });
     private final WorldTravelPanel travel = new WorldTravelPanel(this::goToBookmark, this::goToCoordinates);
+    // HUD step 2: status icons bottom-left; the existing controls stay their models.
+    private ExplorerMotion.Ground motionGround = ExplorerMotion.Ground.FREE;
+    private final WorldStatusIcons icons = new WorldStatusIcons(new WorldStatusIcons.Actions() {
+        @Override public void toggleWalk() { walkMode.fire(); }
+        @Override public void nextSpeed() {
+            var all = WorldControls.Speed.values();
+            var now = flightSpeed.getValue();
+            flightSpeed.setValue(all[now == null ? 0 : (now.ordinal() + 1) % all.length]);
+        }
+        @Override public void toggleSmooth() { smoothMotion.fire(); }
+        @Override public void toggleMusic() { audio.music().fire(); }
+        @Override public void toggleAmbience() { audio.ambience().fire(); }
+        @Override public void volume(boolean music, int steps) {
+            var slider = audio.volume(music ? com.vibeminer.concepts.world.WorldAreaAudio.Kind.MUSIC : com.vibeminer.concepts.world.WorldAreaAudio.Kind.AMBIENCE);
+            slider.setValue(Math.clamp(slider.getValue() + steps * 5.0, slider.getMin(), slider.getMax()));
+        }
+        @Override public void nextTime() {
+            var all = WorldAudioDirector.Slot.values();
+            var now = audio.variant().getValue();
+            audio.variant().setValue(all[now == null ? 0 : (now.ordinal() + 1) % all.length]);
+        }
+        // Until the developer overlay, the Controls page and the tracking popup exist, the
+        // detail for these icons is in the rows under "More".
+        @Override public void details(String icon) { moreControls.setSelected(true); }
+    }, viewport::requestFocus);
     private final Button saveBookmark = new Button("Bookmark this view");
     private String buildLabel = "";
     // A validated target waiting for its tile's first verified seed; never applied elsewhere.
@@ -861,6 +886,20 @@ final class WorldView extends BorderPane implements AutoCloseable {
         hud.topCenter(zoneText.line());
         hud.banner(zoneText.banner());
         hud.bottomRight(coordinates.node());
+        hud.bottomLeft(icons.node());
+        icons.trailing(moreControls);
+        // Change listeners, not invalidation ones: refreshIcons does not read every source each time.
+        javafx.beans.value.ChangeListener<Object> iconState = (o, before, after) -> refreshIcons();
+        for (javafx.beans.value.ObservableValue<?> source : java.util.List.<javafx.beans.value.ObservableValue<?>>of(
+                walkMode.selectedProperty(),
+                smoothMotion.selectedProperty(), motionStatus.textProperty(), flightSpeed.valueProperty(),
+                audio.music().selectedProperty(), audio.ambience().selectedProperty(), audio.status().textProperty(),
+                audio.silent(com.vibeminer.concepts.world.WorldAreaAudio.Kind.MUSIC), audio.silent(com.vibeminer.concepts.world.WorldAreaAudio.Kind.AMBIENCE),
+                audio.variant().valueProperty(), gpuActivity.visibleProperty(), gpuEnabled.selectedProperty(),
+                gpuStatus.textProperty(), textureActivity.visibleProperty(), textureStatus.textProperty(),
+                lookStatus.textProperty()))
+            source.addListener(iconState);
+        refreshIcons();
         // The full text lines stay the models; the HUD shows the short form and keeps them as tooltips.
         zoneText.tooltip().textProperty().bind(currentArea.textProperty());
         coordinates.tooltip().textProperty().bind(position.textProperty());
@@ -1287,6 +1326,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     + (int) ExplorerMotion.EYE_HEIGHT + " yd above rendered terrain · no collision";
             case UNAVAILABLE -> "Walking · no rendered terrain here; altitude held";
         });
+        motionGround = next;
+        refreshIcons();
     }
 
     void ensureLoaded() {
@@ -1934,10 +1975,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         leaveInstance.setManaged(adtInstance);
         refreshEntrances();
         explorerChrome(true);
-        // HUD step 1: one slim bar under the view; every other control row folds behind "More".
-        var bar = new HBox(10, walkMode, new Label("Speed"), flightSpeed, moreControls);
-        bar.setId("world-hud-bar");
-        bar.setAlignment(Pos.CENTER_LEFT);
+        // HUD step 2: the status icons replace the slim bar (walk, speed, audio, day/night);
+        // the rows that have no icon yet fold behind the row's "More" toggle.
         var inspectHint = new Label(INSPECT_HINT);
         inspectHint.setWrapText(true);
         moreRows.getChildren().setAll(
@@ -1946,14 +1985,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 new HBox(8, new Label("Look sensitivity"), lookSensitivity, invertLook, keyBindings,
                         lookStatus),
                 inspectHint,
-                audio.node(),
                 new HBox(8, gpuEnabled, objectTextures, gpuActivity, retryGpu, gpuStatus),
                 new HBox(8, textureActivity, textureStatus, retryTextures),
                 new HBox(8, new Label("Instances"), entrances, enterInstance, leaveInstance,
                         instanceStatus));
         if (spawns != null) moreRows.getChildren().add(spawns.controls());
         if (roles != null) moreRows.getChildren().add(roles.controls());
-        content.setBottom(new VBox(6, bar, inspection, moreRows));
+        content.setBottom(new VBox(6, inspection, moreRows));
         applyPanels();
     }
 
@@ -2648,6 +2686,47 @@ final class WorldView extends BorderPane implements AutoCloseable {
         audio.area(handle, inventory.map().id(), area);
     }
 
+    /** Recomputes every status icon from the controls and labels it summarises. */
+    private void refreshIcons() {
+        icons.mode(!walkMode.isSelected() ? WorldStatusIcons.Mode.FLY
+                : motionGround == ExplorerMotion.Ground.UNAVAILABLE ? WorldStatusIcons.Mode.WALK_NO_TERRAIN
+                : WorldStatusIcons.Mode.WALK, motionStatus.getText());
+        icons.smooth(smoothMotion.isSelected());
+        icons.music(sound(audio.music(), com.vibeminer.concepts.world.WorldAreaAudio.Kind.MUSIC), "Music · " + audio.status().getText());
+        icons.ambience(sound(audio.ambience(), com.vibeminer.concepts.world.WorldAreaAudio.Kind.AMBIENCE),
+                "Ambience · " + audio.status().getText());
+        var slot = audio.variant().getValue();
+        icons.time(slot == WorldAudioDirector.Slot.DAY ? WorldStatusIcons.Time.DAY
+                : slot == WorldAudioDirector.Slot.NIGHT ? WorldStatusIcons.Time.NIGHT : WorldStatusIcons.Time.CLOCK,
+                (slot == null ? WorldAudioDirector.Slot.CLOCK : slot) + "; click for the next day/night slot");
+        icons.render(WorldStatusIcons.render(gpuActivity.isVisible(), gpuEnabled.isSelected(), gpuStatus.getText()),
+                gpuStatus.getText());
+        icons.texture(WorldStatusIcons.texture(textureActivity.isVisible(), textureStatus.getText()),
+                textureStatus.getText());
+        boolean capture = lookStatus.getText() != null && !lookStatus.getText().isBlank();
+        icons.mouse(capture, capture ? lookStatus.getText() : "Mouse look: hold a mouse button and move the mouse");
+        var layers = new java.util.ArrayList<javafx.scene.paint.Color>();
+        if (spawns != null && spawns.toggle().isSelected()) layers.add(WorldSpawnOverlay.rankColor(0));
+        if (roles != null)
+            for (var layer : com.vibeminer.concepts.locations.MapRoles.Layer.values())
+                if (roles.toggle(layer).isSelected()) layers.add(MapRoleOverlay.color(layer));
+        icons.tracking(layers);
+        speedIcon();
+    }
+
+    private WorldStatusIcons.Sound sound(CheckBox channel, com.vibeminer.concepts.world.WorldAreaAudio.Kind kind) {
+        if (!channel.isSelected()) return WorldStatusIcons.Sound.MUTED;
+        return audio.silent(kind).get() ? WorldStatusIcons.Sound.SILENT : WorldStatusIcons.Sound.ON;
+    }
+
+    /** The live speed chip; called per frame with the position line. */
+    private void speedIcon() {
+        var preset = flightSpeed.getValue();
+        var modifier = input.controls().sprintModifier();
+        icons.speed(input.effectiveSpeed(), input.sprinting(), (preset == null ? "" : preset + " preset")
+                + "; click for the next preset" + (modifier == null ? "" : "; " + modifier.getName() + "+wheel steps it"));
+    }
+
     /** The recorded area under the camera (null: unknown), on the area line and the HUD zone text. */
     private void showArea(com.vibeminer.concepts.world.WorldCurrentArea.Result area) {
         currentArea.setText(area == null ? "Terrain area unavailable" : area.label());
@@ -2693,6 +2772,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         input.effectiveSpeed(),
                         loaded.size()));
         coordinates.show(camera.x(), camera.y(), camera.z(), tileX(), tileY());
+        speedIcon();
         if (gpu != null && gpuEnabled.isSelected() && gpuScene != null) {
             if (!viewportActive()) {
                 retireGpu();
@@ -2867,6 +2947,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 input.effectiveSpeed(),
                 snapshot.prepared(), snapshot.desired()));
         if (camera != null) coordinates.show(camera.x(), camera.y(), camera.z(), tileX(), tileY());
+        speedIcon();
         var pending = controller.takePresentation();
         if (pending.isEmpty()) return;
         var frame = pending.get();
@@ -3332,6 +3413,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (roles != null || closed) throw new IllegalStateException("Role overlay already attached");
         roles = java.util.Objects.requireNonNull(overlay);
         minimap.attachRoles(overlay);
+        for (var layer : com.vibeminer.concepts.locations.MapRoles.Layer.values())
+            overlay.toggle(layer).selectedProperty().addListener((o, before, on) -> refreshIcons());
+        refreshIcons();
     }
 
     /** The minimap, for tests. */
@@ -3358,6 +3442,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
             });
         }));
         overlay.bind(this::presentedView);
+        overlay.toggle().selectedProperty().addListener((o, before, on) -> refreshIcons());
+        refreshIcons();
     }
 
     // ---- Instances: recorded entrances and in-place zone-in (#259) ----------------------------
