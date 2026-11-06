@@ -54,7 +54,9 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     final WriteQueue writer = new WriteQueue();
     final PackReaders<FileChannel> packReaders;
     final SessionHashes sessionHashes = new SessionHashes();
-    final ThreadPoolExecutor readers = Async.pool("vimi-store-read", 8);
+    final ThreadPoolExecutor readers;
+    // Idle read-only index connections, reused across reads instead of one open per read.
+    final ReadConnections readConnections;
     final ThreadPoolExecutor verificationWorkers =
             Async.pool(
                     "vimi-store-verify",
@@ -66,7 +68,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     NativeSqlite database;
     StoreIndex index;
     int nextPack = 1;
-    boolean immutable;
+    // Set once by openReader when a read-only store falls back to the immutable URI.
+    volatile boolean immutable;
     volatile StoreException writeFailure;
     OpenReport openReport;
     final Map<ObjectKey, Staging> stagings = new HashMap<>();
@@ -88,6 +91,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     static volatile java.util.function.Consumer<NativeSqlite> indexOpened;
     java.util.function.Consumer<Maintenance.Resources> maintenanceResourcesProbe;
     java.util.function.BiConsumer<ReadPoint, ObjectKey> readProbe;
+    // Test seam: runs before each new read connection opens.
+    Runnable readerOpenProbe;
     java.util.function.Consumer<ObjectKey> wholeShaProbe;
     java.util.function.Consumer<Boolean> verificationProbe;
     // Refusal code for a key, or null; replaces verification's outcome for that object.
@@ -337,6 +342,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         this.folder = path.normalize();
         this.options = options;
         this.readOnly = readOnly;
+        readers = Async.pool("vimi-store-read", options.readers());
+        readConnections = new ReadConnections(options.readers());
         packs = folder.resolve("packs");
         staging = folder.resolve("staging");
         indexPath = folder.resolve("objects.sqlite3");
@@ -673,6 +680,9 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     }
 
     NativeSqlite openReader() throws IOException {
+        if (readerOpenProbe != null) {
+            readerOpenProbe.run();
+        }
         if (immutable) {
             return new NativeSqlite(indexPath.toUri() + "?immutable=1", true);
         }
@@ -813,22 +823,13 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     () -> {
                         ReadTimings.stop("store.read.queue", queued);
                         cancellation.check();
-                        long opening = ReadTimings.start();
+                        long working = ReadTimings.start();
                         try {
-                            NativeSqlite db = openReader();
-                            ReadTimings.stop("store.read.openConnection", opening);
-                            long working = ReadTimings.start();
-                            try {
-                                return db.withCancellation(
-                                        cancellation, () -> work.run(new StoreIndex(db)));
-                            } finally {
-                                ReadTimings.stop("store.read.work", working);
-                                long closing = ReadTimings.start();
-                                db.close();
-                                ReadTimings.stop("store.read.closeConnection", closing);
-                            }
+                            return pooledRead(cancellation, work);
                         } catch (NativeSqlite.Failure e) {
                             throw translate(e, "OBJECT_STORE_INDEX_UNREADABLE");
+                        } finally {
+                            ReadTimings.stop("store.read.pooledWork", working);
                         }
                     });
         }
@@ -836,6 +837,31 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
 
     interface ReadWork<T> {
         T run(StoreIndex index) throws Exception;
+    }
+
+    /**
+     * Runs {@code work} on an idle pooled connection, or on a newly opened one that passes the open
+     * probe. The connection returns to the pool only when the work finished normally and left no
+     * transaction open; any failure, including cancellation, closes it.
+     */
+    private <T> T pooledRead(Cancellation cancellation, ReadWork<T> work) throws Exception {
+        ReadConnections.Pooled connection = readConnections.take(immutable);
+        if (connection == null) {
+            long generation = readConnections.generation();
+            long opening = ReadTimings.start();
+            NativeSqlite opened = openReader();
+            ReadTimings.stop("store.read.openConnection", opening);
+            connection = new ReadConnections.Pooled(opened, immutable, generation);
+        }
+        NativeSqlite db = connection.db();
+        boolean reusable = false;
+        try {
+            T result = db.withCancellation(cancellation, () -> work.run(new StoreIndex(db)));
+            reusable = !db.inTransaction();
+            return result;
+        } finally {
+            readConnections.give(connection, reusable, immutable);
+        }
     }
 
     static StoreException closed() {
@@ -1752,7 +1778,16 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
 
     @Override
     public CompletableFuture<ScanReport> scan(Cancellation cancellation) {
-        return write(0, cancellation, () -> Maintenance.scan(this, cancellation));
+        return write(
+                0,
+                cancellation,
+                () -> {
+                    try {
+                        return Maintenance.scan(this, cancellation);
+                    } finally {
+                        readConnections.retire();
+                    }
+                });
     }
 
     @Override
@@ -1822,6 +1857,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                                     while (!verificationWorkers.awaitTermination(
                                             1, TimeUnit.SECONDS)) {}
                                     while (!readers.awaitTermination(1, TimeUnit.SECONDS)) {}
+                                    readConnections.close();
                                     for (Staging staged : List.copyOf(stagings.values())) {
                                         staged.release(false);
                                     }
@@ -1880,6 +1916,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         writer.shutdown();
         readers.shutdown();
         verificationWorkers.shutdown();
+        readConnections.close();
         try {
             if (database != null) {
                 database.close();
