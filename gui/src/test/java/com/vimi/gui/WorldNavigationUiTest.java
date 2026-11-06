@@ -272,7 +272,7 @@ public final class WorldNavigationUiTest {
         var hint=view.lookup("#world-panels-hint");
         require(split.getItems().size()==2 && content.getBottom().isVisible() && !hint.isVisible(),"Panels start shown");
         for (int i=0;i<30;i++) press(viewport,KeyCode.Z,true);
-        require(split.getItems().size()==1 && split.getItems().getFirst()==content,"Alt+Z hides the map list once, however long it is held");
+        require(split.getItems().size()==1 && split.getItems().getFirst()==content.getParent(),"Alt+Z hides the map list once, however long it is held");
         require(!content.getBottom().isVisible() && !content.getBottom().isManaged(),"Alt+Z hides the control rows");
         require(hint.isVisible(),"A hint says how to bring the panels back");
         release(viewport,KeyCode.Z);

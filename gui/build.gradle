@@ -595,6 +595,13 @@ tasks.register('worldNavigationUiTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldNavigationUiTest'
 }
 
+// World toasts: timing, stack, actions and isolation, plus view wiring; display required.
+tasks.register('worldToastsUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldToastsUiTest'
+}
+
 // F3 developer overlay over the real viewport: pages, mouse isolation, Retry/Copy; display.
 tasks.register('worldDevOverlayUiTest', JavaExec) {
     dependsOn testClasses
