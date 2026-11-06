@@ -775,6 +775,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
             longText.setVisible(false);
             longText.setManaged(false);
         }
+        // So an enabled Retry always says why: its tooltip is the current status text.
+        retryGpu.setTooltip(statusTip(gpuStatus));
+        retryTextures.setTooltip(statusTip(textureStatus));
         gpuEnabled.setOnAction(e -> {
             if (instances.engaged()) return;
             if (streamingMode) {
@@ -874,7 +877,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         localLoading.setVisible(false);
         localLoading.setManaged(false);
         firstFrameActivity.setMouseTransparent(true);
-        viewport.getChildren().addAll(selectionLayer(), firstFrameActivity, hud, minimap, panelsHint);
+        viewport.getChildren().addAll(selectionLayer(), firstFrameActivity, hud, minimap);
         StackPane.setAlignment(minimap, Pos.TOP_RIGHT);
         StackPane.setMargin(minimap, new Insets(12));
         // The developer overlay sits in the HUD's own slot under the left column; it stays when
@@ -1041,8 +1044,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         panelsHint.setVisible(false);
         panelsHint.setStyle("-fx-background-color: rgba(16,24,28,.6); -fx-text-fill: #e8eeee;"
                 + " -fx-padding: 4 8; -fx-background-radius: 4;");
-        StackPane.setAlignment(panelsHint, javafx.geometry.Pos.TOP_LEFT);
-        StackPane.setMargin(panelsHint, new javafx.geometry.Insets(8));
+        // In the HUD's left column, above the developer overlay, so the two never overlap.
+        hud.hiddenHint(panelsHint);
         inventoryMessage.setId("world-inventory-message");
         inventoryMessage.setWrapText(true);
         inventoryMessage.setMaxWidth(400);
@@ -3407,6 +3410,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
         roles = java.util.Objects.requireNonNull(overlay);
         minimap.attachRoles(overlay);
         minimap.tracking().roles(overlay.controls());
+    }
+
+    /** A tooltip that always shows {@code status}'s current text. */
+    private static javafx.scene.control.Tooltip statusTip(Label status) {
+        var tip = new javafx.scene.control.Tooltip();
+        tip.setWrapText(true);
+        tip.setMaxWidth(520);
+        tip.textProperty().bind(status.textProperty());
+        return tip;
     }
 
     /** The developer overlay, for tests. */

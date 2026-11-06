@@ -434,7 +434,18 @@ public final class WorldNavigationUiTest {
                 "#world-instance-status","#world-back","#world-gpu-activity","#world-texture-activity"})
             require(view.lookup(id)!=null && isWithin(view.lookup(id),rows),"Still reachable under More: "+id);
         require(isWithin((Node)get(view,"keyHelp"),rows),"The key help line is under More");
-        // The long GPU and texture texts show once, on the developer overlay; More keeps Retry.
+        // The long GPU and texture texts show once, on the developer overlay; More keeps Retry,
+        // whose tooltip always gives the current reason.
+        for (var pair : new String[][] {{"#world-gpu-retry","#world-gpu-status"},{"#world-texture-retry","#world-texture-status"}}) {
+            var retry=(Button)view.lookup(pair[0]);
+            var text=(javafx.scene.control.Label)view.lookup(pair[1]);
+            require(retry.getTooltip()!=null && retry.getTooltip().getText().equals(text.getText()),
+                    pair[0]+" explains itself: "+(retry.getTooltip()==null?null:retry.getTooltip().getText()));
+            String was=text.getText();
+            text.setText("Renderer not responding; Retry");
+            require(retry.getTooltip().getText().equals("Renderer not responding; Retry"),pair[0]+" follows the status text");
+            text.setText(was);
+        }
         for (var id : new String[] {"#world-gpu-status","#world-texture-status"})
             require(!view.lookup(id).isVisible() && !view.lookup(id).isManaged(),"Not shown under More: "+id);
         for (var id : new String[] {"#world-gpu-retry","#world-texture-retry"})
@@ -565,7 +576,7 @@ public final class WorldNavigationUiTest {
         var slot=view.lookup("#world-hud-dev-slot");
         var left=(javafx.scene.layout.VBox)view.lookup("#world-hud-left");
         require(overlay.getParent()==slot && isWithin(slot,view.lookup("#world-hud")) && !isWithin(slot,rows)
-                        && left.getChildren().indexOf(slot)==left.getChildren().indexOf(rows)+1
+                        && left.getChildren().indexOf(slot)>left.getChildren().indexOf(rows)
                         && left.getChildren().indexOf(slot)<left.getChildren().indexOf(panel),
                 "The developer overlay is in the HUD's slot, under the left column's rows");
         require(!overlay.isVisible() && !slot.isVisible() && !slot.isManaged(),"Off, the slot takes no room");
@@ -585,6 +596,15 @@ public final class WorldNavigationUiTest {
         view.getScene().getRoot().layout();
         require(overlay.localToScene(overlay.getLayoutBounds()).getMinY()<overlayTop,
                 "With the rows hidden the overlay moves up to the top of the column");
+        // The hidden-HUD hint sits in the same column, above the overlay: they never overlap.
+        var hintSlot=view.lookup("#world-hud-hint-slot");
+        require(hint.isVisible() && hint.getParent()==hintSlot && hintSlot.isVisible()
+                        && left.getChildren().indexOf(hintSlot)<left.getChildren().indexOf(slot),
+                "The hint is in the HUD column, above the developer slot");
+        var hintBox=hint.localToScene(hint.getLayoutBounds());
+        var overlayBox=overlay.localToScene(overlay.getLayoutBounds());
+        require(hintBox.getHeight()>0 && hintBox.getMaxY()<=overlayBox.getMinY() && !hintBox.intersects(overlayBox),
+                "Hint and overlay do not overlap: "+hintBox+" / "+overlayBox);
         key(viewport,KeyCode.H,true);
         key(viewport,KeyCode.H,false);
         require(rows.isVisible() && overlay.isVisible(),"Shown again, overlay still on");

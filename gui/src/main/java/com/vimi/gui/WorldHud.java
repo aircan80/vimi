@@ -37,6 +37,8 @@ import javafx.scene.layout.VBox;
  *       rows and above the map panel. The slot does not follow the hidden state: the overlay
  *       stays visible, at the top of the column, while the HUD is hidden. Toasts have their own
  *       layer outside the HUD.
+ *   <li>{@link #hiddenHint} puts the "shows the HUD" hint in the column too, above the
+ *       developer slot, so the hint and the overlay never overlap while the HUD is hidden.
  *   <li>{@link #hiddenProperty()} is the single, read-only "HUD hidden" state. Followers that
  *       manage their own visibility (the minimap shows and hides itself) must not bind
  *       {@code visible} to it: AND it with their own state in a listener, or bind {@code opacity}
@@ -54,6 +56,7 @@ final class WorldHud extends StackPane {
     private final VBox topLeft;
     private final VBox column;
     private final StackPane devSlot = new StackPane();
+    private final StackPane hintSlot = new StackPane();
     private final VBox panel = new VBox(10);
     private final Runnable refocus;
     private final ReadOnlyBooleanWrapper hidden = new ReadOnlyBooleanWrapper(this, "hidden");
@@ -114,10 +117,19 @@ final class WorldHud extends StackPane {
         devSlot.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
         devSlot.setVisible(false);
         devSlot.managedProperty().bind(devSlot.visibleProperty());
-        // One left column: the rows, the developer overlay, then the map panel, which takes the
-        // height that is left, so it never covers what sits above it. Hiding the HUD closes the
-        // panel (the view does that), so only the slot can show while hidden.
-        column = new VBox(6, topLeft, devSlot, panel);
+        // The "how to show the HUD" hint's slot; it shows only while the hint itself does.
+        hintSlot.setId("world-hud-hint-slot");
+        hintSlot.setMouseTransparent(true);
+        hintSlot.setFocusTraversable(false);
+        hintSlot.setAlignment(Pos.TOP_LEFT);
+        hintSlot.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
+        hintSlot.setVisible(false);
+        hintSlot.managedProperty().bind(hintSlot.visibleProperty());
+        // One left column: the rows, the hidden-HUD hint, the developer overlay, then the map
+        // panel, which takes the height that is left, so it never covers what sits above it.
+        // Hiding the HUD closes the panel (the view does that), so only the hint and developer
+        // slots can show while hidden, the hint above the overlay.
+        column = new VBox(6, topLeft, hintSlot, devSlot, panel);
         column.setId("world-hud-left");
         column.setPickOnBounds(false);
         column.setFillWidth(false);
@@ -147,10 +159,23 @@ final class WorldHud extends StackPane {
      * overlay keeps its own input handling (its buttons stop their events and refocus).
      */
     void devOverlay(Node overlay) {
-        Objects.requireNonNull(overlay);
-        devSlot.visibleProperty().unbind();
-        devSlot.getChildren().setAll(overlay);
-        devSlot.visibleProperty().bind(overlay.visibleProperty());
+        slot(devSlot, overlay);
+    }
+
+    /**
+     * Puts the hidden-HUD hint ("H or Alt+Z shows the HUD") in its slot, above the developer
+     * overlay. The view shows the hint while the HUD is hidden; the slot follows the hint's own
+     * visibility and takes no room while it is hidden.
+     */
+    void hiddenHint(Node hint) {
+        slot(hintSlot, hint);
+    }
+
+    private static void slot(StackPane slot, Node node) {
+        Objects.requireNonNull(node);
+        slot.visibleProperty().unbind();
+        slot.getChildren().setAll(node);
+        slot.visibleProperty().bind(node.visibleProperty());
     }
 
     /**
@@ -239,6 +264,10 @@ final class WorldHud extends StackPane {
         return hidden.get();
     }
 
+    /**
+     * Sets the hidden state. Only the view's {@code applyPanels()} calls this, mirroring its one
+     * "HUD hidden" state; followers read {@link #hiddenProperty()} and must never call it.
+     */
     void hidden(boolean value) {
         // The panel is not under the hidden binding (it shares the column with the developer
         // slot), so hiding closes it; the view closes it first and resets what it held.
