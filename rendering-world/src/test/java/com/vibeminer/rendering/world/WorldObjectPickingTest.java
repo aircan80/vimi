@@ -46,7 +46,7 @@ class WorldObjectPickingTest {
                 new int[] {0, indexCount, 0, kind},
                 models,
                 table,
-                new int[] {2, 2},
+                new int[] {2, 2, ObjectTextureFormats.RGBA8},
                 QUAD,
                 TWO_TRIANGLES,
                 HALF_ALPHA);
@@ -151,6 +151,50 @@ class WorldObjectPickingTest {
                 aim(cutout, 100, solid, 0, 2200).orElseThrow().material());
     }
 
+    /** A cutout quad sampling a 4 x 4 BC3 chain (three one-block levels) of one alpha. */
+    private static WorldObjectPicking.Tile bc3Cutout(int alpha) {
+        var block = new byte[16];
+        block[0] = (byte) alpha;
+        block[1] = (byte) alpha;
+        System.arraycopy(ObjectTextureFormatsTest.bc1(0xF800, 0, 0), 0, block, 8, 8);
+        var chain = new byte[ObjectTextureFormats.chainBytes(ObjectTextureFormats.BC3, 4, 4)];
+        for (int at = 0; at < chain.length; at += 16) {
+            System.arraycopy(block, 0, chain, at, 16);
+        }
+        return WorldObjectPicking.Tile.of(
+                new int[] {0, 1},
+                new int[] {0, 4, 0, 6, 0, 1},
+                new int[] {0, 6, 0, WorldObjectPicking.CUTOUT},
+                new int[1],
+                wall(100),
+                new int[] {4, 4, ObjectTextureFormats.BC3},
+                QUAD,
+                TWO_TRIANGLES,
+                chain);
+    }
+
+    @Test
+    void compressedImagesPickByTheirDecodedTopLevelAlpha() {
+        assertEquals(48, ObjectTextureFormats.chainBytes(ObjectTextureFormats.BC3, 4, 4));
+        assertTrue(aim(bc3Cutout(0), 100, 0, 0, 2200).isEmpty(), "alpha 0 discards");
+        assertTrue(aim(bc3Cutout(127), 100, 0, 0, 2200).isEmpty(), "below the reference");
+        assertTrue(aim(bc3Cutout(128), 100, 0, 0, 2200).isPresent(), "at the reference");
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        WorldObjectPicking.Tile.of(
+                                new int[] {0, 1},
+                                new int[] {0, 4, 0, 6, 0, 1},
+                                new int[] {0, 6, 0, WorldObjectPicking.CUTOUT},
+                                new int[1],
+                                wall(100),
+                                new int[] {4, 4, ObjectTextureFormats.BC3},
+                                QUAD,
+                                TWO_TRIANGLES,
+                                new byte[16]),
+                "chain bytes follow the format");
+    }
+
     @Test
     void cornersAreTheDrawnBoundsThroughTheTransform() {
         var tile = tile(WorldObjectPicking.OPAQUE, 6, wall(100));
@@ -174,7 +218,7 @@ class WorldObjectPickingTest {
                                 new int[] {0, 6, 1, 0},
                                 new int[] {0},
                                 wall(100),
-                                new int[] {2, 2},
+                                new int[] {2, 2, ObjectTextureFormats.RGBA8},
                                 QUAD,
                                 TWO_TRIANGLES,
                                 HALF_ALPHA));
@@ -187,7 +231,7 @@ class WorldObjectPickingTest {
                                 new int[] {0, 6, 0, 0},
                                 new int[] {1},
                                 wall(100),
-                                new int[] {2, 2},
+                                new int[] {2, 2, ObjectTextureFormats.RGBA8},
                                 QUAD,
                                 TWO_TRIANGLES,
                                 HALF_ALPHA));
