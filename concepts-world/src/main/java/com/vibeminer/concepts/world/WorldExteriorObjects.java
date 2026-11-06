@@ -214,6 +214,14 @@ public final class WorldExteriorObjects {
     private WorldExteriorObjects() {}
 
     /**
+     * Registered pixels when they are exactly one {@code w x h} RGBA level, else null so the chain
+     * decodes that level from the source instead.
+     */
+    static byte[] reusable(byte[] kept, int w, int h) {
+        return kept != null && kept.length == (long) w * h * 4 ? kept : null;
+    }
+
+    /**
      * Mutually exclusive outcome buckets. Placements: every obj0 MODF record lands in exactly one
      * PLACEMENT bucket. Roots: every distinct root that was read lands in one ROOT bucket (roots
      * never read because of the root cap only cap their placements). Groups and batches count LOD0
@@ -581,6 +589,9 @@ public final class WorldExteriorObjects {
         /** Most image source bytes its builder kept at once (#265); diagnostics and tests. */
         long retainedSourceBytes;
 
+        /** BLP levels its builder decoded, over every image (#360); diagnostics and tests. */
+        int levelDecodes;
+
         private TileObjects(
                 long mapId,
                 int tileX,
@@ -845,6 +856,9 @@ public final class WorldExteriorObjects {
         private final long retainLimit;
         private long retainedSourceBytes, peakRetainedSourceBytes;
 
+        /** Pixel decodes of single BLP levels (registration, relevel and chain); diagnostics. */
+        private int levelDecodes;
+
         /** Registered images by slot, in admission (priority) order; null for other slots. */
         private final List<Demand> demands = new ArrayList<>();
 
@@ -909,6 +923,7 @@ public final class WorldExteriorObjects {
                             modelFailure,
                             detail);
             objects.retainedSourceBytes = peakRetainedSourceBytes;
+            objects.levelDecodes = levelDecodes;
             return objects;
         }
 
@@ -2170,7 +2185,12 @@ public final class WorldExteriorObjects {
                 long height,
                 int recorded,
                 int registered,
-                byte[] registeredRgba) {}
+                byte[] registeredRgba) {
+            Demand withoutRegisteredRgba() {
+                return new Demand(
+                        slot, pool, id, materialClass, width, height, recorded, registered, null);
+            }
+        }
 
         /**
          * Reads and decodes one image at the registration side; the uploaded level is chosen later
@@ -2265,6 +2285,7 @@ public final class WorldExteriorObjects {
                 return null;
             }
             Blp2Types.Image image;
+            levelDecodes++;
             try {
                 image =
                         Blp2Decoder.decodeSynchronous(
@@ -2337,6 +2358,16 @@ public final class WorldExteriorObjects {
                     }
                 }
             }
+            // Registered pixels are reused only when the drawn level lies above them; every other
+            // demand lets them go now instead of holding them, unbudgeted, until the chains.
+            for (int i = 0; i < demands.size(); i++) {
+                var demand = demands.get(i);
+                if (demand != null
+                        && demand.registeredRgba() != null
+                        && !(images.get(demand.slot()).mipLevel() < demand.registered())) {
+                    demands.set(i, demand.withoutRegisteredRgba());
+                }
+            }
         }
 
         /**
@@ -2373,8 +2404,10 @@ public final class WorldExteriorObjects {
                                     return null;
                                 }
                                 if (at == demand.registered()) {
-                                    byte[] kept = demand.registeredRgba();
-                                    return kept.length == w * h * 4 ? kept : null;
+                                    byte[] kept = reusable(demand.registeredRgba(), w, h);
+                                    if (kept != null) {
+                                        return kept;
+                                    }
                                 }
                                 if (!fetched) {
                                     fetched = true;
@@ -2449,6 +2482,7 @@ public final class WorldExteriorObjects {
 
         /** The file's own mip {@code level}, or null when it does not decode at that size. */
         private byte[] fileMip(byte[] raw, int level, int width, int height) {
+            levelDecodes++;
             try {
                 var mip =
                         Blp2Decoder.decodeSynchronous(
