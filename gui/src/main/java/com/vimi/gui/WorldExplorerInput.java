@@ -45,6 +45,12 @@ final class WorldExplorerInput {
 
         void toggleWalk();
 
+        /**
+         * A HUD command key was pressed ({@link WorldControls.Action#command}): once per physical
+         * press. The view routes it to the HUD piece that owns the action.
+         */
+        default void command(WorldControls.Action action) {}
+
         void requestFrame();
 
         void abandonUnusableCandidate();
@@ -182,10 +188,16 @@ final class WorldExplorerInput {
         return !keys.isEmpty();
     }
 
-    /** The walk toggle fires once per physical press of its key; key repeat is ignored. */
+    /**
+     * The walk toggle and HUD commands fire once per physical press of their key; key repeat is
+     * ignored.
+     */
     void keyPressed(KeyCode code) {
         boolean fresh = keys.add(code);
-        if (fresh && controls.keys().get(code) == WorldControls.Action.WALK) host.toggleWalk();
+        if (!fresh) return;
+        var action = controls.keys().get(code);
+        if (action == WorldControls.Action.WALK) host.toggleWalk();
+        else if (action != null && action.command) host.command(action);
     }
 
     void keyReleased(KeyCode code) {

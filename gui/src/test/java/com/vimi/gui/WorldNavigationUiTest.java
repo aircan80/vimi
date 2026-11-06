@@ -203,6 +203,7 @@ public final class WorldNavigationUiTest {
     private static void finish(WorldView view, Fixture fixture) {
             controls(view);
             streamingSizeIsDebouncedPerPulse(view);
+            viewportTakesThePage(view);
             fullscreenAndPanels(view);
             invoke(view,"requestFrame");
             await(fixture,() -> !view.lookup("#world-minimap-activity").isVisible(),() -> {
@@ -270,22 +271,129 @@ public final class WorldNavigationUiTest {
         view.activate();
         var split=(javafx.scene.control.SplitPane)get(view,"split");
         var hint=view.lookup("#world-panels-hint");
-        require(split.getItems().size()==2 && content.getBottom().isVisible() && !hint.isVisible(),"Panels start shown");
+        var hud=view.lookup("#world-hud");
+        // The map list already left the split for the explorer (HUD step 1); Alt+Z hides the HUD.
+        require(split.getItems().size()==1 && content.getBottom().isVisible() && hud.isVisible() && !hint.isVisible(),
+                "The HUD starts shown, without the map list");
         for (int i=0;i<30;i++) press(viewport,KeyCode.Z,true);
-        require(split.getItems().size()==1 && split.getItems().getFirst()==content,"Alt+Z hides the map list once, however long it is held");
-        require(!content.getBottom().isVisible() && !content.getBottom().isManaged(),"Alt+Z hides the control rows");
-        require(hint.isVisible(),"A hint says how to bring the panels back");
+        require(!content.getBottom().isVisible() && !content.getBottom().isManaged() && !hud.isVisible(),
+                "Alt+Z hides the slim bar and the HUD overlays once, however long it is held");
+        require(split.getItems().size()==1 && split.getItems().getFirst()==content,"The map list stays out");
+        require(hint.isVisible(),"A hint says how to bring the HUD back");
         release(viewport,KeyCode.Z);
         press(viewport,KeyCode.Z,true);
         release(viewport,KeyCode.Z);
-        require(split.getItems().size()==2 && content.getBottom().isVisible() && !hint.isVisible(),"Alt+Z shows them again");
-        ((javafx.scene.control.Button)view.lookup("#world-hide-panels")).fire();
-        require(split.getItems().size()==1,"The Hide panels button hides them");
+        require(content.getBottom().isVisible() && hud.isVisible() && !hint.isVisible(),"Alt+Z shows them again");
+        var hide=(javafx.scene.control.Button)view.lookup("#world-hide-panels");
+        require(hide.getText().equals("Hide HUD (Alt+Z)"),"The button names the HUD: "+hide.getText());
+        hide.fire();
+        require(!hud.isVisible() && !content.getBottom().isVisible(),"The Hide HUD button hides it");
         press(viewport,KeyCode.Z,true);
         release(viewport,KeyCode.Z);
-        require(split.getItems().size()==2,"Alt+Z restores after the button");
+        require(hud.isVisible() && content.getBottom().isVisible(),"Alt+Z restores after the button");
+        // The HUD lives in the viewport, so it comes along to full screen, and Alt+Z works there.
+        press(viewport,KeyCode.F11,false);
+        release(viewport,KeyCode.F11);
+        require(full.active() && full.stage().getScene().getRoot().lookup("#world-hud")==hud,"The HUD is on the full-screen stage");
+        press(viewport,KeyCode.Z,true);
+        release(viewport,KeyCode.Z);
+        require(full.active() && !hud.isVisible() && hint.isVisible(),"Alt+Z hides the HUD in full screen");
+        press(viewport,KeyCode.Z,true);
+        release(viewport,KeyCode.Z);
+        require(hud.isVisible(),"And shows it again");
+        press(viewport,KeyCode.F11,false);
+        release(viewport,KeyCode.F11);
+        require(!full.active() && content.getCenter()==viewport,"Left full screen");
         key(viewport,KeyCode.ALT,false);
         closeEndsFullscreen();
+    }
+
+    /**
+     * HUD step 1: the viewport is the page. The map list leaves the split while exploring and
+     * opens as an overlay panel (Map button or M); the heading becomes the map name top-left; the
+     * control rows fold into one slim bar whose "More" toggle shows the rest. Nothing is removed.
+     */
+    private static void viewportTakesThePage(WorldView view) {
+        var viewport=(javafx.scene.layout.StackPane)view.lookup("#world-viewport");
+        var content=(javafx.scene.layout.BorderPane)get(view,"content");
+        var split=(javafx.scene.control.SplitPane)get(view,"split");
+        var sidebar=(Node)get(view,"sidebarPane");
+        require(split.getItems().size()==1 && split.getItems().getFirst()==content && sidebar.getParent()==null,
+                "The map list is not in the split while exploring");
+        require(content.getTop()==null && content.getCenter()==viewport,"Nothing sits above the viewport");
+        // Acceptance: the view takes at least 80% of the window (it was about 27%).
+        view.getScene().getRoot().applyCss();
+        view.getScene().getRoot().layout();
+        double share=viewport.getWidth()*viewport.getHeight()/(view.getScene().getWidth()*view.getScene().getHeight());
+        require(share>=.8,"The viewport takes "+Math.round(share*100)+"% of the window");
+        System.out.println("World HUD step 1: the viewport takes "+Math.round(share*100)+"% of a "
+                +(int)view.getScene().getWidth()+"x"+(int)view.getScene().getHeight()+" window");
+        var hud=view.lookup("#world-hud");
+        require(hud!=null && hud.getParent()==viewport && hud.isVisible() && !hud.isFocusTraversable(),"The HUD is a viewport overlay");
+        var mapButton=(Button)view.lookup("#world-hud-map");
+        var mapName=(javafx.scene.control.Label)view.lookup("#world-hud-map-name");
+        var heading=(javafx.scene.control.Label)get(view,"heading");
+        require(mapButton.getText().startsWith("Map") && !mapButton.isFocusTraversable(),"Map button top-left: "+mapButton.getText());
+        require(mapName.getText().equals(heading.getText()) && !mapName.getText().isBlank(),"The map name is the former heading: "+mapName.getText());
+        var status=(Node)get(view,"status");
+        require(isWithin(status,hud),"The status line floats in the HUD");
+        // One slim bar; the rest folds behind More.
+        var bar=view.lookup("#world-hud-bar");
+        var more=(javafx.scene.control.ToggleButton)view.lookup("#world-hud-more");
+        var rows=view.lookup("#world-hud-more-rows");
+        require(isWithin(bar,content.getBottom()) && isWithin(rows,content.getBottom()),"Slim bar and More rows are the bottom");
+        for (var id : new String[] {"#world-walk-mode","#world-flight-speed","#world-current-area","#world-position"})
+            require(isWithin(view.lookup(id),bar),"In the slim bar: "+id);
+        require(!more.isSelected() && !rows.isVisible() && !rows.isManaged() && !more.isFocusTraversable(),"More starts collapsed");
+        for (var id : new String[] {"#world-smooth-motion","#world-motion-status","#world-save-bookmark",
+                "#world-hide-panels","#world-fullscreen","#world-look-sensitivity","#world-invert-look",
+                "#world-key-bindings-open","#world-look-status","#world-audio","#world-gpu-enabled",
+                "#world-object-textures","#world-gpu-retry","#world-gpu-status","#world-texture-status",
+                "#world-texture-retry","#world-instance-entrances","#world-instance-enter","#world-instance-leave",
+                "#world-instance-status","#world-back"})
+            require(view.lookup(id)!=null && isWithin(view.lookup(id),rows),"Still reachable under More: "+id);
+        more.fire();
+        require(rows.isVisible() && rows.isManaged(),"More shows every other control");
+        require(view.getScene().getFocusOwner()==viewport,"Focus returns to the viewport after More");
+        more.fire();
+        require(!rows.isVisible() && !rows.isManaged(),"More again folds them");
+        // M toggles the map panel; the map list moves into it and back out.
+        var panel=view.lookup("#world-map-panel");
+        require(panel!=null && !panel.isVisible(),"Map panel starts closed");
+        for (int i=0;i<10;i++) key(viewport,KeyCode.M,true);
+        require(panel.isVisible() && isWithin(sidebar,panel) && isWithin(view.lookup("#world-maps"),panel),
+                "M opens the map panel with the map list, once however long it is held");
+        require(isWithin(view.lookup("#world-map-panel-back"),panel) && ((Button)view.lookup("#world-map-panel-back")).getText().equals(((Button)view.lookup("#world-back")).getText()),"The panel offers the way back to the tile picker");
+        require(isWithin(view.lookup("#world-tiles"),panel) && isWithin(view.lookup("#world-open"),panel),
+                "The panel holds the tile inventory and its Open button");
+        view.getScene().getRoot().applyCss();
+        view.getScene().getRoot().layout();
+        require(panel.getLayoutBounds().getWidth()<=viewport.getWidth()/2+1 && ((Node)get(view,"tileInventory")).getScaleX()<1,
+                "The panel sits on the left of the view: "+panel.getLayoutBounds().getWidth()+" of "+viewport.getWidth());
+        require(input(view).axes().equals(com.vibeminer.rendering.world.ExplorerMotion.Input.NONE),
+                "M is not movement");
+        key(viewport,KeyCode.M,false);
+        // Typing in the panel's search never reaches flight input; clicks never inspect or look.
+        var search=(Node)get(view,"search");
+        key(search,KeyCode.W,true);
+        require(!input(view).keysHeld(),"Keys typed in the panel do not fly");
+        key(search,KeyCode.W,false);
+        mouse(panel,javafx.scene.input.MouseEvent.MOUSE_PRESSED,20,20,javafx.scene.input.MouseButton.SECONDARY);
+        require(!input(view).looking(),"A press on the panel is not mouse look");
+        mouse(panel,javafx.scene.input.MouseEvent.MOUSE_RELEASED,20,20,javafx.scene.input.MouseButton.SECONDARY);
+        key(viewport,KeyCode.M,true);
+        key(viewport,KeyCode.M,false);
+        require(!panel.isVisible() && sidebar.getParent()==null && split.getItems().size()==1
+                && ((Node)get(view,"tileInventory")).getScaleX()==1,"M again closes it; the tile inventory is unscaled again");
+        mapButton.fire();
+        require(panel.isVisible() && view.getScene().getFocusOwner()==viewport,"The Map button opens it; focus stays on the world");
+        mapButton.fire();
+        require(!panel.isVisible(),"The Map button closes it");
+    }
+
+    private static boolean isWithin(Node node, Node ancestor) {
+        for (var at=node; at!=null; at=at.getParent()) if (at==ancestor) return true;
+        return false;
     }
 
     /** A view closed while full screen returns nothing and closes its stage. */
@@ -307,8 +415,18 @@ public final class WorldNavigationUiTest {
         invoke(view,"toggleFullscreen");
         require(full.active(),"Full screen before leaving");
         var stage=full.stage();
+        invoke(view,"toggleMapPanel");
+        require(((Node)get(view,"viewport")).lookup("#world-map-panel").isVisible(),"Map panel open before leaving");
         invoke(view,"showInventory");
         require(!full.active() && !stage.isShowing(),"Leaving the explorer ends full screen");
+        var split=(javafx.scene.control.SplitPane)get(view,"split");
+        var content=(javafx.scene.layout.BorderPane)get(view,"content");
+        require(split.getItems().size()==2 && split.getItems().getFirst()==get(view,"sidebarPane")
+                        && split.getItems().get(1)==content,
+                "Leaving the explorer, even with the map panel open, puts the map list back in the split");
+        require(!((Node)get(view,"viewport")).lookup("#world-map-panel").isVisible() && content.getTop()!=null
+                        && isWithin((Node)get(view,"status"),content.getTop()),
+                "The heading and status line are back above the tile picker");
     }
 
     private static boolean viewportActive(WorldView view) {

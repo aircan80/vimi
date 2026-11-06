@@ -39,12 +39,23 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         LOOK_UP("Look up"),
         LOOK_DOWN("Look down"),
         SPRINT("Faster (hold; with the wheel: speed)"),
-        WALK("Walk on terrain (toggle)");
+        WALK("Walk on terrain (toggle)"),
+        MAP_PANEL("Map panel (toggle)", true);
 
         final String label;
+        /**
+         * A HUD command: it fires once per physical press through {@link
+         * WorldExplorerInput.Host#command} and never drives motion.
+         */
+        final boolean command;
 
         Action(String label) {
+            this(label, false);
+        }
+
+        Action(String label, boolean command) {
             this.label = label;
+            this.command = command;
         }
     }
 
@@ -114,6 +125,8 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
             keys.put(KeyCode.DOWN, Action.LOOK_DOWN);
             keys.put(KeyCode.SHIFT, Action.SPRINT);
             keys.put(KeyCode.F, Action.WALK);
+            // HUD commands use keys that sit in the same place on both layouts.
+            keys.put(KeyCode.M, Action.MAP_PANEL);
             return keys;
         }
     }
@@ -216,7 +229,7 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
                 + "/" + keysOf.apply(Action.LOOK_UP) + "/" + keysOf.apply(Action.LOOK_DOWN) + " to look · "
                 + keysOf.apply(Action.SPRINT) + " faster · wheel zooms"
                 + (modifier == null ? "" : " · " + modifier.getName() + "+wheel changes speed")
-                + " · " + keysOf.apply(Action.WALK) + " walks · click inspects · Keys… rebinds";
+                + " · " + keysOf.apply(Action.WALK) + " walks · " + keysOf.apply(Action.MAP_PANEL) + " map · click inspects · Keys… rebinds";
     }
 
     String encode() {
