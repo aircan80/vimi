@@ -90,11 +90,13 @@ public final class WorldSky {
     }
 
     /**
-     * Sky and fog channels; colours are recorded 0xRRGGBB values. A recorded {@code FogEnd} of 0
-     * (or less) means the row records no distance fog. {@code fogShare} is how much of this value
-     * had recorded fog (0..1): fog distance and scaler are averaged over that share only, so a key
-     * or light without fog never pulls the distance toward 0. A share of 0 means no recorded fog
-     * here; callers keep their own fog, or blend it in by {@code 1 - fogShare}.
+     * Sky, light and fog channels; colours are recorded 0xRRGGBB values. {@code direct} and {@code
+     * ambient} are the recorded {@code DirectColor} (sun/moon light) and {@code AmbientColor}. A
+     * recorded {@code FogEnd} of 0 (or less) means the row records no distance fog. {@code
+     * fogShare} is how much of this value had recorded fog (0..1): fog distance and scaler are
+     * averaged over that share only, so a key or light without fog never pulls the distance toward
+     * 0. A share of 0 means no recorded fog here; callers keep their own fog, or blend it in by
+     * {@code 1 - fogShare}.
      */
     public record Sample(
             int skyTop,
@@ -103,11 +105,19 @@ public final class WorldSky {
             int skyBand2,
             int skySmog,
             int skyFog,
+            int direct,
+            int ambient,
             double fogEnd,
             double fogScaler,
             double fogShare) {
+        /** Number of colour channels, in {@link #colours()} order. */
+        static final int COLOURS = 8;
+
         public Sample {
-            for (int colour : new int[] {skyTop, skyMiddle, skyBand1, skyBand2, skySmog, skyFog}) {
+            for (int colour :
+                    new int[] {
+                        skyTop, skyMiddle, skyBand1, skyBand2, skySmog, skyFog, direct, ambient
+                    }) {
                 if ((colour & 0xff00_0000) != 0) {
                     throw new IllegalArgumentException("Colour is not 0xRRGGBB");
                 }
@@ -127,6 +137,8 @@ public final class WorldSky {
                 int skyBand2,
                 int skySmog,
                 int skyFog,
+                int direct,
+                int ambient,
                 double fogEnd,
                 double fogScaler) {
             this(
@@ -136,9 +148,15 @@ public final class WorldSky {
                     skyBand2,
                     skySmog,
                     skyFog,
+                    direct,
+                    ambient,
                     fogEnd > 0 ? fogEnd : 0,
                     fogEnd > 0 ? fogScaler : 0,
                     fogEnd > 0 ? 1 : 0);
+        }
+
+        private Sample(int[] c, double fogEnd, double fogScaler, double fogShare) {
+            this(c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], fogEnd, fogScaler, fogShare);
         }
 
         /** True when part of this value has recorded distance fog. */
@@ -146,48 +164,44 @@ public final class WorldSky {
             return fogShare > 0;
         }
 
+        private int[] colours() {
+            return new int[] {
+                skyTop, skyMiddle, skyBand1, skyBand2, skySmog, skyFog, direct, ambient
+            };
+        }
+
         /** Weighted average; weights sum to 1 and each colour channel is rounded once. */
         static Sample blend(List<Sample> samples, double[] weights) {
             if (samples.size() == 1) {
                 return samples.getFirst();
             }
-            double[] sum = new double[6 * 3 + 3];
+            double[] sum = new double[COLOURS * 3];
+            double fogEnd = 0, fogScaler = 0, fogShare = 0;
             for (int i = 0; i < samples.size(); i++) {
                 var s = samples.get(i);
-                int[] colours = {
-                    s.skyTop, s.skyMiddle, s.skyBand1, s.skyBand2, s.skySmog, s.skyFog
-                };
-                for (int c = 0; c < 6; c++) {
+                int[] colours = s.colours();
+                for (int c = 0; c < COLOURS; c++) {
                     for (int b = 0; b < 3; b++) {
                         sum[c * 3 + b] += ((colours[c] >> (16 - 8 * b)) & 0xff) * weights[i];
                     }
                 }
                 // Fog averages over the fog-bearing share of each sample only.
                 double fog = s.fogShare * weights[i];
-                sum[18] += s.fogEnd * fog;
-                sum[19] += s.fogScaler * fog;
-                sum[20] += fog;
+                fogEnd += s.fogEnd * fog;
+                fogScaler += s.fogScaler * fog;
+                fogShare += fog;
             }
-            int[] out = new int[6];
-            for (int c = 0; c < 6; c++) {
+            int[] out = new int[COLOURS];
+            for (int c = 0; c < COLOURS; c++) {
                 for (int b = 0; b < 3; b++) {
                     int value = Math.clamp(Math.round(sum[c * 3 + b]), 0, 255);
                     out[c] |= value << (16 - 8 * b);
                 }
             }
-            double share = Math.min(1, sum[20]);
-            return sum[20] > 0
+            return fogShare > 0
                     ? new Sample(
-                            out[0],
-                            out[1],
-                            out[2],
-                            out[3],
-                            out[4],
-                            out[5],
-                            sum[18] / sum[20],
-                            sum[19] / sum[20],
-                            share)
-                    : new Sample(out[0], out[1], out[2], out[3], out[4], out[5], 0, 0, 0);
+                            out, fogEnd / fogShare, fogScaler / fogShare, Math.min(1, fogShare))
+                    : new Sample(out, 0, 0, 0);
         }
 
         /**
@@ -196,13 +210,12 @@ public final class WorldSky {
          */
         static Sample mix(Sample a, Sample b, double f) {
             double wa = (1 - f) * a.fogShare, wb = f * b.fogShare, share = wa + wb;
+            int[] from = a.colours(), to = b.colours(), out = new int[COLOURS];
+            for (int c = 0; c < COLOURS; c++) {
+                out[c] = colour(from[c], to[c], f);
+            }
             return new Sample(
-                    colour(a.skyTop, b.skyTop, f),
-                    colour(a.skyMiddle, b.skyMiddle, f),
-                    colour(a.skyBand1, b.skyBand1, f),
-                    colour(a.skyBand2, b.skyBand2, f),
-                    colour(a.skySmog, b.skySmog, f),
-                    colour(a.skyFog, b.skyFog, f),
+                    out,
                     share > 0 ? (a.fogEnd * wa + b.fogEnd * wb) / share : 0,
                     share > 0 ? (a.fogScaler * wa + b.fogScaler * wb) / share : 0,
                     Math.min(1, share));

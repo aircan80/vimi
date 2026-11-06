@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
 final class WorldSkyTest {
     private static WorldSky.Sample grey(int level, double fogEnd) {
         int c = level << 16 | level << 8 | level;
-        return new WorldSky.Sample(c, c, c, c, c, c, fogEnd, 0.5);
+        return new WorldSky.Sample(c, c, c, c, c, c, c, c, fogEnd, 0.5);
     }
 
     private static WorldSky.Light defaultLight(long id, long map, long param) {
@@ -89,7 +89,8 @@ final class WorldSkyTest {
         assertEquals(1.0, half.coverage(), 1e-12);
         int mid = 100 << 16 | 100 << 8 | 100;
         assertEquals(
-                new WorldSky.Sample(mid, mid, mid, mid, mid, mid, 1000, 0.5, 0.5), half.sample());
+                new WorldSky.Sample(mid, mid, mid, mid, mid, mid, mid, mid, 1000, 0.5, 0.5),
+                half.sample());
 
         // The radius is 3D: the same horizontal spot 300 above is outside.
         var above = sky.at(0, 1000, 0, 300, 0);
@@ -179,7 +180,26 @@ final class WorldSkyTest {
         assertFalse(sky.at(0, 0, 0, 0, 100).issues().isEmpty());
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new WorldSky.Sample(0x0100_0000, 0, 0, 0, 0, 0, 0, 0));
+                () -> new WorldSky.Sample(0x0100_0000, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+    }
+
+    @Test
+    void directAndAmbientLightAreTheirOwnChannels() {
+        var sun = new WorldSky.Sample(0, 0, 0, 0, 0, 0, 0xFF8000, 0x002040, 0, 0);
+        var moon = new WorldSky.Sample(0, 0, 0, 0, 0, 0, 0x0000FF, 0x604020, 0, 0);
+
+        var half = WorldSky.Sample.mix(sun, moon, 0.5);
+        assertEquals(0x804080, half.direct());
+        assertEquals(0x303030, half.ambient());
+        assertEquals(0, half.skyTop());
+
+        var quarter = WorldSky.Sample.blend(List.of(sun, moon), new double[] {0.75, 0.25});
+        assertEquals(0xBF6040, quarter.direct());
+        assertEquals(0x182838, quarter.ambient());
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorldSky.Sample(0, 0, 0, 0, 0, 0, 0, 0x0100_0000, 0, 0));
     }
 
     @Test

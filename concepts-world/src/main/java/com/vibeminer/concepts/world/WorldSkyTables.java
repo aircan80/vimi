@@ -28,7 +28,9 @@ final class WorldSkyTables {
         "SkyBand1Color",
         "SkyBand2Color",
         "SkySmogColor",
-        "SkyFogColor"
+        "SkyFogColor",
+        "DirectColor",
+        "AmbientColor"
     };
 
     /** The light tables cannot be used at all; the message names the table and why. */
@@ -145,6 +147,8 @@ final class WorldSkyTables {
                                         colours[3],
                                         colours[4],
                                         colours[5],
+                                        colours[6],
+                                        colours[7],
                                         data.decimal(row, "FogEnd", -1),
                                         data.decimal(row, "FogScaler", -1))));
             } catch (Unreadable | IllegalArgumentException failure) {

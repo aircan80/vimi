@@ -43,6 +43,8 @@ final class WorldSkyTablesTest {
                     new Field("SkyBand2Color", 1, false),
                     new Field("SkySmogColor", 1, false),
                     new Field("SkyFogColor", 1, false),
+                    new Field("DirectColor", 1, false),
+                    new Field("AmbientColor", 1, false),
                     new Field("FogEnd", 1, true),
                     new Field("FogScaler", 1, true));
     private static final List<Field> MAP = List.of(new Field("TimeOfDayOverride", 1, false));
@@ -159,7 +161,7 @@ final class WorldSkyTablesTest {
                                 List.of(
                                         row(
                                                 10, "100", "0", "0", "0", "0", "0", "0", "0", "0",
-                                                "0.25"),
+                                                "0", "0", "0.25"),
                                         row(
                                                 11,
                                                 "200",
@@ -170,14 +172,16 @@ final class WorldSkyTablesTest {
                                                 "0",
                                                 "0",
                                                 "8421504",
+                                                "16769216",
+                                                "4210784",
                                                 "1500",
                                                 "0.5"),
                                         row(
                                                 12, "200", "2880", "0", "0", "0", "0", "0", "0",
-                                                "0", "0"),
+                                                "0", "0", "0", "0"),
                                         row(
                                                 13, "555", "0", "0", "0", "0", "0", "0", "0", "0",
-                                                "0"))),
+                                                "0", "0", "0"))),
                         table(4, "Map", MAP, List.of(row(0, "-1"), row(1, "900")))));
     }
 
@@ -205,6 +209,8 @@ final class WorldSkyTablesTest {
             assertEquals(2, near.contributions().getFirst().lightId());
             assertEquals(0xCC88FF, near.sample().skyTop());
             assertEquals(0x808080, near.sample().skyFog());
+            assertEquals(0xFFE0C0, near.sample().direct());
+            assertEquals(0x404060, near.sample().ambient());
             assertEquals(1500, near.sample().fogEnd(), 0);
             assertEquals(List.of(11L), near.contributions().getFirst().dataRows());
 
