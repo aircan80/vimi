@@ -127,6 +127,12 @@ public final class WorldAppearanceProof {
             session.camera(new WorldStreamTransport.Camera(1, 1, WIDTH, HEIGHT, above));
             var committed = session.commit(1, resident).get(5, TimeUnit.SECONDS);
             frames.put("terrain", frame(session, committed.contentRevision(), 1));
+            // The references are recorded multisampled (#389): say which mode this device ran.
+            System.out.println(
+                    "WORLD_APPEARANCE_SAMPLES "
+                            + (process.get().singleSampled()
+                                    ? 1
+                                    : WorldStreamNativeOwner.MSAA_SAMPLES));
             // Low over the water strip near the tile corner (native x, y in [-74, -10] x
             // [-266, -10]), looking down at it.
             var water = new com.vibeminer.rendering.world.TerrainCamera(-42, -138, 120, 0, -1.45);
@@ -278,6 +284,14 @@ public final class WorldAppearanceProof {
                             return read;
                         }
                     };
+        }
+
+        /** Whether the helper reported that its render target could not be multisampled. */
+        boolean singleSampled() {
+            synchronized (copy) {
+                return copy.toString(java.nio.charset.StandardCharsets.UTF_8)
+                        .contains("multisampling unavailable");
+            }
         }
 
         /** The renderer name the helper reported on stderr, waiting up to {@code timeout}. */

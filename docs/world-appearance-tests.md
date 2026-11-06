@@ -26,11 +26,17 @@ The proof needs a GPU, so it is a `nativeGpu*` task, not a unit test:
 `-PappearanceBackend` selects `VULKAN` (the default) or `D3D11`. Each backend has its own
 references under
 `rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/appearance/<backend>/`, because a
-backend's frame read-back is compared as the raw 32-bit values it returns.
+backend's frame read-back is compared as the raw 32-bit values it returns. The references are
+recorded with the World's render target multisampled (MSAA x4) and anisotropic texture filtering
+(#389); the proof prints `WORLD_APPEARANCE_SAMPLES <n>` for the mode the helper ran. A device that
+cannot multisample (`WORLD_APPEARANCE_SAMPLES 1`) draws harder silhouettes and differs from the
+references at edges.
 
-A passing run prints one line per scene, then a pass line:
+A passing run prints the renderer and sample count, one line per scene, then a pass line:
 
 ```
+WORLD_APPEARANCE_RENDERER Vulkan
+WORLD_APPEARANCE_SAMPLES 4
 WORLD_APPEARANCE terrain mean 0.000, outliers 0.0000%, max 0
 WORLD_APPEARANCE water mean 0.000, outliers 0.0000%, max 0
 WORLD_APPEARANCE fog mean 0.000, outliers 0.0000%, max 0
