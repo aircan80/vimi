@@ -75,6 +75,10 @@ public final class WorldStreamSplatBridgeTest {
                                             "Layer colour carried");
                                     layers.incrementAndGet();
                                 }
+                                var counts = borrow.splatLayerCounts();
+                                check(
+                                        counts.fileBlocks() + counts.encoded() == layers.get(),
+                                        "Every prepared layer is counted by how it was prepared");
                                 check(
                                         input.decode().apply(0xfffffL).isEmpty(),
                                         "A diffuse outside the material yields no layer");

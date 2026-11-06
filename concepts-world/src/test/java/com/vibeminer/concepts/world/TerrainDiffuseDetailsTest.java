@@ -24,7 +24,7 @@ final class TerrainDiffuseDetailsTest {
 
     private static TerrainDiffuseDetails.Detail detail(long id) {
         return new TerrainDiffuseDetails.Detail(
-                id, key(id), new byte[TerrainLayerBlocks.CHAIN_BYTES], false);
+                id, key(id), new byte[TerrainLayerBlocks.CHAIN_BYTES], false, "BGRA8");
     }
 
     /** RGB of texel 0 of one chain level. */
@@ -73,13 +73,19 @@ final class TerrainDiffuseDetailsTest {
         for (int bytes : new int[] {0, TerrainLayerBlocks.CHAIN_BYTES - 1, 128 * 128 * 4}) {
             assertThrows(
                     IllegalArgumentException.class,
-                    () -> new TerrainDiffuseDetails.Detail(7, key(7), new byte[bytes], true));
+                    () ->
+                            new TerrainDiffuseDetails.Detail(
+                                    7, key(7), new byte[bytes], true, "BC1"));
         }
         assertThrows(
                 IllegalArgumentException.class,
                 () ->
                         new TerrainDiffuseDetails.Detail(
-                                7, "X".repeat(32), new byte[TerrainLayerBlocks.CHAIN_BYTES], true));
+                                7,
+                                "X".repeat(32),
+                                new byte[TerrainLayerBlocks.CHAIN_BYTES],
+                                true,
+                                "BC1"));
         assertTrue(detail(7).blocks().isReadOnly());
     }
 
@@ -100,6 +106,9 @@ final class TerrainDiffuseDetailsTest {
             var first = source.detail(binding, request);
             // The authored BLP2 is 8 x 8: too small to carry, so it is enlarged and encoded.
             assertFalse(first.fileBlocks());
+            assertEquals("BC2", first.sourceEncoding());
+            assertEquals(1, source.details.encodedLayers(), "one lossy encode counted");
+            assertEquals(0, source.details.fileBlockLayers());
             assertArrayEquals(new int[] {255, 0, 0}, texel(first, 0), "BC2 0xf800 stays red");
             assertArrayEquals(new int[] {255, 0, 0}, texel(first, 8));
             int opens = files.opens(id);
@@ -161,6 +170,9 @@ final class TerrainDiffuseDetailsTest {
                             source, null, List.of(), Cancellation.NONE, progress -> {}, false);
             var detail = source.detail(bound(files, id), request);
             assertTrue(detail.fileBlocks(), "a 256 BC2 chain is carried as blocks");
+            assertEquals("BC2", detail.sourceEncoding(), "alpha dropped, source format kept");
+            assertEquals(1, source.details.fileBlockLayers());
+            assertEquals(0, source.details.encodedLayers());
             // Level 0 of the file is blue, every lower level red: the layer keeps that split.
             assertArrayEquals(new int[] {0, 0, 255}, texel(detail, 0));
             for (int level = 1; level < TerrainLayerBlocks.LEVELS; level++) {
@@ -220,7 +232,7 @@ final class TerrainDiffuseDetailsTest {
     @Test
     void detailBlocksCannotBeMutatedThroughTheRecord() {
         byte[] input = new byte[TerrainLayerBlocks.CHAIN_BYTES];
-        var value = new TerrainDiffuseDetails.Detail(7, key(7), input, true);
+        var value = new TerrainDiffuseDetails.Detail(7, key(7), input, true, "BC1");
         input[0] = 9;
         assertEquals(0, value.chain()[0], "The constructor copies its input");
         value.chain()[0] = 9;

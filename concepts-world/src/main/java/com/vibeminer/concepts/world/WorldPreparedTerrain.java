@@ -61,6 +61,13 @@ final class WorldPreparedTerrain {
             return splat;
         }
 
+        /** Splat layers this source prepared from file blocks and with the lossy encoder. */
+        long[] splatLayerCounts() {
+            check();
+            var details = owner.source.materials.details;
+            return new long[] {details.fileBlockLayers(), details.encodedLayers()};
+        }
+
         /**
          * Decodes (or reuses) one of this tile's layer diffuses for splatting, bound to the exact
          * source tuple the atlas was composed from; null if that diffuse is not in its receipt.

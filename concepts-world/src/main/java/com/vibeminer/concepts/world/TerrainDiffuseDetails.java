@@ -21,13 +21,22 @@ final class TerrainDiffuseDetails {
     static final long MAX_BYTES = (long) MAX_ENTRIES * TerrainLayerBlocks.CHAIN_BYTES;
 
     /**
-     * One prepared layer diffuse: its BC1 chain, and whether that chain is the file's own blocks
-     * ({@code fileBlocks}) or an encoding of decoded pixels.
+     * One prepared layer diffuse: its BC1 chain, whether that chain is the file's own blocks
+     * ({@code fileBlocks}) or a lossy encoding of decoded pixels, and the source's encoding (BC1,
+     * BC2, BC3, PALETTED or BGRA8). The chain drops the source's alpha on purpose: terrain layers
+     * are drawn opaque, and a later step that wants the alpha (a specular or height hint) can find
+     * from {@code sourceEncoding} which layers carry one.
      */
-    record Detail(long fileId, String contentKey, byte[] chain, boolean fileBlocks) {
+    record Detail(
+            long fileId,
+            String contentKey,
+            byte[] chain,
+            boolean fileBlocks,
+            String sourceEncoding) {
         Detail {
             Objects.requireNonNull(contentKey);
             Objects.requireNonNull(chain);
+            Objects.requireNonNull(sourceEncoding);
             if (fileId <= 0
                     || fileId > 0xffff_ffffL
                     || !contentKey.matches("[0-9a-f]{32}")
@@ -57,6 +66,9 @@ final class TerrainDiffuseDetails {
     private long bytes;
     private long hits, misses;
 
+    // Layers prepared from the file's own blocks, and layers that needed the lossy encoder.
+    private long fileBlockLayers, encodedLayers;
+
     static String key(long fileId, String contentKey) {
         return fileId + ":" + contentKey;
     }
@@ -81,6 +93,11 @@ final class TerrainDiffuseDetails {
         }
         entries.put(key, detail);
         bytes += detail.bytes();
+        if (detail.fileBlocks()) {
+            fileBlockLayers++;
+        } else {
+            encodedLayers++;
+        }
         var oldest = entries.entrySet().iterator();
         while (entries.size() > MAX_ENTRIES || bytes > MAX_BYTES) {
             var evicted = oldest.next().getValue();
@@ -104,5 +121,15 @@ final class TerrainDiffuseDetails {
 
     synchronized long misses() {
         return misses;
+    }
+
+    /** Layers prepared from the file's own blocks since this cache was created. */
+    synchronized long fileBlockLayers() {
+        return fileBlockLayers;
+    }
+
+    /** Layers that needed the lossy encoder since this cache was created. */
+    synchronized long encodedLayers() {
+        return encodedLayers;
     }
 }

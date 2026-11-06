@@ -1101,7 +1101,8 @@ public final class WorldTerrainTextureSource {
                     DIFFUSE_SOURCE_LIMIT,
                     !stream.holes().isEmpty());
             var source = AssetSources.file(stream);
-            byte[] chain = layerBlocks(source, request);
+            String[] encoding = new String[1];
+            byte[] chain = layerBlocks(source, request, encoding);
             boolean fileBlocks = chain != null;
             if (chain == null) {
                 int side = com.vibeminer.rendering.world.TerrainLayerBlocks.SIDE;
@@ -1131,6 +1132,7 @@ public final class WorldTerrainTextureSource {
                 chain =
                         com.vibeminer.rendering.world.TerrainLayerBlocks.encode(
                                 java.nio.ByteBuffer.wrap(image.rgba()), decoded);
+                encoding[0] = image.encoding().name();
             }
             request.check();
             revalidate(
@@ -1144,7 +1146,7 @@ public final class WorldTerrainTextureSource {
                     request);
             return details.put(
                     new TerrainDiffuseDetails.Detail(
-                            before.fileId(), before.contentKey(), chain, fileBlocks));
+                            before.fileId(), before.contentKey(), chain, fileBlocks, encoding[0]));
         }
     }
 
@@ -1153,7 +1155,8 @@ public final class WorldTerrainTextureSource {
      * DXT, not square, smaller than 256, or not recording every level from 256 down to 4 x 4 in
      * exact storage. Reads only the header, the mip table and those levels' byte ranges.
      */
-    private static byte[] layerBlocks(com.vibeminer.formats.AssetSource source, Request request) {
+    private static byte[] layerBlocks(
+            com.vibeminer.formats.AssetSource source, Request request, String[] encoding) {
         int side = com.vibeminer.rendering.world.TerrainLayerBlocks.SIDE;
         try {
             byte[] head = source.readAt(0, Blp2Decoder.HEADER_BYTES, request.token).join();
@@ -1218,8 +1221,11 @@ public final class WorldTerrainTextureSource {
                 }
                 levels.add(level);
             }
-            return com.vibeminer.rendering.world.TerrainLayerBlocks.fromBlocks(
-                    format, levels.toArray(byte[][]::new));
+            var chain =
+                    com.vibeminer.rendering.world.TerrainLayerBlocks.fromBlocks(
+                            format, levels.toArray(byte[][]::new));
+            encoding[0] = new String[] {"RGBA8", "BC1", "BC2", "BC3"}[format];
+            return chain;
         } catch (com.vibeminer.formats.images.BlpFormatException
                 | IllegalArgumentException
                 | java.util.concurrent.CompletionException unusable) {
