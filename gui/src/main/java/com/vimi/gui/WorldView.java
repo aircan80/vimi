@@ -1227,9 +1227,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         image.setPreserveRatio(true);
         viewport.setOnKeyPressed(
                 e -> {
-                    // Nothing flies behind the open menu.
-                    if (!menu.shown()) viewportKey(e);
-                    else devOverlay.refresh();
+                    viewportKey(e);
                     e.consume();
                 });
         viewport.setOnKeyReleased(
@@ -2312,9 +2310,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
         tileInventory.setScaleY(1);
     }
 
-    /** The viewport's key handling: flight input and HUD commands. */
+    /**
+     * The viewport's key handling: flight input and HUD commands, from the viewport and from the
+     * tracking popup's forwarding. While the menu is open no press acts (nothing flies and no
+     * command runs behind it); releases still pass, so nothing stays held.
+     */
     private void viewportKey(javafx.scene.input.KeyEvent e) {
-        if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_PRESSED) input.keyPressed(e.getCode());
+        if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_PRESSED) {
+            if (!menu.shown()) input.keyPressed(e.getCode());
+        }
         else if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_RELEASED) input.keyReleased(e.getCode());
         devOverlay.refresh();
     }
