@@ -127,7 +127,8 @@ public final class WorldMinimapInputUiTest {
     }
 
     private static void clickButton(ButtonBase button) {
-        view.lookup("#world-maps").requestFocus();
+        // Focus elsewhere first; the map list is out of the scene while exploring (HUD step 1).
+        view.lookup("#world-walk-mode").requestFocus();
         mouse(button, MouseEvent.MOUSE_PRESSED, 10, 10);
         mouse(button, MouseEvent.MOUSE_RELEASED, 10, 10);
     }
@@ -176,11 +177,6 @@ public final class WorldMinimapInputUiTest {
             require(!input().keysHeld() && before.equals(get("camera")),
                     "Keys typed while the popup is open never become held flight keys");
             for (var code : List.of(KeyCode.W, KeyCode.A, KeyCode.SPACE, KeyCode.F)) key(viewport, code, false);
-            boolean panels = (boolean) get("panelsHidden");
-            altZ(viewport);
-            require((boolean) get("panelsHidden") != panels, "Alt+Z still works while the popup is open");
-            altZ(viewport);
-            require((boolean) get("panelsHidden") == panels, "And toggles back");
             var entrances = (javafx.scene.control.CheckBox) content.lookup("#world-minimap-entrances");
             require(!entrances.isFocusTraversable() && !entrances.isSelected(), "Entrances layer starts off");
             entrances.fire();
@@ -200,6 +196,41 @@ public final class WorldMinimapInputUiTest {
             key(view.lookup("#world-viewport"), KeyCode.ESCAPE, false);
             require(!input().keysHeld(), "Escape in the popup never becomes a held key");
             require(view.lookup("#world-viewport").isFocused(), "Closing the popup gives focus back");
+            input().clear();
+        });
+        hidingTheHudHidesTheMinimapAndItsPopup();
+    }
+
+    /**
+     * The minimap follows the HUD's hidden state (Alt+Z or H): it hides with the HUD and closes
+     * its tracking popup, and comes back with it; Alt+Z still works while the popup is open.
+     */
+    private static void hidingTheHudHidesTheMinimapAndItsPopup() throws Exception {
+        fx(() -> {
+            var tracking = (ButtonBase) view.lookup("#world-minimap-tracking");
+            mouse(tracking, MouseEvent.MOUSE_PRESSED, 10, 10);
+            mouse(tracking, MouseEvent.MOUSE_RELEASED, 10, 10);
+        });
+        await(() -> view.minimap().tracking().showing());
+        fx(() -> {
+            var viewport = view.lookup("#world-viewport");
+            var minimap = view.lookup("#world-minimap");
+            require((boolean) get("panelsHidden") == false && minimap.isVisible(), "HUD and minimap shown");
+            altZ(viewport);
+            require((boolean) get("panelsHidden") && !minimap.isVisible() && !minimap.isManaged()
+                            && !view.minimap().tracking().showing(),
+                    "Alt+Z with the popup open hides the HUD, the minimap and the popup");
+            altZ(viewport);
+            require(!(boolean) get("panelsHidden") && minimap.isVisible() && minimap.isManaged()
+                            && !view.minimap().tracking().showing(),
+                    "Alt+Z again shows the minimap; the popup stays closed");
+            key(viewport, KeyCode.H, true);
+            key(viewport, KeyCode.H, false);
+            require(!minimap.isVisible(), "H hides the minimap with the HUD");
+            key(viewport, KeyCode.H, true);
+            key(viewport, KeyCode.H, false);
+            require(minimap.isVisible(), "H shows it again");
+            viewport.requestFocus();
             input().clear();
         });
     }

@@ -70,6 +70,8 @@ final class WorldMinimap extends VBox implements AutoCloseable {
     };
     private int zoom = DEFAULT_ZOOM;
     private Runnable refocus = () -> {};
+    // Shown by its own state (a valid view) and not hidden by the HUD; see followHud.
+    private boolean ownVisible, hudHidden;
     /** Recorded entrances on the current map; drawn while the tracking layer is on. */
     private List<WorldInstanceLinks.Link> entrances = List.of();
     private final List<double[]> entranceHits = new ArrayList<>();
@@ -446,8 +448,8 @@ final class WorldMinimap extends VBox implements AutoCloseable {
                         y,
                         yaw,
                         List.copyOf(nearby));
-        setVisible(true);
-        setManaged(true);
+        ownVisible = true;
+        applyVisible();
         var key = DrawKey.of(x, y, yaw, view.tiles(), origin, originX, originY,
                 roles == null ? null : roles.paintKey(), scale);
         if (!key.equals(drawn)) {
@@ -720,8 +722,35 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         cancelActive();
         activity.setVisible(false);
         activity.setManaged(false);
-        setVisible(false);
-        setManaged(false);
+        ownVisible = false;
+        applyVisible();
+    }
+
+    /**
+     * Follows the HUD's hidden state (H, Alt+Z) by listening, not binding, since the minimap also
+     * shows and hides itself: it shows while it has a view and the HUD is shown. Hiding the HUD
+     * closes the tracking popup and the role tip; the view and its artwork are kept. Call it once:
+     * each call adds a listener that is never removed (the view does so at construction).
+     */
+    void followHud(javafx.beans.value.ObservableBooleanValue hidden) {
+        java.util.Objects.requireNonNull(hidden);
+        hidden.addListener((o, was, now) -> hudHidden(now));
+        hudHidden(hidden.get());
+    }
+
+    private void hudHidden(boolean hidden) {
+        hudHidden = hidden;
+        if (hidden) {
+            tracking.hide();
+            roleTip.hide();
+        }
+        applyVisible();
+    }
+
+    private void applyVisible() {
+        boolean shown = ownVisible && !hudHidden;
+        setVisible(shown);
+        setManaged(shown);
     }
 
     private void cancelActive() {

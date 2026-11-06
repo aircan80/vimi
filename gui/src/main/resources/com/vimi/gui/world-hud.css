@@ -1,0 +1,37 @@
+/* World HUD overlays: small, translucent, drawn over the 3D view. */
+.world-hud-chip {
+    -fx-background-color: rgba(14, 24, 31, 0.72);
+    -fx-background-radius: 6;
+    -fx-padding: 4 8;
+}
+
+.world-hud-chip .label,
+.world-hud-chip.label {
+    -fx-text-fill: #e8eeee;
+}
+
+.world-hud-map-button {
+    -fx-background-color: rgba(14, 24, 31, 0.82);
+    -fx-background-radius: 6;
+    -fx-text-fill: #f2f5f2;
+    -fx-font-weight: bold;
+    -fx-padding: 5 12;
+}
+
+.world-hud-map-button:hover,
+.world-hud-map-button:selected-panel {
+    -fx-background-color: rgba(40, 108, 181, 0.9);
+}
+
+.world-hud-map-name {
+    -fx-text-fill: #f2f5f2;
+    -fx-font-size: 1.15em;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.85), 4, 0.4, 0, 1);
+}
+
+.world-map-panel {
+    -fx-background-color: rgba(243, 246, 243, 0.97);
+    -fx-background-radius: 8;
+    -fx-padding: 10;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.45), 12, 0.2, 0, 2);
+}

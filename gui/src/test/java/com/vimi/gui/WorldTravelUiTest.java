@@ -238,6 +238,12 @@ public final class WorldTravelUiTest {
         require(card.isVisible(), "Showing the HUD shows the open card again");
         press.accept(javafx.scene.input.KeyCode.I);
         require(!card.pinned(), "I unpins it");
+        // The view hooks the card to the HUD's hidden state: H hides it and keeps it open.
+        require(card.isOpen() && card.isVisible(), "The card is open before H");
+        press.accept(javafx.scene.input.KeyCode.H);
+        require(card.isOpen() && !card.isVisible(), "H hides the card with the HUD; it stays open");
+        press.accept(javafx.scene.input.KeyCode.H);
+        require(card.isOpen() && card.isVisible(), "H again shows the card");
         card.follow(x + WorldInspectCard.FOLLOW_YARDS, y, z);
         require(!card.isOpen() && !card.isVisible(), "An unpinned card closes after travelling away");
         javafx.event.Event.fireEvent(viewport, new javafx.scene.input.KeyEvent(
