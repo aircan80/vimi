@@ -26,7 +26,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+// Drain waits must fail, not hang, if a lease leaks.
+@Timeout(60)
 class WorldTerrainTextureSourceTest {
     private static final BuildRef BUILD =
             new BuildRef("wowf", "a".repeat(32), "b".repeat(32), "us");
