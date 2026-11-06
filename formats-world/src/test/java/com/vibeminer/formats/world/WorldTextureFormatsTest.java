@@ -48,7 +48,7 @@ class WorldTextureFormatsTest {
                 IllegalArgumentException.class,
                 () ->
                         new WorldTextureFormats.AlphaResult(
-                                1, WorldTextureFormats.ChunkIssue.MASK_SUM));
+                                1, WorldTextureFormats.ChunkIssue.MASK_ENCODING));
         assertThrows(
                 NullPointerException.class, () -> new WorldTextureFormats.AlphaResult(0, null));
         assertEquals(7, new WorldTextureFormats.AlphaResult(7, none).maskCount());
@@ -198,8 +198,8 @@ class WorldTextureFormatsTest {
     }
 
     @Test
-    void unknownFieldsAndInvalidIntervalsDeclineOnlyTheirChunk() {
-        for (int[] mutation : new int[][] {{12, 16}, {16, -1}, {24, 1}, {28, 0x340}, {32, 1}}) {
+    void invalidReferencesIntervalsAndMissingAlphaFlagDeclineOnlyTheirChunk() {
+        for (int[] mutation : new int[][] {{16, -1}, {24, 1}, {28, 0x200}, {28, 0}, {32, 1}}) {
             byte[] first = chunk(1, false);
             bytes(first).putInt(mutation[0], mutation[1]);
             try (var data = WorldTextureFormats.read(texture(first), () -> false)) {
@@ -208,6 +208,25 @@ class WorldTextureFormatsTest {
                 assertTrue(data.decodeAlphas(1, ByteBuffer.allocate(0), () -> false).admitted());
             }
         }
+        // Animation, overbright and reflection bits are carried, not refused.
+        for (int[] mutation :
+                new int[][] {{12, 0x10}, {12, 0x80}, {12, 0x100}, {28, 0x340}, {28, 0x7ff}}) {
+            byte[] first = chunk(1, false);
+            bytes(first).putInt(mutation[0], mutation[1]);
+            try (var data = WorldTextureFormats.read(texture(first), () -> false)) {
+                assertTrue(data.decodeAlphas(0, ByteBuffer.allocate(4096), () -> false).admitted());
+                var layer = data.chunks().getFirst().layers().get(mutation[0] == 12 ? 0 : 1);
+                assertEquals(mutation[1], layer.flags());
+            }
+        }
+        byte[] animated = chunk(1, false);
+        bytes(animated).putInt(28, 0x300 | 0x40 | 0x8 | 0x3);
+        try (var data = WorldTextureFormats.read(texture(animated), () -> false)) {
+            var layer = data.chunks().getFirst().layers().get(1);
+            assertEquals(0x4b, layer.animation());
+            assertFalse(layer.overbright());
+            assertTrue(layer.compressed());
+        }
         byte[] nine = texture(chunk(8, false));
         assertEquals(
                 WorldTextureFormats.ChunkIssue.LAYER_SHAPE,
@@ -215,7 +234,7 @@ class WorldTextureFormatsTest {
     }
 
     @Test
-    void zeroOverflowTruncatedOrTrailingRleAndExcessWeightsDoNotProduceAdmittedMasks() {
+    void zeroOverflowTruncatedOrTrailingRleDoNotProduceAdmittedMasks() {
         byte[] base = chunk(1, false);
         int alpha = 8 + 32 + 8;
         var zero = base.clone();
@@ -238,14 +257,17 @@ class WorldTextureFormatsTest {
         assertEquals(
                 WorldTextureFormats.ChunkIssue.MASK_ENCODING,
                 decode(texture(trailing), ByteBuffer.allocate(4096)).issue());
-        byte[] two = chunk(2, false);
+    }
+
+    @Test
+    void overlappingWeightsAreKeptAsStoredForTheConsumerToClamp() {
+        byte[] two = chunk(2, true);
         int firstAlpha = 8 + 48 + 8;
-        for (int i = firstAlpha + 1; i < two.length; i += 2) {
-            two[i] = (byte) 200;
-        }
-        assertEquals(
-                WorldTextureFormats.ChunkIssue.MASK_SUM,
-                decode(texture(two), ByteBuffer.allocate(8192)).issue());
+        Arrays.fill(two, firstAlpha, two.length, (byte) 200);
+        var target = ByteBuffer.allocate(8192);
+        assertTrue(decode(texture(two), target).admitted());
+        assertEquals(200, target.get(0) & 255);
+        assertEquals(200, target.get(4096) & 255);
     }
 
     @Test
@@ -278,8 +300,8 @@ class WorldTextureFormatsTest {
         byte[] good = texture(chunk(1, false));
         for (byte[] invalid :
                 new byte[][] {
-                    join(good, part("MTXP", new byte[16])),
                     join(good, part("MDID", ints(1))),
+                    join(good, part("MAMP", ints(0))),
                     Arrays.copyOf(good, good.length - 1),
                     new byte[(8 << 20) + 1]
                 }) {
@@ -289,9 +311,9 @@ class WorldTextureFormatsTest {
         }
         var height = good.clone();
         bytes(height).putInt(44, 17);
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> WorldTextureFormats.read(height, () -> false));
+        try (var data = WorldTextureFormats.read(height, () -> false)) {
+            assertEquals(List.of(17L), data.heightIds());
+        }
         assertThrows(CancellationException.class, () -> WorldTextureFormats.read(good, () -> true));
         try (var data = WorldTextureFormats.read(good, () -> false)) {
             assertThrows(
@@ -347,20 +369,193 @@ class WorldTextureFormatsTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> WorldTextureFormats.inventory(duplicate, () -> false));
-        bytes(mphd).putInt(0, 4);
-        assertThrows(
-                IllegalArgumentException.class,
-                () ->
-                        WorldTextureFormats.inventory(
-                                join(
-                                        part("MVER", ints(18)),
-                                        part("MPHD", mphd),
-                                        part("MAIN", main),
-                                        part("MAID", maid)),
-                                () -> false));
+        assertEquals(WorldTextureFormats.AlphaFormat.BIG_8BIT, facts.alphaFormat());
+        // Any MPHD flags are accepted; only 0x4 and 0x80 select 8-bit alpha maps.
+        for (long[] flags :
+                new long[][] {{4, 1}, {0x80, 1}, {0x84, 1}, {0, 0}, {0x2, 0}, {0x8000_0001L, 0}}) {
+            bytes(mphd).putInt(0, (int) flags[0]);
+            var other =
+                    WorldTextureFormats.inventory(
+                            join(
+                                    part("MVER", ints(18)),
+                                    part("MPHD", mphd),
+                                    part("MAIN", main),
+                                    part("MAID", maid)),
+                            () -> false);
+            assertEquals(flags[0], other.flags());
+            assertEquals(
+                    flags[1] == 1
+                            ? WorldTextureFormats.AlphaFormat.BIG_8BIT
+                            : WorldTextureFormats.AlphaFormat.SMALL_4BIT,
+                    other.alphaFormat());
+        }
         assertEquals(
                 1,
                 WorldFormats.wdt(duplicate, () -> false).tiles().size(),
                 "Optional texture gate does not tighten old geometry inventory");
+    }
+
+    private static byte[] smallChunk(byte[] packed) {
+        var layers = ByteBuffer.allocate(32).order(ByteOrder.LITTLE_ENDIAN);
+        layers.putInt(0).putInt(0).putInt(0).putInt(0);
+        layers.putInt(0).putInt(0x100).putInt(0).putInt(0);
+        return join(part("MCLY", layers.array()), part("MCAL", packed));
+    }
+
+    @Test
+    void fourBitMapsExpandLowNibbleFirstAndFixTheLastRowAndColumnUnlessFlagged() {
+        byte[] packed = new byte[2048];
+        for (int row = 0; row < 64; row++) {
+            for (int pair = 0; pair < 32; pair++) {
+                // Low nibble: even column; high nibble: odd column. The last pair is 0, 15.
+                packed[row * 32 + pair] =
+                        (byte) (pair == 31 ? 0xf0 : (row % 16) | (pair % 16) << 4);
+            }
+        }
+        packed[63 * 32] = (byte) 0xff;
+        byte[] source = texture(smallChunk(packed));
+        try (var data =
+                WorldTextureFormats.read(
+                        source, WorldTextureFormats.AlphaFormat.SMALL_4BIT, () -> false)) {
+            assertEquals(WorldTextureFormats.AlphaFormat.SMALL_4BIT, data.alphaFormat());
+            var exact = ByteBuffer.allocate(4096);
+            var result =
+                    data.decodeAlphas(
+                            0, WorldTextureFormats.DO_NOT_FIX_ALPHA_MAP, exact, () -> false);
+            assertTrue(result.admitted());
+            assertEquals(4096, exact.position());
+            assertEquals(5 * 17, exact.get(5 * 64 + 6) & 255);
+            assertEquals(3 * 17, exact.get(5 * 64 + 7) & 255);
+            assertEquals(0, exact.get(5 * 64 + 62) & 255);
+            assertEquals(255, exact.get(5 * 64 + 63) & 255);
+            assertEquals(255, exact.get(63 * 64) & 255);
+            var fixed = ByteBuffer.allocate(4096 + 3);
+            fixed.position(3);
+            assertTrue(data.decodeAlphas(0, 0, fixed, () -> false).admitted());
+            assertEquals(4099, fixed.position());
+            // The last column repeats column 62 and the last row repeats row 62.
+            assertEquals(0, fixed.get(3 + 5 * 64 + 63) & 255);
+            assertEquals(14 * 17, fixed.get(3 + 63 * 64) & 255);
+            assertEquals(14 * 17, fixed.get(3 + 62 * 64) & 255);
+            assertEquals(5 * 17, fixed.get(3 + 5 * 64 + 6) & 255);
+        }
+        // An 8-bit map in a 4-bit layout, and the reverse, are refused.
+        try (var data =
+                WorldTextureFormats.read(
+                        texture(chunk(1, true)),
+                        WorldTextureFormats.AlphaFormat.SMALL_4BIT,
+                        () -> false)) {
+            assertEquals(
+                    WorldTextureFormats.ChunkIssue.MASK_ENCODING,
+                    data.decodeAlphas(0, ByteBuffer.allocate(4096), () -> false).issue());
+        }
+        assertEquals(
+                WorldTextureFormats.ChunkIssue.MASK_ENCODING,
+                decode(source, ByteBuffer.allocate(4096)).issue());
+        // Without big alpha the 0x200 bit means nothing: 2048 raw 4-bit bytes are read, and an
+        // RLE stream is not decoded.
+        byte[] flagged = smallChunk(new byte[2048]);
+        Arrays.fill(flagged, flagged.length - 2048, flagged.length, (byte) 0x21);
+        bytes(flagged).putInt(8 + 16 + 4, 0x300);
+        try (var data =
+                WorldTextureFormats.read(
+                        texture(flagged),
+                        WorldTextureFormats.AlphaFormat.SMALL_4BIT,
+                        () -> false)) {
+            assertTrue(data.chunks().getFirst().layers().get(1).compressed());
+            var target = ByteBuffer.allocate(4096);
+            assertTrue(
+                    data.decodeAlphas(
+                                    0,
+                                    WorldTextureFormats.DO_NOT_FIX_ALPHA_MAP,
+                                    target,
+                                    () -> false)
+                            .admitted());
+            assertEquals(17, target.get(0));
+            assertEquals(34, target.get(1));
+        }
+        try (var data =
+                WorldTextureFormats.read(
+                        texture(chunk(1, false)),
+                        WorldTextureFormats.AlphaFormat.SMALL_4BIT,
+                        () -> false)) {
+            assertEquals(
+                    WorldTextureFormats.ChunkIssue.MASK_ENCODING,
+                    data.decodeAlphas(0, 0, ByteBuffer.allocate(4096), () -> false).issue());
+        }
+        // In an 8-bit layout the same bit selects RLE.
+        var rle = ByteBuffer.allocate(4096);
+        assertTrue(decode(texture(chunk(1, false)), rle).admitted());
+        assertEquals(1, rle.get(4095));
+    }
+
+    @Test
+    void loneBaseLayerIgnoresMcalBytesAndOverrunningUnknownChunksAreRefused() {
+        byte[] lone = join(part("MCLY", ints(0, 0, 0, 0)), part("MCAL", new byte[4096]));
+        try (var data = WorldTextureFormats.read(texture(lone), () -> false)) {
+            assertEquals(WorldTextureFormats.ChunkIssue.NONE, data.chunks().getFirst().issue());
+            var target = ByteBuffer.allocate(0);
+            var result = data.decodeAlphas(0, target, () -> false);
+            assertTrue(result.admitted());
+            assertEquals(0, result.maskCount());
+        }
+        byte[] good = texture(chunk(1, false));
+        // An unknown chunk whose declared size runs past the end is still a bounds failure.
+        byte[] overrun = join(good, ints(0x5a5a5a5a, 64), new byte[8]);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldTextureFormats.read(overrun, () -> false));
+        byte[] negative = join(good, ints(0x5a5a5a5a, -1));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldTextureFormats.read(negative, () -> false));
+    }
+
+    @Test
+    void unusedTopLevelAndChunkSubChunksAreSkippedAndOptionalHeadersCarried() {
+        byte[] first =
+                join(
+                        part("MCSH", new byte[512]),
+                        chunk(1, false),
+                        part("MCMT", new byte[4]),
+                        part("ZZZZ", new byte[0]));
+        var out = new ByteArrayOutputStream();
+        out.writeBytes(
+                join(
+                        part("MVER", ints(18)),
+                        part("MTXF", ints(0, 1)),
+                        part("MAMP", new byte[] {2, 0, 0, 0}),
+                        part("MDID", ints(12345, 678)),
+                        part("MTXP", new byte[32])));
+        out.writeBytes(part("MCNK", first));
+        // A lone base layer may omit MCAL.
+        var single = part("MCLY", ints(1, 0, 0, 0));
+        for (int i = 1; i < 256; i++) {
+            out.writeBytes(part("MCNK", single));
+        }
+        out.writeBytes(part("MLDB", new byte[8]));
+        try (var data = WorldTextureFormats.read(out.toByteArray(), () -> false)) {
+            assertEquals(2, data.amplifier());
+            assertEquals(List.of(12345L, 678L), data.diffuseIds());
+            assertEquals(List.of(0L, 0L), data.heightIds());
+            var target = ByteBuffer.allocate(4096);
+            assertTrue(data.decodeAlphas(0, target, () -> false).admitted());
+            assertEquals(1, target.get(0));
+            assertTrue(data.decodeAlphas(1, ByteBuffer.allocate(0), () -> false).admitted());
+            assertEquals(1L, data.chunks().get(1).layers().getFirst().textureIndex());
+        }
+        // A duplicate MCLY or MCAL is still a malformed chunk.
+        for (byte[] duplicate :
+                new byte[][] {
+                    join(chunk(1, false), part("MCLY", ints(0, 0, 0, 0))),
+                    join(chunk(1, false), part("MCAL", new byte[0]))
+                }) {
+            assertFalse(decode(texture(duplicate), ByteBuffer.allocate(4096)).admitted());
+        }
+        // An overlay without MCAL has no masks to read.
+        byte[] noAlpha = part("MCLY", ints(0, 0, 0, 0, 0, 0x100, 0, 0));
+        assertEquals(
+                WorldTextureFormats.ChunkIssue.LAYER_SHAPE,
+                decode(texture(noAlpha), ByteBuffer.allocate(4096)).issue());
     }
 }

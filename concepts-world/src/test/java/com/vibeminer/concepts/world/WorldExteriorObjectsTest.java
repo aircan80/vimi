@@ -1238,6 +1238,79 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    @Test
+    void theChainReusesTheRegisteredLevelInsteadOfDecodingItAgain() {
+        // A 256^2 file recording 256 and 128: registered at 128 (level 1), allotted 256. With
+        // nothing retained, the relevel needs a second read; the chain's only lower level is the
+        // registered one, so it comes from the first decode and no third read happens.
+        for (int materialClass : new int[] {0, 1}) {
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+                f.files.sources.put(
+                        ROOT,
+                        root(
+                                1,
+                                new long[] {GROUP},
+                                List.of(new Material(materialClass, IMAGE, 0))));
+                f.files.sources.put(GROUP, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+                f.files.sources.put(IMAGE, blp(256, 256, 2, 0x001f));
+                try (var set = retaining(f, 0)) {
+                    var image = set.images().getFirst();
+                    assertEquals(256, image.width(), "allotted level");
+                    assertEquals(2, f.files.opens.get(IMAGE).get(), "class " + materialClass);
+                    assertEquals(2, set.levelDecodes, "registration and relevel only");
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_MIPS_PARTIAL));
+                    // Level 1 is the file's own 128^2 (blue), not a reduction artefact.
+                    var rgba = image.rgba();
+                    int at =
+                            com.vibeminer.rendering.world.ObjectTextureMips.levelOffset(
+                                    256, 256, 1);
+                    assertEquals(0, rgba.get(at) & 255);
+                    assertEquals(255, rgba.get(at + 2) & 255);
+                }
+            }
+        }
+    }
+
+    @Test
+    void aReusedLevelMidChainIsDecodedOnceForEveryMaterialClass() {
+        // A 1024^2 file recording all 11 levels registers at 128 (level 3) and is allotted 256
+        // (level 2). The chain below 256 takes level 3 from the registration decode and decodes
+        // levels 4 to 10 once each: 1 + 1 + 7 decodes; decoding level 3 again would make 10.
+        for (int materialClass : new int[] {0, 1, 2}) {
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+                f.files.sources.put(
+                        ROOT,
+                        root(
+                                1,
+                                new long[] {GROUP},
+                                List.of(new Material(materialClass, IMAGE, 0))));
+                f.files.sources.put(GROUP, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+                f.files.sources.put(IMAGE, blp(1024, 1024, 11, 0x07e0));
+                try (var set = f.run()) {
+                    var image = set.images().getFirst();
+                    assertEquals(256, image.width(), "allotted level, class " + materialClass);
+                    assertEquals(2, image.mipLevel());
+                    assertEquals(9, set.levelDecodes, "class " + materialClass);
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_MIPS_FILE));
+                    assertEquals(1, f.files.opens.get(IMAGE).get(), "the kept bytes serve");
+                    // Level 1 of the chain (the reused 128^2) is the file's green.
+                    int at =
+                            com.vibeminer.rendering.world.ObjectTextureMips.levelOffset(
+                                    256, 256, 1);
+                    assertEquals(255, image.rgba().get(at + 1) & 255);
+                }
+            }
+        }
+    }
+
+    @Test
+    void registeredPixelsOfTheWrongLengthAreNotReused() {
+        byte[] level = new byte[4 * 4 * 4];
+        assertTrue(level == WorldExteriorObjects.reusable(level, 4, 4));
+        assertNull(WorldExteriorObjects.reusable(level, 8, 4), "a level of another size");
+        assertNull(WorldExteriorObjects.reusable(null, 4, 4), "released pixels");
+    }
+
     private static WorldExteriorObjects.TileObjects retaining(Fixture f, long limit) {
         return WorldExteriorObjects.prepare(
                 f.engine,

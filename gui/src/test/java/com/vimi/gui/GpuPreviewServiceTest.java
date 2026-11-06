@@ -44,6 +44,39 @@ public final class GpuPreviewServiceTest {
         }
     }
 
+    /** Starts only `java -version`: a mistyped option fails here, not in the user's helper. */
+    private static void helperAndAppJvmOptionsAreAcceptedByThisRuntime() throws Exception {
+        var helper = GpuPreviewService.HELPER_JVM_OPTIONS;
+        require(helper.contains("-XX:+UseZGC") && helper.stream().anyMatch(o -> o.startsWith("-Xmx")),
+                "Helper gets the low-pause collector and its own bounded heap");
+        var options = new java.util.ArrayList<>(helper);
+        Path shared = Path.of("jvm-options.txt");
+        // JavaExec runs in the gui project directory, beside the shared option file.
+        require(Files.isRegularFile(shared), "Shared app JVM options beside the gui project");
+        for (String line : Files.readAllLines(shared)) {
+            if (!line.isEmpty() && line.charAt(0) == '﻿') line = line.substring(1);
+            line = line.replaceFirst("(^|\\s)#.*$", "").strip();
+            if (!line.isEmpty()) options.add(line);
+        }
+        require(options.contains("-XX:+UseZGC"), "Shared app options read");
+        var command = new java.util.ArrayList<String>();
+        command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
+        command.addAll(options);
+        command.add("-version");
+        Path log = Files.createTempFile("vimi-jvm-options-", ".txt");
+        try {
+            // Output goes to a file, so the bounded wait below really bounds the check.
+            var process = new ProcessBuilder(command).redirectErrorStream(true)
+                    .redirectOutput(log.toFile()).start();
+            boolean exited = process.waitFor(30, TimeUnit.SECONDS);
+            if (!exited) process.destroyForcibly();
+            require(exited && process.exitValue() == 0,
+                    "JVM rejected " + options + ": " + Files.readString(log));
+        } finally {
+            Files.deleteIfExists(log);
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         Path root = Files.createTempDirectory("vimi-gpu-service-test-");
         try {
@@ -58,6 +91,7 @@ public final class GpuPreviewServiceTest {
             } catch (IllegalArgumentException expected) {
             }
             worldBackendOverrideIsExplicitAndBounded();
+            helperAndAppJvmOptionsAreAcceptedByThisRuntime();
             latestFrameHandoffNeverRepublishesOlderWork();
             inlineFramesAndCoalescedControls(root);
             terrainAndModelsShareOwnerAndKeepControlsTyped(root);
