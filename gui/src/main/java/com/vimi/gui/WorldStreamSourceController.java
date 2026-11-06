@@ -189,6 +189,7 @@ final class WorldStreamSourceController {
             Executors.newSingleThreadExecutor(
                     Thread.ofPlatform().daemon().name("world-source-controller").factory());
     private final AtomicBoolean scheduled = new AtomicBoolean(), wake = new AtomicBoolean();
+    private final AtomicBoolean frameWake = new AtomicBoolean();
     private final AtomicBoolean fxQueued = new AtomicBoolean();
     private final Cancellation qualificationCancellation = new Cancellation();
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
@@ -471,6 +472,16 @@ final class WorldStreamSourceController {
 
     private void kick() {
         wake.set(true);
+        schedule();
+    }
+
+    /** Transport frame-reader callback: polls only the new frame, never a full step. */
+    private void frameArrived() {
+        frameWake.set(true);
+        schedule();
+    }
+
+    private void schedule() {
         if (scheduled.compareAndSet(false, true)) {
             try {
                 worker.execute(this::run);
@@ -484,10 +495,13 @@ final class WorldStreamSourceController {
     private void run() {
         try {
             do {
-                wake.set(false);
-                if (closing) retire();
-                else step();
-            } while (wake.get() && !drained.isDone());
+                boolean full = wake.getAndSet(false);
+                boolean frame = frameWake.getAndSet(false);
+                if (full) {
+                    if (closing) retire();
+                    else step();
+                } else if (frame && !closing) pollArrivedFrame();
+            } while ((wake.get() || frameWake.get()) && !drained.isDone());
         } catch (Throwable failure) {
             if (!(closing && CleanCancellation.is(failure))) {
                 if (failure instanceof WorldTerrainStreaming.Refusal refusal
@@ -509,8 +523,16 @@ final class WorldStreamSourceController {
             wake.set(true);
         } finally {
             scheduled.set(false);
-            if (wake.get() && !drained.isDone()) kick();
+            if ((wake.get() || frameWake.get()) && !drained.isDone()) schedule();
         }
+    }
+
+    /** Worker-only: the step() frame poll, gated on the same opened-and-initialized session. */
+    private void pollArrivedFrame() {
+        var opened = session;
+        if (opened == null || !opened.initialized().isDone()
+                || opened.initialized().isCompletedExceptionally()) return;
+        pollFrame();
     }
 
     private void failLater(Throwable failure) {
@@ -594,6 +616,7 @@ final class WorldStreamSourceController {
                 session=opened;
                 if(camera!=null && !closing) opened.camera(camera);
             }
+            session.onFrame(this::frameArrived);
             session.initialized().whenComplete((ignored, failure) -> kick());
             session.completion()
                     .whenComplete(
