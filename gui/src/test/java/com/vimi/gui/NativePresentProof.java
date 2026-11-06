@@ -141,6 +141,7 @@ public final class NativePresentProof {
             stats.complete("NO_STATS");
         });
 
+        var presenter = new WorldNativePresenter(WorldNativePresenter.user32());
         var overlayLabel = new Label("FX overlay above the native child (minimap, markers, selection)");
         overlayLabel.setId("overlay-label");
         overlayLabel.setStyle("-fx-background-color: rgb(16,24,28); -fx-text-fill: white; -fx-padding: 6;");
@@ -158,10 +159,13 @@ public final class NativePresentProof {
             var screen = viewport.localToScreen(viewport.getBoundsInLocal());
             var scene = viewport.localToScene(viewport.getBoundsInLocal());
             if (screen == null || scene == null || !nativeMode) return;
-            double sx = stage.getOutputScaleX(), sy = stage.getOutputScaleY();
-            toHelper.println(String.format(java.util.Locale.ROOT, "SIZE %d %d %d %d",
-                    Math.round(scene.getMinX() * sx), Math.round(scene.getMinY() * sy),
-                    Math.round(scene.getWidth() * sx), Math.round(scene.getHeight() * sy)));
+            // The GUI places the helper's child itself (WorldNativePresenter, java.lang.foreign);
+            // the helper only resizes its swap chain.
+            var placement = WorldNativePresenter.Placement.of(scene.getMinX(), scene.getMinY(),
+                    scene.getWidth(), scene.getHeight(), stage.getOutputScaleX(), stage.getOutputScaleY());
+            presenter.parent(parent);
+            if (!presenter.show(placement)) System.out.println("presenter: child not found yet");
+            toHelper.println("SIZE -1 -1 " + placement.width() + " " + placement.height());
             overlay.setX(screen.getMinX());
             overlay.setY(screen.getMinY());
             overlay.setWidth(screen.getWidth());

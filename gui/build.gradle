@@ -360,6 +360,15 @@ tasks.register('worldPickTest', JavaExec) {
 }
 check.dependsOn worldPickTest
 
+// #381 spike: native-present gating, placement and user32 binding; no display.
+tasks.register('worldNativePresenterTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldNativePresenterTest'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+check.dependsOn worldNativePresenterTest
+
 // Exact picking of drawn exterior objects, their source records and the highlight; authored meshes.
 tasks.register('worldObjectPicksTest', JavaExec) {
     dependsOn testClasses

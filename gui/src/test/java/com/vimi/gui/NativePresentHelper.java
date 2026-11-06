@@ -54,11 +54,11 @@ public final class NativePresentHelper {
         var windowThread = Thread.ofPlatform().daemon().name("present-child-window").start(() -> {
             try (var stack = MemoryStack.stackPush()) {
                 var proc = WindowProc.create(User32::DefWindowProc);
-                var name = stack.UTF16("VimiWorldPresentSpike");
+                var name = stack.UTF16(WorldNativePresenter.CHILD_CLASS);
                 var cls = WNDCLASSEX.calloc(stack).cbSize(WNDCLASSEX.SIZEOF).lpfnWndProc(proc)
                         .lpszClassName(name);
                 if (User32.RegisterClassEx(null, cls) == 0) throw new IllegalStateException("RegisterClassEx");
-                long hwnd = User32.CreateWindowEx(null, 0, "VimiWorldPresentSpike", "",
+                long hwnd = User32.CreateWindowEx(null, 0, WorldNativePresenter.CHILD_CLASS, "",
                         User32.WS_CHILD | User32.WS_CLIPSIBLINGS | User32.WS_DISABLED | User32.WS_VISIBLE,
                         0, 0, 64, 64, parent, 0, 0, 0);
                 if (hwnd == 0) throw new IllegalStateException("CreateWindowEx");
@@ -105,8 +105,10 @@ public final class NativePresentHelper {
                         int x = Integer.parseInt(p[1]), y = Integer.parseInt(p[2]);
                         width = Math.max(1, Integer.parseInt(p[3]));
                         height = Math.max(1, Integer.parseInt(p[4]));
-                        User32.SetWindowPos(null, hwnd, User32.HWND_BOTTOM, x, y, width, height,
-                                User32.SWP_NOACTIVATE | User32.SWP_ASYNCWINDOWPOS | User32.SWP_SHOWWINDOW);
+                        // x < 0: the GUI places the window itself (WorldNativePresenter).
+                        if (x >= 0)
+                            User32.SetWindowPos(null, hwnd, User32.HWND_BOTTOM, x, y, width, height,
+                                    User32.SWP_NOACTIVATE | User32.SWP_ASYNCWINDOWPOS | User32.SWP_SHOWWINDOW);
                         bgfx_reset(width, height, BGFX_RESET_VSYNC, BGFX_TEXTURE_FORMAT_COUNT);
                         visible = true;
                     }
