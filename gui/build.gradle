@@ -357,6 +357,14 @@ tasks.register('worldPickTest', JavaExec) {
 }
 check.dependsOn worldPickTest
 
+// Explorer key/mouse/wheel mapping and pulse cadence against a recording host; no display.
+tasks.register('worldExplorerInputTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldExplorerInputTest'
+}
+check.dependsOn worldExplorerInputTest
+
 // Exact picking of drawn exterior objects, their source records and the highlight; authored meshes.
 tasks.register('worldObjectPicksTest', JavaExec) {
     dependsOn testClasses
