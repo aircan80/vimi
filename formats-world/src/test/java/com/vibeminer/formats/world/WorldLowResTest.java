@@ -132,14 +132,23 @@ class WorldLowResTest {
                         new WorldLowRes.Problem(5, 6, WorldLowRes.TileIssue.TRUNCATED),
                         new WorldLowRes.Problem(7, 8, WorldLowRes.TileIssue.BAD_CHUNK)),
                 lowRes.problems());
-        // A MAHO of the wrong size refuses only its tile.
-        var out = new ByteArrayOutputStream();
+        // A MAHO of the wrong size, or cut off, keeps the tile's heights without holes.
         byte[] base = wdl(List.of(new int[] {9, 9, 30, 0}), new byte[0]);
-        out.writeBytes(base);
-        out.writeBytes(chunk("MAHO", new byte[30]));
-        var badHoles = WorldLowRes.read(out.toByteArray(), () -> false);
-        assertTrue(badHoles.tiles().isEmpty());
-        assertEquals(WorldLowRes.TileIssue.BAD_CHUNK, badHoles.problems().getFirst().issue());
+        for (byte[] tail :
+                new byte[][] {
+                    chunk("MAHO", new byte[30]), Arrays.copyOf(chunk("MAHO", new byte[32]), 20)
+                }) {
+            var out = new ByteArrayOutputStream();
+            out.writeBytes(base);
+            out.writeBytes(tail);
+            var badHoles = WorldLowRes.read(out.toByteArray(), () -> false);
+            assertEquals(1, badHoles.tiles().size());
+            assertEquals(30, badHoles.tile(9, 9).corner(0, 0));
+            assertFalse(badHoles.tile(9, 9).hasHoles());
+            assertEquals(
+                    List.of(new WorldLowRes.Problem(9, 9, WorldLowRes.TileIssue.TRUNCATED)),
+                    badHoles.problems());
+        }
     }
 
     @Test
@@ -158,14 +167,45 @@ class WorldLowResTest {
                 }) {
             assertThrows(IllegalArgumentException.class, () -> WorldLowRes.read(bad, () -> false));
         }
-        byte[] twoMaof =
-                ByteBuffer.allocate(good.length + 8 + 4096 * 4)
-                        .put(good)
-                        .put(chunk("MAOF", new byte[4096 * 4]))
-                        .array();
-        assertThrows(IllegalArgumentException.class, () -> WorldLowRes.read(twoMaof, () -> false));
+        // Two MAOFs before the header is complete are refused.
+        var twoMaof = new ByteArrayOutputStream();
+        twoMaof.writeBytes(chunk("MAOF", new byte[4096 * 4]));
+        twoMaof.writeBytes(chunk("MAOF", new byte[4096 * 4]));
+        twoMaof.writeBytes(chunk("MVER", ints(18)));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldLowRes.read(twoMaof.toByteArray(), () -> false));
+        // The header must be complete within its chunk budget.
+        var late = new ByteArrayOutputStream();
+        late.writeBytes(chunk("MVER", ints(18)));
+        for (int i = 0; i < WorldLowRes.HEADER_CHUNKS; i++) {
+            late.writeBytes(chunk("MWMO", new byte[0]));
+        }
+        late.writeBytes(chunk("MAOF", new byte[4096 * 4]));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldLowRes.read(late.toByteArray(), () -> false));
         assertThrows(CancellationException.class, () -> WorldLowRes.read(good, () -> true));
         // A map whose WDL lists no tiles is valid and empty.
         assertTrue(WorldLowRes.read(wdl(List.of(), new byte[0]), () -> false).tiles().isEmpty());
+    }
+
+    @Test
+    void anyNumberOfPerTileChunksAfterTheHeaderIsFine() {
+        // A full map's MARE and MAHO plus newer per-tile chunk types: far more top-level
+        // chunks than a fixed walk cap would allow.
+        var tiles = new java.util.ArrayList<int[]>();
+        for (int i = 0; i < 4096; i += 3) {
+            tiles.add(new int[] {i / 64, i % 64, i % 1000, i % 2});
+        }
+        var out = new ByteArrayOutputStream();
+        out.writeBytes(wdl(tiles, new byte[0]));
+        for (int i = 0; i < 6000; i++) {
+            out.writeBytes(chunk(i % 2 == 0 ? "MLDD" : "MLMX", new byte[4]));
+        }
+        var lowRes = WorldLowRes.read(out.toByteArray(), () -> false);
+        assertEquals(tiles.size(), lowRes.tiles().size());
+        assertTrue(lowRes.problems().isEmpty());
+        assertEquals(999, lowRes.tile(999 / 64, 999 % 64).corner(0, 0));
     }
 }
