@@ -3,6 +3,7 @@ package com.vibeminer.concepts.world;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -107,6 +108,32 @@ class WorldMinimapsTest {
             assertEquals(0, source.opens.get());
         } finally {
             images.closeAsync().join();
+        }
+    }
+
+    /** A file source that throws an Error still settles the request instead of hanging (#470). */
+    @Test
+    void errorFromTheFileSourceFailsTheImageInsteadOfHanging() throws Exception {
+        var error = new AssertionError("scripted Error from the file source");
+        var files =
+                (BuildFiles)
+                        Proxy.newProxyInstance(
+                                BuildFiles.class.getClassLoader(),
+                                new Class<?>[] {BuildFiles.class},
+                                (proxy, method, args) -> {
+                                    throw error;
+                                });
+        var images = new WorldMinimaps(files);
+        try {
+            var failure =
+                    assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () ->
+                                    images.image(tile(91), Cancellation.NONE)
+                                            .get(10, java.util.concurrent.TimeUnit.SECONDS));
+            assertSame(error, failure.getCause());
+        } finally {
+            images.closeAsync().get(10, java.util.concurrent.TimeUnit.SECONDS);
         }
     }
 
