@@ -300,8 +300,9 @@ public final class WorldTextureFormats {
     }
 
     /**
-     * Reads one split tex0 ADT. Chunks the coverage preview does not use (MTXF, MTXP, MCSH, MCMT,
-     * ...) are skipped; MAMP and MHID are optional and carried as data.
+     * Reads one split tex0 ADT from a private copy of {@code bytes}. Chunks the coverage preview
+     * does not use (MTXF, MTXP, MCSH, MCMT, ...) are skipped; MAMP and MHID are optional and
+     * carried as data.
      */
     public static TextureData read(byte[] bytes, AlphaFormat format, BooleanSupplier canceled) {
         Objects.requireNonNull(bytes);
@@ -311,7 +312,21 @@ public final class WorldTextureFormats {
         if (bytes.length < 12 || bytes.length > MAX_SOURCE_BYTES) {
             throw invalid("Texture source bound");
         }
-        byte[] owned = bytes.clone();
+        return adopt(bytes.clone(), format, canceled);
+    }
+
+    /**
+     * As {@link #read(byte[], AlphaFormat, BooleanSupplier)}, but takes ownership of {@code owned}
+     * without copying it. The caller must not keep, share or modify the array.
+     */
+    public static TextureData adopt(byte[] owned, AlphaFormat format, BooleanSupplier canceled) {
+        Objects.requireNonNull(owned);
+        Objects.requireNonNull(format);
+        Objects.requireNonNull(canceled);
+        check(canceled);
+        if (owned.length < 12 || owned.length > MAX_SOURCE_BYTES) {
+            throw invalid("Texture source bound");
+        }
         var input = ByteBuffer.wrap(owned).order(ByteOrder.LITTLE_ENDIAN);
         boolean version = false, amplified = false;
         int amplifier = 0;

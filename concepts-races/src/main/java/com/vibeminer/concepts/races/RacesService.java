@@ -23,6 +23,10 @@ public final class RacesService implements BuildRaces {
             MAX_LINKS = 16384,
             MAX_ABILITIES = 8192;
     private final BuildTables tables;
+
+    /** Reverse relation indexes for per-key lookups (humanoid NPCs, #385). */
+    final com.vibeminer.concepts.core.RelationIndexes relations;
+
     private final RaceMedia media;
     private final RaceVoices voices;
     private final RaceAppearance appearance;
@@ -60,6 +64,7 @@ public final class RacesService implements BuildRaces {
             com.vibeminer.files.BuildFiles files,
             com.vibeminer.generated.GeneratedStore generated) {
         this.tables = Objects.requireNonNull(tables);
+        this.relations = new com.vibeminer.concepts.core.RelationIndexes(this.tables);
         media = new RaceMedia(this, tables, files, generated);
         voices = new RaceVoices(this, media, tables, files, generated);
         appearance = new RaceAppearance(this, media, tables, files, generated);
@@ -537,6 +542,28 @@ public final class RacesService implements BuildRaces {
             issue(issues, name + " is partial; readable records are retained.");
         }
         return new Data(name, result.columns(), result.schema(), List.of(), result.table());
+    }
+
+    /**
+     * One row by ID; null when the table records it as absent. A row the store cannot answer for
+     * now is unreadable, never a refusal.
+     */
+    Db2Types.Row row(Data data, long id, Cancellation token, List<String> issues) {
+        var result =
+                tables.get(
+                                TableTypes.Ref.forName(data.name),
+                                id,
+                                TableTypes.Priority.INTERACTIVE,
+                                token)
+                        .join();
+        if (result.outcome() == TableTypes.RowOutcome.FOUND && result.row() != null) {
+            return result.row().row();
+        }
+        if (result.outcome() == TableTypes.RowOutcome.ABSENT) {
+            issue(issues, data.name + " #" + id + " is absent.");
+            return null;
+        }
+        throw new Unreadable(data.name + " #" + id + " is " + result.outcome());
     }
 
     Data read(String name, int bound, Cancellation token, List<String> issues) {
