@@ -238,7 +238,7 @@ public final class WorldNavigationUiTest {
         require(content.getCenter()!=viewport,"The explorer layout no longer holds the viewport");
         require(viewportActive(view),"The viewport stays active on the full-screen stage");
         require(WorldFullscreen.EXIT_HINT.equals(full.stage().getFullScreenExitHint()),"Exit hint names the keys");
-        require(!((Set<?>)get(view,"keys")).contains(KeyCode.F11),"F11 is never a held flight key");
+        require(!input(view).keysHeld(),"F11 is never a held flight key");
         var overlay=view.lookup("#world-fullscreen-status");
         require(overlay==null,"The status overlay is not in the window");
         var shown=full.stage().getScene().getRoot().lookup("#world-fullscreen-status");
