@@ -19,10 +19,19 @@ public final class WorldTerrainStreaming {
      * STANDARD every other texel (512).
      */
     public static void splatMasks(WorldExteriorObjects.ImageDetail detail) {
+        splatMasks(detail, false);
+    }
+
+    /**
+     * As {@link #splatMasks(WorldExteriorObjects.ImageDetail)} for a session's view distance: the
+     * FAR view distance uses STANDARD masks on any tier ({@link
+     * com.vibeminer.rendering.world.TerrainTileSplat#maskSide}).
+     */
+    public static void splatMasks(WorldExteriorObjects.ImageDetail detail, boolean far) {
         WorldTerrainTextureSource.splatMask =
-                Objects.requireNonNull(detail) == WorldExteriorObjects.ImageDetail.HIGH
-                        ? com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK
-                        : com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK;
+                com.vibeminer.rendering.world.TerrainTileSplat.maskSide(
+                        Objects.requireNonNull(detail) == WorldExteriorObjects.ImageDetail.HIGH,
+                        far);
     }
 
     public enum Outcome {

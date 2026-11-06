@@ -30,6 +30,7 @@ The splat trailer (`VIMIWSP1`, version 3) carries:
 | STANDARD | 512 x 512 | every other alpha-map texel (32) | 1,398,100 bytes (1.33 MiB) |
 | HIGH | 1024 x 1024 | the native 64 x 64 alpha map | 5,592,404 bytes (5.33 MiB) |
 
+- HIGH masks are used only with the NEAR view distance; FAR uses STANDARD masks on any tier (`TerrainTileSplat.maskSide(high, far)`). A tile's side is fixed when it is composed, and slots are reused as the camera moves, so the rule is per session, which lets #276 charge masks per slot exactly: NEAR + HIGH 10 x 5.33 MiB, FAR 26 x 1.33 MiB.
 - The tier is the World view's texture quality setting (the object textures' tier). It applies to tiles composed after it changes. Each trailer states its own side, and the child recreates a slot's mask texture when the side changes.
 - The mask keeps its full mip chain: bgfx cannot create a partial chain, and levels below 2 are only about 1.5% of it.
 - Splat steps upload in slices of at most 64 KiB. One step call may issue several of them while staying within the 256 KiB step bound.

@@ -33,23 +33,14 @@ public final class TerrainTileSplat {
     public static final int NONE = 255;
 
     /**
-     * The mask side a tile gets (issue #174 step 2b-2, lead decision): HIGH (1024) only on the HIGH
-     * texture tier and inside the NEAR radius; FAR's outer ring uses STANDARD (512) even on HIGH,
-     * which keeps FAR + HIGH near 53 + 20 MiB of masks instead of 139 MiB.
+     * The mask side every tile of a session gets (issue #174 step 2b-2, lead decision): HIGH (1024)
+     * only on the HIGH texture tier with the NEAR view distance; FAR uses STANDARD (512) on any
+     * tier. A tile's side is fixed when it is composed, and slots are reused as the camera moves,
+     * so a per-ring rule could drift; this one is deterministic per session, so a per-slot budget
+     * charges it exactly: NEAR + HIGH 10 x 5.33 MiB, FAR 26 x 1.33 MiB.
      */
-    public static int maskSide(boolean high, boolean outerRing) {
-        return high && !outerRing ? HIGH_MASK : STANDARD_MASK;
-    }
-
-    /**
-     * Whether a tile at offset ({@code dx}, {@code dy}) from the camera's tile lies past the square
-     * {@code nearRadius} (1 for NEAR's 3 x 3): FAR's outer ring.
-     */
-    public static boolean outerRing(int dx, int dy, int nearRadius) {
-        if (nearRadius < 0) {
-            throw new IllegalArgumentException("Invalid near radius");
-        }
-        return Math.max(Math.abs(dx), Math.abs(dy)) > nearRadius;
+    public static int maskSide(boolean high, boolean far) {
+        return high && !far ? HIGH_MASK : STANDARD_MASK;
     }
 
     /**
