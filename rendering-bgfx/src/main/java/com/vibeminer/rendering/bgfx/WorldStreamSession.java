@@ -206,6 +206,17 @@ final class WorldStreamSession {
                         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
                     } // Native presentation: advance() paces itself on the display.
                 }
+                if (Boolean.getBoolean(FRAME_TIMINGS_PROPERTY)) {
+                    // Diagnostics for the readback comparison (#370): stderr, never protocol.
+                    System.err.println(
+                            "WORLD_FRAME_TIMINGS readback="
+                                    + (owner.stagingReadback() ? "staging" : "direct")
+                                    + " meanPublishMicros="
+                                    + owner.meanPublishNanos() / 1000
+                                    + " advance "
+                                    + owner.advanceSummary());
+                    System.err.flush();
+                }
                 requestClose();
                 decoderCanceled.set(true);
                 objectsCanceled.set(true);
@@ -308,6 +319,9 @@ final class WorldStreamSession {
     static long nextDrawBase(long previous, long now) {
         return now - previous < CATCH_UP_LIMIT ? previous + DRAW_INTERVAL : now;
     }
+
+    /** {@code -Dvimi.world.frameTimings=true}: print per-size frame timings to stderr at close. */
+    static final String FRAME_TIMINGS_PROPERTY = "vimi.world.frameTimings";
 
     private void readControls(InputStream input) {
         try {

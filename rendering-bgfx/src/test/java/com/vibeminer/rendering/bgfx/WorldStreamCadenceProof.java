@@ -30,6 +30,12 @@ public final class WorldStreamCadenceProof {
                 "WORLD_FRAME_READ 800x500 mean ms: default %.3f, debug-verify %.3f%n",
                 readMillis(output, false),
                 readMillis(output, true));
+        System.out.printf(
+                Locale.ROOT,
+                "WORLD_FRAME_PUBLISH 2560x1440 mean ms: staging (crop + mapping copy) %.3f,"
+                        + " direct (header only) %.3f%n",
+                publishMillis(output, true),
+                publishMillis(output, false));
         var prepared =
                 WorldStreamTransport.prepare(
                         output,
@@ -47,6 +53,18 @@ public final class WorldStreamCadenceProof {
                                                                     "java")
                                                             .toString(),
                                                     "--enable-native-access=ALL-UNNAMED",
+                                                    "-D"
+                                                            + WorldStreamSession
+                                                                    .FRAME_TIMINGS_PROPERTY
+                                                            + "=true",
+                                                    // Compare the old staging readback path.
+                                                    "-D"
+                                                            + WorldStreamNativeOwner
+                                                                    .STAGING_PROPERTY
+                                                            + "="
+                                                            + Boolean.getBoolean(
+                                                                    WorldStreamNativeOwner
+                                                                            .STAGING_PROPERTY),
                                                     "-cp",
                                                     System.getProperty("java.class.path"),
                                                     GpuViewerMain.class.getName()));
@@ -197,6 +215,59 @@ public final class WorldStreamCadenceProof {
             OFFERED.drainPermits();
         }
         return null;
+    }
+
+    /**
+     * Mean helper-side publication of one 2560x1440 frame from a 2560x1536 readback target: the
+     * staging path (crop copy into a private buffer, then a copy into the mapping) against the
+     * direct path (the readback is already in the slot; only the header is written).
+     */
+    private static double publishMillis(Path output, boolean staging) throws Exception {
+        var nonce = new WorldStreamState.Nonce(7, 8);
+        Path path = output.resolve("publish-" + staging + ".wsf");
+        Files.deleteIfExists(path);
+        int width = 2560, height = 1440, stride = 2560 * 4, targetRows = 1536;
+        var readback =
+                java.nio.ByteBuffer.allocateDirect(stride * targetRows)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        while (readback.hasRemaining()) {
+            readback.putInt(0xff336699);
+        }
+        readback.flip();
+        var cropped = java.nio.ByteBuffer.allocateDirect(width * height * 4);
+        try (var file = WorldFrameFileV2.open(path, nonce, "ab".repeat(32), true, false)) {
+            long sequence = 0, total = 0;
+            int frames = 120;
+            for (int i = 0; i < frames + 20; i++) {
+                int slot = i % 3;
+                var ticket =
+                        new WorldStreamFrameGate.Frame(nonce, ++sequence, 1, 0, 1, width, height);
+                long start;
+                if (staging) {
+                    start = System.nanoTime();
+                    cropped.clear();
+                    for (int row = 0; row < height; row++) {
+                        cropped.put(
+                                readback.duplicate()
+                                        .position(row * stride)
+                                        .limit(row * stride + width * 4));
+                    }
+                    cropped.flip();
+                    file.write(ticket, cropped);
+                } else {
+                    var direct = file.beginDirect(slot, stride * targetRows);
+                    direct.put(readback.duplicate()); // stands in for the GPU readback itself
+                    start = System.nanoTime();
+                    file.publishDirect(slot, ticket, stride);
+                }
+                if (i >= 20) {
+                    total += System.nanoTime() - start;
+                }
+            }
+            return total / 1e6 / frames;
+        } finally {
+            Files.deleteIfExists(path);
+        }
     }
 
     /** Mean parent read of one full frame (copy, checks), released after each read. */
