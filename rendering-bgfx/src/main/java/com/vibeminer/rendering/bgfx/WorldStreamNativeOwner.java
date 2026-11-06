@@ -61,7 +61,9 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             long publishedSequence,
             int pendingReadbacks,
             long gpuHeapBytes,
-            int msaaSamples) {}
+            int msaaSamples,
+            // The WDL horizon (#372), last so earlier fields keep their positions.
+            BgfxWorldStreamRenderer.HorizonCounts horizon) {}
 
     /** Reset flags: no back buffer; anisotropic samplers use the device maximum (issue #357). */
     static final int RESET_FLAGS = org.lwjgl.bgfx.BGFX.BGFX_RESET_MAXANISOTROPY;
@@ -435,6 +437,20 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         }
     }
 
+    /** Whether the next horizon build is waiting for idle upload steps. */
+    boolean horizonUploading() {
+        requireOpen();
+        return renderer.horizonUploading();
+    }
+
+    /** One bounded horizon upload step; like late objects, only in idle iterations. */
+    void stepHorizon() {
+        requireOpen();
+        if (!renderedThisFrame) {
+            renderer.stepHorizon();
+        }
+    }
+
     BgfxWorldStreamRenderer.HorizonCounts horizonCounts() {
         requireOpen();
         return renderer.horizonCounts();
@@ -472,7 +488,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 sequence,
                 pending,
                 stats.gpuMemoryUsed(),
-                samples);
+                samples,
+                renderer.horizonCounts());
     }
 
     private void requireOpen() {

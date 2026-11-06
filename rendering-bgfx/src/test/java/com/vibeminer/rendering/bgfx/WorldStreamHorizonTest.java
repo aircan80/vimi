@@ -87,7 +87,7 @@ class WorldStreamHorizonTest {
             assertEquals(first.indexCount() * 4, first.indices().remaining());
             assertTrue(first.vertexCount() <= WorldStreamHorizon.MAX_VERTICES);
             assertTrue(first.indexCount() <= WorldStreamHorizon.MAX_INDICES);
-            assertTrue(WorldStreamHorizon.GPU_BUDGET_BYTES < 6 << 20);
+            assertTrue(WorldStreamHorizon.GPU_BUDGET_BYTES < 8 << 20);
             System.out.printf(
                     "Horizon rebuild: %d tiles, %d vertices, %d triangles, %.1f ms%n",
                     first.tiles(),
@@ -133,5 +133,39 @@ class WorldStreamHorizonTest {
         assertEquals(32, WorldStreamHorizon.tileOf(centre(32)));
         assertEquals(0, WorldStreamHorizon.tileOf(1e9));
         assertEquals(63, WorldStreamHorizon.tileOf(-1e9));
+    }
+
+    @Test
+    void theChildReadsOnlyTheAnnouncedLengthAndDigest(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+        byte[] wdl = WorldStreamLateObjectsTransportTest.wdl(true);
+        java.nio.file.Files.write(directory.resolve(WorldStreamControl.Horizon.BASENAME), wdl);
+        String sha =
+                java.util.HexFormat.of()
+                        .formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(wdl));
+        var nonce = new WorldStreamState.Nonce(5, 6);
+        var lowRes =
+                WorldStreamSession.decodeHorizon(
+                        directory,
+                        new WorldStreamControl.Horizon(nonce, wdl.length, sha),
+                        () -> false);
+        assertEquals(1, lowRes.tiles().size());
+        for (var wrong :
+                new WorldStreamControl.Horizon[] {
+                    new WorldStreamControl.Horizon(nonce, wdl.length - 1, sha),
+                    new WorldStreamControl.Horizon(nonce, wdl.length, "0".repeat(64))
+                }) {
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    java.io.IOException.class,
+                    () -> WorldStreamSession.decodeHorizon(directory, wrong, () -> false));
+        }
+        java.nio.file.Files.delete(directory.resolve(WorldStreamControl.Horizon.BASENAME));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                java.io.IOException.class,
+                () ->
+                        WorldStreamSession.decodeHorizon(
+                                directory,
+                                new WorldStreamControl.Horizon(nonce, wdl.length, sha),
+                                () -> false));
     }
 }

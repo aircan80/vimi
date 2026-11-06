@@ -196,6 +196,8 @@ final class WorldStreamSourceController {
     private volatile boolean closing;
     private volatile WorldStreamTransport.Camera camera;
     private volatile WorldStreamTransport.Session session;
+    // Whether this session's WDL horizon was asked for (#372); once per session.
+    private boolean horizonStarted;
     private List<WorldFormats.Tile> desired;
     private long demandRevision, presentationRevision, acceptedSequence;
     private Snapshot snapshot =
@@ -319,6 +321,32 @@ final class WorldStreamSourceController {
             demandRevision++;
         }
         kick();
+    }
+
+    /**
+     * Once per session: reads the map's WDL and hands it to the World child, which draws the
+     * low-resolution horizon (#372). Any failure only means no horizon.
+     */
+    private void startHorizon() {
+        if (horizonStarted || closing) return;
+        horizonStarted = true;
+        var opened = session;
+        request.world().horizon(request.map(), qualificationCancellation)
+                .whenComplete((result, failure) -> {
+                    if (failure != null) {
+                        WorldDiagnostics.degradedUnlessClean("horizon",
+                                "World horizon unavailable; terrain continues without it", failure);
+                        return;
+                    }
+                    byte[] wdl = result.sourceBytes();
+                    if (result.state() != com.vibeminer.concepts.world.WorldHorizon.State.READY
+                            || wdl == null || closing) return;
+                    opened.attachHorizon(wdl).whenComplete((outcome, sendFailure) -> {
+                        if (sendFailure != null)
+                            WorldDiagnostics.degradedUnlessClean("horizon",
+                                    "World horizon was not delivered", sendFailure);
+                    });
+                });
     }
 
     /** Records the capacity revision before the transport can refuse this commit. */
@@ -631,6 +659,7 @@ final class WorldStreamSourceController {
         }
         if (!session.initialized().isDone()) return;
         session.initialized().join();
+        startHorizon();
         pollFrame();
         updateArea();
         stepExterior();

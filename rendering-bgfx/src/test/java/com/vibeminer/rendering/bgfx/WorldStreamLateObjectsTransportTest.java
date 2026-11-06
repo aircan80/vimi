@@ -260,6 +260,87 @@ class WorldStreamLateObjectsTransportTest {
         }
     }
 
+    /** A WDL with one tile at 7,19, or none. */
+    static byte[] wdl(boolean tile) {
+        var b =
+                java.nio.ByteBuffer.allocate(12 + 8 + 4096 * 4 + 8 + 1090)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0x4d564552).putInt(4).putInt(18);
+        b.putInt(0x4d414f46).putInt(4096 * 4);
+        int maof = b.position();
+        b.position(maof + 4096 * 4);
+        int at = b.position();
+        b.putInt(0x4d415245).putInt(1090);
+        if (tile) {
+            b.putInt(maof + (7 * 64 + 19) * 4, at);
+        }
+        return b.array();
+    }
+
+    @Test
+    void theHorizonIsSentOnceAfterTheFirstCommitAndItsFileIsRetired() throws Exception {
+        try (var fixture = new Fixture(directory)) {
+            var horizon = fixture.session.attachHorizon(wdl(true));
+            // Nothing is written before the first visible tile.
+            Thread.sleep(200);
+            assertFalse(fixture.commands().contains("Horizon"));
+            assertFalse(horizon.isDone());
+            var first = fixture.stage(7, 19);
+            fixture.commit(first);
+            assertSame(
+                    WorldStreamTransport.HorizonOutcome.DRAWN, horizon.get(10, TimeUnit.SECONDS));
+            assertTrue(fixture.commands().contains("Horizon"));
+            // The file is retired once answered.
+            fixture.until(
+                    () ->
+                            !Files.exists(
+                                    fixture.scratch.resolve(WorldStreamControl.Horizon.BASENAME)));
+            // At most one per session; the terrain stream is untouched.
+            var second =
+                    assertThrows(
+                            ExecutionException.class,
+                            () ->
+                                    fixture.session
+                                            .attachHorizon(wdl(true))
+                                            .get(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, second.getCause());
+            var next = fixture.stage(7, 20);
+            fixture.commit(first, next);
+        }
+    }
+
+    @Test
+    void anEmptyOrUnreadableHorizonIsNotFatalAndCloseCancelsAPendingOne() throws Exception {
+        try (var fixture = new Fixture(directory)) {
+            var empty = fixture.session.attachHorizon(wdl(false));
+            fixture.commit(fixture.stage(7, 19));
+            assertSame(WorldStreamTransport.HorizonOutcome.NONE, empty.get(10, TimeUnit.SECONDS));
+        }
+        try (var fixture = new Fixture(Files.createDirectories(directory.resolve("bad")))) {
+            byte[] bad = wdl(true);
+            bad[8] = 17; // MVER 17: refused by the reader, reported FAILED, session goes on.
+            var failed = fixture.session.attachHorizon(bad);
+            var first = fixture.stage(7, 19);
+            fixture.commit(first);
+            assertSame(
+                    WorldStreamTransport.HorizonOutcome.FAILED, failed.get(10, TimeUnit.SECONDS));
+            fixture.commit(first, fixture.stage(7, 20));
+        }
+        java.util.concurrent.CompletableFuture<WorldStreamTransport.HorizonOutcome> pending;
+        try (var fixture = new Fixture(Files.createDirectories(directory.resolve("closing")))) {
+            pending = fixture.session.attachHorizon(wdl(true));
+        }
+        assertCanceled(pending);
+        assertThrows(
+                ExecutionException.class,
+                () -> {
+                    try (var fixture =
+                            new Fixture(Files.createDirectories(directory.resolve("small")))) {
+                        fixture.session.attachHorizon(new byte[4]).get(2, TimeUnit.SECONDS);
+                    }
+                });
+    }
+
     /** A clean CancellationException outcome, reported directly or as the cause. */
     private static void assertCanceled(java.util.concurrent.Future<?> future) {
         try {
@@ -632,6 +713,17 @@ class WorldStreamLateObjectsTransportTest {
                                                     tile,
                                                     tx,
                                                     active));
+                } else if (command instanceof WorldStreamControl.Horizon wdl) {
+                    // Reads the actual horizon file as the real child does; NONE for an empty WDL.
+                    String outcome;
+                    try {
+                        var lowRes = WorldStreamSession.decodeHorizon(session, wdl, () -> false);
+                        outcome = lowRes.tiles().isEmpty() ? "NONE" : "DRAWN";
+                    } catch (java.io.IOException failed) {
+                        outcome = "FAILED";
+                    }
+                    Files.writeString(control.resolve("horizon-read"), outcome);
+                    send("HORIZON_DONE 1 " + outcome);
                 } else if (command instanceof WorldStreamControl.Close) {
                     send("CLOSED");
                     return;

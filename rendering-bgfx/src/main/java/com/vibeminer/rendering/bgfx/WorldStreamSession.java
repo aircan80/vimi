@@ -48,6 +48,16 @@ final class WorldStreamSession {
             Executors.newSingleThreadExecutor(
                     Thread.ofVirtual().name("world-v2-objects-decoder").factory());
     private CompletableFuture<LateDecoded> objectsDecoding;
+    // The horizon WDL (#372): read and parsed on its own worker, never on the tile decoder.
+    private final AtomicBoolean horizonCanceled = new AtomicBoolean();
+    private final java.util.concurrent.ExecutorService horizonDecoder =
+            Executors.newSingleThreadExecutor(
+                    Thread.ofVirtual().name("world-v2-horizon-decoder").factory());
+    private CompletableFuture<HorizonDecoded> horizonDecoding;
+
+    private record HorizonDecoded(
+            com.vibeminer.formats.world.WorldLowRes.LowRes lowRes, Throwable error) {}
+
     private WorldStreamControl.LateObjects objectsCommand;
     private BgfxWorldStreamRenderer.LateUpload lateUpload;
     private volatile boolean failed;
@@ -141,6 +151,8 @@ final class WorldStreamSession {
                         execute(owner, command);
                     }
                     takeObjects();
+                    takeHorizon();
+                    completeHorizon(owner);
                     reconcile();
                     if (upload != null && !upload.finished()) {
                         owner.step(upload);
@@ -148,6 +160,9 @@ final class WorldStreamSession {
                     } else if (lateUpload != null && !lateUpload.ready()) {
                         // Terrain keeps priority: late object slices use only idle iterations.
                         owner.stepLate(lateUpload);
+                    } else if (owner.horizonUploading()) {
+                        // The horizon uploads after terrain and late objects, in bounded steps.
+                        owner.stepHorizon();
                     }
                     // GPU mutations must precede draw submission in the same bgfx frame.
                     long now = System.nanoTime();
@@ -168,6 +183,7 @@ final class WorldStreamSession {
                 requestClose();
                 decoderCanceled.set(true);
                 objectsCanceled.set(true);
+                horizonCanceled.set(true);
                 // Keep the owner advancing while the actual input/packing worker relinquishes
                 // ownership.
                 while (decoding != null || objectsDecoding != null) {
@@ -194,11 +210,14 @@ final class WorldStreamSession {
             requestClose();
             decoderCanceled.set(true);
             objectsCanceled.set(true);
+            horizonCanceled.set(true);
             decoder.shutdown();
             objectsDecoder.shutdown();
+            horizonDecoder.shutdown();
             // This is a child-only drain. The independent watchdog remains armed throughout it.
             while (!decoder.awaitTermination(100, TimeUnit.MILLISECONDS)
-                    || !objectsDecoder.awaitTermination(100, TimeUnit.MILLISECONDS)) {
+                    || !objectsDecoder.awaitTermination(100, TimeUnit.MILLISECONDS)
+                    || !horizonDecoder.awaitTermination(100, TimeUnit.MILLISECONDS)) {
                 // Do not close a stream under another thread's IO monitor.
             }
             if (decoding != null) {
@@ -481,6 +500,105 @@ final class WorldStreamSession {
                             }
                         },
                         objectsDecoder);
+    }
+
+    private void takeHorizon() {
+        if (closing.get() || horizonDecoding != null) {
+            return;
+        }
+        var command = mailbox.takeHorizon();
+        if (command == null) {
+            return;
+        }
+        horizonDecoding =
+                CompletableFuture.supplyAsync(
+                        () -> {
+                            try {
+                                return new HorizonDecoded(
+                                        decodeHorizon(directory, command, horizonCanceled::get),
+                                        null);
+                            } catch (Throwable error) {
+                                return new HorizonDecoded(null, error);
+                            }
+                        },
+                        horizonDecoder);
+    }
+
+    /**
+     * Horizon-decoder read of the session's one WDL file: a private regular file of exactly the
+     * announced length and digest, parsed with the WDL reader's own bounds.
+     */
+    static com.vibeminer.formats.world.WorldLowRes.LowRes decodeHorizon(
+            Path directory,
+            WorldStreamControl.Horizon command,
+            java.util.function.BooleanSupplier canceled)
+            throws IOException {
+        Path path = directory.resolve(WorldStreamControl.Horizon.BASENAME);
+        if (!java.nio.file.Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Horizon is not a regular private file");
+        }
+        byte[] bytes;
+        try (var channel =
+                FileChannel.open(path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+            if (channel.size() != command.length()) {
+                throw new IOException("Horizon length differs from its command");
+            }
+            var buffer = java.nio.ByteBuffer.allocate(command.length());
+            while (buffer.hasRemaining()) {
+                if (canceled.getAsBoolean()) {
+                    throw new java.util.concurrent.CancellationException();
+                }
+                if (channel.read(buffer) < 0) {
+                    throw new IOException("Truncated horizon file");
+                }
+            }
+            bytes = buffer.array();
+        }
+        try {
+            String digest =
+                    java.util.HexFormat.of()
+                            .formatHex(
+                                    java.security.MessageDigest.getInstance("SHA-256")
+                                            .digest(bytes));
+            if (!digest.equals(command.sha256())) {
+                throw new IOException("Horizon digest differs from its command");
+            }
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
+        try {
+            return com.vibeminer.formats.world.WorldLowRes.read(bytes, canceled);
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException("Malformed horizon WDL", malformed);
+        }
+    }
+
+    /** Attaches a decoded horizon on the owner thread and answers its one HORIZON_DONE. */
+    private void completeHorizon(WorldStreamNativeOwner owner) {
+        if (horizonDecoding == null || !horizonDecoding.isDone()) {
+            return;
+        }
+        var result = horizonDecoding.join();
+        horizonDecoding = null;
+        if (closing.get()) {
+            return;
+        }
+        WorldStreamStatus.HorizonOutcome outcome;
+        if (result.error() != null) {
+            outcome = WorldStreamStatus.HorizonOutcome.FAILED;
+            System.err.println("World horizon unavailable: " + result.error());
+        } else if (result.lowRes().tiles().isEmpty()) {
+            outcome = WorldStreamStatus.HorizonOutcome.NONE;
+        } else {
+            try {
+                owner.attachHorizon(result.lowRes());
+                outcome = WorldStreamStatus.HorizonOutcome.DRAWN;
+            } catch (IOException | RuntimeException failed) {
+                outcome = WorldStreamStatus.HorizonOutcome.FAILED;
+                System.err.println("World horizon unavailable: " + failed);
+            }
+        }
+        send("HORIZON_DONE 1 " + outcome.name());
     }
 
     /**

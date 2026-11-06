@@ -164,6 +164,10 @@ final class WorldStreamHorizonProof {
         var command = new WorldStreamControl.Camera(NONCE, revision, 1, WIDTH, HEIGHT, view);
         boolean submitted = false;
         for (int i = 0; i < 200 && !submitted; i++) {
+            // As the session loop does: horizon upload steps in idle iterations, before drawing.
+            if (owner.horizonUploading()) {
+                owner.stepHorizon();
+            }
             submitted = owner.submit(command);
             owner.advance();
         }

@@ -88,6 +88,7 @@ final class WorldStreamParentState {
         CANCEL_REJECTED,
         CANCELED,
         OBJECTS,
+        HORIZON,
         CLOSED
     }
 
@@ -97,6 +98,8 @@ final class WorldStreamParentState {
     private WorldStreamState.Lease credit;
     private long serial, transaction, content;
     private boolean hello, closed, childGone;
+    // The session's one HORIZON (#372): sent, then answered once.
+    private boolean horizonSent, horizonAnswered;
     private Ticket ticket;
     private Commit commit;
     private List<Resident> active = List.of();
@@ -259,6 +262,23 @@ final class WorldStreamParentState {
         }
         commit = new Commit(nextTransaction(), content, policy, stable);
         return commit;
+    }
+
+    /**
+     * The session's one horizon command, or null once one was sent or the session ended. It sits
+     * outside the tile transaction sequence.
+     */
+    synchronized WorldStreamControl.Horizon horizon(int length, String sha) {
+        if (closed || !hello || horizonSent) {
+            return null;
+        }
+        horizonSent = true;
+        return new WorldStreamControl.Horizon(session.nonce(), length, sha);
+    }
+
+    /** A horizon command that was built but not sent (the session began stopping). */
+    synchronized void horizonUnsent() {
+        horizonAnswered = true;
     }
 
     /**
@@ -514,6 +534,14 @@ final class WorldStreamParentState {
             ticket.canceled = true;
             ticket.cancelResolved = true;
             return Change.CANCELED;
+        }
+        if (message instanceof WorldStreamStatus.HorizonDone) {
+            // Only the one answer to a sent HORIZON counts; anything else is ignored, never fatal.
+            if (!horizonSent || horizonAnswered) {
+                return Change.IGNORED;
+            }
+            horizonAnswered = true;
+            return Change.HORIZON;
         }
         if (message instanceof WorldStreamStatus.ObjectsDone value) {
             require(

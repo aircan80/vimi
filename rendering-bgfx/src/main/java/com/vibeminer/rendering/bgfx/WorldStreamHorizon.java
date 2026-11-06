@@ -26,11 +26,19 @@ final class WorldStreamHorizon implements AutoCloseable {
     /** Fog reaches full by this eye depth when the horizon is on (option (a) of #372). */
     static final float FOG_END = (float) (RADIUS * WorldFormats.TILE_SIZE);
 
-    /** GPU budget of one horizon: vertices and 32-bit indices of the full window with skirts. */
+    /** One buffer set: vertices and 32-bit indices of the full window with skirts. */
     static final int MAX_VERTICES = (2 * RADIUS + 1) * (2 * RADIUS + 1) * (545 + 4 * 17);
 
     static final int MAX_INDICES = (2 * RADIUS + 1) * (2 * RADIUS + 1) * (1024 + 128) * 3;
-    static final long GPU_BUDGET_BYTES = MAX_VERTICES * 16L + MAX_INDICES * 4L;
+
+    /**
+     * The horizon's fixed GPU budget: two buffer sets, one drawn while the next build uploads in
+     * bounded steps into the other.
+     */
+    static final long GPU_BUDGET_BYTES = 2 * (MAX_VERTICES * 16L + MAX_INDICES * 4L);
+
+    /** Most bytes one upload step issues, so a rebuild never takes a frame's upload budget. */
+    static final int STEP_BYTES = 512 << 10;
 
     private static final int[] EARTH = {104, 100, 76};
 

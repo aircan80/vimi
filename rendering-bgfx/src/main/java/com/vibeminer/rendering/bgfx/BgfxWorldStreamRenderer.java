@@ -418,10 +418,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private WorldFog fog = WorldFog.STREAM;
     // Optional WDL horizon (#372): built on its own worker, uploaded and drawn here.
     private WorldStreamHorizon horizon;
-    private short horizonVertices = INVALID, horizonIndices = INVALID;
-    private int horizonVertexCount, horizonIndexCount, horizonTiles;
+    // Two buffer sets: [front] is drawn while the next build uploads into the other.
+    private final short[] horizonVertices = {INVALID, INVALID}, horizonIndices = {INVALID, INVALID};
+    private int horizonFront, horizonVertexCount, horizonIndexCount, horizonTiles;
     private long horizonBuildNanos, horizonUploads;
-    private boolean horizonRequested;
+    private boolean horizonRequested, horizonSwapped;
+    private WorldStreamHorizon.Packed horizonStaging;
+    private int horizonStagedBytes;
     // Samples of the target this renderer draws into; above 1, cutouts use alpha to coverage.
     private int targetSamples = 1;
     // Optional exterior objects pass (existing world-wmo shaders); INVALID program disables it.
@@ -898,23 +901,91 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             throw new IllegalStateException("World horizon already attached");
         }
         try (var layout = meshLayout()) {
-            horizonVertices =
-                    valid(
-                            bgfx_create_dynamic_vertex_buffer(
-                                    WorldStreamHorizon.MAX_VERTICES, layout, BGFX_BUFFER_NONE));
-            horizonIndices =
-                    valid(
-                            bgfx_create_dynamic_index_buffer(
-                                    WorldStreamHorizon.MAX_INDICES,
-                                    org.lwjgl.bgfx.BGFX.BGFX_BUFFER_INDEX32));
-        } catch (IOException | RuntimeException failed) {
-            if (horizonVertices != INVALID) {
-                bgfx_destroy_dynamic_vertex_buffer(horizonVertices);
-                horizonVertices = INVALID;
+            for (int set = 0; set < 2; set++) {
+                horizonVertices[set] =
+                        valid(
+                                bgfx_create_dynamic_vertex_buffer(
+                                        WorldStreamHorizon.MAX_VERTICES, layout, BGFX_BUFFER_NONE));
+                horizonIndices[set] =
+                        valid(
+                                bgfx_create_dynamic_index_buffer(
+                                        WorldStreamHorizon.MAX_INDICES,
+                                        org.lwjgl.bgfx.BGFX.BGFX_BUFFER_INDEX32));
             }
+        } catch (IOException | RuntimeException failed) {
+            destroyHorizonBuffers();
             throw failed;
         }
         horizon = value;
+    }
+
+    private void destroyHorizonBuffers() {
+        for (int set = 0; set < 2; set++) {
+            if (horizonVertices[set] != INVALID) {
+                bgfx_destroy_dynamic_vertex_buffer(horizonVertices[set]);
+                horizonVertices[set] = INVALID;
+            }
+            if (horizonIndices[set] != INVALID) {
+                bgfx_destroy_dynamic_index_buffer(horizonIndices[set]);
+                horizonIndices[set] = INVALID;
+            }
+        }
+    }
+
+    /** A finished build is waiting or uploading: the owner should spend idle steps on it. */
+    boolean horizonUploading() {
+        return horizon != null && (horizonStaging != null || horizon.hasReady());
+    }
+
+    /**
+     * One bounded step of the next horizon's upload into the back buffer set; when the build is
+     * fully uploaded the sets swap and the next frame draws it. Owner thread, before drawing.
+     */
+    void stepHorizon() {
+        requireOwner();
+        if (horizon == null) {
+            return;
+        }
+        if (horizonStaging == null) {
+            horizonStaging = horizon.take();
+            horizonStagedBytes = 0;
+            if (horizonStaging == null) {
+                return;
+            }
+        }
+        var packed = horizonStaging;
+        int back = 1 - horizonFront;
+        int vertexBytes = packed.vertices().remaining(),
+                total = vertexBytes + packed.indices().remaining();
+        int budget = WorldStreamHorizon.STEP_BYTES;
+        while (budget > 0 && horizonStagedBytes < total) {
+            if (horizonStagedBytes < vertexBytes) {
+                // Whole vertices only: 16 bytes each.
+                int count = Math.min(budget, vertexBytes - horizonStagedBytes) & ~15;
+                var slice = packed.vertices().slice(horizonStagedBytes, count);
+                bgfx_update_dynamic_vertex_buffer(
+                        horizonVertices[back], horizonStagedBytes / 16, bgfx_copy(slice));
+                horizonStagedBytes += count;
+                budget -= count;
+            } else {
+                int at = horizonStagedBytes - vertexBytes;
+                int count = Math.min(budget, packed.indices().remaining() - at) & ~3;
+                var slice = packed.indices().slice(at, count);
+                bgfx_update_dynamic_index_buffer(horizonIndices[back], at / 4, bgfx_copy(slice));
+                horizonStagedBytes += count;
+                budget -= count;
+            }
+        }
+        if (horizonStagedBytes == total) {
+            horizonFront = back;
+            horizonVertexCount = packed.vertexCount();
+            horizonIndexCount = packed.indexCount();
+            horizonTiles = packed.tiles();
+            horizonBuildNanos = packed.buildNanos();
+            horizonUploads++;
+            horizonStaging = null;
+            horizonSwapped = true;
+        }
     }
 
     /**
@@ -922,7 +993,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * asked for yet, or a rebuilt horizon is waiting to be uploaded.
      */
     boolean horizonWaiting() {
-        return horizon != null && (!horizonRequested || horizon.hasReady());
+        return horizon != null && (!horizonRequested || horizonSwapped);
     }
 
     HorizonCounts horizonCounts() {
@@ -935,7 +1006,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 horizonUploads);
     }
 
-    /** Asks for the horizon around the camera and uploads a finished one; never waits. */
+    /** Asks for the horizon around the camera; the build and its upload never block a frame. */
     private void refreshHorizon(TerrainCamera camera) {
         long[] resident = new long[64];
         for (var lease : active) {
@@ -945,16 +1016,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
         horizon.request(camera.x(), camera.y(), resident);
         horizonRequested = true;
-        var packed = horizon.take();
-        if (packed != null) {
-            bgfx_update_dynamic_vertex_buffer(horizonVertices, 0, bgfx_copy(packed.vertices()));
-            bgfx_update_dynamic_index_buffer(horizonIndices, 0, bgfx_copy(packed.indices()));
-            horizonVertexCount = packed.vertexCount();
-            horizonIndexCount = packed.indexCount();
-            horizonTiles = packed.tiles();
-            horizonBuildNanos = packed.buildNanos();
-            horizonUploads++;
-        }
+        horizonSwapped = false;
     }
 
     /** The fog and sky of the next frames; #177 feeds it from the light tables. */
@@ -1259,8 +1321,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             // terrain state and the vertex-colour path (no atlas).
             if (horizon != null && horizonIndexCount > 0) {
                 bgfx_set_uniform(atlasUniform, stack.floats(0, 0, 0, 0), 1);
-                bgfx_set_dynamic_vertex_buffer(0, horizonVertices, 0, horizonVertexCount);
-                bgfx_set_dynamic_index_buffer(horizonIndices, 0, horizonIndexCount);
+                bgfx_set_dynamic_vertex_buffer(
+                        0, horizonVertices[horizonFront], 0, horizonVertexCount);
+                bgfx_set_dynamic_index_buffer(horizonIndices[horizonFront], 0, horizonIndexCount);
                 bgfx_set_state(TERRAIN_STATE, 0);
                 bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
             }
@@ -1758,14 +1821,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         if (horizon != null) {
             horizon.close();
         }
-        if (horizonVertices != INVALID) {
-            bgfx_destroy_dynamic_vertex_buffer(horizonVertices);
-            horizonVertices = INVALID;
-        }
-        if (horizonIndices != INVALID) {
-            bgfx_destroy_dynamic_index_buffer(horizonIndices);
-            horizonIndices = INVALID;
-        }
+        destroyHorizonBuffers();
         for (var slot : slots) {
             if (slot != null && slot.objects != null) {
                 slot.objects.destroy();
