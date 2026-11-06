@@ -390,7 +390,7 @@ class WorldTerrainLiquidsTest {
                             assertEquals(1, v.layers());
                             assertEquals(42, v.secondary(0));
                             assertEquals(1250, v.liquidType(0));
-                            assertEquals(5, v.actualUsedHeight(0));
+                            assertEquals(5, v.actualUsedHeight(0, 0));
                             assertEquals(1, v.mask(0));
                             assertEquals(200, v.depth(0, 0));
                             return null;
@@ -401,7 +401,8 @@ class WorldTerrainLiquidsTest {
     }
 
     @Test
-    void allClearUnsupportedAndNonplanarAreNeverGuessedEmptyOrFlat() throws Exception {
+    void allClearAndUnsupportedAreNeverGuessedEmptyAndNonplanarKeepsActualHeights()
+            throws Exception {
         try (var f = new Fixture()) {
             f.payload(liquids(1, 0, 0, false));
             try (var owner = f.inspect()) {
@@ -411,13 +412,35 @@ class WorldTerrainLiquidsTest {
             try (var owner = f.inspect()) {
                 assertEquals(WorldTerrainLiquids.State.UNRESOLVED, owner.summary().state());
                 assertEquals(
-                        WorldTerrainLiquids.Reason.UNRESOLVED_FOOTPRINT, owner.summary().reason());
+                        // Format 1 has a known length (8 bytes per vertex); this authored
+                        // 405-byte stream is too short for it, so the instance is malformed.
+                        WorldTerrainLiquids.Reason.MALFORMED, owner.summary().reason());
             }
+            // Cell 0 uses grid samples 0, 1, 9 and 10; sample 1 is 6, the others 5.
             f.payload(liquids(1, 0, 1, true));
             try (var owner = f.inspect()) {
-                assertEquals(WorldTerrainLiquids.State.UNRESOLVED, owner.summary().state());
-                assertEquals(
-                        WorldTerrainLiquids.Reason.NONPLANAR_PROFILE, owner.summary().reason());
+                assertEquals(WorldTerrainLiquids.State.READY, owner.summary().state());
+                assertEquals(1, owner.summary().cells());
+                owner.withBorrow(
+                        v -> {
+                            assertFalse(v.planar(0));
+                            assertEquals(5, v.actualUsedHeight(0, 0));
+                            assertEquals(6, v.actualUsedHeight(0, 1));
+                            // NW, NE, SW, SE keep their own heights: NE is grid sample 1.
+                            assertEquals(5, v.vertexUp(0));
+                            assertEquals(6, v.vertexUp(1));
+                            assertEquals(5, v.vertexUp(2));
+                            assertEquals(5, v.vertexUp(3));
+                            return null;
+                        });
+            }
+            f.payload(liquids(1, 0, 1, false));
+            try (var owner = f.inspect()) {
+                owner.withBorrow(
+                        v -> {
+                            assertTrue(v.planar(0));
+                            return null;
+                        });
             }
             assertEquals(0, f.liquidCaptures);
         }
@@ -436,7 +459,9 @@ class WorldTerrainLiquidsTest {
                     assertEquals(
                             missingCopy
                                     ? WorldTerrainLiquids.Reason.ROW_NOT_OBSERVED
-                                    : WorldTerrainLiquids.Reason.UNRESOLVED_FOOTPRINT,
+                                    // LVF 1's known 8-byte vertices overrun the authored
+                                    // stream: that instance is malformed, never "empty".
+                                    : WorldTerrainLiquids.Reason.MALFORMED,
                             owner.summary().reason());
                     assertEquals(0, owner.summary().admitted());
                 }
@@ -486,17 +511,20 @@ class WorldTerrainLiquidsTest {
     @Test
     void rootCapAndNoGeometryCacheOnlyAuthority() throws Exception {
         try (var f = new Fixture()) {
-            f.payload(liquids(129, 0, 1, false));
+            // 268 layers in 67 headers of 64 + 63 + 62 + 61 cells: 16750 cells pass the 16384
+            // cell cap, so the last layers are capped while far more than 128 are admitted.
+            f.payload(liquids(268, 0, -1L, false));
             try (var owner = f.inspect()) {
                 assertEquals(WorldTerrainLiquids.State.PARTIAL, owner.summary().state());
-                assertEquals(128, owner.summary().admitted());
                 assertEquals(WorldTerrainLiquids.Reason.CAPPED, owner.summary().reason());
+                assertTrue(owner.summary().cells() <= WorldTerrainLiquids.MAX_CELLS);
+                assertTrue(owner.summary().admitted() > 128);
+                assertEquals(268, owner.summary().admitted() + owner.summary().unresolved());
             }
             int before = f.base.opens.get(2L).get();
             f.payload(liquids(1, 0, 1, true));
             try (var owner = f.inspect()) {
-                assertEquals(
-                        WorldTerrainLiquids.Reason.NONPLANAR_PROFILE, owner.summary().reason());
+                assertEquals(WorldTerrainLiquids.State.READY, owner.summary().state());
             }
             assertEquals(before + 1, f.base.opens.get(2L).get());
         }
@@ -543,14 +571,25 @@ class WorldTerrainLiquidsTest {
                 assertEquals(-1, malformed.summary().declared());
                 assertEquals(256, WorldFormats.adt(f.base.sources.get(2L), () -> false).chunks());
             }
+            // Two instances of one chunk covering the same cell are both source surfaces.
             byte[] p = liquids(2, 0, 1, false);
             ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN).putLong(3072 + 48 + 8, 1);
             f.payload(p);
             try (var overlap = f.inspect()) {
-                assertEquals(WorldTerrainLiquids.Reason.MULTILAYER, overlap.summary().reason());
-                assertEquals(0, overlap.summary().admitted());
+                assertEquals(WorldTerrainLiquids.State.READY, overlap.summary().state());
+                assertEquals(2, overlap.summary().admitted());
+                assertEquals(2, overlap.summary().cells());
             }
+            // No vertex data with one declared height (min = max = 5): flat water at 5.
             p = liquids(1, 0, 1, false);
+            ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN).putInt(3072 + 20, 0);
+            f.payload(p);
+            try (var flat = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.READY, flat.summary().state());
+                assertEquals(1, flat.summary().cells());
+            }
+            // No vertex data with a declared range (5..6) gives no height: stated, not guessed.
+            p = liquids(1, 0, 1, true);
             ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN).putInt(3072 + 20, 0);
             f.payload(p);
             try (var missing = f.inspect()) {
@@ -716,7 +755,7 @@ class WorldTerrainLiquidsTest {
                                             v -> {
                                                 readEntered.complete(null);
                                                 readRelease.join();
-                                                assertEquals(5, v.actualUsedHeight(0));
+                                                assertEquals(5, v.actualUsedHeight(0, 0));
                                                 return null;
                                             });
                                     read.complete(null);
@@ -783,7 +822,7 @@ class WorldTerrainLiquidsTest {
                                             v -> {
                                                 entered.complete(null);
                                                 release.join();
-                                                assertEquals(5, v.actualUsedHeight(0));
+                                                assertEquals(5, v.actualUsedHeight(0, 0));
                                                 return null;
                                             });
                                     finished.complete(null);
@@ -845,24 +884,26 @@ class WorldTerrainLiquidsTest {
     void geometryPrecountAllocatesExactMaximumWithoutTrimAndEmptyAllocatesNothing()
             throws Exception {
         try (var f = new Fixture()) {
-            var p = liquids(128, 0, -1L, false);
+            // A whole tile of full chunks: every cell of all 256 chunks, the cell cap exactly.
+            var p = liquids(256, 0, -1L, false);
             var b = ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN);
             for (int header = 0; header < 256; header++) {
                 b.putInt(header * 12, 0).putInt(header * 12 + 4, 0);
             }
-            for (int i = 0; i < 128; i++) {
+            for (int i = 0; i < 256; i++) {
                 b.putInt(i * 12, 3072 + i * 24).putInt(i * 12 + 4, 1);
-                b.putLong(3072 + 128 * 24 + i * 8, -1L);
+                b.putLong(3072 + 256 * 24 + i * 8, -1L);
             }
             f.payload(p);
             try (var owner = f.inspect()) {
-                assertEquals(8192, owner.summary().cells());
+                assertEquals(WorldTerrainLiquids.State.READY, owner.summary().state());
+                assertEquals(WorldTerrainLiquids.MAX_CELLS, owner.summary().cells());
                 owner.withBorrow(
                         v -> {
-                            assertEquals(32768, v.vertexCount());
-                            assertEquals(49152, v.indexCount());
-                            assertEquals(32767, v.index(49151));
-                            assertEquals(5, v.vertexUp(32767));
+                            assertEquals(65536, v.vertexCount());
+                            assertEquals(98304, v.indexCount());
+                            assertEquals(65535, v.index(98303));
+                            assertEquals(5, v.vertexUp(65535));
                             return null;
                         });
             }
@@ -1333,6 +1374,145 @@ class WorldTerrainLiquidsTest {
                     f.water.prepareAndWrite(
                             f.tile, Cancellation.NONE, (b, t) -> (AutoCloseable) () -> {})) {
                 assertEquals(WorldWaterPreview.State.READY, recovered.facts().state());
+            }
+        }
+    }
+
+    @Test
+    void depthOnlyLayersDrawAtTheirDeclaredHeight() throws Exception {
+        try (var f = new Fixture()) {
+            // LiquidType 2 with a LiquidObject is depth-only by the established extractor
+            // convention, whatever its table says; this source has no row 2, so no issue.
+            byte[] ocean = liquids(1, 42, 1, false);
+            ByteBuffer.wrap(ocean).order(ByteOrder.LITTLE_ENDIAN).putShort(3072, (short) 2);
+            f.payload(ocean);
+            try (var water = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.READY, water.summary().state());
+                assertEquals(1, water.summary().admitted());
+                assertEquals(1, water.summary().cells());
+                // No row 2 in this source; the only issue is the declared level 5 (not 0).
+                assertEquals(1, water.issues().size(), "" + water.issues());
+                assertTrue(water.issues().getFirst().contains("declared level"));
+            }
+            // Declared height 0 agrees with the convention; another declared level wins over
+            // it and the departure is recorded.
+            for (float level : new float[] {0f, 5f}) {
+                var b = ByteBuffer.wrap(ocean).order(ByteOrder.LITTLE_ENDIAN);
+                b.putFloat(3072 + 4, level).putFloat(3072 + 8, level);
+                f.payload(ocean);
+                try (var water = f.inspect()) {
+                    assertEquals(WorldTerrainLiquids.State.READY, water.summary().state());
+                    assertEquals(level == 0 ? 0 : 1, water.issues().size(), "" + water.issues());
+                    if (level != 0) {
+                        assertTrue(water.issues().getFirst().contains("declared level"));
+                    }
+                }
+            }
+            // A LiquidType row 2 that resolves height and depth (LVF 0) disagrees with the
+            // convention: still drawn depth-only, and the disagreement is recorded.
+            f.nativeRows.close();
+            f.nativeRows = new AuthoredNativeLiquids(f.files, 130, true, true);
+            f.payload(ocean);
+            try (var water = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.READY, water.summary().state());
+                assertTrue(
+                        water.issues().stream().anyMatch(i -> i.contains("vertex format 0")),
+                        water.issues().toString());
+            }
+            // A direct depth-only format (secondary 2) reads the same way.
+            f.payload(liquids(1, 2, 1, false));
+            try (var direct = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.READY, direct.summary().state());
+                assertEquals(1, direct.summary().cells());
+            }
+            // Other direct formats (1: height and texture coordinates) stay unsupported.
+            f.payload(liquids(1, 1, 1, false));
+            try (var magma = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.UNRESOLVED, magma.summary().state());
+            }
+        }
+    }
+
+    @Test
+    void publicWaterFactsCarryTheSourceIssues() throws Exception {
+        // Direct depth-only water at declared level 5: drawn, with the departure from the
+        // convention's 0 visible on the public facts.
+        try (var f = new PublicFixture(2)) {
+            try (var result =
+                    f.water.prepareAndWrite(
+                            f.tile, Cancellation.NONE, (b, t) -> (AutoCloseable) () -> {})) {
+                assertEquals(WorldWaterPreview.State.READY, result.facts().state());
+                assertEquals(1, result.facts().issues().size(), "" + result.facts().issues());
+                assertTrue(result.facts().issues().getFirst().contains("declared level"));
+            }
+        }
+        try (var f = new PublicFixture(0)) {
+            try (var result =
+                    f.water.prepareAndWrite(
+                            f.tile, Cancellation.NONE, (b, t) -> (AutoCloseable) () -> {})) {
+                assertEquals(List.of(), result.facts().issues());
+            }
+        }
+    }
+
+    @Test
+    void oneCorruptInstanceIsRefusedAloneAndTheRestOfTheTileDraws() throws Exception {
+        try (var f = new Fixture()) {
+            // A coast-like tile: instance 0 is good water; instance 1 (a lake) uses a height
+            // above its declared maximum.
+            byte[] p = liquids(2, 0, 1, false);
+            int vertices = 3072 + 2 * 24 + 2 * 8;
+            ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN).putFloat(vertices + 405 + 4, 9f);
+            f.payload(p);
+            try (var tile = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.PARTIAL, tile.summary().state());
+                assertEquals(1, tile.summary().admitted());
+                assertEquals(1, tile.summary().unresolved());
+                assertEquals(WorldTerrainLiquids.Reason.MALFORMED, tile.summary().reason());
+                assertTrue(
+                        tile.issues().stream().anyMatch(i -> i.startsWith("1 malformed")),
+                        tile.issues().toString());
+            }
+            // Two indirect instances whose streams overlap are both refused; the third draws.
+            byte[] q = liquids(3, 42, 1, false);
+            var b = ByteBuffer.wrap(q).order(ByteOrder.LITTLE_ENDIAN);
+            b.putInt(3072 + 2 * 24 + 20, b.getInt(3072 + 24 + 20));
+            f.payload(q);
+            try (var tile = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.PARTIAL, tile.summary().state());
+                assertEquals(1, tile.summary().admitted());
+                assertEquals(2, tile.summary().unresolved());
+                assertTrue(
+                        tile.issues().stream().anyMatch(i -> i.startsWith("2 malformed")),
+                        tile.issues().toString());
+            }
+        }
+    }
+
+    @Test
+    void knownLengthMagmaNoLongerHidesTheTilesWater() throws Exception {
+        try (var f = new Fixture()) {
+            // Instance 0 is water; instance 1 is direct format 1 (height and texture coordinates,
+            // 8 bytes per vertex), given room for its whole stream.
+            byte[] p =
+                    java.util.Arrays.copyOf(
+                            liquids(2, 0, 1, false), 3072 + 2 * 24 + 2 * 8 + 405 + 81 * 8);
+            ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN).putShort(3072 + 24 + 2, (short) 1);
+            f.payload(p);
+            try (var tile = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.PARTIAL, tile.summary().state());
+                assertEquals(1, tile.summary().admitted());
+                assertEquals(
+                        WorldTerrainLiquids.Reason.UNSUPPORTED_LAYOUT, tile.summary().reason());
+            }
+            // Without that room its stream runs past the payload: that instance alone is refused.
+            byte[] q = liquids(2, 0, 1, false);
+            ByteBuffer.wrap(q).order(ByteOrder.LITTLE_ENDIAN).putShort(3072 + 24 + 2, (short) 1);
+            f.payload(q);
+            try (var tile = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.PARTIAL, tile.summary().state());
+                assertEquals(1, tile.summary().admitted());
+                assertEquals(WorldTerrainLiquids.Reason.MALFORMED, tile.summary().reason());
             }
         }
     }

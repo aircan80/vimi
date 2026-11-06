@@ -51,6 +51,8 @@ final class ReadConnections {
     volatile long idleTtlNanos = DEFAULT_IDLE_TTL_NANOS;
     private long generation;
     private boolean closed, sweeping;
+    // Connections taken out of the pool to be closed whose close has not finished yet.
+    private int closing;
 
     ReadConnections(int capacity) {
         this(capacity, System::nanoTime);
@@ -86,6 +88,7 @@ final class ReadConnections {
                     found = next;
                 }
             }
+            closing += stale.size();
         }
         closeAll(stale);
         return found;
@@ -114,6 +117,7 @@ final class ReadConnections {
                 }
                 return;
             }
+            closing++;
         }
         closeAll(List.of(connection));
     }
@@ -146,12 +150,21 @@ final class ReadConnections {
             } else {
                 sweepLater(next);
             }
+            closing += expired.size();
         }
         closeAll(expired);
     }
 
     synchronized int idle() {
         return idle.size();
+    }
+
+    /**
+     * Connections the pool still holds open: idle ones plus those taken out to be closed whose
+     * close has not finished. Zero means the pool holds no handle on the index files.
+     */
+    synchronized int held() {
+        return idle.size() + closing;
     }
 
     /**
@@ -164,6 +177,7 @@ final class ReadConnections {
             generation++;
             all = new ArrayList<>(idle);
             idle.clear();
+            closing += all.size();
         }
         closeAll(all);
     }
@@ -179,16 +193,31 @@ final class ReadConnections {
     /**
      * Closes read-only connections. A failure to close one has no durability consequence, so it is
      * logged rather than thrown: it must never skip a store's clean-close mark or the closing of
-     * its writer connection and lock.
+     * its writer connection and lock. Every connection is attempted and uncounted even if one close
+     * throws an {@link Error}; the first Error is rethrown after the loop.
      */
-    private static void closeAll(List<Pooled> connections) {
+    private void closeAll(List<Pooled> connections) {
+        Error fatal = null;
         for (Pooled pooled : connections) {
             try {
                 pooled.db.close();
             } catch (RuntimeException error) {
                 System.getLogger(ReadConnections.class.getName())
                         .log(System.Logger.Level.WARNING, "Read connection close failed", error);
+            } catch (Error error) {
+                if (fatal == null) {
+                    fatal = error;
+                } else {
+                    fatal.addSuppressed(error);
+                }
+            } finally {
+                synchronized (this) {
+                    closing--;
+                }
             }
+        }
+        if (fatal != null) {
+            throw fatal;
         }
     }
 }

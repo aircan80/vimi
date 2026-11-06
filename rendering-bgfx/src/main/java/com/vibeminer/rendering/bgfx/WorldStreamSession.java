@@ -96,17 +96,49 @@ final class WorldStreamSession {
         if (parentPid <= 0) {
             throw new IllegalArgumentException("Invalid parent PID");
         }
+        return run(session, directory, input, output, frames, backend, parentPid, terminate, null);
+    }
+
+    /**
+     * #381 spike: with {@code window}, the native-presentation loop variant (frames presented into
+     * the child window at the display rate, uploads paced by {@link WorldPresentBudget}).
+     */
+    static boolean run(
+            WorldStreamEnvelope.Session session,
+            Path directory,
+            InputStream input,
+            OutputStream output,
+            WorldFrameFileV2 frames,
+            int backend,
+            long parentPid,
+            Runnable terminate,
+            WorldWindowPresentation window)
+            throws Exception {
+        Objects.requireNonNull(session);
+        Objects.requireNonNull(directory);
+        Objects.requireNonNull(input);
+        Objects.requireNonNull(output);
+        Objects.requireNonNull(frames);
+        Objects.requireNonNull(terminate);
+        if (parentPid <= 0) {
+            throw new IllegalArgumentException("Invalid parent PID");
+        }
         var runtime = new WorldStreamSession(session, directory, output, parentPid);
+        runtime.window = window;
         runtime.runOwner(input, frames, backend, terminate);
         return !runtime.failed;
     }
+
+    // #381 spike: native presentation (null: the readback loop, unchanged).
+    private WorldWindowPresentation window;
+    private final WorldPresentBudget budget = new WorldPresentBudget();
 
     private void runOwner(
             InputStream input, WorldFrameFileV2 frames, int backend, Runnable terminate)
             throws Exception {
         Thread.ofVirtual().name("world-v2-control-reader").start(() -> readControls(input));
         Thread.ofVirtual().name("world-v2-independent-watchdog").start(() -> watch(terminate));
-        try (var owner = new WorldStreamNativeOwner(session, frames, backend)) {
+        try (var owner = new WorldStreamNativeOwner(session, frames, backend, window)) {
             try {
                 send(
                         session.exteriorObjects()
@@ -144,7 +176,9 @@ final class WorldStreamSession {
                     }
                     takeObjects();
                     reconcile();
-                    if (upload != null && !upload.finished()) {
+                    if (window != null) {
+                        stepWithinFrameBudget(owner); // #381 spike
+                    } else if (upload != null && !upload.finished()) {
                         owner.step(upload);
                         reconcile();
                     } else if (lateUpload != null && !lateUpload.ready()) {
@@ -153,7 +187,10 @@ final class WorldStreamSession {
                     }
                     // GPU mutations must precede draw submission in the same bgfx frame.
                     long now = System.nanoTime();
-                    if (camera != null && now - lastDraw >= DRAW_INTERVAL && owner.submit(camera)) {
+                    // Native presentation draws every presented frame; readback keeps its cap.
+                    if (camera != null
+                            && (window != null || now - lastDraw >= DRAW_INTERVAL)
+                            && owner.submit(camera)) {
                         lastDraw = nextDrawBase(lastDraw, now);
                         status.cameraApplied(camera.policy(), camera.width(), camera.height());
                     }
@@ -165,7 +202,9 @@ final class WorldStreamSession {
                     finishUpload();
                     finishLate(owner);
                     advertiseCredit();
-                    LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+                    if (window == null) {
+                        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+                    } // Native presentation: advance() paces itself on the display.
                 }
                 if (Boolean.getBoolean(FRAME_TIMINGS_PROPERTY)) {
                     // Diagnostics for the readback comparison (#370): stderr, never protocol.
@@ -248,6 +287,24 @@ final class WorldStreamSession {
             }
             if (!failed && status.failure() == null) {
                 allDrained.set(true);
+            }
+        }
+    }
+
+    /**
+     * #381 spike: one presented frame's uploads, several bounded steps (each still at most
+     * STEP_BOUND) until the frame's byte or time budget is spent, terrain before late objects.
+     */
+    private void stepWithinFrameBudget(WorldStreamNativeOwner owner) {
+        budget.begin(System.nanoTime());
+        while (budget.another(System.nanoTime())) {
+            if (upload != null && !upload.finished()) {
+                budget.stepped(owner.step(upload));
+                reconcile();
+            } else if (lateUpload != null && !lateUpload.ready()) {
+                budget.stepped(owner.stepLate(lateUpload));
+            } else {
+                break;
             }
         }
     }
