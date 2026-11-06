@@ -29,16 +29,45 @@ public final class TerrainScene {
         private final float[] vertices;
         private final int[] indices;
         private final byte[] attributes;
+        // Immutable payload, so its geometry fingerprint is computed at most once.
+        private volatile String fingerprint;
 
+        /** Copies the terrain's payload once through its read-only views. */
         public Tile(int x, int y, WorldFormats.Terrain terrain) {
             this(
                     x,
                     y,
-                    Objects.requireNonNull(terrain).vertices(),
-                    terrain.triangles(),
+                    copy(Objects.requireNonNull(terrain).vertexView()),
+                    copy(terrain.triangleView()),
                     terrain.chunks(),
-                    terrain.attributes(),
+                    copy(terrain.attributeView()),
                     true);
+        }
+
+        private static float[] copy(FloatBuffer view) {
+            float[] values = new float[view.remaining()];
+            view.get(values);
+            return values;
+        }
+
+        private static int[] copy(IntBuffer view) {
+            int[] values = new int[view.remaining()];
+            view.get(values);
+            return values;
+        }
+
+        private static byte[] copy(java.nio.ByteBuffer view) {
+            byte[] values = new byte[view.remaining()];
+            view.get(values);
+            return values;
+        }
+
+        String cachedFingerprint() {
+            return fingerprint;
+        }
+
+        void cacheFingerprint(String value) {
+            fingerprint = value;
         }
 
         private Tile(

@@ -69,11 +69,19 @@ public final class WorldFormats {
         private final byte[] attributes;
 
         public Terrain(float[] vertices, int[] triangles, int chunks) {
-            this(vertices, triangles, chunks, new byte[0]);
+            this(vertices.clone(), triangles.clone(), chunks, new byte[0], true);
         }
 
-        /** {@code attributes}: empty, or {@link #ATTRIBUTE_BYTES} per vertex. */
+        /**
+         * {@code attributes}: empty, or {@link #ATTRIBUTE_BYTES} per vertex; all three are copied.
+         */
         public Terrain(float[] vertices, int[] triangles, int chunks, byte[] attributes) {
+            this(vertices.clone(), triangles.clone(), chunks, attributes.clone(), true);
+        }
+
+        /** Adopts arrays no one else holds (the parser's own output). */
+        private Terrain(
+                float[] vertices, int[] triangles, int chunks, byte[] attributes, boolean owned) {
             if (vertices.length == 0
                     || vertices.length % 3 != 0
                     || vertices.length > 256 * 145 * 3
@@ -97,12 +105,13 @@ public final class WorldFormats {
                     && attributes.length != vertices.length / 3 * ATTRIBUTE_BYTES) {
                 throw new IllegalArgumentException("Invalid terrain attributes");
             }
-            this.vertices = vertices.clone();
-            this.triangles = triangles.clone();
+            this.vertices = vertices;
+            this.triangles = triangles;
             this.chunks = chunks;
-            this.attributes = attributes.clone();
+            this.attributes = attributes;
         }
 
+        /** A defensive copy; prefer {@link #vertexView()} to read without copying. */
         public float[] vertices() {
             return vertices.clone();
         }
@@ -117,8 +126,22 @@ public final class WorldFormats {
             return attributes.clone();
         }
 
+        /** A defensive copy; prefer {@link #triangleView()} to read without copying. */
         public int[] triangles() {
             return triangles.clone();
+        }
+
+        public java.nio.FloatBuffer vertexView() {
+            return java.nio.FloatBuffer.wrap(vertices).asReadOnlyBuffer();
+        }
+
+        public java.nio.IntBuffer triangleView() {
+            return java.nio.IntBuffer.wrap(triangles).asReadOnlyBuffer();
+        }
+
+        /** The attributes without a copy; empty when the terrain carries none. */
+        public java.nio.ByteBuffer attributeView() {
+            return java.nio.ByteBuffer.wrap(attributes).asReadOnlyBuffer();
         }
 
         public int chunks() {
@@ -262,6 +285,14 @@ public final class WorldFormats {
     public static TerrainAreas adtTile(byte[] bytes, BooleanSupplier canceled) {
         var parsed = parseAdt(bytes, canceled, true);
         return new TerrainAreas(parsed.terrain(), parsed.areas());
+    }
+
+    /** Geometry, area metadata and the native grid from one checked source walk. */
+    public record TerrainAreasGrid(Terrain terrain, AreaMetadata areas, TerrainGrid grid) {}
+
+    public static TerrainAreasGrid adtTileGrid(byte[] bytes, BooleanSupplier canceled) {
+        var parsed = parseAdt(bytes, canceled, true, true);
+        return new TerrainAreasGrid(parsed.terrain(), parsed.areas(), parsed.grid());
     }
 
     /** Native source samples through the same checked walker, never inferred from a mesh. */
@@ -504,7 +535,7 @@ public final class WorldFormats {
             return new ParsedAdt(null, metadata, captureGrid ? new TerrainGrid(grids) : null);
         }
         return new ParsedAdt(
-                new Terrain(vertices.take(), indices.take(), chunks, attributes.take()),
+                new Terrain(vertices.take(), indices.take(), chunks, attributes.take(), true),
                 metadata,
                 captureGrid ? new TerrainGrid(grids) : null);
     }
