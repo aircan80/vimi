@@ -175,14 +175,12 @@ public final class FilesScenario {
 
     /** Adds a stored, unencrypted file whose BLTE body has exactly {@code chunks}. */
     public FilesScenario addChunks(long id, List<FileFixtures.Chunk> chunks, byte[] decoded) {
-        return add(
-                id,
-                null,
-                decoded,
-                true,
-                List.of(),
-                FileLocales.bitOf("enUS"),
-                FileFixtures.chunked(chunks));
+        return addBody(id, FileFixtures.chunked(chunks), decoded);
+    }
+
+    /** Adds a stored, unencrypted file with the given encoded {@code body}, e.g. headerless. */
+    public FilesScenario addBody(long id, FileFixtures.Encoded body, byte[] decoded) {
+        return add(id, null, decoded, true, List.of(), FileLocales.bitOf("enUS"), body);
     }
 
     private FilesScenario add(

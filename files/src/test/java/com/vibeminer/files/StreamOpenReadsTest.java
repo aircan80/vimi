@@ -166,6 +166,68 @@ final class StreamOpenReadsTest {
         }
     }
 
+    /** One chunk over 64 KiB: open fetches only its envelope, so nothing is retained. */
+    @Test
+    void singleLargeChunkIsReadInFull() {
+        for (boolean zlib : new boolean[] {false, true}) {
+            var s = scenario();
+            byte[] decoded = pattern(70000, zlib ? 8 : 7);
+            var chunk = zlib ? FileFixtures.zlib(randomish(decoded)) : FileFixtures.raw(decoded);
+            byte[] expected = zlib ? randomish(decoded) : decoded;
+            s.addChunks(12, List.of(chunk), expected);
+            try (var h = open(s);
+                    var stream = h.openRead(FileRef.id(12), Cancellation.NONE).join().stream()) {
+                assertArrayEquals(expected, readAll(stream));
+            }
+        }
+    }
+
+    /** Headerless BLTE bodies, over and under the small-chunk bound, read in full. */
+    @Test
+    void headerlessBodiesAreReadInFull() {
+        for (int size : new int[] {70000, 3000}) {
+            var s = scenario();
+            byte[] decoded = pattern(size, 9);
+            s.addBody(13, FileFixtures.headerless(FileFixtures.raw(decoded)), decoded);
+            try (var h = open(s)) {
+                var opened = h.openRead(FileRef.id(13), Cancellation.NONE).join();
+                try (var stream = opened.stream()) {
+                    assertEquals(FileReadState.COMPLETE, opened.state());
+                    int atOpen = ranges.get();
+                    assertArrayEquals(decoded, readAll(stream));
+                    assertEquals(size > 65536 ? atOpen + 1 : atOpen, ranges.get());
+                }
+            }
+        }
+    }
+
+    /** A small first chunk followed by a large one: the run does not cover the body. */
+    @Test
+    void mixedChunkSizesAreReadInFull() {
+        var s = scenario();
+        byte[] small = pattern(1000, 10), large = pattern(70000, 11);
+        s.addChunks(
+                14,
+                List.of(FileFixtures.raw(small), FileFixtures.raw(large)),
+                concat(small, large));
+        try (var h = open(s);
+                var stream = h.openRead(FileRef.id(14), Cancellation.NONE).join().stream()) {
+            assertArrayEquals(concat(small, large), readAll(stream));
+        }
+    }
+
+    private static byte[] randomish(byte[] seed) {
+        byte[] out = seed.clone();
+        long x = 0x9E3779B97F4A7C15L;
+        for (int i = 0; i < out.length; i++) {
+            x ^= x << 13;
+            x ^= x >>> 7;
+            x ^= x << 17;
+            out[i] ^= (byte) x;
+        }
+        return out;
+    }
+
     @Test
     void closedStreamRefusesReads() {
         var s = scenario();

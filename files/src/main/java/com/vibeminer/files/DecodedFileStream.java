@@ -14,8 +14,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Keeps only the last decoded chunk; envelopes are scanned without decoding at open. When the open
- * scan fetched the whole encoded body in one run (small chunks, at most {@link #RETAIN} bytes), the
- * stream keeps that run and decodes later reads from it instead of fetching the chunks again.
+ * scan fetched the whole encoded body in one run (every chunk at most 64 KiB, at most {@link
+ * #RETAIN} bytes in all), the stream keeps that run and decodes later reads from it instead of
+ * fetching the chunks again. Each open stream therefore holds up to {@link #RETAIN} retained
+ * encoded bytes until {@link #close()}, which clears them.
  */
 final class DecodedFileStream extends FileReadStream {
     /** Largest encoded run the open scan fetches, and so the most a stream retains. */
@@ -102,8 +104,14 @@ final class DecodedFileStream extends FileReadStream {
                 }
                 at += next.encodedSize();
             }
-            if (i == 0 && last == layout.chunks().size() - 1 && n == run.length) {
-                retained = run; // One run covered the whole body; reads reuse it.
+            if (i == 0
+                    && last == layout.chunks().size() - 1
+                    && chunk.encodedSize() <= 65536
+                    && n == run.length
+                    && n == layout.encodedLength() - chunk.encodedOffset()) {
+                // One run fetched every chunk's full encoded bytes; reads reuse it. A chunk over
+                // 64 KiB only had its envelope fetched, so nothing is retained for it.
+                retained = run;
             }
             i = last + 1;
         }
