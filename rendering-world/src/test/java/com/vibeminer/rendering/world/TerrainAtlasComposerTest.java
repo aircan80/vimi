@@ -309,6 +309,72 @@ class TerrainAtlasComposerTest {
     }
 
     @Test
+    void highMaskCarriesEveryAlphaMapTexel() {
+        // Mask variation: alpha-map texels at odd row and odd column are 0, the rest 128.
+        try (var textures = textures(new int[] {128, 64}, true)) {
+            var mips = Map.of(1L, mip(1, 255, 0, 0), 2L, mip(2, 0, 255, 0), 3L, mip(3, 0, 0, 255));
+            var standard =
+                    TerrainAtlasComposer.compose(
+                                    TILE,
+                                    grid(new byte[0], true, true),
+                                    textures,
+                                    mips,
+                                    true,
+                                    () -> false)
+                            .splat();
+            var high =
+                    TerrainAtlasComposer.compose(
+                                    TILE,
+                                    grid(new byte[0], true, true),
+                                    textures,
+                                    mips,
+                                    true,
+                                    TerrainTileSplat.HIGH_MASK,
+                                    () -> false)
+                            .splat();
+            assertEquals(TerrainTileSplat.STANDARD_MASK, standard.maskSide());
+            assertEquals(TerrainTileSplat.HIGH_MASK, high.maskSide());
+            assertEquals(TerrainTileSplat.MAX_ALPHA_BYTES, high.alpha().remaining());
+            // STANDARD samples only odd/odd texels (every other one): all 0 here.
+            assertEquals(0, standard.alpha().get(0) & 255);
+            // HIGH keeps the native map: texel (0, 0) is 128, texel (1, 1) is 0.
+            var alpha = high.alpha();
+            assertEquals(128, alpha.get(0) & 255);
+            assertEquals(0, alpha.get((1 * TerrainTileSplat.HIGH_MASK + 1) * 4) & 255);
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            TerrainAtlasComposer.compose(
+                                    TILE,
+                                    grid(new byte[0], true, true),
+                                    textures,
+                                    mips,
+                                    true,
+                                    768,
+                                    () -> false));
+        }
+    }
+
+    @Test
+    void highMasksOnlyOnTheNearViewDistance() {
+        assertEquals(TerrainTileSplat.HIGH_MASK, TerrainTileSplat.maskSide(true, false));
+        assertEquals(TerrainTileSplat.STANDARD_MASK, TerrainTileSplat.maskSide(true, true));
+        assertEquals(TerrainTileSplat.STANDARD_MASK, TerrainTileSplat.maskSide(false, false));
+        assertEquals(TerrainTileSplat.STANDARD_MASK, TerrainTileSplat.maskSide(false, true));
+        // Measured in the splat proof: one slot's mask chain at each side.
+        assertEquals(1_398_100L, TerrainTileSplat.maskChainBytes(TerrainTileSplat.STANDARD_MASK));
+        assertEquals(5_592_404L, TerrainTileSplat.maskChainBytes(TerrainTileSplat.HIGH_MASK));
+        assertThrows(IllegalArgumentException.class, () -> TerrainTileSplat.maskChainBytes(768));
+        // Exact per-slot totals: NEAR (10 slots) + HIGH, and FAR (26 slots) on any tier.
+        assertEquals(
+                10 * 5_592_404L,
+                10 * TerrainTileSplat.maskChainBytes(TerrainTileSplat.maskSide(true, false)));
+        assertEquals(
+                26 * 1_398_100L,
+                26 * TerrainTileSplat.maskChainBytes(TerrainTileSplat.maskSide(true, true)));
+    }
+
+    @Test
     void splatRefusesInvalidShapes() {
         var layers = new byte[TerrainTileSplat.LAYER_BYTES];
         var alpha = new byte[TerrainTileSplat.ALPHA_BYTES];

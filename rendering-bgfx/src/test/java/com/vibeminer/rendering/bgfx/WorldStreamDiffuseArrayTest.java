@@ -140,13 +140,37 @@ final class WorldStreamDiffuseArrayTest {
     }
 
     @Test
+    void aCommitReleasesOnlyRetiredSlots() {
+        var array = new WorldStreamDiffuseArray();
+        array.bind(0, List.of(key(1), key(2)));
+        array.bind(1, List.of(key(2), key(3)));
+        array.bind(2, List.of(key(4)));
+        assertEquals(4, array.referenced());
+        // The commit keeps slots 0 and 2 (slot 2 may be the tile still in flight); slot 1 retired.
+        assertEquals(List.of(1), array.retain(java.util.Set.of(0, 2)));
+        assertEquals(3, array.referenced(), "key 3 is no longer pinned; key 2 still is by slot 0");
+        assertEquals(4, array.resident(), "released layers stay cached for reuse");
+        // Retiring everything leaves every layer evictable, and a new key can take one.
+        array.retain(java.util.Set.of());
+        assertEquals(0, array.referenced());
+        var full = array.bind(5, keys(10, 10 + WorldStreamDiffuseArray.CAPACITY));
+        assertEquals(
+                WorldStreamDiffuseArray.CAPACITY, full.uploads().size(), "idle layers evicted");
+    }
+
+    @Test
     void sharedLayersUploadEvenWhenTheSlotInputsCannot() {
-        int slot = WorldStreamAtlasMips.STEPS.size() + 1;
-        assertEquals(slot + 3, BgfxWorldStreamRenderer.splatStepCount(true, 3));
+        assertEquals(22 + 1 + 3, BgfxWorldStreamRenderer.splatStepCount(22, true, 3));
         // Without the slot's mask and table textures, its three new layers still go up: the
         // parent records them resident once the tile is staged (review of #435).
-        assertEquals(3, BgfxWorldStreamRenderer.splatStepCount(false, 3));
-        assertEquals(0, BgfxWorldStreamRenderer.splatStepCount(false, 0));
+        assertEquals(3, BgfxWorldStreamRenderer.splatStepCount(22, false, 3));
+        assertEquals(0, BgfxWorldStreamRenderer.splatStepCount(0, false, 0));
+        // Several splat steps share one call, and none can carry it past the step bound.
+        assertTrue(
+                BgfxWorldStreamRenderer.MAX_SPLAT_STEP_BYTES <= BgfxWorldStreamRenderer.STEP_BOUND);
+        assertEquals(
+                WorldStreamDiffuseArray.FALLBACK_LAYER_BYTES,
+                BgfxWorldStreamRenderer.MAX_SPLAT_STEP_BYTES);
     }
 
     @Test
