@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import static org.lwjgl.bgfx.BGFX.BGFX_RENDERER_TYPE_DIRECT3D11;
 import static org.lwjgl.bgfx.BGFX.BGFX_RENDERER_TYPE_VULKAN;
 
 import com.vibeminer.rendering.world.TerrainCamera;
@@ -25,6 +26,21 @@ public final class WorldStreamNativeProof {
             new WorldStreamEnvelope.Session(NONCE, SCOPE, 1);
     private static final TerrainCamera CAMERA = new TerrainCamera(-100, -10, 50, 0, -.6);
     private static final int WIDTH = 256, HEIGHT = 256;
+
+    /**
+     * The proof backend: Vulkan unless the {@code vimi.worldProof.backend} system property is
+     * {@code d3d11} (Gradle: {@code -PworldProofBackend=d3d11}).
+     */
+    static final int BACKEND = backend(System.getProperty("vimi.worldProof.backend", "vulkan"));
+
+    static int backend(String name) {
+        return switch (name) {
+            case "vulkan" -> BGFX_RENDERER_TYPE_VULKAN;
+            case "d3d11" -> BGFX_RENDERER_TYPE_DIRECT3D11;
+            default -> throw new IllegalArgumentException("Unknown proof backend " + name);
+        };
+    }
+
     private static long camera = 1, sequence;
     private static int framesDuringUploads;
 
@@ -324,8 +340,7 @@ public final class WorldStreamNativeProof {
                                     180,
                                     true)
                             .get(20, TimeUnit.SECONDS);
-            try (var owner =
-                    new WorldStreamNativeOwner(SESSION, frames, BGFX_RENDERER_TYPE_VULKAN)) {
+            try (var owner = new WorldStreamNativeOwner(SESSION, frames, BACKEND)) {
                 upload(owner, first, reader, 0, false);
                 var active = new ArrayList<WorldStreamState.Lease>();
                 active.add(new WorldStreamState.Lease(0, 1, 1));
@@ -475,7 +490,9 @@ public final class WorldStreamNativeProof {
                                 && closingUpload.retainedInputBytes() == 0,
                         "Shutdown callback/input drain");
                 System.out.println(
-                        "WORLD_NATIVE_OWNER_PASS pid="
+                        "WORLD_NATIVE_OWNER_PASS backend="
+                                + System.getProperty("vimi.worldProof.backend", "vulkan")
+                                + " pid="
                                 + pid
                                 + " replacements=104 content="
                                 + content
@@ -491,9 +508,7 @@ public final class WorldStreamNativeProof {
         try (var nextFrames =
                         WorldFrameFileV2.create(
                                 directory.resolve("frames-successor"), nextNonce, SCOPE);
-                var successor =
-                        new WorldStreamNativeOwner(
-                                nextSession, nextFrames, BGFX_RENDERER_TYPE_VULKAN)) {
+                var successor = new WorldStreamNativeOwner(nextSession, nextFrames, BACKEND)) {
             require(successor.stats().dynamicBuffers() == 10, "Successor context resources");
         }
         // Exterior object culling on a further fresh context: draw counts and pixels, culled and

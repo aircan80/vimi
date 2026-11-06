@@ -1,6 +1,5 @@
 package com.vibeminer.rendering.bgfx;
 
-import static org.lwjgl.bgfx.BGFX.BGFX_RENDERER_TYPE_VULKAN;
 import static org.lwjgl.bgfx.BGFX.bgfx_get_stats;
 
 import java.nio.IntBuffer;
@@ -11,11 +10,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Actual Vulkan proof of CPU exterior object culling on the production native owner: one authored
- * terrain tile with the material proof's late objects (three camera-facing quads in placement 0,
- * then the tile filled to the placement cap behind the camera). With culling on, only placement 0
- * is drawn; with it off, every placement is. Both frames must have identical pixels, and the bgfx
- * draw counts must drop by the culled placements' submits. Authored data only.
+ * Actual GPU proof (Vulkan, or D3D11 on request; see WorldStreamNativeProof.BACKEND) of CPU
+ * exterior object culling on the production native owner: one authored terrain tile with the
+ * material proof's late objects (three camera-facing quads in placement 0, then the tile filled to
+ * the placement cap behind the camera). With culling on, only placement 0 is drawn; with it off,
+ * every placement is. Both frames must have identical pixels, and the bgfx draw counts must drop by
+ * the culled placements' submits. Authored data only.
  */
 final class WorldStreamObjectsCullProof {
     private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(321, -654);
@@ -57,7 +57,8 @@ final class WorldStreamObjectsCullProof {
         try (var frames = WorldFrameFileV2.create(mapping, NONCE, WorldStreamNativeProof.SCOPE);
                 var reader = WorldFrameFileV2.open(mapping, NONCE, WorldStreamNativeProof.SCOPE);
                 var owner =
-                        new WorldStreamNativeOwner(session, frames, BGFX_RENDERER_TYPE_VULKAN)) {
+                        new WorldStreamNativeOwner(
+                                session, frames, WorldStreamNativeProof.BACKEND)) {
             var upload = owner.begin(tile);
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
             while (!upload.finished()) {
@@ -126,8 +127,31 @@ final class WorldStreamObjectsCullProof {
             require(
                     (sky & 0xffffff) == 0x5b8db1 || (sky & 0xffffff) == 0xb18d5b,
                     "Sky top row " + Integer.toHexString(sky));
+            // MSAA resolve: the opaque quad's left edge falls at x = 400 - 0.9 / 5 * 640 = 284.8,
+            // so pixel 284 is partly covered. Single-sampled, its centre misses the quad and it
+            // is the gap's terrain pixel; resolved x4 it mixes terrain and quad red.
+            int samples = owner.stats().msaaSamples();
+            int row = HEIGHT / 2;
+            int edge = channel(a.get(row * WIDTH + 284), red16(middle));
+            int gap = channel(a.get(row * WIDTH + 278), red16(middle));
+            int inside = channel(a.get(row * WIDTH + 290), red16(middle));
+            if (samples == 4) {
+                require(
+                        edge > Math.min(gap, inside) + 8 && edge < Math.max(gap, inside) - 8,
+                        "Resolved MSAA edge " + gap + " " + edge + " " + inside);
+            } else {
+                require(samples == 1 && Math.abs(edge - gap) <= 1, "Single-sampled edge");
+            }
             System.out.println(
-                    "WORLD_OBJECT_CULL_PASS placements="
+                    "WORLD_OBJECT_CULL_PASS samples="
+                            + samples
+                            + " edgeRed="
+                            + gap
+                            + "/"
+                            + edge
+                            + "/"
+                            + inside
+                            + " placements="
                             + placements
                             + " culled="
                             + culled.culled()
@@ -143,6 +167,15 @@ final class WorldStreamObjectsCullProof {
                             + drawsAll);
             return new Result(drawsCulled, drawsAll, culled);
         }
+    }
+
+    /** The shift of the red channel, from a pixel known to be the opaque quad's red. */
+    private static int red16(int quad) {
+        return Math.abs((quad >>> 16 & 255) - 200) <= 1 ? 16 : 0;
+    }
+
+    private static int channel(int pixel, int shift) {
+        return pixel >>> shift & 255;
     }
 
     private record Drawn(int draws, IntBuffer pixels) {}

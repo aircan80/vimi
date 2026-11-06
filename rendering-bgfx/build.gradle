@@ -313,6 +313,8 @@ tasks.register('nativeGpuWorldStreamOwnerProof', JavaExec) {
     mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamNativeProof'
     timeout = java.time.Duration.ofMinutes(2)
     jvmArgs '--enable-native-access=ALL-UNNAMED'
+    // Vulkan by default; -PworldProofBackend=d3d11 runs the same proof on Direct3D 11.
+    systemProperty 'vimi.worldProof.backend', providers.gradleProperty('worldProofBackend').getOrElse('vulkan')
     args layout.buildDirectory.dir('native-world-stream-owner').get().asFile.absolutePath
 }
 
@@ -380,6 +382,7 @@ tasks.register('nativeGpuWorldStreamObjectsProof', JavaExec) {
     mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamObjectsMaterialProof'
     timeout = java.time.Duration.ofMinutes(1)
     jvmArgs '--enable-native-access=ALL-UNNAMED'
+    systemProperty 'vimi.worldProof.backend', providers.gradleProperty('worldProofBackend').getOrElse('vulkan')
     args layout.buildDirectory.dir('native-world-stream-objects').get().asFile.absolutePath
 }
 

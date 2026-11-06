@@ -94,10 +94,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private static final short INVALID = -1;
 
     /**
-     * Trilinear over the worker-built mip chain (issue #174); clamp keeps each tile from sampling
-     * the opposite edge of its own atlas.
+     * Anisotropic over the worker-built mip chain with linear mips (issues #174, #357; the owner
+     * resets with BGFX_RESET_MAXANISOTROPY); clamp keeps each tile from sampling the opposite edge
+     * of its own atlas.
      */
-    static final int SAMPLER_FLAGS = BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
+    static final int SAMPLER_FLAGS =
+            BGFX_SAMPLER_U_CLAMP
+                    | BGFX_SAMPLER_V_CLAMP
+                    | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIN_ANISOTROPIC
+                    | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MAG_ANISOTROPIC;
 
     record Ticket(long camera, long content, long policy, int width, int height) {}
 
@@ -1150,10 +1155,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             com.vibeminer.rendering.world.ObjectTextureMips.CUTOUT_REFERENCE;
 
     /**
-     * Object textures: trilinear (linear min, mag and mip, the zero flags) over each image's mip
-     * chain, with repeat addressing because model texture coordinates tile (issue #265).
+     * Object textures: anisotropic min and mag with linear mips over each image's mip chain (issues
+     * #265, #357), with repeat addressing because model texture coordinates tile.
      */
-    static final int OBJECT_SAMPLER_FLAGS = 0;
+    static final int OBJECT_SAMPLER_FLAGS =
+            org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIN_ANISOTROPIC
+                    | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MAG_ANISOTROPIC;
 
     /** Blend state: depth tested, no depth or alpha write, source-alpha over. */
     static final long BLENDED_STATE =
