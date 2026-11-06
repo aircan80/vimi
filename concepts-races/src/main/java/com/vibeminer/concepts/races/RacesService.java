@@ -540,6 +540,38 @@ public final class RacesService implements BuildRaces {
     }
 
     Data read(String name, int bound, Cancellation token, List<String> issues) {
+        return read(name, bound, token, issues, List.of());
+    }
+
+    /**
+     * One row by ID; null when the table records it as absent. A row the store cannot answer for
+     * now is unreadable, never a refusal.
+     */
+    Db2Types.Row row(Data data, long id, Cancellation token, List<String> issues) {
+        var result =
+                tables.get(
+                                TableTypes.Ref.forName(data.name),
+                                id,
+                                TableTypes.Priority.INTERACTIVE,
+                                token)
+                        .join();
+        if (result.outcome() == TableTypes.RowOutcome.FOUND && result.row() != null) {
+            return result.row().row();
+        }
+        if (result.outcome() == TableTypes.RowOutcome.ABSENT) {
+            issue(issues, data.name + " #" + id + " is absent.");
+            return null;
+        }
+        throw new Unreadable(data.name + " #" + id + " is " + result.outcome());
+    }
+
+    /** As {@link #read(String, int, Cancellation, List)}, over only the rows the filters keep. */
+    Data read(
+            String name,
+            int bound,
+            Cancellation token,
+            List<String> issues,
+            List<TableTypes.Filter> filters) {
         Data data = schema(name, token, issues);
         var rows = new ArrayList<Db2Types.Row>();
         long after = -1;
@@ -552,7 +584,7 @@ public final class RacesService implements BuildRaces {
                                             TableTypes.Ref.forName(name),
                                             after,
                                             256,
-                                            List.of(),
+                                            filters,
                                             identity),
                                     TableTypes.Priority.INTERACTIVE,
                                     token)
