@@ -452,16 +452,63 @@ class WorldTextureFormatsTest {
         assertEquals(
                 WorldTextureFormats.ChunkIssue.MASK_ENCODING,
                 decode(source, ByteBuffer.allocate(4096)).issue());
-        // Compressed maps decode to 8-bit in either layout.
+        // Without big alpha the 0x200 bit means nothing: 2048 raw 4-bit bytes are read, and an
+        // RLE stream is not decoded.
+        byte[] flagged = smallChunk(new byte[2048]);
+        Arrays.fill(flagged, flagged.length - 2048, flagged.length, (byte) 0x21);
+        bytes(flagged).putInt(8 + 16 + 4, 0x300);
+        try (var data =
+                WorldTextureFormats.read(
+                        texture(flagged),
+                        WorldTextureFormats.AlphaFormat.SMALL_4BIT,
+                        () -> false)) {
+            assertTrue(data.chunks().getFirst().layers().get(1).compressed());
+            var target = ByteBuffer.allocate(4096);
+            assertTrue(
+                    data.decodeAlphas(
+                                    0,
+                                    WorldTextureFormats.DO_NOT_FIX_ALPHA_MAP,
+                                    target,
+                                    () -> false)
+                            .admitted());
+            assertEquals(17, target.get(0));
+            assertEquals(34, target.get(1));
+        }
         try (var data =
                 WorldTextureFormats.read(
                         texture(chunk(1, false)),
                         WorldTextureFormats.AlphaFormat.SMALL_4BIT,
                         () -> false)) {
-            var target = ByteBuffer.allocate(4096);
-            assertTrue(data.decodeAlphas(0, 0, target, () -> false).admitted());
-            assertEquals(1, target.get(4095));
+            assertEquals(
+                    WorldTextureFormats.ChunkIssue.MASK_ENCODING,
+                    data.decodeAlphas(0, 0, ByteBuffer.allocate(4096), () -> false).issue());
         }
+        // In an 8-bit layout the same bit selects RLE.
+        var rle = ByteBuffer.allocate(4096);
+        assertTrue(decode(texture(chunk(1, false)), rle).admitted());
+        assertEquals(1, rle.get(4095));
+    }
+
+    @Test
+    void loneBaseLayerIgnoresMcalBytesAndOverrunningUnknownChunksAreRefused() {
+        byte[] lone = join(part("MCLY", ints(0, 0, 0, 0)), part("MCAL", new byte[4096]));
+        try (var data = WorldTextureFormats.read(texture(lone), () -> false)) {
+            assertEquals(WorldTextureFormats.ChunkIssue.NONE, data.chunks().getFirst().issue());
+            var target = ByteBuffer.allocate(0);
+            var result = data.decodeAlphas(0, target, () -> false);
+            assertTrue(result.admitted());
+            assertEquals(0, result.maskCount());
+        }
+        byte[] good = texture(chunk(1, false));
+        // An unknown chunk whose declared size runs past the end is still a bounds failure.
+        byte[] overrun = join(good, ints(0x5a5a5a5a, 64), new byte[8]);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldTextureFormats.read(overrun, () -> false));
+        byte[] negative = join(good, ints(0x5a5a5a5a, -1));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldTextureFormats.read(negative, () -> false));
     }
 
     @Test

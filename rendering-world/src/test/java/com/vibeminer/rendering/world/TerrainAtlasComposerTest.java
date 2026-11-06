@@ -82,6 +82,63 @@ class TerrainAtlasComposerTest {
     }
 
     private static TerrainGrid grid(byte[] firstColors, boolean holes, boolean reverseX) {
+        return grid(firstColors, holes, reverseX, 0);
+    }
+
+    /** One 4-bit overlay per chunk whose last column is 15 and every other column 0. */
+    private static WorldTextureFormats.TextureData smallTextures() {
+        var out = new ByteArrayOutputStream();
+        out.writeBytes(part("MVER", ints(18)));
+        out.writeBytes(part("MDID", ints(1, 2)));
+        byte[] packed = new byte[2048];
+        for (int row = 0; row < 64; row++) {
+            packed[row * 32 + 31] = (byte) 0xf0;
+        }
+        for (int ordinal = 0; ordinal < 256; ordinal++) {
+            var chunk = new ByteArrayOutputStream();
+            chunk.writeBytes(part("MCLY", ints(0, 0, 0, 0, 1, 0x100, 0, 0)));
+            chunk.writeBytes(part("MCAL", packed));
+            out.writeBytes(part("MCNK", chunk.toByteArray()));
+        }
+        return WorldTextureFormats.read(
+                out.toByteArray(), WorldTextureFormats.AlphaFormat.SMALL_4BIT, () -> false);
+    }
+
+    @Test
+    void rootChunkFlagsReachTheFourBitEdgeFix() {
+        var mips = Map.of(1L, mip(1, 255, 0, 0), 2L, mip(2, 0, 255, 0));
+        try (var textures = smallTextures()) {
+            // Without 0x8000 the last column repeats column 62 (0): pure base.
+            var fixed =
+                    TerrainAtlasComposer.compose(
+                                    TILE,
+                                    grid(new byte[0], false, false, 0),
+                                    textures,
+                                    mips,
+                                    () -> false)
+                            .atlas();
+            rgb(fixed, 31, 0, 255, 0, 0);
+            // With 0x8000 the stored 15 (255) is kept: the 2x2 average is 128.
+            var exact =
+                    TerrainAtlasComposer.compose(
+                                    TILE,
+                                    grid(
+                                            new byte[0],
+                                            false,
+                                            false,
+                                            WorldTextureFormats.DO_NOT_FIX_ALPHA_MAP),
+                                    textures,
+                                    mips,
+                                    () -> false)
+                            .atlas();
+            rgb(exact, 31, 0, 127, 128, 0);
+            rgb(exact, 30, 0, 255, 0, 0);
+            rgb(fixed, 30, 0, 255, 0, 0);
+        }
+    }
+
+    private static TerrainGrid grid(
+            byte[] firstColors, boolean holes, boolean reverseX, long chunkFlags) {
         var chunks = new ArrayList<TerrainGrid.Chunk>();
         for (int ordinal = 0; ordinal < 256; ordinal++) {
             int x = reverseX ? 15 - ordinal % 16 : ordinal % 16, y = ordinal / 16;
@@ -95,7 +152,7 @@ class TerrainAtlasComposerTest {
                             ordinal,
                             x,
                             y,
-                            0,
+                            chunkFlags,
                             (float) (999000 - y * WorldFormats.TILE_SIZE / 16),
                             (float) (-999000 - x * WorldFormats.TILE_SIZE / 16),
                             12,

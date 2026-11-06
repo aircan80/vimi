@@ -87,6 +87,7 @@ public final class WorldTextureFormats {
             return (flags & OVERBRIGHT) != 0;
         }
 
+        /** The layer's 0x200 bit; it means RLE only in an 8-bit alpha layout. */
         public boolean compressed() {
             return (flags & ALPHA_COMPRESSED) != 0;
         }
@@ -219,9 +220,12 @@ public final class WorldTextureFormats {
                             .sum();
         }
 
-        /** Decodes as if the root MCNK had {@link #DO_NOT_FIX_ALPHA_MAP} set. */
+        /**
+         * Decodes as if the root MCNK flags were 0, the common case: a 4-bit map's last row and
+         * column are fixed. Pass the real flags when they are known.
+         */
         public AlphaResult decodeAlphas(int ordinal, ByteBuffer target, BooleanSupplier canceled) {
-            return decodeAlphas(ordinal, DO_NOT_FIX_ALPHA_MAP, target, canceled);
+            return decodeAlphas(ordinal, 0, target, canceled);
         }
 
         /**
@@ -261,7 +265,9 @@ public final class WorldTextureFormats {
                                         + (int) row.layers().get(layer + 1).alphaOffset()
                                 : chunk.alpha().end();
                 boolean valid;
-                if (entry.compressed()) {
+                // Compression applies only to 8-bit maps; a 4-bit layout is always 2048 raw
+                // bytes, whatever the layer's 0x200 bit says.
+                if (format == AlphaFormat.BIG_8BIT && entry.compressed()) {
                     valid = rle(source, at, end, target, canceled);
                 } else if (format == AlphaFormat.BIG_8BIT) {
                     valid = end - at == 4096;
@@ -446,9 +452,7 @@ public final class WorldTextureFormats {
                     issue = ChunkIssue.MASK_INTERVAL;
                 }
             }
-            if (entries.size() == 1 && alpha.length() != 0) {
-                issue = ChunkIssue.MASK_INTERVAL;
-            }
+            // A lone base layer has no masks; any MCAL bytes there are ignored, as the client does.
         }
         return new ChunkSlice(new ChunkTexture(ordinal, entries, issue), alpha);
     }
