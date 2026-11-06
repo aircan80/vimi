@@ -1769,14 +1769,23 @@ class WorldExteriorObjectsTest {
      * holds (0, 1, 2) and (0, 2, 3), section 1 holds (1, 3, 2). Local 3 is the billboarded vertex.
      */
     private static byte[] twoSectionSkin() {
+        return twoSectionSkin(false);
+    }
+
+    /**
+     * As {@link #twoSectionSkin()}; with {@code unsupportedBatch} a third batch over section 0
+     * records no texture (texture count 0), which the profile refuses as MODEL_BATCH_UNSUPPORTED.
+     */
+    private static byte[] twoSectionSkin(boolean unsupportedBatch) {
+        int batches = unsupportedBatch ? 3 : 2;
         int[] indices = {0, 1, 2, 0, 2, 3, 1, 3, 2};
         int[][] sections = {{0, 6}, {6, 3}};
         int vertices = 0x38, triangles = vertices + 8, properties = triangles + 2 * indices.length;
-        int sectionAt = properties + 16, batchAt = sectionAt + 48 * 2, end = batchAt + 24 * 2;
+        int sectionAt = properties + 16, batchAt = sectionAt + 48 * 2, end = batchAt + 24 * batches;
         var b = buffer(end);
         b.put(new byte[] {'S', 'K', 'I', 'N'});
         b.putInt(4).putInt(vertices).putInt(indices.length).putInt(triangles);
-        b.putInt(4).putInt(properties).putInt(2).putInt(sectionAt).putInt(2).putInt(batchAt);
+        b.putInt(4).putInt(properties).putInt(2).putInt(sectionAt).putInt(batches).putInt(batchAt);
         b.position(vertices);
         b.putShort((short) 2).putShort((short) 0).putShort((short) 1).putShort((short) 3);
         for (int i : indices) {
@@ -1796,6 +1805,9 @@ class WorldExteriorObjectsTest {
             b.putShort(at + 4, (short) s).putShort(at + 6, (short) s).putShort(at + 8, (short) -1);
             b.putShort(at + 14, (short) 1);
         }
+        if (unsupportedBatch) {
+            b.putShort(batchAt + 48 + 8, (short) -1); // section 0, no colour, texture count 0
+        }
         return b.array();
     }
 
@@ -1811,6 +1823,8 @@ class WorldExteriorObjectsTest {
                                 WorldExteriorObjects.Count.MODEL_DRAWN, 1,
                                 WorldExteriorObjects.Count.MODEL_BATCH_DRAWN, 1,
                                 WorldExteriorObjects.Count.MODEL_BATCH_BILLBOARD, 1,
+                                WorldExteriorObjects.Count.MODEL_BATCH_TRIMMED, 1,
+                                WorldExteriorObjects.Count.MODEL_TRIANGLE_BILLBOARD, 2,
                                 WorldExteriorObjects.Count.MODEL_IMAGE_DECODED, 1),
                         counts(set));
                 var mesh = set.models().getFirst().meshes().getFirst();
@@ -1846,11 +1860,32 @@ class WorldExteriorObjectsTest {
                     assertEquals(
                             Map.of(
                                     WorldExteriorObjects.Count.DOODAD_FAILED_MODEL, 1,
-                                    WorldExteriorObjects.Count.MODEL_UNSUPPORTED, 1),
+                                    WorldExteriorObjects.Count.MODEL_ALL_BILLBOARD, 1,
+                                    WorldExteriorObjects.Count.MODEL_BATCH_BILLBOARD, 2,
+                                    WorldExteriorObjects.Count.MODEL_TRIANGLE_BILLBOARD, 3),
                             counts(set),
                             "flags 0x" + Long.toHexString(flags));
                     assertTrue(set.models().isEmpty());
                 }
+            }
+        }
+    }
+
+    @Test
+    void anAllBillboardModelWithAnUnsupportedBatchKeepsBothBatchCounts() {
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, billboardModel(0x8, 0));
+            f.files.sources.put(SKIN, twoSectionSkin(true));
+            try (var set = run(f, obj0(List.of(), List.of(Mddf.of(MODEL, 1, 0x40))))) {
+                assertEquals(
+                        Map.of(
+                                WorldExteriorObjects.Count.DOODAD_FAILED_MODEL, 1,
+                                WorldExteriorObjects.Count.MODEL_ALL_BILLBOARD, 1,
+                                WorldExteriorObjects.Count.MODEL_BATCH_BILLBOARD, 2,
+                                WorldExteriorObjects.Count.MODEL_BATCH_UNSUPPORTED, 1,
+                                WorldExteriorObjects.Count.MODEL_TRIANGLE_BILLBOARD, 3),
+                        counts(set));
+                assertTrue(set.models().isEmpty());
             }
         }
     }
