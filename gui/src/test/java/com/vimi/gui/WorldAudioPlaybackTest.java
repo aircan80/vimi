@@ -588,6 +588,161 @@ public final class WorldAudioPlaybackTest {
             throw new AssertionError("Looped full-volume peak " + peaks[passes - 1]);
     }
 
+
+    /** Authored mono stream at a given rate. */
+    private static final class RatePcm extends FakePcm {
+        final int rate;
+
+        RatePcm(int rate, long frames) {
+            super(frames);
+            this.rate = rate;
+        }
+
+        @Override public int sampleRate() { return rate; }
+    }
+
+    private static WorldAreaAudio.Track weighted(WorldAreaAudio.Kind kind, long kit,
+            List<Long> files, List<Integer> weights, double volume, int silence) {
+        return new WorldAreaAudio.Track(kind, 10, "Authored zone", 5, kit, files, weights, volume,
+                silence, silence);
+    }
+
+    /**
+     * Files are picked by recorded weight (a zero weight never plays) and the recorded kit
+     * volume scales the full-volume amplitude: 0.25 of 0x4000 is 0x1000.
+     */
+    private static void recordedWeightsPickFilesAndKitVolumeScalesGain() throws Exception {
+        var device = new Device();
+        var requested = new ConcurrentLinkedQueue<Long>();
+        var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        WorldAudioPlayback.Source counted = (id, token) -> {
+            requested.add(id);
+            return FILES.file(id, token);
+        };
+        var playback = new WorldAudioPlayback(format -> device.line(),
+                (bytes, canceled) -> new FakePcm(8000 * 2), statuses::add);
+        playback.music.volume(1);
+        playback.music.track(weighted(WorldAreaAudio.Kind.MUSIC, 100, List.of(1L, 2L, 3L),
+                List.of(0, 4, 0), 0.25, 0), counted);
+        playback.music.enabled(true);
+        await(() -> requested.size() >= 3, "music did not repeat");
+        await(() -> statuses.stream().filter(WorldAudioPlayback.Status::playing).count() >= 2,
+                "music did not play twice");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        if (!requested.stream().allMatch(id -> id == 2L))
+            throw new AssertionError("Only the weighted file may play: " + requested);
+        int max = device.peaks.stream().mapToInt(Integer::intValue).max().orElse(0);
+        if (max != 0x1000) throw new AssertionError("Kit volume peak " + max);
+    }
+
+    /**
+     * An ambience kit of several files reopens a file per loop. Each reopen reports "Loading"
+     * and must report "Playing" again, or the status stays on "Loading" while audio plays.
+     */
+    private static void ambienceReopenReportsPlayingAgain() throws Exception {
+        var opens = new AtomicInteger();
+        var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        var playback = new WorldAudioPlayback(format -> new Device().line(), (bytes, canceled) -> {
+            opens.incrementAndGet();
+            return new FakePcm(400);
+        }, statuses::add);
+        playback.ambience.track(weighted(WorldAreaAudio.Kind.AMBIENCE, 100, List.of(1L, 2L),
+                List.of(1, 1), 1, 0), FILES);
+        playback.ambience.enabled(true);
+        await(() -> opens.get() >= 4, "ambience did not reopen its files");
+        playback.ambience.enabled(false);
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        var seen = statuses.toArray(WorldAudioPlayback.Status[]::new);
+        int loadings = 0;
+        for (int i = 0; i < seen.length; i++) {
+            if (!seen[i].message().startsWith("Loading")) continue;
+            loadings++;
+            boolean last = java.util.Arrays.stream(seen, i + 1, seen.length)
+                    .noneMatch(s -> s.message().startsWith("Loading"));
+            if (last) continue; // the final load may be the one disabled
+            if (i + 1 >= seen.length || !seen[i + 1].playing())
+                throw new AssertionError("Loading was not followed by playing: "
+                        + java.util.Arrays.toString(seen));
+        }
+        if (loadings < 4) throw new AssertionError("Expected reopen loads: " + loadings);
+    }
+
+    /**
+     * A mixed-format ambience kit switches lines on a format change and keeps its gain, instead
+     * of ending the track and fading in from silence on every loop.
+     */
+    private static void mixedFormatAmbienceSwitchesLinesWithoutRestarting() throws Exception {
+        var devices = new ConcurrentLinkedQueue<Device>();
+        var formats = new ConcurrentLinkedQueue<javax.sound.sampled.AudioFormat>();
+        var decodes = new AtomicInteger();
+        var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        var playback = new WorldAudioPlayback(format -> {
+            var device = new Device();
+            devices.add(device);
+            formats.add(format);
+            return device.line();
+        }, (bytes, canceled) -> {
+            // The first file outlasts the fade-in; later files alternate rates.
+            int n = decodes.incrementAndGet();
+            return n == 1 ? new RatePcm(8000, 8000 * 2)
+                    : new RatePcm(n % 2 == 0 ? 16000 : 8000, 2000);
+        }, statuses::add);
+        playback.ambience.volume(1);
+        playback.ambience.track(weighted(WorldAreaAudio.Kind.AMBIENCE, 100, List.of(1L, 2L),
+                List.of(1, 1), 1, 0), FILES);
+        playback.ambience.enabled(true);
+        await(() -> decodes.get() >= 4 && devices.size() >= 3, "mixed formats did not loop");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        var lines = devices.toArray(Device[]::new);
+        var opened = formats.toArray(javax.sound.sampled.AudioFormat[]::new);
+        if (opened[0].getSampleRate() != 8000 || opened[1].getSampleRate() != 16000)
+            throw new AssertionError("Lines must follow the decoded formats");
+        for (int i = 1; i < lines.length; i++) {
+            Integer first = lines[i].peaks.peek();
+            if (first != null && first < 16000)
+                throw new AssertionError("Line " + i + " restarted the fade-in: " + first);
+        }
+        if (lines[0].closedLines.get() != 1)
+            throw new AssertionError("The replaced line was not closed");
+        if (statuses.stream().anyMatch(s -> !s.playing() && !s.message().startsWith("Loading")))
+            throw new AssertionError("A format change must not end the track: " + statuses);
+    }
+
+    /** A full source queue is retried with backoff instead of showing the file unavailable. */
+    private static void busySourceIsRetriedNotUnavailable() throws Exception {
+        var attempts = new AtomicInteger();
+        var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        WorldAudioPlayback.Source busy = (id, token) -> attempts.incrementAndGet() <= 3
+                ? CompletableFuture.failedFuture(new WorldAreaAudio.QueueFull(null))
+                : FILES.file(id, token);
+        var playback = new WorldAudioPlayback(format -> new Device().line(),
+                (bytes, canceled) -> new FakePcm(Long.MAX_VALUE), statuses::add);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), busy);
+        playback.music.enabled(true);
+        await(() -> statuses.stream().anyMatch(WorldAudioPlayback.Status::playing),
+                "busy source was not retried");
+        if (attempts.get() != 4) throw new AssertionError("Attempts " + attempts.get());
+        if (statuses.stream().anyMatch(s -> s.message().contains("unavailable")))
+            throw new AssertionError("A full queue was reported unavailable: " + statuses);
+        // A disabled channel stops retrying a source that stays busy.
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        var stuck = new AtomicInteger();
+        var waiting = new WorldAudioPlayback(format -> new Device().line(),
+                (bytes, canceled) -> new FakePcm(400), statuses::add);
+        waiting.music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), (id, token) -> {
+            stuck.incrementAndGet();
+            return CompletableFuture.failedFuture(new WorldAreaAudio.QueueFull(null));
+        });
+        waiting.music.enabled(true);
+        await(() -> stuck.get() >= 2, "busy source was not retried");
+        waiting.music.enabled(false);
+        Thread.sleep(50);
+        int after = stuck.get();
+        Thread.sleep(WorldAudioPlayback.BUSY_RETRY_MAX_MILLIS + 200);
+        if (stuck.get() != after) throw new AssertionError("Disabled channel kept retrying");
+        waiting.closeAsync().get(10, TimeUnit.SECONDS);
+    }
+
     public static void main(String[] args) throws Exception {
         probeMatchesWindowsLinuxAndMonoMixerFormats();
         downmixAveragesStereoFrames();
@@ -600,8 +755,13 @@ public final class WorldAudioPlaybackTest {
         missingDeviceIsReportedBeforeAnyFileOrDecoder();
         deadLineAndStreamFailuresStopAmbienceLooping();
         statusTextNamesNoLocalPaths();
+        recordedWeightsPickFilesAndKitVolumeScalesGain();
+        ambienceReopenReportsPlayingAgain();
+        mixedFormatAmbienceSwitchesLinesWithoutRestarting();
+        busySourceIsRetriedNotUnavailable();
         System.out.println("World audio playback: fades, kit continuity, ambience loops,"
                 + " recorded silence, mute, missing sources, missing device, dead lines,"
-                + " path-free status, mono downmix and owned close passed");
+                + " path-free status, mono downmix, recorded weights and kit volume, reopen status,"
+                + " mixed-format ambience, busy-source retry and owned close passed");
     }
 }
