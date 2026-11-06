@@ -78,11 +78,15 @@ public final class FileReadLatencyProbe {
             var map =
                     catalog.maps().stream().filter(m -> m.id() == 0).findFirst().orElseThrow();
             var tiles = world.inventory(map, Cancellation.NONE).get(5, TimeUnit.MINUTES).world().tiles();
-            int cx = Integer.getInteger("probe.x", 31), cy = Integer.getInteger("probe.y", 49);
+            int cx = Integer.getInteger("probe.x", 49), cy = Integer.getInteger("probe.y", 31);
             var tileIds = new LinkedHashSet<Long>();
             var modelIds = new LinkedHashSet<Long>();
+            boolean direct = tiles.stream().anyMatch(t -> t.x() == cx && t.y() == cy);
+            System.out.printf(Locale.ROOT, "PROBE %d tiles on map 0; centre %s%n", tiles.size(),
+                    direct ? "as given" : "swapped");
             for (var tile : tiles) {
-                if (Math.abs(tile.x() - cx) > 1 || Math.abs(tile.y() - cy) > 1) continue;
+                int tx = direct ? tile.x() : tile.y(), ty = direct ? tile.y() : tile.x();
+                if (Math.abs(tx - cx) > 1 || Math.abs(ty - cy) > 1) continue;
                 for (long id : new long[] {tile.rootId(), tile.obj0Id(), tile.tex0Id()}) {
                     if (id > 0) tileIds.add(id);
                 }
@@ -104,6 +108,7 @@ public final class FileReadLatencyProbe {
             if (ids.size() > limit) ids = new ArrayList<>(ids.subList(0, limit));
             System.out.printf(Locale.ROOT, "PROBE %d tile files, %d models; reading %d%n",
                     tileIds.size(), modelIds.size(), ids.size());
+            if (ids.isEmpty()) throw new IllegalStateException("No files around the centre tile");
             ReadTimings.enabled = true;
             pass("cold-seq", files, ids, 1);
             pass("warm-seq", files, ids, 1);
