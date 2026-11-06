@@ -316,6 +316,28 @@ tasks.register('nativeGpuWorldStreamOwnerProof', JavaExec) {
     args layout.buildDirectory.dir('native-world-stream-owner').get().asFile.absolutePath
 }
 
+tasks.register('nativeGpuWorldStreamObjectsBudgetProof', JavaExec) {
+    group = 'verification'
+    description = 'Proves the World objects GPU budget refuses, reserves and releases per slot.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamObjectsBudgetProof'
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-objects-budget').get().asFile.absolutePath
+}
+
+tasks.register('nativeGpuWorldStreamNeighborhoodProof', JavaExec) {
+    group = 'verification'
+    description = 'Times camera frames with 9 and 25 maximum World residents (5 x 5 neighborhood).'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamNeighborhoodNativeProof'
+    timeout = java.time.Duration.ofMinutes(3)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-neighborhood').get().asFile.absolutePath
+}
+
 tasks.register('nativeGpuWorldStreamSessionProof', JavaExec) {
     group = 'verification'
     description = 'Exercises the isolated authored World v2 actor and typed child protocol.'
