@@ -227,7 +227,10 @@ public final class WorldNavigationUiTest {
                 viewport.resize(viewport.getWidth()+17,viewport.getHeight()+11);
                 invoke(view,"requestFrame");
                 require(!view.lookup("#world-minimap").isVisible(),"Retired source cannot reveal minimap after resize");
-                require(((javafx.scene.control.Label)get(view,"currentArea")).getText().equals("Terrain area unavailable"),"Retired source cannot retain current-area name");
+                require(((javafx.scene.control.Label)get(view,"currentArea")).getText().equals("Terrain area unavailable")
+                                && ((javafx.scene.control.Label)view.lookup("#world-zone-name")).getText().isEmpty()
+                                && !view.lookup("#world-zone-text").isVisible(),
+                        "Retired source cannot retain current-area name, on the area line or the zone line");
                 require(fixture.minimapCalls.get()==before,"Retired source cannot request artwork after resize");
                 showInventoryEndsFullscreen(view);
                 await(fixture,RACE_CHECKED::get,() -> DONE.complete(null));
@@ -448,8 +451,10 @@ public final class WorldNavigationUiTest {
         require(pill.getTooltip().getText().equals(((javafx.scene.control.Label)get(view,"position")).getText())
                         && !pill.getTooltip().getText().isBlank(),
                 "The pill's tooltip is the full position line: "+pill.getTooltip().getText());
+        // The copy goes through the view's hook, so the test never needs the system clipboard
+        // (unavailable on a locked desktop); the system clipboard itself is an owner check.
         var copied=new java.util.concurrent.atomic.AtomicReference<String>();
-        var clipboard=javafx.scene.input.Clipboard.getSystemClipboard();
+        view.coordinatesCopy(copied::set);
         mouse(pill,javafx.scene.input.MouseEvent.MOUSE_PRESSED,4,4,javafx.scene.input.MouseButton.PRIMARY);
         require(!input(view).looking(),"A press on the pill is not mouse look");
         mouse(pill,javafx.scene.input.MouseEvent.MOUSE_RELEASED,4,4,javafx.scene.input.MouseButton.PRIMARY);
@@ -457,12 +462,12 @@ public final class WorldNavigationUiTest {
                 javafx.scene.input.MouseButton.PRIMARY,1,false,false,false,false,false,false,false,false,false,true,
                 new PickResult(pill,4,4)));
         var camera=(TerrainRenderer.Camera)get(view,"camera");
-        copied.set(clipboard.getString());
         require(String.format(java.util.Locale.ROOT,"%.1f %.1f %.1f",camera.x(),camera.y(),camera.z()).equals(copied.get()),
                 "A click copies x y z: "+copied.get());
         require(com.vibeminer.concepts.world.WorldBookmarks.parseCoordinates(copied.get()).isPresent(),
                 "The travel panel reads the copied coordinates back");
         require(view.getScene().getFocusOwner()==viewport,"Focus stays on the viewport after copying");
+        view.coordinatesCopy(WorldCoordinatesPill::systemClipboard);
         // HUD step 5: every control that was a row is on an Escape menu page; nothing is removed.
         var pages=java.util.Map.of(
                 "controls",new String[] {"#world-flight-speed","#world-smooth-motion","#world-walk-mode","#world-motion-status",
@@ -686,8 +691,10 @@ public final class WorldNavigationUiTest {
             // Twice, so the map panel and the hidden state end where they started.
             require(view.command(action) && view.command(action),"WorldView.command routes "+action);
         }
-        // MAP_PANEL, HIDE_HUD, DEV_OVERLAY and SCREENSHOT (no data folder here, so it only toasts).
-        require(commands==4,"The command actions are walked: "+commands);
+        // MAP_PANEL, HIDE_HUD, DEV_OVERLAY, INSPECT_PIN and SCREENSHOT (no data folder here, so it
+        // only toasts).
+        require(commands==5,"The command actions are walked: "+commands);
+        view.inspectCard().close();
         view.devOverlay().show(null);
     }
 
@@ -741,17 +748,40 @@ public final class WorldNavigationUiTest {
         var gpuStatus=(javafx.scene.control.Label)get(view,"gpuStatus");
         var render=(Button)view.lookup("#world-icon-render");
         require(icons.render()==WorldStatusIcons.render(((Node)get(view,"gpuActivity")).isVisible(),
-                        ((javafx.scene.control.CheckBox)get(view,"gpuEnabled")).isSelected(),gpuStatus.getText())
+                        ((javafx.scene.control.CheckBox)get(view,"gpuEnabled")).isSelected(),
+                        (WorldStatusIcons.Render)get(view,"renderHealth"))
                         && render.getTooltip().getText().equals(gpuStatus.getText().strip()),
                 "The render chip follows the GPU line: "+icons.render()+" · "+gpuStatus.getText());
         var textureStatus=(javafx.scene.control.Label)get(view,"textureStatus");
-        require(icons.texture()==WorldStatusIcons.texture(((Node)get(view,"textureActivity")).isVisible(),textureStatus.getText())
+        require(icons.texture()==WorldStatusIcons.texture(((Node)get(view,"textureActivity")).isVisible(),
+                        (WorldStatusIcons.Texture)get(view,"textureHealth"))
                         && ((Button)view.lookup("#world-icon-texture")).getTooltip().getText().equals(textureStatus.getText().strip()),
                 "The texture chip follows the texture line: "+icons.texture()+" · "+textureStatus.getText());
-        var menu=(WorldGameMenu)get(view,"menu");
+        // The chips read typed health, not the text: a stream detail full of "unavailable" and
+        // "failed on" words leaves them as they were.
+        var renderBefore=icons.render();
+        var textureBefore=icons.texture();
+        String gpuWas=gpuStatus.getText(), textureWas=textureStatus.getText();
+        String partial=WorldDevReportTest.DETAIL+"; water tables unavailable; building objects failed on 2";
+        gpuStatus.setText(partial);
+        textureStatus.setText(partial);
+        require(icons.render()==renderBefore && icons.texture()==textureBefore
+                        && icons.render()!=WorldStatusIcons.Render.FAILED && icons.texture()!=WorldStatusIcons.Texture.FAILED
+                        && render.getTooltip().getText().equals(partial),
+                "Detail text never turns a chip red: "+icons.render()+" / "+icons.texture());
+        gpuStatus.setText(gpuWas);
+        textureStatus.setText(textureWas);
+        // Details open where they live: render and texture on the developer overlay's pages, the
+        // mouse on the menu's Controls page.
+        var overlay=view.devOverlay();
         render.fire();
-        require(menu.shown() && menu.current()==WorldGameMenu.Page.DISPLAY,"The render chip opens the Display page");
-        menu.close();
+        require(overlay.isVisible() && overlay.page()==WorldDevReport.Page.RENDER
+                        && view.getScene().getFocusOwner()==viewport,
+                "The render chip opens the developer overlay's Render page; focus on the world");
+        ((Button)view.lookup("#world-icon-texture")).fire();
+        require(overlay.page()==WorldDevReport.Page.STREAM,"The texture chip opens the Stream page");
+        overlay.show(null);
+        var menu=(WorldGameMenu)get(view,"menu");
         ((Button)view.lookup("#world-icon-mouse")).fire();
         require(menu.current()==WorldGameMenu.Page.CONTROLS,"The mouse icon opens the Controls page");
         menu.close();

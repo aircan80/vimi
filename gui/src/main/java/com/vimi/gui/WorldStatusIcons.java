@@ -35,9 +35,15 @@ final class WorldStatusIcons {
     /** A sound channel: playing, switched off, or on with nothing recorded for this area. */
     enum Sound { ON, MUTED, SILENT }
 
-    enum Render { GPU, SOFTWARE, FAILED, BUSY }
+    /**
+     * GPU (white); PARTIAL, GPU with some wanted tiles missing (amber); SOFTWARE, a fallback
+     * (amber); FAILED, a real failure such as a failed stream, a stalled renderer or a failed upload
+     * (red); BUSY (spinner).
+     */
+    enum Render { GPU, PARTIAL, SOFTWARE, FAILED, BUSY }
 
-    enum Texture { READY, LOADING, FAILED }
+    /** READY (white); FALLBACK, height shading instead of textures (amber); FAILED (red). */
+    enum Texture { READY, LOADING, FALLBACK, FAILED }
 
     enum Time { CLOCK, DAY, NIGHT }
 
@@ -96,6 +102,8 @@ final class WorldStatusIcons {
     private Mode modeState = Mode.FLY;
     private Sound musicState = Sound.MUTED, ambienceState = Sound.MUTED;
     private Render renderState = Render.GPU;
+    // The tracking colours shown, so an unchanged list never rebuilds the dots.
+    private List<Color> trackingShown;
     private Texture textureState = Texture.READY;
     private Time timeState = Time.CLOCK;
     private boolean mouseUnavailable;
@@ -196,13 +204,15 @@ final class WorldStatusIcons {
     void render(Render state, String tip) {
         renderState = Objects.requireNonNull(state);
         render.setText(state == Render.SOFTWARE ? "CPU" : "GPU");
-        status(render, renderBusy, state == Render.BUSY, state == Render.SOFTWARE, state == Render.FAILED);
+        status(render, renderBusy, state == Render.BUSY,
+                state == Render.SOFTWARE || state == Render.PARTIAL, state == Render.FAILED);
         tip(render, tip);
     }
 
     void texture(Texture state, String tip) {
         textureState = Objects.requireNonNull(state);
-        status(texture, textureBusy, state == Texture.LOADING, false, state == Texture.FAILED);
+        status(texture, textureBusy, state == Texture.LOADING, state == Texture.FALLBACK,
+                state == Texture.FAILED);
         tip(texture, tip);
     }
 
@@ -213,8 +223,14 @@ final class WorldStatusIcons {
         tip(mouse, tip);
     }
 
-    /** One dot per active tracking layer, in the layer's marker colour; hidden when none. */
+    /**
+     * One dot per active tracking layer, in the layer's marker colour; hidden when none. The view
+     * calls this on every status refresh (each stream snapshot), so the dots are only rebuilt when
+     * the colours change.
+     */
     void tracking(List<Color> layers) {
+        if (layers.equals(trackingShown)) return;
+        trackingShown = List.copyOf(layers);
         dots.getChildren().setAll(layers.stream().map(color -> {
             var dot = new Circle(4, color);
             dot.setStroke(Color.rgb(12, 16, 14, .9));
@@ -225,24 +241,38 @@ final class WorldStatusIcons {
                 + " shown; click for the layer controls");
     }
 
-    /** Render chip state from the view's GPU controls; general, no per-map rule. */
-    static Render render(boolean busy, boolean gpuSelected, String status) {
+    /** The dots shown now; for tests. */
+    List<javafx.scene.Node> trackingDots() {
+        return dots.getChildren();
+    }
+
+    /**
+     * Render chip state from typed state, never from the status text: the view's status lines
+     * carry stream details that routinely mention unavailable tiles or failed objects while the
+     * view renders fine. {@code health} is what the view last recorded (failure, fallback, partial
+     * or fine); a failure wins over everything but a running job, then the software choice.
+     */
+    static Render render(boolean busy, boolean gpuSelected, Render health) {
         if (busy) return Render.BUSY;
-        var text = status == null ? "" : status.toLowerCase(Locale.ROOT);
-        // A software fallback ("unavailable; using software") is amber, not a failure.
-        if (!gpuSelected || text.contains("software")) return Render.SOFTWARE;
-        if (failed(text)) return Render.FAILED;
-        return Render.GPU;
+        if (health == Render.FAILED) return Render.FAILED;
+        if (!gpuSelected || health == Render.SOFTWARE) return Render.SOFTWARE;
+        return health == Render.PARTIAL ? Render.PARTIAL : Render.GPU;
     }
 
-    static Texture texture(boolean busy, String status) {
+    /** Texture chip state from the view's typed texture outcome, never from the text. */
+    static Texture texture(boolean busy, Texture health) {
         if (busy) return Texture.LOADING;
-        return failed(status == null ? "" : status.toLowerCase(Locale.ROOT)) ? Texture.FAILED : Texture.READY;
+        return health == null || health == Texture.LOADING ? Texture.READY : health;
     }
 
-    private static boolean failed(String text) {
-        return text.contains("fail") || text.contains("could not") || text.contains("unavailable")
-                || text.contains("not responding");
+    /** Stream render health from the typed snapshot: phase, stall alert and tile counts. */
+    static Render streamHealth(WorldStreamSourceController.Phase phase, boolean stalled, int prepared, int desired) {
+        if (phase == WorldStreamSourceController.Phase.FAILED || stalled) return Render.FAILED;
+        if (phase == WorldStreamSourceController.Phase.UNAVAILABLE) return Render.SOFTWARE;
+        // Settled with some wanted tiles not resident (for example missing tiles at a map edge).
+        if (phase == WorldStreamSourceController.Phase.READY && desired > 0 && prepared < desired)
+            return Render.PARTIAL;
+        return Render.GPU;
     }
 
     Mode mode() {

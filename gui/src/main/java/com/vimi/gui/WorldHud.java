@@ -60,6 +60,8 @@ final class WorldHud extends StackPane {
     private final VBox panel = new VBox(10);
     // The placed widgets (zone line, icon row, coordinates pill, banner): they hide with the HUD.
     private final StackPane widgets = new StackPane();
+    // Bottom-left stack in the widget layer: the inspect card above the status icon row.
+    private final VBox bottomLeft = new VBox(6);
     private final Runnable refocus;
     private final ReadOnlyBooleanWrapper hidden = new ReadOnlyBooleanWrapper(this, "hidden");
 
@@ -154,6 +156,17 @@ final class WorldHud extends StackPane {
         widgets.setId("world-hud-widgets");
         widgets.setPickOnBounds(false);
         widgets.visibleProperty().bind(hidden.not());
+        bottomLeft.setId("world-hud-bottom-left");
+        bottomLeft.setPickOnBounds(false);
+        bottomLeft.setFillWidth(false);
+        bottomLeft.setAlignment(Pos.BOTTOM_LEFT);
+        bottomLeft.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
+        StackPane.setAlignment(bottomLeft, Pos.BOTTOM_LEFT);
+        StackPane.setMargin(bottomLeft, new Insets(10));
+        widgets.getChildren().add(bottomLeft);
+        // The left column (and the map panel that fills it) ends above the bottom-left stack, so an
+        // open map panel never covers the icon row or the inspect card.
+        bottomLeft.heightProperty().addListener((o, was, now) -> columnAboveBottomLeft());
         // The left column stays on top of the placed widgets.
         getChildren().addAll(widgets, column);
     }
@@ -224,9 +237,26 @@ final class WorldHud extends StackPane {
         place(node, Pos.TOP_CENTER, new Insets(10, 220, 0, 220));
     }
 
-    /** Places {@code node} bottom-left (the status icon row). */
+    /** Places {@code node} bottom-left (the status icon row), under the inspect card's slot. */
     void bottomLeft(Node node) {
-        place(node, Pos.BOTTOM_LEFT, new Insets(10));
+        Objects.requireNonNull(node);
+        bottomLeft.getChildren().add(node);
+    }
+
+    /**
+     * Puts the inspect card above the status icon row, in the bottom-left stack. It hides with the
+     * HUD (the view also tells the card, which keeps its open state), and takes no room while it
+     * is closed.
+     */
+    void inspectCard(Node card) {
+        Objects.requireNonNull(card);
+        card.managedProperty().bind(card.visibleProperty());
+        bottomLeft.getChildren().add(0, card);
+    }
+
+    private void columnAboveBottomLeft() {
+        double below = bottomLeft.getHeight() > 0 ? bottomLeft.getHeight() + 6 : 0;
+        StackPane.setMargin(column, new Insets(10, 10, 10 + below, 10));
     }
 
     /** Places {@code node} bottom-right (the coordinates pill). */

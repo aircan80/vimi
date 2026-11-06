@@ -129,18 +129,44 @@ public final class WorldHudUiTest {
             require(pseudo(render, WorldStatusIcons.RED) && !amber(render), "Render failed: red");
             icons.render(WorldStatusIcons.Render.BUSY, "Waiting for previous World resources to retire…");
             require(spinning(render) && !pseudo(render, WorldStatusIcons.RED), "Render busy: spinning ring");
-            require(WorldStatusIcons.render(true, true, "") == WorldStatusIcons.Render.BUSY
-                            && WorldStatusIcons.render(false, false, "9 tiles") == WorldStatusIcons.Render.SOFTWARE
-                            && WorldStatusIcons.render(false, true, "GPU terrain unavailable; using software rendering.")
-                                    == WorldStatusIcons.Render.SOFTWARE
-                            && WorldStatusIcons.render(false, true, "GPU World frame upload failed; retry the viewer.")
-                                    == WorldStatusIcons.Render.FAILED
-                            && WorldStatusIcons.render(false, true, WorldView.STALL_HINT) == WorldStatusIcons.Render.FAILED
-                            && WorldStatusIcons.render(false, true, "World resources could not be confirmed retired (x)")
-                                    == WorldStatusIcons.Render.FAILED
-                            && WorldStatusIcons.render(false, true, "9 tiles: 9 textured · 40 surfaces")
-                                    == WorldStatusIcons.Render.GPU,
-                    "Render state from the GPU controls");
+            icons.render(WorldStatusIcons.Render.PARTIAL, WorldDevReportTest.DETAIL);
+            require(render.getText().equals("GPU") && amber(render) && !pseudo(render, WorldStatusIcons.RED),
+                    "Render partial (some wanted tiles missing): amber GPU, not red");
+            // Typed state, never the text: failure wins over software, software over partial.
+
+            require(WorldStatusIcons.render(true, true, WorldStatusIcons.Render.FAILED) == WorldStatusIcons.Render.BUSY
+                            && WorldStatusIcons.render(false, false, WorldStatusIcons.Render.GPU) == WorldStatusIcons.Render.SOFTWARE
+                            && WorldStatusIcons.render(false, false, WorldStatusIcons.Render.FAILED) == WorldStatusIcons.Render.FAILED
+                            && WorldStatusIcons.render(false, true, WorldStatusIcons.Render.SOFTWARE) == WorldStatusIcons.Render.SOFTWARE
+                            && WorldStatusIcons.render(false, true, WorldStatusIcons.Render.PARTIAL) == WorldStatusIcons.Render.PARTIAL
+                            && WorldStatusIcons.render(false, true, WorldStatusIcons.Render.GPU) == WorldStatusIcons.Render.GPU,
+                    "Render state from typed health");
+            var phase = WorldStreamSourceController.Phase.class.getEnumConstants();
+            for (var each : phase) {
+                var health = WorldStatusIcons.streamHealth(each, false, 9, 9);
+                require(health == (each == WorldStreamSourceController.Phase.FAILED ? WorldStatusIcons.Render.FAILED
+                                : each == WorldStreamSourceController.Phase.UNAVAILABLE ? WorldStatusIcons.Render.SOFTWARE
+                                : WorldStatusIcons.Render.GPU),
+                        "Stream phase " + each + " -> " + health);
+            }
+            require(WorldStatusIcons.streamHealth(WorldStreamSourceController.Phase.READY, true, 9, 9)
+                            == WorldStatusIcons.Render.FAILED,
+                    "A stall alert is a failure");
+            require(WorldStatusIcons.streamHealth(WorldStreamSourceController.Phase.READY, false, 8, 9)
+                            == WorldStatusIcons.Render.PARTIAL,
+                    "Settled with a wanted tile missing is partial (amber), not a failure");
+            // A healthy but partial stream: its detail names "1 unavailable (28_31: missing)", yet
+            // the chips stay white or amber, never red.
+            icons.render(WorldStatusIcons.render(false, true,
+                    WorldStatusIcons.streamHealth(WorldStreamSourceController.Phase.READY, false, 8, 9)),
+                    WorldDevReportTest.DETAIL);
+            require(!pseudo(render, WorldStatusIcons.RED) && render.getTooltip().getText().contains("1 unavailable"),
+                    "A partial stream's detail never turns the render chip red");
+            icons.render(WorldStatusIcons.render(false, true,
+                    WorldStatusIcons.streamHealth(WorldStreamSourceController.Phase.READY, false, 9, 9)),
+                    WorldDevReportTest.DETAIL + "; water tables unavailable; building objects failed on 2");
+            require(icons.render() == WorldStatusIcons.Render.GPU && !pseudo(render, WorldStatusIcons.RED) && !amber(render),
+                    "A complete stream whose detail mentions failed objects stays white");
             // Texture: ready, loading (ring), failed (red).
             var texture = button(row, "texture");
             icons.texture(WorldStatusIcons.Texture.READY, "Basic terrain textures · 256/256 regions");
@@ -151,11 +177,16 @@ public final class WorldHudUiTest {
             require(pseudo(texture, WorldStatusIcons.RED)
                             && texture.getTooltip().getText().equals("Terrain texture loading unavailable"),
                     "Texture failed: red");
-            require(WorldStatusIcons.texture(true, "") == WorldStatusIcons.Texture.LOADING
-                            && WorldStatusIcons.texture(false, "Terrain texture frame unavailable · previous preview retained")
-                                    == WorldStatusIcons.Texture.FAILED
-                            && WorldStatusIcons.texture(false, "Height shading") == WorldStatusIcons.Texture.READY,
-                    "Texture state from the texture line");
+            icons.texture(WorldStatusIcons.Texture.FALLBACK, "Terrain textures unavailable · height shading");
+            require(amber(texture) && !pseudo(texture, WorldStatusIcons.RED), "Texture fallback (height shading): amber");
+            require(WorldStatusIcons.texture(true, WorldStatusIcons.Texture.FAILED) == WorldStatusIcons.Texture.LOADING
+                            && WorldStatusIcons.texture(false, WorldStatusIcons.Texture.FAILED) == WorldStatusIcons.Texture.FAILED
+                            && WorldStatusIcons.texture(false, WorldStatusIcons.Texture.FALLBACK) == WorldStatusIcons.Texture.FALLBACK
+                            && WorldStatusIcons.texture(false, WorldStatusIcons.Texture.READY) == WorldStatusIcons.Texture.READY,
+                    "Texture state from the typed texture outcome");
+            icons.texture(WorldStatusIcons.texture(false, WorldStatusIcons.Texture.READY), WorldDevReportTest.DETAIL);
+            require(!pseudo(texture, WorldStatusIcons.RED) && !amber(texture),
+                    "A healthy stream's texture detail never turns the texture chip red");
             // Mouse: slashed when cursor capture is unavailable.
             var mouse = button(row, "mouse");
             icons.mouse(false, "Mouse look: hold a mouse button and move the mouse");
@@ -174,6 +205,13 @@ public final class WorldHudUiTest {
                                     .equals(javafx.scene.paint.Color.CORNFLOWERBLUE)
                             && tracking.getTooltip().getText().startsWith("2 tracking layers"),
                     "Two layers, two coloured dots");
+            var firstDot = icons.trackingDots().getFirst();
+            icons.tracking(List.of(javafx.scene.paint.Color.GOLD, javafx.scene.paint.Color.CORNFLOWERBLUE));
+            require(icons.trackingDots().getFirst() == firstDot, "The same colours never rebuild the dots");
+            icons.tracking(List.of(javafx.scene.paint.Color.GOLD));
+            require(icons.trackingDots().size() == 1 && icons.trackingDots().getFirst() != firstDot,
+                    "Changed colours rebuild them");
+            icons.tracking(List.of(javafx.scene.paint.Color.GOLD, javafx.scene.paint.Color.CORNFLOWERBLUE));
             // Clicks: each runs its action, then gives focus back to the viewport.
             icons.smooth(true);
             calls.clear();
@@ -290,13 +328,36 @@ public final class WorldHudUiTest {
                         && banner.getText().equals("Elwynn Forest") && animation.getStatus() == Animation.Status.RUNNING,
                 "A zone without a sub-area: one line, and a banner for the zone");
         animation.stop();
+        // A, unknown, A: an unknown area (tiles not loaded yet, a tab switch) keeps the last area,
+        // so coming back to it replays nothing and the line never blanks.
         zone.area(List.of());
-        require(!zone.line().isVisible() && animation.getStatus() == Animation.Status.STOPPED,
-                "An unknown area clears the line and plays nothing");
+        require(zone.line().isVisible() && text(zone, "#world-zone-name").equals("Elwynn Forest")
+                        && animation.getStatus() == Animation.Status.STOPPED,
+                "An unknown area keeps the last one on the line and plays nothing");
+        zone.area(List.of("Elwynn Forest"));
+        require(animation.getStatus() == Animation.Status.STOPPED, "A, unknown, A: no replay");
+        zone.reset();
+        require(!zone.line().isVisible(), "Only a reset clears the line");
         zone.leave().setVisible(true);
         require(zone.line().isVisible() && zone.leave().getText().equals("Leave"), "The leave chip keeps the line shown");
         zone.leave().fire();
         require(left.equals(List.of("leave", "focus")), "Leave runs the view's leave, then refocuses the world");
+        // Rapid changes: mid-hold, a new area keeps the banner up with the new name (no blink).
+        zone.reset();
+        zone.area(List.of("Elwynn Forest", "Goldshire"));
+        animation.pause();
+        animation.jumpTo(Duration.millis(1000));
+        zone.area(List.of("Elwynn Forest", "Northshire Valley"));
+        require(banner.getText().equals("Northshire Valley") && near(banner.getOpacity(), 1)
+                        && animation.getCurrentTime().equals(WorldZoneText.FADE_IN),
+                "Mid-hold the banner takes the new name at full opacity and holds again: " + banner.getOpacity());
+        animation.stop();
+        // Long names are capped like the area label.
+        zone.area(List.of("Z".repeat(300)));
+        require(text(zone, "#world-zone-name").length() == WorldZoneText.MAX_NAME + 1
+                        && text(zone, "#world-zone-name").endsWith("…"),
+                "Names are capped at " + WorldZoneText.MAX_NAME);
+        animation.stop();
         zone.area(List.of("Elwynn Forest"));
         zone.reset();
         require(!banner.isVisible() && animation.getStatus() == Animation.Status.STOPPED, "Reset stops the banner");
@@ -358,14 +419,23 @@ public final class WorldHudUiTest {
         var widgets = hud.lookup("#world-hud-widgets");
         require(hud.getChildren().indexOf(widgets) < hud.getChildren().indexOf(column),
                 "The left column stays above the placed widgets");
+        // The icon row sits in the bottom-left stack (under the inspect card's slot), inside the
+        // widget layer; the others are direct children of the layer.
+        var bottomLeft = hud.lookup("#world-hud-bottom-left");
+        require(icons.getParent() == bottomLeft && bottomLeft.getParent() == widgets, "The icon row is in the bottom-left stack");
         for (var node : List.of(zone, icons, pill, banner))
-            require(node.getParent() == widgets && node.isVisible() && widgets.isVisible(), "Placed and shown: " + node.getText());
+            require(isWithin(node, widgets) && node.isVisible() && widgets.isVisible(), "Placed and shown: " + node.getText());
         hud.hidden(true);
         for (var node : List.of(zone, icons, pill, banner))
-            require(!node.getParent().isVisible(), "Hidden with the HUD: " + node.getText());
+            require(isWithin(node, widgets) && !widgets.isVisible(), "Hidden with the HUD: " + node.getText());
         require(dev.getParent().isVisible() && hud.isVisible(), "The developer slot stays while hidden");
         hud.hidden(false);
         require(widgets.isVisible(), "Shown again with the HUD");
+    }
+
+    private static boolean isWithin(javafx.scene.Node node, javafx.scene.Node ancestor) {
+        for (var at = node; at != null; at = at.getParent()) if (at == ancestor) return true;
+        return false;
     }
 
     private static void click(javafx.scene.Node node) {

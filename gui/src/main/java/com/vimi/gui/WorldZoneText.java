@@ -17,8 +17,8 @@ import javafx.util.Duration;
 
 /**
  * Zone text for the World HUD. The top-centre line shows the recorded area and its sub-area and
- * updates at once. When the most specific area changes, a large banner fades in over the upper
- * third of the view, holds, and fades out, as game clients do on entering a zone. A "Leave" chip
+ * updates at once. When the most specific area changes, a large banner fades in a quarter of the
+ * way down the view, holds, and fades out, as game clients do on entering a zone. A "Leave" chip
  * sits next to the zone while an instance can be left. FX thread only.
  */
 final class WorldZoneText {
@@ -75,7 +75,7 @@ final class WorldZoneText {
         out.setToValue(0);
         bannerAnimation = new SequentialTransition(in, new PauseTransition(HOLD), out);
         bannerAnimation.setOnFinished(e -> banner.setVisible(false));
-        area(List.of());
+        clearLine();
     }
 
     /** The top-centre zone line (zone, leave chip and sub-area). */
@@ -83,7 +83,7 @@ final class WorldZoneText {
         return line;
     }
 
-    /** The large zone-change banner; the HUD centres it in the upper third. */
+    /** The large zone-change banner; the HUD centres it a quarter of the way down the view. */
     Label banner() {
         return banner;
     }
@@ -99,34 +99,59 @@ final class WorldZoneText {
 
     /**
      * The recorded area chain, outermost first (e.g. zone, then sub-area), or empty when the area
-     * is unknown. The line updates now; a new most specific area also plays the banner.
+     * is unknown. The line updates now; a new most specific area also plays the banner. An unknown
+     * area keeps the last known one, on the line and as the banner's memory: tiles not loaded yet
+     * or a tab switch report "unknown" for a moment, and coming back to the same area must not
+     * replay the banner. Only {@link #reset()} forgets it.
      */
     void area(List<String> chain) {
         var names = chain == null ? List.<String>of()
-                : chain.stream().filter(n -> n != null && !n.isBlank()).toList();
-        zone.setText(names.isEmpty() ? "" : names.getFirst());
+                : chain.stream().filter(n -> n != null && !n.isBlank()).map(WorldZoneText::cap).toList();
+        if (names.isEmpty()) return;
+        zone.setText(names.getFirst());
         subzone.setText(names.size() < 2 ? "" : names.getLast());
         subzone.setVisible(names.size() >= 2);
-        String specific = names.isEmpty() ? "" : names.getLast();
+        String specific = names.getLast();
         if (specific.equals(shown)) return;
         shown = specific;
-        if (specific.isEmpty()) return;
         banner.setText(specific);
         banner.setVisible(true);
+        // Already shown (holding or fading out): keep it up with the new name and hold again,
+        // rather than blinking back to 0; still fading in: just let it continue.
+        if (bannerAnimation.getStatus() != Animation.Status.STOPPED) {
+            if (bannerAnimation.getCurrentTime().greaterThanOrEqualTo(FADE_IN)) bannerAnimation.jumpTo(FADE_IN);
+            return;
+        }
         bannerAnimation.playFromStart();
     }
+
+    /** Names are capped as {@code WorldCurrentArea.Result.label()} caps them. */
+    static String cap(String name) {
+        return name.length() > MAX_NAME ? name.substring(0, MAX_NAME) + "…" : name;
+    }
+
+    static final int MAX_NAME = 256;
 
     /** The zone line's tooltip; the view binds it to its full "Terrain area: ..." text. */
     Tooltip tooltip() {
         return tooltip;
     }
 
-    /** Stops the banner, e.g. when the explorer closes; the next area plays it again. */
+    /**
+     * Stops the banner and forgets the area, e.g. when the explorer closes or the map changes; the
+     * next area plays the banner again.
+     */
     void reset() {
         bannerAnimation.stop();
         banner.setOpacity(0);
         banner.setVisible(false);
         shown = "";
-        area(List.of());
+        clearLine();
+    }
+
+    private void clearLine() {
+        zone.setText("");
+        subzone.setText("");
+        subzone.setVisible(false);
     }
 }

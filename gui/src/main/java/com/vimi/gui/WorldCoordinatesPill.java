@@ -23,11 +23,14 @@ final class WorldCoordinatesPill {
     private String coordinates;
 
     WorldCoordinatesPill(Runnable refocus) {
-        this(text -> {
-            var content = new ClipboardContent();
-            content.putString(text);
-            javafx.scene.input.Clipboard.getSystemClipboard().setContent(content);
-        }, refocus);
+        this(WorldCoordinatesPill::systemClipboard, refocus);
+    }
+
+    /** Puts {@code text} on the system clipboard; the pill's copy outside tests. */
+    static void systemClipboard(String text) {
+        var content = new ClipboardContent();
+        content.putString(text);
+        javafx.scene.input.Clipboard.getSystemClipboard().setContent(content);
     }
 
     /** {@code copy} receives the copied text (the system clipboard outside tests). */
