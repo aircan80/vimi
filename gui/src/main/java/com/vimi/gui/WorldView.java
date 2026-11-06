@@ -2559,13 +2559,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var creatureSource = WorldStreamGpuOwner.CREATURES ? creatures : null;
         long creatureMap = inventory.map().id();
         var detail = objectTextures.getValue();
+        // Dungeon and raid maps (Map.InstanceType 1 or 2) draw their WMO interiors too (#280).
+        boolean interiors = instanceInteriors(inventory.map());
         WorldStreamSourceBridge.ExteriorPreparer preparer = creatureSource == null
                 ? (source, scope, tile, cancellation) -> WorldStreamSourceBridge.prepareExterior(
-                        source, scope, tile, cancellation, null, detail)
+                        source, scope, tile, cancellation, null, detail, interiors)
                 : (source, scope, tile, cancellation) -> WorldStreamSourceBridge.prepareExterior(
                         source, scope, tile, cancellation,
                         (builder, owned, token) -> creatureSource.append(builder, creatureMap, owned, token),
-                        detail);
+                        detail, interiors);
         stallWatchdog.reset();
         streaming = new WorldStreamSourceController(request, scope -> {
             var owner = new WorldStreamGpuOwner(gpuService, scope, detail);
@@ -3124,6 +3126,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     // ---- Instances: recorded entrances and in-place zone-in (#259) ----------------------------
+
+    /** Dungeon (InstanceType 1) and raid (2) maps draw interior WMO groups (#280). */
+    static boolean instanceInteriors(WorldService.MapInfo map) {
+        return map != null && map.type() != null && (map.type() == 1 || map.type() == 2);
+    }
 
     /** A map that records one global world model and no terrain tiles (an interior map). */
     private static boolean globalOnly(WorldService.Inventory data) {
