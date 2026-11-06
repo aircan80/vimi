@@ -1281,7 +1281,22 @@ final class GpuPreviewService {
         command.add(frames.toAbsolutePath().toString());
         command.add("--parent-pid");
         command.add(Long.toString(ProcessHandle.current().pid()));
+        try {
+            command.addAll(backendArguments(WorldStreamGpuOwner.configuredBackend()));
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException(invalid.getMessage(), invalid);
+        }
         return new ProcessBuilder(command).start();
+    }
+
+    /**
+     * The inline child's {@code --backend} arguments for the {@code vimi.gpu.backend} override,
+     * named as the streaming child takes them; none for the platform default.
+     */
+    static List<String> backendArguments(com.vibeminer.rendering.bgfx.WorldStreamTransport.Backend backend) {
+        return backend == com.vibeminer.rendering.bgfx.WorldStreamTransport.Backend.DEFAULT
+                ? List.of()
+                : List.of("--backend", backend.name().toLowerCase(java.util.Locale.ROOT));
     }
 
     private static Process startGlobalChild(List<String> arguments) throws IOException {

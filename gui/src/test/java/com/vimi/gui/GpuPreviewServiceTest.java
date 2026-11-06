@@ -37,6 +37,17 @@ public final class GpuPreviewServiceTest {
         require(WorldStreamGpuOwner.backend("Vulkan").name().equals("VULKAN"), "Vulkan backend");
         require(WorldStreamGpuOwner.backend("dx11").name().equals("D3D11"), "D3D11 alias");
         require(backend.getEnumConstants().length == 4, "Backend override covers every backend");
+        require(GpuPreviewService.backendArguments(WorldStreamGpuOwner.backend(null)).isEmpty(),
+                "Inline child keeps the platform default without an override");
+        require(GpuPreviewService.backendArguments(WorldStreamGpuOwner.backend("Vulkan"))
+                        .equals(java.util.List.of("--backend", "vulkan")),
+                "Inline child takes the Vulkan override");
+        require(GpuPreviewService.backendArguments(WorldStreamGpuOwner.backend("dx11"))
+                        .equals(java.util.List.of("--backend", "d3d11")),
+                "Inline child takes the D3D11 alias by its child name");
+        require(GpuPreviewService.backendArguments(WorldStreamGpuOwner.backend("metal"))
+                        .equals(java.util.List.of("--backend", "metal")),
+                "Inline child takes the Metal override");
         try {
             WorldStreamGpuOwner.backend("opengl");
             throw new AssertionError("Unknown GPU backend override must be rejected");
