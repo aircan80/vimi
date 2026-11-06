@@ -502,26 +502,25 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     /**
-     * Places the system cursor with the JavaFX robot for mouse-look capture and reports where it
-     * actually is afterwards (the platform rounds to a physical pixel). Null when the robot is
-     * unavailable; the input then keeps that look relative.
+     * Places the system cursor with the JavaFX robot for mouse-look capture. The position is never
+     * read back: the input recognises the warp from the next mouse events. False when the robot is
+     * unavailable; the input then keeps looks relative.
      */
     private static WorldExplorerInput.Pointer robotPointer() {
         return new WorldExplorerInput.Pointer() {
             private javafx.scene.robot.Robot robot;
             private boolean unavailable;
 
-            @Override public double[] warp(double screenX, double screenY) {
-                if (unavailable) return null;
+            @Override public boolean warp(double screenX, double screenY) {
+                if (unavailable) return false;
                 try {
                     if (robot == null) robot = new javafx.scene.robot.Robot();
                     robot.mouseMove(screenX, screenY);
-                    var at = robot.getMousePosition();
-                    return new double[] {at.getX(), at.getY()};
+                    return true;
                 } catch (RuntimeException failed) {
                     unavailable = true;
                     WorldDiagnostics.warn("Mouse-look cursor capture is unavailable", failed);
-                    return null;
+                    return false;
                 }
             }
         };
@@ -949,9 +948,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         viewport.setOnMousePressed(
                 e -> {
                     viewport.requestFocus();
-                    var center = viewCenter();
-                    if (center != null)
-                        input.lookPressed(e.getButton(), e.getScreenX(), e.getScreenY(), center.getX(), center.getY());
+                    input.lookPressed(e.getButton(), e.getScreenX(), e.getScreenY());
                 });
         viewport.setOnMouseReleased(e -> input.lookReleased(e.getButton()));
         viewport.setOnMouseClicked(
@@ -959,11 +956,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     if (WorldExplorerInput.inspects(e.getButton(), e.isStillSincePress()))
                         inspect(e.getSceneX(), e.getSceneY());
                 });
-        // The centre is recomputed per move, so a window moved or resized mid-look re-centres there.
-        viewport.setOnMouseDragged(e -> {
-            var center = viewCenter();
-            if (center != null) input.lookMoved(e.getScreenX(), e.getScreenY(), center.getX(), center.getY());
-        });
+        // The view box is taken per move, so a window moved or resized mid-look warps to its centre.
+        viewport.setOnMouseDragged(e -> input.lookMoved(e.getScreenX(), e.getScreenY(), viewBox()));
         viewport.setOnScroll(e -> {
             input.scroll(e.getDeltaY(), e.isShiftDown());
             e.consume();
@@ -976,6 +970,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     public void handle(long now) {
                         if (!active || !explorer || instances.engaged()) {
                             // Inactive or switching instances: nothing is owed meanwhile.
+                            input.idle();
                             stallWatchdog.poll(now, false, false);
                             return;
                         }
@@ -1124,8 +1119,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         viewport.requestFocus();
     }
 
-    private javafx.geometry.Point2D viewCenter() {
-        return viewport.localToScreen(viewport.getWidth() / 2, viewport.getHeight() / 2);
+    private WorldExplorerInput.ViewBox viewBox() {
+        var box = viewport.localToScreen(viewport.getLayoutBounds());
+        return box == null ? null : new WorldExplorerInput.ViewBox(box.getMinX(), box.getMinY(), box.getWidth(), box.getHeight());
     }
 
     private void clearKeys() {

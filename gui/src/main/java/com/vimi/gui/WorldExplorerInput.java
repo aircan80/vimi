@@ -16,8 +16,11 @@ import javafx.scene.input.MouseButton;
  * values and supplies the camera, ground and frame/discovery hooks through {@link Host}.
  *
  * <p>Mouse look follows the game client. Holding the right button captures the cursor: it is
- * hidden and, when the {@link Pointer} can warp, re-centred after every move so it never leaves
- * the view; on release it returns to where the look began. Holding the left button looks without
+ * hidden, every move counts as a plain relative delta between mouse events, and only when it
+ * nears the edge of the view is it warped back to the centre so it never leaves; on release it
+ * returns to where the look began. The warp's own move event (its echo) is recognised from the
+ * events themselves, never from a cursor read-back, so platform rounding of the warp target
+ * (fractional output scales, integer robot coordinates) cannot bias the measurement. Holding the left button looks without
  * capture (the cursor stays visible and moves), which suits touchpads; a left click without a drag
  * still inspects. Movement is summed between pulses and applied once per pulse, so a burst of
  * mouse events costs one camera update and at most one frame request. Movement owed while no
@@ -55,24 +58,45 @@ final class WorldExplorerInput {
         void captureFallback(String reason);
     }
 
-    /**
-     * Moves the system cursor and reports where it actually is afterwards, in the same screen
-     * units as mouse events. That can differ from the request: the platform puts the cursor on a
-     * physical pixel (fractional output scales, odd view sizes), or the move is still in flight.
-     */
+    /** Moves the system cursor; false when this platform cannot place it (e.g. no robot). */
     @FunctionalInterface
     interface Pointer {
-        /** The cursor's position after the move ({x, y}), or null when it cannot be placed. */
-        double[] warp(double screenX, double screenY);
+        boolean warp(double screenX, double screenY);
 
-        /** No cursor placement: mouse look then uses relative movement without re-centring. */
-        Pointer NONE = (x, y) -> null;
+        /** No cursor placement: a captured look then stays purely relative. */
+        Pointer NONE = (x, y) -> false;
     }
 
-    /** A reported position farther than this from the request means the move has not landed. */
-    static final double LANDED = 2;
+    /** The view's rectangle in screen units, at the time of an event (the window may move). */
+    record ViewBox(double minX, double minY, double width, double height) {
+        double centerX() {
+            return minX + width / 2;
+        }
 
-    /** Consecutive looks whose first warp fails before capture is turned off for good. */
+        double centerY() {
+            return minY + height / 2;
+        }
+
+        /** True when the point lies within {@code EDGE} of the box size from an edge (or outside). */
+        boolean nearEdge(double x, double y) {
+            double mx = width * EDGE, my = height * EDGE;
+            return x < minX + mx || x > minX + width - mx || y < minY + my || y > minY + height - my;
+        }
+    }
+
+    /** A captured look warps back to the centre only within this fraction of the view of an edge. */
+    static final double EDGE = .25;
+
+    /**
+     * Events after a warp that may still predate its echo; without an echo by then the warp is
+     * taken as failed and the next event becomes the new origin, uncounted.
+     */
+    static final int ECHO_EVENTS = 8;
+
+    /** How close to a given-up warp target a late echo lands (screen units). */
+    static final double LATE_ECHO = 2;
+
+    /** Consecutive warps without an echo before capture stops warping for good. */
     static final int CAPTURE_FAILURES = 3;
 
     /**
@@ -99,10 +123,13 @@ final class WorldExplorerInput {
     private Pointer pointer = Pointer.NONE;
     // Mouse look: reference point for the next delta (the warp centre, or the last position when
     // the cursor cannot be warped), where the look began, and pixels owed to the next pulse.
-    private boolean looking, warping, captureOff;
+    private boolean looking, captureOff, awaitingEcho, lateEcho;
     private MouseButton lookButton;
-    private int captureFailures;
-    private double lookX, lookY, anchorX, anchorY, pendingX, pendingY;
+    private int captureFailures, echoWait;
+    // Last event position (deltas are measured from it), where the look began, the pending warp
+    // target, and pixels owed to the next pulse.
+    private double lookX, lookY, anchorX, anchorY, targetX, targetY, pendingX, pendingY;
+    private boolean warpedOnce;
     // The camera moved since the last frame this input requested (cadence held it back).
     private boolean unshown;
 
@@ -184,60 +211,81 @@ final class WorldExplorerInput {
     }
 
     /**
-     * A look button pressed at a screen position. The right button hides the cursor and, when
-     * possible, moves it to the view centre so every later move is measured from where it lands;
-     * the left button looks with relative movement. A second button during a look is ignored.
+     * A look button pressed at a screen position. The right button hides the cursor (it is
+     * warped back only near the view edge); the left button looks without capture. A second
+     * button during a look is ignored.
      */
-    void lookPressed(MouseButton button, double screenX, double screenY, double centerX, double centerY) {
+    void lookPressed(MouseButton button, double screenX, double screenY) {
         if (looking || !looks(button)) return;
         looking = true;
         lookButton = button;
         anchorX = lookX = screenX;
         anchorY = lookY = screenY;
-        warping = false;
-        if (!captures(button)) return;
-        host.cursorHidden(true);
-        if (captureOff) return;
-        var landed = pointer.warp(centerX, centerY);
-        if (landed != null && near(landed, centerX, centerY)) {
-            captureFailures = 0;
-            warping = true;
-            lookX = landed[0];
-            lookY = landed[1];
-        } else if (++captureFailures >= CAPTURE_FAILURES) {
-            captureOff = true;
-            host.captureFallback("the cursor could not be placed for " + CAPTURE_FAILURES
-                    + " looks in a row; mouse look stays relative");
-        } else {
-            host.captureFallback("the cursor could not be placed; this look is relative");
-        }
+        awaitingEcho = lateEcho = warpedOnce = false;
+        if (captures(button)) host.cursorHidden(true);
     }
 
     /**
-     * A move while looking, with the view centre now (the window may have moved). A move to the
-     * reference point is the event our own warp produced and is ignored. After each counted move
-     * a capturing look re-centres and measures from where the cursor lands; a warp the platform
-     * refuses ends re-centring for this look, and one still in flight is assumed to land.
+     * A move while looking. Deltas are relative to the previous event. While a warp's echo is
+     * awaited, an event nearer the warp target than the previous position is the echo (or already
+     * after it): it becomes the new origin and is not counted. Events still near the old position
+     * are real motion from before the warp. A captured look nearing the view edge warps to the
+     * centre.
      */
-    void lookMoved(double screenX, double screenY, double centerX, double centerY) {
-        if (!looking) return;
+    void lookMoved(double screenX, double screenY, ViewBox view) {
+        if (!looking || !Double.isFinite(screenX) || !Double.isFinite(screenY)) return;
+        if (lateEcho && Math.hypot(screenX - targetX, screenY - targetY) <= LATE_ECHO
+                && Math.hypot(screenX - lookX, screenY - lookY) > LATE_ECHO) {
+            // A warp given up on landed after all: a new origin, not motion.
+            lateEcho = false;
+            lookX = screenX;
+            lookY = screenY;
+            return;
+        }
+        if (awaitingEcho) {
+            double toTarget = Math.hypot(screenX - targetX, screenY - targetY);
+            double toLast = Math.hypot(screenX - lookX, screenY - lookY);
+            if (toTarget < toLast) {
+                awaitingEcho = false;
+                captureFailures = 0;
+                lookX = screenX;
+                lookY = screenY;
+                return;
+            }
+            if (++echoWait >= ECHO_EVENTS) {
+                // No echo yet: count this move as real (it is near the old position) and carry on
+                // relatively; an echo that still lands later is recognised once.
+                awaitingEcho = false;
+                lateEcho = true;
+                if (++captureFailures >= CAPTURE_FAILURES) {
+                    captureOff = true;
+                    host.captureFallback("the cursor could not be re-centred " + CAPTURE_FAILURES
+                            + " times in a row; mouse look stays relative");
+                } else {
+                    host.captureFallback("the cursor could not be re-centred; this move is relative");
+                }
+            }
+        }
+        boolean timedOut = lateEcho && !awaitingEcho && echoWait >= ECHO_EVENTS;
+        if (timedOut) echoWait = 0;
         double dx = screenX - lookX, dy = screenY - lookY;
-        if (!Double.isFinite(dx) || !Double.isFinite(dy) || dx == 0 && dy == 0) return;
         pendingX += dx;
         pendingY += dy;
         lookX = screenX;
         lookY = screenY;
-        if (!warping) return;
-        var landed = pointer.warp(centerX, centerY);
-        if (landed == null) {
-            warping = false;
-            host.captureFallback("the cursor could not be re-centred; this look is relative");
-        } else if (near(landed, centerX, centerY)) {
-            lookX = landed[0];
-            lookY = landed[1];
+        // A warp given up on this very event is not retried until the next one.
+        if (timedOut || !captures(lookButton) || captureOff || awaitingEcho || view == null
+                || !view.nearEdge(screenX, screenY)) return;
+        targetX = view.centerX();
+        targetY = view.centerY();
+        if (pointer.warp(targetX, targetY)) {
+            awaitingEcho = true;
+            lateEcho = false;
+            warpedOnce = true;
+            echoWait = 0;
         } else {
-            lookX = centerX;
-            lookY = centerY;
+            captureOff = true;
+            host.captureFallback("the cursor cannot be placed on this platform; mouse look stays relative");
         }
     }
 
@@ -250,14 +298,10 @@ final class WorldExplorerInput {
         if (!looking) return;
         looking = false;
         boolean captured = captures(lookButton);
-        if (warping) pointer.warp(anchorX, anchorY);
-        warping = false;
+        if (captured && warpedOnce && !captureOff) pointer.warp(anchorX, anchorY);
+        awaitingEcho = lateEcho = warpedOnce = false;
         lookButton = null;
         if (captured) host.cursorHidden(false);
-    }
-
-    private static boolean near(double[] at, double x, double y) {
-        return at.length == 2 && Math.abs(at[0] - x) <= LANDED && Math.abs(at[1] - y) <= LANDED;
     }
 
     /** True when a click should inspect: primary button released without movement. */
