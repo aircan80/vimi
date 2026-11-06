@@ -45,6 +45,7 @@ final class DecodedFileStream extends FileReadStream {
                     null,
                     null);
         }
+        long envelopes = com.vibeminer.store.ReadTimings.start();
         var layout = reader.layout(token);
         List<FileHole> holes = new ArrayList<>();
         TreeSet<String> keys = new TreeSet<>();
@@ -88,6 +89,7 @@ final class DecodedFileStream extends FileReadStream {
             }
             i = last + 1;
         }
+        com.vibeminer.store.ReadTimings.stop("files.open.layoutAndEnvelopes", envelopes);
         long missing = holes.stream().mapToLong(FileHole::length).sum();
         return new FileOpen(
                 missing == 0
@@ -153,6 +155,7 @@ final class DecodedFileStream extends FileReadStream {
         CompletableFuture<Integer> answer =
                 Io.async(
                         () -> {
+                            long streamRead = com.vibeminer.store.ReadTimings.start();
                             try {
                                 synchronized (this) {
                                     check();
@@ -207,6 +210,7 @@ final class DecodedFileStream extends FileReadStream {
                             } catch (BlteChunks.Failure e) {
                                 throw new FileReadException(e.state, e.code, e.getMessage(), null);
                             } finally {
+                                com.vibeminer.store.ReadTimings.stop("files.stream.read", streamRead);
                                 reading.set(false);
                             }
                         });

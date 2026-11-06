@@ -129,8 +129,18 @@ final class FileReader {
     BlteChunks.Layout layout(Cancellation token) {
         var existing = cache.find(ekey);
         if (existing != null) {
+            com.vibeminer.store.ReadTimings.stop("files.layout.cacheHit", com.vibeminer.store.ReadTimings.start());
             return checked(existing);
         }
+        long laying = com.vibeminer.store.ReadTimings.start();
+        try {
+            return layoutMiss(token);
+        } finally {
+            com.vibeminer.store.ReadTimings.stop("files.layout.miss", laying);
+        }
+    }
+
+    private BlteChunks.Layout layoutMiss(Cancellation token) {
         if (request.declaredLength() != null && request.declaredLength() < 8) {
             throw BlteChunks.invalid("Encoded copy shorter than BLTE prefix");
         }
@@ -175,9 +185,11 @@ final class FileReader {
 
     private ObjectResult range(long offset, int length, Cancellation token) {
         token.check();
+        long ranging = com.vibeminer.store.ReadTimings.start();
         var got =
                 objects.getRange(request, offset, length, cdn, FetchPriority.INTERACTIVE, token)
                         .join();
+        com.vibeminer.store.ReadTimings.stop("files.range.getRangeJoin", ranging);
         if (!got.isPresent()) {
             boolean unroutedFailure =
                     cdn == null

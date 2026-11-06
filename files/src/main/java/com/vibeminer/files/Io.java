@@ -41,9 +41,11 @@ final class Io {
                                 "FILES_OPERATION_LIMIT", "Too many pending Files operations"));
             }
             CompletableFuture<T> answer = new CompletableFuture<>();
+            long hop = com.vibeminer.store.ReadTimings.start();
             try {
                 Thread.startVirtualThread(
                         () -> {
+                            com.vibeminer.store.ReadTimings.stop("files.io.asyncStart", hop);
                             T value = null;
                             Throwable failure = null;
                             try {

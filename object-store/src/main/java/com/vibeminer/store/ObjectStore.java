@@ -807,13 +807,26 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             if (!accepting) {
                 return CompletableFuture.failedFuture(closed());
             }
+            long queued = ReadTimings.start();
             return Async.submit(
                     readers,
                     () -> {
+                        ReadTimings.stop("store.read.queue", queued);
                         cancellation.check();
-                        try (NativeSqlite db = openReader()) {
-                            return db.withCancellation(
-                                    cancellation, () -> work.run(new StoreIndex(db)));
+                        long opening = ReadTimings.start();
+                        try {
+                            NativeSqlite db = openReader();
+                            ReadTimings.stop("store.read.openConnection", opening);
+                            long working = ReadTimings.start();
+                            try {
+                                return db.withCancellation(
+                                        cancellation, () -> work.run(new StoreIndex(db)));
+                            } finally {
+                                ReadTimings.stop("store.read.work", working);
+                                long closing = ReadTimings.start();
+                                db.close();
+                                ReadTimings.stop("store.read.closeConnection", closing);
+                            }
                         } catch (NativeSqlite.Failure e) {
                             throw translate(e, "OBJECT_STORE_INDEX_UNREADABLE");
                         }

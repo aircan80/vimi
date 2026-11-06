@@ -221,6 +221,7 @@ final class BuildFilesHandle implements BuildFiles {
         if (known == null
                 && file.storage() == FileStorage.STORED
                 && variant.decodedSize() != null) {
+            com.vibeminer.store.ReadTimings.stop("files.stat.formatSniffs", com.vibeminer.store.ReadTimings.start());
             try {
                 if (variant.decodedSize() == 0) {
                     head = new byte[0];
@@ -295,8 +296,14 @@ final class BuildFilesHandle implements BuildFiles {
         return Io.async(
                 () -> {
                     token.check();
+                    long statting = com.vibeminer.store.ReadTimings.start();
+                    try {
+                    long t = com.vibeminer.store.ReadTimings.start();
                     LoadedNames names = options.names().current(token).join();
+                    com.vibeminer.store.ReadTimings.stop("files.stat.namesCurrent", t);
+                    t = com.vibeminer.store.ReadTimings.start();
                     var found = find(built, file, names, token);
+                    com.vibeminer.store.ReadTimings.stop("files.stat.find", t);
                     var resolved = found.resolution();
                     if (resolved.state() == FileResolutionState.UNKNOWN_FILE
                             || resolved.fileDataId() == null) {
@@ -306,10 +313,12 @@ final class BuildFilesHandle implements BuildFiles {
                     if (variant == null) {
                         return new FileStat(FileLookupState.NOT_IN_LOCALE, null);
                     }
+                    t = com.vibeminer.store.ReadTimings.start();
                     String path =
                             names == null
                                     ? null
                                     : names.nameOf(resolved.fileDataId(), token).join();
+                    com.vibeminer.store.ReadTimings.stop("files.stat.nameOf", t);
                     FilePathSource source =
                             path != null
                                     ? FilePathSource.LISTFILE
@@ -317,18 +326,21 @@ final class BuildFilesHandle implements BuildFiles {
                     if (path == null && found.root()) {
                         path = file.path();
                     }
-                    var result =
-                            toFile(
-                                    resolved.fileDataId(),
-                                    variant,
-                                    storage(List.of(variant), token).getFirst(),
-                                    path,
-                                    source);
+                    t = com.vibeminer.store.ReadTimings.start();
+                    var stored = storage(List.of(variant), token).getFirst();
+                    com.vibeminer.store.ReadTimings.stop("files.stat.storage", t);
+                    var result = toFile(resolved.fileDataId(), variant, stored, path, source);
+                    t = com.vibeminer.store.ReadTimings.start();
+                    var formatted = format(result, variant, built, token);
+                    com.vibeminer.store.ReadTimings.stop("files.stat.format", t);
                     return new FileStat(
                             variant.encodedKey() == null
                                     ? FileLookupState.NOT_IN_ENCODING
                                     : FileLookupState.FOUND,
-                            format(result, variant, built, token));
+                            formatted);
+                    } finally {
+                        com.vibeminer.store.ReadTimings.stop("files.stat.total", statting);
+                    }
                 });
     }
 
@@ -461,11 +473,16 @@ final class BuildFilesHandle implements BuildFiles {
                 () -> {
                     try {
                         token.check();
+                        long opening = com.vibeminer.store.ReadTimings.start();
                         var reader = readerFor(built, file, 0, token);
                         if (reader.size == 0 && !reader.matches(new byte[0])) {
                             throw BlteChunks.integrity();
                         }
-                        return DecodedFileStream.open(reader, token);
+                        try {
+                            return DecodedFileStream.open(reader, token);
+                        } finally {
+                            com.vibeminer.store.ReadTimings.stop("files.open.total", opening);
+                        }
                     } catch (FileReader.Failure e) {
                         return new FileOpen(e.state, null, e.code, e.getMessage(), e.at);
                     } catch (BlteChunks.Failure e) {

@@ -807,11 +807,14 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
             return CompletableFuture.failedFuture(
                     new IllegalArgumentException("Range past the object's end"));
         }
+        long rangeQueued = com.vibeminer.store.ReadTimings.start();
         return streams.submit(
                         priority,
                         1,
                         token,
                         () -> {
+                            com.vibeminer.store.ReadTimings.stop("access.range.schedulerQueue", rangeQueued);
+                            long storeRead = com.vibeminer.store.ReadTimings.start();
                             StoreTypes.ObjectRead read =
                                     reader == null
                                             ? null
@@ -821,6 +824,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                                                             length,
                                                             token.storeToken())
                                                     .join();
+                            com.vibeminer.store.ReadTimings.stop("access.range.storeReadJoin", storeRead);
                             if (read != null && read.state() == StoreTypes.ReadState.PRESENT) {
                                 return CompletableFuture.completedFuture(
                                         present(
@@ -1949,11 +1953,13 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
 
     private CompletableFuture<List<Boolean>> hasKeysCore(List<ObjectKey> keys, Cancellation token) {
         List<ObjectKey> owned = List.copyOf(keys);
+        long hasQueued = com.vibeminer.store.ReadTimings.start();
         return streams.submit(
                         FetchPriority.INTERACTIVE,
                         1,
                         token,
                         () -> {
+                            com.vibeminer.store.ReadTimings.stop("access.hasKeys.schedulerQueue", hasQueued);
                             List<Boolean> values = new ArrayList<>(owned.size());
                             for (ObjectKey key : owned) {
                                 token.check();

@@ -800,3 +800,15 @@ tasks.register('globalInteriorFloorsTest', JavaExec) {
     mainClass = 'com.vimi.gui.GlobalInteriorFloorsTest'
 }
 check.dependsOn globalInteriorFloorsTest
+
+// Scratch: real-data per-source read latency probe (never part of check).
+tasks.register('fileReadLatencyProbe', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.FileReadLatencyProbe'
+    timeout = java.time.Duration.ofMinutes(10)
+    ['probe.build', 'probe.x', 'probe.y', 'probe.files'].each { name ->
+        def value = providers.gradleProperty(name)
+        if (value.isPresent()) systemProperty name, value.get()
+    }
+}
