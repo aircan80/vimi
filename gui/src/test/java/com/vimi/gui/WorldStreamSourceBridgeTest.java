@@ -174,7 +174,9 @@ public final class WorldStreamSourceBridgeTest {
         check(WorldStreamGpuOwner.imageDetail("HIGH") == high, "high (any case) selects High");
         check(WorldStreamGpuOwner.imageDetail(" high ") == high, "Surrounding whitespace is ignored");
         check(WorldStreamGpuOwner.imageDetail("ultra") == standard, "Anything else stays Standard");
-        check(high.totalPixels() == 2 * standard.totalPixels(), "High doubles every pool");
+        // Budgets are mip-chain texels (#265): the chain of a twice-as-large texture is double
+        // within one texel, the 1 x 1 level.
+        check(Math.abs(high.totalPixels() - 2 * standard.totalPixels()) <= 3, "High doubles every pool");
         check(WorldStreamGpuOwner.exteriorsEnabled(null), "Exteriors are on without the property");
         check(WorldStreamGpuOwner.exteriorsEnabled("true"), "true keeps exteriors on");
         check(WorldStreamGpuOwner.exteriorsEnabled(""), "An empty value keeps exteriors on");

@@ -37,6 +37,7 @@ public final class WorldStreamSourceControllerTest {
         skyOnlyFullUnionAdmitsMissingLookaheadBeforeReacquiringVictim();
         permanentSkyDisjointDemandRetiresPinsWithoutFakePresentation();
         explicitUnsupportedSourceHasCleanNoOwnerDrain();
+        stallSummaryWithoutSessionIsBoundedAndNeverWaits();
         fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(false);
         fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(true);
         backDemandDoesNotTreatPresentedOnlySourceAsLiveGpuResident();
@@ -49,7 +50,9 @@ public final class WorldStreamSourceControllerTest {
         missingNearestIsFiniteUnavailableWithoutFillingOutputUnion();
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
+        capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
         sameResidentCameraFrameDoesNotRetryMaterialPool();
+        transportFrameSignalQueuesPresentationWithoutAnyPulse();
         queuedGpuOwnerLateCloseIsPartOfControllerDrain();
         closeDuringActualInitialWdtQualificationIsCleanAndWaitsSourceDrain();
         terrainNeverWaitsForBlockedObjectPreparation();
@@ -61,7 +64,7 @@ public final class WorldStreamSourceControllerTest {
     /** One authored building: a quad drawn by one range of one 2x2 image, placed once. */
     private static com.vibeminer.rendering.bgfx.WorldStreamTileWriter.Exterior building() {
         var builder = com.vibeminer.rendering.bgfx.WorldStreamTileWriter.Exterior.builder();
-        builder.image(2, 2, ByteBuffer.wrap(new byte[16]));
+        builder.image(2, 2, ByteBuffer.wrap(new byte[20])); // 2x2 and its 1x1 mip
         builder.model();
         float[] vertices = new float[4 * 8];
         for (int v = 0; v < 4; v++) {
@@ -397,6 +400,64 @@ public final class WorldStreamSourceControllerTest {
         }
     }
 
+    /**
+     * Lost wake-up regression (#283): a tile preparation refused with RETRY_LATER for a non-pool
+     * reason (the geometry lane) waits for a capacity change. Here the change, the refused
+     * reservation's unused-credit CREDIT, lands after the refusal but before the controller records
+     * it. With the frozen test clock the controller must still retry, because capacity changed
+     * after the refused reservation was issued.
+     */
+    private static void capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation()
+            throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 1);
+        var geometry = com.vibeminer.concepts.world.AuthoredGeometryPressure.hold(fixture.world);
+        Path holdCredit = fixture.directory.resolve("authored-hold-unused-credit");
+        var seamRan = new java.util.concurrent.atomic.AtomicBoolean();
+        try {
+            Files.writeString(holdCredit, "hold");
+            Runnable seam = () -> {
+                if (!seamRan.compareAndSet(false, true)) return;
+                try {
+                    // Inside the window: free the geometry lane and let the refused
+                    // reservation's credit arrive, then wait for its capacity change.
+                    geometry.close();
+                    var session = fixture.gpu.session;
+                    long before = session.capacityRevision();
+                    Files.delete(holdCredit);
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                    while (session.capacityRevision() == before && System.nanoTime() < deadline)
+                        java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                    check(session.capacityRevision() != before,
+                            "The refused reservation's credit changed capacity inside the window");
+                } catch (Exception failure) {
+                    throw new AssertionError(failure);
+                }
+            };
+            // Install the seam before any tile can be prepared: the GPU starts first.
+            fixture.start(scope -> {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (fixture.controller == null && System.nanoTime() < deadline)
+                    java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                fixture.controller.tileRefusalSeam = seam;
+                return fixture.gpu.start(scope);
+            });
+            fixture.until(seamRan::get);
+            var blocked = WorldStreamSourceController.class.getDeclaredField("blockedOnMaterialPool");
+            blocked.setAccessible(true);
+            check(!blocked.getBoolean(fixture.controller),
+                    "A geometry-lane refusal waits on capacity, not on the material pool");
+            // The clock never advances: only the observed capacity change may trigger the retry.
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+        } finally {
+            Files.deleteIfExists(holdCredit);
+            geometry.close();
+            fixture.close();
+        }
+    }
+
     private static void enqueueHeldFile(WorldStreamTransport.Session session,
             java.util.concurrent.CountDownLatch entered,java.util.concurrent.CountDownLatch release) throws Exception {
         var method=session.getClass().getDeclaredMethod("enqueueFile",Runnable.class);method.setAccessible(true);
@@ -560,6 +621,33 @@ public final class WorldStreamSourceControllerTest {
             fixture.controller.closeAsync().get(5,TimeUnit.SECONDS);
             check(starts.get()==0 && fixture.files.totalOpens()==reads,
                     "Explicit absent optional capability has no source IO or fake GPU owner");
+        } finally { fixture.close(); }
+    }
+
+    private static void stallSummaryWithoutSessionIsBoundedAndNeverWaits() throws Exception {
+        var fixture=new Fixture(new AuthoredTerrainSource.Files(),1);
+        try {
+            var custom=(com.vibeminer.concepts.world.BuildWorld)java.lang.reflect.Proxy.newProxyInstance(
+                    com.vibeminer.concepts.world.BuildWorld.class.getClassLoader(),
+                    new Class<?>[]{com.vibeminer.concepts.world.BuildWorld.class},
+                    (proxy,method,args)-> {
+                        if(method.getName().equals("terrainStreaming")) return java.util.Optional.empty();
+                        throw new AssertionError("Unsupported custom source must perform no IO/close");
+                    });
+            var map=new WorldService.MapInfo(7,"Authored",null,0,1L);
+            var inventory=fixture.world.inventory(map,Cancellation.NONE).join();
+            fixture.controller=new WorldStreamSourceController(new WorldStreamSourceController.Request(
+                    1,custom,map,inventory,fixture.tiles.getFirst(),null,WorldCurrentArea.Index.of(List.of())),
+                    fixture.gpu::start,()->{},fixture.fx::add);
+            fixture.until(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.UNAVAILABLE);
+            var controller=fixture.controller;
+            String summary=java.util.concurrent.CompletableFuture.supplyAsync(controller::stallSummary)
+                    .get(2,TimeUnit.SECONDS);
+            check(summary.startsWith("phase UNAVAILABLE (")
+                            && summary.endsWith("; accepted frame sequence 0; presentation none; no session"),
+                    "Controller stall summary without a session: "+summary);
+            check(summary.length()<600,"Controller stall summary stays bounded");
+            controller.closeAsync().get(5,TimeUnit.SECONDS);
         } finally { fixture.close(); }
     }
 
@@ -733,7 +821,8 @@ public final class WorldStreamSourceControllerTest {
             });
             fixture.controller.camera(new WorldStreamTransport.Camera(1,1,80,50,new TerrainCamera(0,0,110,0,-.8)));
             started.get(5,TimeUnit.SECONDS);
-            fixture.gpu.session.initialized().get(5,TimeUnit.SECONDS);
+            // Bounded by the transport's own startup deadline, which fails init clearly.
+            fixture.gpu.session.initialized().get(60,TimeUnit.SECONDS);
             var field=WorldStreamTransport.Session.class.getDeclaredField("lock");
             field.setAccessible(true);
             Object parentGate=field.get(fixture.gpu.session);
@@ -1070,6 +1159,40 @@ public final class WorldStreamSourceControllerTest {
             check(ticket.get(fixture.gpu.session)==refused,
                     "Accepted same-resident camera pixels release no pool owner and must not reopen source pressure");
         } finally {if(held!=null)held.close();fixture.close();}
+    }
+
+    private static void transportFrameSignalQueuesPresentationWithoutAnyPulse() throws Exception {
+        var fixture=new Fixture(new AuthoredTerrainSource.Files(),1);
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            var worker=WorldStreamSourceController.class.getDeclaredField("worker");worker.setAccessible(true);
+            var actor=(java.util.concurrent.ExecutorService)worker.get(fixture.controller);
+            // Drain every earlier frame; discard() kicks, so fence the actor after each one.
+            for(int quiet=0;quiet<3;) {
+                actor.submit(() -> {}).get(3,TimeUnit.SECONDS);
+                var stale=fixture.controller.takePresentation();
+                if(stale.isPresent()) { fixture.controller.discard(stale.get()); quiet=0; }
+                else { quiet++; Thread.sleep(50); }
+            }
+            // Bypass the controller: camera() and pulse() would kick a full step. Only the
+            // transport's frame listener can now bring this frame to the controller.
+            var seed=fixture.controller.snapshot().seed().camera();
+            fixture.gpu.session.camera(new WorldStreamTransport.Camera(1000,1,80,50,
+                    new TerrainCamera(seed.x()+5,seed.y(),seed.z(),seed.yaw(),seed.pitch())));
+            WorldStreamSourceController.Presentation frame=null;
+            long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);
+            while(frame==null && System.nanoTime()<until) {
+                frame=fixture.controller.takePresentation().orElse(null);
+                if(frame==null) Thread.sleep(1);
+            }
+            check(frame!=null,"A published frame reaches the controller without a pulse");
+            try {
+                check(frame.cameraRevision()==1000,"The signaled frame is the new camera's");
+            } finally { fixture.controller.discard(frame); }
+        } finally { fixture.close(); }
     }
 
     @SuppressWarnings("try")

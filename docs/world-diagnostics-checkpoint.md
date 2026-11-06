@@ -69,6 +69,21 @@ rendering.
   mangled record (a lost prefix byte, a byte-order mark, a spliced write), not
   noise: it ends the session at once with "Mangled World status", so a lost
   record cannot stall it silently.
+- **Stalled frames.** While the streamed explorer is visible and its window
+  is shown and not minimized, frames are owed in two cases: the stream is
+  PRESENTING (the first frame, or the first after a commit, which the helper
+  draws on its own cadence), or it is READY and a camera revision has no newer
+  frame. No progress for 5 s (`-Dvimi.world.stallMillis`, 1000 to 600000) is a
+  stall. Only a frame for a newer camera revision counts as progress, so a
+  helper that redraws an old camera is still caught. An idle camera in READY
+  owes nothing. A hidden view, another phase, an instance switch, a retirement
+  or a stopped explorer pulse restarts the clock. Each episode logs one WARNING
+  with the frame numbers, controller phase, prepared tiles, pending
+  presentation, the transport's pending upload, commit, late objects and command
+  state (read without its lock), the ignored stdout noise count, and the
+  redacted helper stderr tail. While the phase is READY or PRESENTING, the
+  status shows "Renderer not responding; Retry" until progress arrives. Any
+  other phase's detail, such as FAILED, always shows.
 - **Original cause survives.** `WorldStreamGpuOwner` keeps the cause instead of
   replacing it. A queued request that is blocked because the previous World
   resources did not retire now fails with `RetirementBlocked`, which carries the
@@ -136,9 +151,9 @@ path and not this machine's identity is not recognised.
 
 ## Not in this slice (remaining for #166)
 
-- No stalled-frame watchdog yet. It needs rate limits, lifecycle awareness
-  (hidden or idle camera must not alarm) and parent/child thread evidence, with
-  no perpetual dump loop and no waits on the UI thread.
+- The stalled-frame watchdog only detects and diagnoses. It never kills or
+  restarts the helper, and it collects no thread dumps. A commit or upload that
+  never finishes (COMMITTING or UPLOADING) is not timed yet.
 - If the helper exits before the parent attaches its stream workers, stderr is
   not read. The record then says "helper stderr not captured" instead of claiming
   that stderr was empty.

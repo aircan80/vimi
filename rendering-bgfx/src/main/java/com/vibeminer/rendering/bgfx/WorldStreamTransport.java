@@ -15,6 +15,9 @@ import java.util.concurrent.CompletableFuture;
  * and retains its permit until terminatedAndDrained completes successfully.
  */
 public final class WorldStreamTransport {
+    /** Fallback frame poll when no FRAME hint arrives; hints normally wake the reader first. */
+    static final long FRAME_POLL_MILLIS = 33;
+
     public enum Backend {
         DEFAULT,
         VULKAN,
@@ -359,10 +362,24 @@ public final class WorldStreamTransport {
         private volatile boolean stop;
         private volatile WorldStreamProducerCancellation.Producer cancellation;
         private boolean produced, offerOutstanding, cancelOutstanding;
+        // Guarded by the session lock: the capacity revision when this reservation was issued and
+        // the capacity changes it made itself before its result completed (#283).
+        private long issuedCapacity;
+        private int ownCapacityChanges;
 
         private TileReservation(Session session, WorldStreamParentState.Ticket ticket) {
             this.session = session;
             this.ticket = ticket;
+        }
+
+        /**
+         * The capacity revision this reservation alone accounts for: the revision when it was
+         * issued plus its own retirement and drain changes up to its result. Once the result has
+         * completed, a session revision above this means capacity changed for some other reason
+         * since the reservation was issued, so a caller blocked by its refusal should retry.
+         */
+        public long capacityBaseline() {
+            return session.baseline(this);
         }
 
         public CompletableFuture<Resident> produce(PacketProducer producer) {
@@ -549,11 +566,26 @@ public final class WorldStreamTransport {
         private int outstandingReliable;
         private volatile long capacityRevision;
         private TileReservation tile;
+        // The reservation tile replaced. The parent state admits a successor only once this one's
+        // replies are all accounted for, but a reply it has already accepted may still be on its
+        // way through this reader when the successor is reserved, so replies are matched by
+        // transaction, never by whichever reservation is current.
+        private TileReservation previousTile;
+        // Test seam: runs on the status reader after the parent state accepted a message and
+        // before this session handles it.
+        volatile java.util.function.Consumer<WorldStreamParentState.Change> statusSeam;
         private WorldStreamPacketFile.Moved input;
         private boolean commitRequested;
         private CommitOperation commitOperation;
         private CommitReceipt currentReceipt;
         private Frame latestFrame;
+        // Child FRAME hints wake the frame reader at once. The bounded wait remains the fallback,
+        // so a lost or absent hint costs at most the old poll interval.
+        private final WorldFrameSignal frameSignal = new WorldFrameSignal();
+        private volatile Runnable frameListener;
+        // Test seams: the reader's fallback wait, and completion when the reader has returned.
+        volatile long framePollMillis = FRAME_POLL_MILLIS;
+        final CompletableFuture<Void> framesReaderDone = new CompletableFuture<>();
         // Diagnostics only: bounded helper stderr, logged on abnormal end and with renderer
         // objects failures; never protocol.
         private final HelperStderrTail stderrTail = new HelperStderrTail();
@@ -627,6 +659,8 @@ public final class WorldStreamTransport {
 
         private void launched(WorldStreamLaunchOwner.Handle handle) {
             owner = handle;
+            // Every stop (close, child exit, worker failure) wakes a parked frame reader.
+            handle.onStopping(this::frameSignaled);
             handle.childExited().thenRun(this::childExited);
             handle.boundedClose()
                     .whenComplete(
@@ -1076,10 +1110,27 @@ public final class WorldStreamTransport {
             }
         }
 
+        /**
+         * Runs on the transport's frame reader, without any lock, each time a new frame becomes
+         * available to {@link #takeLatestFrame}. It must not block; replaced by a later call.
+         */
+        public void onFrame(Runnable listener) {
+            frameListener = listener;
+        }
+
         private void pollFrames(WorldStreamLaunchOwner.Handle handle) throws Exception {
+            try {
+                readFrames(handle);
+            } finally {
+                framesReaderDone.complete(null);
+            }
+        }
+
+        private void readFrames(WorldStreamLaunchOwner.Handle handle) throws Exception {
             long after = 0;
-            while (!handle.stopping()) {
+            while (!handle.stopping() && !closing) {
                 var candidate = frames.readLatest(handle.files().frames(), after);
+                boolean offered = false;
                 if (candidate != null) {
                     after = candidate.metadata().sequence();
                     synchronized (lock) {
@@ -1090,12 +1141,29 @@ public final class WorldStreamTransport {
                                         == candidate.metadata().content()
                                 && frames.current(candidate.metadata())) {
                             latestFrame = new Frame(candidate, currentReceipt);
+                            offered = true;
                         }
                     }
                 }
-                java.util.concurrent.locks.LockSupport.parkNanos(
-                        java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(33));
+                var listener = frameListener;
+                if (offered && listener != null) {
+                    try {
+                        listener.run();
+                    } catch (RuntimeException failure) {
+                        // A consumer's fault must not end the frame reader or the session.
+                        System.getLogger(WorldStreamTransport.class.getName())
+                                .log(
+                                        System.Logger.Level.WARNING,
+                                        "World frame listener failed",
+                                        failure);
+                    }
+                }
+                frameSignal.await(framePollMillis);
             }
+        }
+
+        private void frameSignaled() {
+            frameSignal.signal();
         }
 
         private void deleteCommit(CommitOperation operation) {
@@ -1136,6 +1204,20 @@ public final class WorldStreamTransport {
             }
         }
 
+        /** A capacity change caused by {@code reservation}'s own drain or retirement. */
+        private void capacityChanged(TileReservation reservation) {
+            synchronized (lock) {
+                capacityChanged();
+                reservation.ownCapacityChanges++;
+            }
+        }
+
+        private long baseline(TileReservation reservation) {
+            synchronized (lock) {
+                return reservation.issuedCapacity + reservation.ownCapacityChanges;
+            }
+        }
+
         /** Cheap metadata reservation; empty means genuine child/file credit is not available. */
         public java.util.Optional<TileReservation> tryReserveTile(int x, int y) {
             synchronized (lock) {
@@ -1146,7 +1228,9 @@ public final class WorldStreamTransport {
                 if (reserved == null) {
                     return java.util.Optional.empty();
                 }
+                previousTile = tile;
                 tile = new TileReservation(this, reserved);
+                tile.issuedCapacity = capacityRevision;
                 return java.util.Optional.of(tile);
             }
         }
@@ -1202,6 +1286,31 @@ public final class WorldStreamTransport {
                         case RETIRED -> CancellationReason.ALREADY_RETIRED;
                         default -> throw new IllegalArgumentException("Nonterminal cancellation");
                     });
+        }
+
+        /**
+         * The reservation a tile reply names, by transaction: the current one or its predecessor.
+         */
+        private TileReservation reservationFor(long transaction) {
+            synchronized (lock) {
+                if (tile != null && tile.ticket.transaction == transaction) {
+                    return tile;
+                }
+                if (previousTile != null && previousTile.ticket.transaction == transaction) {
+                    return previousTile;
+                }
+                throw new IllegalStateException("Uncorrelated tile status");
+            }
+        }
+
+        private static long transaction(WorldStreamStatus.Message message) {
+            return switch (message) {
+                case WorldStreamStatus.InputConsumed value -> value.transaction();
+                case WorldStreamStatus.Staged value -> value.transaction();
+                case WorldStreamStatus.Rejected value -> value.transaction();
+                case WorldStreamStatus.Canceled value -> value.transaction();
+                default -> throw new IllegalStateException("Status names no tile transaction");
+            };
         }
 
         /**
@@ -1279,9 +1388,9 @@ public final class WorldStreamTransport {
                     throw unavailable;
                 }
                 state.producerDrained(reservation.ticket);
-                capacityChanged();
+                capacityChanged(reservation);
                 state.retireTileFile(reservation.ticket);
-                capacityChanged();
+                capacityChanged(reservation);
                 reservation.result.completeExceptionally(
                         new java.util.concurrent.CancellationException(
                                 "World stopped before producer"));
@@ -1324,7 +1433,7 @@ public final class WorldStreamTransport {
                 error = cancellation.failure();
             }
             state.producerDrained(reservation.ticket);
-            capacityChanged();
+            capacityChanged(reservation);
             try {
                 if (error != null
                         && !(error instanceof PreparationRefusal refusal
@@ -1343,7 +1452,7 @@ public final class WorldStreamTransport {
                         packet = null;
                     }
                     state.retireTileFile(reservation.ticket);
-                    capacityChanged();
+                    capacityChanged(reservation);
                     synchronized (lock) {
                         var command = state.cancel(reservation.ticket);
                         if (command != null) {
@@ -1386,7 +1495,7 @@ public final class WorldStreamTransport {
                     packet.close();
                     packet = null;
                     state.retireTileFile(reservation.ticket);
-                    capacityChanged();
+                    capacityChanged(reservation);
                     synchronized (lock) {
                         var command = state.cancel(reservation.ticket);
                         if (command != null) {
@@ -1488,6 +1597,7 @@ public final class WorldStreamTransport {
                 latestFrame = null;
                 lock.notifyAll();
             }
+            frameSignaled();
             frames.close();
             cancellation.stopSession();
         }
@@ -1549,6 +1659,10 @@ public final class WorldStreamTransport {
                         return;
                     }
                     var change = state.status(message);
+                    var seam = statusSeam;
+                    if (seam != null) {
+                        seam.accept(change);
+                    }
                     switch (change) {
                         case SESSION -> {
                             handle.initialized();
@@ -1560,6 +1674,7 @@ public final class WorldStreamTransport {
                             }
                         }
                         case CAMERA -> frames.applied((WorldStreamStatus.CameraApplied) message);
+                        case FRAME -> frameSignaled();
                         case INPUT_COMMIT -> {
                             CommitOperation operation;
                             synchronized (lock) {
@@ -1607,32 +1722,31 @@ public final class WorldStreamTransport {
                                 publishCancellation(candidate);
                             }
                         }
-                        case INPUT_TILE ->
-                                enqueueFile(
-                                        () -> {
-                                            WorldStreamPacketFile.Moved owned;
-                                            TileReservation current;
-                                            synchronized (lock) {
-                                                owned = input;
-                                                current = tile;
-                                            }
-                                            if (owned == null) {
-                                                throw new IllegalStateException(
-                                                        "Missing advertised input owner");
-                                            }
-                                            owned.close();
-                                            state.retireTileFile(current.ticket);
-                                            publishCancellation(current);
-                                            capacityChanged();
-                                            synchronized (lock) {
-                                                input = null;
-                                                lock.notifyAll();
-                                            }
-                                        });
+                        case INPUT_TILE -> {
+                            var current = reservationFor(transaction(message));
+                            enqueueFile(
+                                    () -> {
+                                        WorldStreamPacketFile.Moved owned;
+                                        synchronized (lock) {
+                                            owned = input;
+                                        }
+                                        if (owned == null) {
+                                            throw new IllegalStateException(
+                                                    "Missing advertised input owner");
+                                        }
+                                        owned.close();
+                                        state.retireTileFile(current.ticket);
+                                        publishCancellation(current);
+                                        capacityChanged();
+                                        synchronized (lock) {
+                                            input = null;
+                                            lock.notifyAll();
+                                        }
+                                    });
+                        }
                         case STAGED -> {
-                            TileReservation current;
+                            TileReservation current = reservationFor(transaction(message));
                             synchronized (lock) {
-                                current = tile;
                                 if (!current.offerOutstanding) {
                                     throw new IllegalStateException("Missing offer command credit");
                                 }
@@ -1652,9 +1766,8 @@ public final class WorldStreamTransport {
                             }
                         }
                         case CANCELED -> {
-                            TileReservation current;
+                            TileReservation current = reservationFor(transaction(message));
                             synchronized (lock) {
-                                current = tile;
                                 if (!current.cancelOutstanding) {
                                     throw new IllegalStateException(
                                             "Missing cancel command credit");
@@ -1698,10 +1811,9 @@ public final class WorldStreamTransport {
                                         new java.io.IOException("World commit rejected"));
                                 break;
                             }
-                            TileReservation current;
+                            TileReservation current = reservationFor(transaction(message));
                             boolean cancelPending;
                             synchronized (lock) {
-                                current = tile;
                                 if (!current.offerOutstanding) {
                                     throw new IllegalStateException(
                                             "Missing rejected offer credit");
@@ -1717,9 +1829,8 @@ public final class WorldStreamTransport {
                             current.result.completeExceptionally(error);
                         }
                         case CANCEL_REJECTED -> {
-                            TileReservation current;
+                            TileReservation current = reservationFor(transaction(message));
                             synchronized (lock) {
-                                current = tile;
                                 if (!current.cancelOutstanding) {
                                     throw new IllegalStateException("Missing stale cancel credit");
                                 }
@@ -1836,6 +1947,47 @@ public final class WorldStreamTransport {
         /** Test observation of the first renderer objects failure record of the session. */
         CompletableFuture<String> objectsDiagnostic() {
             return objectsDiagnostic.copy();
+        }
+
+        /**
+         * Bounded, redacted evidence for a stalled-frame report, without waiting on the helper:
+         * pending upload, commit and late objects work, queued reliable commands, whether a frame
+         * awaits the viewer, the ignored stdout noise count and the helper stderr tail. Never ends
+         * or changes the session.
+         *
+         * <p>Runs on the FX thread during a stall, when a session thread may hold {@code lock}, so
+         * it never takes it: the fields are read racily as a best-effort snapshot. A stale or mixed
+         * view is acceptable for a diagnostic, and none of these reads can throw.
+         */
+        public String stallSummary() {
+            boolean upload = tile != null;
+            boolean commit = commitOperation != null;
+            boolean objects = objectsOperation != null;
+            boolean frame = latestFrame != null;
+            int commands = reliableCommands.size();
+            int reliable = outstandingReliable;
+            long noiseLines = stdout.noiseLines(), noiseBytes = stdout.noiseBytes();
+            long pid = childPid;
+            return (pid == 0 ? "no child process" : "pid " + pid)
+                    + (closing ? "; closing" : "")
+                    + "; tile upload "
+                    + (upload ? "pending" : "idle")
+                    + "; commit "
+                    + (commit ? "pending" : "idle")
+                    + "; late objects "
+                    + (objects ? "pending" : "idle")
+                    + "; queued commands "
+                    + commands
+                    + "; outstanding reliable "
+                    + reliable
+                    + "; frame awaiting viewer "
+                    + (frame ? "yes" : "no")
+                    + "; unrelated stdout ignored "
+                    + noiseLines
+                    + (noiseLines == 1 ? " line, " : " lines, ")
+                    + noiseBytes
+                    + (noiseBytes == 1 ? " byte" : " bytes")
+                    + stderrSuffix();
         }
 
         /**

@@ -65,8 +65,14 @@ record GlobalWmoCamera(double x, double y, double z, double yaw, double pitch) {
         if (minX > maxX || minY > maxY || minZ > maxZ) {
             throw new IllegalArgumentException("Reversed global bounds");
         }
+        // Far enough back that the box's width and height both fit the shared field of view.
+        double aspect = GlobalWmoNativeScene.WIDTH / (double) GlobalWmoNativeScene.HEIGHT;
         double distance =
-                Math.max(4, Math.max((maxY - (double) minY) * .8, (maxZ - (double) minZ) * 1.28));
+                Math.max(
+                        4,
+                        .5
+                                * TerrainCamera.FOCAL
+                                * Math.max(maxY - (double) minY, (maxZ - (double) minZ) * aspect));
         return new GlobalWmoCamera(
                 Math.max(-8192, minX - distance),
                 (minY + (double) maxY) * .5,

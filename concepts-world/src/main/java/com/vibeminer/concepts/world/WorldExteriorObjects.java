@@ -14,6 +14,7 @@ import com.vibeminer.formats.world.WmoFormats;
 import com.vibeminer.formats.world.WmoGroupSpans;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldPlacements;
+import com.vibeminer.rendering.world.ObjectTextureMips;
 import com.vibeminer.rendering.world.TerrainScene;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
@@ -46,8 +47,13 @@ public final class WorldExteriorObjects {
     static final int MAX_VERTICES = 98_304, MAX_INDICES = 294_912;
     static final int MAX_RANGES = 1024, MAX_MESHES = 256, MAX_PIXELS = 1 << 20;
 
-    /** BASIC doodad caps, separate from the building caps so buildings are never displaced. */
-    static final int MAX_DOODADS = 512, MAX_MODELS = 48, MAX_MODEL_IMAGES = 64;
+    /**
+     * BASIC doodad caps, separate from the building caps so buildings are never displaced. Distinct
+     * models are the binding cap on dense tiles: Zephras Isle read 48 models per tile and capped
+     * 791 set doodads at 48, while no tile came near 512 doodad placements, so 96 models (and 96
+     * model images) are read.
+     */
+    static final int MAX_DOODADS = 512, MAX_MODELS = 96, MAX_MODEL_IMAGES = 96;
 
     static final int MAX_DOODAD_VERTICES = 65_536, MAX_DOODAD_INDICES = 196_608;
     static final int MAX_DOODAD_RANGES = 512, MAX_DOODAD_PIXELS = 1 << 19;
@@ -67,8 +73,11 @@ public final class WorldExteriorObjects {
      * The objects file and renderer admit the HIGH totals.
      */
     public enum ImageDetail {
-        STANDARD(1 << 20, 1 << 18, 1 << 19),
-        HIGH(1 << 21, 1 << 19, 1 << 20);
+        // Budgets count whole mip chains (#265): each is the chain of one texture of the old
+        // top-level size (1 Mi, 256 Ki, 512 Ki texels; doubled on HIGH), so the same images keep
+        // the same top levels while the chains below them are paid for.
+        STANDARD(chain(1024, 1024), chain(512, 512), chain(1024, 512)),
+        HIGH(chain(2048, 1024), chain(1024, 512), chain(1024, 1024));
         private final int buildingPixels, materialPixels, doodadPixels;
 
         ImageDetail(int buildingPixels, int materialPixels, int doodadPixels) {
@@ -89,11 +98,21 @@ public final class WorldExteriorObjects {
             return doodadPixels;
         }
 
+        private static int chain(int width, int height) {
+            return ObjectTextureMips.chainPixels(width, height);
+        }
+
         /** All pools together: the most RGBA8 pixels one tile's object set can carry. */
         public int totalPixels() {
             return buildingPixels + materialPixels + doodadPixels;
         }
     }
+
+    /**
+     * Image source bytes a tile build keeps between an image's first read, its budget relevel and
+     * its mip chain (#265); real tiles read about 7 MiB of BLP data.
+     */
+    static final long RETAINED_SOURCE_BYTES = 32L << 20;
 
     /** Per-tile draw budget: the sum over all placements of their model's ranges. */
     static final int MAX_DRAWS = 4096;
@@ -130,8 +149,21 @@ public final class WorldExteriorObjects {
      */
     private static final int DOODAD_DIRECT_ID = 0x40, DOODAD_ADMITTED = 0x2 | 0x20 | 0x200 | 0x1000;
 
-    /** MODD flags: only 0x1 (accepts projected textures) is admitted; it carries no transform. */
-    private static final int SET_DOODAD_ADMITTED = 0x1;
+    /**
+     * MODD flags (the high byte over the 24-bit reference) admitted without being interpreted: 0x1
+     * accepts projected textures, 0x2 selects interior rather than exterior lighting, and 0x4, 0x8
+     * and 0x10 are undocumented (0x10 lies in the bits wowdev records as unused as of 7.0.1.20994).
+     * No reviewed source lets any of them change the model reference or the transform: wowdev WMO
+     * (MODD, SMODoodadDef) keeps them apart from nameIndex, position, orientation and scale, and
+     * wow.export 4474fa4 reads them in WMOLoader.js but never uses them; WMORendererGL.js:380-418
+     * resolves the model from the reference alone and places it from position, rotation and scale.
+     * Zephras Isle records 0x10, 0x12, 0x16 and 0x1e on 1,337 set doodads. 0x20 to 0x80 are not
+     * seen and stay refused.
+     */
+    private static final int SET_DOODAD_ADMITTED = 0x1 | 0x2 | 0x4 | 0x8 | 0x10;
+
+    // MODD 0x2 selects interior rather than exterior lighting; vimi lights every set doodad as
+    // exterior (BASIC profile, fixed light), so the flag is admitted but not honoured.
 
     /**
      * Whether texture1 of a batch is sampled with UV0: the batch's shader ID and texture count name
@@ -162,6 +194,13 @@ public final class WorldExteriorObjects {
 
     /** MODF flags: 0x2 LOD-capable, 0x4 scale-enable, 0x8 direct FileDataID (required). */
     private static final int DIRECT_ID = 0x8, SCALED = 0x4, LOD_CAPABLE = 0x2;
+
+    /**
+     * MODF 0x80 (modf_use_sets_from_mwds, Shadowlands+, wowdev ADT/v18): doodadSet names an MWDR
+     * entry whose inclusive MWDS range lists the WMO MODS sets to load. It changes neither the
+     * model reference nor the transform.
+     */
+    private static final int SETS_FROM_MWDS = 0x80;
 
     /** MOGP exterior and interior flags; interior wins when both are present. */
     private static final long EXTERIOR = 0x8, INTERIOR = 0x2000;
@@ -238,7 +277,7 @@ public final class WorldExteriorObjects {
         DOODAD_EMPTY,
         SET_DOODAD_DRAWN,
         /**
-         * Name-table (MODN) reference, zero or out-of-range MODI entry, a MODD flag other than 0x1,
+         * Name-table (MODN) reference, zero or out-of-range MODI entry, a MODD flag outside 0x1F,
          * or a bad transform.
          */
         SET_DOODAD_UNSUPPORTED,
@@ -270,7 +309,15 @@ public final class WorldExteriorObjects {
          * or a short read. Each is also counted as that read's UNAVAILABLE bucket; unlike a
          * building read, it omits only its doodads instead of failing the whole set.
          */
-        DOODAD_SOURCE_INPUT
+        DOODAD_SOURCE_INPUT,
+        /**
+         * Decoded images (building and model) by where their lower mip levels came from (issue
+         * #265): all from the file's own mips, some from the file and the rest generated, or all
+         * generated. A 1 x 1 image counts in none of these.
+         */
+        IMAGE_MIPS_FILE,
+        IMAGE_MIPS_PARTIAL,
+        IMAGE_MIPS_GENERATED
     }
 
     /** What a placement draws: an outdoor WMO, an MDDF doodad or a WMO doodad-set entry. */
@@ -465,13 +512,33 @@ public final class WorldExteriorObjects {
         private final long id;
         private final int width, height, mipLevel;
         private final byte[] rgba;
+        private final ObjectTextureMips.Source mips;
 
         private Image(long id, int width, int height, int mipLevel, byte[] rgba) {
+            this(id, width, height, mipLevel, rgba, null);
+        }
+
+        private Image(
+                long id,
+                int width,
+                int height,
+                int mipLevel,
+                byte[] rgba,
+                ObjectTextureMips.Source mips) {
             this.id = id;
             this.width = width;
             this.height = height;
             this.mipLevel = mipLevel;
             this.rgba = rgba;
+            this.mips = mips;
+        }
+
+        /**
+         * Where the chain's lower levels came from; null only while a builder still holds the
+         * single registered level.
+         */
+        public ObjectTextureMips.Source mips() {
+            return mips;
         }
 
         public long id() {
@@ -490,6 +557,10 @@ public final class WorldExteriorObjects {
             return mipLevel;
         }
 
+        /**
+         * The whole mip chain, top level first ({@link ObjectTextureMips#chainPixels} texels), for
+         * every image a tile set returns.
+         */
         public ByteBuffer rgba() {
             return ByteBuffer.wrap(rgba).asReadOnlyBuffer();
         }
@@ -506,6 +577,9 @@ public final class WorldExteriorObjects {
         private final int vertices, indices, ranges, pixels;
         private final RuntimeException modelFailure;
         private volatile boolean closed;
+
+        /** Most image source bytes its builder kept at once (#265); diagnostics and tests. */
+        long retainedSourceBytes;
 
         private TileObjects(
                 long mapId,
@@ -679,6 +753,21 @@ public final class WorldExteriorObjects {
             Cancellation token,
             ModelReader modelReader,
             ImageDetail detail) {
+        return prepare(engine, scope, tile, token, modelReader, detail, RETAINED_SOURCE_BYTES);
+    }
+
+    /** As above, with the retained image source bound; tests pass 0 to force every re-read. */
+    static TileObjects prepare(
+            WorldStreamScopes engine,
+            WorldStreamScopes.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation token,
+            ModelReader modelReader,
+            ImageDetail detail,
+            long retainLimit) {
+        if (retainLimit < 0) {
+            throw new IllegalArgumentException("Retained source bound");
+        }
         Objects.requireNonNull(modelReader);
         Objects.requireNonNull(detail);
         Objects.requireNonNull(engine);
@@ -690,7 +779,7 @@ public final class WorldExteriorObjects {
                 tile,
                 WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
                 token,
-                admission -> new Builder(admission, modelReader, detail).build());
+                admission -> new Builder(admission, modelReader, detail, retainLimit).build());
     }
 
     private enum RootState {
@@ -737,6 +826,25 @@ public final class WorldExteriorObjects {
         private final Map<Long, RootState> doodadStates = new HashMap<>();
         private final Map<Long, Integer> doodadSlots = new HashMap<>();
 
+        /** obj0 MWDR ranges and MWDS set indexes, for MODF flag 0x80 placements. */
+        private List<WorldPlacements.SetRange> setRanges = List.of();
+
+        private List<Integer> setIds = List.of();
+
+        /**
+         * Image source bytes by file, kept from an image's first read until its chain is built, so
+         * the budget's relevel and the chain's file mips need no second read (#265). One file used
+         * under two material classes is kept and counted once. Bounded by retainLimit: past it a
+         * re-read source serves its one use and is dropped.
+         */
+        private final Map<Long, byte[]> sources = new HashMap<>();
+
+        /** Files whose second read was refused; never tried again. */
+        private final java.util.Set<Long> unreadSources = new java.util.HashSet<>();
+
+        private final long retainLimit;
+        private long retainedSourceBytes, peakRetainedSourceBytes;
+
         /** Registered images by slot, in admission (priority) order; null for other slots. */
         private final List<Demand> demands = new ArrayList<>();
 
@@ -757,8 +865,10 @@ public final class WorldExteriorObjects {
         Builder(
                 WorldStreamScopes.TileAdmission admission,
                 ModelReader modelReader,
-                ImageDetail detail) {
+                ImageDetail detail,
+                long retainLimit) {
             this.detail = detail;
+            this.retainLimit = retainLimit;
             this.admission = admission;
             this.token = admission.cancellation();
             this.modelReader = modelReader;
@@ -771,6 +881,8 @@ public final class WorldExteriorObjects {
                 try (var input = admission.readRecorded(WorldStreamScopes.RecordedInput.OBJ0)) {
                     metadata = WorldPlacements.readObj0(input.bytes(), token::isCanceled);
                 }
+                setRanges = metadata.setRanges();
+                setIds = metadata.setIds();
                 place(metadata.worldObjects());
                 fitMaterialDraws();
                 // Admission ran largest first; the set keeps obj0 source order.
@@ -780,17 +892,24 @@ public final class WorldExteriorObjects {
                 placeSetDoodads();
             }
             allocateImages();
+            chainImages();
+            sources.clear();
+            unreadSources.clear();
+            retainedSourceBytes = 0;
             dropUnusedImages();
-            return new TileObjects(
-                    admission.mapId(),
-                    recorded.x(),
-                    recorded.y(),
-                    models,
-                    placements,
-                    images,
-                    counts,
-                    modelFailure,
-                    detail);
+            var objects =
+                    new TileObjects(
+                            admission.mapId(),
+                            recorded.x(),
+                            recorded.y(),
+                            models,
+                            placements,
+                            images,
+                            counts,
+                            modelFailure,
+                            detail);
+            objects.retainedSourceBytes = peakRetainedSourceBytes;
+            return objects;
         }
 
         private void count(Count count) {
@@ -1111,7 +1230,8 @@ public final class WorldExteriorObjects {
                                         transform.scale(),
                                         transform.cos(),
                                         transform.sin(),
-                                        Rotation.heading(transform.cos(), transform.sin())));
+                                        buildingRotation(
+                                                record, transform.cos(), transform.sin())));
                     }
                 }
             }
@@ -1223,21 +1343,18 @@ public final class WorldExteriorObjects {
                 }
                 var selected = new ArrayList<Integer>(2);
                 selected.add(0);
-                if (building.doodadSet() != 0) {
+                if ((building.flags() & SETS_FROM_MWDS) != 0) {
+                    // MODF doodadSet names an MWDR range of MWDS set indexes (set 0 is kept).
+                    if (!selectFromMwds(building.doodadSet(), declared, selected)) {
+                        count(Count.SET_UNSUPPORTED);
+                    }
+                } else if (building.doodadSet() != 0) {
                     if (building.doodadSet() >= declared.sets().size()) {
                         count(Count.SET_UNSUPPORTED);
                     } else {
                         selected.add(building.doodadSet());
                     }
                 }
-                var parent =
-                        new WorldBasicWmo.Transform(
-                                building.x(),
-                                building.y(),
-                                building.z(),
-                                building.scale(),
-                                building.cos(),
-                                building.sin());
                 for (int set : selected) {
                     var range = declared.sets().get(set);
                     long end = range.firstDefinition() + range.count();
@@ -1247,18 +1364,41 @@ public final class WorldExteriorObjects {
                             count(Count.SET_DOODAD_UNSUPPORTED);
                             continue;
                         }
-                        setDoodad(building, parent, declared, set, (int) d);
+                        setDoodad(building, declared, set, (int) d);
                     }
                 }
             }
         }
 
+        /**
+         * Adds the MWDS sets of MWDR entry {@code entry}; false (nothing added) when the entry or
+         * any set index it lists is outside the recorded MWDR, MWDS or MODS.
+         */
+        private boolean selectFromMwds(
+                int entry, WmoFormats.Doodads declared, List<Integer> selected) {
+            if (entry >= setRanges.size()) {
+                return false;
+            }
+            var range = setRanges.get(entry);
+            if (range.end() < range.begin() || range.end() >= setIds.size()) {
+                return false;
+            }
+            var listed = new ArrayList<Integer>();
+            for (long i = range.begin(); i <= range.end(); i++) {
+                int set = setIds.get((int) i);
+                if (set >= declared.sets().size()) {
+                    return false;
+                }
+                if (!selected.contains(set) && !listed.contains(set)) {
+                    listed.add(set);
+                }
+            }
+            selected.addAll(listed);
+            return true;
+        }
+
         private void setDoodad(
-                Placement building,
-                WorldBasicWmo.Transform parent,
-                WmoFormats.Doodads declared,
-                int set,
-                int ordinal) {
+                Placement building, WmoFormats.Doodads declared, int set, int ordinal) {
             var def = declared.definitions().get(ordinal);
             long id =
                     def.reference() < declared.fileIdCount() ? declared.fileId(def.reference()) : 0;
@@ -1276,8 +1416,13 @@ public final class WorldExteriorObjects {
                 count(Count.SET_DOODAD_UNSUPPORTED);
                 return;
             }
-            double x = parent.x(def.x(), def.y()), y = parent.y(def.x(), def.y());
-            double z = parent.z(def.z());
+            // The building's full rotation (heading, pitch, roll) and scale carry the MODD
+            // position; for an untilted building this is exactly the heading rule.
+            double[] m = building.rotation().rowMajor();
+            double s = building.scale(), a = def.x(), b = def.y(), c = def.z();
+            double x = building.x() + s * (m[0] * a + m[1] * b + m[2] * c);
+            double y = building.y() + s * (m[3] * a + m[4] * b + m[5] * c);
+            double z = building.z() + s * (m[6] * a + m[7] * b + m[8] * c);
             if (!finite(x, y, z)) {
                 count(Count.SET_DOODAD_UNSUPPORTED);
                 return;
@@ -1389,6 +1534,8 @@ public final class WorldExteriorObjects {
             int[] local = new int[counts.length];
             var pending = new ArrayList<PendingMesh>();
             int tentativeVertices = 0, tentativeIndices = 0, tentativeRanges = 0;
+            // Heap held by pending copies: every candidate vertex and index of every kept group.
+            long pendingVertices = 0, pendingIndices = 0, tentativeMaterialVertices = 0;
             for (int g = 0; g < lod0; g++) {
                 token.check();
                 long groupId = root.gfid(g);
@@ -1400,6 +1547,33 @@ public final class WorldExteriorObjects {
                 var mesh = readGroup(g, groupId, root, local);
                 if (mesh == null) {
                     continue;
+                }
+                int meshVertices = mesh.vertices().length / VERTEX_FLOATS;
+                boolean materialOnly = mesh.ranges().stream().noneMatch(r -> r.blend() == OPAQUE);
+                if (materialOnly
+                        && !mesh.ranges().isEmpty()
+                        && meshVertices
+                                > MAX_MATERIAL_VERTICES
+                                        - materialVertices
+                                        - tentativeMaterialVertices) {
+                    // resolveBuilding would cap every range of this cutout- or blend-only mesh on
+                    // its vertices (BATCH_CAPPED, then GROUP_EMPTY) before reading any image; do it
+                    // now so its copy is never held. Material vertices still pending are charged
+                    // as if kept, a conservative bound.
+                    local[Count.BATCH_CAPPED.ordinal()] += mesh.ranges().size();
+                    local[Count.GROUP_EMPTY.ordinal()]++;
+                    continue;
+                }
+                if (materialOnly) {
+                    tentativeMaterialVertices += meshVertices;
+                }
+                pendingVertices += meshVertices;
+                pendingIndices += mesh.indices().length;
+                if (pendingVertices > MAX_VERTICES + MAX_MATERIAL_VERTICES
+                        || pendingIndices > MAX_INDICES + MAX_MATERIAL_INDICES) {
+                    // More candidate geometry than both budgets could ever draw: never hold it.
+                    count(Count.ROOT_CAPPED);
+                    return RootState.CAPPED;
                 }
                 pending.add(mesh);
                 // Caps are decided by opaque candidates alone, exactly as the opaque-only profile
@@ -1471,7 +1645,7 @@ public final class WorldExteriorObjects {
                 if (range.blend() != OPAQUE) {
                     continue;
                 }
-                int slot = image(range.image(), true, Pool.BUILDING, local);
+                int slot = image(range.image(), OPAQUE, Pool.BUILDING, local);
                 if (slot < 0) {
                     local[Count.BATCH_MISSING_IMAGE.ordinal()]++;
                     continue;
@@ -1500,7 +1674,7 @@ public final class WorldExteriorObjects {
                     local[Count.BATCH_CAPPED.ordinal()]++;
                     continue;
                 }
-                int slot = image(range.image(), false, Pool.MATERIAL, local);
+                int slot = image(range.image(), range.blend(), Pool.MATERIAL, local);
                 if (slot < 0) {
                     local[
                             (slot == UNREADABLE
@@ -1539,7 +1713,7 @@ public final class WorldExteriorObjects {
             var compact = new int[mesh.indices().length];
             int used = 0;
             for (var range : mesh.ranges()) {
-                int slot = image(range.image(), range.blend() == OPAQUE, pool, local);
+                int slot = image(range.image(), range.blend(), pool, local);
                 if (slot < 0) {
                     local[missing.ordinal()]++;
                     continue;
@@ -1944,9 +2118,10 @@ public final class WorldExteriorObjects {
          * Image slot for a texture1 FileDataID; MISSING when it is missing for any other reason,
          * UNREADABLE when a material-pool read was refused at SOURCE_INPUT.
          */
-        private int image(long id, boolean opaque, Pool pool, int[] local) {
-            // Alpha is forced only for opaque ranges, so one ID may decode twice.
-            long key = id * 2 + (opaque ? 0 : 1);
+        private int image(long id, int materialClass, Pool pool, int[] local) {
+            // Alpha is forced for opaque ranges and coverage-preserved down the chain for cutout
+            // ones, so one ID may decode once per material class.
+            long key = id * 3 + materialClass;
             var slots =
                     switch (pool) {
                         case BUILDING -> imageSlots;
@@ -1974,7 +2149,7 @@ public final class WorldExteriorObjects {
                     case MATERIAL -> materialImagesRead++;
                     case DOODAD -> modelImagesRead++;
                 }
-                slot = decode(id, opaque, pool, local);
+                slot = decode(id, materialClass, pool, local);
             }
             slots.put(key, slot);
             return slot;
@@ -1988,7 +2163,7 @@ public final class WorldExteriorObjects {
                 int slot,
                 Pool pool,
                 long id,
-                boolean opaque,
+                int materialClass,
                 long width,
                 long height,
                 int recorded,
@@ -1998,7 +2173,8 @@ public final class WorldExteriorObjects {
          * Reads and decodes one image at the registration side; the uploaded level is chosen later
          * by {@link #allocateImages}. Missing, protected or undecodable images are counted here.
          */
-        private int decode(long id, boolean opaque, Pool pool, int[] local) {
+        private int decode(long id, int materialClass, Pool pool, int[] local) {
+            boolean opaque = materialClass == OPAQUE;
             boolean building = pool != Pool.DOODAD;
             var unavailable = building ? Count.IMAGE_UNAVAILABLE : Count.MODEL_IMAGE_UNAVAILABLE;
             var undecodable = building ? Count.IMAGE_UNDECODABLE : Count.MODEL_IMAGE_UNDECODABLE;
@@ -2053,10 +2229,12 @@ public final class WorldExteriorObjects {
                 }
                 images.add(image);
                 int slot = images.size() - 1;
+                retain(id, raw);
                 while (demands.size() < slot) {
                     demands.add(null);
                 }
-                demands.add(new Demand(slot, pool, id, opaque, width, height, recorded, level));
+                demands.add(
+                        new Demand(slot, pool, id, materialClass, width, height, recorded, level));
                 local[(building ? Count.IMAGE_DECODED : Count.MODEL_IMAGE_DECODED).ordinal()]++;
                 return slot;
             }
@@ -2149,6 +2327,110 @@ public final class WorldExteriorObjects {
             }
         }
 
+        /**
+         * Replaces every used image's final level with its full mip chain (#265): the file's own
+         * mips below that level while it records them, generated after that, with the alpha
+         * treatment of the image's material class.
+         */
+        private void chainImages() {
+            boolean[] used = new boolean[images.size()];
+            for (var model : models) {
+                for (var mesh : model.meshes()) {
+                    for (var range : mesh.ranges()) {
+                        used[range.image()] = true;
+                    }
+                }
+            }
+            for (var demand : demands) {
+                if (demand == null || !used[demand.slot()]) {
+                    continue;
+                }
+                token.check();
+                var top = images.get(demand.slot());
+                int level = top.mipLevel();
+                // The file's own mips below the final level, when it records any.
+                byte[] file = level + 1 < demand.recorded() ? source(demand) : null;
+                var chain =
+                        ObjectTextureMips.build(
+                                top.width(),
+                                top.height(),
+                                top.rgba,
+                                demand.materialClass(),
+                                (below, w, h) ->
+                                        file == null || level + below >= demand.recorded()
+                                                ? null
+                                                : fileMip(file, level + below, w, h),
+                                token::isCanceled);
+                switch (chain.source()) {
+                    case FILE -> counts[Count.IMAGE_MIPS_FILE.ordinal()]++;
+                    case PARTIAL -> counts[Count.IMAGE_MIPS_PARTIAL.ordinal()]++;
+                    case GENERATED -> counts[Count.IMAGE_MIPS_GENERATED.ordinal()]++;
+                    case SINGLE -> {}
+                }
+                images.set(
+                        demand.slot(),
+                        new Image(
+                                top.id,
+                                top.width(),
+                                top.height(),
+                                level,
+                                chain.rgba(),
+                                chain.source()));
+            }
+        }
+
+        /** The image's retained source bytes, or a second read when they were not kept. */
+        private byte[] source(Demand demand) {
+            byte[] kept = sources.get(demand.id());
+            if (kept != null || unreadSources.contains(demand.id())) {
+                return kept; // A refused second read is not tried again.
+            }
+            // A refused second read of a cutout or blended image keeps what the first read gave,
+            // as the first read would have: it never costs the tile its set.
+            var input =
+                    derived(
+                            demand.id(),
+                            imageKind(demand.pool()),
+                            demand.pool() == Pool.MATERIAL ? new boolean[1] : null);
+            if (input == null) {
+                unreadSources.add(demand.id());
+                return null;
+            }
+            try (input) {
+                byte[] raw = input.bytes().clone();
+                retain(demand.id(), raw);
+                return raw;
+            }
+        }
+
+        /** Keeps one file's source bytes while they fit the bound; counts each file once. */
+        private void retain(long id, byte[] raw) {
+            if (sources.containsKey(id) || retainedSourceBytes + raw.length > retainLimit) {
+                return;
+            }
+            sources.put(id, raw.clone());
+            retainedSourceBytes += raw.length;
+            peakRetainedSourceBytes = Math.max(peakRetainedSourceBytes, retainedSourceBytes);
+        }
+
+        /** The file's own mip {@code level}, or null when it does not decode at that size. */
+        private byte[] fileMip(byte[] raw, int level, int width, int height) {
+            try {
+                var mip =
+                        Blp2Decoder.decodeSynchronous(
+                                AssetSource.bytes(raw),
+                                level,
+                                IMAGE_LIMITS,
+                                token,
+                                Blp2Types.MipProfile.STRICT);
+                return mip.mipLevel() == level && mip.width() == width && mip.height() == height
+                        ? mip.rgba()
+                        : null;
+            } catch (BlpFormatException | IllegalArgumentException absent) {
+                return null;
+            }
+        }
+
         /** Every level down to 1x1: recorded levels come from the file, the rest are reduced. */
         private static int levelsDown(Demand demand) {
             int levels = 1;
@@ -2163,26 +2445,18 @@ public final class WorldExteriorObjects {
         private Image relevel(Demand demand, int level) {
             var registered = images.get(demand.slot());
             if (level < demand.recorded()) {
-                // A refused second read of a cutout or blended image keeps the registered level,
-                // as the first read would have: it never costs the tile its set.
-                var input =
-                        derived(
-                                demand.id(),
-                                imageKind(demand.pool()),
-                                demand.pool() == Pool.MATERIAL ? new boolean[1] : null);
-                if (input != null) {
-                    try (input) {
-                        var image =
-                                decodeLevel(
-                                        input.bytes(),
-                                        demand.id(),
-                                        demand.width(),
-                                        demand.height(),
-                                        level,
-                                        demand.opaque());
-                        if (image != null) {
-                            return image;
-                        }
+                byte[] raw = source(demand);
+                if (raw != null) {
+                    var image =
+                            decodeLevel(
+                                    raw,
+                                    demand.id(),
+                                    demand.width(),
+                                    demand.height(),
+                                    level,
+                                    demand.materialClass() == OPAQUE);
+                    if (image != null) {
+                        return image;
                     }
                 }
                 if (level < demand.registered()) {
@@ -2323,15 +2597,26 @@ public final class WorldExteriorObjects {
                 && a.scale() == b.scale();
     }
 
+    /**
+     * A MODF rotation: the same construction as MDDF ({@link Rotation#mddf}), heading from rotation
+     * y, pitch from rotation x and roll from rotation z. wowdev ADT/v18 builds MODF and MDDF
+     * placement matrices with the identical sequence (rotation[1] - 270, -rotation[0], rotation[2]
+     * - 90), and TrinityCore ec72c19 places WMO and M2 instances alike through {@code
+     * ModelInstance} with {@code fromEulerAnglesZYX}. Untilted placements stay bit-identical to the
+     * heading rule.
+     */
+    static Rotation buildingRotation(WorldPlacements.WorldObject p, double cos, double sin) {
+        return Rotation.mddf(cos, sin, p.rotation().x(), p.rotation().z());
+    }
+
     /** Placement policy; null means unsupported. The ADT heading rule is WorldBasicWmo's. */
     private static WorldBasicWmo.Transform qualify(WorldPlacements.WorldObject p) {
         int flags = p.flags();
         if ((flags & DIRECT_ID) == 0
-                || (flags & ~(DIRECT_ID | SCALED | LOD_CAPABLE)) != 0
+                || (flags & ~(DIRECT_ID | SCALED | LOD_CAPABLE | SETS_FROM_MWDS)) != 0
                 || p.reference().kind() != WorldPlacements.ReferenceKind.FILE_DATA_ID
                 || p.reference().value() <= 0
-                || p.rotation().x() != 0
-                || p.rotation().z() != 0) {
+                || !buildingRotation(p, 1, 0).finite()) {
             return null;
         }
         double scale = 1.0;

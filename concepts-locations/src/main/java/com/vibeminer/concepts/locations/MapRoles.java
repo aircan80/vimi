@@ -36,7 +36,10 @@ public final class MapRoles {
         FLIGHT_MASTER
     }
 
-    /** Questie {@code friendlyToFaction}: "A", "H", "AH"; anything else stays unknown. */
+    /**
+     * Questie {@code friendlyToFaction}: "A", "H", "AH" (any case); a missing or unrecognised value
+     * is UNKNOWN.
+     */
     public enum Friendly {
         ALLIANCE,
         HORDE,
@@ -268,11 +271,16 @@ public final class MapRoles {
                 LocationAdapters.state(issues), source, releaseTag, result, locations, issues);
     }
 
-    /** One role NPC position on a selected-build UiMap, normalized to the map's 0..1 frame. */
-    public record Marker(Npc npc, double x, double y, MapTypes.Basis basis) {
+    /**
+     * One role NPC position on a selected-build UiMap, normalized to the map's 0..1 frame, with the
+     * recorded Questie location it was placed from.
+     */
+    public record Marker(
+            Npc npc, double x, double y, MapTypes.Basis basis, LocationTypes.Location location) {
         public Marker {
             Objects.requireNonNull(npc);
             Objects.requireNonNull(basis);
+            Objects.requireNonNull(location);
         }
     }
 
@@ -306,6 +314,100 @@ public final class MapRoles {
                     .filter(m -> m.npc().layers().stream().anyMatch(layers::contains))
                     .toList();
         }
+    }
+
+    /** A placed marker carried to world yards (no height) through one recorded frame. */
+    public record WorldMarker(Marker marker, double x, double y, long assignmentId) {
+        public WorldMarker {
+            Objects.requireNonNull(marker);
+            if (!Double.isFinite(x) || !Double.isFinite(y)) {
+                throw new IllegalArgumentException("Non-finite world point");
+            }
+        }
+    }
+
+    /**
+     * Role markers of one world map in world yards. {@code outside} counts markers whose UiMap has
+     * frames on this map but none whose UI rectangle contains them; {@code ambiguous} counts
+     * markers where frames that contain them disagree; {@code degenerate} counts markers whose only
+     * containing frames cannot be inverted. Markers on UiMaps with no frame on this map belong to
+     * other maps and are not counted.
+     */
+    public record WorldPlacement(
+            long worldMapId,
+            List<WorldMarker> markers,
+            int outside,
+            int ambiguous,
+            int degenerate,
+            List<String> issues) {
+        public WorldPlacement {
+            markers = List.copyOf(markers);
+            issues = List.copyOf(issues);
+        }
+    }
+
+    /** World points agree when they are within this many yards. */
+    static final double WORLD_AGREEMENT = 0.01;
+
+    /**
+     * Inverts each placed marker through the recorded unscoped UiMapAssignment frames of {@code
+     * frames.worldMapId()} ({@link MapTypes.WorldFrame#toWorld}). A marker gets a world point only
+     * when every invertible frame of its UiMap that contains it gives the same point. No height is
+     * assigned or guessed.
+     */
+    public static WorldPlacement world(Placement placement, MapTypes.WorldFrames frames) {
+        Objects.requireNonNull(placement);
+        Objects.requireNonNull(frames);
+        var byUiMap = new java.util.HashMap<Long, List<MapTypes.WorldFrame>>();
+        for (var frame : frames.frames()) {
+            byUiMap.computeIfAbsent(frame.uiMapId(), k -> new ArrayList<>()).add(frame);
+        }
+        var result = new ArrayList<WorldMarker>();
+        int outside = 0, ambiguous = 0, degenerate = 0;
+        var uiMaps = new java.util.TreeSet<>(placement.byUiMap().keySet());
+        for (long uiMap : uiMaps) {
+            var candidates = byUiMap.get(uiMap);
+            if (candidates == null) {
+                continue;
+            }
+            for (var marker : placement.byUiMap().get(uiMap)) {
+                double[] point = null;
+                long assignment = 0;
+                boolean contained = false, disagree = false;
+                for (var frame : candidates) {
+                    if (!frame.containsUi(marker.x(), marker.y())) {
+                        continue;
+                    }
+                    contained = true;
+                    var world = frame.toWorld(marker.x(), marker.y());
+                    if (world == null) {
+                        continue;
+                    }
+                    if (point == null) {
+                        point = world;
+                        assignment = frame.assignmentId();
+                    } else if (Math.abs(point[0] - world[0]) > WORLD_AGREEMENT
+                            || Math.abs(point[1] - world[1]) > WORLD_AGREEMENT) {
+                        disagree = true;
+                    }
+                }
+                if (disagree) {
+                    ambiguous++;
+                } else if (point != null) {
+                    result.add(new WorldMarker(marker, point[0], point[1], assignment));
+                } else if (contained) {
+                    degenerate++;
+                } else {
+                    outside++;
+                }
+            }
+        }
+        var issues = new ArrayList<>(frames.issues());
+        if (frames.message() != null && frames.state() != MapTypes.State.READY) {
+            LocationAdapters.issue(issues, frames.message());
+        }
+        return new WorldPlacement(
+                frames.worldMapId(), result, outside, ambiguous, degenerate, issues);
     }
 
     /** The catalog's recorded locations in NPC order: the input to one batch resolution. */
@@ -369,7 +471,7 @@ public final class MapRoles {
                         continue;
                     }
                     byUiMap.computeIfAbsent(entry.getKey(), k -> new ArrayList<>())
-                            .add(new Marker(npc, first.x(), first.y(), first.basis()));
+                            .add(new Marker(npc, first.x(), first.y(), first.basis(), location));
                     drawn = true;
                 }
                 if (!drawn) {
@@ -380,11 +482,12 @@ public final class MapRoles {
         return new Placement(catalog, byUiMap, expected.size(), unplaced, ambiguous, issues);
     }
 
-    private static Friendly friendly(Object value) {
-        if (!(value instanceof String text)) {
+    /** Case and surrounding space are ignored; any other value is unrecognised (UNKNOWN). */
+    static Friendly friendly(Object value) {
+        if (!(value instanceof String raw) || raw.length() > 8) {
             return Friendly.UNKNOWN;
         }
-        return switch (text) {
+        return switch (raw.strip().toUpperCase(java.util.Locale.ROOT)) {
             case "A" -> Friendly.ALLIANCE;
             case "H" -> Friendly.HORDE;
             case "AH", "HA" -> Friendly.BOTH;

@@ -297,12 +297,20 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    /** Mip-chain sources describe decoded images, not outcomes; they have their own test. */
+    private static final java.util.Set<WorldExteriorObjects.Count> MIP_SOURCES =
+            java.util.EnumSet.of(
+                    WorldExteriorObjects.Count.IMAGE_MIPS_FILE,
+                    WorldExteriorObjects.Count.IMAGE_MIPS_PARTIAL,
+                    WorldExteriorObjects.Count.IMAGE_MIPS_GENERATED);
+
+    /** Non-zero outcome buckets. */
     private static Map<WorldExteriorObjects.Count, Integer> counts(
             WorldExteriorObjects.TileObjects set) {
         var result =
                 new EnumMap<WorldExteriorObjects.Count, Integer>(WorldExteriorObjects.Count.class);
         for (var c : WorldExteriorObjects.Count.values()) {
-            if (set.count(c) != 0) {
+            if (set.count(c) != 0 && !MIP_SOURCES.contains(c)) {
                 result.put(c, set.count(c));
             }
         }
@@ -431,8 +439,8 @@ class WorldExteriorObjectsTest {
                         Modf.of(ROOT, 1, 0x8),
                         Modf.of(ROOT, 2, 0x9), // 0x1 unsupported
                         Modf.of(ROOT, 3, 0x4), // name-table reference
-                        new Modf(ROOT, 4, 0x8, 1, 2, 3, 5, 0, 0, 1024), // pitch
-                        new Modf(ROOT, 5, 0x8, 1, 2, 3, 0, 0, 5, 1024), // roll
+                        new Modf(ROOT, 4, 0x8, 1, 2, 3, 5, 0, 0, 1024), // pitch: drawn (#268)
+                        new Modf(ROOT, 5, 0x8, 1, 2, 3, 0, 0, 5, 1024), // roll: drawn (#268)
                         new Modf(ROOT, 6, 0xc, 1, 2, 3, 0, 0, 0, 0), // scaled to zero
                         new Modf(ROOT, 7, 0x8, 1, 2, 3, 0, 0, 0, 0), // raw scale ignored
                         Modf.of(ROOT, 8, 0x8),
@@ -445,8 +453,8 @@ class WorldExteriorObjectsTest {
                 var set = f.run()) {
             assertEquals(
                     Map.of(
-                            WorldExteriorObjects.Count.PLACEMENT_DRAWN, 3,
-                            WorldExteriorObjects.Count.PLACEMENT_UNSUPPORTED, 7,
+                            WorldExteriorObjects.Count.PLACEMENT_DRAWN, 5,
+                            WorldExteriorObjects.Count.PLACEMENT_UNSUPPORTED, 5,
                             WorldExteriorObjects.Count.PLACEMENT_SHARED_DUPLICATE, 1,
                             WorldExteriorObjects.Count.PLACEMENT_CONFLICTING, 2,
                             WorldExteriorObjects.Count.ROOT_DRAWN, 1,
@@ -456,11 +464,11 @@ class WorldExteriorObjectsTest {
                     counts(set));
             assertPlacementsAccounted(set, records.size());
             assertEquals(
-                    List.of(0, 6, 7),
+                    List.of(0, 3, 4, 6, 7),
                     set.placements().stream()
                             .map(WorldExteriorObjects.Placement::ordinal)
                             .toList());
-            assertEquals(1.0, set.placements().get(1).scale(), 0);
+            assertEquals(1.0, set.placements().get(3).scale(), 0);
         }
     }
 
@@ -732,6 +740,52 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void imagesCarryTheirFullChainUsingTheFilesOwnMipsWhenTheyArePresent() {
+        // 4x4 has levels 4x4, 2x2, 1x1. Each fixture level is one flat colour.
+        for (int declared = 1; declared <= 3; declared++) {
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+                f.files.sources.put(IMAGE, blp(4, 4, declared, 0xf800));
+                try (var set = f.run()) {
+                    var image = set.images().getFirst();
+                    assertEquals(4, image.width());
+                    assertEquals(
+                            com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(4, 4) * 4,
+                            image.rgba().remaining());
+                    var expected =
+                            switch (declared) {
+                                case 3 ->
+                                        com.vibeminer.rendering.world.ObjectTextureMips.Source.FILE;
+                                case 2 ->
+                                        com.vibeminer.rendering.world.ObjectTextureMips.Source
+                                                .PARTIAL;
+                                default ->
+                                        com.vibeminer.rendering.world.ObjectTextureMips.Source
+                                                .GENERATED;
+                            };
+                    assertEquals(expected, image.mips());
+                    assertEquals(
+                            declared == 3 ? 1 : 0,
+                            set.count(WorldExteriorObjects.Count.IMAGE_MIPS_FILE));
+                    assertEquals(
+                            declared == 2 ? 1 : 0,
+                            set.count(WorldExteriorObjects.Count.IMAGE_MIPS_PARTIAL));
+                    assertEquals(
+                            declared == 1 ? 1 : 0,
+                            set.count(WorldExteriorObjects.Count.IMAGE_MIPS_GENERATED));
+                    // Opaque: every level of the chain is red with alpha 255.
+                    var rgba = image.rgba();
+                    for (int at = 0; at < rgba.remaining(); at += 4) {
+                        assertEquals(255, rgba.get(at) & 255);
+                        assertEquals(255, rgba.get(at + 3) & 255);
+                    }
+                    // Budgets still count the drawn top level only.
+                    assertEquals(16, set.pixels());
+                }
+            }
+        }
+    }
+
+    @Test
     void placementCapKeepsFirstSixtyFourInSourceOrder() {
         var records = new ArrayList<Modf>();
         for (int i = 0; i < 70; i++) {
@@ -985,7 +1039,8 @@ class WorldExteriorObjectsTest {
 
     @Test
     void tilePixelBudgetLowersLevelsInsteadOfDroppingImages() {
-        // 15 x 256^2 + 256x128 fill the 1 Mi pixel budget exactly; the last two images still
+        // 15 x 256^2 + 256x128 chains (1,354,406 texels) leave 43,695 of the 1,398,101-texel
+        // chain budget, so the last two images still
         // draw at 128^2 instead of being dropped. 4016 records level 1, so its own mip is read
         // again from the file; 4017 records only level 0, so it is reduced by a 2x2 box.
         var materials = new ArrayList<Material>();
@@ -1015,8 +1070,12 @@ class WorldExteriorObjectsTest {
                 assertEquals(4016L, recorded.id());
                 assertEquals(1, recorded.mipLevel());
                 assertEquals(128, recorded.width());
-                // Registered at 128 (its recorded level 1): no second read was needed.
+                // Registered at 128 (its recorded level 1); its chain takes the recorded level 2
+                // below it from the bytes kept since registration, so one read in all (#265).
                 assertEquals(1, f.files.opens.get(4016L).get());
+                assertEquals(
+                        com.vibeminer.rendering.world.ObjectTextureMips.Source.PARTIAL,
+                        recorded.mips());
                 var reduced = set.images().get(17);
                 assertEquals(4017L, reduced.id());
                 assertEquals(1, reduced.mipLevel());
@@ -1152,7 +1211,20 @@ class WorldExteriorObjectsTest {
             f.files.sources.put(
                     GROUP, group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 1))));
             f.files.sources.put(IMAGE2, blp(256, 256, 3, 0x001f));
+            // Normally the bytes kept since registration serve the relevel (#265): no second
+            // read, and the allotted level is drawn.
             try (var set = f.run()) {
+                var cutout =
+                        set.images().stream()
+                                .filter(i -> i.id() == IMAGE2)
+                                .findFirst()
+                                .orElseThrow();
+                assertEquals(256, cutout.width(), "allotted level from the kept bytes");
+                assertEquals(1, f.files.opens.get(IMAGE2).get(), "no second read");
+            }
+            // With nothing retained, the second read happens and its refusal keeps the level.
+            f.files.opens.clear();
+            try (var set = retaining(f, 0)) {
                 assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
                 var cutout =
                         set.images().stream()
@@ -1161,6 +1233,70 @@ class WorldExteriorObjectsTest {
                                 .orElseThrow();
                 assertEquals(128, cutout.width(), "registered level kept");
                 assertEquals(2, f.files.opens.get(IMAGE2).get(), "the second read was attempted");
+                assertEquals(0, set.retainedSourceBytes);
+            }
+        }
+    }
+
+    private static WorldExteriorObjects.TileObjects retaining(Fixture f, long limit) {
+        return WorldExteriorObjects.prepare(
+                f.engine,
+                f.scope,
+                TILE,
+                Cancellation.NONE,
+                WorldExteriorObjects.ModelReader.STANDARD,
+                WorldExteriorObjects.ImageDetail.STANDARD,
+                limit);
+    }
+
+    @Test
+    void retainedImageSourcesStayWithinTheirBoundAndCountEachFileOnce() {
+        // One 256^2 file with three recorded levels, drawn opaque and cutout: two images (one per
+        // material class) from one source file.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            1,
+                            new long[] {GROUP},
+                            List.of(new Material(0, IMAGE2, 0), new Material(1, IMAGE2, 0))));
+            f.files.sources.put(
+                    GROUP, group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 1))));
+            byte[] file = blp(256, 256, 3, 0x001f);
+            f.files.sources.put(IMAGE2, file);
+            try (var set = retaining(f, WorldExteriorObjects.RETAINED_SOURCE_BYTES)) {
+                assertEquals(2, set.images().size(), "one image per material class");
+                assertEquals(file.length, set.retainedSourceBytes, "the file is kept once");
+            }
+            // A bound below one file keeps nothing, yet the tile draws the same images.
+            try (var set = retaining(f, file.length - 1)) {
+                assertEquals(0, set.retainedSourceBytes);
+                assertEquals(2, set.images().size());
+                assertTrue(set.images().stream().allMatch(i -> i.width() == 256));
+            }
+        }
+        // Many files: the kept bytes never pass the bound, and the drawn result is unchanged.
+        var materials = new ArrayList<Material>();
+        var batches = new ArrayList<Batch>();
+        for (int i = 0; i < 18; i++) {
+            materials.add(new Material(0, 4000 + i, 0));
+            batches.add(new Batch(i * 3, 3, 0, i));
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(1, new long[] {GROUP}, materials));
+            f.files.sources.put(GROUP, group(EXT, 3, 18, batches));
+            for (int i = 0; i < 18; i++) {
+                f.files.sources.put(4000L + i, blp(256, 256, 3, i));
+            }
+            long one = f.files.sources.get(4000L).length, bound = one * 5 + one / 2;
+            java.util.List<Integer> unbounded;
+            try (var set = f.run()) {
+                unbounded = set.images().stream().map(i -> i.width()).toList();
+            }
+            try (var set = retaining(f, bound)) {
+                assertTrue(set.retainedSourceBytes <= bound, "kept " + set.retainedSourceBytes);
+                assertEquals(one * 5, set.retainedSourceBytes, "whole files only, up to the bound");
+                assertEquals(unbounded, set.images().stream().map(i -> i.width()).toList());
             }
         }
     }
@@ -1666,6 +1802,245 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void moddFlagsThatNeverChangeReferenceOrTransformAreAdmitted() {
+        // Zephras Isle records 0x10, 0x12, 0x16 and 0x1e; 0x1 to 0x10 are admitted uninterpreted,
+        // unseen higher bits stay refused.
+        int[] flags = {0x01, 0x02, 0x04, 0x08, 0x10, 0x12, 0x16, 0x1e, 0x20, 0x40, 0x80};
+        var defs = new ArrayList<Modd>();
+        for (int flag : flags) {
+            defs.add(new Modd(flag << 24, 0, 0, 0, new double[] {0, 0, 0, 1}, 1));
+        }
+        var chunks = doodadChunks(new int[][] {{0, flags.length}}, new long[] {MODEL}, defs);
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), chunks));
+            try (var set = run(f, obj0(List.of(Modf.of(ROOT, 1, 0x8)), List.of(), 0))) {
+                assertEquals(8, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(3, set.count(WorldExteriorObjects.Count.SET_DOODAD_UNSUPPORTED));
+            }
+        }
+    }
+
+    @Test
+    void tiltedBuildingsFollowThePinnedPlacementMatrixAndCarryTheirSetDoodads() {
+        // MODF pitch (rotation x) and roll (rotation z) use the MDDF construction: the wowdev
+        // ADT/v18 placement matrix is the oracle, as for MDDF. A set doodad at a local offset
+        // lands where the full building matrix puts it, not where the heading alone would.
+        var tilted =
+                new Modf(ROOT, 1, 0x8, 1234.5f, 87.25f, 2345.75f, 17.18f, 1.41f, -22.42f, 1024);
+        var steep = new Modf(ROOT, 2, 0xc, 500, 40, 600, 37.85f, 56.82f, -5.54f, 1536);
+        var defs = List.of(new Modd(0, 3, -2, 5, new double[] {0, 0, 0, 1}, 1));
+        var chunks = doodadChunks(new int[][] {{0, 1}}, new long[] {MODEL}, defs);
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), chunks));
+            try (var set = run(f, obj0(List.of(tilted, steep), List.of()))) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_UNSUPPORTED));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                var buildings =
+                        set.placements().stream()
+                                .filter(p -> p.kind() == WorldExteriorObjects.Kind.BUILDING)
+                                .toList();
+                var doodads =
+                        set.placements().stream()
+                                .filter(p -> p.kind() == WorldExteriorObjects.Kind.SET_DOODAD)
+                                .toList();
+                for (int i = 0; i < 2; i++) {
+                    var r = i == 0 ? tilted : steep;
+                    var oracle =
+                            GlMat4.adtPlacement(
+                                    r.x(),
+                                    r.y(),
+                                    r.z(),
+                                    r.pitch(),
+                                    r.heading(),
+                                    r.roll(),
+                                    r.flags() == 0xc ? r.scale() / 1024.0 : 1.0);
+                    assertMapsLike(oracle, buildings.get(i));
+                    var expected = oracle.apply(3, -2, 5);
+                    var doodad = doodads.get(i);
+                    assertEquals(expected[0], doodad.x(), 1e-6);
+                    assertEquals(expected[1], doodad.y(), 1e-6);
+                    assertEquals(expected[2], doodad.z(), 1e-6);
+                }
+            }
+        }
+    }
+
+    @Test
+    void flag0x80BuildingsTakeTheirDoodadSetsFromMwdrAndMwds() {
+        // MODF 0x80: doodadSet 1 names MWDR entry 1 = MWDS[1..2] = sets {2, 1}; set 0 is kept.
+        // A second building names MWDR entry 5, which is not recorded: set 0 only, reported.
+        var defs =
+                List.of(
+                        new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 1}, 1),
+                        new Modd(0, 1, 0, 0, new double[] {0, 0, 0, 1}, 1),
+                        new Modd(0, 2, 0, 0, new double[] {0, 0, 0, 1}, 1),
+                        new Modd(0, 3, 0, 0, new double[] {0, 0, 0, 1}, 1));
+        var chunks =
+                doodadChunks(
+                        new int[][] {{0, 1}, {1, 1}, {2, 1}, {3, 1}}, new long[] {MODEL}, defs);
+        var mwdr = buffer(16).putInt(0).putInt(0).putInt(1).putInt(2).array();
+        var mwds = buffer(6).putShort((short) 3).putShort((short) 2).putShort((short) 1).array();
+        var listed = new Modf(ROOT, 1, 0x88, 100, 20, 300, 0, 90, 0, 1024);
+        var missing = new Modf(ROOT, 2, 0x88, 50, 5, 60, 0, 180, 0, 1024);
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), chunks));
+            byte[] objects =
+                    join(
+                            obj0(List.of(listed, missing), List.of(), 1, 5),
+                            chunk("MWDR", mwdr),
+                            chunk("MWDS", mwds));
+            try (var set = run(f, objects)) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertEquals(4, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_UNSUPPORTED));
+                var sets =
+                        set.placements().stream()
+                                .filter(p -> p.kind() == WorldExteriorObjects.Kind.SET_DOODAD)
+                                .map(p -> p.uniqueId() + ":" + p.doodadSet())
+                                .toList();
+                assertEquals(List.of("1:0", "1:2", "1:1", "2:0"), sets);
+            }
+        }
+    }
+
+    @Test
+    void aGroupFileOverOneMebibyteIsReadAndDrawn() {
+        // The BASIC_EXTERIOR read profile follows WmoGroupSpans.MAX_BYTES (8 MiB): a group padded
+        // past the old 1 MiB cap with an unparsed chunk still draws.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            byte[] small = group(EXT);
+            int mogp = indexOf(small, "MOGP");
+            byte[] pad = chunk("ZZZZ", new byte[1 << 20]);
+            byte[] big = join(small, pad);
+            ByteBuffer.wrap(big)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(mogp + 4, small.length - mogp - 8 + pad.length);
+            assertTrue(big.length > 1 << 20);
+            f.files.sources.put(GROUP, big);
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+            }
+        }
+    }
+
+    @Test
+    void pendingGroupCopiesStayWithinWhatTheBudgetsCanDraw() {
+        // A cutout-only group larger than the whole material vertex budget is capped before its
+        // copy is held (BATCH_CAPPED, GROUP_EMPTY), exactly as resolving it would have; its image
+        // is never read.
+        int vertices = WorldExteriorObjects.MAX_MATERIAL_VERTICES + 1;
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            2,
+                            new long[] {GROUP, GROUP + 1},
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
+            f.files.sources.put(GROUP + 1, group(EXT, vertices, 1, List.of(new Batch(0, 3, 0, 1))));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_EMPTY));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
+                assertNull(f.files.opens.get(IMAGE2), "the capped cutout image is never read");
+            }
+        }
+        // Hostile input: three groups each with one opaque triangle and 65,535 cutout triangles,
+        // hold more candidate indices than both index budgets together; the root is capped whole
+        // instead of keeping every copy.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            3,
+                            new long[] {GROUP, GROUP + 1, GROUP + 2},
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
+            for (int g = 0; g < 3; g++) {
+                f.files.sources.put(
+                        GROUP + g,
+                        group(
+                                EXT,
+                                3,
+                                65536,
+                                List.of(
+                                        new Batch(0, 3, 0, 0),
+                                        // MOBA counts are u16: three batches of 21,845 triangles
+                                        new Batch(3, 65535, 0, 1),
+                                        new Batch(3 + 65535, 65535, 0, 1),
+                                        new Batch(3 + 2 * 65535, 65535, 0, 1))));
+            }
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertTrue(set.models().isEmpty());
+            }
+        }
+    }
+
+    @Test
+    void mwdsEdgeRangesAreRefusedWholeAndListedSetsAreDeduplicated() {
+        // Four MODS sets, one definition each. MWDR entries: 0 = [1, 0] (begin > end),
+        // 1 = [0, 9] (end past MWDS), 2 = [0, 1] (lists set 7, past MODS), 3 = [2, 4] (lists
+        // sets 0, 2 and 2 again). MWDS = [3, 7, 0, 2, 2].
+        var defs = new ArrayList<Modd>();
+        for (int i = 0; i < 4; i++) {
+            defs.add(new Modd(0, i, 0, 0, new double[] {0, 0, 0, 1}, 1));
+        }
+        var chunks =
+                doodadChunks(
+                        new int[][] {{0, 1}, {1, 1}, {2, 1}, {3, 1}}, new long[] {MODEL}, defs);
+        var mwdr =
+                buffer(32)
+                        .putInt(1)
+                        .putInt(0)
+                        .putInt(0)
+                        .putInt(9)
+                        .putInt(0)
+                        .putInt(1)
+                        .putInt(2)
+                        .putInt(4)
+                        .array();
+        var mwds = buffer(10);
+        for (int id : new int[] {3, 7, 0, 2, 2}) {
+            mwds.putShort((short) id);
+        }
+        int[] entries = {0, 1, 2, 3};
+        var records = new ArrayList<Modf>();
+        for (int i = 0; i < entries.length; i++) {
+            records.add(new Modf(ROOT, 1 + i, 0x88, 100 + 10 * i, 20, 300, 0, 90, 0, 1024));
+        }
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), chunks));
+            byte[] objects =
+                    join(
+                            obj0(records, List.of(), entries),
+                            chunk("MWDR", mwdr),
+                            chunk("MWDS", mwds.array()));
+            try (var set = run(f, objects)) {
+                assertEquals(4, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                // The first three ranges are refused whole (all-or-nothing): set 0 only.
+                assertEquals(3, set.count(WorldExteriorObjects.Count.SET_UNSUPPORTED));
+                var sets =
+                        set.placements().stream()
+                                .filter(p -> p.kind() == WorldExteriorObjects.Kind.SET_DOODAD)
+                                .map(p -> p.uniqueId() + ":" + p.doodadSet())
+                                .toList();
+                // The fourth lists 0 (already drawn) and 2 twice: sets 0 and 2, each once.
+                assertEquals(List.of("1:0", "2:0", "3:0", "4:0", "4:2"), sets);
+            }
+        }
+    }
+
+    @Test
     void wmoDoodadSetsComposeTheBuildingTransform() {
         double h = Math.sqrt(0.5);
         var defs =
@@ -1676,7 +2051,7 @@ class WorldExteriorObjectsTest {
                         new Modd(5, 0, 0, 0, new double[] {0, 0, 0, 1}, 1), // outside MODI
                         new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 2}, 1), // not unit
                         new Modd(0, 0, 0, 0, new double[] {h, 0, 0, h}, 1), // pitched: drawn
-                        new Modd(0x02000000, 0, 0, 0, new double[] {0, 0, 0, 1}, 1)); // flag 0x2
+                        new Modd(0x20000000, 0, 0, 0, new double[] {0, 0, 0, 1}, 1)); // flag 0x20
         var chunks =
                 doodadChunks(new int[][] {{0, 2}, {2, 5}, {4, 1}}, new long[] {MODEL, 0}, defs);
         var building = new Modf(ROOT, 77, 0xc, 100, 20, 300, 0, 90, 0, 2048);

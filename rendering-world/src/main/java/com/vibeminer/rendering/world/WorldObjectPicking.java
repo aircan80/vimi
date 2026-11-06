@@ -108,9 +108,9 @@ public final class WorldObjectPicking {
          * (first vertex, vertex count, first index, index count, first range, range count); per
          * range (mesh-relative first index, index count, image, class); per placement its model and
          * 13 doubles (x, y, z, scale, row-major rotation); per image (width, height); 8 floats per
-         * vertex (position, normal, uv); mesh-relative u16 indices; RGBA8 pixels. Positions, UVs
-         * and indices are copied, and only the alpha of images that a cutout or blended range
-         * samples is kept.
+         * vertex (position, normal, uv); mesh-relative u16 indices; RGBA8 pixels, one full mip
+         * chain per image of which only the top level is read. Positions, UVs and indices are
+         * copied, and only the alpha of images that a cutout or blended range samples is kept.
          */
         public static Tile of(
                 int[] modelTable,
@@ -144,8 +144,12 @@ public final class WorldObjectPicking {
             var imageOffsets = new long[imageCount + 1];
             for (int i = 0; i < imageCount; i++) {
                 require(imageTable[i * 2] > 0 && imageTable[i * 2 + 1] > 0, "image size");
+                // Each image is its full packed mip chain; picking tests the top level.
                 imageOffsets[i + 1] =
-                        imageOffsets[i] + 4L * imageTable[i * 2] * imageTable[i * 2 + 1];
+                        imageOffsets[i]
+                                + 4L
+                                        * ObjectTextureMips.chainPixels(
+                                                imageTable[i * 2], imageTable[i * 2 + 1]);
             }
             require(imageOffsets[imageCount] == pixelData.length, "pixel data");
             var sampled = new boolean[imageCount];

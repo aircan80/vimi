@@ -40,6 +40,110 @@ public final class MapTypes {
         }
     }
 
+    /**
+     * One unscoped UiMapAssignment row as a recorded linear frame between a UiMap's normalized
+     * rectangle ({@code uiMin*}/{@code uiMax*}) and a world-yard region ({@code Region[0,1]} to
+     * {@code Region[3,4]}, x north and y west). {@link #toUi} is the selected-build world
+     * projection the resolver applies; {@link #toWorld} is its exact inverse over the same row.
+     * Neither guesses a height.
+     */
+    public record WorldFrame(
+            long assignmentId,
+            long uiMapId,
+            long worldMapId,
+            double uiMinX,
+            double uiMinY,
+            double uiMaxX,
+            double uiMaxY,
+            double minX,
+            double minY,
+            double maxX,
+            double maxY) {
+        public WorldFrame {
+            for (double value :
+                    new double[] {uiMinX, uiMinY, uiMaxX, uiMaxY, minX, minY, maxX, maxY}) {
+                if (!Double.isFinite(value)) {
+                    throw new IllegalArgumentException("Non-finite frame value");
+                }
+            }
+        }
+
+        /** Positive, finite world extent and a UI rectangle with distinct edges. */
+        public boolean invertible() {
+            return maxX - minX > 0 && maxY - minY > 0 && uiMaxX != uiMinX && uiMaxY != uiMinY;
+        }
+
+        /**
+         * Whether a normalized UiMap point lies inside this row's UI rectangle (edges included).
+         */
+        public boolean containsUi(double uiX, double uiY) {
+            return uiX >= Math.min(uiMinX, uiMaxX)
+                    && uiX <= Math.max(uiMinX, uiMaxX)
+                    && uiY >= Math.min(uiMinY, uiMaxY)
+                    && uiY <= Math.max(uiMinY, uiMaxY);
+        }
+
+        /** World yards to the normalized UiMap point, as the resolver records it; null outside. */
+        public double[] toUi(double worldX, double worldY) {
+            double sizeX = maxX - minX, sizeY = maxY - minY;
+            if (!(sizeX > 0)
+                    || !(sizeY > 0)
+                    || worldX < minX
+                    || worldX > maxX
+                    || worldY < minY
+                    || worldY > maxY) {
+                return null;
+            }
+            double relativeX = (worldX - minX) / sizeX, relativeY = (worldY - minY) / sizeY;
+            return new double[] {
+                relativeY * uiMinX + (1 - relativeY) * uiMaxX,
+                relativeX * uiMinY + (1 - relativeX) * uiMaxY
+            };
+        }
+
+        /**
+         * The exact inverse of {@link #toUi}: world x/y (no height), or null when not invertible.
+         */
+        public double[] toWorld(double uiX, double uiY) {
+            if (!invertible() || !containsUi(uiX, uiY)) {
+                return null;
+            }
+            double relativeY = (uiMaxX - uiX) / (uiMaxX - uiMinX);
+            double relativeX = (uiMaxY - uiY) / (uiMaxY - uiMinY);
+            return new double[] {
+                minX + relativeX * (maxX - minX), minY + relativeY * (maxY - minY)
+            };
+        }
+    }
+
+    /** The unscoped assignment frames recorded for one world map. */
+    public record WorldFrames(
+            State state,
+            long worldMapId,
+            List<WorldFrame> frames,
+            List<String> issues,
+            String message) {
+        public static final int MAX_FRAMES = 4096;
+
+        public WorldFrames {
+            java.util.Objects.requireNonNull(state);
+            frames = List.copyOf(frames);
+            issues = List.copyOf(issues);
+            if (frames.size() > MAX_FRAMES) {
+                throw new IllegalArgumentException("World frames exceed their limit");
+            }
+        }
+
+        public static WorldFrames unsupported(long worldMapId) {
+            return new WorldFrames(
+                    State.UNSUPPORTED,
+                    worldMapId,
+                    List.of(),
+                    List.of(),
+                    "World frames are unsupported by this map source.");
+        }
+    }
+
     public record Resolution(
             State state,
             BuildRef build,

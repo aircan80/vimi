@@ -77,10 +77,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     /**
      * Ten slots (nine active, one staged). Exterior objects add at most one validated objects file
      * per slot: up to {@link WorldStreamObjectsFile#MAX_BYTES} of GPU vertices, indices and RGBA8
-     * textures (the version 2 maximum profile is about 22.2 MB with the HIGH texture tier), so the
-     * object GPU budget is about 222 MB in the worst case, charged in Stats.objectBytes; real tiles
-     * stay far below it (Zephras Isle: 5.2 MB mean, 8.7 MB max on STANDARD; 6.8 and 13.7 MB on
-     * HIGH).
+     * textures with their full mip chains. The version 3 maximum profile, with the HIGH texture
+     * tier's chains, is about 27 MB, so the object GPU budget is about 270 MB in the worst case,
+     * charged in Stats.objectBytes; real tiles stay far below it (see WorldStreamObjectsFile).
      */
     static final int SLOT_COUNT = 10, INSTANCE_BYTES = 48;
 
@@ -112,8 +111,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             long maximumStepNanos,
             long objectBytes) {}
 
-    /** Bounded object upload slice; same bound as the terrain step. */
-    static final int OBJECT_CHUNK = 262144;
+    /**
+     * Most bytes one step call may issue: two geometry chunks plus one atlas step for terrain, or
+     * one object step. Exceeding it is a planning bug, so both step paths treat it as fatal.
+     */
+    static final int STEP_BOUND = 262144;
+
+    /** Bounded object upload slice: a whole step, since object steps never share one. */
+    static final int OBJECT_CHUNK = STEP_BOUND;
 
     static final class Upload {
         private final long tag;
@@ -196,14 +201,20 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     }
 
     /**
-     * Bounded building of one tile's objects: resource creation, then vertex, index and image
-     * slices of at most OBJECT_CHUNK bytes, each a bgfx_copy. Owns its packed input until the last
-     * slice is issued; any failure destroys only this build.
+     * Bounded building of one tile's objects: resource creation, then vertex and index slices and
+     * image mip-chain steps (WorldStreamObjectMips) of at most OBJECT_CHUNK bytes, each a
+     * bgfx_copy. Owns its packed input until the last slice is issued; any failure destroys only
+     * this build, including a texture whose chain is only partly filled.
      */
     private static final class ObjectsBuild {
         private WorldStreamPackedObjects source;
         private SlotObjects building;
         private int vertexAt, indexAt, image;
+
+        /** The current image's upload plan, or null before its texture is created. */
+        private List<List<WorldStreamObjectMips.Slice>> imagePlan;
+
+        private int imageStep;
         private boolean failed;
 
         ObjectsBuild(WorldStreamPackedObjects source) {
@@ -427,8 +438,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         String step = "RGBA8 textures";
         try {
             if (!org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
-                    0, false, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
-                throw new IOException("Exterior objects need RGBA8 textures");
+                    0, true, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
+                throw new IOException("Exterior objects need mipmapped RGBA8 textures");
             }
             step = "program";
             wmoProgram = program(profile, "world-wmo/");
@@ -569,7 +580,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
         maximumStepNanos = Math.max(maximumStepNanos, System.nanoTime() - started);
         peakStepBytes = Math.max(peakStepBytes, bytes);
-        if (bytes > 262144) {
+        if (bytes > STEP_BOUND) {
             throw new IllegalStateException("Upload slice escaped bound");
         }
         pollUploads();
@@ -583,8 +594,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     }
 
     /**
-     * One bounded object slice: resource creation, then vertex, index and image copies of at most
-     * OBJECT_CHUNK bytes. Any failure drops only this build's objects.
+     * One bounded object slice: resource creation, then vertex and index copies and image mip-chain
+     * steps of at most OBJECT_CHUNK bytes. Any failure drops only this build's objects.
      */
     private int stepObjects(ObjectsBuild build) {
         var source = build.source;
@@ -634,22 +645,46 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             if (build.image < source.imageCount()) {
                 int image = build.image;
                 int width = source.images[image * 2], height = source.images[image * 2 + 1];
-                int count = width * height * 4;
-                built.textures[image] =
-                        valid(
-                                bgfx_create_texture_2d(
-                                        width,
-                                        height,
-                                        false,
-                                        1,
-                                        BGFX_TEXTURE_FORMAT_RGBA8,
-                                        BGFX_TEXTURE_NONE,
-                                        bgfx_copy(
-                                                source.pixels.slice(
-                                                        source.imageOffset(image), count)),
-                                        0));
+                if (build.imagePlan == null) {
+                    // One mipmapped texture per image, created empty and owned by the build at
+                    // once, so a partly filled chain is destroyed with it. A 256 x 256 chain
+                    // exceeds one step, so levels are filled in planned row bands.
+                    build.imagePlan = WorldStreamObjectMips.plan(width, height, OBJECT_CHUNK);
+                    build.imageStep = 0;
+                    built.textures[image] =
+                            valid(
+                                    bgfx_create_texture_2d(
+                                            width,
+                                            height,
+                                            true,
+                                            1,
+                                            BGFX_TEXTURE_FORMAT_RGBA8,
+                                            BGFX_TEXTURE_NONE,
+                                            null,
+                                            0));
+                }
+                int chain = source.imageOffset(image), count = 0;
+                for (var slice : build.imagePlan.get(build.imageStep)) {
+                    int levelWidth =
+                            com.vibeminer.rendering.world.ObjectTextureMips.levelWidth(
+                                    width, slice.level());
+                    bgfx_update_texture_2d(
+                            built.textures[image],
+                            0,
+                            slice.level(),
+                            0,
+                            slice.row(),
+                            levelWidth,
+                            slice.rows(),
+                            bgfx_copy(source.pixels.slice(chain + slice.offset(), slice.bytes())),
+                            levelWidth * 4);
+                    count += slice.bytes();
+                }
                 built.bytes += count;
-                build.image++;
+                if (++build.imageStep == build.imagePlan.size()) {
+                    build.imagePlan = null;
+                    build.image++;
+                }
                 return count;
             }
             // Every slice is a bgfx-owned copy; the packed native input can retire now.
@@ -1065,8 +1100,18 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         return result;
     }
 
-    /** Alpha-test reference for cutout ranges: a BASIC approximation, not client parity. */
-    static final float CUTOUT_REFERENCE = 0.5f;
+    /**
+     * Alpha-test reference for cutout ranges: a BASIC approximation, not client parity. Cutout mip
+     * chains preserve the coverage this reference sees (issue #265).
+     */
+    static final float CUTOUT_REFERENCE =
+            com.vibeminer.rendering.world.ObjectTextureMips.CUTOUT_REFERENCE;
+
+    /**
+     * Object textures: trilinear (linear min, mag and mip, the zero flags) over each image's mip
+     * chain, with repeat addressing because model texture coordinates tile (issue #265).
+     */
+    static final int OBJECT_SAMPLER_FLAGS = 0;
 
     /** Blend state: depth tested, no depth or alpha write, source-alpha over. */
     static final long BLENDED_STATE =
@@ -1208,7 +1253,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         0,
                         wmoSampler,
                         objects.textures[objects.ranges[r * stride + 2]],
-                        BgfxWorldWmoPass.SAMPLER_STATE);
+                        OBJECT_SAMPLER_FLAGS);
                 bgfx_set_state(blendedPass ? BLENDED_STATE : BgfxWorldWmoPass.DRAW_STATE, 0);
                 bgfx_submit(0, wmoProgram, 0, BGFX_DISCARD_ALL);
             }

@@ -108,18 +108,37 @@ final class TalentSourceDetails {
                 + (message == null || message.isBlank() ? "" : ": " + shortText(message, 200));
     }
 
+    /**
+     * True when rank 2 has its own source: a second legacy rank spell, or a TraitTree definition
+     * whose rank values can differ. Otherwise "Next rank" would repeat rank 1.
+     */
+    static boolean distinctNextRank(TalentTypes.Talent talent) {
+        if (talent.maxRanks() < 2) return false;
+        if (talent.origin().model() == TalentTypes.Model.TRAIT_TREE)
+            return talent.origin().traitDefinitionId() != null;
+        return talent.rankSpells().size() > 1;
+    }
+
+    static String sameTextForAllRanks(TalentTypes.Talent talent) {
+        return "One spell is recorded for all " + talent.maxRanks()
+                + " ranks; values are shown as recorded, not per rank.";
+    }
+
     static String buildLabel(String version) {
         return version == null || version.isBlank() ? "" : "Source build " + version;
     }
 
     /**
-     * Classic point gate for legacy Talent rows: tier N (zero-based) needs 5 × N points in the
-     * tree. TraitTree tier gates (TraitCond) are not interpreted, so none is shown for them.
+     * The tier gate in game wording ("Requires 30 points in Balance Talents"). The reader records
+     * it: the Classic 5-per-tier rule for legacy rows, TraitCond spend requirements for TraitTree
+     * nodes. Trees without a recorded name say "this tree".
      */
     static String pointRequirement(TalentTypes.Tree tree, TalentTypes.Talent talent) {
-        if (talent.origin().model() != TalentTypes.Model.LEGACY_TALENT || talent.row() <= 0) return null;
-        String name = tree.name() == null || tree.name().isBlank() ? "this tree" : tree.name() + " Talents";
-        return "Requires " + talent.row() * 5 + " points in " + name;
+        Integer points = talent.requiredTreePoints();
+        if (points == null) return null;
+        String name = tree.name() == null || tree.name().isBlank() || tree.name().matches("Talent tree [0-9]+")
+                ? "this tree" : tree.name() + " Talents";
+        return "Requires " + points + (points == 1 ? " point in " : " points in ") + name;
     }
 
     /** Game wording: legacy edges name the points needed; trait edges record no rank. */

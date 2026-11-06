@@ -2,6 +2,7 @@ package com.vibeminer.concepts.talents;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -200,6 +201,8 @@ final class TalentsServiceTest {
             assertEquals("First talent", first.name());
             assertEquals(900L, first.iconFileDataId());
             assertEquals("Raw $s1 description", first.description());
+            assertNull(first.requiredTreePoints());
+            assertEquals(5, result.trees().getFirst().talents().get(1).requiredTreePoints());
             assertEquals(
                     1,
                     result.trees()

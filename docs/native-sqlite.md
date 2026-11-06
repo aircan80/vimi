@@ -55,9 +55,14 @@ SQLite class initialization. A successfully loaded library stays loaded for the 
 ```
 
 Fresh JVM probes cover a missing path, a non-library file, explicit override startup
-and default-name startup. A controlled symbol lookup checks rejection of a missing C symbol. The default-name case skips on
-Windows, where CI supplies its DLL by absolute path. The override case requires the
-Gradle property. These probes do not replace clean-machine/native testing under #24.
+and default-name startup. A controlled symbol lookup checks rejection of a missing
+C symbol. Windows ships no `sqlite3.dll`, so there the default-name case puts the
+directory of the `-PsqliteLibrary` DLL first on the child's `PATH` and starts
+without the override property. A companion case starts a child with no `PATH`
+change and expects the actionable failure. Both skip when `-PsqliteLibrary` is
+missing or names a file other than `sqlite3.dll`, or when the default DLL search
+path already provides `sqlite3.dll`. The override case also requires the Gradle
+property. These probes do not replace clean-machine/native testing under #24.
 Run the broader disk, crash and interoperability suites before accepting a new native
 library build. Read-only media evidence is tracked separately in #25.
 

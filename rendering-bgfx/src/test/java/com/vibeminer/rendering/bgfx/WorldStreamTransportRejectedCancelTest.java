@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /** Actual Java pipes, with authored deterministic child acknowledgements (no GPU/source claim). */
-@Timeout(20)
+@Timeout(WorldStreamTestChildren.TEST_TIMEOUT_SECONDS)
 class WorldStreamTransportRejectedCancelTest {
     @TempDir Path directory;
 
@@ -83,9 +83,12 @@ class WorldStreamTransportRejectedCancelTest {
                                             .start();
                             child.set(process);
                             return process;
-                        });
+                        },
+                        WorldStreamTestChildren.STARTUP_GUARD_MILLIS,
+                        5000);
         try {
-            session.initialized().get(8, TimeUnit.SECONDS);
+            session.initialized()
+                    .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);
             var ticket = reserve(session, 7, 19);
             var result =
                     ticket.produce(

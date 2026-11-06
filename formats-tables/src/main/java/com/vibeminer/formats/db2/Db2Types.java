@@ -83,6 +83,13 @@ public final class Db2Types {
         }
     }
 
+    /** Policy of a column whose base rows keep the physical integer. */
+    public static final String RAW_PHYSICAL_POLICY = "raw-physical-integer-v1";
+
+    /** Warning of a raw column kept only because its provider name is unverified. */
+    public static final String UNVERIFIED_RAW_WARNING =
+            "Unverified provider field: values preserve the physical integer without narrowing to the candidate schema. Names, relationships and semantic meaning are unverified.";
+
     public record Interpretation(
             String policy,
             int physicalBits,

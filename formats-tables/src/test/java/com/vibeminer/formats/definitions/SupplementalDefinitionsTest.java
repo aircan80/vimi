@@ -30,7 +30,8 @@ class SupplementalDefinitionsTest {
                 TableDefinitions.State.FETCHING_OFF,
                 resolve(original, "1.60.1.70755", "4FDF0951").state());
         var enabled = original.withSupplementalDefinitions();
-        for (String build : List.of("1.60.1.70707", "1.60.1.70753", "1.60.1.70755")) {
+        for (String build :
+                List.of("1.60.1.70707", "1.60.1.70753", "1.60.1.70755", "1.60.1.70790")) {
             for (String layout : new String[] {null, "4FDF0951", "4fdf0951"}) {
                 var result = resolve(enabled, build, layout);
                 assertEquals(TableDefinitions.State.RESOLVED, result.state());
@@ -71,9 +72,13 @@ class SupplementalDefinitionsTest {
     void wrongBuildLayoutAndManifestBindingNeverSelectTheSupplement() {
         var bundled = BundledDefinitions.open(TOKEN).join();
         var enabled = new TableDefinitions(bundled, null, null).withSupplementalDefinitions();
-        assertEquals(
-                TableDefinitions.State.FETCHING_OFF,
-                resolve(enabled, "1.60.1.70754", "4FDF0951").state());
+        // Builds the pinned document or the build list does not name stay without a definition.
+        for (String unlisted : List.of("1.60.1.70754", "1.60.1.70800", "1.60.2.70790")) {
+            assertEquals(
+                    TableDefinitions.State.FETCHING_OFF,
+                    resolve(enabled, unlisted, "4FDF0951").state(),
+                    unlisted);
+        }
         assertEquals(
                 TableDefinitions.State.FETCHING_OFF,
                 resolve(enabled, "1.60.1.70755", "4FDF0952").state());
@@ -102,6 +107,7 @@ class SupplementalDefinitionsTest {
             bytes = input.readAllBytes();
         }
         assertTrue(SupplementalDefinitions.verify(bytes).listsBuild("1.60.1.70755", TOKEN));
+        assertTrue(SupplementalDefinitions.verify(bytes).listsBuild("1.60.1.70790", TOKEN));
         assertThrows(
                 DefinitionException.class,
                 () ->

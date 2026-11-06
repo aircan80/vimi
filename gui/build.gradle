@@ -488,7 +488,7 @@ tasks.register('gpuPreviewUiTest', JavaExec) {
 // Explicit authored-data proof requiring a display and Vulkan hardware.
 tasks.register('worldGpuUiProof', JavaExec) {
     group = 'verification'
-    description = 'Authored real World inline GPU proof; requires Linux Vulkan and a JavaFX display.'
+    description = 'Authored real World inline GPU proof on the platform default backend; requires a GPU and a JavaFX display.'
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldGpuUiTest'
@@ -529,6 +529,14 @@ tasks.register('worldAudioPlaybackTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldAudioPlaybackTest'
 }
 tasks.named('check') { dependsOn tasks.named('worldAudioPlaybackTest') }
+
+// Audio controls selection logic: authored world, manual settle delay and clock; no display.
+tasks.register('worldAudioControlsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldAudioControlsTest'
+}
+tasks.named('check') { dependsOn tasks.named('worldAudioControlsTest') }
 
 // Inline instance switch ordering: drain, audio handover, cancel and refusal; no display or GPU.
 tasks.register('worldInstanceSwitchTest', JavaExec) {
@@ -664,6 +672,14 @@ tasks.register('worldDiagnosticsTest', JavaExec) {
 }
 check.dependsOn worldDiagnosticsTest
 
+// Stalled-frame detection for the visible World explorer, with an injected clock.
+tasks.register('worldStallWatchdogTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldStallWatchdogTest'
+}
+check.dependsOn worldStallWatchdogTest
+
 // Off-FX display feedback and actual legacy-work retirement, without live data or a GPU.
 tasks.register('worldStreamBackgroundTest', JavaExec) {
     dependsOn testClasses
@@ -695,7 +711,7 @@ tasks.register('worldCpuRetirementUiTest', JavaExec) {
 
 tasks.register('worldHotLifecycleUiProof', JavaExec) {
     group = 'verification'
-    description = 'Authored qualified HOT World source and actual inline GPU lifecycle; requires Vulkan and an FX display.'
+    description = 'Authored qualified HOT World source and actual inline GPU lifecycle on the platform default backend; requires a GPU and an FX display.'
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldHotLifecycleUiProof'
@@ -716,6 +732,14 @@ tasks.register('clientHotfixDetailsTest', JavaExec) {
     mainClass = 'com.vimi.gui.ClientHotfixDetailsTest'
 }
 tasks.named('check') { dependsOn tasks.named('clientHotfixDetailsTest') }
+
+tasks.register('deliveredKeysTest', JavaExec) {
+    group = 'verification'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.DeliveredKeysTest'
+}
+check.dependsOn deliveredKeysTest
 check.dependsOn clientHotfixStoreTest
 
 tasks.register('nativeHotfixWorkspaceTest', JavaExec) {

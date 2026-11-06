@@ -189,6 +189,7 @@ final class WorldStreamSourceController {
             Executors.newSingleThreadExecutor(
                     Thread.ofPlatform().daemon().name("world-source-controller").factory());
     private final AtomicBoolean scheduled = new AtomicBoolean(), wake = new AtomicBoolean();
+    private final AtomicBoolean frameWake = new AtomicBoolean();
     private final AtomicBoolean fxQueued = new AtomicBoolean();
     private final Cancellation qualificationCancellation = new Cancellation();
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
@@ -246,6 +247,9 @@ final class WorldStreamSourceController {
     private long commitRetryAt, commitRetryCapacity, commitIssuedCapacity;
     // Test seam: runs on the worker after a RETRY_LATER commit refusal, before it is recorded.
     volatile Runnable refusalSeam;
+    // Test seam: runs on the worker after a RETRY_LATER tile-preparation refusal, before it is
+    // recorded.
+    volatile Runnable tileRefusalSeam;
 
     WorldStreamSourceController(
             Request request, GpuStarter starter, Events events, Consumer<Runnable> fxPost) {
@@ -356,6 +360,36 @@ final class WorldStreamSourceController {
         return WorldCurrentArea.locateIn(request.map().id(), x, y, known, request.areaIndex());
     }
 
+    /**
+     * Bounded evidence for a stalled-frame report: the phase, how many desired tiles are prepared,
+     * whether a presentation is queued or borrowed, and the transport's own summary. Never waits on
+     * the worker or the helper.
+     */
+    String stallSummary() {
+        Snapshot current;
+        boolean queuedFrame, borrowedFrame;
+        long accepted;
+        synchronized (lock) {
+            current = snapshot;
+            queuedFrame = queued != null;
+            borrowedFrame = borrowed != null;
+            accepted = acceptedSequence;
+        }
+        var transport = session;
+        String helper;
+        try {
+            helper = transport == null ? "no session" : transport.stallSummary();
+        } catch (RuntimeException unavailable) {
+            helper = "session summary unavailable";
+        }
+        return "phase " + current.phase()
+                + " (" + WorldDiagnostics.clean(current.detail()) + ")"
+                + "; tiles " + current.prepared() + "/" + current.desired()
+                + "; accepted frame sequence " + accepted
+                + "; presentation " + (borrowedFrame ? "borrowed" : queuedFrame ? "queued" : "none")
+                + "; " + helper;
+    }
+
     Optional<Presentation> takePresentation() {
         synchronized (lock) {
             if (closing || borrowed != null || queued == null) return Optional.empty();
@@ -438,6 +472,16 @@ final class WorldStreamSourceController {
 
     private void kick() {
         wake.set(true);
+        schedule();
+    }
+
+    /** Transport frame-reader callback: polls only the new frame, never a full step. */
+    private void frameArrived() {
+        frameWake.set(true);
+        schedule();
+    }
+
+    private void schedule() {
         if (scheduled.compareAndSet(false, true)) {
             try {
                 worker.execute(this::run);
@@ -451,10 +495,13 @@ final class WorldStreamSourceController {
     private void run() {
         try {
             do {
-                wake.set(false);
-                if (closing) retire();
-                else step();
-            } while (wake.get() && !drained.isDone());
+                boolean full = wake.getAndSet(false);
+                boolean frame = frameWake.getAndSet(false);
+                if (full) {
+                    if (closing) retire();
+                    else step();
+                } else if (frame && !closing) pollArrivedFrame();
+            } while ((wake.get() || frameWake.get()) && !drained.isDone());
         } catch (Throwable failure) {
             if (!(closing && CleanCancellation.is(failure))) {
                 if (failure instanceof WorldTerrainStreaming.Refusal refusal
@@ -476,8 +523,16 @@ final class WorldStreamSourceController {
             wake.set(true);
         } finally {
             scheduled.set(false);
-            if (wake.get() && !drained.isDone()) kick();
+            if ((wake.get() || frameWake.get()) && !drained.isDone()) schedule();
         }
+    }
+
+    /** Worker-only: the step() frame poll, gated on the same opened-and-initialized session. */
+    private void pollArrivedFrame() {
+        var opened = session;
+        if (opened == null || !opened.initialized().isDone()
+                || opened.initialized().isCompletedExceptionally()) return;
+        pollFrame();
     }
 
     private void failLater(Throwable failure) {
@@ -561,6 +616,7 @@ final class WorldStreamSourceController {
                 session=opened;
                 if(camera!=null && !closing) opened.camera(camera);
             }
+            session.onFrame(this::frameArrived);
             session.initialized().whenComplete((ignored, failure) -> kick());
             session.completion()
                     .whenComplete(
@@ -611,6 +667,8 @@ final class WorldStreamSourceController {
                             || refusal.getSuppressed().length != 0) throw failure;
                     var origin = pending.producer.sourceRefusal();
                     int failedTile = key(pending.tile);
+                    // Read while the refused reservation is still at hand (#283).
+                    long refusedCapacity = pending.reservation.capacityBaseline();
                     if(creditTarget!=null && same(creditTarget,pending.tile)
                             && refusal.reason()!=WorldStreamTransport.Refusal.RETRY_LATER) creditTarget=null;
                     pending.producer.close();
@@ -643,8 +701,17 @@ final class WorldStreamSourceController {
                     // This refusal's own unused-credit ACK is not a source-pool wakeup.
                     blockedOnMaterialPool = origin != null && origin.site().equals("MATERIAL_POOL");
                     blockedSourceRetirement = sourceRetirementRevision;
+                    var seam = tileRefusalSeam;
+                    if (seam != null) seam.run();
                     blockedAt = clock.getAsLong();
-                    blockedCapacity = session.capacityRevision();
+                    // The revision the refused reservation itself accounts for, not the current
+                    // one: a retirement or credit that landed after it was issued (even between
+                    // the refusal and this step) must still wake the retry (#283). The
+                    // reservation's own drain and retirement are excluded; its unused-credit
+                    // CREDIT arrives as an ordinary capacity change and deliberately wakes one
+                    // retry per refusal, as before (polling while the geometry lane is busy is
+                    // pre-existing and tracked separately).
+                    blockedCapacity = refusedCapacity;
                     synchronized (lock) {
                         blockedPresentation = presentationRevision;
                         blockedDemand = demandRevision;
