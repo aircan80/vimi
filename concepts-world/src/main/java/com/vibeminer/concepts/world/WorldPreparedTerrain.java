@@ -15,7 +15,14 @@ import java.util.function.Consumer;
  */
 final class WorldPreparedTerrain {
     static final long MAX_RECEIPT_BYTES = 2048L + 64L * 512;
-    static final long MAX_OUTPUT_RECEIPT_BYTES = 12 * MAX_RECEIPT_BYTES;
+
+    /**
+     * Written outputs alive at once: the World stream's 25 residents (a 5 x 5 neighborhood), its
+     * staged tile, one pending tile and one retiring (issue #173).
+     */
+    static final int MAX_OUTPUTS = 28;
+
+    static final long MAX_OUTPUT_RECEIPT_BYTES = MAX_OUTPUTS * MAX_RECEIPT_BYTES;
 
     enum Outcome {
         TEXTURED,
@@ -508,7 +515,7 @@ final class WorldPreparedTerrain {
     private synchronized <R extends AutoCloseable> WrittenTile<R> reserve(
             WorldStreamScopes.Scope scope) {
         checkOpen();
-        if (outputs.size() >= 12) {
+        if (outputs.size() >= MAX_OUTPUTS) {
             throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OUTPUT_CREDIT);
         }
         var value = new WrittenTile<R>(this, Objects.requireNonNull(scope));
@@ -604,13 +611,15 @@ final class WorldPreparedTerrain {
         if (!materials.matchesNamespace(namespace.build(), namespace.locale())) {
             throw new IllegalStateException("Configured material namespace differs");
         }
+        var map = new WorldService.MapInfo(namespace.mapId(), null, null, 0, namespace.wdtId());
+        // Reuse the geometry's checked root parse and fingerprint instead of a second read.
+        var root = owned.geometry.materialRoot();
         var operation =
-                materials.readOwned(
-                        new WorldService.MapInfo(
-                                namespace.mapId(), null, null, 0, namespace.wdtId()),
-                        List.of(tile),
-                        admission.cancellation(),
-                        p -> {});
+                root != null && root.binding().fileId() == tile.rootId()
+                        ? materials.readOwned(
+                                map, List.of(tile), admission.cancellation(), p -> {}, root)
+                        : materials.readOwned(
+                                map, List.of(tile), admission.cancellation(), p -> {});
         WorldTerrainTextureSource.BatchResult batch = null;
         try {
             Throwable materialFailure = null;
@@ -668,6 +677,9 @@ final class WorldPreparedTerrain {
                     || receipt.textures().fileId() != tile.tex0Id()) {
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MATERIAL_BINDING);
             }
+            // With a prepared root both sides come from the geometry cache's single walk, so
+            // this holds by construction; the cache asserts (enabled in tests) that the grid and
+            // the mesh of that walk fingerprint alike, so a parser divergence still fails there.
             if (!receipt.geometrySha256().equals(owned.geometry.fingerprint())) {
                 throw new IllegalStateException(
                         "Material geometry disagrees with the same root source");
