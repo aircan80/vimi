@@ -40,6 +40,48 @@ import org.lwjgl.system.MemoryUtil;
 final class WorldWindowPresentation implements AutoCloseable {
     static final String PROBE_PROPERTY = "vimi.world.presentProbe";
     static final int SHOT_AFTER_DRAWS = 240;
+    static final int TERRAIN_SAMPLES = 20;
+
+    /**
+     * The sky the renderer draws at {@code row} of a {@code height}-row frame (top-origin rows):
+     * 91,141,177 at the top plus 80,60,37 times the row fraction, floored (terrain/sky shader).
+     */
+    static int skyAt(int row, int height) {
+        double t = row / (double) height;
+        return (int) Math.floor(91 + 80 * t) << 16
+                | (int) Math.floor(141 + 60 * t) << 8
+                | (int) Math.floor(177 + 37 * t);
+    }
+
+    /** Neither cleared black nor within 12 per channel of the sky at that row. */
+    static boolean terrainPixel(int rgb, int row, int height) {
+        if ((rgb & 0xffffff) == 0) {
+            return false;
+        }
+        int sky = skyAt(row, height);
+        for (int shift = 0; shift <= 16; shift += 8) {
+            if (Math.abs((rgb >> shift & 255) - (sky >> shift & 255)) > 12) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** A present returning this soon after the last one did not wait for the display. */
+    static final long UNPACED_NANOS = 2_000_000;
+
+    /** How long to idle then: one 60 Hz frame from the previous present. */
+    static final long IDLE_FRAME_NANOS = 16_666_667;
+
+    /**
+     * Park time after a present that came {@code interval} after the previous one. An occluded or
+     * minimised window lets DXGI present return at once; without this the loop would spin a core.
+     */
+    static long unpacedPark(long interval) {
+        return interval >= 0 && interval < UNPACED_NANOS ? IDLE_FRAME_NANOS - interval : 0;
+    }
+
+    private long park;
     private static final short BACKBUFFER = (short) 0xffff;
 
     private final WorldChildWindow window;
@@ -133,6 +175,7 @@ final class WorldWindowPresentation implements AutoCloseable {
 
     /** Called after each {@code bgfx_frame} (which waited for the display). */
     void presented(long now) {
+        park = lastPresent == 0 ? 0 : unpacedPark(now - lastPresent);
         if (probe != null && lastPresent != 0 && draws > 0) {
             intervals.add(now - lastPresent);
         }
@@ -141,6 +184,11 @@ final class WorldWindowPresentation implements AutoCloseable {
         if (taken != null) {
             shotResult = taken;
         }
+    }
+
+    /** Nanoseconds the loop should idle after the last present (0 when vsync paced it). */
+    long park() {
+        return park;
     }
 
     @Override
@@ -185,32 +233,45 @@ final class WorldWindowPresentation implements AutoCloseable {
         if (shotResult == null) {
             verdict = "CHILD_SHOWS_FRAMES FAIL no swap-chain readback after " + draws + " draws";
         } else {
-            int rgb = shotResult[2];
+            int rgb = shotResult[2], terrain = shotResult[3], ground = shotResult[4];
             boolean sized = shotResult[0] == width && shotResult[1] == height;
             boolean drawn = rgb != 0x000000;
             verdict =
                     String.format(
                             Locale.ROOT,
-                            "CHILD_SHOWS_FRAMES %s swapchain %dx%d (window %dx%d) centre rgb(%d,%d,%d)",
-                            sized && drawn ? "PASS" : "FAIL",
+                            "CHILD_SHOWS_FRAMES %s swapchain %dx%d (window %dx%d) centre rgb(%d,%d,%d)"
+                                    + " terrain %d/%d lower samples%s",
+                            sized && drawn && terrain > 0 ? "PASS" : "FAIL",
                             shotResult[0],
                             shotResult[1],
                             width,
                             height,
                             rgb >> 16 & 255,
                             rgb >> 8 & 255,
-                            rgb & 255);
+                            rgb & 255,
+                            terrain,
+                            TERRAIN_SAMPLES,
+                            ground < 0
+                                    ? ""
+                                    : String.format(
+                                            Locale.ROOT,
+                                            " first rgb(%d,%d,%d)",
+                                            ground >> 16 & 255,
+                                            ground >> 8 & 255,
+                                            ground & 255));
         }
         Files.writeString(
                 probe,
                 String.format(
                         Locale.ROOT,
-                        "%s%nPRESENT_INTERVALS n %d p50Ms %.3f p95Ms %.3f maxMs %.3f draws %d depth %s%n",
+                        "%s%nPRESENT_INTERVALS n %d p50Ms %.3f p95Ms %.3f maxMs %.3f under5Ms %d"
+                                + " draws %d depth %s%n",
                         verdict,
                         sorted.size(),
                         pct(sorted, .5),
                         pct(sorted, .95),
                         pct(sorted, 1),
+                        sorted.stream().filter(interval -> interval < 5_000_000).count(),
                         draws,
                         depthFormat == BGFX_TEXTURE_FORMAT_D32F ? "D32F" : "D24S8"));
     }
@@ -243,11 +304,38 @@ final class WorldWindowPresentation implements AutoCloseable {
                         .cache_write((self, id, data, size) -> {})
                         .screen_shot(
                                 (self, path, w, h, pitch, format, data, size, yflip) -> {
-                                    long at = data + (long) (h / 2) * pitch + (w / 2) * 4L;
-                                    int b = MemoryUtil.memGetByte(at) & 255;
-                                    int g = MemoryUtil.memGetByte(at + 1) & 255;
-                                    int r = MemoryUtil.memGetByte(at + 2) & 255;
-                                    shot.set(new int[] {w, h, r << 16 | g << 8 | b});
+                                    // Row r of the picture (0 = top) in the shot's memory.
+                                    java.util.function.IntBinaryOperator pixel =
+                                            (row, column) -> {
+                                                int stored = yflip ? h - 1 - row : row;
+                                                long at =
+                                                        data + (long) stored * pitch + column * 4L;
+                                                int b = MemoryUtil.memGetByte(at) & 255;
+                                                int g = MemoryUtil.memGetByte(at + 1) & 255;
+                                                int r = MemoryUtil.memGetByte(at + 2) & 255;
+                                                return r << 16 | g << 8 | b;
+                                            };
+                                    // Lower half of the centre column: how many samples are
+                                    // terrain (neither cleared black nor the sky at that row).
+                                    int terrain = 0, firstTerrain = -1;
+                                    for (int i = 0; i < TERRAIN_SAMPLES; i++) {
+                                        int row = h * (55 + 40 * i / TERRAIN_SAMPLES) / 100;
+                                        int rgb = pixel.applyAsInt(row, w / 2);
+                                        if (terrainPixel(rgb, row, h)) {
+                                            terrain++;
+                                            if (firstTerrain < 0) {
+                                                firstTerrain = rgb;
+                                            }
+                                        }
+                                    }
+                                    shot.set(
+                                            new int[] {
+                                                w,
+                                                h,
+                                                pixel.applyAsInt(h / 2, w / 2),
+                                                terrain,
+                                                firstTerrain
+                                            });
                                 })
                         .capture_begin((self, w, h, pitch, format, yflip) -> {})
                         .capture_end(self -> {})

@@ -106,22 +106,45 @@ public final class WorldStreamWindowProof {
                                                     4_166_667L);
                                         }
                                     });
-            Thread.sleep(6000);
+            Thread.sleep(4500);
+            // Minimised, DXGI presents without waiting; the loop must idle, not spin.
+            User32.ShowWindow(parent, User32.SW_MINIMIZE);
+            Thread.sleep(1500);
+            User32.ShowWindow(parent, User32.SW_RESTORE);
+            Thread.sleep(500);
             running.set(false);
             driver.join();
             session.closeAsync().get(7, TimeUnit.SECONDS);
             session.completion().get(2, TimeUnit.SECONDS);
+            String report =
+                    Files.exists(probe)
+                            ? Files.readString(probe)
+                            : "CHILD_SHOWS_FRAMES FAIL no probe file%n".formatted();
             System.out.printf(
                     Locale.ROOT,
                     "WORLD_STREAM_WINDOW mode=%s cameras=%d tileCommitMs=%.1f%n%s",
                     readback ? "readback" : "native",
                     revision.get(),
                     commitMs,
-                    readback
-                            ? ""
-                            : Files.exists(probe)
-                                    ? Files.readString(probe)
-                                    : "CHILD_SHOWS_FRAMES FAIL no probe file\n");
+                    readback ? "" : report);
+            if (!readback) {
+                // The terrain samples must be the authored tile's atlas colour (17, 34, 51): the
+                // window shows the uploaded terrain, not just a sky or a clear.
+                var match =
+                        java.util.regex.Pattern.compile("first rgb\\((\\d+),(\\d+),(\\d+)\\)")
+                                .matcher(report);
+                boolean atlas =
+                        report.startsWith("CHILD_SHOWS_FRAMES PASS")
+                                && match.find()
+                                && Math.abs(Integer.parseInt(match.group(1)) - 17) <= 2
+                                && Math.abs(Integer.parseInt(match.group(2)) - 34) <= 2
+                                && Math.abs(Integer.parseInt(match.group(3)) - 51) <= 2;
+                System.out.println(
+                        "WINDOW_TERRAIN_IS_THE_AUTHORED_ATLAS " + (atlas ? "PASS" : "FAIL"));
+                if (!atlas) {
+                    throw new AssertionError("The child window does not show the authored terrain");
+                }
+            }
         } finally {
             session.closeAsync();
             session.terminatedAndDrained().get(7, TimeUnit.SECONDS);
@@ -179,8 +202,13 @@ public final class WorldStreamWindowProof {
         return hwnd;
     }
 
+    /**
+     * Facing north at the authored triangle's centroid (-0.69, -1.74, 10) from 9 yd south and 4 yd
+     * up, pitched less than the line of sight so the triangle sits below the centre, in the lower
+     * rows the swap-chain check samples. The camera only slides a little, so it stays in view.
+     */
     private static TerrainCamera view(long revision) {
         double t = revision * 0.002;
-        return new TerrainCamera(-20 + Math.sin(t) * 4, -2, 20, Math.sin(t) * 0.4, -.5);
+        return new TerrainCamera(-10 + Math.sin(t) * .5, -1.74, 14, 0, -.25);
     }
 }

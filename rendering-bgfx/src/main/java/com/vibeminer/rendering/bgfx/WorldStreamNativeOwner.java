@@ -147,19 +147,18 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             var caps = bgfx_get_caps();
             GpuViewerMain.requireHardware(
                     Short.toUnsignedInt(caps.vendorId()), Short.toUnsignedInt(caps.deviceId()));
+            // Readback capabilities matter only without a window (#381 spike).
             if (window == null
-                            && (caps.supported()
-                                            & (BGFX_CAPS_TEXTURE_BLIT
-                                                    | BGFX_CAPS_TEXTURE_READ_BACK))
+                    && ((caps.supported() & (BGFX_CAPS_TEXTURE_BLIT | BGFX_CAPS_TEXTURE_READ_BACK))
                                     != (BGFX_CAPS_TEXTURE_BLIT | BGFX_CAPS_TEXTURE_READ_BACK)
-                    || !bgfx_is_texture_valid(
-                            0, false, 1, BGFX_TEXTURE_FORMAT_BGRA8, BGFX_TEXTURE_RT)
-                    || !bgfx_is_texture_valid(
-                            0,
-                            false,
-                            1,
-                            BGFX_TEXTURE_FORMAT_BGRA8,
-                            BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK)) {
+                            || !bgfx_is_texture_valid(
+                                    0, false, 1, BGFX_TEXTURE_FORMAT_BGRA8, BGFX_TEXTURE_RT)
+                            || !bgfx_is_texture_valid(
+                                    0,
+                                    false,
+                                    1,
+                                    BGFX_TEXTURE_FORMAT_BGRA8,
+                                    BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK))) {
                 throw new IOException("World readback capabilities unavailable");
             }
             bgfx_frame(BGFX_FRAME_NONE);

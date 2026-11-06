@@ -75,6 +75,36 @@ class WorldPresentBudgetTest {
     }
 
     @Test
+    void anUnpacedPresentIdlesAboutAFrame() {
+        assertEquals(0, WorldWindowPresentation.unpacedPark(16_600_000), "Vsync-paced: no park");
+        assertEquals(
+                0,
+                WorldWindowPresentation.unpacedPark(4_000_000),
+                "A 240 Hz display is still paced");
+        assertEquals(
+                WorldWindowPresentation.IDLE_FRAME_NANOS - 300_000,
+                WorldWindowPresentation.unpacedPark(300_000),
+                "Occluded: idle to one 60 Hz frame");
+    }
+
+    @Test
+    void terrainSamplesAreNeitherBlackNorTheSkyAtTheirRow() {
+        int h = 640;
+        assertEquals(0x5b8db1, WorldWindowPresentation.skyAt(0, h), "Sky top 91,141,177");
+        assertFalse(
+                WorldWindowPresentation.terrainPixel(WorldWindowPresentation.skyAt(500, h), 500, h),
+                "The sky at its own row is not terrain");
+        assertFalse(
+                WorldWindowPresentation.terrainPixel(0, 500, h), "Cleared black is not terrain");
+        assertTrue(
+                WorldWindowPresentation.terrainPixel(0x2c4729, 500, h), "Ground green is terrain");
+        int nearSky = WorldWindowPresentation.skyAt(500, h) + 0x050505;
+        assertFalse(
+                WorldWindowPresentation.terrainPixel(nearSky, 500, h),
+                "Within 12 of the sky is sky");
+    }
+
+    @Test
     void theFirstStepAlwaysRuns() {
         var budget = new WorldPresentBudget();
         budget.begin(5);
