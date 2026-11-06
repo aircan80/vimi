@@ -20,7 +20,11 @@ public final class WorldStreamTransportProof {
                 WorldStreamTransport.prepare(
                         output,
                         new WorldStreamTransport.Spec(
-                                "ab".repeat(32), 1, WorldStreamTransport.Backend.VULKAN));
+                                "ab".repeat(32),
+                                1,
+                                WorldStreamTransport.Backend.valueOf(
+                                        System.getProperty("vimi.proof.backend", "VULKAN")
+                                                .toUpperCase(java.util.Locale.ROOT))));
         var session =
                 prepared.launch(
                         controls -> {

@@ -367,6 +367,11 @@ tasks.register('nativeGpuWorldStreamTransportProof', JavaExec) {
     dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamTransportProof'
+    // -PproofBackend=d3d11|vulkan|metal (default Vulkan).
+    def proofBackend = providers.gradleProperty('proofBackend')
+    if (proofBackend.isPresent()) {
+        systemProperty 'vimi.proof.backend', proofBackend.get()
+    }
     timeout = java.time.Duration.ofMinutes(1)
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-world-stream-public-lifecycle').get().asFile.absolutePath
@@ -378,6 +383,11 @@ tasks.register('nativeGpuWorldStreamObjectsProof', JavaExec) {
     dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyWorldWmoShaders'), tasks.named('verifyShaders')
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamObjectsMaterialProof'
+    // -PproofBackend=d3d11|vulkan|metal (default Vulkan).
+    def proofBackend = providers.gradleProperty('proofBackend')
+    if (proofBackend.isPresent()) {
+        systemProperty 'vimi.proof.backend', proofBackend.get()
+    }
     timeout = java.time.Duration.ofMinutes(1)
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-world-stream-objects').get().asFile.absolutePath

@@ -384,4 +384,75 @@ class WorldStreamTransportTest {
         assertThrows(
                 java.util.concurrent.ExecutionException.class, () -> session.completion().get());
     }
+
+    /** #431: a helper that needs longer than the exit grace to drain still closes cleanly. */
+    @Test
+    void slowDrainingChildIsNotSignalledBeforeItsClosedStatus() throws Exception {
+        Path source = directory.resolve("SlowClose.java");
+        Files.writeString(
+                source,
+                """
+            class SlowClose {
+              public static void main(String[] a) throws Exception {
+                String prefix="WS2 "+a[0]+" ";
+                System.out.print(prefix+"SESSION TERRAIN_BASIC_V1\\n"+prefix+"CREDIT 1 0 1\\n");
+                System.out.flush();
+                var input=new java.io.BufferedReader(new java.io.InputStreamReader(System.in));
+                String line;
+                while((line=input.readLine())!=null) {
+                  if(line.split(" ")[2].equals("CLOSE")) {
+                    Thread.sleep(900); // decoder and GPU teardown on a loaded host
+                    System.out.print(prefix+"CLOSED\\n"); System.out.flush(); return;
+                  }
+                }
+              }
+            }
+            """);
+        var child = new AtomicReference<Process>();
+        var prepared = WorldStreamTransport.prepare(directory, spec);
+        var session =
+                prepared.launch(
+                        arguments -> {
+                            Path own = Path.of(arguments.get(1));
+                            var descriptor =
+                                    WorldStreamEnvelope.decodeSession(
+                                            Files.readAllBytes(own.resolve("session.wss")),
+                                            arguments.get(3));
+                            String nonce =
+                                    HexFormat.of().toHexDigits(descriptor.nonce().high())
+                                            + HexFormat.of().toHexDigits(descriptor.nonce().low());
+                            var process =
+                                    new ProcessBuilder(
+                                                    Path.of(
+                                                                    System.getProperty("java.home"),
+                                                                    "bin",
+                                                                    "java")
+                                                            .toString(),
+                                                    source.toString(),
+                                                    nonce)
+                                            .start();
+                            child.set(process);
+                            return process;
+                        },
+                        WorldStreamTestChildren.STARTUP_GUARD_MILLIS,
+                        5000);
+        try {
+            session.initialized()
+                    .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);
+            prepared.close();
+            var receipt = session.closeAsync().get(8, TimeUnit.SECONDS);
+            session.completion().get(2, TimeUnit.SECONDS);
+            assertEquals(0, receipt.exitCode().orElseThrow(), "exited on its own, not signalled");
+        } finally {
+            session.closeAsync();
+            session.terminatedAndDrained().get(8, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void exitWaitGivesADrainingChildItsBudgetAndAnAcknowledgedOneOnlyTheGrace() {
+        assertEquals(250, WorldStreamLaunchOwner.Handle.exitWaitMillis(true, 100, 250, 2500));
+        assertEquals(2400, WorldStreamLaunchOwner.Handle.exitWaitMillis(false, 100, 250, 2500));
+        assertEquals(250, WorldStreamLaunchOwner.Handle.exitWaitMillis(false, 2400, 250, 2500));
+    }
 }

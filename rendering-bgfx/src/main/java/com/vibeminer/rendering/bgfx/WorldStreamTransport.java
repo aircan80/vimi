@@ -1794,6 +1794,7 @@ public final class WorldStreamTransport {
                         }
                         case CLOSED -> {
                             closedStatus = true;
+                            handle.closedAcknowledged();
                             requestClose();
                             handle.closeAsync();
                         }
