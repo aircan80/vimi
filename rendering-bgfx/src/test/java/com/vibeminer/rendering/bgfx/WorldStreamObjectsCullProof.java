@@ -96,6 +96,11 @@ final class WorldStreamObjectsCullProof {
             require(
                     all.culled() == 0 && all.objectSubmits() == 3 * placements,
                     "Unculled counts " + all);
+            // Terrain eye, projection and rebase plus object eye and projection: once per frame,
+            // whatever the number of slots and placements drawn.
+            require(
+                    culled.cameraUniforms() == 5 && all.cameraUniforms() == 5,
+                    "Camera uniforms per frame " + culled + " " + all);
             require(
                     drawsAll - drawsCulled == all.objectSubmits() - culled.objectSubmits(),
                     "bgfx draw counts " + drawsCulled + " " + drawsAll);
@@ -115,6 +120,12 @@ final class WorldStreamObjectsCullProof {
             require(
                     Math.abs(red - 200) <= 1 && Math.abs((middle >>> 8 & 255) - 40) <= 1,
                     "Visible placement drawn " + Integer.toHexString(middle));
+            // The sky, drawn after the opaque surfaces with GEQUAL at the cleared depth, still
+            // fills the uncovered top row with its row-0 colour (terrain ends 20 yd ahead).
+            int sky = a.get(0);
+            require(
+                    (sky & 0xffffff) == 0x5b8db1 || (sky & 0xffffff) == 0xb18d5b,
+                    "Sky top row " + Integer.toHexString(sky));
             System.out.println(
                     "WORLD_OBJECT_CULL_PASS placements="
                             + placements
@@ -124,6 +135,8 @@ final class WorldStreamObjectsCullProof {
                             + culled.objectSubmits()
                             + "/"
                             + all.objectSubmits()
+                            + " cameraUniforms="
+                            + all.cameraUniforms()
                             + " bgfxDraws="
                             + drawsCulled
                             + "/"

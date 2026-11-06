@@ -238,7 +238,7 @@ public final class MeshAppearanceCodec {
             for (int p = 0; p < argb.length; p++) {
                 argb[p] = input.getInt();
             }
-            textures.add(new MeshAppearance.Texture(width, height, argb));
+            textures.add(MeshAppearance.Texture.adopt(width, height, argb));
         }
         return textures;
     }
@@ -324,7 +324,7 @@ public final class MeshAppearanceCodec {
                 for (int p = 0; p < argb.length; p++) {
                     argb[p] = input.getInt();
                 }
-                textures.add(new MeshAppearance.Texture(width, height, argb));
+                textures.add(MeshAppearance.Texture.adopt(width, height, argb));
             }
             if (input.hasRemaining()) {
                 throw new IllegalArgumentException("Trailing appearance data");
