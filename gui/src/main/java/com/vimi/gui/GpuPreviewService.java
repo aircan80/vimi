@@ -1315,6 +1315,8 @@ final class GpuPreviewService {
             command.add("-XstartOnFirstThread");
         command.addAll(HELPER_JVM_OPTIONS);
         command.add("--enable-native-access=ALL-UNNAMED");
+        // Debug frame verification (CRC32C, opaque alpha) must run on the writing side too.
+        if (Boolean.getBoolean("vimi.frameVerify")) command.add("-Dvimi.frameVerify=true");
         command.add("-cp");
         command.add(System.getProperty("java.class.path"));
         command.add("com.vibeminer.rendering.bgfx.GpuViewerMain");
