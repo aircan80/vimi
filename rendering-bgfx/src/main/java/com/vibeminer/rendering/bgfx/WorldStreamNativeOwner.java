@@ -318,7 +318,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         if (submittedCamera == cameraRevision
                 && submittedContent == renderer.contentRevision()
                 && submittedObjects == renderer.objectsRevision()
-                && submittedPolicy == policy) {
+                && submittedPolicy == policy
+                && !renderer.horizonWaiting()) {
             return false;
         }
         if (renderedThisFrame) {
@@ -420,6 +421,23 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     // correct across bgfx's uint32 frame wrap; unsigned absolute ordering does not.
     static boolean readbackReady(int current, int ready) {
         return current - ready >= 0;
+    }
+
+    /** Draws the map's WDL horizon from now on (#372); its rebuilds run on their own worker. */
+    void attachHorizon(com.vibeminer.formats.world.WorldLowRes.LowRes lowRes) throws IOException {
+        requireOpen();
+        var built = new WorldStreamHorizon(lowRes);
+        try {
+            renderer.horizon(built);
+        } catch (IOException | RuntimeException failed) {
+            built.close();
+            throw failed;
+        }
+    }
+
+    BgfxWorldStreamRenderer.HorizonCounts horizonCounts() {
+        requireOpen();
+        return renderer.horizonCounts();
     }
 
     /** Exterior object counts of the last drawn frame. */

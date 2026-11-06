@@ -122,6 +122,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             long objectBytes) {}
 
     /**
+     * The WDL horizon of the last frame: tiles and triangles drawn, the fixed GPU allocation of its
+     * buffers, the last rebuild's time on the horizon worker, and how many rebuilds were uploaded.
+     */
+    record HorizonCounts(
+            int tiles, int triangles, long gpuBytes, long lastBuildNanos, long uploads) {}
+
+    /**
      * Exterior objects of the last drawn frame: placements tested in the opaque/cutout pass, how
      * many of them the CPU cull skipped, object draw submits over both passes, and how many times a
      * camera uniform (eye, projection, rebase, for terrain and objects) was set.
@@ -409,6 +416,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private short wmoFog = INVALID, wmoFogRange = INVALID, wmoSkyTop = INVALID;
     // Read once per frame; #177 sets it from the light tables (fog(WorldFog)).
     private WorldFog fog = WorldFog.STREAM;
+    // Optional WDL horizon (#372): built on its own worker, uploaded and drawn here.
+    private WorldStreamHorizon horizon;
+    private short horizonVertices = INVALID, horizonIndices = INVALID;
+    private int horizonVertexCount, horizonIndexCount, horizonTiles;
+    private long horizonBuildNanos, horizonUploads;
+    private boolean horizonRequested;
     // Samples of the target this renderer draws into; above 1, cutouts use alpha to coverage.
     private int targetSamples = 1;
     // Optional exterior objects pass (existing world-wmo shaders); INVALID program disables it.
@@ -873,6 +886,77 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         return WorldStreamStatus.LateOutcome.ATTACHED;
     }
 
+    /**
+     * Draws the map's low-resolution horizon from now on; its buffers are allocated once at the
+     * horizon's fixed GPU budget. Owner thread only.
+     */
+    void horizon(WorldStreamHorizon value) throws IOException {
+        requireOwner();
+        requireOpen();
+        java.util.Objects.requireNonNull(value);
+        if (horizon != null) {
+            throw new IllegalStateException("World horizon already attached");
+        }
+        try (var layout = meshLayout()) {
+            horizonVertices =
+                    valid(
+                            bgfx_create_dynamic_vertex_buffer(
+                                    WorldStreamHorizon.MAX_VERTICES, layout, BGFX_BUFFER_NONE));
+            horizonIndices =
+                    valid(
+                            bgfx_create_dynamic_index_buffer(
+                                    WorldStreamHorizon.MAX_INDICES,
+                                    org.lwjgl.bgfx.BGFX.BGFX_BUFFER_INDEX32));
+        } catch (IOException | RuntimeException failed) {
+            if (horizonVertices != INVALID) {
+                bgfx_destroy_dynamic_vertex_buffer(horizonVertices);
+                horizonVertices = INVALID;
+            }
+            throw failed;
+        }
+        horizon = value;
+    }
+
+    /**
+     * The horizon needs a frame even if nothing else changed: it was just attached and has not been
+     * asked for yet, or a rebuilt horizon is waiting to be uploaded.
+     */
+    boolean horizonWaiting() {
+        return horizon != null && (!horizonRequested || horizon.hasReady());
+    }
+
+    HorizonCounts horizonCounts() {
+        requireOwner();
+        return new HorizonCounts(
+                horizon == null ? 0 : horizonTiles,
+                horizon == null ? 0 : horizonIndexCount / 3,
+                horizon == null ? 0 : WorldStreamHorizon.GPU_BUDGET_BYTES,
+                horizonBuildNanos,
+                horizonUploads);
+    }
+
+    /** Asks for the horizon around the camera and uploads a finished one; never waits. */
+    private void refreshHorizon(TerrainCamera camera) {
+        long[] resident = new long[64];
+        for (var lease : active) {
+            var slot = slots[lease.slot()];
+            int bit = slot.x * 64 + slot.y;
+            resident[bit / 64] |= 1L << (bit % 64);
+        }
+        horizon.request(camera.x(), camera.y(), resident);
+        horizonRequested = true;
+        var packed = horizon.take();
+        if (packed != null) {
+            bgfx_update_dynamic_vertex_buffer(horizonVertices, 0, bgfx_copy(packed.vertices()));
+            bgfx_update_dynamic_index_buffer(horizonIndices, 0, bgfx_copy(packed.indices()));
+            horizonVertexCount = packed.vertexCount();
+            horizonIndexCount = packed.indexCount();
+            horizonTiles = packed.tiles();
+            horizonBuildNanos = packed.buildNanos();
+            horizonUploads++;
+        }
+    }
+
     /** The fog and sky of the next frames; #177 feeds it from the light tables. */
     void fog(WorldFog value) {
         requireOwner();
@@ -1115,6 +1199,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         bgfx_set_view_rect(0, 0, 0, width, height);
         bgfx_set_view_mode(0, BGFX_VIEW_MODE_SEQUENTIAL);
         bgfx_set_view_clear(0, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x000000ff, 0, 0);
+        // With a horizon, one fog range reaches out to it for every pass (#372, option (a)).
+        var fog = horizon == null ? this.fog : this.fog.withHorizon(WorldStreamHorizon.FOG_END);
+        if (horizon != null) {
+            refreshHorizon(camera);
+        }
         try (var stack = MemoryStack.stackPush()) {
             var origin =
                     new TerrainScene.Origin(
@@ -1165,6 +1254,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         stack.floats(slot.anchorX, slot.anchorY, 3f / 1600, slot.textured ? 1 : 0),
                         1);
                 drawTerrain(slot, view);
+            }
+            // The horizon right after the streamed terrain, before objects and the sky, with the
+            // terrain state and the vertex-colour path (no atlas).
+            if (horizon != null && horizonIndexCount > 0) {
+                bgfx_set_uniform(atlasUniform, stack.floats(0, 0, 0, 0), 1);
+                bgfx_set_dynamic_vertex_buffer(0, horizonVertices, 0, horizonVertexCount);
+                bgfx_set_dynamic_index_buffer(horizonIndices, 0, horizonIndexCount);
+                bgfx_set_state(TERRAIN_STATE, 0);
+                bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
             }
             // One fixed set of object uniform buffers per frame: per-placement work allocates
             // nothing on the frame's MemoryStack, whatever the number of placements.
@@ -1656,6 +1754,17 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             late.dropped = true;
             late.build.abandon();
             late = null;
+        }
+        if (horizon != null) {
+            horizon.close();
+        }
+        if (horizonVertices != INVALID) {
+            bgfx_destroy_dynamic_vertex_buffer(horizonVertices);
+            horizonVertices = INVALID;
+        }
+        if (horizonIndices != INVALID) {
+            bgfx_destroy_dynamic_index_buffer(horizonIndices);
+            horizonIndices = INVALID;
         }
         for (var slot : slots) {
             if (slot != null && slot.objects != null) {

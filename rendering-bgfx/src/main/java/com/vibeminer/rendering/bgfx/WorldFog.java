@@ -63,6 +63,19 @@ record WorldFog(
         return new WorldFog(horizon, top, start, Math.min(end, cut), 1, cut, topElevation);
     }
 
+    /**
+     * This fog with the WDL horizon drawn (#372, option (a)): fog reaches its maximum at {@code
+     * horizonEnd} instead of the streamed-terrain cut, and the cut moves out to it as well, so
+     * terrain, objects and the horizon all fade into the sky together. The streamed tiles stay
+     * culled on the CPU at their own distance.
+     */
+    WorldFog withHorizon(float horizonEnd) {
+        if (!(horizonEnd >= end)) {
+            throw new IllegalArgumentException("Horizon fog must reach at least the current end");
+        }
+        return new WorldFog(horizon, top, start, horizonEnd, maximum, horizonEnd, topElevation);
+    }
+
     @Override
     public float[] horizon() {
         return horizon.clone();
