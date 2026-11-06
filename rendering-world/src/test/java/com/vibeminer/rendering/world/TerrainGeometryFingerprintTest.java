@@ -105,6 +105,70 @@ class TerrainGeometryFingerprintTest {
                 () -> TerrainGeometryFingerprint.sha256(64, 19, canonical));
     }
 
+    /** The digest one little-endian int at a time, as before block hashing. */
+    private static String reference(TerrainScene.Tile tile) throws Exception {
+        var digest = java.security.MessageDigest.getInstance("SHA-256");
+        digest.update(
+                "VIMI_TERRAIN_GEOMETRY_V1\0".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        var ints = new java.util.ArrayList<Integer>();
+        ints.addAll(
+                java.util.List.of(
+                        tile.x(), tile.y(), tile.chunks(), tile.vertexCount(), tile.indexCount()));
+        var vertices = tile.vertices();
+        while (vertices.hasRemaining()) {
+            ints.add(Float.floatToRawIntBits(vertices.get()));
+        }
+        var indices = tile.indices();
+        while (indices.hasRemaining()) {
+            ints.add(indices.get());
+        }
+        for (int value : ints) {
+            digest.update((byte) value);
+            digest.update((byte) (value >>> 8));
+            digest.update((byte) (value >>> 16));
+            digest.update((byte) (value >>> 24));
+        }
+        return java.util.HexFormat.of().formatHex(digest.digest());
+    }
+
+    @Test
+    void blockHashingMatchesTheIntAtATimeDigestAndIsRememberedPerTile() throws Exception {
+        byte[] source = root();
+        var parsed = WorldFormats.adtTileGrid(source, () -> false);
+        var tile = new TerrainScene.Tile(7, 19, parsed.terrain());
+        String expected = reference(tile);
+        assertEquals(expected, TerrainGeometryFingerprint.sha256(tile));
+        assertEquals(expected, TerrainGeometryFingerprint.sha256(tile));
+        assertEquals(expected, TerrainGeometryFingerprint.sha256(7, 19, parsed.grid()));
+        // One walk gives the same geometry and grid as the separate parses.
+        var legacy = WorldFormats.adt(source, () -> false);
+        assertEquals(
+                java.util.Arrays.toString(legacy.vertices()),
+                java.util.Arrays.toString(parsed.terrain().vertices()));
+        assertEquals(
+                java.util.Arrays.toString(legacy.triangles()),
+                java.util.Arrays.toString(parsed.terrain().triangles()));
+        assertEquals(
+                TerrainGeometryFingerprint.sha256(7, 19, WorldFormats.adtGrid(source, () -> false)),
+                TerrainGeometryFingerprint.sha256(7, 19, parsed.grid()));
+        assertEquals(
+                parsed.areas().chunks().size(),
+                WorldFormats.adtAreas(source, () -> false).chunks().size());
+        // An equal copy hashes the same; the views are read-only.
+        var copy = TerrainScene.Tile.copyOf(7, 19, legacy.vertices(), legacy.triangles(), 256);
+        assertEquals(expected, TerrainGeometryFingerprint.sha256(copy));
+        assertThrows(
+                java.nio.ReadOnlyBufferException.class,
+                () -> parsed.terrain().vertexView().put(0, 1f));
+        assertThrows(
+                java.nio.ReadOnlyBufferException.class,
+                () -> parsed.terrain().triangleView().put(0, 1));
+        float[] caller = legacy.vertices();
+        var owned = new WorldFormats.Terrain(caller, legacy.triangles(), 256);
+        caller[0] += 1;
+        assertEquals(legacy.vertices()[0], owned.vertexView().get(0));
+    }
+
     @Test
     void batchedDigestMatchesPlainLittleEndianStreamAcrossBufferBoundaries() throws Exception {
         // 37,120 vertices and 196,608 indices: many 8 KiB batches, with an uneven final batch.
