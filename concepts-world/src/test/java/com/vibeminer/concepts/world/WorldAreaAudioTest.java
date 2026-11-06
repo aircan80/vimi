@@ -2,6 +2,7 @@ package com.vibeminer.concepts.world;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
@@ -22,7 +23,16 @@ final class WorldAreaAudioTest {
     private static final BuildRef BUILD =
             new BuildRef("wowf", "a".repeat(32), "b".repeat(32), "us");
 
-    private record Field(String name, int length, String target, boolean verified) {}
+    private record Field(
+            String name, int length, String target, boolean verified, boolean decimal) {
+        Field(String name, int length, String target, boolean verified) {
+            this(name, length, target, verified, false);
+        }
+    }
+
+    private static Field decimal(String name) {
+        return new Field(name, 1, null, true, true);
+    }
 
     private static Field reference(String name, String target) {
         return new Field(name, 1, target, true);
@@ -45,7 +55,7 @@ final class WorldAreaAudioTest {
                 columns.add(
                         new Db2Types.Column(
                                 field.length() == 1 ? field.name() : field.name() + "[" + i + "]",
-                                "integer",
+                                field.decimal() ? "float" : "integer",
                                 false,
                                 null,
                                 null));
@@ -53,7 +63,9 @@ final class WorldAreaAudioTest {
             schema.add(
                     new TableSchema.SchemaColumn(
                             field.name(),
-                            TableSchema.ColumnKind.INT,
+                            field.decimal()
+                                    ? TableSchema.ColumnKind.FLOAT
+                                    : TableSchema.ColumnKind.INT,
                             32,
                             true,
                             field.length(),
@@ -92,7 +104,13 @@ final class WorldAreaAudioTest {
     }
 
     private static List<MemoryTables.FakeTable> fixture(boolean verifiedMusic) {
-        return List.of(
+        return fixture(verifiedMusic, true, true);
+    }
+
+    private static List<MemoryTables.FakeTable> fixture(
+            boolean verifiedMusic, boolean verifiedFrequency, boolean soundKits) {
+        var tables = new ArrayList<MemoryTables.FakeTable>();
+        tables.add(
                 table(
                         1,
                         "AreaTable",
@@ -100,7 +118,8 @@ final class WorldAreaAudioTest {
                                 reference("ZoneMusic", "ZoneMusic"),
                                 reference("AmbienceID", "SoundAmbience")),
                         // Zone 10 records both; subzone 11 overrides ambience only.
-                        List.of(row(10, "5", "7"), row(11, "0", "8"), row(12, "0", "0"))),
+                        List.of(row(10, "5", "7"), row(11, "0", "8"), row(12, "0", "0"))));
+        tables.add(
                 table(
                         2,
                         "ZoneMusic",
@@ -108,23 +127,39 @@ final class WorldAreaAudioTest {
                                 new Field("Sounds", 2, "SoundEntries", verifiedMusic),
                                 array("SilenceIntervalMin", null),
                                 array("SilenceIntervalMax", null)),
-                        List.of(row(5, "100", "0", "1000", "2000", "4000", "8000"))),
+                        List.of(row(5, "100", "0", "1000", "2000", "4000", "8000"))));
+        tables.add(
                 table(
                         3,
                         "SoundAmbience",
                         List.of(array("AmbienceID", "SoundKit")),
-                        List.of(row(7, "200", "201"), row(8, "300", "301"))),
+                        List.of(row(7, "200", "201"), row(8, "300", "301"))));
+        tables.add(
                 table(
                         4,
                         "SoundKitEntry",
                         List.of(
                                 reference("SoundKitID", "SoundKit"),
-                                reference("FileDataID", "FileData")),
+                                reference("FileDataID", "FileData"),
+                                new Field("Frequency", 1, null, verifiedFrequency)),
+                        // File 9001 is recorded twice; its weights add up.
                         List.of(
-                                row(1, "100", "9001"),
-                                row(2, "100", "9002"),
-                                row(3, "300", "9301"),
-                                row(4, "201", "0"))));
+                                row(1, "100", "9001", "3"),
+                                row(2, "100", "9002", "1"),
+                                row(3, "300", "9301", "0"),
+                                row(4, "201", "0", "1"),
+                                row(5, "100", "9001", "2"),
+                                row(6, "200", "9201", "1"))));
+        if (soundKits) {
+            tables.add(
+                    table(
+                            5,
+                            "SoundKit",
+                            List.of(decimal("VolumeFloat")),
+                            // Kit 300 records more than full volume; kit 200 has no row.
+                            List.of(row(100, "0.5"), row(300, "2.5"))));
+        }
+        return tables;
     }
 
     private static BuildTables open(List<MemoryTables.FakeTable> fixture) {
@@ -144,7 +179,10 @@ final class WorldAreaAudioTest {
                     List.of(
                             new WorldService.Area(10, "Recorded zone", 0, 0),
                             new WorldService.Area(11, "Recorded subzone", 10, 0),
-                            new WorldService.Area(12, "Silent zone", 0, 0)));
+                            new WorldService.Area(12, "Silent zone", 0, 0),
+                            // No AreaTable rows record areas 13 and 14.
+                            new WorldService.Area(13, "Unreadable subzone", 10, 0),
+                            new WorldService.Area(14, "Unreadable zone", 0, 0)));
 
     @Test
     void subzoneRelationshipsOverrideTheirZoneIndependentlyForMusicAndAmbience() {
@@ -280,5 +318,231 @@ final class WorldAreaAudioTest {
         var file = WorldAreaAudio.read(null, 9001, Cancellation.NONE);
         assertEquals(WorldAreaAudio.FileState.UNAVAILABLE, file.state());
         assertNull(file.bytes());
+    }
+
+    @Test
+    void recordedFrequenciesWeightFilesAndKitVolumeScalesTracks() {
+        var tables = open(fixture(true));
+        try {
+            var plan =
+                    WorldAreaAudio.resolve(
+                            tables,
+                            0,
+                            area(11, INDEX),
+                            WorldAreaAudio.Variant.DAY,
+                            Cancellation.NONE);
+            var music = plan.music().track();
+            assertEquals(List.of(9001L, 9002L), music.fileDataIds());
+            assertEquals(List.of(5, 1), music.fileWeights(), "duplicate entries add weights");
+            assertEquals(0.5, music.volume());
+            var ambience = plan.ambience().track();
+            assertEquals(List.of(0), ambience.fileWeights());
+            assertEquals(1.0, ambience.volume(), "recorded volume above 1 is clamped");
+            assertTrue(
+                    plan.issues().stream().noneMatch(i -> i.contains("SoundKit #")),
+                    plan.issues().toString());
+        } finally {
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void weightedPicksFollowRecordedFrequencies() {
+        var track =
+                new WorldAreaAudio.Track(
+                        WorldAreaAudio.Kind.MUSIC,
+                        10,
+                        "Authored zone",
+                        5,
+                        100,
+                        List.of(1L, 2L, 3L),
+                        List.of(5, 0, 1),
+                        1,
+                        0,
+                        0);
+        assertEquals(1, track.pick(0));
+        assertEquals(1, track.pick(0.8));
+        assertEquals(3, track.pick(0.84));
+        assertEquals(3, track.pick(0.999999));
+        var counts = new java.util.HashMap<Long, Integer>();
+        for (int i = 0; i < 600; i++) {
+            counts.merge(track.pick(i / 600.0), 1, Integer::sum);
+        }
+        assertEquals(500, counts.get(1L));
+        assertNull(counts.get(2L), "a zero weight is never picked");
+        assertEquals(100, counts.get(3L));
+        var silent =
+                new WorldAreaAudio.Track(
+                        WorldAreaAudio.Kind.AMBIENCE,
+                        10,
+                        "Authored zone",
+                        5,
+                        100,
+                        List.of(1L, 2L),
+                        List.of(0, 0),
+                        1,
+                        0,
+                        0);
+        assertEquals(1, silent.pick(0.49));
+        assertEquals(2, silent.pick(0.5), "all-zero weights pick uniformly");
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new WorldAreaAudio.Track(
+                                WorldAreaAudio.Kind.MUSIC,
+                                10,
+                                "Authored zone",
+                                5,
+                                100,
+                                List.of(1L),
+                                List.of(1),
+                                1.5,
+                                0,
+                                0));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new WorldAreaAudio.Track(
+                                WorldAreaAudio.Kind.MUSIC,
+                                10,
+                                "Authored zone",
+                                5,
+                                100,
+                                List.of(1L),
+                                List.of(1, 1),
+                                1,
+                                0,
+                                0));
+    }
+
+    @Test
+    void unreviewedFrequencyAndAbsentKitVolumeFallBackVisibly() {
+        var tables = open(fixture(true, false, false));
+        try {
+            var plan =
+                    WorldAreaAudio.resolve(
+                            tables,
+                            0,
+                            area(11, INDEX),
+                            WorldAreaAudio.Variant.DAY,
+                            Cancellation.NONE);
+            assertEquals(WorldAreaAudio.State.RECORDED, plan.music().state());
+            var music = plan.music().track();
+            assertEquals(List.of(1, 1), music.fileWeights(), "uniform without Frequency");
+            assertEquals(1.0, music.volume());
+            assertTrue(
+                    plan.issues().stream()
+                            .anyMatch(
+                                    i ->
+                                            i.contains("Frequency has an unreviewed shape")
+                                                    && i.contains("uniformly")),
+                    plan.issues().toString());
+            assertTrue(
+                    plan.issues().stream()
+                            .anyMatch(i -> i.contains("SoundKit is") && i.contains("full volume")),
+                    plan.issues().toString());
+        } finally {
+            tables.closeAsync().join();
+        }
+        var missingRow = open(fixture(true));
+        try {
+            var plan =
+                    WorldAreaAudio.resolve(
+                            missingRow,
+                            0,
+                            area(10, INDEX),
+                            WorldAreaAudio.Variant.DAY,
+                            Cancellation.NONE);
+            // Zone 10's day ambience is kit 200, which records no SoundKit row.
+            assertEquals(WorldAreaAudio.State.RECORDED, plan.ambience().state());
+            assertEquals(1.0, plan.ambience().track().volume());
+            assertTrue(
+                    plan.issues().stream()
+                            .anyMatch(
+                                    i ->
+                                            i.contains("SoundKit #200 is")
+                                                    && i.contains("full volume")),
+                    plan.issues().toString());
+        } finally {
+            missingRow.closeAsync().join();
+        }
+    }
+
+    @Test
+    void unreadableChainMembersFallBackToTheirParents() {
+        var tables = open(fixture(true));
+        try {
+            var plan =
+                    WorldAreaAudio.resolve(
+                            tables,
+                            0,
+                            area(13, INDEX),
+                            WorldAreaAudio.Variant.DAY,
+                            Cancellation.NONE);
+            assertEquals(WorldAreaAudio.State.RECORDED, plan.music().state());
+            assertEquals(10, plan.music().track().areaId());
+            assertEquals(WorldAreaAudio.State.RECORDED, plan.ambience().state());
+            assertEquals(200, plan.ambience().track().soundKitId());
+            assertTrue(
+                    plan.issues().stream()
+                            .anyMatch(i -> i.contains("#13") && i.contains("parent area")),
+                    plan.issues().toString());
+            // Nothing readable in the chain is still unavailable, not "none recorded".
+            var lone =
+                    WorldAreaAudio.resolve(
+                            tables,
+                            0,
+                            area(14, INDEX),
+                            WorldAreaAudio.Variant.DAY,
+                            Cancellation.NONE);
+            assertEquals(WorldAreaAudio.State.UNAVAILABLE, lone.music().state());
+            assertTrue(lone.music().message().contains("#14"), lone.music().message());
+        } finally {
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void aFullRequestQueueIsReportedAsBusy() throws Exception {
+        var gate = new java.util.concurrent.CompletableFuture<Object>();
+        var tables =
+                (BuildTables)
+                        java.lang.reflect.Proxy.newProxyInstance(
+                                WorldAreaAudioTest.class.getClassLoader(),
+                                new Class<?>[] {BuildTables.class},
+                                (proxy, method, args) ->
+                                        gate.thenApply(
+                                                ignored -> {
+                                                    throw new IllegalStateException("closed");
+                                                }));
+        var audio = new WorldAreaAudio(tables, null);
+        try {
+            // One request runs (blocked on the gate) and eight fill the queue.
+            var running =
+                    audio.plan(0, area(11, INDEX), WorldAreaAudio.Variant.DAY, Cancellation.NONE);
+            long deadline = System.nanoTime() + 10_000_000_000L;
+            java.util.concurrent.CompletableFuture<?> rejected = null;
+            int queued = 0;
+            while (rejected == null && System.nanoTime() < deadline) {
+                var next =
+                        audio.plan(
+                                0, area(11, INDEX), WorldAreaAudio.Variant.DAY, Cancellation.NONE);
+                if (next.isCompletedExceptionally()) {
+                    rejected = next;
+                } else {
+                    queued++;
+                }
+            }
+            assertTrue(rejected != null, "the bounded queue never filled");
+            assertTrue(queued <= 9, "queue held " + queued);
+            var failure =
+                    assertThrows(java.util.concurrent.CompletionException.class, rejected::join);
+            assertTrue(WorldAreaAudio.busy(failure));
+            assertTrue(!WorldAreaAudio.busy(new IllegalStateException("closed")));
+            assertTrue(!running.isCompletedExceptionally());
+        } finally {
+            gate.complete(null);
+            audio.closeAsync().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
     }
 }
