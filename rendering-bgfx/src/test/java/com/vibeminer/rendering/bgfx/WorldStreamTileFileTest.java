@@ -127,7 +127,7 @@ final class WorldStreamTileFileTest {
         return directory.resolve("tile-42.wst");
     }
 
-    private static WorldStreamTileFile.Expected signed(byte[] bytes) throws Exception {
+    static WorldStreamTileFile.Expected signed(byte[] bytes) throws Exception {
         return new WorldStreamTileFile.Expected(
                 NONCE,
                 SCOPE,

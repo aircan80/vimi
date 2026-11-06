@@ -5,8 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -51,6 +53,86 @@ final class WorldStreamTileSplatTest {
                                 WorldStreamTileFileTest.header(tile, true),
                                 tile,
                                 () -> false));
+    }
+
+    @Test
+    void flippedOrTruncatedSplatAndWaterTrailersAreRefused() throws Exception {
+        var tile = WorldStreamTileFileTest.full(false);
+        var header = WorldStreamTileFileTest.header(tile, true);
+        var terrain =
+                WorldStreamTileFile.write(
+                        directory, header, tile, WorldStreamTileFileTest.atlas(), () -> false);
+        var splat = splat(3, 200);
+        var withSplat =
+                WorldStreamTileFile.appendSplat(path(), terrain, header, splat, () -> false);
+        var full =
+                WorldStreamTileFile.appendWater(
+                        path(),
+                        withSplat,
+                        header,
+                        WorldStreamTileWaterTest.water(3, 0),
+                        () -> false);
+        byte[] clean = Files.readAllBytes(path());
+        int start = terrain.length(), water = withSplat.length();
+        // Any flipped trailer byte fails the digest of the replayed expectation.
+        for (int offset :
+                new int[] {
+                    start,
+                    start + 8,
+                    start + WorldStreamTileFile.SPLAT_HEAD_BYTES,
+                    water - 1,
+                    water,
+                    water + 40,
+                    clean.length - 1
+                }) {
+            byte[] bad = clean.clone();
+            bad[offset] ^= 0x10;
+            Files.write(path(), bad);
+            assertThrows(
+                    IOException.class,
+                    () -> WorldStreamTileFile.read(path(), full, () -> false),
+                    "Flipped byte " + offset);
+        }
+        // Flipped structure is refused even when the expectation is re-signed: the splat magic,
+        // version and count, the water magic, version and geometry identity.
+        for (int offset : new int[] {start, start + 8, start + 12, water, water + 8, water + 32}) {
+            byte[] bad = clean.clone();
+            bad[offset] ^= 0x10;
+            Files.write(path(), bad);
+            assertThrows(
+                    IOException.class,
+                    () ->
+                            WorldStreamTileFile.read(
+                                    path(), WorldStreamTileFileTest.signed(bad), () -> false),
+                    "Re-signed flipped byte " + offset);
+        }
+        // Truncated inside either trailer: refused replayed and re-signed.
+        for (int keep :
+                new int[] {
+                    start + 4,
+                    start + WorldStreamTileFile.SPLAT_HEAD_BYTES,
+                    water - 1,
+                    water + 4,
+                    water + 100,
+                    clean.length - 1
+                }) {
+            byte[] cut = Arrays.copyOf(clean, keep);
+            Files.write(path(), cut);
+            assertThrows(
+                    IOException.class,
+                    () -> WorldStreamTileFile.read(path(), full, () -> false),
+                    "Truncated to " + keep);
+            assertThrows(
+                    IOException.class,
+                    () ->
+                            WorldStreamTileFile.read(
+                                    path(), WorldStreamTileFileTest.signed(cut), () -> false),
+                    "Re-signed truncation to " + keep);
+        }
+        Files.write(path(), clean);
+        try (var payload = WorldStreamTileFile.read(path(), full, () -> false)) {
+            assertEquals(3, payload.water().indices().length / 6);
+        }
     }
 
     @Test

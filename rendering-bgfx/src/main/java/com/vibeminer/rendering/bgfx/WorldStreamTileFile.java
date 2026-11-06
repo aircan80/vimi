@@ -566,7 +566,7 @@ final class WorldStreamTileFile {
                     at = splat.bytes();
                 }
                 if (at < trailer) {
-                    require(trailer - at >= 8, "Packet trailer");
+                    require(trailer - at >= WATER_HEADER_BYTES, "Packet trailer");
                     water = readWater(trailerBytes.slice(at, trailer - at), header, tile, canceled);
                 }
             }
@@ -697,11 +697,15 @@ final class WorldStreamTileFile {
         }
     }
 
-    /** The splat trailer at the start of {@code bytes}, which may continue with water. */
+    /**
+     * The splat trailer starting at {@code bytes}' position, which may continue with water. Read
+     * through its own slice, so absolute offsets count from the trailer whatever the caller's
+     * buffer.
+     */
     private static Splat readSplat(ByteBuffer bytes, BooleanSupplier canceled) throws IOException {
         long limit = bytes.remaining();
         require(limit >= SPLAT_HEAD_BYTES, "Splat trailer head");
-        var in = bytes.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+        var in = bytes.slice().order(ByteOrder.LITTLE_ENDIAN);
         byte[] head = new byte[SPLAT_HEAD_BYTES];
         in.get(0, head);
         var fields = ByteBuffer.wrap(head).order(ByteOrder.LITTLE_ENDIAN);
