@@ -58,6 +58,7 @@ public final class WorldHudKeysUiTest {
             fx(() -> ((Button) view.lookup("#world-open")).fire());
             await(() -> get("camera") != null && !(boolean) get("scenePreparing"));
             fx(WorldHudKeysUiTest::keysAct);
+            fx(WorldHudKeysUiTest::bookmarksKey);
             await(() -> view.lookup("#world-minimap").isVisible());
             fx(WorldHudKeysUiTest::minimapKey);
             fx(() -> {
@@ -126,6 +127,7 @@ public final class WorldHudKeysUiTest {
                     // With the Escape menu open, a command key forwarded from the popup does nothing.
                     var menu = (WorldGameMenu) get("menu");
                     menu.open();
+                    require(!view.minimap().tracking().showing(), "Opening the menu closes the tracking popup");
                     var withMenu = audio.slot();
                     Event.fireEvent(popup.getScene(), new KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.T,
                             false, false, false, false));
@@ -140,7 +142,7 @@ public final class WorldHudKeysUiTest {
                             false, false, false, false));
                 }
                 require(!input.keysHeld(), "Nothing stays held after the scene keys");
-                press(KeyCode.L);
+                if (view.minimap().tracking().showing()) press(KeyCode.L);
             });
             await(() -> !view.minimap().tracking().showing());
             // With the minimap hidden by N, the tracking icon shows it again and opens the popup.
@@ -157,10 +159,29 @@ public final class WorldHudKeysUiTest {
                 press(KeyCode.L);
             });
             await(() -> !view.minimap().tracking().showing());
+            // B pressed while the tracking popup is open: the menu opens on Bookmarks and the
+            // popup closes, so nothing of the HUD stays over the menu.
+            fx(() -> {
+                ((javafx.scene.Node) get("viewport")).requestFocus();
+                press(KeyCode.L);
+            });
+            await(() -> view.minimap().tracking().showing());
+            fx(() -> {
+                var menu = (WorldGameMenu) get("menu");
+                key(KeyCode.B, true);
+                require(menu.shown() && menu.current() == WorldGameMenu.Page.BOOKMARKS
+                                && !view.minimap().tracking().showing(),
+                        "B from the open popup opens Bookmarks and closes the popup");
+                key(KeyCode.B, true);
+                require(menu.shown(), "Its auto-repeat keeps the menu open");
+                key(KeyCode.B, false);
+                press(KeyCode.B);
+                require(!menu.shown(), "B closes the menu");
+            });
             System.out.println("World HUD keys PASS: V spawns toggle, T day/night cycle, 1-5 speed presets"
                     + " persisted, N minimap hide/show (ignored with the HUD hidden), L tracking popup open/close,"
-                    + " HUD keys through the popup before its controls, movement kept in the popup, no"
-                    + " held keys or motion");
+                    + " HUD keys through the popup before its controls, movement kept in the popup, B bookmarks"
+                    + " page open/close with nothing behind the menu, no held keys or motion");
         } finally {
             fx(() -> { if (view != null) view.close(); if (stage != null) stage.close(); });
             Platform.exit();
@@ -169,7 +190,7 @@ public final class WorldHudKeysUiTest {
 
     private static void keysAct() {
         ((AnimationTimer) get("timer")).stop();
-        var viewport = view.lookup("#world-viewport");
+        var viewport = (javafx.scene.Node) get("viewport");
         viewport.requestFocus();
         var input = (WorldExplorerInput) get("input");
         var before = (TerrainRenderer.Camera) get("camera");
@@ -229,8 +250,89 @@ public final class WorldHudKeysUiTest {
         require(minimap.isVisible(), "Showing the HUD shows the minimap again");
     }
 
+    /** B opens the menu on Bookmarks, B closes it; nothing acts behind the open menu. */
+    private static void bookmarksKey() {
+        var menu = (WorldGameMenu) get("menu");
+        var input = (WorldExplorerInput) get("input");
+        var audio = (WorldAudioControls) get("audio");
+        var camera = (TerrainRenderer.Camera) get("camera");
+        view.lookup("#world-viewport").requestFocus();
+        require(!menu.shown(), "The menu starts closed");
+        key(KeyCode.B, true);
+        require(menu.shown() && menu.current() == WorldGameMenu.Page.BOOKMARKS,
+                "B opens the menu on its Bookmarks page");
+        key(KeyCode.B, true);
+        require(menu.shown(), "B's auto-repeat does not close it again");
+        // Losing focus while B is down (its release goes elsewhere) resets the latch, so the
+        // next press is a press, not a repeat.
+        menu.page(WorldGameMenu.Page.BOOKMARKS).lookup(".text-field").requestFocus();
+        require(!((javafx.scene.Node) get("viewport")).isFocused(), "The viewport lost focus");
+        ((javafx.scene.Node) get("viewport")).requestFocus();
+        key(KeyCode.B, true);
+        require(!menu.shown(), "After a focus loss the next B is a fresh press and closes the menu");
+        key(KeyCode.B, false);
+        key(KeyCode.B, true);
+        require(menu.shown() && menu.current() == WorldGameMenu.Page.BOOKMARKS, "B opens it again");
+        key(KeyCode.B, false);
+        var first = menu.page(WorldGameMenu.Page.BOOKMARKS).getChildren().getFirst();
+        require("world-save-bookmark".equals(first.getId()), "Save current view stays the first row: " + first);
+        var slot = audio.slot();
+        press(KeyCode.T);
+        key(KeyCode.W, true);
+        tick();
+        require(audio.slot() == slot && camera.equals(get("camera")) && !input.keysHeld(),
+                "Nothing acts behind the open menu");
+        key(KeyCode.W, false);
+        var field = menu.page(WorldGameMenu.Page.BOOKMARKS).lookup(".text-field");
+        require(field != null, "The Bookmarks page has a text field (travel)");
+        {
+            field.requestFocus();
+            Event.fireEvent(field, new KeyEvent(KeyEvent.KEY_PRESSED, "b", "b", KeyCode.B, false, false, false, false));
+            Event.fireEvent(field, new KeyEvent(KeyEvent.KEY_RELEASED, "b", "b", KeyCode.B, false, false, false, false));
+            require(menu.shown(), "Typing b in a bookmarks text field does not close the menu");
+            view.lookup("#world-viewport").requestFocus();
+        }
+        press(KeyCode.B);
+        require(!menu.shown(), "B again closes the menu");
+        // Full screen: the menu and its fields live in the full-screen stage; typing b there
+        // still types.
+        try {
+            var fullscreen = (WorldFullscreen) get("fullscreen");
+            fullscreen.windowed(true);
+            var toggle = WorldView.class.getDeclaredMethod("toggleFullscreen");
+            toggle.setAccessible(true);
+            toggle.invoke(view);
+            require(fullscreen.active(), "Full screen on");
+            press(KeyCode.B);
+            require(menu.shown() && menu.current() == WorldGameMenu.Page.BOOKMARKS, "B opens Bookmarks in full screen");
+            var fullField = menu.page(WorldGameMenu.Page.BOOKMARKS).lookup(".text-field");
+            require(fullField.getScene() == fullscreen.stage().getScene(), "The field is in the full-screen stage");
+            fullField.requestFocus();
+            Event.fireEvent(fullField, new KeyEvent(KeyEvent.KEY_PRESSED, "b", "b", KeyCode.B, false, false, false, false));
+            Event.fireEvent(fullField, new KeyEvent(KeyEvent.KEY_RELEASED, "b", "b", KeyCode.B, false, false, false, false));
+            require(menu.shown(), "In full screen, typing b in a bookmarks field does not close the menu");
+            ((javafx.scene.Node) get("viewport")).requestFocus();
+            press(KeyCode.B);
+            require(!menu.shown(), "B closes it in full screen");
+            toggle.invoke(view);
+            require(!fullscreen.active(), "Full screen off");
+        } catch (ReflectiveOperationException error) {
+            throw new AssertionError(error);
+        }
+        menu.open();
+        press(KeyCode.B);
+        require(menu.shown() && menu.current() == WorldGameMenu.Page.BOOKMARKS,
+                "From the main column, B goes to the Bookmarks page");
+        menu.open(WorldGameMenu.Page.CONTROLS);
+        press(KeyCode.B);
+        require(menu.shown() && menu.current() == WorldGameMenu.Page.BOOKMARKS,
+                "From another page, B switches to the Bookmarks page");
+        press(KeyCode.B);
+        require(!menu.shown() && !input.keysHeld(), "And closes it again, holding nothing");
+    }
+
     private static void key(KeyCode code, boolean down) {
-        var viewport = view.lookup("#world-viewport");
+        var viewport = (javafx.scene.Node) get("viewport");
         Event.fireEvent(viewport, new KeyEvent(down ? KeyEvent.KEY_PRESSED : KeyEvent.KEY_RELEASED,
                 "", "", code, false, false, false, false));
     }
@@ -243,7 +345,7 @@ public final class WorldHudKeysUiTest {
     }
 
     private static void press(KeyCode code) {
-        var viewport = view.lookup("#world-viewport");
+        var viewport = (javafx.scene.Node) get("viewport");
         Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_PRESSED, "", "", code, false, false, false, false));
         Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_RELEASED, "", "", code, false, false, false, false));
     }

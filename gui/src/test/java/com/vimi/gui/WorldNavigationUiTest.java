@@ -697,8 +697,9 @@ public final class WorldNavigationUiTest {
             require(view.command(action) && view.command(action),"WorldView.command routes "+action);
         }
         // MAP_PANEL, HIDE_HUD, DEV_OVERLAY, INSPECT_PIN, SCREENSHOT (no data folder here, so it
-        // only toasts), and the step 7 keys: SPAWNS, TRACKING, MINIMAP, DAY_NIGHT and five speeds.
-        require(commands==14,"The command actions are walked: "+commands);
+        // only toasts), and the step 7 keys: SPAWNS, TRACKING, MINIMAP, DAY_NIGHT, five speeds
+        // and BOOKMARKS (twice: opens the menu page, then closes it).
+        require(commands==15,"The command actions are walked: "+commands);
         view.inspectCard().close();
         view.devOverlay().show(null);
     }

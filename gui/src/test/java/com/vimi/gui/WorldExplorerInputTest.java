@@ -140,7 +140,8 @@ public final class WorldExplorerInputTest {
                 WorldControls.Action.DAY_NIGHT, WorldControls.Action.SPEED_STROLL,
                 WorldControls.Action.SPEED_MOUNT, WorldControls.Action.SPEED_FLY,
                 WorldControls.Action.SPEED_FAST, WorldControls.Action.SPEED_TURBO,
-                WorldControls.Action.INSPECT_PIN, WorldControls.Action.SCREENSHOT);
+                WorldControls.Action.INSPECT_PIN, WorldControls.Action.SCREENSHOT,
+                WorldControls.Action.BOOKMARKS);
         for (var action : WorldControls.Action.values())
             require(action.command == commands.contains(action),
                     "Exactly the HUD keys are commands: " + action);
@@ -268,6 +269,16 @@ public final class WorldExplorerInputTest {
         require(shots.commands.equals(List.of(WorldControls.Action.SCREENSHOT))
                         && shotInput.axes().equals(ExplorerMotion.Input.NONE),
                 "F12 commands one screenshot per press and moves nothing: " + shots.commands);
+        for (var layout : WorldControls.Layout.values())
+            require(layout.keys().get(KeyCode.B) == WorldControls.Action.BOOKMARKS,
+                    layout + " binds B to the bookmarks page");
+        var help = WorldControls.DEFAULTS.help();
+        for (var part : List.of("M map", "H hides the HUD", "F3 developer overlay", "I pins the card",
+                "F12 screenshot", "V NPC spawns", "L tracking", "N minimap", "T day/night",
+                "1/2/3/4/5 speed", "B bookmarks"))
+            require(help.contains(part), "Help names " + part + ": " + help);
+        require(WorldControls.DEFAULTS.withKeys(WorldControls.Layout.AZERTY.keys()).help().contains("unbound speed"),
+                "AZERTY help says the speed keys are unbound");
         require(WorldControls.DEFAULTS.help().contains("F3 developer overlay"),
                 "Help names the overlay key: " + WorldControls.DEFAULTS.help());
     }
