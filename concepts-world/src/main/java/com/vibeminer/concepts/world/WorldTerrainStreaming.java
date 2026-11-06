@@ -374,6 +374,18 @@ public final class WorldTerrainStreaming {
         }
     }
 
+    /** A decoded layer diffuse for splatting; {@code rgba} is a read-only view. */
+    public record DiffuseDetail(
+            long fileId, String contentKey, int side, java.nio.ByteBuffer rgba) {
+        public DiffuseDetail {
+            Objects.requireNonNull(contentKey);
+            Objects.requireNonNull(rgba);
+            if (!rgba.isReadOnly() || rgba.remaining() != side * side * 4) {
+                throw new IllegalArgumentException("Invalid diffuse detail");
+            }
+        }
+    }
+
     /** Same-thread, synchronous view. Geometry, pixels and area graphs must not escape. */
     public static final class CheckedBorrow {
         private WorldPreparedTerrain.Borrow borrow;
@@ -407,6 +419,29 @@ public final class WorldTerrainStreaming {
 
         public TerrainTextureBinding texture() {
             return live().texture();
+        }
+
+        /** Splatting inputs of this tile's atlas, if composed (issue #174 step 2). */
+        public java.util.Optional<com.vibeminer.rendering.world.TerrainTileSplat> splat() {
+            return java.util.Optional.ofNullable(live().splat());
+        }
+
+        /**
+         * One layer diffuse of this tile for splatting: square power-of-two RGBA8 within 128, read
+         * through the same bounds and revalidation as the atlas's own mips, and cached by content.
+         * Empty when the diffuse is not part of this tile's material.
+         */
+        public java.util.Optional<DiffuseDetail> diffuseDetail(
+                long fileId, com.vibeminer.access.Cancellation token) {
+            var detail = live().detail(fileId, token);
+            return detail == null
+                    ? java.util.Optional.empty()
+                    : java.util.Optional.of(
+                            new DiffuseDetail(
+                                    detail.fileId(),
+                                    detail.contentKey(),
+                                    detail.side(),
+                                    detail.pixels()));
         }
 
         public WorldFormats.AreaMetadata areas() {

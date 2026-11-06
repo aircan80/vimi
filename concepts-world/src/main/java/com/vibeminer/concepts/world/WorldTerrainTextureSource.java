@@ -625,6 +625,13 @@ public final class WorldTerrainTextureSource {
 
     private final BuildFiles files;
     private final TerrainAtlasPool pool;
+
+    /**
+     * Shader-side terrain splatting (issue #174 step 2), off until its renderer path ships: only
+     * {@code -Dvimi.world.splat=true} composes the splatting inputs beside each atlas.
+     */
+    static volatile boolean splat = Boolean.getBoolean("vimi.world.splat");
+
     // Layer diffuses decoded for shader-side splatting, shared by every tile of this source.
     final TerrainDiffuseDetails details = new TerrainDiffuseDetails();
     private final TerrainTextureTasks tasks;
@@ -946,7 +953,8 @@ public final class WorldTerrainTextureSource {
                 }
                 request.report(Stage.COMPOSING, tileIndex, 0);
                 var composition =
-                        TerrainAtlasComposer.compose(tile, grid, data, diffuse, request::canceled);
+                        TerrainAtlasComposer.compose(
+                                tile, grid, data, diffuse, splat, request::canceled);
                 for (var issue : composition.diagnostics()) {
                     issues.add(
                             new Issue(

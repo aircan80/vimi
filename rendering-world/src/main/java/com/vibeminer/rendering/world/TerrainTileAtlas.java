@@ -19,10 +19,21 @@ public final class TerrainTileAtlas {
     private final long[] coverage;
     private final List<Mapping> mappings;
     private final int supportedChunks;
+    private final TerrainTileSplat splat;
 
     // Package-private ownership transfer: only the pure composer allocates these arrays.
     TerrainTileAtlas(
             WorldFormats.Tile tile, byte[] pixels, long[] coverage, List<Mapping> mappings) {
+        this(tile, pixels, coverage, mappings, null);
+    }
+
+    TerrainTileAtlas(
+            WorldFormats.Tile tile,
+            byte[] pixels,
+            long[] coverage,
+            List<Mapping> mappings,
+            TerrainTileSplat splat) {
+        this.splat = splat;
         this.tile = tile;
         this.pixels = pixels;
         this.coverage = coverage;
@@ -62,7 +73,27 @@ public final class TerrainTileAtlas {
         return mappings;
     }
 
-    public long retainedBytes() {
-        return PIXEL_BYTES + 32L + mappings.size() * 64L + 256;
+    /** Shader-side splatting inputs when the composition requested them (issue #174 step 2). */
+    public java.util.Optional<TerrainTileSplat> splat() {
+        return java.util.Optional.ofNullable(splat);
     }
+
+    public long retainedBytes() {
+        return PIXEL_BYTES
+                + 32L
+                + mappings.size() * 64L
+                + 256
+                + (splat == null ? 0 : splat.retainedBytes());
+    }
+
+    /** The largest {@link #retainedBytes()} with a full splat: 256 mappings, 64 diffuses. */
+    public static final long MAX_RETAINED_BYTES =
+            PIXEL_BYTES
+                    + 32L
+                    + 256 * 64L
+                    + 256
+                    + 64L
+                    + TerrainTileSplat.MAX_DIFFUSES * 8L
+                    + TerrainTileSplat.LAYER_BYTES
+                    + TerrainTileSplat.ALPHA_BYTES;
 }

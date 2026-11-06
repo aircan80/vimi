@@ -10,7 +10,9 @@ import java.util.function.Consumer;
 /** Application-owned bounded atlas storage; build sources must explicitly share this pool. */
 public final class TerrainAtlasPool {
     public static final int MAX_ENTRIES = 18;
-    public static final long ENTRY_BYTES = TerrainTileAtlas.PIXEL_BYTES + 32L + 256L * 64 + 256;
+
+    /** Charged per entry: the largest atlas, including its optional splatting inputs. */
+    public static final long ENTRY_BYTES = TerrainTileAtlas.MAX_RETAINED_BYTES;
 
     public record Stats(
             int entries,
