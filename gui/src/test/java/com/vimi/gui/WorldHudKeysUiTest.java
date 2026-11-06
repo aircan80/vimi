@@ -67,9 +67,17 @@ public final class WorldHudKeysUiTest {
             await(stage::isFocused);
             fx(() -> {
                 view.lookup("#world-viewport").requestFocus();
-                press(KeyCode.L);
+                key(KeyCode.L, true);
             });
             await(() -> view.minimap().tracking().showing());
+            fx(() -> {
+                // Holding L: its auto-repeat (another press, no release) keeps the popup open.
+                key(KeyCode.L, true);
+                key(KeyCode.L, true);
+                require(view.minimap().tracking().showing(), "Holding L does not toggle the popup");
+                key(KeyCode.L, false);
+                require(view.minimap().tracking().showing(), "Releasing L leaves it open");
+            });
             fx(() -> {
                 // Keys reach the open popup through the owner window; bound HUD keys pass on.
                 var overlay = view.devOverlay();

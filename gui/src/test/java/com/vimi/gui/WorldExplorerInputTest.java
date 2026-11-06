@@ -312,6 +312,15 @@ public final class WorldExplorerInputTest {
         require(host.commands.equals(List.of(WorldControls.Action.SPAWNS, WorldControls.Action.DAY_NIGHT,
                         WorldControls.Action.SPEED_TURBO)) && input.axes().equals(ExplorerMotion.Input.NONE),
                 "Each HUD key commands once per press and moves nothing: " + host.commands);
+        var repeat = new Host();
+        var repeatInput = exact(repeat);
+        repeatInput.keyPressed(KeyCode.L);
+        repeatInput.keyPressed(KeyCode.W);
+        repeatInput.clearMotion();
+        repeatInput.keyPressed(KeyCode.L);
+        require(repeat.commands.equals(List.of(WorldControls.Action.TRACKING))
+                        && repeatInput.axes().equals(ExplorerMotion.Input.NONE),
+                "clearMotion drops W but keeps L held, so its repeat does not fire again: " + repeat.commands);
         var stored = WorldControls.decode(WorldControls.DEFAULTS.unbind(WorldControls.Action.SPAWNS)
                 .bind(KeyCode.K, WorldControls.Action.SPAWNS).encode());
         require(stored.keys().get(KeyCode.K) == WorldControls.Action.SPAWNS && !stored.keys().containsKey(KeyCode.V),

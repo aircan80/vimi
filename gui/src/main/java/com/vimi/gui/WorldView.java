@@ -935,7 +935,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (explorer) viewport.requestFocus();
         });
         placeToasts();
-        minimap.tracking().onShowing(this::clearKeys);
+        // Opening the popup stops flight; a held command key (L) stays held so its repeat is no toggle.
+        minimap.tracking().onShowing(() -> {
+            input.clearMotion();
+            devOverlay.refresh();
+        });
         minimap.tracking().passThrough(event -> {
             var action = input.controls().keys().get(event.getCode());
             return action != null && action.command;
