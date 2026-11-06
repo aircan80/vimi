@@ -482,6 +482,7 @@ public final class WorldStreamNativeProof {
                 // Native resolution: the full shared cap, then back down (memory returned).
                 long resizePolicy = 2;
                 var nativeSizes = new StringBuilder();
+                var edges = new StringBuilder();
                 for (int[] size : new int[][] {{2560, 1600}, {1920, 1080}, {256, 256}}) {
                     long drawn = ++camera;
                     long epoch = ++resizePolicy;
@@ -496,6 +497,36 @@ public final class WorldStreamNativeProof {
                     require(
                             Math.abs((center >>> 16 & 255) - 83) <= 1,
                             "Native-size pixels " + Integer.toHexString(center));
+                    // Edge rows: the crop must take the frame's own first and last rows, never
+                    // rows of the larger allocation beyond the view rect (cleared to black).
+                    int top = big.pixels().get(size[0] / 2);
+                    int bottom = big.pixels().get((size[1] - 1) * size[0] + size[0] / 2);
+                    int left = big.pixels().get(size[1] / 2 * size[0]);
+                    int right = big.pixels().get(size[1] / 2 * size[0] + size[0] - 1);
+                    for (int edge : new int[] {top, bottom, left, right}) {
+                        require(
+                                (edge & 0xffffff) != 0,
+                                "Edge pixel is drawn, not the cleared allocation: "
+                                        + Integer.toHexString(edge));
+                    }
+                    // First row is the sky shader's top colour, last row the terrain.
+                    require(
+                            Math.abs((top >>> 16 & 255) - 91) <= 1
+                                    && Math.abs((top >>> 8 & 255) - 141) <= 1
+                                    && Math.abs((top & 255) - 177) <= 1,
+                            "Top row is the frame's own first row: " + Integer.toHexString(top));
+                    require(
+                            Math.abs((bottom >>> 16 & 255) - 83) <= 1,
+                            "Bottom row is the frame's own last row: "
+                                    + Integer.toHexString(bottom));
+                    edges.append(' ')
+                            .append(size[0])
+                            .append('x')
+                            .append(size[1])
+                            .append(":top=")
+                            .append(Integer.toHexString(top))
+                            .append(",bottom=")
+                            .append(Integer.toHexString(bottom));
                     big.release();
                     nativeSizes
                             .append(' ')
@@ -550,6 +581,8 @@ public final class WorldStreamNativeProof {
                                 + framesDuringUploads
                                 + " nativeSizes="
                                 + nativeSizes.toString().strip()
+                                + " edges="
+                                + edges.toString().strip()
                                 + " reallocations="
                                 + owner.reallocations()
                                 + " stats="

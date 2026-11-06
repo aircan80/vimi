@@ -205,6 +205,26 @@ final class WorldFrameFileV2Test {
     }
 
     @Test
+    void poolTakeWithMixedSizesReusesFittingArraysAndDropsTheRest() {
+        var pool = new WorldFrameFileV2.Pool();
+        int[] small = pool.take(100), large = pool.take(1000);
+        assertEquals(2, pool.allocations());
+        pool.recycle(large);
+        pool.recycle(small); // most recent first: polled, too small, dropped
+        // A 600-pixel frame: the large array fits (<= 2x); the small one is dropped on the way.
+        assertTrue(pool.take(600) == large, "fitting array reused");
+        assertEquals(0, pool.retained(), "too-small array dropped");
+        pool.recycle(large);
+        // A 300-pixel frame: 1000 is more than twice 300, so it is dropped and a new one made.
+        int[] fresh = pool.take(300);
+        assertEquals(300, fresh.length);
+        assertEquals(3, pool.allocations());
+        assertEquals(0, pool.retained(), "oversized array dropped after a shrink");
+        pool.recycle(fresh);
+        assertTrue(pool.take(150) == fresh, "exactly twice is still reused");
+    }
+
+    @Test
     void sampledAlphaStrideCoversAFrameEvenly() {
         assertEquals(1, WorldFrameFileV2.alphaStride(1));
         assertEquals(1, WorldFrameFileV2.alphaStride(64));

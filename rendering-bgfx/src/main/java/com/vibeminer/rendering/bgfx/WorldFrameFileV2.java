@@ -134,7 +134,9 @@ final class WorldFrameFileV2 implements AutoCloseable {
             synchronized (lock) {
                 int[] reused;
                 while ((reused = free.pollFirst()) != null) {
-                    if (reused.length >= pixels) {
+                    // Too small, or more than twice the frame after a shrink: dropped, so the
+                    // memory follows the frame size.
+                    if (reused.length >= pixels && reused.length <= 2L * pixels) {
                         return reused;
                     }
                 }

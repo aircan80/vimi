@@ -2562,12 +2562,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void streamCamera() {
         if (streaming == null || camera == null || !active || !explorer || closed) return;
         if (stale(selection) || !viewportActive()) return;
-        // Native resolution: the viewport times the window's output scale (HiDPI), within the
-        // one shared frame cap. The ImageView fits it back to the viewport's layout size.
+        // Native resolution: the viewport times the window's render scale on each axis (HiDPI),
+        // within the one shared frame cap. The ImageView fits it back to layout size.
         var window = getScene() == null ? null : getScene().getWindow();
         var frame = com.vibeminer.rendering.world.WorldFrameLimits.frame(
                 viewport.getWidth(), viewport.getHeight(),
-                window == null ? 1 : window.getOutputScaleX(), 1);
+                window == null ? 1 : window.getRenderScaleX(),
+                window == null ? 1 : window.getRenderScaleY(), 1);
         int width = frame.width();
         int height = frame.height();
         if (streamingWidth != 0 && (width != streamingWidth || height != streamingHeight)) streamingPolicy++;

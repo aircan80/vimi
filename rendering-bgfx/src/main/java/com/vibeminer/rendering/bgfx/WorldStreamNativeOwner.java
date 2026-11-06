@@ -80,7 +80,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     private long publishedCamera, publishedContent, sequence, order;
     private int width, height, currentFrame, contextBuffers, contextTextures;
     // The render target, readback textures and buffers, sized to the viewport (see targetSize).
-    private int targetWidth, targetHeight, reallocations;
+    private int targetWidth, targetHeight, reallocations, failedWidth, failedHeight;
     private long contextGpuHeap;
     private boolean initialized, acquired, closed, renderedThisFrame;
 
@@ -121,6 +121,11 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 initialized = true;
             }
             var caps = bgfx_get_caps();
+            if (caps.originBottomLeft()) {
+                // World backends are D3D11, Vulkan and Metal (top-left origin); the readback crop
+                // takes the first rows of the target, which a bottom-left origin (GL) would not.
+                throw new IOException("World requires a top-left-origin backend");
+            }
             GpuViewerMain.requireHardware(
                     Short.toUnsignedInt(caps.vendorId()), Short.toUnsignedInt(caps.deviceId()));
             if ((caps.supported() & (BGFX_CAPS_TEXTURE_BLIT | BGFX_CAPS_TEXTURE_READ_BACK))
@@ -160,9 +165,32 @@ final class WorldStreamNativeOwner implements AutoCloseable {
      * the shared cap. Reallocate when the frame outgrows it, or shrinks below half of it in either
      * dimension (to give the memory back), never on a small change.
      */
-    static int targetSize(int frame, int allocated, int max) {
-        int stepped = Math.min(max, (frame + TARGET_STEP - 1) / TARGET_STEP * TARGET_STEP);
-        return frame > allocated || frame * 2 < allocated ? stepped : allocated;
+    static int stepped(int frame, int max) {
+        return Math.min(max, (frame + TARGET_STEP - 1) / TARGET_STEP * TARGET_STEP);
+    }
+
+    /**
+     * The allocation {@code {width, height}} for a frame: unchanged while the frame fits and the
+     * allocation is at most twice the stepped frame's area (bgfx reads back the whole readback
+     * texture, so this bounds the over-read to 2x); else the stepped frame size.
+     */
+    static int[] targetSize(
+            int frameWidth, int frameHeight, int allocatedWidth, int allocatedHeight) {
+        int width = stepped(frameWidth, WorldFrameLimits.MAX_WIDTH);
+        int height = stepped(frameHeight, WorldFrameLimits.MAX_HEIGHT);
+        boolean fits = frameWidth <= allocatedWidth && frameHeight <= allocatedHeight;
+        if (fits && (long) allocatedWidth * allocatedHeight <= 2L * width * height) {
+            return new int[] {allocatedWidth, allocatedHeight};
+        }
+        return new int[] {width, height};
+    }
+
+    /** Sizes to try when allocating: the stepped size, then the exact frame if that differs. */
+    static java.util.List<int[]> allocationAttempts(
+            int[] stepped, int frameWidth, int frameHeight) {
+        return stepped[0] == frameWidth && stepped[1] == frameHeight
+                ? java.util.List.of(stepped)
+                : java.util.List.of(stepped, new int[] {frameWidth, frameHeight});
     }
 
     /** Frees the target; callers ensure no readback still writes into a slot's buffer. */
@@ -195,6 +223,36 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         }
         targetWidth = 0;
         targetHeight = 0;
+    }
+
+    /**
+     * Allocates the stepped target, then the exact frame size if that fails. If neither fits in
+     * device memory this size is not drawn (the session stays up; a smaller viewport retries).
+     */
+    private boolean allocateWithFallback(int[] stepped) {
+        RuntimeException last = null;
+        for (int[] size : allocationAttempts(stepped, width, height)) {
+            try {
+                allocateTarget(size[0], size[1]);
+                return true;
+            } catch (IOException | OutOfMemoryError failure) {
+                releaseTarget();
+                last = new IllegalStateException(size[0] + "x" + size[1], failure);
+            }
+        }
+        if (failedWidth != width || failedHeight != height) {
+            failedWidth = width;
+            failedHeight = height;
+            System.err.println(
+                    "World render target unavailable for "
+                            + width
+                            + "x"
+                            + height
+                            + ": "
+                            + last.getCause());
+            System.err.flush();
+        }
+        return false;
     }
 
     private void allocateTarget(int newWidth, int newHeight) throws IOException {
@@ -317,18 +375,15 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         if (renderedThisFrame) {
             return false;
         }
-        int wantWidth = targetSize(width, targetWidth, WorldFrameLimits.MAX_WIDTH);
-        int wantHeight = targetSize(height, targetHeight, WorldFrameLimits.MAX_HEIGHT);
-        if (wantWidth != targetWidth || wantHeight != targetHeight) {
+        int[] want = targetSize(width, height, targetWidth, targetHeight);
+        if (want[0] != targetWidth || want[1] != targetHeight) {
             for (var slot : readbacks) {
                 if (slot.ticket != null) {
                     return false; // advance() retires in-flight readbacks first
                 }
             }
-            try {
-                allocateTarget(wantWidth, wantHeight);
-            } catch (IOException failure) {
-                throw new java.io.UncheckedIOException(failure);
+            if (!allocateWithFallback(want)) {
+                return false;
             }
         }
         Readback available = null;
@@ -385,9 +440,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             var ticket = newest.ticket;
             cropped.clear();
             int stride = targetWidth * 4, length = ticket.width() * 4;
-            boolean flip = bgfx_get_caps().originBottomLeft();
             for (int row = 0; row < ticket.height(); row++) {
-                int sourceRow = flip ? targetHeight - 1 - row : row;
+                int sourceRow = row; // top-left origin (checked at init)
                 cropped.put(
                         newest.pixels
                                 .duplicate()

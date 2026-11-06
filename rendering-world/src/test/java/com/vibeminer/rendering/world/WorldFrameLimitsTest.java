@@ -9,7 +9,16 @@ import org.junit.jupiter.api.Test;
 
 class WorldFrameLimitsTest {
     private static WorldFrameLimits.Size frame(double w, double h, double output, double render) {
-        return WorldFrameLimits.frame(w, h, output, render);
+        return WorldFrameLimits.frame(w, h, output, output, render);
+    }
+
+    @Test
+    void eachAxisUsesItsOwnScale() {
+        assertEquals(
+                new WorldFrameLimits.Size(1500, 1000),
+                WorldFrameLimits.frame(1000, 800, 1.5, 1.25, 1));
+        assertEquals(
+                new WorldFrameLimits.Size(1000, 800), WorldFrameLimits.frame(1000, 800, 0, -1, 1));
     }
 
     @Test
