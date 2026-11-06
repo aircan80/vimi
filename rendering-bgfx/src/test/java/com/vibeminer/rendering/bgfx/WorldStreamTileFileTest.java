@@ -127,7 +127,7 @@ final class WorldStreamTileFileTest {
         return directory.resolve("tile-42.wst");
     }
 
-    private static WorldStreamTileFile.Expected signed(byte[] bytes) throws Exception {
+    static WorldStreamTileFile.Expected signed(byte[] bytes) throws Exception {
         return new WorldStreamTileFile.Expected(
                 NONCE,
                 SCOPE,
@@ -650,7 +650,7 @@ final class WorldStreamTileFileTest {
             byte[] bad = clean.clone();
             var view = ByteBuffer.wrap(bad).order(ByteOrder.LITTLE_ENDIAN);
             switch (mode) {
-                case 0 -> view.putInt(8, 3);
+                case 0 -> view.putInt(8, 2); // the version before splat trailers (#174)
                 case 1 -> view.putInt(12, 2048);
                 default -> bad[7] = '1';
             }

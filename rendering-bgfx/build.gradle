@@ -305,12 +305,27 @@ tasks.register('verifyWorldStreamShaders', Exec) {
 tasks.named('processResources') { dependsOn tasks.named('verifyWorldStreamShaders') }
 tasks.named('check') { dependsOn tasks.named('verifyWorldStreamShaders') }
 
+tasks.register('nativeGpuWorldStreamSplatUploadProof', JavaExec) {
+    group = 'verification'
+    description = 'Uploads World splatting inputs (shared layer array, masks, table) beside the atlas.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamSplatUploadProof'
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    // -PsplatProofBackend=vulkan|d3d11|metal; -PsplatProofRgba8=true forces the RGBA8 layer array.
+    systemProperty 'vimi.proof.backend', providers.gradleProperty('splatProofBackend').getOrElse('vulkan')
+    systemProperty 'vimi.world.splat.rgba8', providers.gradleProperty('splatProofRgba8').getOrElse('false')
+    args layout.buildDirectory.dir('native-world-stream-splat').get().asFile.absolutePath
+}
+
 tasks.register('nativeGpuWorldStreamOwnerProof', JavaExec) {
     group = 'verification'
     description = 'Exercises persistent production World uploads, callback drain and v2 readback tickets.'
     dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamNativeProof'
+    systemProperty 'vimi.world.readbackStaging', providers.gradleProperty('readbackStaging').getOrElse('false')
     timeout = java.time.Duration.ofMinutes(2)
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     // Vulkan by default; -PworldProofBackend=d3d11 runs the same proof on Direct3D 11.
@@ -502,6 +517,8 @@ tasks.register('nativeGpuWorldStreamCadenceProof', JavaExec) {
     dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamCadenceProof'
+    // -PreadbackStaging=true measures the old copy path (readback, crop, mapping copy).
+    systemProperty 'vimi.world.readbackStaging', providers.gradleProperty('readbackStaging').getOrElse('false')
     timeout = java.time.Duration.ofMinutes(2)
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-world-stream-cadence').get().asFile.absolutePath
