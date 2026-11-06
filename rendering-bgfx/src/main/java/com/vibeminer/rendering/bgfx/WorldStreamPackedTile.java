@@ -39,6 +39,13 @@ final class WorldStreamPackedTile implements AutoCloseable {
     /** At most this many cull runs per tile; more (an unusual mesh) collapse into one run. */
     static final int MAX_RUNS = 1024;
 
+    static {
+        // Terrain and water indices are written as u16, each relative to its own first vertex.
+        if (MAX_TERRAIN_VERTICES > 65536 || MAX_WATER_VERTICES > 65536) {
+            throw new ExceptionInInitializerError("Mesh vertices exceed u16 indices");
+        }
+    }
+
     /** One credit's largest terrain input: geometry plus the atlas with its mip chain. */
     static final long MAX_PAYLOAD_BYTES =
             (long) MAX_GEOMETRY_BYTES + WorldStreamAtlasMips.CHAIN_BYTES;

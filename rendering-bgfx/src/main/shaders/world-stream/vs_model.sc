@@ -1,5 +1,5 @@
 $input a_position, a_color0
-$output v_color, v_uvFog, v_fogColor, v_depth
+$output v_color, v_uvFog, v_fogColor
 #include <bgfx_shader.sh>
 uniform mat4 u_worldEye;
 uniform mat4 u_worldProjection;
@@ -26,5 +26,4 @@ void main()
     vec2 uv = vec2(u_worldAtlas.y - a_position.y, u_worldAtlas.x - a_position.x) * u_worldAtlas.z;
     v_uvFog = vec3(uv, fog);
     v_fogColor = sky;
-    v_depth = depth;
 }

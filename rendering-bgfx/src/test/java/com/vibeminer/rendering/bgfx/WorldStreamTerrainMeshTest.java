@@ -120,4 +120,53 @@ class WorldStreamTerrainMeshTest {
         assertTrue(view.visible(mesh.spheres(), 1), "the chunk under the camera");
         assertFalse(view.visible(mesh.spheres(), 2));
     }
+
+    @Test
+    void aCameraExactlyOnAChunkEdgeSeesBothChunks() {
+        var tile = TerrainScene.Tile.copyOf(7, 19, vertices(3), fans(3, 0), 3);
+        var mesh = WorldStreamPackedTile.mesh(tile, null, () -> false);
+        // Chunk 0 spans x 0..-32 and chunk 1 x -40..-72; the camera stands on chunk 0's -x edge,
+        // looking along -x toward chunk 1, level and pitched down.
+        for (double pitch : new double[] {0, -0.6, -1.4}) {
+            var view =
+                    WorldStreamObjectCulling.View.of(
+                            new TerrainCamera(-32, -16, 12, Math.PI, pitch), 800, 500);
+            assertTrue(view.visible(mesh.spheres(), 1), "chunk ahead, pitch " + pitch);
+            // Chunk 0 is behind the camera but its sphere reaches past the camera.
+            assertTrue(view.visible(mesh.spheres(), 0), "chunk at the edge, pitch " + pitch);
+        }
+    }
+
+    @Test
+    void theCullCutFollowsTheFrameFogCut() {
+        var tile = TerrainScene.Tile.copyOf(7, 19, vertices(3), fans(3, 0), 3);
+        var mesh = WorldStreamPackedTile.mesh(tile, null, () -> false);
+        // Looking along +x from 100 yd ahead of chunk 0: chunk 2's sphere is ~200 yd away.
+        var camera = new TerrainCamera(-200, -16, 12, 0, 0);
+        assertTrue(
+                WorldStreamObjectCulling.View.of(camera, 800, 500, 2200)
+                        .visible(mesh.spheres(), 0));
+        assertFalse(
+                WorldStreamObjectCulling.View.of(camera, 800, 500, 150).visible(mesh.spheres(), 0));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldStreamObjectCulling.View.of(camera, 800, 500, 0));
+    }
+
+    @Test
+    void meshVertexCountsFitU16Indices() {
+        assertTrue(WorldStreamPackedTile.MAX_TERRAIN_VERTICES <= 65536);
+        assertTrue(WorldStreamPackedTile.MAX_WATER_VERTICES <= 65536);
+    }
+
+    @Test
+    void inPlaceRangesMatchAndAllocateNothing() {
+        int[] runs = {0, 30, 30, 30, 60, 30, 90, 30};
+        var out = new int[runs.length];
+        int ints =
+                BgfxWorldStreamRenderer.visibleRanges(
+                        runs, new boolean[] {true, false, true, true}, out);
+        assertEquals(4, ints);
+        assertArrayEquals(new int[] {0, 30, 60, 60}, java.util.Arrays.copyOf(out, ints));
+    }
 }

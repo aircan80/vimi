@@ -1,15 +1,11 @@
-$input v_color, v_uvFog, v_fogColor, v_depth
+$input v_color, v_uvFog, v_fogColor
 #include <bgfx_shader.sh>
 SAMPLER2D(s_worldAtlas, 0);
 uniform vec4 u_worldAtlas;
-// x: fog start depth, y: depth where fog reaches z, z: maximum fog, w: cut depth.
-uniform vec4 u_worldFogRange;
+// No discard, so terrain keeps early depth testing. Chunks wholly past the cut are culled on the
+// CPU; the few triangles of a straddling chunk drawn past it are fully fogged into the sky.
 void main()
 {
-    // The World cut, per pixel as for objects; fog is full there, so it never shows.
-    if (v_depth > u_worldFogRange.w) {
-        discard;
-    }
     vec3 base = v_color.rgb * 255.0;
     if (u_worldAtlas.w > 0.5) {
         vec4 texel = texture2D(s_worldAtlas, v_uvFog.xy);

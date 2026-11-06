@@ -225,6 +225,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         int[] runs = new int[0];
 
         double[] runSpheres = new double[0];
+
+        /** Per-frame cull scratch: run visibility and merged index ranges. */
+        boolean[] visible = new boolean[0];
+
+        int[] ranges = new int[0];
         float anchorX, anchorY;
         boolean textured, ready;
         SlotObjects objects;
@@ -1000,6 +1005,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             slot.waterIndices = upload.source.waterIndices;
             slot.runs = upload.source.runs;
             slot.runSpheres = upload.source.runSpheres;
+            // Per-frame cull scratch, sized once per tile generation.
+            slot.visible = new boolean[slot.runs.length / 2];
+            slot.ranges = new int[slot.runs.length];
             slot.x = upload.source.header.x();
             slot.y = upload.source.header.y();
             staged = upload.lease;
@@ -1143,7 +1151,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             bgfx_set_uniform(worldSkyTop, stack.floats(fog.topUniform()), 1);
             bgfx_set_uniform(worldFogRange, stack.floats(fog.rangeUniform()), 1);
             var view =
-                    objectCulling ? WorldStreamObjectCulling.View.of(camera, width, height) : null;
+                    objectCulling
+                            ? WorldStreamObjectCulling.View.of(camera, width, height, fog.cut())
+                            : null;
             frameChunks = frameChunksCulled = frameTerrainSubmits = 0;
             for (var lease : active) {
                 var slot = slots[lease.slot()];
@@ -1244,14 +1254,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      */
     private void drawTerrain(Slot slot, WorldStreamObjectCulling.View view) {
         int runCount = slot.runs.length / 2;
-        var visible = new boolean[runCount];
+        var visible = slot.visible;
         for (int r = 0; r < runCount; r++) {
             visible[r] = view == null || view.visible(slot.runSpheres, r);
             frameChunksCulled += visible[r] ? 0 : 1;
         }
         frameChunks += runCount;
-        var ranges = visibleRanges(slot.runs, r -> visible[r]);
-        for (int i = 0; i < ranges.length; i += 2) {
+        var ranges = slot.ranges;
+        int rangeInts = visibleRanges(slot.runs, visible, ranges);
+        for (int i = 0; i < rangeInts; i += 2) {
             bgfx_set_texture(0, sampler, slot.texture, SAMPLER_FLAGS);
             bgfx_set_dynamic_vertex_buffer(0, slot.vertices, 0, slot.terrainVertices);
             bgfx_set_dynamic_index_buffer(slot.indices, ranges[i], ranges[i + 1]);
@@ -1261,15 +1272,25 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
     }
 
-    /**
-     * Index ranges (first, count) to draw for the runs (first index, count) that pass {@code
-     * visible}: consecutive visible runs whose indices are contiguous merge into one range.
-     */
+    /** Index ranges for the visible runs, as a new array; see the in-place overload. */
     static int[] visibleRanges(int[] runs, java.util.function.IntPredicate visible) {
+        var flags = new boolean[runs.length / 2];
+        for (int r = 0; r < flags.length; r++) {
+            flags[r] = visible.test(r);
+        }
         var result = new int[runs.length];
+        return java.util.Arrays.copyOf(result, visibleRanges(runs, flags, result));
+    }
+
+    /**
+     * Writes the index ranges (first, count) to draw for the runs (first index, count) marked
+     * {@code visible} into {@code result} and returns how many ints it wrote: consecutive visible
+     * runs whose indices are contiguous merge into one range. Allocates nothing.
+     */
+    static int visibleRanges(int[] runs, boolean[] visible, int[] result) {
         int size = 0, first = -1, count = 0;
         for (int r = 0; r < runs.length / 2; r++) {
-            if (!visible.test(r)) {
+            if (!visible[r]) {
                 continue;
             }
             if (first >= 0 && runs[r * 2] == first + count) {
@@ -1287,7 +1308,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             result[size++] = first;
             result[size++] = count;
         }
-        return java.util.Arrays.copyOf(result, size);
+        return size;
     }
 
     private void frameUniform(short handle, java.nio.FloatBuffer value) {

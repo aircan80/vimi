@@ -318,6 +318,19 @@ tasks.register('nativeGpuWorldStreamOwnerProof', JavaExec) {
     args layout.buildDirectory.dir('native-world-stream-owner').get().asFile.absolutePath
 }
 
+// Raw terrain frames of one authored tile, for before/after comparisons of the terrain path.
+tasks.register('nativeGpuWorldStreamTerrainCapture', JavaExec) {
+    group = 'verification'
+    description = 'Captures authored World terrain frames (fallback and textured, near and fogged).'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamTerrainCapture'
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    systemProperty 'vimi.worldProof.backend', providers.gradleProperty('worldProofBackend').getOrElse('vulkan')
+    args providers.gradleProperty('captureDirectory').getOrElse(layout.buildDirectory.dir('native-world-stream-capture').get().asFile.absolutePath)
+}
+
 tasks.register('nativeGpuWorldStreamSessionProof', JavaExec) {
     group = 'verification'
     description = 'Exercises the isolated authored World v2 actor and typed child protocol.'
