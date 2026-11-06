@@ -1824,4 +1824,92 @@ class WorldTerrainTextureSourceTest {
             pool.closeAsync().get(5, TimeUnit.SECONDS);
         }
     }
+
+    /** A BC2 BLP of width x height with the first {@code levels} levels, one colour. */
+    private static byte[] blpShape(int flags, int width, int height, int levels) {
+        long total = 148;
+        for (int level = 0; level < levels; level++) {
+            int bw = Math.max(1, (width >> level) / 4), bh = Math.max(1, (height >> level) / 4);
+            total += (long) bw * bh * 16;
+        }
+        var data = ByteBuffer.allocate((int) total).order(ByteOrder.LITTLE_ENDIAN);
+        data.put(new byte[] {'B', 'L', 'P', '2'})
+                .putInt(1)
+                .put((byte) 2)
+                .put((byte) 8)
+                .put((byte) 1)
+                .put((byte) flags)
+                .putInt(width)
+                .putInt(height);
+        int at = 148;
+        for (int level = 0; level < levels; level++) {
+            int bw = Math.max(1, (width >> level) / 4), bh = Math.max(1, (height >> level) / 4);
+            int length = bw * bh * 16;
+            data.putInt(20 + level * 4, at).putInt(84 + level * 4, length);
+            data.position(at);
+            for (int block = 0; block < bw * bh; block++) {
+                data.putLong(-1).putShort((short) 0xf800).putShort((short) 0).putInt(0);
+            }
+            at += length;
+        }
+        return data.array();
+    }
+
+    private static WorldTerrainTextureSource.DiffuseRefusal refusalFor(byte[] diffuse)
+            throws Exception {
+        var files = new Files();
+        files.sources.put(10L, diffuse);
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try (var result = read(source)) {
+            var refused =
+                    result.tiles().getFirst().issues().stream()
+                            .filter(issue -> issue.fileId() == 10)
+                            .toList();
+            assertEquals(1, refused.size(), refused.toString());
+            assertEquals(
+                    WorldTerrainTextureSource.Reason.DIFFUSE_PROFILE, refused.getFirst().reason());
+            return refused.getFirst().diffuseRefusal();
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void diffuseProfileRefusalsSayWhy() throws Exception {
+        // 16 x 8 down to 1 x 1: the small mip exists but the base is not square.
+        assertEquals(
+                WorldTerrainTextureSource.DiffuseRefusal.NON_SQUARE,
+                refusalFor(blpShape(2, 16, 8, 5)));
+        // A single 16 x 16 level: no mip of 4 pixels or less.
+        assertEquals(
+                WorldTerrainTextureSource.DiffuseRefusal.MIP_UNAVAILABLE,
+                refusalFor(blpShape(0, 16, 16, 1)));
+        // Not a BLP2 container.
+        byte[] blp1 = blpShape(2, 8, 8, 4);
+        blp1[3] = '1';
+        assertEquals(WorldTerrainTextureSource.DiffuseRefusal.UNSUPPORTED, refusalFor(blp1));
+        // A mip offset past the end of the file.
+        byte[] truncated = blpShape(2, 8, 8, 4);
+        ByteBuffer.wrap(truncated)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(20 + 1 * 4, truncated.length + 64);
+        assertEquals(WorldTerrainTextureSource.DiffuseRefusal.INVALID, refusalFor(truncated));
+        // The detail is only ever attached to DIFFUSE_PROFILE.
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new WorldTerrainTextureSource.Issue(
+                                WorldTerrainTextureSource.Reason.LIMIT,
+                                -1,
+                                10,
+                                null,
+                                com.vibeminer.formats.world.WorldTextureFormats.ChunkIssue.NONE,
+                                WorldTerrainTextureSource.DiffuseRefusal.INVALID));
+        assertEquals(
+                WorldTerrainTextureSource.DiffuseRefusal.NONE,
+                new WorldTerrainTextureSource.Issue(WorldTerrainTextureSource.Reason.LIMIT, -1, 10)
+                        .diffuseRefusal());
+    }
 }

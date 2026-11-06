@@ -83,24 +83,55 @@ public final class WorldTerrainTextureSource {
         }
     }
 
+    /** Why a diffuse was refused as {@link Reason#DIFFUSE_PROFILE}. */
+    public enum DiffuseRefusal {
+        NONE,
+        /** The BLP decoder does not support the container, encoding, alpha or mip flags. */
+        UNSUPPORTED,
+        /** The BLP's header or mip descriptors are malformed. */
+        INVALID,
+        /** A decoder byte or pixel bound refused it. */
+        LIMIT,
+        /** No declared, non-compact mip is 4 pixels or smaller. */
+        MIP_UNAVAILABLE,
+        /** The base image is not square. */
+        NON_SQUARE,
+        /** The selected small mip is not 4 x 4. */
+        MIP_SHAPE,
+        /** A decoder refusal with a code this source does not name. */
+        OTHER
+    }
+
     public record Issue(
             Reason reason,
             int ordinal,
             long fileId,
             TerrainAtlasComposer.Reason chunkReason,
-            WorldTextureFormats.ChunkIssue maskIssue) {
+            WorldTextureFormats.ChunkIssue maskIssue,
+            DiffuseRefusal diffuseRefusal) {
         public Issue(Reason reason, int ordinal, long fileId) {
             this(reason, ordinal, fileId, null, WorldTextureFormats.ChunkIssue.NONE);
+        }
+
+        public Issue(
+                Reason reason,
+                int ordinal,
+                long fileId,
+                TerrainAtlasComposer.Reason chunkReason,
+                WorldTextureFormats.ChunkIssue maskIssue) {
+            this(reason, ordinal, fileId, chunkReason, maskIssue, DiffuseRefusal.NONE);
         }
 
         public Issue {
             Objects.requireNonNull(reason);
             Objects.requireNonNull(maskIssue);
+            Objects.requireNonNull(diffuseRefusal);
             if (ordinal < -1
                     || ordinal >= 256
                     || fileId < 0
                     || fileId > 0xffff_ffffL
-                    || (reason == Reason.CHUNK) != (chunkReason != null)) {
+                    || (reason == Reason.CHUNK) != (chunkReason != null)
+                    || diffuseRefusal != DiffuseRefusal.NONE && reason != Reason.DIFFUSE_PROFILE) {
                 throw new IllegalArgumentException("Invalid texture issue bounds");
             }
         }
@@ -670,11 +701,38 @@ public final class WorldTerrainTextureSource {
     private static final class SourceFailure extends RuntimeException {
         private static final long serialVersionUID = 1L;
         final Reason reason;
+        final DiffuseRefusal diffuse;
 
         SourceFailure(Reason reason) {
+            this(reason, DiffuseRefusal.NONE);
+        }
+
+        SourceFailure(Reason reason, DiffuseRefusal diffuse) {
             super(reason.name(), null, false, false);
             this.reason = reason;
+            this.diffuse = diffuse;
         }
+    }
+
+    /** The specific refusal behind a diffuse decode failure reported as DIFFUSE_PROFILE. */
+    static DiffuseRefusal diffuseRefusal(Throwable failure) {
+        Throwable value = failure;
+        for (int i = 0; i < 16 && value != null; i++) {
+            if (value instanceof SourceFailure known) {
+                return known.diffuse;
+            }
+            if (value instanceof BlpFormatException blp) {
+                return switch (String.valueOf(blp.code())) {
+                    case "BLP_UNSUPPORTED" -> DiffuseRefusal.UNSUPPORTED;
+                    case "BLP_INVALID" -> DiffuseRefusal.INVALID;
+                    case "BLP_LIMIT" -> DiffuseRefusal.LIMIT;
+                    case "BLP_MIP_UNAVAILABLE" -> DiffuseRefusal.MIP_UNAVAILABLE;
+                    default -> DiffuseRefusal.OTHER;
+                };
+            }
+            value = value.getCause();
+        }
+        return DiffuseRefusal.NONE;
     }
 
     private final BuildFiles files;
@@ -1020,11 +1078,17 @@ public final class WorldTerrainTextureSource {
                         mipBindings.add(mip.binding());
                     } catch (RuntimeException missing) {
                         propagateCancellation(request, missing);
+                        var reason = reason(request, missing, Reason.DIFFUSE_PROFILE);
                         issues.add(
                                 new Issue(
-                                        reason(request, missing, Reason.DIFFUSE_PROFILE),
+                                        reason,
                                         -1,
-                                        binding.fileId()));
+                                        binding.fileId(),
+                                        null,
+                                        WorldTextureFormats.ChunkIssue.NONE,
+                                        reason == Reason.DIFFUSE_PROFILE
+                                                ? diffuseRefusal(missing)
+                                                : DiffuseRefusal.NONE));
                     }
                 }
                 request.report(Stage.COMPOSING, tileIndex, 0);
@@ -1120,10 +1184,11 @@ public final class WorldTerrainTextureSource {
                                     Blp2Types.MipProfile.DECLARED_HANDMADE_V1)
                             .join();
             request.check();
-            if (image.width() != 4
-                    || image.height() != 4
-                    || image.baseWidth() != image.baseHeight()) {
-                throw new SourceFailure(Reason.DIFFUSE_PROFILE);
+            if (image.baseWidth() != image.baseHeight()) {
+                throw new SourceFailure(Reason.DIFFUSE_PROFILE, DiffuseRefusal.NON_SQUARE);
+            }
+            if (image.width() != 4 || image.height() != 4) {
+                throw new SourceFailure(Reason.DIFFUSE_PROFILE, DiffuseRefusal.MIP_SHAPE);
             }
             // Revalidated with the tile's other sources before publication.
             FileBinding actual =
