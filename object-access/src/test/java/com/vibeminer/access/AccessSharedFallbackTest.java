@@ -115,6 +115,103 @@ final class AccessSharedFallbackTest {
         }
     }
 
+    private static StoreException queueFull() {
+        return new StoreException("OBJECT_STORE_QUEUE_FULL", "scripted full queue");
+    }
+
+    /** A full shared-store queue is an error, never a miss that downloads from the CDN. */
+    @Test
+    void sharedQueueFullIsUnavailableNotACdnDownload() {
+        var fixture = fixture(64);
+        for (boolean failHas : new boolean[] {true, false}) {
+            MemoryStore own = new MemoryStore(), shared = new MemoryStore();
+            put(shared, fixture);
+            ObjectReader full =
+                    new Reader(shared) {
+                        @Override
+                        public CompletableFuture<Boolean> has(
+                                ObjectKey key, com.vibeminer.store.Cancellation token) {
+                            return failHas
+                                    ? CompletableFuture.failedFuture(queueFull())
+                                    : super.has(key, token);
+                        }
+
+                        @Override
+                        public CompletableFuture<StoreTypes.ObjectRead> read(
+                                ObjectKey key, com.vibeminer.store.Cancellation token) {
+                            return CompletableFuture.failedFuture(queueFull());
+                        }
+                    };
+            CachingObjectSource source =
+                    new CachingObjectSource(own, own, own, full, network(fixture), List.of());
+            try {
+                var result =
+                        source.getKey(
+                                        new ObjectRequest(fixture.key()),
+                                        CONTEXT,
+                                        FetchPriority.INTERACTIVE,
+                                        Cancellation.NONE)
+                                .join();
+                assertEquals(SourceTypes.ObjectState.UNAVAILABLE, result.state(), "has=" + failHas);
+                assertEquals("OBJECT_STORE_QUEUE_FULL", result.code());
+                assertFalse(own.has(fixture.key()).join(), "the CDN copy was stored");
+            } finally {
+                source.closeAsync().join();
+            }
+        }
+    }
+
+    /** A full local-store queue fails the read as unavailable instead of downloading. */
+    @Test
+    void localQueueFullIsUnavailableNotACdnDownload() {
+        var fixture = fixture(64);
+        MemoryStore own = new MemoryStore();
+        ObjectReader full =
+                new Reader(own) {
+                    @Override
+                    public CompletableFuture<StoreTypes.ObjectRead> read(
+                            ObjectKey key, com.vibeminer.store.Cancellation token) {
+                        return CompletableFuture.failedFuture(queueFull());
+                    }
+
+                    @Override
+                    public CompletableFuture<StoreTypes.ObjectRead> readRange(
+                            ObjectKey key,
+                            long offset,
+                            int length,
+                            com.vibeminer.store.Cancellation token) {
+                        return CompletableFuture.failedFuture(queueFull());
+                    }
+                };
+        CachingObjectSource source =
+                new CachingObjectSource(full, own, own, null, network(fixture), List.of());
+        try {
+            var whole =
+                    source.getKey(
+                                    new ObjectRequest(fixture.key()),
+                                    CONTEXT,
+                                    FetchPriority.INTERACTIVE,
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals(SourceTypes.ObjectState.UNAVAILABLE, whole.state());
+            assertEquals("OBJECT_STORE_QUEUE_FULL", whole.code());
+            var range =
+                    source.getRange(
+                                    new ObjectRequest(fixture.key()),
+                                    0,
+                                    4,
+                                    CONTEXT,
+                                    FetchPriority.INTERACTIVE,
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals(SourceTypes.ObjectState.UNAVAILABLE, range.state());
+            assertEquals("OBJECT_STORE_QUEUE_FULL", range.code());
+            assertFalse(own.has(fixture.key()).join(), "the CDN copy was stored");
+        } finally {
+            source.closeAsync().join();
+        }
+    }
+
     @Test
     void failedLargeSharedRangeAbandonsPrefixBeforeCdnFallback() {
         var fixture = fixture((4 << 20) + 100);

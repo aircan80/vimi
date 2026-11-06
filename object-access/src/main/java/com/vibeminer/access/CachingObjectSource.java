@@ -905,6 +905,10 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                 .exceptionallyCompose(
                         error -> {
                             Throwable cause = unwrap(error);
+                            var full = queueFull(cause);
+                            if (full != null) {
+                                return CompletableFuture.completedFuture(busy(request.key(), full));
+                            }
                             if (cause instanceof CdnException failure) {
                                 return CompletableFuture.completedFuture(
                                         fromCdn(request.key(), failure));
@@ -1126,6 +1130,35 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
         if (reader == null) {
             return null;
         }
+        try {
+            return localCore(request, withBytes, token);
+        } catch (RuntimeException e) {
+            var busy = queueFull(e);
+            if (busy != null) {
+                return busy(request.key(), busy); // A full store queue is not a miss.
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * The store's admission queue was at its hard bound ({@code OBJECT_STORE_QUEUE_FULL}), or null.
+     * Distinct from {@code OBJECT_STORE_LIMIT}: it is transient and says nothing about presence, so
+     * callers never treat it as a miss or fall back to the CDN.
+     */
+    private static StoreException queueFull(Throwable error) {
+        return unwrap(error) instanceof StoreException store && QUEUE_FULL.equals(store.code())
+                ? store
+                : null;
+    }
+
+    private static final String QUEUE_FULL = "OBJECT_STORE_QUEUE_FULL";
+
+    private ObjectResult busy(ObjectKey key, StoreException full) {
+        return failure(key, ObjectState.UNAVAILABLE, full.code(), full.getMessage());
+    }
+
+    private ObjectResult localCore(ObjectRequest request, boolean withBytes, Cancellation token) {
         if (!withBytes
                 || request.declaredLength() != null
                         && request.declaredLength() > options.inMemoryObjectBytes()) {
@@ -1218,10 +1251,19 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
     }
 
     private ObjectResult copyShared(ObjectRequest request, Cancellation token) {
-        if (shared == null
-                || writer == null
-                || !shared.has(request.key(), token.storeToken()).join()) {
+        if (shared == null || writer == null) {
             return null;
+        }
+        try {
+            if (!shared.has(request.key(), token.storeToken()).join()) {
+                return null;
+            }
+        } catch (RuntimeException e) {
+            var full = queueFull(e);
+            if (full != null) {
+                return busy(request.key(), full);
+            }
+            throw e;
         }
         if (request.declaredLength() != null
                 && request.declaredLength() > options.inMemoryObjectBytes()) {
@@ -1248,7 +1290,8 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                     } catch (RuntimeException failed) {
                         if (unwrap(failed) instanceof StoreException) {
                             stage.abandon().join();
-                            return null;
+                            var full = queueFull(failed);
+                            return full == null ? null : busy(request.key(), full);
                         }
                         throw failed;
                     }
@@ -1288,6 +1331,10 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
         try {
             read = shared.read(request.key(), token.storeToken()).join();
         } catch (RuntimeException error) {
+            var full = queueFull(error);
+            if (full != null) {
+                return busy(request.key(), full);
+            }
             Throwable cause = unwrap(error);
             if (cause instanceof StoreException limit
                     && limit.code().equals("OBJECT_STORE_LIMIT")) {
