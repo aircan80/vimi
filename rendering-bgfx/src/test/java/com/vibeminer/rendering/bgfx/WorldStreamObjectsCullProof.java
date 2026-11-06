@@ -139,14 +139,22 @@ final class WorldStreamObjectsCullProof {
             require(
                     rgb == 0x99b8c4 && ((sky & 0xffffff) == rgb || (sky & 0xffffff) == bgr),
                     "Sky top row " + Integer.toHexString(sky) + " != " + Integer.toHexString(rgb));
-            // MSAA resolve: the opaque quad's left edge falls at x = 400 - 0.9 / 5 * 640 = 284.8,
-            // so pixel 284 is partly covered. Single-sampled, its centre misses the quad and it
-            // is the gap's terrain pixel; resolved x4 it mixes terrain and quad red.
+            // MSAA resolve: moving the camera 0.01 yd west puts the opaque quad's left edge (eye
+            // right -0.9 at depth 5) at x = 400 + focal * -0.89 / 5 = 328.8 for the 90 degree
+            // field of view, so pixel 328 is partly covered. Single-sampled, its centre misses the
+            // quad and it is the gap's pixel (324); resolved x4 it mixes the gap and quad red.
+            var shifted =
+                    new TerrainCamera(
+                            VIEW.x(), VIEW.y() + 0.01, VIEW.z(), VIEW.yaw(), VIEW.pitch());
+            var edgeFrame = frame(owner, reader, NONCE, shifted).pixels;
+            double edgeX = WIDTH / 2.0 + TerrainCamera.focalPixels(WIDTH) * -0.89 / 5;
+            int edgePixel = (int) Math.floor(edgeX);
+            require(edgeX - edgePixel > 0.6 && edgeX - edgePixel < 0.95, "Edge position " + edgeX);
             int samples = owner.stats().msaaSamples();
             int row = HEIGHT / 2;
-            int edge = channel(a.get(row * WIDTH + 284), red16(middle));
-            int gap = channel(a.get(row * WIDTH + 278), red16(middle));
-            int inside = channel(a.get(row * WIDTH + 290), red16(middle));
+            int edge = channel(edgeFrame.get(row * WIDTH + edgePixel), red16(middle));
+            int gap = channel(edgeFrame.get(row * WIDTH + edgePixel - 4), red16(middle));
+            int inside = channel(edgeFrame.get(row * WIDTH + edgePixel + 6), red16(middle));
             if (samples == 4) {
                 require(
                         edge > Math.min(gap, inside) + 8 && edge < Math.max(gap, inside) - 8,
@@ -368,6 +376,8 @@ final class WorldStreamObjectsCullProof {
     private static int channel(int pixel, int shift) {
         return pixel >>> shift & 255;
     }
+
+    private static final TerrainCamera VIEW = WorldStreamObjectsMaterialProof.VIEW;
 
     private record Drawn(int draws, IntBuffer pixels) {}
 

@@ -79,7 +79,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * per slot: up to {@link WorldStreamObjectsFile#MAX_BYTES} of GPU vertices, indices and RGBA8
      * textures with their full mip chains. The version 3 maximum profile, with the HIGH texture
      * tier's chains, is about 27 MB, so the object GPU budget is about 270 MB in the worst case,
-     * charged in Stats.objectBytes; real tiles stay far below it (see WorldStreamObjectsFile).
+     * charged in Stats.objectBytes; real tiles stay far below it (see WorldStreamObjectsFile). The
+     * owner's x4 multisampled colour and depth target adds about 11 MB on top (issue #357).
      */
     static final int SLOT_COUNT = 10, INSTANCE_BYTES = 48;
 
@@ -1082,6 +1083,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                                         0
                                     })
                             .flip();
+            frameCameraUniforms = 0;
             // Frame-constant uniforms once per frame: bgfx keeps a uniform's value across submits
             // until it is set again, and no other pass writes these handles.
             frameUniform(eye, matrix);
@@ -1131,8 +1133,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 }
             }
             // Sky after every opaque surface: reversed depth clears to 0 and every drawn surface
-            // is nearer, so GEQUAL at depth 0 shades only the pixels nothing covered. Before water
-            // and blended objects, which write no depth over the sky or blend with it.
+            // is nearer, so GEQUAL at depth 0 shades only the pixels nothing covered. It must
+            // come before water, which writes depth (the sky would then be rejected under it),
+            // and before blended objects, which blend over whatever is behind them.
             bgfx_set_uniform(
                     sky, stack.floats(0, height, bgfx_get_caps().originBottomLeft() ? 1 : 0, 1), 1);
             // The horizon gradient: the sky meets the terrain and object fog in one colour.
@@ -1173,7 +1176,6 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         lastFrame =
                 new FrameCounts(
                         framePlacements, frameCulled, frameObjectSubmits, frameCameraUniforms);
-        frameCameraUniforms = 0;
         return new Ticket(cameraRevision, content, policy, width, height);
     }
 
@@ -1233,30 +1235,43 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                             org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_SRC_ALPHA,
                             org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_INV_SRC_ALPHA);
 
-    /** Bits of a blend key holding its entry: the slot above the placement's bits. */
+    /**
+     * Bits of a blend key holding its entry: the tile's position in the active (producer) order
+     * above the placement's bits.
+     */
     static final int BLEND_ENTRY_BITS = 14, BLEND_PLACEMENT_BITS = 10;
+
+    static {
+        // The key's entry bits must hold every active position and every placement of a tile.
+        if (WorldStreamObjectsFile.MAX_PLACEMENTS > 1 << BLEND_PLACEMENT_BITS
+                || SLOT_COUNT > 1 << (BLEND_ENTRY_BITS - BLEND_PLACEMENT_BITS)) {
+            throw new ExceptionInInitializerError("Blend key bit budget");
+        }
+    }
 
     /**
      * One primitive sort key per blended placement: the squared camera distance's IEEE bits with
      * the lowest {@link #BLEND_ENTRY_BITS} replaced by the inverted entry. Non-negative doubles
      * order like their bits, so an ascending sort read backwards is farthest first, and equal
-     * distances keep slot-then-placement order. The dropped mantissa bits are 2^-38 relative.
+     * distances keep active-order-then-placement order, as the stable sort this replaced did. The
+     * dropped mantissa bits are 2^-38 relative.
      */
-    static long blendKey(double squaredDistance, int slot, int placement) {
+    static long blendKey(double squaredDistance, int position, int placement) {
         if (!(squaredDistance >= 0)
-                || slot < 0
-                || slot >= SLOT_COUNT
+                || position < 0
+                || position >= SLOT_COUNT
                 || placement < 0
                 || placement >= 1 << BLEND_PLACEMENT_BITS) {
             throw new IllegalArgumentException("Blend key");
         }
-        int entry = slot << BLEND_PLACEMENT_BITS | placement;
+        int entry = position << BLEND_PLACEMENT_BITS | placement;
         long mask = (1L << BLEND_ENTRY_BITS) - 1;
         // +0.0 for -0.0, so the sign bit never inverts the order.
         return Double.doubleToRawLongBits(squaredDistance + 0.0) & ~mask | mask - entry;
     }
 
-    static int blendSlot(long key) {
+    /** The key's position in the active order. */
+    static int blendPosition(long key) {
         return blendEntry(key) >>> BLEND_PLACEMENT_BITS;
     }
 
@@ -1277,8 +1292,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private void drawBlended(
             ObjectFrame frame, WorldStreamObjectCulling.View view, TerrainScene.Origin origin) {
         int count = 0;
-        for (var lease : active) {
-            var objects = slots[lease.slot()].objects;
+        for (int position = 0; position < active.size(); position++) {
+            var objects = slots[active.get(position).slot()].objects;
             if (objects == null || !objects.anyBlended) {
                 continue;
             }
@@ -1294,13 +1309,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 if (count == blendKeys.length) {
                     blendKeys = java.util.Arrays.copyOf(blendKeys, Math.max(64, count * 2));
                 }
-                blendKeys[count++] = blendKey(dx * dx + dy * dy + dz * dz, lease.slot(), p);
+                blendKeys[count++] = blendKey(dx * dx + dy * dy + dz * dz, position, p);
             }
         }
         java.util.Arrays.sort(blendKeys, 0, count);
         for (int i = count - 1; i >= 0; i--) {
             long key = blendKeys[i];
-            drawPlacement(frame, slots[blendSlot(key)].objects, blendPlacement(key), origin, true);
+            var objects = slots[active.get(blendPosition(key)).slot()].objects;
+            drawPlacement(frame, objects, blendPlacement(key), origin, true);
         }
     }
 

@@ -1,6 +1,10 @@
 package com.vibeminer.rendering.bgfx;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.lwjgl.bgfx.BGFX.BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER;
+import static org.lwjgl.bgfx.BGFX.BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA;
 import static org.lwjgl.bgfx.BGFX.BGFX_RESET_MAXANISOTROPY;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_RT;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_RT_MSAA_X4;
@@ -16,6 +20,21 @@ class WorldStreamTargetSamplesTest {
         assertEquals(1, WorldStreamNativeOwner.targetSamples(true, false));
         assertEquals(1, WorldStreamNativeOwner.targetSamples(false, true));
         assertEquals(1, WorldStreamNativeOwner.targetSamples(false, false));
+    }
+
+    @Test
+    void formatCapsDecideMultisamplingEvenWhenTextureValidationAccepts() {
+        int msaa = BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA;
+        int framebuffer = BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER;
+        assertTrue(WorldStreamNativeOwner.multisampled(framebuffer | msaa, true));
+        // A device whose format caps lack the MSAA bit falls back, whatever validation says.
+        assertFalse(WorldStreamNativeOwner.multisampled(framebuffer, true));
+        assertFalse(WorldStreamNativeOwner.multisampled(framebuffer | msaa, false));
+        assertEquals(
+                1,
+                WorldStreamNativeOwner.targetSamples(
+                        WorldStreamNativeOwner.multisampled(framebuffer | msaa, true),
+                        WorldStreamNativeOwner.multisampled(framebuffer, true)));
     }
 
     @Test

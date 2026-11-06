@@ -9,19 +9,29 @@ import java.util.Objects;
  * each placement a world sphere. A placement is skipped when its sphere lies wholly outside the
  * explorer's view frustum (near plane, the four side planes of {@link
  * TerrainCamera#reversedProjection}, and the {@link TerrainCamera#WHOLE_TRIANGLE_FAR} depth past
- * which the object fragment shader discards everything), or when it projects to less than {@link
- * #MIN_PIXEL_RADIUS} pixels of radius. The culls are conservative: a skipped placement could not
- * have produced a visible pixel larger than the size threshold. Pure; no bgfx calls.
+ * which the object fragment shader discards everything), all derived from {@link
+ * TerrainCamera#FOCAL}. The frustum culls are conservative: such a placement draws no pixel.
+ *
+ * <p>The size cull is deliberate and not conservative: a placement whose sphere projects under
+ * {@link #MIN_PIXEL_RADIUS} pixels of radius is skipped although it could still have touched a
+ * pixel or two, so a very small object far away can pop in or out at that threshold. Pure; no bgfx
+ * calls.
  */
 final class WorldStreamObjectCulling {
     /**
-     * Placements whose sphere projects under this many pixels of radius at their center distance
-     * are skipped. The distance is Euclidean, so turning the camera never changes the decision.
+     * Placements whose sphere's projected radius, at its center's eye depth, is under this many
+     * pixels are skipped: a sphere under one pixel wide.
      */
-    static final double MIN_PIXEL_RADIUS = 1.0;
+    static final double MIN_PIXEL_RADIUS = 0.5;
 
     /** Margin on placement radii for the validated rotation orthonormality tolerance (1e-6). */
     private static final double ROTATION_MARGIN = 1 + 1e-5;
+
+    /**
+     * Absolute radius slack in yards: the GPU transforms in float relative to a float origin while
+     * this test runs in double, which differs by far less than this at the far depth.
+     */
+    static final double RADIUS_SLACK = 0.01;
 
     private WorldStreamObjectCulling() {}
 
@@ -33,12 +43,20 @@ final class WorldStreamObjectCulling {
      * center is the box center. A model that draws nothing gets radius -1.
      */
     static double[] modelSpheres(
-            int[] models, int[] meshes, int[] ranges, float[] vertices, short[] indices) {
+            int[] models,
+            int[] meshes,
+            int[] ranges,
+            float[] vertices,
+            short[] indices,
+            java.util.function.BooleanSupplier canceled) {
         int count = models.length / 2;
         var result = new double[count * 4];
         int stride = WorldStreamObjectsFile.RANGE_INTS;
         int floats = WorldStreamObjectsFile.VERTEX_FLOATS;
         for (int m = 0; m < count; m++) {
+            if (canceled.getAsBoolean()) {
+                throw new java.util.concurrent.CancellationException();
+            }
             double minX = Double.POSITIVE_INFINITY, minY = minX, minZ = minX;
             double maxX = Double.NEGATIVE_INFINITY, maxY = maxX, maxZ = maxX;
             int first = models[m * 2], last = first + models[m * 2 + 1];
@@ -109,7 +127,7 @@ final class WorldStreamObjectCulling {
                                                 + placements[r + 1] * cy
                                                 + placements[r + 2] * cz);
             }
-            result[p * 4 + 3] = s * radius * ROTATION_MARGIN;
+            result[p * 4 + 3] = s * radius * ROTATION_MARGIN + RADIUS_SLACK;
         }
         return result;
     }
@@ -127,12 +145,14 @@ final class WorldStreamObjectCulling {
             sy = Math.sin(camera.yaw());
             cp = Math.cos(camera.pitch());
             sp = Math.sin(camera.pitch());
-            // Projection 1.6 horizontally and 1.6 * width / height vertically (eye units).
-            kx = 1 / 1.6;
-            ky = height / (1.6 * width);
+            // TerrainCamera.reversedProjection scales eye right by FOCAL and eye up by FOCAL *
+            // width
+            // / height, so the frustum's half-extents per unit depth are their inverses.
+            kx = 1 / TerrainCamera.FOCAL;
+            ky = height / (TerrainCamera.FOCAL * width);
             nx = Math.sqrt(1 + kx * kx);
             ny = Math.sqrt(1 + ky * ky);
-            focal = 0.8 * width;
+            focal = TerrainCamera.focalPixels(width);
         }
 
         static View of(TerrainCamera camera, int width, int height) {
@@ -164,8 +184,11 @@ final class WorldStreamObjectCulling {
                     || -up - ky * depth > radius * ny) {
                 return false;
             }
-            double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-            return radius * focal >= MIN_PIXEL_RADIUS * distance;
+            // Projected radius at the center's eye depth: focal * r / sqrt(depth^2 - r^2), exact on
+            // the view axis and an underestimate of the off-axis extent. Nearer than its radius,
+            // the sphere fills the view.
+            double squared = depth * depth - radius * radius;
+            return squared <= 0 || radius * focal >= MIN_PIXEL_RADIUS * Math.sqrt(squared);
         }
     }
 }
