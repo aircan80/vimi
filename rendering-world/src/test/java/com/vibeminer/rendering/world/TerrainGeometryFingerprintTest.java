@@ -104,4 +104,35 @@ class TerrainGeometryFingerprintTest {
                 IllegalArgumentException.class,
                 () -> TerrainGeometryFingerprint.sha256(64, 19, canonical));
     }
+
+    @Test
+    void batchedDigestMatchesPlainLittleEndianStreamAcrossBufferBoundaries() throws Exception {
+        // 37,120 vertices and 196,608 indices: many 8 KiB batches, with an uneven final batch.
+        float[] vertices = new float[37120 * 3];
+        for (int i = 0; i < vertices.length; i++) {
+            vertices[i] = i % 7 == 0 ? -0f : (float) Math.sin(i) * 1000;
+        }
+        int[] indices = new int[196608 - 3];
+        for (int i = 0; i < indices.length; i++) {
+            indices[i] = (i * 7919) % 37120;
+        }
+        var stream =
+                ByteBuffer.allocate(20 + vertices.length * 4 + indices.length * 4)
+                        .order(ByteOrder.LITTLE_ENDIAN);
+        stream.putInt(7).putInt(19).putInt(256).putInt(37120).putInt(indices.length);
+        for (float value : vertices) {
+            stream.putInt(Float.floatToRawIntBits(value));
+        }
+        for (int value : indices) {
+            stream.putInt(value);
+        }
+        var digest = java.security.MessageDigest.getInstance("SHA-256");
+        digest.update(
+                "VIMI_TERRAIN_GEOMETRY_V1\0".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        digest.update(stream.array());
+        assertEquals(
+                java.util.HexFormat.of().formatHex(digest.digest()),
+                TerrainGeometryFingerprint.sha256(
+                        TerrainScene.Tile.copyOf(7, 19, vertices, indices, 256)));
+    }
 }
