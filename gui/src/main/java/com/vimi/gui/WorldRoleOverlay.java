@@ -240,6 +240,14 @@ final class WorldRoleOverlay implements AutoCloseable {
         status.setText(summary(loaded, layers, filter, shown.size(), onMap, hidden));
     }
 
+    /** The loaded role record of one NPC on the current map, or null (none loaded or listed). */
+    MapRoles.Npc npc(long npcId) {
+        if (loaded == null) return null;
+        for (var marker : loaded.world().markers())
+            if (marker.marker().npc().id() == npcId) return marker.marker().npc();
+        return null;
+    }
+
     /** The nearest drawn marker under a minimap canvas point, or null. */
     MapRoles.Marker markerAt(double x, double y) {
         var near = grid.near(x, y);

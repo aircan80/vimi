@@ -31,6 +31,8 @@ final class WorldMinimapTracking {
     private final VBox spawnSlot = new VBox(), roleSlot = new VBox();
     private final CheckBox entrances = new CheckBox("Instance entrances");
     private Runnable refocus = () -> {}, showing = () -> {};
+    // Keys bound to HUD commands pass through to the viewport like the layout keys.
+    private java.util.function.Predicate<KeyEvent> passes = event -> false;
 
     WorldMinimapTracking() {
         var title = new Label("TRACKING");
@@ -46,7 +48,7 @@ final class WorldMinimapTracking {
                 + " -fx-padding: 10; -fx-base: #24343d; -fx-text-fill: white;");
         // Handle first, then stop presses (but the layout keys) from reaching the viewport.
         content.addEventHandler(KeyEvent.ANY, event -> {
-            if (event.getEventType() == KeyEvent.KEY_RELEASED || layoutKey(event)) return;
+            if (event.getEventType() == KeyEvent.KEY_RELEASED || layoutKey(event) || passes.test(event)) return;
             if (event.getEventType() == KeyEvent.KEY_PRESSED && event.getCode() == KeyCode.ESCAPE) popup.hide();
             event.consume();
         });
@@ -64,6 +66,11 @@ final class WorldMinimapTracking {
     static boolean layoutKey(KeyEvent event) {
         var code = event.getCode();
         return code == KeyCode.F11 || event.isAltDown() && (code == KeyCode.ENTER || code == KeyCode.Z);
+    }
+
+    /** Keys that pass through to the viewport while open (the view's HUD command keys). */
+    void passThrough(java.util.function.Predicate<KeyEvent> next) {
+        passes = Objects.requireNonNull(next);
     }
 
     /** Runs when the popup opens, e.g. to drop held flight input. */
