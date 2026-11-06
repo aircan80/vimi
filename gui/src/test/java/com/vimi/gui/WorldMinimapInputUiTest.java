@@ -62,8 +62,7 @@ public final class WorldMinimapInputUiTest {
                     && view.lookup("#world-minimap").isVisible());
             fx(() -> {
                 ((AnimationTimer) get("timer")).stop();
-                set("lastRender", Long.MAX_VALUE);
-                set("lastNearby", Long.MAX_VALUE);
+                input().holdCadence();
                 controlEventsNeverSteerWorld();
             });
             popupKeyboardSelectsOrientation();
@@ -78,7 +77,7 @@ public final class WorldMinimapInputUiTest {
     private static void controlEventsNeverSteerWorld() {
         var choice = (ChoiceBox<?>) view.lookup("#world-minimap-orientation");
         var before = (TerrainRenderer.Camera) get("camera");
-        double speed = (double) get("speed");
+        double speed = input().speed();
         choice.requestFocus();
         key(choice, KeyCode.W, true);
         key(choice, KeyCode.RIGHT, true);
@@ -94,7 +93,7 @@ public final class WorldMinimapInputUiTest {
                 10, 10, 10, 10, false, false, false, false, false, false,
                 0, 40, 0, 40, ScrollEvent.HorizontalTextScrollUnits.NONE, 0,
                 ScrollEvent.VerticalTextScrollUnits.NONE, 0, 0, new PickResult(choice, 10, 10)));
-        require(speed == (double) get("speed"), "Scrolling orientation must not change flight speed");
+        require(speed == input().speed(), "Scrolling orientation must not change flight speed");
         choice.hide();
     }
 
@@ -170,7 +169,7 @@ public final class WorldMinimapInputUiTest {
         key(selected, KeyCode.ENTER, false);
         require("Heading up".equals(choice.getValue()), "Popup keyboard chooses Heading up");
         require(!choice.isShowing(), "Popup selection closes normally");
-        require(((java.util.Set<?>) get("keys")).isEmpty(), "Control input leaves no held flight keys");
+        require(!input().keysHeld(), "Control input leaves no held flight keys");
     }
 
     private static void hover(Node node) {
@@ -200,7 +199,7 @@ public final class WorldMinimapInputUiTest {
     }
 
     private static void tick() {
-        set("lastTick", 0L);
+        input().idle();
         var timer = (AnimationTimer) get("timer");
         timer.handle(1_000_000_000L);
         timer.handle(1_100_000_000L);
@@ -215,6 +214,10 @@ public final class WorldMinimapInputUiTest {
         Event.fireEvent(node, new MouseEvent(type, x, y, x, y, MouseButton.PRIMARY, 1,
                 false, false, false, false, type != MouseEvent.MOUSE_RELEASED,
                 false, false, false, false, true, new PickResult(node, x, y)));
+    }
+
+    private static WorldExplorerInput input() {
+        return (WorldExplorerInput) get("input");
     }
 
     private static Object get(String name) {
