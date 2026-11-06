@@ -683,6 +683,19 @@ tasks.register('worldStreamImagePresentationTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldStreamImagePresentationTest'
 }
 check.dependsOn worldStreamImagePresentationTest
+// Render-scale changes (monitor moves) re-request World frames; no window needed.
+tasks.register('worldRenderScaleWatchTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldRenderScaleWatchTest'
+}
+check.dependsOn worldRenderScaleWatchTest
+// Real node → scene → window wiring of the render-scale watch; needs a desktop session.
+tasks.register('worldRenderScaleUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldRenderScaleUiTest'
+}
 // PixelBuffer presentation on the FX thread, with a 1440p timing; needs a desktop session.
 tasks.register('worldStreamImagePresentationUiTest', JavaExec) {
     dependsOn testClasses
