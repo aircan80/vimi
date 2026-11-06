@@ -586,9 +586,20 @@ public final class WorldStreamSourceControllerTest {
             Files.write(fixture.directory.resolve("authored-sky"),new byte[0]);
             fixture.camera(2);
             fixture.until(()->fixture.controller.snapshot().detail().equals("Loading terrain in viewing direction"));
-            check(drops.stream().anyMatch(d->d.getKey().equals("sky") && released(d.getValue())),
-                    "A suppressed all-sky frame releases its pixels");
-            check(fixture.controller.takePresentation().isEmpty(),"Known all-sky pending frame cannot overwrite prior useful pixels");
+            // The pending all-sky frame is presented (no freeze) and pins no resident.
+            var sky=fixture.nextFrame();
+            try {
+                check(sky.skyOnly(),"The pending view is marked sky-only");
+                check(WorldStreamBackground.matchesBasicSky(sky.pixels(),sky.width(),sky.height(),()->false),
+                        "The presented frame is the live sky");
+                check(fixture.controller.mayPresent(sky),"A sky frame replaces the previous view while terrain loads");
+                check(fixture.controller.presented(sky),"The sky frame is accepted");
+            } finally { fixture.controller.discard(sky); }
+            var pins=WorldStreamSourceController.class.getDeclaredField("presented");pins.setAccessible(true);
+            check(((List<?>)pins.get(fixture.controller)).isEmpty(),"Sky-only pixels pin no resident");
+            check(fixture.controller.snapshot().detail().equals("Loading terrain in viewing direction"),
+                    "Status says terrain is loading in the viewing direction");
+            check(drops.stream().noneMatch(d->d.getKey().equals("sky")),"Sky frames are no longer dropped");
             var initial=fixture.controller.snapshot().seed().camera();
             fixture.controller.camera(new WorldStreamTransport.Camera(3,1,80,50,
                     new TerrainCamera(initial.x(),initial.y(),initial.z(),initial.yaw(),.3)));

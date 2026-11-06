@@ -97,10 +97,17 @@ final class WorldStreamSourceController {
     static final class Presentation {
         private final WorldStreamTransport.Frame frame;
         private final long generation;
+        // Only the basic sky, drawn while terrain in the viewing direction is still loading.
+        private final boolean skyOnly;
 
-        private Presentation(WorldStreamTransport.Frame frame, long generation) {
+        private Presentation(WorldStreamTransport.Frame frame, long generation, boolean skyOnly) {
             this.frame = frame;
             this.generation = generation;
+            this.skyOnly = skyOnly;
+        }
+
+        boolean skyOnly() {
+            return skyOnly;
         }
 
         long sequence() {
@@ -242,6 +249,8 @@ final class WorldStreamSourceController {
     private CompletableFuture<Void> physicalClosing;
     private boolean initialized;
     private boolean skySuppressed;
+    private static final String LOADING_IN_VIEW = "Loading terrain in viewing direction";
+    private static final String SHOWING_PREVIOUS = "Loading terrain; showing previous view";
     private boolean historicalRaster;
     private WorldFormats.Tile creditTarget;
     private boolean retryCommit;
@@ -419,10 +428,23 @@ final class WorldStreamSourceController {
                     historicalRaster=false;
                     acceptedSequence = value.sequence();
                     acceptedReceipt = currentReceipt;
-                    presented = List.copyOf(current);
+                    // Sky-only pixels show no resident terrain, so they pin no resident.
+                    presented = value.skyOnly ? List.of() : List.copyOf(current);
                     presentationRevision++;
                 }
             }
+        }
+        // The visible view is now the live sky, no longer a retained previous view.
+        if (accepted && value.skyOnly) {
+            boolean relabeled = false;
+            synchronized (lock) {
+                if (snapshot.detail().equals(SHOWING_PREVIOUS)) {
+                    snapshot = new Snapshot(snapshot.phase(), LOADING_IN_VIEW, snapshot.prepared(),
+                            snapshot.desired(), snapshot.seed(), snapshot.area());
+                    relabeled = true;
+                }
+            }
+            if (relabeled) changed();
         }
         kick();
         return accepted;
@@ -765,6 +787,12 @@ final class WorldStreamSourceController {
                 currentReceipt = receipt;
                 skySuppressed=false;
                 committing = List.of();
+                // A queued frame of the old receipt can no longer be presented; release it so
+                // this commit's own first frame is taken at once.
+                if (queued != null && queued.frame.content() != receipt) {
+                    drop(queued.frame, "superseded");
+                    queued = null;
+                }
             }
             commit = null;
             pollFrame();
@@ -1156,28 +1184,37 @@ final class WorldStreamSourceController {
             if(hasPresented && latest!=null && latest.view().pitch()<0 && pendingWanted
                     && WorldStreamBackground.matchesBasicSky(candidate.pixels(),candidate.width(),
                             candidate.height(),()->closing)) {
+                // Terrain in the viewing direction is still loading: present the live sky frame
+                // rather than freezing on the previous one, and keep asking for useful terrain.
                 skySuppressed=true;
                 synchronized(lock) {
                     if(!closing && borrowed==null && queued==null && entries.size()>=12
                             && !presented.isEmpty() && candidate.content()==currentReceipt) {
-                        // Detached old GUI pixels remain a historical raster, not a live Source borrow.
-                        // No new receipt/sequence is acknowledged and no new pixels are displayed.
+                        // Source pins retire now: should this frame be refused (nearest tile not
+                        // current), the old pixels stay a historical raster, not a live borrow.
                         presented=List.of();
                         historicalRaster=true;
                     }
                 }
-                drop(candidate, "sky");
-                publish(Phase.PREPARING,"Loading terrain in viewing direction");
+                publish(Phase.PREPARING,LOADING_IN_VIEW);
+                queue(candidate,true);
                 return;
             }
             skySuppressed=false;
-            synchronized (lock) {
-                if (!closing)
-                    queued = new Presentation(candidate, request.viewGeneration());
-                else drop(candidate, "closing");
-            }
-            changed();
+            queue(candidate,false);
         }
+    }
+
+    private void queue(WorldStreamTransport.Frame candidate, boolean skyOnly) {
+        synchronized (lock) {
+            if (!closing)
+                queued = new Presentation(candidate, request.viewGeneration(), skyOnly);
+            else {
+                drop(candidate, "closing");
+                return;
+            }
+        }
+        changed();
     }
 
     private void seed(WorldStreamSourceBridge.Prepared prepared) {
@@ -1337,7 +1374,7 @@ final class WorldStreamSourceController {
     private void publish(Phase phase, String detail) {
         synchronized (lock) {
             if(historicalRaster && phase!=Phase.FAILED && phase!=Phase.CLOSED
-                    && phase!=Phase.UNAVAILABLE) detail="Loading terrain; showing previous view";
+                    && phase!=Phase.UNAVAILABLE) detail=SHOWING_PREVIOUS;
             else if(historicalRaster && phase==Phase.UNAVAILABLE) detail+="; previous view retained";
             int available=0;
             for(var tile:desired) {
