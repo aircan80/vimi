@@ -107,6 +107,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private double sidebarDivider = .23;
     private boolean panelsHidden;
     private final WorldMinimap minimap = new WorldMinimap();
+    // Transient notices over the viewport (HUD step 6); first-run help is shown once per view.
+    private final WorldToasts toasts = new WorldToasts();
+    private boolean helpToastShown, streamFailedToast, stallToast;
     private WorldSpawnOverlay spawns;
     private WorldRoleOverlay roles;
     // Highlight of the picked object; FX overlay only, cleared by terrain, sky and marker clicks.
@@ -182,6 +185,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
         @Override public void captureUnavailable() {
             lookStatus.setText("Mouse look: cursor capture unavailable; looking stays relative");
+            toasts.show(lookStatus.getText());
         }
         @Override public void captureFallback(String reason) {
             if (captureFallbackLogged) return;
@@ -843,6 +847,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         viewport.getChildren().addAll(selectionLayer(), firstFrameActivity, minimap, panelsHint);
         StackPane.setAlignment(minimap, Pos.TOP_RIGHT);
         StackPane.setMargin(minimap, new Insets(12));
+        // Interim placement until the HUD layout's slots land: bottom-centre of the viewport.
+        viewport.getChildren().add(toasts);
+        StackPane.setAlignment(toasts, Pos.BOTTOM_CENTER);
+        StackPane.setMargin(toasts, new Insets(12, 12, 48, 12));
+        toasts.refocus(viewport::requestFocus);
         VBox.setVgrow(maps, Priority.ALWAYS);
         heading.getStyleClass().add("h2");
         currentArea.setId("world-current-area");
@@ -1209,6 +1218,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 map.directory() == null ? "" : map.directory(), map.name() == null ? "" : map.name(),
                 tx, ty, camera.x(), camera.y(), camera.z(), yaw, camera.pitch(), buildLabel));
         status.setText("Saved bookmark " + name + " · see Bookmarks & travel on the map page");
+        toasts.show("Bookmark saved: " + name);
         viewport.requestFocus();
     }
 
@@ -1868,6 +1878,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         image.setImage(null);
         showExplorerLayout();
         resetInspection();
+        if (!helpToastShown) {
+            helpToastShown = true;
+            toasts.show(input.controls().help() + " · " + INSPECT_HINT);
+        }
         status.setText("Loading terrain tile " + selected.key() + "…");
         if (spawns != null) spawns.resume();
         show(firstFrameActivity, true);
@@ -2477,6 +2491,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             show(textureActivity, texturePendingFrame);
             textureStatus.setText(result.issue());
             retryTextures.setDisable(texturePendingFrame);
+            if (result.issue() != null) toasts.show(result.issue(), "Retry", retryTextures::fire);
             return;
         }
         ++textureGeneration;
@@ -2709,6 +2724,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         show(firstFrameActivity, false);
         gpuStatus.setText("World resources could not be confirmed retired ("
                 + WorldDiagnostics.brief(failure) + "); reload the workspace.");
+        toasts.show(gpuStatus.getText());
         retryGpu.setDisable(true);
     }
 
@@ -2779,6 +2795,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             show(gpuActivity, false);
             gpuStatus.setText("GPU World frame upload failed; retry the viewer.");
             retryGpu.setDisable(false);
+            toasts.show(gpuStatus.getText(), "Retry", retryGpu::fire);
         } finally {
             controller.discard(frame);
         }
@@ -2870,6 +2887,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
         boolean hint = stallWatchdog.alerted() && stallPhase(snapshot.phase());
         gpuStatus.setText(hint ? STALL_HINT : snapshot.detail());
         retryGpu.setDisable(busy && !hint);
+        // One toast per failure or stall episode, not per snapshot.
+        boolean failed = snapshot.phase() == WorldStreamSourceController.Phase.FAILED;
+        if (failed && !streamFailedToast) toasts.show("GPU World failed: " + snapshot.detail(), "Retry", retryGpu::fire);
+        if (hint && !stallToast) toasts.show(STALL_HINT, "Retry", retryGpu::fire);
+        streamFailedToast = failed;
+        stallToast = hint;
     }
 
     private void streamNeighborhood() {
@@ -3224,6 +3247,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         minimap.attachRoles(overlay);
     }
 
+    /** The toasts, for tests. */
+    WorldToasts toasts() {
+        return toasts;
+    }
+
     /** The minimap, for tests. */
     WorldMinimap minimap() {
         return minimap;
@@ -3554,6 +3582,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             content.setCenter(interior.node());
             content.setBottom(new VBox(8, new HBox(10, leaveInstance, instanceArea),
                     audio.node()));
+            toasts.show("Entered " + target.map());
             status.setText("Inside " + target.map() + " · Map #" + target.map().id()
                     + " · Leave instance returns to "
                     + (explorer && inventory != null ? inventory.map().toString() : "the map page"));
@@ -3578,6 +3607,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             showExplorerLayout();
             if (spawns != null) spawns.resume();
             status.setText("Back in " + inventory.map() + " · the open world resumes where you entered");
+            toasts.show("Left the instance · back in " + inventory.map());
             input.idle();
             if (!active) return;
             input.idle(); // owed look movement never lands as one jump on restart
@@ -3611,6 +3641,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         picks.shutdownNow();
         streamingImages.clear();
         minimap.close();
+        toasts.clear();
         if (gpu != null) gpu.close();
         invalidate();
         textureLoading.close();
