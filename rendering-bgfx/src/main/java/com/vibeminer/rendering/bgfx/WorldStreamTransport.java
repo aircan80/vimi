@@ -84,7 +84,12 @@ public final class WorldStreamTransport {
     public enum Refusal {
         RETRY_LATER,
         CAPABILITY_UNAVAILABLE,
-        SOURCE_INVALIDATED
+        SOURCE_INVALIDATED,
+        /**
+         * The helper rejected this tile's packet (for example a header that does not match its
+         * slot); only that tile is affected and the session keeps streaming (issue #365).
+         */
+        PACKET_REJECTED
     }
 
     public static final class PreparationRefusal extends Exception {
@@ -1540,9 +1545,7 @@ public final class WorldStreamTransport {
                 if (closing || owner != null && owner.stopping()) {
                     throw new IllegalStateException("World session is stopping");
                 }
-                try {
-                    frames.desire(command);
-                } catch (IllegalArgumentException refused) {
+                if (!frames.tryDesire(command)) {
                     cameraRejected(camera);
                     return false;
                 }
@@ -1851,7 +1854,11 @@ public final class WorldStreamTransport {
                                 retireReliable();
                                 cancelPending = current.cancelOutstanding;
                             }
-                            var error = new IOException("World packet rejected");
+                            var error =
+                                    new PreparationRefusal(
+                                            Refusal.PACKET_REJECTED,
+                                            "World helper rejected the tile packet",
+                                            null);
                             if (!cancelPending) {
                                 publishCancellation(current);
                             }

@@ -36,8 +36,6 @@ class WorldStreamTransactionRejectionTest {
         var admitted =
                 WorldStreamSession.admit(
                         state,
-                        NONCE,
-                        1,
                         lease,
                         8,
                         19,
@@ -58,51 +56,37 @@ class WorldStreamTransactionRejectionTest {
     }
 
     @Test
-    void aRendererRefusalRetiresTheLeaseAndTheSessionContinues() {
-        var state = offered(1, 7, 19);
-        var admitted =
-                WorldStreamSession.<String, String>admit(
-                        state,
-                        NONCE,
-                        1,
-                        lease,
-                        7,
-                        19,
-                        tile -> {
-                            throw new IllegalArgumentException(
-                                    "Foreign, active or stale upload lease");
-                        },
-                        "tile");
-        assertNull(admitted.upload());
-        assertTrue(admitted.reason().contains("renderer refused"), admitted.reason());
-        var next = state.credit();
-        assertNotNull(next);
-        assertNotEquals(lease, next);
-    }
-
-    @Test
     void anAcceptedTileBeginsItsUpload() {
         var state = offered(1, 7, 19);
-        var admitted =
-                WorldStreamSession.admit(
-                        state, NONCE, 1, lease, 7, 19, tile -> "upload:" + tile, "t");
+        var admitted = WorldStreamSession.admit(state, lease, 7, 19, tile -> "upload:" + tile, "t");
         assertEquals("upload:t", admitted.upload());
         assertNull(admitted.reason());
         assertEquals(WorldStreamState.Phase.UPLOADING, state.phase());
     }
 
     @Test
-    void otherRendererFailuresStayFatal() {
-        // Only the renderer's per-transaction argument refusal is a rejection; an internal
-        // failure (a broken invariant or a native error) still ends the session.
+    void aRendererRefusalAfterTheStateAcceptedTheTileStaysFatal() {
+        // The decoder validated the header and the state accepted it, so a renderer lease
+        // refusal is a broken invariant: it propagates and ends the session, as before #365.
         var state = offered(1, 7, 19);
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        WorldStreamSession.<String, String>admit(
+                                state,
+                                lease,
+                                7,
+                                19,
+                                tile -> {
+                                    throw new IllegalArgumentException(
+                                            "Foreign, active or stale upload lease");
+                                },
+                                "tile"));
         assertThrows(
                 IllegalStateException.class,
                 () ->
                         WorldStreamSession.<String, String>admit(
-                                state,
-                                NONCE,
-                                1,
+                                state(1, 7, 19),
                                 lease,
                                 7,
                                 19,
@@ -112,26 +96,8 @@ class WorldStreamTransactionRejectionTest {
                                 "tile"));
     }
 
-    @Test
-    void aSessionIdentityMismatchStaysFatal() {
-        var state = offered(1, 7, 19);
-        var foreign = new WorldStreamState.Nonce(6, 9);
-        assertThrows(
-                IllegalStateException.class,
-                () ->
-                        WorldStreamSession.<String, String>admit(
-                                state,
-                                foreign,
-                                1,
-                                lease,
-                                7,
-                                19,
-                                tile -> {
-                                    throw new IllegalArgumentException("Foreign upload lease");
-                                },
-                                "tile"));
-        // A command or commit naming another session is refused by the state itself.
-        assertEquals(WorldStreamState.Result.WRONG_SESSION, state.cancel(foreign, 1, lease));
+    private WorldStreamState state(long transaction, int x, int y) {
+        return offered(transaction, x, y);
     }
 
     @Test
@@ -145,13 +111,34 @@ class WorldStreamTransactionRejectionTest {
     }
 
     @Test
-    void aRejectedObjectsSetNamesItsReasonAndKeepsTheTerrain() {
-        String record =
-                WorldStreamSession.objectsRejected(
-                        12, new java.io.IOException("Placement transform"));
-        assertTrue(record.contains("tile transaction 12"), record);
-        assertTrue(record.contains("terrain kept"), record);
-        assertTrue(record.contains("IOException: Placement transform"), record);
+    void objectsRejectionsNameTheirReasonAndAreCountedPerSession() {
+        var err = System.err;
+        var captured = new java.io.ByteArrayOutputStream();
+        System.setErr(
+                new java.io.PrintStream(captured, true, java.nio.charset.StandardCharsets.UTF_8));
+        try {
+            var first = new WorldStreamSession.ObjectsRejections();
+            String record = first.reject(12, new java.io.IOException("Placement transform"));
+            assertTrue(record.contains("tile transaction 12"), record);
+            assertTrue(record.contains("terrain kept"), record);
+            assertTrue(record.contains("IOException: Placement transform"), record);
+            assertTrue(record.contains("(1 objects set this session)"), record);
+            for (int i = 2; i < 64; i++) {
+                first.reject(i, new java.io.IOException("quiet"));
+            }
+            assertTrue(first.reject(64, new java.io.IOException("x")).contains("(64 objects sets"));
+            // Another session starts its own count.
+            assertTrue(
+                    new WorldStreamSession.ObjectsRejections()
+                            .reject(1, new java.io.IOException("y"))
+                            .contains("(1 objects set this session)"));
+        } finally {
+            System.setErr(err);
+        }
+        String written = captured.toString(java.nio.charset.StandardCharsets.UTF_8);
+        // Sampled: the first and 64th of the first session, and the first of the second.
+        assertEquals(3, written.lines().count(), written);
+        assertFalse(written.contains("quiet"), written);
     }
 
     @Test
@@ -168,6 +155,14 @@ class WorldStreamTransactionRejectionTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> gate.desire(new WorldStreamControl.Camera(NONCE, 6, 1, 400, 300, view)));
+        // A closed or foreign gate is not a transition: it still throws from tryDesire.
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        gate.tryDesire(
+                                new WorldStreamControl.Camera(
+                                        new WorldStreamState.Nonce(6, 9), 9, 1, 800, 500, view)));
+        assertFalse(gate.tryDesire(new WorldStreamControl.Camera(NONCE, 4, 1, 800, 500, view)));
         // The gate keeps working: a valid transition after the refusals is accepted.
         gate.desire(new WorldStreamControl.Camera(NONCE, 7, 2, 400, 300, view));
     }

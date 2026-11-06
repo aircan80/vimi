@@ -232,6 +232,13 @@ final class WorldStreamSourceController {
             new LinkedHashMap<>();
     private boolean initialBlocked;
     private long initialRetryAt, blockedAt;
+    // Tiles the helper rejected (issue #365): rejection count and the earliest retry time.
+    private final java.util.Map<Integer, Integer> helperRejections =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<Integer, Long> helperRetryAt =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /** After this many helper rejections a tile is unavailable for as long as it stays wanted. */
+    static final int MAX_HELPER_REJECTIONS = 3;
     private boolean blockedOnMaterialPool;
     private long sourceRetirementRevision, blockedSourceRetirement;
     private long blockedCapacity = -1, blockedPresentation = -1, blockedDemand = -1;
@@ -290,13 +297,15 @@ final class WorldStreamSourceController {
             if (camera != null && next.revision() <= camera.revision()) {
                 throw new IllegalArgumentException("Camera revision must advance");
             }
-            camera=next;
             // Actual final Session.camera only replaces metadata; no IO/external callback.
             // Use the same gate as initial publication so an older initial camera cannot follow.
+            // A camera the session refuses as an invalid transition is not kept (#365).
+            boolean accepted=true;
             if(session!=null) {
-                try { session.camera(next); }
+                try { accepted=session.camera(next); }
                 catch(RuntimeException failure) { problem=failure; }
             }
+            if(accepted) camera=next;
         }
         if(problem!=null) failLater(problem);
         kick();
@@ -614,6 +623,8 @@ final class WorldStreamSourceController {
         var wanted = demand();
         if(creditTarget!=null && !contains(wanted,creditTarget)) creditTarget=null;
         unavailable.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
+        helperRejections.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
+        helperRetryAt.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
         if (pending != null) {
             if (!contains(wanted, pending.tile) && pending.cancellation == null) {
                 // Parent's explicit stop MUST precede the bridge's latest=false cancellation.
@@ -650,6 +661,10 @@ final class WorldStreamSourceController {
                             && refusal.reason()!=WorldStreamTransport.Refusal.RETRY_LATER) creditTarget=null;
                     pending.producer.close();
                     pending = null;
+                    if (refusal.reason() == WorldStreamTransport.Refusal.PACKET_REJECTED) {
+                        helperRejected(failedTile);
+                        return;
+                    }
                     if (origin != null && !origin.reason().name().equals(refusal.reason().name()))
                         throw failure;
                     if (origin == null
@@ -842,6 +857,8 @@ final class WorldStreamSourceController {
         }
         for (var tile : admissionOrder) {
             if (unavailable.containsKey(key(tile))) continue;
+            var retryAt = helperRetryAt.get(key(tile));
+            if (retryAt != null && clock.getAsLong() - retryAt < 0) continue;
             boolean found = false;
             for (var entry : current)
                 if (same(tile, entry.resident())) {
@@ -1426,6 +1443,34 @@ final class WorldStreamSourceController {
         worker.shutdown();
         if (failure == null) drained.complete(null);
         else drained.completeExceptionally(failure);
+    }
+
+    /**
+     * The helper rejected one tile's packet (issue #365). The producer is deterministic, so the
+     * same tile is likely rejected again: retry it after a doubling back-off, and after {@link
+     * #MAX_HELPER_REJECTIONS} rejections leave it unavailable while it stays wanted, with a
+     * visible status. Other tiles keep streaming meanwhile.
+     */
+    private void helperRejected(int tile) {
+        int count = helperRejections.merge(tile, 1, Integer::sum);
+        if (count >= MAX_HELPER_REJECTIONS) {
+            helperRetryAt.remove(tile);
+            unavailable.put(tile, WorldStreamSourceBridge.RefusalMetadata.helperRejected());
+            publish(Phase.UNAVAILABLE, "Terrain unavailable: HELPER_REJECTED");
+            wake.set(true);
+            return;
+        }
+        long delay = RETRY_NANOS << (count - 1);
+        helperRetryAt.put(tile, clock.getAsLong() + delay);
+        publish(Phase.WAITING_CAPACITY, "Retrying a terrain tile the World helper rejected");
+        wake.set(true);
+        CompletableFuture.delayedExecutor(delay, java.util.concurrent.TimeUnit.NANOSECONDS)
+                .execute(this::kick);
+    }
+
+    /** Test observation: helper rejections per tile key. */
+    int helperRejections(int tileKey) {
+        return helperRejections.getOrDefault(tileKey, 0);
     }
 
     private static int key(WorldFormats.Tile tile) {

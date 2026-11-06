@@ -67,6 +67,21 @@ public final class AuthoredWorldControllerChild {
                                             offer.sha256()),
                                     () -> false)) {
                         var h = payload.header();
+                        // An authored control file names one tile row whose packets the helper
+                        // rejects, as the real helper rejects an invalid packet (#365).
+                        var reject = directory.getParent().resolve("authored-reject-tile");
+                        if (Files.exists(reject)
+                                && Integer.parseInt(Files.readString(reject).trim()) == h.y()) {
+                            Files.writeString(
+                                    directory.getParent().resolve("authored-rejections.log"),
+                                    h.y() + System.lineSeparator(),
+                                    java.nio.file.StandardOpenOption.CREATE,
+                                    java.nio.file.StandardOpenOption.APPEND);
+                            state.send("INPUT_CONSUMED " + offer.transaction() + " TILE");
+                            state.send("REJECTED " + offer.transaction() + " INVALID_PACKET");
+                            state.grant();
+                            continue;
+                        }
                         state.tileY.put(offer.lease().slot(),h.y());
                         state.tileX.put(offer.lease().slot(),h.x());
                         state.leases.put(offer.lease().slot(),offer.lease());

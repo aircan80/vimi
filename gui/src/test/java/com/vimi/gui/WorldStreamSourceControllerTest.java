@@ -48,6 +48,7 @@ public final class WorldStreamSourceControllerTest {
         supersededHeldSourceCancelsBeforeStalePredicateAndKeepsSession();
         missingRootIsFinitePerDemandAndDoesNotInvalidateCurrentScope();
         missingNearestIsFiniteUnavailableWithoutFillingOutputUnion();
+        helperRejectedTileRetriesWithBackoffThenBecomesUnavailable();
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
@@ -1039,6 +1040,71 @@ public final class WorldStreamSourceControllerTest {
             fixture.camera(3);
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
         } finally { fixture.close(); }
+    }
+
+    /**
+     * Issue #365: the helper rejects every packet of one neighbour tile (REJECTED INVALID_PACKET,
+     * through the real transport). The session keeps streaming: the nearest tile is presented,
+     * the rejected tile is retried after a back-off on the controller clock, and after three
+     * rejections it is unavailable with a visible reason and no further retries.
+     */
+    private static void helperRejectedTileRetriesWithBackoffThenBecomesUnavailable()
+            throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        Path reject = fixture.directory.resolve("authored-reject-tile");
+        Path log = fixture.directory.resolve("authored-rejections.log");
+        try {
+            Files.writeString(reject, Integer.toString(fixture.tiles.get(1).y()));
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(
+                    () -> fixture.controller.snapshot().phase()
+                            == WorldStreamSourceController.Phase.READY);
+            fixture.controller.neighborhood(fixture.tiles);
+            int key = fixture.tiles.get(1).x() * 64 + fixture.tiles.get(1).y();
+            for (int rejection = 1; rejection <= WorldStreamSourceController.MAX_HELPER_REJECTIONS;
+                    rejection++) {
+                int expected = rejection;
+                fixture.until(() -> fixture.controller.helperRejections(key) == expected);
+                if (rejection < WorldStreamSourceController.MAX_HELPER_REJECTIONS) {
+                    // Before the back-off ends the tile is not offered again.
+                    for (int i = 0; i < 20; i++) {
+                        fixture.pump();
+                        Thread.sleep(2);
+                    }
+                    check(lines(log) == rejection, "No retry before the back-off ends");
+                    fixture.clock.addAndGet(500_000_000L << (rejection - 1));
+                    fixture.controller.pulse();
+                }
+            }
+            fixture.untilPresented(
+                    () -> fixture.controller.snapshot().phase()
+                                    == WorldStreamSourceController.Phase.READY
+                            && fixture.controller.snapshot().detail().contains("1 unavailable"));
+            check(
+                    fixture.controller.snapshot().detail().contains("HELPER_REJECTED"),
+                    "The rejected tile's reason is visible");
+            fixture.clock.addAndGet(60_000_000_000L);
+            for (int i = 0; i < 30; i++) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            check(
+                    lines(log) == WorldStreamSourceController.MAX_HELPER_REJECTIONS,
+                    "An unavailable rejected tile is not retried while it stays wanted");
+            check(
+                    fixture.controller.snapshot().phase()
+                            != WorldStreamSourceController.Phase.FAILED,
+                    "A rejected tile never ends the World session");
+        } finally {
+            Files.deleteIfExists(reject);
+            fixture.close();
+        }
+    }
+
+    private static int lines(Path log) throws java.io.IOException {
+        return Files.exists(log) ? Files.readAllLines(log).size() : 0;
     }
 
     private static void missingRootIsFinitePerDemandAndDoesNotInvalidateCurrentScope()

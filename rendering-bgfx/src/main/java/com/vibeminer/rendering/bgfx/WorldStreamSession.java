@@ -350,7 +350,8 @@ final class WorldStreamSession {
 
     private Decoded decodeOffer(WorldStreamControl.Offer offer) {
         try {
-            var tile = decodeTile(session, directory, offer, decoderCanceled::get);
+            var tile =
+                    decodeTile(session, directory, offer, decoderCanceled::get, objectsRejections);
             return new Decoded(tile, tile.header(), null, null);
         } catch (Throwable error) {
             return new Decoded(null, null, null, error);
@@ -367,6 +368,16 @@ final class WorldStreamSession {
             Path directory,
             WorldStreamControl.Offer offer,
             java.util.function.BooleanSupplier canceled)
+            throws IOException {
+        return decodeTile(session, directory, offer, canceled, new ObjectsRejections());
+    }
+
+    static WorldStreamPackedTile decodeTile(
+            WorldStreamEnvelope.Session session,
+            Path directory,
+            WorldStreamControl.Offer offer,
+            java.util.function.BooleanSupplier canceled,
+            ObjectsRejections rejections)
             throws IOException {
         var expected =
                 new WorldStreamTileFile.Expected(
@@ -408,23 +419,32 @@ final class WorldStreamSession {
                     payload.close();
                     throw new java.util.concurrent.CancellationException();
                 }
-                objectsRejected(offer.transaction(), failed);
+                rejections.reject(offer.transaction(), failed);
                 state = 2;
             }
         }
         return WorldStreamPackedTile.prepare(payload, objects, state, canceled);
     }
 
-    private static final java.util.concurrent.atomic.AtomicLong OBJECTS_REJECTED =
-            new java.util.concurrent.atomic.AtomicLong();
-
     /**
-     * An inline objects set refused by validation or packing: the tile stages as terrain only
-     * (objects state 2) and the reason goes to stderr, the first of the process and then every
-     * 64th. The parent logs the redacted stderr tail with its objects-failure record.
+     * Objects sets refused by validation, packing or upload in one session: the tile keeps its
+     * terrain and the reason goes to stderr, the first of the session and then every 64th. The
+     * parent logs the redacted stderr tail with its objects-failure record. Thread-safe: the tile
+     * decoder and the owner thread both report.
      */
-    static String objectsRejected(long transaction, Throwable failed) {
-        long count = OBJECTS_REJECTED.incrementAndGet();
+    static final class ObjectsRejections {
+        private final java.util.concurrent.atomic.AtomicLong count =
+                new java.util.concurrent.atomic.AtomicLong();
+
+        /** The record of this rejection; written to stderr when its count is sampled. */
+        String reject(long transaction, Throwable failed) {
+            return objectsRejected(count.incrementAndGet(), transaction, failed);
+        }
+    }
+
+    private final ObjectsRejections objectsRejections = new ObjectsRejections();
+
+    private static String objectsRejected(long count, long transaction, Throwable failed) {
         String record =
                 "World exterior objects of tile transaction "
                         + transaction
@@ -538,7 +558,7 @@ final class WorldStreamSession {
             }
             if (!closing.get()
                     && !(result.error() instanceof java.util.concurrent.CancellationException)) {
-                objectsRejected(command.transaction(), result.error());
+                objectsRejections.reject(command.transaction(), result.error());
             }
             boolean live = state.objectsLive(command.lease());
             retireObjects(command, false);
@@ -639,8 +659,6 @@ final class WorldStreamSession {
                     var admitted =
                             admit(
                                     state,
-                                    session.nonce(),
-                                    offer.transaction(),
                                     offer.lease(),
                                     result.header().x(),
                                     result.header().y(),
@@ -727,15 +745,12 @@ final class WorldStreamSession {
 
     /**
      * Admits one decoded, valid tile (issue #365). Its header's coordinates are checked against the
-     * slot before the renderer sees it, then the renderer begins the upload. Either refusal is a
-     * per-transaction rejection: the state retires the incoming lease as an invalid packet and the
-     * session keeps streaming. A refusal by the renderer after the state accepted the tile (its
-     * lease checks duplicate the state's) cancels that lease instead.
+     * slot before the renderer sees it; a mismatch is a per-transaction rejection: the state
+     * retires the incoming lease as an invalid packet and the session keeps streaming. Otherwise
+     * the renderer begins the upload, and any renderer refusal stays session-fatal.
      */
     static <T, U> Admission<U> admit(
             WorldStreamState state,
-            WorldStreamState.Nonce nonce,
-            long transaction,
             WorldStreamState.Lease lease,
             int tileX,
             int tileY,
@@ -751,16 +766,9 @@ final class WorldStreamSession {
         if (accepted != WorldStreamState.Result.OK) {
             throw new IllegalStateException("Decoded tile outside its lease");
         }
-        try {
-            return new Admission<>(begin.apply(tile), null);
-        } catch (IllegalArgumentException refused) {
-            var retired = state.cancel(nonce, transaction, lease);
-            if (retired != WorldStreamState.Result.OK
-                    && retired != WorldStreamState.Result.CLOSED) {
-                throw new IllegalStateException("Refused tile could not retire its lease");
-            }
-            return new Admission<>(null, "renderer refused the upload: " + refused.getMessage());
-        }
+        // The decoder validated the header's session and lease and the state just accepted it,
+        // so a renderer refusal here is a broken state/renderer invariant: fatal, as before.
+        return new Admission<>(begin.apply(tile), null);
     }
 
     /**
