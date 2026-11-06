@@ -978,7 +978,8 @@ final class ClientHotfixStore implements AutoCloseable {
         try {
             long size = Long.parseLong(lines[3]);
             int records = Integer.parseInt(lines[4]);
-            if (size < 44 || size > MAX_SOURCE_BYTES || records > 65536)
+            if (size < 44 || size > MAX_SOURCE_BYTES
+                    || records > HotfixCacheReader.Limits.MAX_RECORDS)
                 throw new IllegalArgumentException();
             return new Summary(
                     scope.buildNumber(),

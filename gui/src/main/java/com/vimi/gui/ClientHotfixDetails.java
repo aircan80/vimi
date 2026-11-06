@@ -22,6 +22,9 @@ final class ClientHotfixDetails {
                 case "HOTFIX_BUILD_MISMATCH" -> "The cache belongs to a different client build.";
                 case "HOTFIX_UNSUPPORTED" -> "The cache uses an unsupported format or record profile.";
                 case "HOTFIX_LIMIT" -> "The cache exceeds the supported size or record limits.";
+                case "HOTFIX_RECORD_LIMIT" -> "The cache holds " + format.records()
+                        + " records; vimi reads at most " + format.recordLimit()
+                        + ". Its hotfixes are not applied.";
                 case "HOTFIX_SOURCE_CHANGED" -> "The cache changed while it was being read; import it again.";
                 default -> "The cache could not be verified.";
             };
