@@ -147,39 +147,58 @@ public final class WorldMinimapInputUiTest {
         // Native window focus settles on a later turn; open the popup once the stage has it, so
         // a late focus change cannot auto-hide it.
         await(stage::isFocused);
-        fx(() -> clickButton((ButtonBase) view.lookup("#world-minimap-tracking")));
+        // As in use: the viewport owns focus and W is held when the popup opens.
+        fx(() -> {
+            var viewport = view.lookup("#world-viewport");
+            viewport.requestFocus();
+            key(viewport, KeyCode.W, true);
+            require(input().keysHeld(), "W is held before the popup opens");
+            var tracking = (ButtonBase) view.lookup("#world-minimap-tracking");
+            mouse(tracking, MouseEvent.MOUSE_PRESSED, 10, 10);
+            mouse(tracking, MouseEvent.MOUSE_RELEASED, 10, 10);
+        });
         await(() -> view.minimap().tracking().showing());
         fx(() -> {
+            var viewport = view.lookup("#world-viewport");
             var content = view.minimap().tracking().popup().getContent().getFirst();
             require(content.lookup("#world-role-overlays") != null && content.lookup("#world-role-faction") != null
                             && content.lookup("#world-minimap-entrances") != null,
                     "The popup holds the role controls, the faction filter and the entrances layer");
             require(view.lookup("#world-role-overlays") == null, "The role row left the bottom block");
-            var vendor = (javafx.scene.control.CheckBox) content.lookup("#world-role-vendor");
+            require(!input().keysHeld(), "Opening the popup drops the held W");
+            // Keys arrive at the owner's focus owner and reach the popup through the owner
+            // window's redirector, exactly as typed keys do.
             var before = (TerrainRenderer.Camera) get("camera");
-            for (var code : List.of(KeyCode.W, KeyCode.A, KeyCode.SPACE, KeyCode.F)) {
-                key(vendor, code, true);
-                key(vendor, code, false);
-                key(content, code, true);
-            }
+            key(viewport, KeyCode.W, false);
+            for (var code : List.of(KeyCode.W, KeyCode.A, KeyCode.SPACE, KeyCode.F)) key(viewport, code, true);
             tick();
             require(!input().keysHeld() && before.equals(get("camera")),
-                    "Keys typed in the popup never become held flight keys");
-            for (var code : List.of(KeyCode.W, KeyCode.A, KeyCode.SPACE, KeyCode.F)) key(content, code, false);
+                    "Keys typed while the popup is open never become held flight keys");
+            for (var code : List.of(KeyCode.W, KeyCode.A, KeyCode.SPACE, KeyCode.F)) key(viewport, code, false);
+            boolean panels = (boolean) get("panelsHidden");
+            altZ(viewport);
+            require((boolean) get("panelsHidden") != panels, "Alt+Z still works while the popup is open");
+            altZ(viewport);
+            require((boolean) get("panelsHidden") == panels, "And toggles back");
             var entrances = (javafx.scene.control.CheckBox) content.lookup("#world-minimap-entrances");
             require(!entrances.isFocusTraversable() && !entrances.isSelected(), "Entrances layer starts off");
             entrances.fire();
             require(entrances.isSelected(), "The entrances layer toggles in the popup");
             entrances.fire();
-            key(content, KeyCode.ESCAPE, true);
+            key(viewport, KeyCode.ESCAPE, true);
         });
         await(() -> !view.minimap().tracking().showing());
         fx(() -> {
-            key(view.minimap().tracking().popup().getContent().getFirst(), KeyCode.ESCAPE, false);
-            require(!input().keysHeld(), "Escape in the popup never reaches the viewport");
+            key(view.lookup("#world-viewport"), KeyCode.ESCAPE, false);
+            require(!input().keysHeld(), "Escape in the popup never becomes a held key");
             require(view.lookup("#world-viewport").isFocused(), "Closing the popup gives focus back");
             input().clear();
         });
+    }
+
+    private static void altZ(Node node) {
+        Event.fireEvent(node, new KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.Z, false, false, true, false));
+        Event.fireEvent(node, new KeyEvent(KeyEvent.KEY_RELEASED, "", "", KeyCode.Z, false, false, true, false));
     }
 
     private static void viewportStillAcceptsFlightInput() {

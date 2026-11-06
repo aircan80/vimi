@@ -63,7 +63,8 @@ final class WorldMinimap extends VBox implements AutoCloseable {
     private final AnimationTimer ringFade = new AnimationTimer() {
         @Override
         public void handle(long now) {
-            redraw();
+            // Through the hold nothing visible changes: redraw only while fading, and once after.
+            if (ring.opacity(now) < 1) redraw();
             if (!ring.animating(now)) stop();
         }
     };

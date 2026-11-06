@@ -843,7 +843,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         viewport.getChildren().addAll(selectionLayer(), firstFrameActivity, minimap, panelsHint);
         StackPane.setAlignment(minimap, Pos.TOP_RIGHT);
         StackPane.setMargin(minimap, new Insets(12));
-        minimap.refocus(viewport::requestFocus);
+        minimap.refocus(() -> {
+            if (explorer) viewport.requestFocus();
+        });
+        minimap.tracking().onShowing(this::clearKeys);
         VBox.setVgrow(maps, Priority.ALWAYS);
         heading.getStyleClass().add("h2");
         currentArea.setId("world-current-area");
