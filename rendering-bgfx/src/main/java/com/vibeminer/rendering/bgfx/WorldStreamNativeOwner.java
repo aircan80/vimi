@@ -238,6 +238,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                                             1,
                                             BGFX_TEXTURE_FORMAT_D32F,
                                             depthFlags(MSAA_SAMPLES))));
+            renderer.targetSamples(samples);
             if (samples == 1) {
                 // A device fact, not a failure: the World draws single-sampled, as before.
                 System.err.println("World render target: multisampling unavailable, 1 sample");
@@ -435,6 +436,22 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             BgfxWorldStreamRenderer.LateUpload upload, boolean live) {
         requireOpen();
         return renderer.finishLate(upload, live);
+    }
+
+    /** Proof observation of the renderer's splat state. */
+    boolean splatted(int slot) {
+        requireOpen();
+        return renderer.splatted(slot);
+    }
+
+    boolean splatBlocks() {
+        requireOpen();
+        return renderer.splatBlocks();
+    }
+
+    boolean splatArrayCreated() {
+        requireOpen();
+        return renderer.splatArrayCreated();
     }
 
     /** Test seam for native proofs; see {@link BgfxWorldStreamRenderer#objectBudgetForProof}. */

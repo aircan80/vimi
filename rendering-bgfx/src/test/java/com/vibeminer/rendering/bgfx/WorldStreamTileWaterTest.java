@@ -68,8 +68,11 @@ final class WorldStreamTileWaterTest {
         var before = terrain(tile, true);
         var water = water(WorldStreamTileFile.MAX_WATER_CELLS, 0);
         var expected = WorldStreamTileFile.appendWater(path(), before, header, water, () -> false);
-        assertEquals(WorldStreamEnvelope.MAX_PACKET_BYTES, expected.length());
-        assertEquals(WorldStreamEnvelope.MAX_PACKET_BYTES, Files.size(path()));
+        // The largest terrain packet with the largest water; a splat trailer may add more.
+        int terrainAndWater =
+                WorldStreamEnvelope.MAX_PACKET_BYTES - WorldStreamTileFile.MAX_SPLAT_BYTES;
+        assertEquals(terrainAndWater, expected.length());
+        assertEquals(terrainAndWater, Files.size(path()));
         assertNotEquals(before.sha256(), expected.sha256());
         // The terrain-only expectation no longer describes these bytes.
         assertThrows(
