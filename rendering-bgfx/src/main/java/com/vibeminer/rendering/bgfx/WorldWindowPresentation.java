@@ -146,7 +146,7 @@ final class WorldWindowPresentation implements AutoCloseable {
         init.resolution()
                 .width(width)
                 .height(height)
-                .reset(BGFX_RESET_VSYNC)
+                .reset(BGFX_RESET_VSYNC | WorldStreamNativeOwner.RESET_FLAGS)
                 .maxFrameLatency((byte) 1)
                 .formatDepthStencil(BGFX_TEXTURE_FORMAT_D32F);
         if (probe != null) {
@@ -178,7 +178,11 @@ final class WorldWindowPresentation implements AutoCloseable {
                 height = size[1];
                 // TODO(#389): OR the World reset flags (anisotropic filtering, MSAA) in here
                 // once they are on main, so a resize keeps them.
-                bgfx_reset(width, height, BGFX_RESET_VSYNC, BGFX_TEXTURE_FORMAT_COUNT);
+                bgfx_reset(
+                        width,
+                        height,
+                        BGFX_RESET_VSYNC | WorldStreamNativeOwner.RESET_FLAGS,
+                        BGFX_TEXTURE_FORMAT_COUNT);
             }
             case NONE -> {}
         }
