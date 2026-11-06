@@ -75,7 +75,10 @@ dependencies {
 application {
     mainClass = 'com.vimi.gui.Launcher'
     applicationName = 'vimi-gui-prototype'
-    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED']
+    // Shared with the packaged app (scripts/release/package_app.py); see the file's comments.
+    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED'] +
+            providers.fileContents(layout.projectDirectory.file('jvm-options.txt')).asText.get()
+                    .readLines()*.replaceFirst(/(^|\s)#.*$/, '')*.trim().findAll { it }
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -356,6 +359,14 @@ tasks.register('worldPickTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldPickTest'
 }
 check.dependsOn worldPickTest
+
+// Explorer key/mouse/wheel mapping and pulse cadence against a recording host; no display.
+tasks.register('worldExplorerInputTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldExplorerInputTest'
+}
+check.dependsOn worldExplorerInputTest
 
 // Exact picking of drawn exterior objects, their source records and the highlight; authored meshes.
 tasks.register('worldObjectPicksTest', JavaExec) {
