@@ -648,6 +648,12 @@ public final class WorldTerrainTextureSource {
      */
     static final int DIFFUSE_SOURCE_LIMIT = 8 << 20;
 
+    /**
+     * Largest root ADT accepted, the same as the streaming geometry admission, so a root the
+     * geometry draws is never refused for textures only because the material read it itself.
+     */
+    static final int ROOT_SOURCE_LIMIT = 8 << 20;
+
     private record CachedInventory(FileBinding binding, WorldTextureFormats.Inventory inventory) {}
 
     private static final int INVENTORY_CACHE = 4;
@@ -922,18 +928,18 @@ public final class WorldTerrainTextureSource {
             grid = prepared.grid();
             geometry = prepared.geometrySha256();
         } else {
-            var read = readBytes(tile.rootId(), 2 << 20, request);
+            var read = readBytes(tile.rootId(), ROOT_SOURCE_LIMIT, request);
             root = read.binding();
             try {
                 grid = WorldFormats.adtGrid(read.bytes(), request::canceled);
                 geometry = TerrainGeometryFingerprint.sha256(tile.x(), tile.y(), grid);
             } catch (IllegalArgumentException invalid) {
-                throw new SourceFailure(Reason.ROOT_PROFILE);
+                throw profileFailure(root, Reason.ROOT_PROFILE, request);
             }
         }
         request.report(Stage.TEXTURES, tileIndex, 0);
         var texture = readBytes(tile.tex0Id(), WorldTextureFormats.MAX_SOURCE_BYTES, request);
-        try (var data = readTextureData(texture.bytes(), alphaFormat, request)) {
+        try (var data = readTextureData(texture, alphaFormat, request)) {
             boolean[] used = new boolean[data.diffuseIds().size()];
             for (var chunk : data.chunks()) {
                 if (chunk.issue() == WorldTextureFormats.ChunkIssue.NONE) {
@@ -1066,13 +1072,22 @@ public final class WorldTerrainTextureSource {
         }
     }
 
-    private static WorldTextureFormats.TextureData readTextureData(
-            byte[] bytes, WorldTextureFormats.AlphaFormat alphaFormat, Request request) {
+    private WorldTextureFormats.TextureData readTextureData(
+            ReadSource texture, WorldTextureFormats.AlphaFormat alphaFormat, Request request) {
         try {
-            return WorldTextureFormats.adopt(bytes, alphaFormat, request::canceled);
+            return WorldTextureFormats.adopt(texture.bytes(), alphaFormat, request::canceled);
         } catch (IllegalArgumentException invalid) {
-            throw new SourceFailure(Reason.TEXTURE_PROFILE);
+            throw profileFailure(texture.binding(), Reason.TEXTURE_PROFILE, request);
         }
+    }
+
+    /**
+     * Reads no longer revalidate one by one, so bytes that fail to parse may come from a source
+     * that changed after its stat. Report that as CHANGED, not as a profile refusal.
+     */
+    private SourceFailure profileFailure(FileBinding binding, Reason profile, Request request) {
+        revalidate(List.of(binding), request);
+        return new SourceFailure(profile);
     }
 
     private record Decoded(TerrainAtlasComposer.DiffuseMip pixels, MipBinding binding) {}
@@ -1255,7 +1270,7 @@ public final class WorldTerrainTextureSource {
         try {
             parsed = WorldTextureFormats.inventory(wdt.bytes(), request::canceled);
         } catch (IllegalArgumentException invalid) {
-            throw new SourceFailure(Reason.INVENTORY_PROFILE);
+            throw profileFailure(wdt.binding(), Reason.INVENTORY_PROFILE, request);
         }
         // Checked like every other source before this request uses or caches it.
         revalidate(List.of(wdt.binding()), request);

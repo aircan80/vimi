@@ -287,6 +287,11 @@ final class WorldGeometryCache {
                 nativeTile = new TerrainScene.Tile(tuple.x(), tuple.y(), parsed.terrain());
                 grid = parsed.grid();
                 String fingerprint = TerrainGeometryFingerprint.sha256(nativeTile);
+                // The material read trusts this fingerprint for the grid; prove the pairing
+                // whenever assertions are on (always in tests).
+                assert TerrainGeometryFingerprint.sha256(tuple.x(), tuple.y(), grid)
+                                .equals(fingerprint)
+                        : "Root grid and mesh fingerprints differ";
                 proof =
                         new RootProof(
                                 root.fileDataId(),
@@ -365,6 +370,8 @@ final class WorldGeometryCache {
         }
         var next = new Entry(key, refreshed);
         next.nativeTile = old.nativeTile;
+        // Same proven root content, so its grid still pairs with the tile.
+        next.grid = old.grid;
         next.proof = proof;
         current.put(key, next);
         retained.add(next);
@@ -413,6 +420,7 @@ final class WorldGeometryCache {
         retained.remove(entry);
         entry.loaded = null;
         entry.nativeTile = null;
+        entry.grid = null;
         entry.proof = null;
     }
 
