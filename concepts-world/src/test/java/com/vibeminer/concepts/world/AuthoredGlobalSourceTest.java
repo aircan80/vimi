@@ -30,7 +30,10 @@ class AuthoredGlobalSourceTest {
                                         assertEquals(6, borrow.indices());
                                         assertEquals(4, borrow.facts().sources().size());
                                         assertEquals(1, borrow.imageCount());
-                                        assertEquals(255, borrow.imageByte(0, 3));
+                                        assertEquals(
+                                                0,
+                                                borrow.imageByte(0, 3),
+                                                "the source alpha is kept (#297)");
                                         return (AutoCloseable) closed::incrementAndGet;
                                     })) {
                 assertTrue(written.isOpen());

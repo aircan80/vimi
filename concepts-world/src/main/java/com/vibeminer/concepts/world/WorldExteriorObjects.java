@@ -16,6 +16,7 @@ import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldPlacements;
 import com.vibeminer.rendering.world.ObjectTextureMips;
 import com.vibeminer.rendering.world.TerrainScene;
+import com.vibeminer.rendering.world.WmoMaterialClass;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
@@ -136,25 +137,12 @@ public final class WorldExteriorObjects {
      */
     public static final int UNLIT = 0x100;
 
-    /** MOMT flags bit 0x1, F_UNLIT: the material is not lit. */
-    static final long MOMT_F_UNLIT = 0x1;
-
     /**
      * Flag on a range class (MOMT F_UNCULLED, flags bit 0x4, documented as "two-sided", issue
      * #375): the surface is seen from both sides. The World pass culls no faces yet, so every
      * surface is still drawn two-sided; the flag is carried for single-sided culling.
      */
     public static final int TWO_SIDED = 0x200;
-
-    /** MOMT flags bit 0x4, F_UNCULLED: two-sided. */
-    static final long MOMT_F_UNCULLED = 0x4;
-
-    /**
-     * MOMT flags this profile applies. Any other set bit (F_UNFOGGED, F_EXTLIGHT, F_SIDN, F_WINDOW,
-     * the clamp bits and the undocumented rest) is ignored and counted in {@link
-     * Count#BATCH_FLAGS_IGNORED}: their documented effects name no formula to apply.
-     */
-    static final long MOMT_APPLIED = MOMT_F_UNLIT | MOMT_F_UNCULLED;
 
     /** The kind of a range class, without its flags. */
     public static int kind(int rangeClass) {
@@ -2032,20 +2020,13 @@ public final class WorldExteriorObjects {
                 // MOMT blend mode (EGxBlend): 0 opaque, 1 alpha key (cutout), 2 alpha (blended),
                 // 3 add (additive). Higher modes (modulate and their variants) stay refused until
                 // their behaviour is pinned (#367).
-                long blend = material.word(2);
-                if (blend > ADDITIVE || material.word(3) == 0) {
+                // The shared MOMT mapping (#297): blend mode word 2, flags word 0.
+                int blend = WmoMaterialClass.of(material.word(0), material.word(2));
+                if (blend == WmoMaterialClass.UNSUPPORTED || material.word(3) == 0) {
                     unsupported++;
                     continue;
                 }
-                // MOMT flags word 0: bit 0x1 F_UNLIT (no lighting), bit 0x4 F_UNCULLED (two-sided).
-                long momtFlags = material.word(0);
-                if ((momtFlags & MOMT_F_UNLIT) != 0) {
-                    blend |= UNLIT;
-                }
-                if ((momtFlags & MOMT_F_UNCULLED) != 0) {
-                    blend |= TWO_SIDED;
-                }
-                if ((momtFlags & ~MOMT_APPLIED) != 0) {
+                if (WmoMaterialClass.ignoresFlags(material.word(0))) {
                     ignoredFlags++;
                 }
                 candidates.add(
@@ -2054,7 +2035,7 @@ public final class WorldExteriorObjects {
                                 batch.indexCount(),
                                 index,
                                 material.word(3),
-                                (int) blend));
+                                blend));
                 candidateIndices += batch.indexCount();
             }
             if (candidates.isEmpty()) {

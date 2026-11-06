@@ -18,6 +18,7 @@ import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_NONE;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_RT;
 import static org.lwjgl.bgfx.BGFX.BGFX_UNIFORM_TYPE_MAT4;
 import static org.lwjgl.bgfx.BGFX.BGFX_UNIFORM_TYPE_SAMPLER;
+import static org.lwjgl.bgfx.BGFX.BGFX_UNIFORM_TYPE_VEC4;
 import static org.lwjgl.bgfx.BGFX.bgfx_copy;
 import static org.lwjgl.bgfx.BGFX.bgfx_create_index_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_create_program;
@@ -44,6 +45,8 @@ import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_begin;
 import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_end;
 
 import com.vibeminer.rendering.world.GlobalInteriorLimits;
+import com.vibeminer.rendering.world.WmoMaterialClass;
+import com.vibeminer.rendering.world.WorldObjectPicking;
 import java.io.IOException;
 import java.nio.ByteOrder;
 import java.util.Arrays;
@@ -71,7 +74,11 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
     private final int vertexCount;
     private final GlobalWmoCamera initialCamera;
     private short vertices = INVALID, indices = INVALID, program = INVALID;
-    private short eye = INVALID, projection = INVALID, sampler = INVALID;
+    private short eye = INVALID, projection = INVALID, sampler = INVALID, material = INVALID;
+
+    /** Per recorded batch: its material's range class ({@link WmoMaterialClass}, #297). */
+    private final int[] batchClasses;
+
     private long meshBytes, imageBytes;
     private int stagingBytes, peakMesh, peakImage;
     private boolean closed;
@@ -103,6 +110,7 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
         Arrays.fill(textures, INVALID);
         Arrays.fill(materialImages, -1);
         initialCamera = boundsCamera(data);
+        batchClasses = batchClasses(data);
         try {
             check(canceled);
             var caps = bgfx_get_caps();
@@ -120,6 +128,7 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
             projection =
                     valid(bgfx_create_uniform("u_globalProjection", BGFX_UNIFORM_TYPE_MAT4, 1));
             sampler = valid(bgfx_create_uniform("s_globalDiffuse", BGFX_UNIFORM_TYPE_SAMPLER, 1));
+            material = valid(bgfx_create_uniform("u_globalMaterial", BGFX_UNIFORM_TYPE_VEC4, 1));
             uploadMesh(canceled);
             uploadImages(canceled);
             for (int m = 0; m < data.counts().materials(); m++) {
@@ -273,17 +282,79 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
         try (var stack = MemoryStack.stackPush()) {
             var e = stack.mallocFloat(16).put(camera.modelToEye()).flip();
             var p = stack.mallocFloat(16).put(projectionMatrix).flip();
-            for (var batch : data.batches()) {
-                bgfx_set_uniform(eye, e, 1);
-                bgfx_set_uniform(projection, p, 1);
-                bgfx_set_vertex_buffer(0, vertices, 0, vertexCount);
-                bgfx_set_index_buffer(indices, batch.firstIndex(), batch.indexCount());
-                bgfx_set_texture(
-                        0, sampler, textures[materialImages[batch.material()]], SAMPLER_STATE);
-                bgfx_set_state(DRAW_STATE, 0);
-                bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
+            var batches = data.batches();
+            // Opaque and cutout first, then alpha-blended, then additive, each in recorded order:
+            // the outdoor objects' order (#449), so both paths draw a material the same way.
+            for (int pass = 0; pass < 3; pass++) {
+                for (int b = 0; b < batches.size(); b++) {
+                    int rangeClass = batchClasses[b];
+                    if (pass(rangeClass) != pass) {
+                        continue;
+                    }
+                    var batch = batches.get(b);
+                    bgfx_set_uniform(eye, e, 1);
+                    bgfx_set_uniform(projection, p, 1);
+                    bgfx_set_uniform(material, stack.floats(materialUniform(rangeClass)), 1);
+                    bgfx_set_vertex_buffer(0, vertices, 0, vertexCount);
+                    bgfx_set_index_buffer(indices, batch.firstIndex(), batch.indexCount());
+                    bgfx_set_texture(
+                            0, sampler, textures[materialImages[batch.material()]], SAMPLER_STATE);
+                    bgfx_set_state(state(rangeClass), 0);
+                    bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
+                }
             }
         }
+    }
+
+    /**
+     * Range classes of the recorded batches from their materials' flags (word 0) and blend mode
+     * (word 2). The source factory admits only supported blend modes; any other is refused here.
+     */
+    static int[] batchClasses(GpuGlobalWmoSceneFile.Decoded data) throws IOException {
+        var batches = data.batches();
+        var classes = new int[batches.size()];
+        for (int b = 0; b < classes.length; b++) {
+            long[] words = data.description().materials().get(batches.get(b).material()).words();
+            classes[b] = WmoMaterialClass.of(words[0], words[2]);
+            if (classes[b] == WmoMaterialClass.UNSUPPORTED) {
+                throw new IOException("Global material blend mode unsupported");
+            }
+        }
+        return classes;
+    }
+
+    /** Draw pass of a range class: 0 opaque and cutout, 1 alpha-blended, 2 additive. */
+    static int pass(int rangeClass) {
+        return switch (WorldObjectPicking.kind(rangeClass)) {
+            case WorldObjectPicking.BLENDED -> 1;
+            case WorldObjectPicking.ADDITIVE -> 2;
+            default -> 0;
+        };
+    }
+
+    /**
+     * The fragment material (u_globalMaterial): x the alpha-test reference (cutouts discard below
+     * {@link WorldObjectPicking#CUTOUT_REFERENCE}), y 1 to output the sampled alpha for blending.
+     * The interior profile is unlit, so the unlit flag changes nothing; nothing is culled, so
+     * neither does two-sided.
+     */
+    static float[] materialUniform(int rangeClass) {
+        return switch (WorldObjectPicking.kind(rangeClass)) {
+            case WorldObjectPicking.CUTOUT ->
+                    new float[] {WorldObjectPicking.CUTOUT_REFERENCE, 0, 0, 0};
+            case WorldObjectPicking.BLENDED, WorldObjectPicking.ADDITIVE ->
+                    new float[] {0, 1, 0, 0};
+            default -> new float[] {0, 0, 0, 0};
+        };
+    }
+
+    /** Draw state: the outdoor objects' blend states for blended and additive surfaces. */
+    static long state(int rangeClass) {
+        return switch (WorldObjectPicking.kind(rangeClass)) {
+            case WorldObjectPicking.BLENDED -> BgfxWorldStreamRenderer.BLENDED_STATE;
+            case WorldObjectPicking.ADDITIVE -> BgfxWorldStreamRenderer.ADDITIVE_STATE;
+            default -> DRAW_STATE;
+        };
     }
 
     @Override
@@ -360,7 +431,7 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
                                 bgfx_destroy_program(p);
                             }
                         });
-        for (short u : new short[] {eye, projection, sampler}) {
+        for (short u : new short[] {eye, projection, sampler, material}) {
             failure =
                     destroy(
                             failure,
@@ -370,7 +441,7 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
                                 }
                             });
         }
-        eye = projection = sampler = INVALID;
+        eye = projection = sampler = material = INVALID;
         var decoded = data;
         data = null;
         failure =

@@ -360,7 +360,7 @@ public final class WorldGlobalSceneWriter {
                 int size = Math.min(scratch.length, length - offset);
                 for (int n = 0; n < size; n++) {
                     int value = read.imageByte(image, offset + n);
-                    require(value >= 0 && value <= 255 && ((offset + n) % 4 != 3 || value == 255));
+                    require(value >= 0 && value <= 255);
                     scratch[n] = (byte) value;
                 }
                 hash.update(scratch, 0, size);
@@ -369,7 +369,7 @@ public final class WorldGlobalSceneWriter {
             }
             if (!HexFormat.of()
                     .formatHex(hash.digest())
-                    .equals(description.images().get(image).opaqueRgbaSha256())) {
+                    .equals(description.images().get(image).originalRgbaSha256())) {
                 throw new IOException("Global image changed while writing");
             }
         }
