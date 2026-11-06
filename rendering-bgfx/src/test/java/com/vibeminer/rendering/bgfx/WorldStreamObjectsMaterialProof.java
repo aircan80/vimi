@@ -322,15 +322,15 @@ public final class WorldStreamObjectsMaterialProof {
      * texel per pixel and trilinear sampling reads level k alone. Every block of every level has
      * its own colour, so a wrong pitch, row, level offset or a missing level shows.
      */
-    record Ladder(int format, int width, int height, double up, int top, int image) {}
+    record Ladder(int format, int width, int height, int top, int image) {}
 
     static final List<Ladder> LADDERS =
             List.of(
-                    new Ladder(ObjectTextureFormats.BC1, 64, 64, 1.0, 58, 3),
-                    new Ladder(ObjectTextureFormats.BC3, 64, 64, -1.5, 378, 4),
-                    new Ladder(ObjectTextureFormats.BC1, 64, 16, .75, 138, 5));
+                    new Ladder(ObjectTextureFormats.BC1, 64, 64, 58, 3),
+                    new Ladder(ObjectTextureFormats.BC3, 64, 64, 378, 4),
+                    new Ladder(ObjectTextureFormats.BC1, 64, 16, 138, 5));
 
-    /** Screen column of ladder quad k's left edge: eye-right -2 + 0.5625 k (72 pixels). */
+    /** Frame column of ladder quad k's left edge: 72 pixels apart from column 144. */
     private static int ladderLeft(int level) {
         return 144 + 72 * level;
     }
@@ -381,14 +381,18 @@ public final class WorldStreamObjectsMaterialProof {
         double cp = Math.cos(VIEW.pitch()), sp = Math.sin(VIEW.pitch());
         int q = 0;
         for (var ladder : LADDERS) {
-            double tall = .5 * ladder.height / ladder.width;
+            int bottom = ladder.top + 64 * ladder.height / ladder.width;
             for (int level = 0;
                     level < ObjectTextureMips.levels(ladder.width, ladder.height);
                     level++) {
-                double left = -2 + .5625 * level, repeat = 1 << level;
+                double repeat = 1 << level, depth = 5;
                 for (int corner = 0; corner < 4; corner++) {
-                    double right = left + (corner == 1 || corner == 2 ? .5 : 0);
-                    double up = ladder.up + (corner < 2 ? 0 : tall), depth = 5;
+                    // Pixel edges to eye space at depth 5 through the explorer's focal length.
+                    int x = ladderLeft(level) + (corner == 1 || corner == 2 ? 64 : 0);
+                    int y = corner < 2 ? bottom : ladder.top;
+                    double focal = TerrainCamera.focalPixels(WIDTH);
+                    double right = (x - WIDTH * .5) * depth / focal;
+                    double up = (HEIGHT * .5 - y) * depth / focal;
                     double dx = -sp * up + cp * depth, dy = -right, dz = cp * up + sp * depth;
                     vertices.put((float) dx).put((float) dy).put((float) dz);
                     vertices.put(-0.408248290463863f).put(-0.408248290463863f);
