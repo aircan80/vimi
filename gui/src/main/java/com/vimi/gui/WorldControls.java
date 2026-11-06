@@ -6,20 +6,21 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.prefs.Preferences;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 import javafx.scene.input.KeyCode;
 
 /**
  * World explorer control preferences: mouse-look sensitivity and invert-Y, the flight speed
- * preset, and the key bindings. They belong to the user, not to a library, so they persist in the
- * per-user {@link Preferences} tree as one versioned text value. Decoding is lenient: an unknown
- * key, action or key code is ignored, and a missing or malformed value falls back to its default,
- * so a damaged entry never blocks the explorer.
+ * preset, and the key bindings. They persist with the other World settings in the library
+ * database ({@link WorldBookmarkStore}) as one versioned text value. Decoding is lenient: an
+ * unknown key, action or key code is ignored, and a missing or malformed value falls back to its
+ * default, so a damaged entry never blocks the explorer.
  *
- * <p>Bindings map physical {@link KeyCode}s to actions. JavaFX reports letter keys by the
- * character they produce in the active layout, so W/A/S/D sit elsewhere on AZERTY; the layout
- * presets and per-action rebinding cover that.
+ * <p>Bindings map {@link KeyCode}s to actions. JavaFX key codes for letter keys follow the
+ * active keyboard layout (they name the key's character, not its physical position), so the
+ * QWERTY W/A/S/D positions report other codes on AZERTY; the layout presets and per-action
+ * rebinding cover that.
  */
 record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCode, Action> keys) {
     /** Radians of look per pixel of mouse movement. */
@@ -252,55 +253,46 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         }
     }
 
-    /** Where the encoded value lives. Failures are swallowed: controls are a convenience. */
+    /** Where the encoded value lives. Failures are logged, never thrown: controls are a convenience. */
     interface Store {
-        String load();
+        /** The stored value, or null when none was saved; completes on any thread. */
+        CompletableFuture<String> load();
 
         void save(String value);
+
+        /** The World store of the library (or its session-only store). */
+        static Store of(WorldBookmarkStore store) {
+            Objects.requireNonNull(store);
+            return new Store() {
+                @Override
+                public CompletableFuture<String> load() {
+                    return store.loadControls();
+                }
+
+                @Override
+                public void save(String value) {
+                    store.saveControls(value).exceptionally(failure -> {
+                        WorldDiagnostics.warn("World controls could not be saved", failure);
+                        return null;
+                    });
+                }
+            };
+        }
     }
 
-    /** Session-only storage, used by tests and when no user preferences are available. */
+    /** Session-only storage, used by views without a library and by tests. */
     static Store memory() {
         return new Store() {
             private String value;
 
             @Override
-            public String load() {
-                return value;
+            public CompletableFuture<String> load() {
+                return CompletableFuture.completedFuture(value);
             }
 
             @Override
             public void save(String next) {
                 value = Objects.requireNonNull(next);
-            }
-        };
-    }
-
-    /** The per-user preferences node {@code vimi/world-controls}. */
-    static Store preferences() {
-        return new Store() {
-            private static final String KEY = "controls";
-
-            @Override
-            public String load() {
-                try {
-                    return node().get(KEY, null);
-                } catch (RuntimeException unavailable) {
-                    return null;
-                }
-            }
-
-            @Override
-            public void save(String value) {
-                try {
-                    node().put(KEY, value);
-                } catch (RuntimeException unavailable) {
-                    WorldDiagnostics.warn("World controls could not be saved", unavailable);
-                }
-            }
-
-            private Preferences node() {
-                return Preferences.userRoot().node("vimi/world-controls");
             }
         };
     }

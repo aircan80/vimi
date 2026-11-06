@@ -216,6 +216,28 @@ public final class WorldNavigationUiTest {
             });
     }
 
+    /** Showing stored controls sets every control without saving a half-applied value. */
+    private static void storedControlsLoadWithoutBeingOverwritten(WorldView view) {
+        var saved=new ArrayList<String>();
+        view.controls(new WorldControls.Store() {
+            public java.util.concurrent.CompletableFuture<String> load() { return java.util.concurrent.CompletableFuture.completedFuture(null); }
+            public void save(String value) { saved.add(value); }
+        });
+        var stored=WorldControls.DEFAULTS.withSensitivity(.013).withInvertY(true);
+        view.showControls(stored);
+        var invert=(javafx.scene.control.CheckBox)view.lookup("#world-invert-look");
+        var slider=(javafx.scene.control.Slider)view.lookup("#world-look-sensitivity");
+        require(saved.isEmpty(),"Loading controls never saves: "+saved);
+        require(invert.isSelected() && Math.abs(slider.getValue()-.013)<1e-12 && input(view).controls().equals(stored),
+                "Stored invert-Y and sensitivity both apply");
+        require(slider.getBlockIncrement()==.001,"Slider steps suit its range");
+        invert.fire();
+        require(saved.size()==1 && WorldControls.decode(saved.getFirst()).equals(stored.withInvertY(false)),
+                "A user change saves the whole value: "+saved);
+        view.showControls(WorldControls.DEFAULTS);
+        view.controls(WorldControls.memory());
+    }
+
     private static void controls(WorldView view) {
         var viewport=view.lookup("#world-viewport");
         var timer=(AnimationTimer)get(view,"timer");
@@ -269,8 +291,11 @@ public final class WorldNavigationUiTest {
             mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_PRESSED,50,50,javafx.scene.input.MouseButton.PRIMARY);
             mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_DRAGGED,50+delta,50,javafx.scene.input.MouseButton.PRIMARY);
             mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_RELEASED,50+delta,50,javafx.scene.input.MouseButton.PRIMARY);
+            require(viewport.getCursor()==null,"Left-drag look keeps the cursor visible");
             timer.handle(2_200_000_000L);
-            require(start.equals(get(view,"camera")),"Left drag never looks");
+            var left=(TerrainRenderer.Camera)get(view,"camera");
+            require(Math.abs(left.yaw()+delta*WorldControls.DEFAULT_SENSITIVITY)<1e-12,"Left drag looks without capture");
+            set(view,"camera",start);
             mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_PRESSED,50,50,javafx.scene.input.MouseButton.SECONDARY);
             require(viewport.getCursor()==javafx.scene.Cursor.NONE,"Right-button look hides the cursor");
             mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_DRAGGED,50+delta,50,javafx.scene.input.MouseButton.SECONDARY);
@@ -281,6 +306,7 @@ public final class WorldNavigationUiTest {
             var moved=(TerrainRenderer.Camera)get(view,"camera");
             require(Math.abs(moved.yaw()+delta*WorldControls.DEFAULT_SENSITIVITY)<1e-12,"Right-button look turns toward actual screen side");
         }
+        storedControlsLoadWithoutBeingOverwritten(view);
         var before = new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,.7,-.8);
         set(view,"camera",before);
         double originalSpeed = input(view).speed();

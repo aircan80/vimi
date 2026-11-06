@@ -87,10 +87,11 @@ public final class WorldMinimapInputUiTest {
         key(choice, KeyCode.RIGHT, false);
         mouse(choice, MouseEvent.MOUSE_PRESSED, 10, 10);
         mouse(choice, MouseEvent.MOUSE_DRAGGED, 35, 30);
+        pulse();
         mouse(choice, MouseEvent.MOUSE_RELEASED, 35, 30);
         mouse(choice, MouseEvent.MOUSE_PRESSED, 10, 10, MouseButton.SECONDARY);
         mouse(choice, MouseEvent.MOUSE_DRAGGED, 35, 30, MouseButton.SECONDARY);
-        tick();
+        pulse();
         mouse(choice, MouseEvent.MOUSE_RELEASED, 35, 30, MouseButton.SECONDARY);
         require(before.equals(get("camera")), "Dragging orientation must not look around the world");
         Event.fireEvent(choice, new ScrollEvent(ScrollEvent.SCROLL,
@@ -193,7 +194,7 @@ public final class WorldMinimapInputUiTest {
         var minimap = view.lookup("#world-minimap");
         mouse(minimap, MouseEvent.MOUSE_PRESSED, 10, 10, MouseButton.SECONDARY);
         mouse(minimap, MouseEvent.MOUSE_DRAGGED, 35, 30, MouseButton.SECONDARY);
-        tick();
+        pulse();
         mouse(minimap, MouseEvent.MOUSE_RELEASED, 35, 30, MouseButton.SECONDARY);
         require(!before.equals(get("camera")), "Right-dragging non-control minimap artwork still looks around");
         require(viewport.isFocused(), "Clicking non-control artwork restores viewport focus");
@@ -203,6 +204,14 @@ public final class WorldMinimapInputUiTest {
         key(viewport, KeyCode.W, false);
         require(!moved.equals(get("camera")), "Viewport keyboard still moves");
     }
+
+    /** One more timer pulse without resetting owed look movement (unlike {@link #tick}). */
+    private static void pulse() {
+        clock += 16_000_000L;
+        ((AnimationTimer) get("timer")).handle(clock);
+    }
+
+    private static long clock = 5_000_000_000L;
 
     private static void tick() {
         input().idle();
