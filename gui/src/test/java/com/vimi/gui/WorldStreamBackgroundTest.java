@@ -22,9 +22,32 @@ public final class WorldStreamBackgroundTest {
         rgba[3 + 10 * width] ^= 0x00000001;
         require(WorldStreamBackground.matchesBasicSky(pixels, width, height, () -> false),
                 "One-byte quantization tolerance");
-        rgba[3 + 10 * width] = 0xff25651a;
+        int sky = rgba[3 + 8 * width];
+        rgba[3 + 8 * width] = 0xff25651a;
         require(!WorldStreamBackground.matchesBasicSky(pixels, width, height, () -> false),
-                "A single actual foreground difference is not discarded as sky");
+                "A sampled foreground difference is not discarded as sky");
+        rgba[3 + 8 * width] = sky;
+        int step = WorldStreamBackground.STEP;
+        int[] clean = rgba.clone();
+        rgba[3 + 10 * width + 1] = 0xff25651a;
+        require(WorldStreamBackground.matchesBasicSky(pixels, width, height, () -> false),
+                "A lone pixel between samples is below the subsampled resolution");
+        // Any foreground block STEP pixels across, at every placement, is seen.
+        for (int top = 0; top + step <= height; top++) {
+            for (int left = 0; left + step <= width; left++) {
+                System.arraycopy(clean, 0, rgba, 0, clean.length);
+                for (int y = top; y < top + step; y++) {
+                    java.util.Arrays.fill(rgba, 3 + y * width + left, 3 + y * width + left + step,
+                            0xff25651a);
+                }
+                require(!WorldStreamBackground.matchesBasicSky(pixels, width, height, () -> false),
+                        "Foreground block at " + left + "," + top + " is not discarded as sky");
+            }
+        }
+        System.arraycopy(clean, 0, rgba, 0, clean.length);
+        edgeBandsAreSampled(18, 31);
+        edgeBandsAreSampled(800, 500);
+        edgeBandsAreSampled(1, 1);
         try {
             WorldStreamBackground.matchesBasicSky(pixels, width, height, () -> true);
             throw new AssertionError("Stopped scan must cancel");
@@ -35,6 +58,27 @@ public final class WorldStreamBackgroundTest {
         } catch (IllegalArgumentException expected) { }
         System.out.println("World background feedback: shader rows, foreground, cursor and cancellation passed");
     }
+    /** (n-1) % STEP != 0 for 18x31 and 800x500: the last row and column must still be sampled. */
+    private static void edgeBandsAreSampled(int width, int height) {
+        int[] sky = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            double t = (double) y / height;
+            int color = 0xff000000 | (int) (91 + 80 * t) << 16
+                    | (int) (141 + 60 * t) << 8 | (int) (177 + 37 * t);
+            java.util.Arrays.fill(sky, y * width, (y + 1) * width, color);
+        }
+        require(WorldStreamBackground.matchesBasicSky(IntBuffer.wrap(sky), width, height, () -> false),
+                "Clean sky " + width + "x" + height);
+        int[] bottom = sky.clone();
+        java.util.Arrays.fill(bottom, (height - 1) * width, height * width, 0xff25651a);
+        require(!WorldStreamBackground.matchesBasicSky(IntBuffer.wrap(bottom), width, height,
+                () -> false), "A one-row terrain band on the bottom edge is not sky");
+        int[] right = sky.clone();
+        for (int y = 0; y < height; y++) right[y * width + width - 1] = 0xff25651a;
+        require(!WorldStreamBackground.matchesBasicSky(IntBuffer.wrap(right), width, height,
+                () -> false), "A one-column band on the right edge is not sky");
+    }
+
     private static void require(boolean value, String message) {
         if (!value) throw new AssertionError(message);
     }
