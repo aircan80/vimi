@@ -819,3 +819,11 @@ tasks.register('globalInteriorFloorsTest', JavaExec) {
     mainClass = 'com.vimi.gui.GlobalInteriorFloorsTest'
 }
 check.dependsOn globalInteriorFloorsTest
+
+// Recorded sky and fog mixed into the World look (#177-2a); pure, no display.
+tasks.register('worldSkyLookTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldSkyLookTest'
+}
+tasks.named('check') { dependsOn tasks.named('worldSkyLookTest') }
