@@ -112,7 +112,7 @@ final class WorldSelectionOverlay extends Pane implements AutoCloseable {
         var camera = TerrainCamera.from(view.camera());
         double scale = Math.min(viewWidth / frameWidth, viewHeight / frameHeight);
         double left = (viewWidth - frameWidth * scale) / 2, top = (viewHeight - frameHeight * scale) / 2;
-        double focal = frameWidth * .8;
+        double focal = TerrainCamera.focalPixels(frameWidth);
         var eyes = new TerrainCamera.Eye[8];
         for (int i = 0; i < 8; i++) eyes[i] = camera.eye(corners[i * 3], corners[i * 3 + 1], corners[i * 3 + 2]);
         for (var edge : EDGES) {
