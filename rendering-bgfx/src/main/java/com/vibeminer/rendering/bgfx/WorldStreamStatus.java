@@ -26,6 +26,9 @@ final class WorldStreamStatus {
     record CameraApplied(WorldStreamState.Nonce nonce, long policy, int width, int height)
             implements Message {}
 
+    /** Non-reliable wake-up hint that the frame mapping published {@code sequence}. */
+    record FramePublished(WorldStreamState.Nonce nonce, long sequence) implements Message {}
+
     enum InputKind {
         TILE,
         COMMIT
@@ -160,6 +163,12 @@ final class WorldStreamStatus {
                     int width = integer(p[4]), height = integer(p[5]);
                     require(width >= 1 && width <= 800 && height >= 1 && height <= 500);
                     yield new CameraApplied(nonce, policy, width, height);
+                }
+                case "FRAME" -> {
+                    arity(p, 4);
+                    long sequence = positive(p[3]);
+                    require(sequence <= WorldFrameFileV2.MAX_SEQUENCE);
+                    yield new FramePublished(nonce, sequence);
                 }
                 case "INPUT_CONSUMED" -> {
                     arity(p, 5);

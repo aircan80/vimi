@@ -56,6 +56,7 @@ public final class WorldStreamSourceControllerTest {
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
         sameResidentCameraFrameDoesNotRetryMaterialPool();
+        transportFrameSignalQueuesPresentationWithoutAnyPulse();
         queuedGpuOwnerLateCloseIsPartOfControllerDrain();
         closeDuringActualInitialWdtQualificationIsCleanAndWaitsSourceDrain();
         terrainNeverWaitsForBlockedObjectPreparation();
@@ -1379,6 +1380,40 @@ public final class WorldStreamSourceControllerTest {
             check(ticket.get(fixture.gpu.session)==refused,
                     "Accepted same-resident camera pixels release no pool owner and must not reopen source pressure");
         } finally {if(held!=null)held.close();fixture.close();}
+    }
+
+    private static void transportFrameSignalQueuesPresentationWithoutAnyPulse() throws Exception {
+        var fixture=new Fixture(new AuthoredTerrainSource.Files(),1);
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            var worker=WorldStreamSourceController.class.getDeclaredField("worker");worker.setAccessible(true);
+            var actor=(java.util.concurrent.ExecutorService)worker.get(fixture.controller);
+            // Drain every earlier frame; discard() kicks, so fence the actor after each one.
+            for(int quiet=0;quiet<3;) {
+                actor.submit(() -> {}).get(3,TimeUnit.SECONDS);
+                var stale=fixture.controller.takePresentation();
+                if(stale.isPresent()) { fixture.controller.discard(stale.get()); quiet=0; }
+                else { quiet++; Thread.sleep(50); }
+            }
+            // Bypass the controller: camera() and pulse() would kick a full step. Only the
+            // transport's frame listener can now bring this frame to the controller.
+            var seed=fixture.controller.snapshot().seed().camera();
+            fixture.gpu.session.camera(new WorldStreamTransport.Camera(1000,1,80,50,
+                    new TerrainCamera(seed.x()+5,seed.y(),seed.z(),seed.yaw(),seed.pitch())));
+            WorldStreamSourceController.Presentation frame=null;
+            long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);
+            while(frame==null && System.nanoTime()<until) {
+                frame=fixture.controller.takePresentation().orElse(null);
+                if(frame==null) Thread.sleep(1);
+            }
+            check(frame!=null,"A published frame reaches the controller without a pulse");
+            try {
+                check(frame.cameraRevision()==1000,"The signaled frame is the new camera's");
+            } finally { fixture.controller.discard(frame); }
+        } finally { fixture.close(); }
     }
 
     @SuppressWarnings("try")

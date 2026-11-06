@@ -45,6 +45,11 @@ class WorldStreamStatusTest {
         assertEquals(1, ((WorldStreamStatus.Committed) parse("COMMITTED 10 0 1")).next());
         assertEquals(9, ((WorldStreamStatus.Canceled) parse("CANCELED 9 12 9 18")).transaction());
         assertInstanceOf(WorldStreamStatus.Closed.class, parse("CLOSED"));
+        assertEquals(7, ((WorldStreamStatus.FramePublished) parse("FRAME 7")).sequence());
+        assertEquals(
+                WorldFrameFileV2.MAX_SEQUENCE,
+                ((WorldStreamStatus.FramePublished) parse("FRAME " + WorldFrameFileV2.MAX_SEQUENCE))
+                        .sequence());
         for (var reason : WorldStreamStatus.Rejection.values()) {
             assertEquals(
                     reason, ((WorldStreamStatus.Rejected) parse("REJECTED 1 " + reason)).reason());
@@ -75,6 +80,11 @@ class WorldStreamStatusTest {
                         "CAMERA_APPLIED 1 1 501",
                         "CAMERA_APPLIED 1 0 1",
                         "CAMERA_APPLIED 1 1 -1",
+                        "FRAME",
+                        "FRAME 0",
+                        "FRAME 01",
+                        "FRAME 1 2",
+                        "FRAME " + (WorldFrameFileV2.MAX_SEQUENCE + 1),
                         "INPUT_CONSUMED 1 tile",
                         "INPUT_CONSUMED 0 TILE",
                         "INPUT_CONSUMED 1 TILE extra",

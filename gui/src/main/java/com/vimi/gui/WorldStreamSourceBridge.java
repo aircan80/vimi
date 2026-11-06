@@ -222,6 +222,7 @@ final class WorldStreamSourceBridge {
                             WorldExteriorObjects.Count.BATCH_CAPPED,
                             WorldExteriorObjects.Count.BATCH_UNREADABLE,
                             WorldExteriorObjects.Count.MODEL_BATCH_UNSUPPORTED,
+                            WorldExteriorObjects.Count.MODEL_BATCH_BILLBOARD,
                             WorldExteriorObjects.Count.MODEL_BATCH_MISSING_IMAGE);
             return new ExteriorSummary(
                     buildings,

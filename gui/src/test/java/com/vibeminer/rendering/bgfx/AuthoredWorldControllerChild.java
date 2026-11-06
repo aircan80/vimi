@@ -256,6 +256,7 @@ public final class AuthoredWorldControllerChild {
                                     camera.width(),
                                     camera.height()),
                             pixels);
+                    state.send("FRAME " + sequence);
                 }
             }
         }
