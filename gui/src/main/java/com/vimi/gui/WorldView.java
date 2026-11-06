@@ -3113,10 +3113,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
         show(gpuActivity, busy);
         show(textureActivity, busy);
         show(firstFrameActivity, busy && image.getImage() == null);
-        streamStatus(snapshot);
-        // Streamed textures ride with the stream: only a failed stream is a texture failure.
+        // Streamed textures ride with the stream: only a failed stream is a texture failure. Set
+        // before streamStatus() refreshes the icons, so the texture chip never waits for the
+        // detail text to change.
         textureHealth = snapshot.phase() == WorldStreamSourceController.Phase.FAILED
                 ? WorldStatusIcons.Texture.FAILED : WorldStatusIcons.Texture.READY;
+        streamStatus(snapshot);
         textureStatus.setText(snapshot.detail());
         retryTextures.setDisable(true);
         if (snapshot.area() != null) {
