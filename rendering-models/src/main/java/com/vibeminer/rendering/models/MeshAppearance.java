@@ -191,17 +191,31 @@ public final class MeshAppearance {
         private final int width, height;
         final int[] pixels;
 
+        /** A texture over a private copy of {@code argb}. */
         public Texture(int width, int height, int[] argb) {
+            this(argb.clone(), width, height);
+        }
+
+        private Texture(int[] owned, int width, int height) {
             if (width < 1
                     || height < 1
                     || width > 2048
                     || height > 2048
-                    || (long) width * height != argb.length) {
+                    || (long) width * height != owned.length) {
                 throw new IllegalArgumentException("Preview texture exceeds bounds");
             }
             this.width = width;
             this.height = height;
-            pixels = argb.clone();
+            pixels = owned;
+        }
+
+        /**
+         * A texture that takes ownership of {@code argb} without copying it (#361): for callers
+         * that have just built the array and never touch it again, such as a decoder or a cache
+         * reader.
+         */
+        public static Texture adopt(int width, int height, int[] argb) {
+            return new Texture(java.util.Objects.requireNonNull(argb), width, height);
         }
 
         public int width() {
