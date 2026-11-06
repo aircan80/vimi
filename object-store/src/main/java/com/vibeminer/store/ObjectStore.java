@@ -46,7 +46,14 @@ import java.util.concurrent.TimeUnit;
 /** Layer 1 format-1 store. Public operations enqueue work; no GUI or network dependencies. */
 public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog, StoreMaintenance {
     public static final String DEFAULT_FOLDER_NAME = "cdn-store-v1";
-    private static final ThreadPoolExecutor OPENERS = Async.pool("vimi-store-open", 2);
+
+    /** Store opens waiting JVM-wide for one of the two opener threads, at most. */
+    static final int OPEN_QUEUE = 1024;
+
+    /** Reads waiting per store for a read worker, at most. */
+    static final int READ_QUEUE = 4096;
+
+    private static final ThreadPoolExecutor OPENERS = Async.pool("vimi-store-open", 2, OPEN_QUEUE);
     final Path folder, packs, staging, indexPath;
     final Options options;
     final boolean readOnly;
@@ -63,6 +70,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     PreparedPut.parallelism(Runtime.getRuntime().availableProcessors()));
     private final Object lifecycle = new Object();
     private boolean accepting = true;
+    // Cleared with accepting at close; read without the lifecycle lock by waiting reads.
+    private volatile boolean readsAccepted = true;
     private CompletableFuture<Void> closing;
     WriterLock lock;
     NativeSqlite database;
@@ -342,7 +351,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         this.folder = path.normalize();
         this.options = options;
         this.readOnly = readOnly;
-        readers = Async.pool("vimi-store-read", options.readers());
+        readers = Async.pool("vimi-store-read", options.readers(), READ_QUEUE);
         readConnections = new ReadConnections(options.readers());
         packs = folder.resolve("packs");
         staging = folder.resolve("staging");
@@ -394,8 +403,10 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             Options options,
             java.util.function.Consumer<MaintenancePoint> probe,
             StoreIo.Fault fault) {
-        return Async.submit(
+        return Async.admit(
                 OPENERS,
+                Cancellation.NONE,
+                ObjectStore::closed,
                 () -> {
                     ObjectStore store = new ObjectStore(folder, options, false);
                     store.maintenanceProbe = probe;
@@ -412,8 +423,10 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     }
 
     public static CompletableFuture<ReadOnlyStore> openReadOnly(Path folder, Options options) {
-        return Async.submit(
+        return Async.admit(
                 OPENERS,
+                Cancellation.NONE,
+                ObjectStore::closed,
                 () -> {
                     ObjectStore store = new ObjectStore(folder, options, true);
                     try {
@@ -827,10 +840,15 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             if (!accepting) {
                 return CompletableFuture.failedFuture(closed());
             }
-            return Async.submit(
+            return Async.admit(
                     readers,
+                    cancellation,
+                    ObjectStore::closed,
                     () -> {
                         cancellation.check();
+                        if (!readsAccepted) {
+                            throw closed(); // Close began while this read waited.
+                        }
                         try {
                             return pooledRead(cancellation, work);
                         } catch (NativeSqlite.Failure e) {
@@ -1875,6 +1893,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 return closing;
             }
             accepting = false;
+            readsAccepted = false;
             if (readDayWakeup != null) {
                 readDayWakeup.cancel();
                 readDayWakeup = null;
@@ -1887,6 +1906,11 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                             () -> {
                                 Throwable failure = null;
                                 try {
+                                    // Reads still waiting for a worker fail now, without running
+                                    // their work, rather than one by one behind running reads.
+                                    List<Runnable> waiting = new ArrayList<>();
+                                    readers.getQueue().drainTo(waiting);
+                                    waiting.forEach(Runnable::run);
                                     while (!writer.awaitTermination(1, TimeUnit.SECONDS)) {}
                                     verificationWorkers.shutdown();
                                     while (!verificationWorkers.awaitTermination(
