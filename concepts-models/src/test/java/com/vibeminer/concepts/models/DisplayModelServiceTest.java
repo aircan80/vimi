@@ -23,6 +23,57 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class DisplayModelServiceTest {
+    private static <T> T unusable(
+            Class<T> type, java.util.function.Function<String, Object> answer) {
+        return type.cast(
+                java.lang.reflect.Proxy.newProxyInstance(
+                        type.getClassLoader(),
+                        new Class<?>[] {type},
+                        (proxy, method, args) -> {
+                            Object value = answer.apply(method.getName());
+                            if (value == null) {
+                                throw new AssertionError("Unexpected " + method.getName());
+                            }
+                            return value;
+                        }));
+    }
+
+    @Test
+    void aFailedTableReadIsAStatedRefusalAndBusyOrClosedIsItsOwnType() throws Exception {
+        var tables =
+                unusable(
+                        com.vibeminer.formats.tables.BuildTables.class,
+                        name ->
+                                switch (name) {
+                                    case "schema" ->
+                                            java.util.concurrent.CompletableFuture.failedFuture(
+                                                    new IllegalStateException("tables retired"));
+                                    case "closeAsync" ->
+                                            java.util.concurrent.CompletableFuture.completedFuture(
+                                                    null);
+                                    default -> null;
+                                });
+        var files = unusable(com.vibeminer.files.BuildFiles.class, name -> null);
+        var service = new DisplayModelService(tables, files, null);
+        var preview = service.preview(5, Cancellation.NONE).get();
+        assertEquals(DisplayModelTypes.State.UNAVAILABLE, preview.state());
+        assertTrue(
+                preview.message().contains("Display tables could not be read"), preview.message());
+        service.closeAsync().get();
+        var closed = assertThrowsCause(() -> service.preview(5, Cancellation.NONE).get());
+        assertTrue(
+                closed instanceof DisplayModelTypes.ServiceUnavailable unavailable
+                        && unavailable.closed());
+    }
+
+    private static Throwable assertThrowsCause(
+            org.junit.jupiter.api.function.Executable executable) {
+        var thrown =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        java.util.concurrent.ExecutionException.class, executable);
+        return thrown.getCause();
+    }
+
     @Test
     void replacementTexturesUseDisplayVariationsWhileTypeZeroUsesExactTxid() {
         var variations = List.of(100L, 200L, 300L, 400L);

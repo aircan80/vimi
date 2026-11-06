@@ -37,6 +37,8 @@ public final class WorldTileCreaturesTest {
         texturesReduceToPowerOfTwoOpaqueImages();
         alphaKeyedSurfacesDrawAsCutoutKeepingAlpha();
         defaultGeosetsDrawWithoutCreatureGeosetData();
+        aDenseNeighbourNoLongerStarvesTheTilesOwnSpawns();
+        busyOrClosedPreviewsCostNoBudget();
         appendDrawsOnlyQualifiedSpawnsOfTheTile();
         buildingsKeepTheirBudgetFirst();
         cachesPerRevisionAndRetriesFailures();
@@ -147,6 +149,53 @@ public final class WorldTileCreaturesTest {
         }
     }
 
+
+    private static void aDenseNeighbourNoLongerStarvesTheTilesOwnSpawns() {
+        // 600 points just across the tile's +x edge (tile 31) are nearer the tile centre than the
+        // tile's own corner point; the 512-point query used to fill up with them first.
+        var rows = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < 600; i++) rows.add(WorldSpawnOverlayTest.spawn(2, i + 1, 5 + i * 0.01, -266, 10.0));
+        rows.add(WorldSpawnOverlayTest.spawn(1, 1, -520, -520, 10.0));
+        var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified(7, null), (display, token) -> preview(display, 0L, 0L, appearance(true)));
+        var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(summary.drawn() == 1 && summary.placed().getFirst().spawn().npcId() == 1,
+                "The tile's own point is drawn next to a dense neighbour");
+        require(summary.note() == null, "Neighbour points are not reported as beyond the query limit");
+    }
+
+    private static void busyOrClosedPreviewsCostNoBudget() {
+        // Twenty displays whose previews are all refused busy (bare or wrapped): every point is
+        // counted as busy, none is capped by the 16-preview budget and nothing is cached.
+        var rows = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < 20; i++) rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
+        var calls = new AtomicInteger();
+        var busy = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified((int) npc, null), (display, token) -> {
+                    int call = calls.incrementAndGet();
+                    if (busy.get()) {
+                        var refusal = new DisplayModelTypes.ServiceUnavailable("Display previews busy",
+                                call % 3 == 0, null);
+                        if (call % 2 == 0) throw new java.util.concurrent.CompletionException(refusal);
+                        throw refusal;
+                    }
+                    return preview(display, 0L, 0L, appearance(true));
+                });
+        var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(summary.count(WorldTileCreatures.Count.PREVIEWS_BUSY) == 20
+                        && summary.count(WorldTileCreatures.Count.CAPPED) == 0
+                        && summary.count(WorldTileCreatures.Count.FAILED) == 0,
+                "Busy or closed previews are their own count and take no preview budget");
+        busy.set(false);
+        var later = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(later.drawn() == 8 && calls.get() == 20 + 16,
+                "A busy refusal is not cached: the next tile reads the previews again");
+        require(WorldTileCreatures.busy(new RuntimeException(new java.util.concurrent.CompletionException(
+                new DisplayModelTypes.ServiceUnavailable("closed", true, null))))
+                && !WorldTileCreatures.busy(new IllegalStateException("Display previews busy")),
+                "Only the component's own busy/closed refusal counts as busy");
+    }
     private static void appendDrawsOnlyQualifiedSpawnsOfTheTile() {
         var previews = new AtomicInteger();
         var creatures = new WorldTileCreatures(token -> index(List.of(
