@@ -42,10 +42,11 @@ public final class WorldStreamObjectsMaterialProof {
         Path output = Path.of(arguments[0]);
         Files.createDirectories(output);
         var process = new AtomicReference<Process>();
+        // One backend property for every World proof (-PworldProofBackend; -PobjectsProofBackend
+        // is kept as an alias).
         var backend =
-                WorldStreamTransport.Backend.valueOf(
-                        System.getProperty("vimi.proof.backend", "VULKAN")
-                                .toUpperCase(java.util.Locale.ROOT));
+                WorldStreamTransportProof.proofBackend(
+                        System.getProperty("vimi.worldProof.backend", "vulkan"));
         var prepared =
                 WorldStreamTransport.prepare(
                         output, new WorldStreamTransport.Spec("ab".repeat(32), 1, backend, true));

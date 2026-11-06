@@ -128,7 +128,7 @@ final class WorldStreamTileFileTest {
         return directory.resolve("tile-42.wst");
     }
 
-    private static WorldStreamTileFile.Expected signed(byte[] bytes) throws Exception {
+    static WorldStreamTileFile.Expected signed(byte[] bytes) throws Exception {
         return new WorldStreamTileFile.Expected(
                 NONCE,
                 SCOPE,
@@ -563,5 +563,145 @@ final class WorldStreamTileFileTest {
                         WorldStreamTileFile.Encoding.BC2,
                         8,
                         1));
+    }
+
+    /** Independent oracle for the wire layout: header, then each word little-endian, then atlas. */
+    private static byte[] legacyLayout(
+            WorldStreamTileFile.Header header, TerrainScene.Tile tile, ByteBuffer atlas) {
+        var out = ByteBuffer.allocate(header.totalBytes()).order(ByteOrder.LITTLE_ENDIAN);
+        // Packet version 4 (#373): zero attributes for a tile without them, bound in the header.
+        byte[] attributes = new byte[tile.vertexCount() * WorldStreamTileFile.ATTRIBUTE_BYTES];
+        out.put(
+                WorldStreamTileFile.encodeHeader(
+                        header, WorldStreamTileFile.attributeSha256(attributes)));
+        var vertices = tile.vertices();
+        while (vertices.hasRemaining()) {
+            out.putInt(Float.floatToRawIntBits(vertices.get()));
+        }
+        var indices = tile.indices();
+        while (indices.hasRemaining()) {
+            out.putInt(indices.get());
+        }
+        out.put(attributes);
+        if (atlas != null) {
+            out.put(atlas.duplicate());
+        }
+        return out.array();
+    }
+
+    private static TerrainScene.Tile varied() {
+        var base = full(false);
+        float[] vertices = new float[base.vertexCount() * 3];
+        base.vertices().get(vertices);
+        for (int i = 2; i < vertices.length; i += 3) {
+            vertices[i] = i % 11 == 0 ? -0f : (float) Math.cos(i) * 300;
+        }
+        int[] indices = new int[196608];
+        for (int i = 0; i < indices.length; i++) {
+            indices[i] = (i * 7919) % 37120;
+        }
+        return TerrainScene.Tile.copyOf(7, 19, vertices, indices, 256);
+    }
+
+    @Test
+    void bulkWriterKeepsExactWireBytesAndReaderReturnsExactGeometryAndAtlas() throws Exception {
+        var tile = varied();
+        var header = header(tile, true);
+        var pixels = atlas();
+        var expected = WorldStreamTileFile.write(directory, header, tile, pixels, () -> false);
+        byte[] bytes = Files.readAllBytes(path());
+        assertTrue(Arrays.equals(legacyLayout(header, tile, pixels), bytes));
+        assertEquals(signed(bytes), expected);
+        try (var decoded = WorldStreamTileFile.read(path(), expected, () -> false)) {
+            float[] want = new float[tile.vertexCount() * 3], got = new float[want.length];
+            tile.vertices().get(want);
+            decoded.tile().vertices().get(got);
+            for (int i = 0; i < want.length; i++) {
+                assertEquals(Float.floatToRawIntBits(want[i]), Float.floatToRawIntBits(got[i]));
+            }
+            int[] wantIndices = new int[tile.indexCount()],
+                    gotIndices = new int[wantIndices.length];
+            tile.indices().get(wantIndices);
+            decoded.tile().indices().get(gotIndices);
+            assertTrue(Arrays.equals(wantIndices, gotIndices));
+            byte[] atlas = new byte[WorldStreamTileFile.ATLAS_BYTES];
+            decoded.atlas().get(atlas);
+            byte[] source = new byte[atlas.length];
+            pixels.duplicate().get(source);
+            assertTrue(Arrays.equals(source, atlas));
+        }
+    }
+
+    @Test
+    void anyFlippedByteWithoutResigningIsRefusedInEverySection() throws Exception {
+        var tile = varied();
+        var expected =
+                WorldStreamTileFile.write(
+                        directory, header(tile, true), tile, atlas(), () -> false);
+        byte[] clean = Files.readAllBytes(path());
+        // Header, first vertex, last vertex, first index, last index, first and last atlas byte.
+        int vertexEnd = 4096 + tile.vertexCount() * 12, indexEnd = vertexEnd + 196608 * 4;
+        for (int offset :
+                new int[] {
+                    0, 100, 4096, vertexEnd - 1, vertexEnd, indexEnd - 1, indexEnd, clean.length - 1
+                }) {
+            byte[] bad = clean.clone();
+            bad[offset] ^= 0x10;
+            Files.write(path(), bad);
+            assertThrows(
+                    IOException.class,
+                    () -> WorldStreamTileFile.read(path(), expected, () -> false),
+                    "Flipped byte " + offset);
+        }
+    }
+
+    @Test
+    void truncatedOrTornPacketIsRefusedEvenWhenTheExpectationIsReplayed() throws Exception {
+        var tile = varied();
+        var expected =
+                WorldStreamTileFile.write(
+                        directory, header(tile, true), tile, atlas(), () -> false);
+        byte[] clean = Files.readAllBytes(path());
+        for (int keep : new int[] {0, 100, 4096, 4096 + 7, clean.length / 2, clean.length - 1}) {
+            Files.write(path(), Arrays.copyOf(clean, keep));
+            assertThrows(
+                    IOException.class,
+                    () -> WorldStreamTileFile.read(path(), expected, () -> false),
+                    "Truncated to " + keep);
+        }
+        // Torn: the right length, but the tail never landed (zeros), as a short write would leave.
+        byte[] torn = clean.clone();
+        Arrays.fill(torn, clean.length / 2, clean.length, (byte) 0);
+        Files.write(path(), torn);
+        assertThrows(
+                IOException.class, () -> WorldStreamTileFile.read(path(), expected, () -> false));
+        // A stale expectation for a shorter packet never accepts a prefix of a longer file.
+        Files.write(path(), clean);
+        var shorter =
+                new WorldStreamTileFile.Expected(
+                        NONCE, SCOPE, 42, LEASE, clean.length - 4, expected.sha256());
+        assertThrows(
+                IOException.class, () -> WorldStreamTileFile.read(path(), shorter, () -> false));
+    }
+
+    @Test
+    void versionAndMagicMismatchesAreRefusedEvenWhenResigned() throws Exception {
+        var tile = triangle();
+        WorldStreamTileFile.write(directory, header(tile, false), tile, null, () -> false);
+        byte[] clean = Files.readAllBytes(path());
+        for (int mode = 0; mode < 3; mode++) {
+            byte[] bad = clean.clone();
+            var view = ByteBuffer.wrap(bad).order(ByteOrder.LITTLE_ENDIAN);
+            switch (mode) {
+                case 0 -> view.putInt(8, 2); // the version before splat trailers (#174)
+                case 1 -> view.putInt(12, 2048);
+                default -> bad[7] = '1';
+            }
+            Files.write(path(), bad);
+            assertThrows(
+                    IOException.class,
+                    () -> WorldStreamTileFile.read(path(), signed(bad), () -> false),
+                    "Mode " + mode);
+        }
     }
 }
