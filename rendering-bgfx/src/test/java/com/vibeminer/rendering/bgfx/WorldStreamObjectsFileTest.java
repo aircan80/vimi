@@ -631,9 +631,15 @@ final class WorldStreamObjectsFileTest {
         builder.model();
         builder.mesh(
                 FloatBuffer.wrap(new float[24]),
-                IntBuffer.wrap(new int[] {0, 1, 2, 0, 2, 1}),
-                new int[] {0, 3, 0, 3, 3, 0},
-                new int[] {WorldStreamObjectsFile.CUTOUT, WorldStreamObjectsFile.BLENDED});
+                IntBuffer.wrap(new int[] {0, 1, 2, 0, 2, 1, 1, 2, 0, 2, 0, 1}),
+                new int[] {0, 3, 0, 3, 3, 0, 6, 3, 0, 9, 3, 0},
+                new int[] {
+                    WorldStreamObjectsFile.CUTOUT,
+                    WorldStreamObjectsFile.BLENDED,
+                    // Version 4 (#367): additive and the unlit flag round-trip.
+                    WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT,
+                    WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT
+                });
         double h = Math.sqrt(0.5);
         builder.placement(0, 1, 2, 3, 1.5, new double[] {1, 0, 0, 0, h, -h, 0, h, h});
         var exterior = builder.build();
@@ -641,6 +647,10 @@ final class WorldStreamObjectsFileTest {
         var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
         assertEquals(WorldStreamObjectsFile.CUTOUT, read.ranges[3]);
         assertEquals(WorldStreamObjectsFile.BLENDED, read.ranges[7]);
+        assertEquals(
+                WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT, read.ranges[11]);
+        assertEquals(WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT, read.ranges[15]);
+        assertEquals(4, WorldStreamObjectsFile.VERSION);
         assertEquals(h, read.placements[8], 0);
         // An unknown class, a scaled matrix or a reflection is refused.
         var badClass = WorldStreamTileWriter.Exterior.builder();
@@ -650,7 +660,8 @@ final class WorldStreamObjectsFileTest {
                 FloatBuffer.wrap(new float[24]),
                 IntBuffer.wrap(new int[] {0, 1, 2}),
                 new int[] {0, 3, 0},
-                new int[] {3});
+                // Modulate (4) and unknown flags stay refused.
+                new int[] {4});
         badClass.placement(0, 0, 0, 0, 1, 1, 0);
         assertEquals(
                 "Draw range",

@@ -31,7 +31,24 @@ public final class WorldObjectPicking {
     /** The hot pass's cutout alpha-test reference. */
     public static final float CUTOUT_REFERENCE = 0.5f;
 
-    public static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2;
+    public static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2, ADDITIVE = 3;
+
+    /**
+     * A range class is one of the kinds above, optionally with this flag for an unlit surface (MOMT
+     * F_UNLIT, #367). Unlit changes shading only, never what is hit.
+     */
+    public static final int UNLIT = 0x100;
+
+    /** The kind of a range class, without its flags. */
+    public static int kind(int rangeClass) {
+        return rangeClass & 0xff;
+    }
+
+    /** Whether a range class is a known kind with only known flags. */
+    public static boolean validClass(int rangeClass) {
+        return (rangeClass & ~(UNLIT | 0xff)) == 0 && kind(rangeClass) <= ADDITIVE;
+    }
+
     private static final int VERTEX_FLOATS = 8, PLACEMENT_DOUBLES = 13, RANGE_INTS = 4;
     private static final double EPSILON = 1e-12;
 
@@ -154,9 +171,11 @@ public final class WorldObjectPicking {
             require(imageOffsets[imageCount] == pixelData.length, "pixel data");
             var sampled = new boolean[imageCount];
             for (int r = 0; r < rangeCount; r++) {
-                int image = rangeTable[r * RANGE_INTS + 2], kind = rangeTable[r * RANGE_INTS + 3];
+                int image = rangeTable[r * RANGE_INTS + 2],
+                        rangeClass = rangeTable[r * RANGE_INTS + 3];
                 require(image >= 0 && image < imageCount, "range image");
-                require(kind >= OPAQUE && kind <= BLENDED, "range class");
+                require(validClass(rangeClass), "range class");
+                int kind = kind(rangeClass);
                 if (kind != OPAQUE) {
                     sampled[image] = true;
                 }
@@ -400,7 +419,8 @@ public final class WorldObjectPicking {
                 for (int r = firstRange; r < firstRange + tile.meshRanges[m * 2 + 1]; r++) {
                     int start = tile.ranges[r * RANGE_INTS];
                     int end = start + tile.ranges[r * RANGE_INTS + 1];
-                    int kind = tile.ranges[r * RANGE_INTS + 3];
+                    // Additive surfaces pick like blended ones: where their alpha is above zero.
+                    int kind = kind(tile.ranges[r * RANGE_INTS + 3]);
                     for (int i = start; i + 2 < end; i += 3) {
                         int a = idx[i] & 0xffff, b = idx[i + 1] & 0xffff, c = idx[i + 2] & 0xffff;
                         var bary = intersect(pos, a, b, c, local, bestT);

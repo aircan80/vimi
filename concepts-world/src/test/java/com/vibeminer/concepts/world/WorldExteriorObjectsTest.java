@@ -600,7 +600,7 @@ class WorldExteriorObjectsTest {
                             List.of(
                                     new Material(0, IMAGE, 0),
                                     new Material(2, IMAGE, 0), // blended: drawn, alpha kept
-                                    new Material(3, IMAGE, 0), // additive: unsupported
+                                    new Material(3, IMAGE, 0), // additive (#367): drawn, sorted
                                     new Material(0, 0, 0), // no texture1
                                     new Material(0, 400, 0), // missing image source
                                     new Material(0, 401, 0), // undecodable
@@ -624,9 +624,9 @@ class WorldExteriorObjectsTest {
                                 WorldExteriorObjects.Count.PLACEMENT_DRAWN, 1,
                                 WorldExteriorObjects.Count.ROOT_DRAWN, 1,
                                 WorldExteriorObjects.Count.GROUP_DRAWN, 1,
-                                WorldExteriorObjects.Count.BATCH_DRAWN, 3,
-                                WorldExteriorObjects.Count.BATCH_BLENDED, 2,
-                                WorldExteriorObjects.Count.BATCH_UNSUPPORTED, 5,
+                                WorldExteriorObjects.Count.BATCH_DRAWN, 4,
+                                WorldExteriorObjects.Count.BATCH_BLENDED, 3,
+                                WorldExteriorObjects.Count.BATCH_UNSUPPORTED, 4,
                                 WorldExteriorObjects.Count.BATCH_MISSING_IMAGE, 3,
                                 WorldExteriorObjects.Count.IMAGE_DECODED, 2,
                                 WorldExteriorObjects.Count.IMAGE_UNAVAILABLE, 2,
@@ -638,9 +638,67 @@ class WorldExteriorObjectsTest {
                                         0, 3, 0, 0, WorldExteriorObjects.OPAQUE),
                                 new WorldExteriorObjects.DrawRange(
                                         3, 3, 1, 1, WorldExteriorObjects.BLENDED),
+                                // The additive image is prepared as a blended one: same slot.
                                 new WorldExteriorObjects.DrawRange(
-                                        6, 3, 1, 1, WorldExteriorObjects.BLENDED)),
+                                        6, 3, 1, 2, WorldExteriorObjects.ADDITIVE),
+                                new WorldExteriorObjects.DrawRange(
+                                        9, 3, 1, 1, WorldExteriorObjects.BLENDED)),
                         set.models().getFirst().meshes().getFirst().ranges());
+            }
+        }
+    }
+
+    /**
+     * Issue #367: MOMT flags bit 0x1 (F_UNLIT) marks a range unlit, whatever its kind; blend mode 3
+     * is additive; modes above 3 (modulate and variants) stay unsupported.
+     */
+    @Test
+    void unlitFlagAndAdditiveBlendMapToRangeClasses() {
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            byte[] root =
+                    root(
+                            1,
+                            new long[] {GROUP},
+                            List.of(
+                                    new Material(0, IMAGE, 0), // lit opaque
+                                    new Material(0, IMAGE, 0), // unlit opaque (flag set below)
+                                    new Material(3, IMAGE, 0), // unlit additive (flag below)
+                                    new Material(4, IMAGE, 0), // modulate: unsupported
+                                    new Material(5, IMAGE, 0))); // modulate 2x: unsupported
+            int momt = indexOf(root, "MOMT") + 8;
+            var data = ByteBuffer.wrap(root).order(ByteOrder.LITTLE_ENDIAN);
+            data.putInt(momt + 64, 0x1);
+            data.putInt(momt + 2 * 64, 0x1 | 0x4);
+            f.files.sources.put(ROOT, root);
+            var batches = new ArrayList<Batch>();
+            for (int material = 0; material < 5; material++) {
+                batches.add(new Batch(material * 3, 3, 0, material));
+            }
+            f.files.sources.put(GROUP, group(EXT, 3, 5, batches));
+            try (var set = f.run()) {
+                var ranges = set.models().getFirst().meshes().getFirst().ranges();
+                assertEquals(
+                        List.of(
+                                new WorldExteriorObjects.DrawRange(
+                                        0, 3, 0, 0, WorldExteriorObjects.OPAQUE),
+                                new WorldExteriorObjects.DrawRange(
+                                        3,
+                                        3,
+                                        0,
+                                        1,
+                                        WorldExteriorObjects.OPAQUE | WorldExteriorObjects.UNLIT),
+                                new WorldExteriorObjects.DrawRange(
+                                        6,
+                                        3,
+                                        1,
+                                        2,
+                                        WorldExteriorObjects.ADDITIVE
+                                                | WorldExteriorObjects.UNLIT)),
+                        ranges);
+                assertEquals(2, counts(set).get(WorldExteriorObjects.Count.BATCH_UNSUPPORTED));
+                assertEquals(
+                        WorldExteriorObjects.ADDITIVE,
+                        WorldExteriorObjects.kind(ranges.get(2).blend()));
             }
         }
     }

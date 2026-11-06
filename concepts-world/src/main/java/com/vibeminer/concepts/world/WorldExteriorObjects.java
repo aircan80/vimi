@@ -124,6 +124,32 @@ public final class WorldExteriorObjects {
     /** Material classes carried by every draw range. */
     public static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2;
 
+    /**
+     * Additive blend (MOMT blend mode 3, issue #367): sorted with the blended surfaces and added to
+     * what is behind them. Its images are prepared as blended ones.
+     */
+    public static final int ADDITIVE = 3;
+
+    /**
+     * Flag on a range class (MOMT F_UNLIT, flags bit 0x1): the surface is drawn at full intensity,
+     * without the light. The World objects file carries it in the same int.
+     */
+    public static final int UNLIT = 0x100;
+
+    /** MOMT flags bit 0x1, F_UNLIT: the material is not lit. */
+    static final long MOMT_F_UNLIT = 0x1;
+
+    /** The kind of a range class, without its flags. */
+    public static int kind(int rangeClass) {
+        return rangeClass & 0xff;
+    }
+
+    /** The image preparation class of a range class: additive images are prepared as blended. */
+    static int imageClass(int rangeClass) {
+        int kind = kind(rangeClass);
+        return kind == ADDITIVE ? BLENDED : kind;
+    }
+
     /** Position xyz, unit normal xyz, texture1 uv: 32 bytes per vertex. */
     static final int VERTEX_FLOATS = 8;
 
@@ -518,8 +544,9 @@ public final class WorldExteriorObjects {
             Rotation rotation) {}
 
     /**
-     * Index range into one mesh, drawn with one decoded image (index into images()); blend is
-     * {@link #OPAQUE}, {@link #CUTOUT} or {@link #BLENDED}.
+     * Index range into one mesh, drawn with one decoded image (index into images()); blend is the
+     * range class: {@link #OPAQUE}, {@link #CUTOUT}, {@link #BLENDED} or {@link #ADDITIVE}, plus
+     * {@link #UNLIT} for an unlit surface. Use {@link #kind} for the kind alone.
      */
     public record DrawRange(int firstIndex, int indexCount, int image, int material, int blend) {}
 
@@ -1014,7 +1041,7 @@ public final class WorldExteriorObjects {
             int opaque = 0;
             for (var mesh : models.get(model).meshes()) {
                 for (var range : mesh.ranges()) {
-                    opaque += range.blend() == OPAQUE ? 1 : 0;
+                    opaque += kind(range.blend()) == OPAQUE ? 1 : 0;
                 }
             }
             return opaque;
@@ -1056,7 +1083,7 @@ public final class WorldExteriorObjects {
                     var opaque = new ArrayList<DrawRange>();
                     int end = 0;
                     for (var range : mesh.ranges()) {
-                        if (range.blend() == OPAQUE) {
+                        if (kind(range.blend()) == OPAQUE) {
                             opaque.add(range);
                             end = Math.max(end, range.firstIndex() + range.indexCount());
                             continue;
@@ -1065,7 +1092,9 @@ public final class WorldExteriorObjects {
                         count(Count.BATCH_CAPPED);
                         counts[Count.BATCH_DRAWN.ordinal()]--;
                         counts[
-                                (range.blend() == CUTOUT ? Count.BATCH_CUTOUT : Count.BATCH_BLENDED)
+                                (kind(range.blend()) == CUTOUT
+                                                ? Count.BATCH_CUTOUT
+                                                : Count.BATCH_BLENDED)
                                         .ordinal()]--;
                     }
                     if (opaque.isEmpty()) {
@@ -1638,7 +1667,8 @@ public final class WorldExteriorObjects {
                     continue;
                 }
                 int meshVertices = mesh.vertices().length / VERTEX_FLOATS;
-                boolean materialOnly = mesh.ranges().stream().noneMatch(r -> r.blend() == OPAQUE);
+                boolean materialOnly =
+                        mesh.ranges().stream().noneMatch(r -> kind(r.blend()) == OPAQUE);
                 if (materialOnly
                         && !mesh.ranges().isEmpty()
                         && meshVertices
@@ -1670,7 +1700,7 @@ public final class WorldExteriorObjects {
                 // cannot exceed MAX_MESHES: one per group read.
                 int opaqueIndices = 0, opaqueRanges = 0;
                 for (var range : mesh.ranges()) {
-                    if (range.blend() == OPAQUE) {
+                    if (kind(range.blend()) == OPAQUE) {
                         opaqueIndices += range.indexCount();
                         opaqueRanges++;
                     }
@@ -1696,9 +1726,10 @@ public final class WorldExteriorObjects {
                     continue;
                 }
                 for (var range : mapped.ranges()) {
-                    if (range.blend() == CUTOUT) {
+                    if (kind(range.blend()) == CUTOUT) {
                         local[Count.BATCH_CUTOUT.ordinal()]++;
-                    } else if (range.blend() == BLENDED) {
+                    } else if (kind(range.blend()) >= BLENDED) {
+                        // Additive surfaces count with the blended ones.
                         local[Count.BATCH_BLENDED.ordinal()]++;
                     }
                 }
@@ -1731,7 +1762,7 @@ public final class WorldExteriorObjects {
             var compact = new int[mesh.indices().length];
             int used = 0, vertexCount = mesh.vertices().length / VERTEX_FLOATS;
             for (var range : mesh.ranges()) {
-                if (range.blend() != OPAQUE) {
+                if (kind(range.blend()) != OPAQUE) {
                     continue;
                 }
                 int slot = image(range.image(), OPAQUE, Pool.BUILDING, local);
@@ -1741,7 +1772,10 @@ public final class WorldExteriorObjects {
                 }
                 System.arraycopy(
                         mesh.indices(), range.firstIndex(), compact, used, range.indexCount());
-                kept.add(new DrawRange(used, range.indexCount(), slot, range.material(), OPAQUE));
+                // The range class keeps its flags (an unlit opaque surface stays unlit).
+                kept.add(
+                        new DrawRange(
+                                used, range.indexCount(), slot, range.material(), range.blend()));
                 used += range.indexCount();
                 local[Count.BATCH_DRAWN.ordinal()]++;
             }
@@ -1753,7 +1787,7 @@ public final class WorldExteriorObjects {
             }
             boolean materialVerticesCharged = false;
             for (var range : mesh.ranges()) {
-                if (range.blend() == OPAQUE) {
+                if (kind(range.blend()) == OPAQUE) {
                     continue;
                 }
                 int extraVertices = opaqueVertices || materialVerticesCharged ? 0 : vertexCount;
@@ -1763,7 +1797,7 @@ public final class WorldExteriorObjects {
                     local[Count.BATCH_CAPPED.ordinal()]++;
                     continue;
                 }
-                int slot = image(range.image(), range.blend(), Pool.MATERIAL, local);
+                int slot = image(range.image(), imageClass(range.blend()), Pool.MATERIAL, local);
                 if (slot < 0) {
                     local[
                             (slot == UNREADABLE
@@ -1802,7 +1836,7 @@ public final class WorldExteriorObjects {
             var compact = new int[mesh.indices().length];
             int used = 0;
             for (var range : mesh.ranges()) {
-                int slot = image(range.image(), range.blend(), pool, local);
+                int slot = image(range.image(), imageClass(range.blend()), pool, local);
                 if (slot < 0) {
                     local[missing.ordinal()]++;
                     continue;
@@ -1901,11 +1935,17 @@ public final class WorldExteriorObjects {
                     continue;
                 }
                 var material = materials.get(index);
-                // MOMT blend mode: 0 opaque, 1 alpha key (cutout), 2 alpha (blended).
+                // MOMT blend mode (EGxBlend): 0 opaque, 1 alpha key (cutout), 2 alpha (blended),
+                // 3 add (additive). Higher modes (modulate and their variants) stay refused until
+                // their behaviour is pinned (#367).
                 long blend = material.word(2);
-                if (blend > BLENDED || material.word(3) == 0) {
+                if (blend > ADDITIVE || material.word(3) == 0) {
                     unsupported++;
                     continue;
+                }
+                // MOMT flags word 0, bit 0x1 F_UNLIT: no lighting.
+                if ((material.word(0) & MOMT_F_UNLIT) != 0) {
+                    blend |= UNLIT;
                 }
                 candidates.add(
                         new Candidate(
