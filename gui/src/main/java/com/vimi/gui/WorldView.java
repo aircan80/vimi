@@ -118,8 +118,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private int streamingWidth, streamingHeight;
     // Cameras of recent stream requests, and the camera of the streamed frame on screen; overlays
     // and picking use it so they stay on the drawn terrain while the live camera runs ahead.
-    private final WorldCameraRing streamedCameras = new WorldCameraRing();
-    private TerrainRenderer.Camera presentedCamera;
+    private final WorldPresentedCamera presentedCamera = new WorldPresentedCamera(
+            reason -> WorldDiagnostics.warn("World overlay camera", new IllegalStateException(reason)));
     private CompletableFuture<Void> streamingRetirement = CompletableFuture.completedFuture(null);
     private final CheckBox gpuEnabled = new CheckBox("GPU terrain");
     // Object texture budget tier (#267); a change re-prepares the streamed tiles' objects.
@@ -2453,8 +2453,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         streamingControl = 0;
         streamingPolicy = 1;
         streamingWidth = streamingHeight = 0;
-        streamedCameras.clear();
-        presentedCamera = null;
+        presentedCamera.restart();
         var request = new WorldStreamSourceController.Request(selection, handle, inventory.map(),
                 inventory, origin, areaEntry == null || areaEntry.entryChunk() == null
                         ? null : areaEntry.entryChunk().entryReference(), catalog.areaIndex());
@@ -2547,7 +2546,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (!streamingImages.present(frame.width(), frame.height(), frame.pixels(),
                     () -> !stale(selection) && viewportActive() && controller == streaming,
                     () -> controller.presented(frame))) return;
-            presentedCamera = streamedCameras.camera(frame.cameraRevision()).orElse(null);
+            presentedCamera.presented(frame.cameraRevision(), image.getImage());
             if (stallWatchdog.presented(frame.cameraRevision(), frame.sequence(), System.nanoTime())) {
                 streamStatus(controller.snapshot());
             }
@@ -2579,7 +2578,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         streamingHeight = height;
         streaming.camera(new com.vibeminer.rendering.bgfx.WorldStreamTransport.Camera(
                 ++streamingControl, streamingPolicy, width, height, TerrainCamera.from(camera)));
-        streamedCameras.record(streamingControl, camera);
+        presentedCamera.sent(streamingControl, camera);
         stallWatchdog.requested(streamingControl);
         minimap.update(handle, inventory, origin, originX, originY,
                 camera.x(), camera.y(), camera.yaw());
@@ -2662,6 +2661,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         bitmap.getPixelWriter().setPixels(0, 0, frame.width(), frame.height(),
                 PixelFormat.getIntArgbPreInstance(), frame.pixels(), frame.width());
         image.setImage(bitmap);
+        presentedCamera.shownOther();
         presentedScene = terrainScene;
         show(firstFrameActivity, false);
         var textures = gpu == null ? null : gpu.textureStatus();
@@ -2699,6 +2699,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         bitmap.getPixelWriter().setPixels(0, 0, frame.width(), frame.height(),
                 PixelFormat.getIntArgbInstance(), frame.pixels(), 0, frame.width());
         image.setImage(bitmap);
+        presentedCamera.shownOther();
         // Matching frame and material epochs establish that this is the current scene; no old
         // scene reference needs to survive in the queued callback to establish that identity.
         presentedScene = terrainScene;
@@ -2836,12 +2837,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     /**
-     * The camera the frame on screen was drawn with: for a streamed frame the camera sent with
-     * its revision; otherwise (CPU and single-frame GPU paths, or an unknown revision) the live
-     * camera.
+     * The camera the frame on screen was drawn with: for the streamed image on screen the camera
+     * sent with its revision ({@link WorldPresentedCamera}); for any other image (CPU and
+     * single-frame GPU paths) the live camera.
      */
     private TerrainRenderer.Camera frameCamera() {
-        return streamingMode && presentedCamera != null ? presentedCamera : camera;
+        return presentedCamera.frameCamera(camera, image.getImage());
     }
 
     /** Pick tiles of the objects the hot child draws now; none outside streaming. */

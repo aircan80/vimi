@@ -12,9 +12,10 @@ public final class WorldCameraRingTest {
         exactRevisionsOnly();
         overwrittenAndClearedRevisionsAreUnknown();
         overlaysFollowThePresentedFrameNotTheLiveCamera();
+        presentedCameraFollowsTheImageOnScreen();
         System.out.println(
-                "World camera ring: exact revisions, overwrite, clear and presented-frame overlay"
-                        + " projection passed");
+                "World camera ring: exact revisions, overwrite, clear, presented-frame overlay"
+                        + " projection, image keying, CPU fallback, restart and unknown revisions passed");
     }
 
     private static TerrainRenderer.Camera turned(double yaw) {
@@ -73,6 +74,41 @@ public final class WorldCameraRingTest {
         require(withLive.size() == 1, "The marker is in view for the live camera too");
         double drift = Math.abs(withLive.getFirst().x() - frameX);
         require(drift > 20, "The live camera would draw it " + drift + " px off the terrain on screen");
+    }
+
+    private static void presentedCameraFollowsTheImageOnScreen() {
+        var misses = new java.util.ArrayList<String>();
+        var presented = new WorldPresentedCamera(misses::add);
+        var live = turned(.9);
+        var streamed = new Object();
+        require(presented.frameCamera(live, streamed) == live, "Nothing presented: live camera");
+        presented.sent(1, turned(.1));
+        presented.sent(2, turned(.2));
+        presented.presented(1, streamed);
+        require(presented.frameCamera(live, streamed).equals(turned(.1)),
+                "The revision sent is the revision looked up for the shown image");
+        // GPU -> CPU: a CPU frame is a different image, or the same object rewritten.
+        var cpu = new Object();
+        require(presented.frameCamera(live, cpu) == live, "A CPU frame uses the live camera");
+        presented.shownOther();
+        require(presented.frameCamera(live, streamed) == live,
+                "A non-streamed frame written into the streamed image forgets its camera");
+        // CPU -> GPU again: the next streamed frame brings its own camera.
+        presented.presented(2, streamed);
+        require(presented.frameCamera(live, streamed).equals(turned(.2)), "Streaming again uses its camera");
+        // Retry / reactivation: the stream restarts, the frozen frame keeps its camera.
+        presented.restart();
+        require(presented.frameCamera(live, streamed).equals(turned(.2)),
+                "A restart never snaps overlays on the frozen frame to the live camera");
+        presented.presented(1, streamed);
+        require(presented.frameCamera(live, streamed).equals(turned(.2)) && misses.size() == 1,
+                "An unrecorded revision keeps the previous camera and is reported: " + misses);
+        presented.presented(7, streamed);
+        require(misses.size() == 1, "Only the first miss is reported");
+        presented.sent(1, turned(.3));
+        presented.presented(1, streamed);
+        require(presented.frameCamera(live, streamed).equals(turned(.3)), "Recorded revisions resume");
+        require(presented.frameCamera(live, null) == live, "No image: live camera");
     }
 
     private static void require(boolean condition, String message) {
