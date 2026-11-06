@@ -65,6 +65,29 @@ final class ReadOnlyMediaTest {
     }
 
     @Test
+    void immutableFallbackReadsReuseOneImmutableConnection() throws Exception {
+        createClosedStore();
+        try (ReadOnlyPermissions ignored = new ReadOnlyPermissions(folder)) {
+            ReadOnlyStore reader = ObjectStore.openReadOnly(folder, new Options()).join();
+            try {
+                var inner = reader.inner();
+                var opens = new java.util.concurrent.atomic.AtomicInteger();
+                inner.readerOpenProbe = opens::incrementAndGet;
+                for (int i = 0; i < 5; i++) {
+                    assertArrayEquals(bytes, reader.read(key(bytes), NONE).join().bytes());
+                }
+                assertTrue(inner.immutable);
+                assertEquals(1, opens.get());
+                assertEquals(1, inner.readConnections.idle());
+                assertFalse(Files.exists(folder.resolve("objects.sqlite3-shm")));
+            } finally {
+                reader.closeAsync().join();
+            }
+            assertEquals(0, reader.inner().readConnections.idle());
+        }
+    }
+
+    @Test
     void immutableFallbackRejectsUncleanMainFile() throws Exception {
         createClosedStore();
         try (NativeSqlite db = new NativeSqlite(folder.resolve("objects.sqlite3"), false)) {
