@@ -190,17 +190,17 @@ class TerrainAtlasComposerTest {
                                     Map.of(1L, base, 2L, mip(2, 255, 255, 255)),
                                     () -> false)
                             .atlas();
-            // Both sampled mask coordinates are odd: that exact lattice selects base. A wrong
-            // edge/center
-            // convention can select the overlay, and a transpose swaps this asymmetric pattern.
-            rgb(atlas, 2, 3, 50, 120, 0);
-            rgb(atlas, 6, 7, 50, 120, 0);
-            rgb(atlas, 3, 2, 70, 90, 0);
+            // Each atlas pixel averages its 2x2 mask block: three 255 texels and one zero (the
+            // odd/odd one) give overlay 191, base 64. Point sampling the odd texel would give
+            // pure base; a transpose swaps this asymmetric base pattern.
+            rgb(atlas, 2, 3, 204, 221, 191);
+            rgb(atlas, 6, 7, 204, 221, 191);
+            rgb(atlas, 3, 2, 209, 214, 191);
         }
     }
 
     @Test
-    void fullEightLayersAndAllMaskPixelsAreValidatedBeforePainting() {
+    void fullEightLayersBlendAndOverlappingWeightsClampTheBaseLayer() {
         int[] weights = {1, 2, 4, 8, 16, 32, 64};
         var mips = new HashMap<Long, TerrainAtlasComposer.DiffuseMip>();
         for (long id = 1; id <= 8; id++) {
@@ -226,19 +226,25 @@ class TerrainAtlasComposerTest {
                 assertEquals(0, missing.atlas().pixels().get(at));
             }
         }
-        // This invalid sum is detected even where a chosen atlas sample might miss it.
-        try (var textures = textures(new int[] {255, 1}, true)) {
+        // Overlays summing past 255 are drawn: base weight clamps to zero and the overlays are
+        // normalized, 200/400 each.
+        try (var textures = textures(new int[] {200, 200}, false)) {
             var result =
                     TerrainAtlasComposer.compose(
                             TILE,
                             grid(new byte[0], false, false),
                             textures,
-                            Map.of(1L, mip(1, 1, 1, 1), 2L, mip(2, 2, 2, 2), 3L, mip(3, 3, 3, 3)),
+                            Map.of(
+                                    1L,
+                                    mip(1, 255, 0, 0),
+                                    2L,
+                                    mip(2, 0, 255, 0),
+                                    3L,
+                                    mip(3, 0, 0, 255)),
                             () -> false);
-            assertEquals(0, result.supportedChunks());
-            assertEquals(
-                    WorldTextureFormats.ChunkIssue.MASK_SUM,
-                    result.diagnostics().getFirst().maskIssue());
+            assertEquals(256, result.supportedChunks());
+            assertTrue(result.diagnostics().isEmpty());
+            rgb(result.atlas(), 17, 5, 0, 128, 128);
         }
     }
 
@@ -290,20 +296,19 @@ class TerrainAtlasComposerTest {
                                     () -> false)
                             .atlas();
             rgb(swizzled, 0, 0, 64, 128, 192);
+            // MCCV alpha is not a coverage input: a translucent vertex color still tints.
             constant[3] = 0;
-            var declined =
+            var translucent =
                     TerrainAtlasComposer.compose(
                             TILE,
                             grid(constant, false, false),
                             textures,
                             Map.of(1L, mip(1, 255, 255, 255)),
                             () -> false);
-            assertEquals(255, declined.supportedChunks());
-            assertFalse(declined.atlas().covered(0));
-            assertEquals(
-                    TerrainAtlasComposer.Reason.COLOR_ALPHA,
-                    declined.diagnostics().getFirst().reason());
-            assertEquals(0, channel(declined.atlas(), 0, 0, 3));
+            assertEquals(256, translucent.supportedChunks());
+            assertTrue(translucent.atlas().covered(0));
+            assertTrue(translucent.diagnostics().isEmpty());
+            rgb(translucent.atlas(), 0, 0, 64, 128, 192);
         }
     }
 
