@@ -124,6 +124,7 @@ final class WorldStreamSourceController {
             return frame.height();
         }
 
+        /** Valid until {@link #discard}; the pixel array is then reused by a later frame. */
         IntBuffer pixels() {
             return frame.pixels();
         }
@@ -445,6 +446,7 @@ final class WorldStreamSourceController {
         return accepted;
     }
 
+    /** Ends the FX borrow; the frame's pixels are released for reuse and must not be read again. */
     void discard(Presentation value) {
         synchronized (lock) {
             if (borrowed == value) {
@@ -452,6 +454,7 @@ final class WorldStreamSourceController {
                 validated = false;
             }
         }
+        drop(value.frame, "discard");
         kick();
     }
 
@@ -476,6 +479,7 @@ final class WorldStreamSourceController {
         synchronized (lock) {
             if (closing) return drained.copy();
             closing = true;
+            if (queued != null) drop(queued.frame, "close");
             queued = null;
         }
         // This private token has only the actual engine's coalesced metadata cancellation listener.
@@ -1160,6 +1164,16 @@ final class WorldStreamSourceController {
                                 + ")");
     }
 
+    /** Test seam: every frame released without presentation, with its drop path's name. */
+    volatile java.util.function.BiConsumer<String, WorldStreamTransport.Frame> dropSeam;
+
+    /** The one release point for frames the controller owns. */
+    private void drop(WorldStreamTransport.Frame frame, String path) {
+        frame.release();
+        var seam = dropSeam;
+        if (seam != null) seam.accept(path, frame);
+    }
+
     private void pollFrame() {
         if (commit != null) return;
         synchronized (lock) {
@@ -1170,7 +1184,7 @@ final class WorldStreamSourceController {
         if (frame.isPresent()) {
             WorldStageTimings.stop("parent.frame.takeLatest", taking);
             var candidate=frame.orElseThrow();
-            if(candidate.content()!=currentReceipt) return;
+            if(candidate.content()!=currentReceipt) { drop(candidate, "content"); return; }
             var latest=camera;
             boolean pendingWanted, hasPresented;
             synchronized(lock) {
@@ -1191,13 +1205,15 @@ final class WorldStreamSourceController {
                         historicalRaster=true;
                     }
                 }
+                drop(candidate, "sky");
                 publish(Phase.PREPARING,"Loading terrain in viewing direction");
                 return;
             }
             skySuppressed=false;
             synchronized (lock) {
                 if (!closing)
-                    queued = new Presentation(frame.orElseThrow(), request.viewGeneration());
+                    queued = new Presentation(candidate, request.viewGeneration());
+                else drop(candidate, "closing");
             }
             changed();
         }
@@ -1441,6 +1457,7 @@ final class WorldStreamSourceController {
         }
         synchronized (lock) {
             if (borrowed != null) return;
+            if (queued != null) drop(queued.frame, "retire");
             queued = null;
             current = List.of();
             objects = List.of();

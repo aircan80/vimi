@@ -73,7 +73,8 @@ final class WorldStreamGpuOwner {
             case "metal" -> WorldStreamTransport.Backend.METAL;
             case "d3d11", "direct3d11", "dx11" -> WorldStreamTransport.Backend.D3D11;
             default -> throw new IllegalArgumentException(
-                    "vimi.gpu.backend must be default, vulkan, metal or d3d11");
+                    "vimi.gpu.backend '" + requested.strip()
+                            + "' is not a GPU backend: use default, vulkan, metal or d3d11");
         };
     }
 
