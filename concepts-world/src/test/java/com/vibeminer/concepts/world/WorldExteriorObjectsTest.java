@@ -1773,6 +1773,192 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    /**
+     * The authored model with three bones appended (bone 0 plain, bone 1 carrying {@code
+     * billboardFlags}, bone 2 a plain child of bone 1) and every global vertex weighted fully to
+     * one bone: globals 0, 1 and 2 to bone 0, global 3 (SKIN local 3) to bone 2.
+     */
+    private static byte[] billboardModel(long rootFlags, long billboardFlags) {
+        var base = model();
+        int md20 = 40, rel = (base.length - md20 + 3) & ~3, stride = 88;
+        var bytes = Arrays.copyOf(base, md20 + rel + 3 * stride);
+        var b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+        b.putInt(36, rel + 3 * stride); // MD21 chunk size
+        b.putInt(md20 + 44, 3).putInt(md20 + 48, rel); // bones
+        long[] flags = {rootFlags, billboardFlags, 0};
+        int[] parents = {-1, 0, 1};
+        for (int i = 0; i < 3; i++) {
+            int at = md20 + rel + i * stride;
+            b.putInt(at, -1).putInt(at + 4, (int) flags[i]).putShort(at + 8, (short) parents[i]);
+        }
+        int vertices = md20 + b.getInt(md20 + 64);
+        int[] bones = {0, 0, 0, 2};
+        for (int v = 0; v < 4; v++) {
+            b.putInt(vertices + v * 48 + 12, 255).putInt(vertices + v * 48 + 16, bones[v]);
+        }
+        return bytes;
+    }
+
+    /**
+     * A SKIN over the authored lookup (2, 0, 1, 3) with two sections and one batch each: section 0
+     * holds (0, 1, 2) and (0, 2, 3), section 1 holds (1, 3, 2). Local 3 is the billboarded vertex.
+     */
+    private static byte[] twoSectionSkin() {
+        return twoSectionSkin(false);
+    }
+
+    /**
+     * As {@link #twoSectionSkin()}; with {@code unsupportedBatch} a third batch over section 0
+     * records no texture (texture count 0), which the profile refuses as MODEL_BATCH_UNSUPPORTED.
+     */
+    private static byte[] twoSectionSkin(boolean unsupportedBatch) {
+        int batches = unsupportedBatch ? 3 : 2;
+        int[] indices = {0, 1, 2, 0, 2, 3, 1, 3, 2};
+        int[][] sections = {{0, 6}, {6, 3}};
+        int vertices = 0x38, triangles = vertices + 8, properties = triangles + 2 * indices.length;
+        int sectionAt = properties + 16, batchAt = sectionAt + 48 * 2, end = batchAt + 24 * batches;
+        var b = buffer(end);
+        b.put(new byte[] {'S', 'K', 'I', 'N'});
+        b.putInt(4).putInt(vertices).putInt(indices.length).putInt(triangles);
+        b.putInt(4).putInt(properties).putInt(2).putInt(sectionAt).putInt(batches).putInt(batchAt);
+        b.position(vertices);
+        b.putShort((short) 2).putShort((short) 0).putShort((short) 1).putShort((short) 3);
+        for (int i : indices) {
+            b.putShort((short) i);
+        }
+        for (int i = 0; i < 4; i++) {
+            b.putInt(0x03020100);
+        }
+        for (var s : sections) {
+            int at = b.position();
+            b.putShort(at + 6, (short) 4).putShort(at + 8, (short) s[0]);
+            b.putShort(at + 10, (short) s[1]);
+            b.position(at + 48);
+        }
+        for (int s = 0; s < 2; s++) {
+            int at = batchAt + s * 24;
+            b.putShort(at + 4, (short) s).putShort(at + 6, (short) s).putShort(at + 8, (short) -1);
+            b.putShort(at + 14, (short) 1);
+        }
+        if (unsupportedBatch) {
+            b.putShort(batchAt + 48 + 8, (short) -1); // section 0, no colour, texture count 0
+        }
+        return b.array();
+    }
+
+    @Test
+    void billboardWeightedTrianglesAreLeftOutAndTheRestOfTheModelDraws() {
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, billboardModel(0, 0x8));
+            f.files.sources.put(SKIN, twoSectionSkin());
+            try (var set = run(f, obj0(List.of(), List.of(Mddf.of(MODEL, 1, 0x40))))) {
+                assertEquals(
+                        Map.of(
+                                WorldExteriorObjects.Count.DOODAD_DRAWN, 1,
+                                WorldExteriorObjects.Count.MODEL_DRAWN, 1,
+                                WorldExteriorObjects.Count.MODEL_BATCH_DRAWN, 1,
+                                WorldExteriorObjects.Count.MODEL_BATCH_BILLBOARD, 1,
+                                WorldExteriorObjects.Count.MODEL_BATCH_TRIMMED, 1,
+                                WorldExteriorObjects.Count.MODEL_TRIANGLE_BILLBOARD, 2,
+                                WorldExteriorObjects.Count.MODEL_IMAGE_DECODED, 1),
+                        counts(set));
+                var mesh = set.models().getFirst().meshes().getFirst();
+                // (0, 2, 3) of section 0 and all of section 1 touch local 3, a child of bone 1.
+                assertEquals(List.of(0, 1, 2), toList(mesh.indices()));
+                assertEquals(
+                        List.of(
+                                new WorldExteriorObjects.DrawRange(
+                                        0, 3, 0, 0, WorldExteriorObjects.OPAQUE)),
+                        mesh.ranges());
+            }
+        }
+        // Without a billboard bone both sections draw in full.
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, billboardModel(0, 0));
+            f.files.sources.put(SKIN, twoSectionSkin());
+            try (var set = run(f, obj0(List.of(), List.of(Mddf.of(MODEL, 1, 0x40))))) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.MODEL_BATCH_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.MODEL_BATCH_BILLBOARD));
+                var mesh = set.models().getFirst().meshes().getFirst();
+                assertEquals(9, mesh.indices().remaining());
+            }
+        }
+    }
+
+    @Test
+    void aModelWhoseEveryTriangleBillboardsIsStillRefused() {
+        for (long flags : new long[] {0x8, 0x10, 0x20, 0x40}) {
+            try (var f = new Fixture(List.of())) {
+                putModel(f, MODEL, billboardModel(flags, 0));
+                f.files.sources.put(SKIN, twoSectionSkin());
+                try (var set = run(f, obj0(List.of(), List.of(Mddf.of(MODEL, 1, 0x40))))) {
+                    assertEquals(
+                            Map.of(
+                                    WorldExteriorObjects.Count.DOODAD_FAILED_MODEL, 1,
+                                    WorldExteriorObjects.Count.MODEL_ALL_BILLBOARD, 1,
+                                    WorldExteriorObjects.Count.MODEL_BATCH_BILLBOARD, 2,
+                                    WorldExteriorObjects.Count.MODEL_TRIANGLE_BILLBOARD, 3),
+                            counts(set),
+                            "flags 0x" + Long.toHexString(flags));
+                    assertTrue(set.models().isEmpty());
+                }
+            }
+        }
+    }
+
+    @Test
+    void anAllBillboardModelWithAnUnsupportedBatchKeepsBothBatchCounts() {
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, billboardModel(0x8, 0));
+            f.files.sources.put(SKIN, twoSectionSkin(true));
+            try (var set = run(f, obj0(List.of(), List.of(Mddf.of(MODEL, 1, 0x40))))) {
+                assertEquals(
+                        Map.of(
+                                WorldExteriorObjects.Count.DOODAD_FAILED_MODEL, 1,
+                                WorldExteriorObjects.Count.MODEL_ALL_BILLBOARD, 1,
+                                WorldExteriorObjects.Count.MODEL_BATCH_BILLBOARD, 2,
+                                WorldExteriorObjects.Count.MODEL_BATCH_UNSUPPORTED, 1,
+                                WorldExteriorObjects.Count.MODEL_TRIANGLE_BILLBOARD, 3),
+                        counts(set));
+                assertTrue(set.models().isEmpty());
+            }
+        }
+    }
+
+    @Test
+    void billboardBonesIncludeDescendantsAndSurviveParentCycles() {
+        var zero = new com.vibeminer.formats.models.M2Types.Vec3(0, 0, 0);
+        var bones =
+                List.of(
+                        new com.vibeminer.formats.models.M2Types.Bone(-1, 0x200, -1, 0, zero),
+                        new com.vibeminer.formats.models.M2Types.Bone(-1, 0x10, 0, 0, zero),
+                        new com.vibeminer.formats.models.M2Types.Bone(-1, 0, 1, 0, zero),
+                        new com.vibeminer.formats.models.M2Types.Bone(-1, 0, 4, 0, zero),
+                        new com.vibeminer.formats.models.M2Types.Bone(-1, 0, 3, 0, zero));
+        var set = WorldExteriorObjects.billboardBones(bones);
+        assertEquals("{1, 2}", set.toString());
+        assertTrue(WorldExteriorObjects.billboardBones(bones.subList(3, 5)).isEmpty());
+        var vertex =
+                new com.vibeminer.formats.models.M2Types.Vertex(
+                        zero,
+                        0x0000ff00L,
+                        0x00000200L,
+                        zero,
+                        new com.vibeminer.formats.models.M2Types.Vec2(0, 0),
+                        new com.vibeminer.formats.models.M2Types.Vec2(0, 0));
+        assertTrue(WorldExteriorObjects.billboardWeighted(vertex, set));
+        // A zero weight on a billboard bone does not count.
+        var unweighted =
+                new com.vibeminer.formats.models.M2Types.Vertex(
+                        zero,
+                        0x000000ffL,
+                        0x00000200L,
+                        zero,
+                        new com.vibeminer.formats.models.M2Types.Vec2(0, 0),
+                        new com.vibeminer.formats.models.M2Types.Vec2(0, 0));
+        assertTrue(!WorldExteriorObjects.billboardWeighted(unweighted, set));
+    }
+
     @Test
     void unexpectedReaderFailuresAreCountedAndKeptForTheCallerToLog() {
         var bug = new IllegalStateException("Authored reader bug");
