@@ -60,7 +60,7 @@ class WorldStreamControlTest {
                         "CANCEL 01 9 23",
                         "CANCEL +1 9 23",
                         "CANCEL 9223372036854775808 9 23",
-                        "CANCEL 1 10 23",
+                        "CANCEL 1 26 23",
                         "CANCEL 0 9 23",
                         "CANCEL 1 4294967296 23",
                         "CANCEL 1 9 0",
