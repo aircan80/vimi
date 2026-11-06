@@ -5,6 +5,10 @@ uniform mat4 u_worldEye;
 uniform mat4 u_worldProjection;
 uniform vec4 u_worldRebase;
 uniform vec4 u_worldAtlas;
+// rgb: fog colour in 0..255; w unused.
+uniform vec4 u_worldFog;
+// x: fog start depth, y: depth where fog reaches z, z: maximum fog, w: unused.
+uniform vec4 u_worldFogRange;
 void main()
 {
     vec4 a = mul(u_worldEye, vec4(i_data0.xyz - u_worldRebase.xyz, 1.0));
@@ -20,8 +24,8 @@ void main()
         vec4 selected = a_position.x < 0.5 ? a : (a_position.x < 1.5 ? b : c);
         vec3 nativePosition = a_position.x < 0.5 ? i_data0.xyz : (a_position.x < 1.5 ? i_data1.xyz : i_data2.xyz);
         gl_Position = mul(u_worldProjection, selected);
-        float fog = clamp((farDepth - 600.0) / 1600.0, 0.0, 0.85);
-        vec3 rgb = floor(vec3(i_data0.w, i_data1.w, i_data2.w) * (1.0 - fog) + vec3(153.0, 184.0, 196.0) * fog);
+        float fog = clamp((farDepth - u_worldFogRange.x) / (u_worldFogRange.y - u_worldFogRange.x), 0.0, u_worldFogRange.z);
+        vec3 rgb = floor(vec3(i_data0.w, i_data1.w, i_data2.w) * (1.0 - fog) + u_worldFog.xyz * fog);
         v_color = vec4(rgb / 255.0, 1.0);
         vec2 uv = vec2(u_worldAtlas.y - nativePosition.y, u_worldAtlas.x - nativePosition.x) * u_worldAtlas.z;
         v_uvFog = vec3(uv, fog);

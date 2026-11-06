@@ -2,6 +2,7 @@ package com.vibeminer.rendering.bgfx;
 
 import static org.lwjgl.bgfx.BGFX.bgfx_get_stats;
 
+import com.vibeminer.rendering.world.TerrainCamera;
 import java.nio.IntBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,6 +22,7 @@ final class WorldStreamObjectsCullProof {
     private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(321, -654);
     private static final int WIDTH = 800, HEIGHT = 500;
     private static long camera, sequence;
+    private static int farFogPixel;
 
     private WorldStreamObjectsCullProof() {}
 
@@ -54,6 +56,7 @@ final class WorldStreamObjectsCullProof {
                             .get(20, TimeUnit.SECONDS);
         }
         Path mapping = directory.resolve("frames-cull");
+        Result result;
         try (var frames = WorldFrameFileV2.create(mapping, NONCE, WorldStreamNativeProof.SCOPE);
                 var reader = WorldFrameFileV2.open(mapping, NONCE, WorldStreamNativeProof.SCOPE);
                 var owner =
@@ -77,11 +80,11 @@ final class WorldStreamObjectsCullProof {
             require(
                     owner.finishLate(late, true) == WorldStreamStatus.LateOutcome.ATTACHED,
                     "Late objects attach");
-            var culledFrame = frame(owner, reader);
+            var culledFrame = frame(owner, reader, NONCE, WorldStreamObjectsMaterialProof.VIEW);
             int drawsCulled = culledFrame.draws;
             var culled = owner.frameCounts();
             owner.objectCulling(false);
-            var allFrame = frame(owner, reader);
+            var allFrame = frame(owner, reader, NONCE, WorldStreamObjectsMaterialProof.VIEW);
             int drawsAll = allFrame.draws;
             var all = owner.frameCounts();
             owner.objectCulling(true);
@@ -121,12 +124,21 @@ final class WorldStreamObjectsCullProof {
             require(
                     Math.abs(red - 200) <= 1 && Math.abs((middle >>> 8 & 255) - 40) <= 1,
                     "Visible placement drawn " + Integer.toHexString(middle));
-            // The sky, drawn after the opaque surfaces with GEQUAL at the cleared depth, still
-            // fills the uncovered top row with its row-0 colour (terrain ends 20 yd ahead).
+            // The sky, drawn after the opaque surfaces with GEQUAL at the cleared depth, fills the
+            // uncovered top row (terrain ends 20 yd ahead) with its horizon gradient colour; the
+            // view pitches down, so the top row is below the horizon: exactly the fog colour.
             int sky = a.get(0);
+            var expected =
+                    WorldFog.STREAM.sky(
+                            WorldStreamObjectsMaterialProof.VIEW.pitch(), WIDTH, HEIGHT, 0);
+            int rgb =
+                    (int) Math.floor(expected[0]) << 16
+                            | (int) Math.floor(expected[1]) << 8
+                            | (int) Math.floor(expected[2]);
+            int bgr = (rgb & 255) << 16 | rgb & 0xff00 | rgb >>> 16;
             require(
-                    (sky & 0xffffff) == 0x5b8db1 || (sky & 0xffffff) == 0xb18d5b,
-                    "Sky top row " + Integer.toHexString(sky));
+                    rgb == 0x99b8c4 && ((sky & 0xffffff) == rgb || (sky & 0xffffff) == bgr),
+                    "Sky top row " + Integer.toHexString(sky) + " != " + Integer.toHexString(rgb));
             // MSAA resolve: the opaque quad's left edge falls at x = 400 - 0.9 / 5 * 640 = 284.8,
             // so pixel 284 is partly covered. Single-sampled, its centre misses the quad and it
             // is the gap's terrain pixel; resolved x4 it mixes terrain and quad red.
@@ -165,7 +177,186 @@ final class WorldStreamObjectsCullProof {
                             + drawsCulled
                             + "/"
                             + drawsAll);
-            return new Result(drawsCulled, drawsAll, culled);
+            result = new Result(drawsCulled, drawsAll, culled);
+        }
+        int partial = coverage(base);
+        System.out.println(
+                "WORLD_OBJECT_COVERAGE_PASS partialEdgePixels="
+                        + partial
+                        + " fogAt2190="
+                        + Integer.toHexString(farFogPixel));
+        return result;
+    }
+
+    private static final WorldStreamState.Nonce COVERAGE_NONCE =
+            new WorldStreamState.Nonce(987, -321);
+
+    /** Camera of the coverage quad: level, looking along native +X. */
+    static final TerrainCamera COVERAGE_VIEW = new TerrainCamera(-20, -2, 20, 0, 0);
+
+    /**
+     * One cutout quad at eye depth 5 in front of {@link #COVERAGE_VIEW}, eye-right [-1.5, 1.5],
+     * eye-up [-1, 1], yellow at full light. Its 2 x 2 image is opaque in the left texels and
+     * transparent in the right ones; texture u runs between the texel centres along right + up / 2,
+     * so the bilinear alpha falls through the 0.5 reference on a slanted line across the quad.
+     */
+    static WorldStreamTileWriter.Exterior coverageQuad() {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        var pixels = java.nio.ByteBuffer.allocate(16);
+        for (int i = 0; i < 4; i++) {
+            pixels.put((byte) 250).put((byte) 250).put((byte) 20);
+            pixels.put((byte) (i % 2 == 0 ? 255 : 0));
+        }
+        builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, pixels.flip()));
+        // Model 0 at eye depth 5; model 1, the same quad scaled to eye depth FAR_FOG_DEPTH and
+        // raised to the frame's top rows, keeping its angular size (placement scales are capped).
+        for (int model = 0; model < 2; model++) {
+            double k = model == 0 ? 1 : FAR_FOG_DEPTH / 5;
+            builder.model();
+            var vertices = java.nio.FloatBuffer.allocate(4 * 8);
+            double[][] corners = {{-1.5, -1}, {1.5, -1}, {1.5, 1}, {-1.5, 1}};
+            for (var corner : corners) {
+                double right = corner[0], up = corner[1];
+                // Level camera at yaw 0: depth is +x, right is -y, up is +z.
+                vertices.put((float) (5 * k)).put((float) (-right * k));
+                vertices.put((float) ((up + (model == 0 ? 0 : 1.5)) * k));
+                vertices.put(-0.408248290463863f).put(-0.408248290463863f);
+                vertices.put(0.816496580927726f);
+                vertices.put((float) (0.5 + (right + up / 2) / 8)).put(.5f);
+            }
+            vertices.flip();
+            var indices = java.nio.IntBuffer.allocate(6).put(new int[] {0, 1, 2, 0, 2, 3}).flip();
+            builder.mesh(
+                    vertices,
+                    indices,
+                    new int[] {0, 6, 0},
+                    new int[] {WorldStreamObjectsFile.CUTOUT});
+            builder.placement(
+                    model,
+                    COVERAGE_VIEW.x(),
+                    COVERAGE_VIEW.y(),
+                    COVERAGE_VIEW.z(),
+                    1,
+                    new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1});
+        }
+        return builder.build();
+    }
+
+    /** Eye depth of the fogged far quad: 10 yd inside the 2200 yd cut. */
+    static final double FAR_FOG_DEPTH = 2190;
+
+    /**
+     * A fresh context drawing only {@link #coverageQuad}. Multisampled, cutouts use alpha to
+     * coverage, so the quad's alpha edge resolves with pixels that mix yellow and the background;
+     * single-sampled, the plain alpha test leaves none. Returns the count of such pixels.
+     */
+    @SuppressWarnings("try")
+    static int coverage(Path base) throws Exception {
+        Path directory = Files.createDirectories(base.resolve("objects-coverage"));
+        var session =
+                new WorldStreamEnvelope.Session(
+                        COVERAGE_NONCE, WorldStreamNativeProof.SCOPE, 1, true);
+        var lease = new WorldStreamState.Lease(0, 1, 1);
+        WorldStreamPackedTile tile;
+        WorldStreamPackedObjects objects;
+        try (var worker =
+                Executors.newSingleThreadExecutor(
+                        Thread.ofPlatform().daemon().name("world-coverage-pack").factory())) {
+            tile =
+                    worker.submit(
+                                    () ->
+                                            WorldStreamNativeProof.prepare(
+                                                    COVERAGE_NONCE,
+                                                    directory,
+                                                    1,
+                                                    lease,
+                                                    7,
+                                                    19,
+                                                    120,
+                                                    true))
+                            .get(20, TimeUnit.SECONDS);
+            var quad = coverageQuad();
+            objects =
+                    worker.submit(() -> WorldStreamPackedObjects.pack(quad.data(), () -> false))
+                            .get(20, TimeUnit.SECONDS);
+        }
+        Path mapping = directory.resolve("frames-coverage");
+        sequence = 0;
+        try (var frames =
+                        WorldFrameFileV2.create(
+                                mapping, COVERAGE_NONCE, WorldStreamNativeProof.SCOPE);
+                var reader =
+                        WorldFrameFileV2.open(
+                                mapping, COVERAGE_NONCE, WorldStreamNativeProof.SCOPE);
+                var owner =
+                        new WorldStreamNativeOwner(
+                                session, frames, WorldStreamNativeProof.BACKEND)) {
+            var upload = owner.begin(tile);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+            while (!upload.finished()) {
+                owner.step(upload);
+                owner.advance();
+                require(System.nanoTime() < deadline, "Terrain upload did not drain");
+            }
+            owner.commit(0, 1, List.of(lease));
+            var late = owner.beginLate(lease, objects);
+            while (!late.ready()) {
+                owner.stepLate(late);
+                owner.advance();
+                require(System.nanoTime() < deadline, "Late objects did not build");
+            }
+            require(
+                    owner.finishLate(late, true) == WorldStreamStatus.LateOutcome.ATTACHED,
+                    "Coverage quad attach");
+            var pixels = frame(owner, reader, COVERAGE_NONCE, COVERAGE_VIEW).pixels;
+            int samples = owner.stats().msaaSamples();
+            int yellow = 0, partial = 0;
+            for (int y = 200; y < 300; y++) {
+                // Left of the quad (it spans x 208..592) is the background of this row.
+                int background = pixels.get(y * WIDTH + 150) >>> 8 & 255;
+                for (int x = 300; x < 500; x++) {
+                    int pixel = pixels.get(y * WIDTH + x);
+                    int r = pixel >>> 16 & 255, g = pixel >>> 8 & 255, b = pixel & 255;
+                    if (g >= 249 && Math.max(r, b) >= 249 && Math.min(r, b) <= 21) {
+                        yellow++;
+                    } else if (g > background + 12 && g < 240) {
+                        partial++;
+                    }
+                }
+            }
+            require(yellow > 2000, "Coverage quad drawn: " + yellow);
+            require(
+                    samples > 1 ? partial >= 50 : partial == 0,
+                    "Cutout edge pixels " + partial + " at " + samples + " samples");
+            // Fog near the cut: the far quad's opaque part (pixel 300, 40) is almost exactly the
+            // fog colour, as WorldFog computes it (the fog before #357 stopped at 0.85).
+            float fog = WorldFog.STREAM.factor(FAR_FOG_DEPTH);
+            int far = pixels.get(40 * WIDTH + 300);
+            int[] quadColour = {250, 250, 20};
+            int[] expected = new int[3];
+            for (int c = 0; c < 3; c++) {
+                expected[c] =
+                        (int) Math.floor(quadColour[c] * (1 - fog) + WorldFog.FOG_COLOUR[c] * fog);
+            }
+            int r = far >>> 16 & 255, g = far >>> 8 & 255, b = far & 255;
+            if (Math.abs(r - expected[0]) > 1) {
+                int swap = r;
+                r = b;
+                b = swap;
+            }
+            require(
+                    fog > 0.99
+                            && Math.abs(r - expected[0]) <= 1
+                            && Math.abs(g - expected[1]) <= 1
+                            && Math.abs(b - expected[2]) <= 1,
+                    "Fog at "
+                            + FAR_FOG_DEPTH
+                            + " yd: "
+                            + Integer.toHexString(far)
+                            + " != "
+                            + java.util.Arrays.toString(expected));
+            farFogPixel = far;
+            return partial;
         }
     }
 
@@ -181,13 +372,15 @@ final class WorldStreamObjectsCullProof {
     private record Drawn(int draws, IntBuffer pixels) {}
 
     /** Submits one new camera revision and returns its bgfx draw count and published pixels. */
-    private static Drawn frame(WorldStreamNativeOwner owner, WorldFrameFileV2 reader)
+    private static Drawn frame(
+            WorldStreamNativeOwner owner,
+            WorldFrameFileV2 reader,
+            WorldStreamState.Nonce nonce,
+            TerrainCamera view)
             throws Exception {
         long revision = ++camera;
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        var command =
-                new WorldStreamControl.Camera(
-                        NONCE, revision, 1, WIDTH, HEIGHT, WorldStreamObjectsMaterialProof.VIEW);
+        var command = new WorldStreamControl.Camera(nonce, revision, 1, WIDTH, HEIGHT, view);
         while (!owner.submit(command)) {
             owner.advance();
             require(System.nanoTime() < deadline, "Camera submit");

@@ -91,7 +91,9 @@ final class BgfxWorldWmoPass implements AutoCloseable {
             model = INVALID,
             normal = INVALID,
             sampler = INVALID,
-            material = INVALID;
+            material = INVALID,
+            fog = INVALID,
+            fogRange = INVALID;
     private long meshBytes, textureBytes;
     private int liveStaging, peakMeshStaging, peakTextureStaging;
     private boolean closed;
@@ -148,6 +150,10 @@ final class BgfxWorldWmoPass implements AutoCloseable {
             sampler = valid(bgfx_create_uniform("s_wmoDiffuse", BGFX_UNIFORM_TYPE_SAMPLER, 1));
             // Opaque only: no alpha test, output alpha 1 (the shader's opaque material class).
             material = valid(bgfx_create_uniform("u_wmoMaterial", BGFX_UNIFORM_TYPE_VEC4, 1));
+            // The shared object shaders take their fog from uniforms; this pass keeps the fog it
+            // always drew (WorldFog.LEGACY).
+            fog = valid(bgfx_create_uniform("u_wmoFog", BGFX_UNIFORM_TYPE_VEC4, 1));
+            fogRange = valid(bgfx_create_uniform("u_wmoFogRange", BGFX_UNIFORM_TYPE_VEC4, 1));
             uploadMesh(canceled);
             uploadTextures(canceled, textureAccepted);
             batches = decoded.batches();
@@ -289,6 +295,8 @@ final class BgfxWorldWmoPass implements AutoCloseable {
             var m = stack.mallocFloat(16).put(modelTransform.asReadOnlyBuffer()).flip();
             var n = stack.mallocFloat(16).put(normalTransform.asReadOnlyBuffer()).flip();
             var opaque = stack.floats(0, 0, 0, 0);
+            bgfx_set_uniform(fog, stack.floats(WorldFog.LEGACY.colourUniform()), 1);
+            bgfx_set_uniform(fogRange, stack.floats(WorldFog.LEGACY.rangeUniform()), 1);
             for (var batch : batches) {
                 bgfx_set_uniform(material, opaque, 1);
                 bgfx_set_uniform(eye, e, 1);
@@ -372,12 +380,13 @@ final class BgfxWorldWmoPass implements AutoCloseable {
             bgfx_destroy_program(program);
             program = INVALID;
         }
-        for (short u : new short[] {eye, projection, model, normal, sampler, material}) {
+        for (short u :
+                new short[] {eye, projection, model, normal, sampler, material, fog, fogRange}) {
             if (u != INVALID) {
                 bgfx_destroy_uniform(u);
             }
         }
-        eye = projection = model = normal = sampler = material = INVALID;
+        eye = projection = model = normal = sampler = material = fog = fogRange = INVALID;
         data = null;
         batches = List.of();
         materialImages = new int[0];
