@@ -2059,6 +2059,19 @@ final class ClientBuildTables implements BuildTables {
                 });
     }
 
+    /** FileDataID of the manifest table with this table hash, or null. */
+    Long fileDataIdForHash(long hash) {
+        for (var entry : manifest.entrySet()) {
+            String tableId = entry.getValue().tableId();
+            if (tableId != null
+                    && tableId.matches("[0-9A-Fa-f]{8}")
+                    && Long.parseUnsignedLong(tableId, 16) == hash) {
+                return entry.getKey();
+            }
+        }
+        return null;
+    }
+
     @Override
     public CompletableFuture<TableTypes.RowResult> get(
             TableTypes.Ref table, long id, TableTypes.Priority priority, Cancellation token) {

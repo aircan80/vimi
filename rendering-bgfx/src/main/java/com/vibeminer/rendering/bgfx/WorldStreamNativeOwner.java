@@ -409,6 +409,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return published;
     }
 
+    /** Sequence of the newest frame written to the mapping, or 0 before the first. */
+    long publishedSequence() {
+        requireOpen();
+        return sequence;
+    }
+
     // A readback is scheduled less than 2^31 frames ahead. Modular subtraction remains
     // correct across bgfx's uint32 frame wrap; unsigned absolute ordering does not.
     static boolean readbackReady(int current, int ready) {

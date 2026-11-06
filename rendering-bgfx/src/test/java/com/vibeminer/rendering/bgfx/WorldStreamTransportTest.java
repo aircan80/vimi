@@ -269,6 +269,8 @@ class WorldStreamTransportTest {
                   if(p[2].equals("CAM")) {
                     java.nio.file.Files.writeString(java.nio.file.Path.of(a[1]),line);
                     System.out.print(prefix+"CAMERA_APPLIED "+p[4]+" "+p[5]+" "+p[6]+"\\n");
+                    // A wake-up hint with no matching mapping frame is harmless.
+                    System.out.print(prefix+"FRAME "+p[3]+"\\n");
                     System.out.flush();
                   } else if(p[2].equals("CLOSE")) {
                     System.out.print(prefix+"CLOSED\\n"); System.out.flush(); return;
@@ -383,5 +385,92 @@ class WorldStreamTransportTest {
                 java.util.concurrent.ExecutionException.class, () -> session.initialized().get());
         assertThrows(
                 java.util.concurrent.ExecutionException.class, () -> session.completion().get());
+    }
+
+    /** Every stop path wakes a frame reader parked in a (test-lengthened) 60 s fallback wait. */
+    @Test
+    void everyStopPathWakesTheParkedFrameReaderAtOnce() throws Exception {
+        Path source = directory.resolve("Idle.java");
+        Files.writeString(
+                source,
+                """
+            class Idle {
+              public static void main(String[] a) throws Exception {
+                String prefix="WS2 "+a[0]+" ";
+                System.out.print(prefix+"SESSION TERRAIN_BASIC_V1\\n"+prefix+"CREDIT 1 0 1\\n");
+                System.out.flush();
+                var input=new java.io.BufferedReader(new java.io.InputStreamReader(System.in));
+                String line;
+                while((line=input.readLine())!=null) {
+                  if(line.split(" ")[2].equals("CLOSE")) {
+                    System.out.print(prefix+"CLOSED\\n"); System.out.flush(); return;
+                  }
+                }
+              }
+            }
+            """);
+        for (String path : java.util.List.of("close", "child-exit", "owner-stop")) {
+            var child = new AtomicReference<Process>();
+            var prepared = WorldStreamTransport.prepare(directory, spec);
+            var session =
+                    prepared.launch(
+                            arguments -> {
+                                Path own = Path.of(arguments.get(1));
+                                var descriptor =
+                                        WorldStreamEnvelope.decodeSession(
+                                                Files.readAllBytes(own.resolve("session.wss")),
+                                                arguments.get(3));
+                                String nonce =
+                                        HexFormat.of().toHexDigits(descriptor.nonce().high())
+                                                + HexFormat.of()
+                                                        .toHexDigits(descriptor.nonce().low());
+                                var process =
+                                        new ProcessBuilder(
+                                                        Path.of(
+                                                                        System.getProperty(
+                                                                                "java.home"),
+                                                                        "bin",
+                                                                        "java")
+                                                                .toString(),
+                                                        source.toString(),
+                                                        nonce)
+                                                .start();
+                                child.set(process);
+                                return process;
+                            },
+                            WorldStreamTestChildren.STARTUP_GUARD_MILLIS,
+                            5000);
+            try {
+                session.initialized()
+                        .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);
+                prepared.close();
+                session.framePollMillis = 60_000;
+                Thread.sleep(150); // The reader is now parked in the long wait.
+                assertFalse(session.framesReaderDone.isDone());
+                long start = System.nanoTime();
+                switch (path) {
+                    case "close" -> session.closeAsync();
+                    case "child-exit" -> child.get().destroyForcibly();
+                    default -> {
+                        var field = WorldStreamTransport.Session.class.getDeclaredField("owner");
+                        field.setAccessible(true);
+                        ((WorldStreamLaunchOwner.Handle) field.get(session)).closeAsync();
+                    }
+                }
+                session.framesReaderDone.get(10, TimeUnit.SECONDS);
+                long millis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+                System.out.println("frame reader woke after " + path + " in " + millis + " ms");
+                // Without a wake-up the reader would sleep out its 60 s wait.
+                assertTrue(millis < 5_000, path + " woke the reader after " + millis + " ms");
+            } finally {
+                session.closeAsync();
+                child.get().destroyForcibly();
+                try {
+                    session.terminatedAndDrained().get(10, TimeUnit.SECONDS);
+                } catch (java.util.concurrent.ExecutionException expected) {
+                    // Child-exit and owner-stop paths end the session abnormally.
+                }
+            }
+        }
     }
 }
