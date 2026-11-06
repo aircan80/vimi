@@ -201,6 +201,15 @@ final class WorldStreamSourceController {
                     Thread.ofPlatform().daemon().name("world-source-controller").factory());
     private final AtomicBoolean scheduled = new AtomicBoolean(), wake = new AtomicBoolean();
     private final AtomicBoolean frameWake = new AtomicBoolean();
+    // Clock time from which an FX tick wakes the worker: the earliest due timed wait, or never
+    // (MAX_VALUE). Starts due, so the first tick starts the first step.
+    private volatile long pulseAt = Long.MIN_VALUE;
+    // Diagnostics and tests: steps run and ground/area recomputations (#366).
+    final java.util.concurrent.atomic.AtomicLong steps = new java.util.concurrent.atomic.AtomicLong(),
+            areaScans = new java.util.concurrent.atomic.AtomicLong();
+    // Worker-only: the camera and table the ground and area were last computed for.
+    private WorldStreamTransport.Camera areaCamera;
+    private List<Entry> areaTable;
     private final AtomicBoolean fxQueued = new AtomicBoolean();
     private final Cancellation qualificationCancellation = new Cancellation();
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
@@ -367,8 +376,18 @@ final class WorldStreamSourceController {
         return open == null ? residents : Math.min(residents, open.viewDistance().residents());
     }
 
+    /**
+     * The FX timer's tick. Steps are event-driven (#366): camera, demand, frames, presentation,
+     * transport capacity and every async completion kick the worker themselves, so a tick only
+     * wakes a step whose timed wait (a retry timeout) has come due.
+     */
     void pulse() {
-        kick();
+        if (clock.getAsLong() >= pulseAt) kick();
+    }
+
+    /** Worker-only: the step returns waiting until {@code deadline}; a tick then wakes it. */
+    private void wakeAt(long deadline) {
+        pulseAt = Math.min(pulseAt, deadline);
     }
 
     Snapshot snapshot() {
@@ -603,8 +622,13 @@ final class WorldStreamSourceController {
     }
 
     private void step() {
+        steps.incrementAndGet();
+        pulseAt = Long.MAX_VALUE; // no timed wait until this step returns on one
         if (!initialized) {
-            if (initialBlocked && clock.getAsLong() - initialRetryAt < RETRY_NANOS) return;
+            if (initialBlocked && clock.getAsLong() - initialRetryAt < RETRY_NANOS) {
+                wakeAt(initialRetryAt + RETRY_NANOS);
+                return;
+            }
             if(source==null) {
                 var capability=request.world().terrainStreaming();
                 if(capability.isEmpty()) {
@@ -666,6 +690,8 @@ final class WorldStreamSourceController {
                 if(camera!=null && !closing) opened.camera(camera);
             }
             session.onFrame(this::frameArrived);
+            // Credits, retirements and releases wake a step waiting on capacity (#366).
+            session.onCapacity(this::kick);
             session.initialized().whenComplete((ignored, failure) -> kick());
             session.completion()
                     .whenComplete(
@@ -773,7 +799,10 @@ final class WorldStreamSourceController {
             }
         }
         if(retryCommit) {
-            if(session.capacityRevision()==commitRetryCapacity && clock.getAsLong()-commitRetryAt<RETRY_NANOS) return;
+            if(session.capacityRevision()==commitRetryCapacity && clock.getAsLong()-commitRetryAt<RETRY_NANOS) {
+                wakeAt(commitRetryAt + RETRY_NANOS);
+                return;
+            }
             commit=issueCommit(camera.policy(),committing.stream().map(Entry::resident)
                     .toArray(WorldStreamTransport.Resident[]::new));
             retryCommit=false;
@@ -861,7 +890,10 @@ final class WorldStreamSourceController {
                             ? blockedSourceRetirement == sourceRetirementRevision
                             : blockedPresentation == presentationRevision)
                     && blockedDemand == demandRevision
-                    && clock.getAsLong() - blockedAt < RETRY_NANOS) return;
+                    && clock.getAsLong() - blockedAt < RETRY_NANOS) {
+                wakeAt(blockedAt + RETRY_NANOS);
+                return;
+            }
         }
         boolean needsSource=wanted.stream().anyMatch(tile->!unavailable.containsKey(key(tile))
                 && current.stream().noneMatch(entry->same(tile,entry.resident())));
@@ -907,6 +939,7 @@ final class WorldStreamSourceController {
         if(waterTables!=null && !waterTables.isDone()
                 && clock.getAsLong()-waterTablesStarted<WATER_TABLE_WAIT_NANOS) {
             // Bounded wait so the first tiles can carry water; terrain proceeds after timeout.
+            wakeAt(waterTablesStarted + WATER_TABLE_WAIT_NANOS);
             publish(Phase.PREPARING, "Preparing water tables");
             return;
         }
@@ -1335,8 +1368,15 @@ final class WorldStreamSourceController {
     }
 
     private void updateArea() {
-        updateGround();
         var latest = camera;
+        var table = current;
+        // Ground and area depend only on the camera and the current table, each replaced (never
+        // mutated) when it changes: skip the per-chunk scan while neither did (#366).
+        if (latest == areaCamera && table == areaTable) return;
+        areaCamera = latest;
+        areaTable = table;
+        areaScans.incrementAndGet();
+        updateGround();
         if (latest == null) return;
         long[] selected = {0};
         int[] count = {0};

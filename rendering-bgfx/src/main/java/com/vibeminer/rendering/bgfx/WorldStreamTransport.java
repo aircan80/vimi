@@ -704,6 +704,7 @@ public final class WorldStreamTransport {
         // so a lost or absent hint costs at most the old poll interval.
         private final WorldFrameSignal frameSignal = new WorldFrameSignal();
         private volatile Runnable frameListener;
+        private volatile Runnable capacityListener;
         // Test seams: the reader's fallback wait, and completion when the reader has returned.
         volatile long framePollMillis = FRAME_POLL_MILLIS;
         final CompletableFuture<Void> framesReaderDone = new CompletableFuture<>();
@@ -1352,6 +1353,28 @@ public final class WorldStreamTransport {
                 }
                 capacityRevision++;
             }
+            var listener = capacityListener;
+            if (listener != null) {
+                try {
+                    listener.run();
+                } catch (RuntimeException failure) {
+                    // A consumer's fault must not end the status reader or the session.
+                    System.getLogger(WorldStreamTransport.class.getName())
+                            .log(
+                                    System.Logger.Level.WARNING,
+                                    "World capacity listener failed",
+                                    failure);
+                }
+            }
+        }
+
+        /**
+         * Runs after every {@link #capacityRevision} change, possibly under the transport's own
+         * lock, so it must only signal (never block or call back in). Replaced by a later call.
+         * Lets a consumer wait on capacity without polling (#366).
+         */
+        public void onCapacity(Runnable listener) {
+            capacityListener = listener;
         }
 
         /** A capacity change caused by {@code reservation}'s own drain or retirement. */

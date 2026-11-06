@@ -63,6 +63,7 @@ public final class WorldStreamSourceControllerTest {
         budgetRefusedObjectsRetryAfterAReleaseOnly();
         lateObjectFailuresStayIsolatedFromTerrain();
         lateObjectsCompletingAfterRetirementAreIgnored();
+        anIdleViewRunsNoStepOnTicksAndScansAreasOnlyWhenTheCameraMoves();
         tilesKeepStreamingWhileAFrameIsBorrowed();
         aBorrowedFrameKeepsTheSourcesOfTheTableItShows();
         fiveByFiveNeighborhoodHoldsTwentyFiveResidentsWithinTheSourceUnion();
@@ -133,6 +134,48 @@ public final class WorldStreamSourceControllerTest {
             fixture.untilPresented(() -> fixture.controller.snapshot().phase()
                     == WorldStreamSourceController.Phase.READY
                     && fixture.controller.snapshot().prepared() == 2);
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * #366: steps are event-driven. Once READY with a still camera, FX ticks run no step and no
+     * ground or area scan; a camera change runs steps and exactly one new scan per camera.
+     */
+    private static void anIdleViewRunsNoStepOnTicksAndScansAreasOnlyWhenTheCameraMoves()
+            throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+            // Let trailing completions settle, then count across many FX ticks.
+            for (int i = 0; i < 50; i++) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            long steps = fixture.controller.steps.get();
+            long scans = fixture.controller.areaScans.get();
+            for (int i = 0; i < 200; i++) {
+                fixture.controller.pulse();
+                Thread.sleep(1);
+            }
+            check(fixture.controller.steps.get() == steps,
+                    "Idle ticks run no step: " + (fixture.controller.steps.get() - steps));
+            check(fixture.controller.areaScans.get() == scans, "Idle ticks scan no area");
+            fixture.camera(2);
+            fixture.until(() -> fixture.controller.areaScans.get() > scans);
+            for (int i = 0; i < 50; i++) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            check(fixture.controller.steps.get() > steps, "A camera change runs a step");
+            check(fixture.controller.areaScans.get() == scans + 1,
+                    "One area scan for the one new camera: "
+                            + (fixture.controller.areaScans.get() - scans));
         } finally {
             fixture.close();
         }
