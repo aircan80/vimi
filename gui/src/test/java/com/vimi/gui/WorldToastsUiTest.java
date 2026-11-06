@@ -67,6 +67,7 @@ public final class WorldToastsUiTest {
             await(() -> get("camera") != null && !(boolean) get("scenePreparing"));
             fx(WorldToastsUiTest::viewShowsHelpAndCaptureToasts);
             screenshotSavesTheFrameOnly();
+            fx(WorldToastsUiTest::toastsFollowFullScreenAndSurviveTheInteriorSwap);
             System.out.println("World toasts PASS: 4 s life and fade, stack of 3 oldest-first, repeat"
                     + " restart, action run/dismiss/refocus, event isolation, click-through backing,"
                     + " first-run help, capture-fallback, failure-episode and screenshot toasts in the World view");
@@ -190,7 +191,16 @@ public final class WorldToastsUiTest {
         texts = texts(toasts);
         require(texts.size() == 2 && texts.getLast().startsWith("Mouse look: cursor capture unavailable"),
                 "The cursor-capture fallback shows a toast: " + texts);
-        require(toasts.getParent() == view.lookup("#world-viewport"), "Toasts sit over the viewport");
+        require(toasts.getParent() == view.lookup("#world-toast-layer"),
+                "Toasts sit on the layer above the explorer content");
+        view.applyCss();
+        view.layout();
+        var viewport = view.lookup("#world-viewport");
+        var port = viewport.localToScene(viewport.getLayoutBounds());
+        var stack = toasts.localToScene(toasts.getLayoutBounds());
+        require(stack.getMaxY() <= port.getMaxY() + 1 && stack.getMinY() >= port.getMinY()
+                        && Math.abs(stack.getCenterX() - port.getCenterX()) < 2,
+                "The stack sits bottom-centre over the viewport, above the control rows: " + stack + " in " + port);
         // Stream failures toast once per failure episode, not once per snapshot.
         toasts.clear();
         streamStatus(WorldStreamSourceController.Phase.FAILED, "World streaming failed: authored");
@@ -208,25 +218,33 @@ public final class WorldToastsUiTest {
     /** F12's action: the presented frame, unchanged, as a PNG in the folder, with a toast. */
     private static void screenshotSavesTheFrameOnly() throws Exception {
         var root = java.nio.file.Files.createTempDirectory("vimi-world-screenshot-ui");
+        var opened = new ArrayList<java.nio.file.Path>();
         try {
             fx(() -> {
                 view.toasts().clear();
                 view.screenshots(null);
                 view.screenshot();
-                require(texts(view.toasts()).equals(List.of("Screenshots need a library folder; this session has none")),
+                require(texts(view.toasts()).equals(List.of("Screenshots need a data folder; this session has none")),
                         "Without a library the toast says so: " + texts(view.toasts()));
                 view.toasts().clear();
                 view.screenshots(WorldScreenshots.folder(root));
-                view.screenshot();
+                view.folderOpener(opened::add);
+                // F12 is the screenshot command: a real key event on the viewport.
+                var viewport = view.lookup("#world-viewport");
+                Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.F12, false, false, false, false));
+                Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_RELEASED, "", "", KeyCode.F12, false, false, false, false));
             });
             await(() -> texts(view.toasts()).stream().anyMatch(t -> t.startsWith("Screenshot saved: ")));
             fx(() -> {
                 var toast = view.toasts().toasts().getLast();
-                require("Copy path".equals(toast.action()), "The saved toast offers Copy path");
-                var file = java.nio.file.Path.of(toast.text().substring("Screenshot saved: ".length()));
-                require(file.getParent().equals(WorldScreenshots.folder(root))
-                                && file.getFileName().toString().startsWith("world-authored-"),
-                        "Saved in the screenshots folder under the map's name: " + file);
+                require("Open folder".equals(toast.action()), "The saved toast offers Open folder");
+                String name = toast.text().substring("Screenshot saved: ".length());
+                var file = WorldScreenshots.folder(root).resolve(name);
+                require(java.nio.file.Files.isRegularFile(file) && name.startsWith("vimi-world-authored-"),
+                        "Saved in the screenshots folder under the map's name, toast names the file: " + name);
+                require(!input().keysHeld(), "F12 is not a held key");
+                toast.run().run();
+                require(opened.equals(List.of(WorldScreenshots.folder(root))), "Open folder opens the screenshots folder");
                 var frame = ((javafx.scene.image.ImageView) get("image")).getImage();
                 try {
                     var saved = javax.imageio.ImageIO.read(file.toFile());
@@ -246,6 +264,51 @@ public final class WorldToastsUiTest {
             try (var walk = java.nio.file.Files.walk(root)) {
                 walk.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
             }
+        }
+    }
+
+    /**
+     * In full screen the toasts move onto the viewport (in its own stage) and back after; an
+     * instance interior replacing the viewport keeps them, so its "Entered" toast is seen.
+     */
+    private static void toastsFollowFullScreenAndSurviveTheInteriorSwap() {
+        var toasts = view.toasts();
+        var viewport = view.lookup("#world-viewport");
+        try {
+            var fullscreen = (WorldFullscreen) get("fullscreen");
+            fullscreen.windowed(true);
+            var toggle = WorldView.class.getDeclaredMethod("toggleFullscreen");
+            toggle.setAccessible(true);
+            toggle.invoke(view);
+            require(fullscreen.active() && toasts.getParent() == viewport,
+                    "Full screen carries the toasts on the viewport");
+            toggle.invoke(view);
+            require(!fullscreen.active() && toasts.getParent() == view.lookup("#world-toast-layer"),
+                    "Leaving full screen puts them back on the content layer");
+
+            Class<?> type = Class.forName("com.vimi.gui.WorldView$InstanceTarget");
+            var make = type.getDeclaredConstructors()[0];
+            make.setAccessible(true);
+            var raid = new WorldService.MapInfo(9, "Authored raid", null, 2, null);
+            Object target = make.newInstance(raid, null, null, -1L, "authored");
+            var hooksField = WorldInstanceSwitch.class.getDeclaredField("hooks");
+            hooksField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            var hooks = (WorldInstanceSwitch.Hooks<Object>) hooksField.get(get("instances"));
+            var interiorNode = new javafx.scene.layout.Pane();
+            hooks.showInterior(target, new WorldInstanceSwitch.Interior() {
+                @Override public javafx.scene.Node node() { return interiorNode; }
+                @Override public CompletableFuture<Void> closeAsync() { return CompletableFuture.completedFuture(null); }
+            });
+            var content = (javafx.scene.layout.BorderPane) get("content");
+            require(content.getCenter() == interiorNode, "The interior replaces the viewport");
+            require(toasts.getScene() != null && toasts.isVisible()
+                            && texts(toasts).contains("Entered Authored raid"),
+                    "The global-interior entry toast is showing: " + texts(toasts));
+            content.setCenter(viewport);
+            toasts.clear();
+        } catch (ReflectiveOperationException error) {
+            throw new AssertionError(error);
         }
     }
 
@@ -282,6 +345,10 @@ public final class WorldToastsUiTest {
         }
         var local = node.sceneToLocal(sceneX, sceneY);
         return local != null && node.contains(local) ? node : null;
+    }
+
+    private static WorldExplorerInput input() {
+        return (WorldExplorerInput) get("input");
     }
 
     private static Object get(String name) {

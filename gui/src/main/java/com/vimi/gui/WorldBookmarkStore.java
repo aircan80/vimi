@@ -36,7 +36,7 @@ final class WorldBookmarkStore implements AutoCloseable {
         }
     }
 
-    private final Path database;
+    private final Path database, screenshots;
     private final ThreadPoolExecutor worker =
             new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(64),
                     Thread.ofPlatform().daemon().name("vimi-world-bookmarks").factory(),
@@ -47,29 +47,33 @@ final class WorldBookmarkStore implements AutoCloseable {
     private boolean prepared, controlsPrepared;
     private String sessionControls;
 
-    private WorldBookmarkStore(Path database) {
+    private WorldBookmarkStore(Path database, Path screenshots) {
         this.database = database;
+        this.screenshots = screenshots;
     }
 
     /** Session-only bookmarks, used when no library database is available. */
     static WorldBookmarkStore session() {
-        return new WorldBookmarkStore(null);
+        return new WorldBookmarkStore(null, null);
     }
 
     /** Persistent bookmarks in the unified library database; the schema is checked lazily. */
     static WorldBookmarkStore forLibrary(Path database) {
-        return new WorldBookmarkStore(Objects.requireNonNull(database));
+        return forLibrary(database, null);
+    }
+
+    /** As {@link #forLibrary(Path)}, with the data directory's screenshots folder (or null). */
+    static WorldBookmarkStore forLibrary(Path database, Path screenshots) {
+        return new WorldBookmarkStore(Objects.requireNonNull(database), screenshots);
     }
 
     boolean persistent() {
         return database != null;
     }
 
-    /** The library's screenshots folder (beside its database), or null for a session-only store. */
+    /** The data directory's screenshots folder, or null (session-only store, or none given). */
     Path screenshots() {
-        if (database == null) return null;
-        var parent = database.toAbsolutePath().getParent();
-        return parent == null ? null : WorldScreenshots.folder(parent);
+        return screenshots;
     }
 
     CompletableFuture<Snapshot> load() {

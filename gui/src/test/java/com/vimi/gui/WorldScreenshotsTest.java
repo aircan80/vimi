@@ -11,14 +11,14 @@ public final class WorldScreenshotsTest {
 
     public static void main(String[] args) throws Exception {
         var time = ZonedDateTime.of(2026, 11, 6, 21, 5, 9, 0, ZoneOffset.UTC);
-        require(WorldScreenshots.fileName("Eastern Kingdoms", time).equals("world-eastern-kingdoms-20261106-210509.png"),
+        require(WorldScreenshots.fileName("Eastern Kingdoms", time).equals("vimi-world-eastern-kingdoms-20261106-210509.png"),
                 "Map and time name the file: " + WorldScreenshots.fileName("Eastern Kingdoms", time));
-        require(WorldScreenshots.fileName("../C:\\x?*", time).equals("world-c-x-20261106-210509.png"),
+        require(WorldScreenshots.fileName("../C:\\x?*", time).equals("vimi-world-c-x-20261106-210509.png"),
                 "Path characters never reach the name: " + WorldScreenshots.fileName("../C:\\x?*", time));
-        require(WorldScreenshots.fileName(null, time).equals("world-map-20261106-210509.png")
-                        && WorldScreenshots.fileName("???", time).equals("world-map-20261106-210509.png"),
+        require(WorldScreenshots.fileName(null, time).equals("vimi-world-map-20261106-210509.png")
+                        && WorldScreenshots.fileName("???", time).equals("vimi-world-map-20261106-210509.png"),
                 "No usable map name falls back to map");
-        require(WorldScreenshots.fileName("a".repeat(80), time).length() == "world-".length() + 40 + 20,
+        require(WorldScreenshots.fileName("a".repeat(80), time).length() == "vimi-world-".length() + 40 + 20,
                 "Long names are bounded");
         require(WorldScreenshots.folder(Path.of("data")).equals(Path.of("data", "screenshots")),
                 "The folder is the data directory's screenshots subfolder");

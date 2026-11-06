@@ -10,8 +10,9 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Viewport screenshots: the presented World frame only (no HUD), as a PNG in the library's
- * {@code screenshots} folder. Names carry the map and the local time; an existing file is never
+ * Viewport screenshots: the presented World frame only (no HUD), as a PNG in the {@code
+ * screenshots} folder of the application's data directory (the {@code vimi.dataDirectory}
+ * setting or the platform default, as {@link BuildApplication#defaultDataDirectory} resolves it). Names carry the map and the local time; an existing file is never
  * overwritten. The file is written beside its final name and moved into place, so a reader never
  * sees a half-written image. No JavaFX; callers copy the pixels on FX and save off it.
  */
@@ -26,12 +27,12 @@ final class WorldScreenshots {
         return dataDirectory.resolve(FOLDER);
     }
 
-    /** {@code world-<map>-<yyyyMMdd-HHmmss>.png}; the map part keeps letters and digits only. */
+    /** {@code vimi-world-<map>-<yyyyMMdd-HHmmss>.png}; the map part keeps letters and digits only. */
     static String fileName(String mapName, ZonedDateTime time) {
         String slug = mapName == null ? "" : mapName.toLowerCase(Locale.ROOT)
                 .replaceAll("[^a-z0-9]+", "-").replaceAll("^-+|-+$", "");
         if (slug.length() > 40) slug = slug.substring(0, 40).replaceAll("-+$", "");
-        return "world-" + (slug.isEmpty() ? "map" : slug) + "-" + STAMP.format(time) + ".png";
+        return "vimi-world-" + (slug.isEmpty() ? "map" : slug) + "-" + STAMP.format(time) + ".png";
     }
 
     /**

@@ -171,6 +171,16 @@ public final class WorldExplorerInputTest {
         var older = WorldControls.decode("v1;keys=W:FORWARD;actions=FORWARD,BACK,WALK");
         require(older.keys().get(KeyCode.F3) == WorldControls.Action.DEV_OVERLAY,
                 "Stored controls from before the overlay gain its default key: " + older.keys());
+        for (var layout : WorldControls.Layout.values())
+            require(layout.keys().get(KeyCode.F12) == WorldControls.Action.SCREENSHOT,
+                    layout + " binds F12 to the screenshot");
+        var shots = new Host();
+        var shotInput = exact(shots);
+        shotInput.keyPressed(KeyCode.F12);
+        shotInput.keyPressed(KeyCode.F12);
+        require(shots.commands.equals(List.of(WorldControls.Action.SCREENSHOT))
+                        && shotInput.axes().equals(ExplorerMotion.Input.NONE),
+                "F12 commands one screenshot per press and moves nothing: " + shots.commands);
         require(WorldControls.DEFAULTS.help().contains("F3 developer overlay"),
                 "Help names the overlay key: " + WorldControls.DEFAULTS.help());
     }

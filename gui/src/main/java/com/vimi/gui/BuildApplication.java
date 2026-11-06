@@ -215,7 +215,8 @@ public final class BuildApplication {
                                 fullContexts.communityNames(), ownership, keyClient == null ? network : keyClient, tactOwner, tactOwner, network, network, observer);
                         cleanup.addFirst(dataSources::closeAsync);
                         fullContexts.withSources(dataSources);
-                        var worldBookmarks = WorldBookmarkStore.forLibrary(library.databasePath());
+                        var worldBookmarks = WorldBookmarkStore.forLibrary(library.databasePath(),
+                                WorldScreenshots.folder(directory));
                         cleanup.addFirst(() -> {
                             worldBookmarks.close();
                             return CompletableFuture.completedFuture(null);

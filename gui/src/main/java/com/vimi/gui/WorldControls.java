@@ -40,7 +40,8 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         LOOK_DOWN("Look down"),
         SPRINT("Faster (hold; with the wheel: speed)"),
         WALK("Walk on terrain (toggle)"),
-        DEV_OVERLAY("Developer overlay (next page)", true);
+        DEV_OVERLAY("Developer overlay (next page)", true),
+        SCREENSHOT("Save a viewport screenshot", true);
 
         final String label;
         /**
@@ -127,6 +128,7 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
             keys.put(KeyCode.F, Action.WALK);
             // Function keys sit in the same place on every layout.
             keys.put(KeyCode.F3, Action.DEV_OVERLAY);
+            keys.put(KeyCode.F12, Action.SCREENSHOT);
             return keys;
         }
     }

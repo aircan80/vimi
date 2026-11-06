@@ -96,6 +96,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final WorldFullscreen fullscreen = new WorldFullscreen(viewport, node -> {
         // During an instance switch the switch owns the layout: never put the world back over it.
         if (this.explorer && !this.instances.engaged()) content.setCenter(node);
+        placeToasts();
     }, this::layoutKeys, fullscreenStatus);
     // Layout toggles fire once per physical press: held keys repeat KEY_PRESSED.
     private boolean fullscreenKeyHeld, panelsKeyHeld;
@@ -109,11 +110,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final WorldMinimap minimap = new WorldMinimap();
     // Transient notices over the viewport (HUD step 6); first-run help is shown once per view.
     private final WorldToasts toasts = new WorldToasts();
+    // The toasts' layer sits above the whole explorer content (viewport or interior view), so a
+    // swap of the centre never hides them; in full screen they move onto the viewport.
+    private final StackPane toastLayer = new StackPane();
     private boolean helpToastShown, streamFailedToast, stallToast;
-    // Where viewport screenshots go: the library's screenshots folder; null without a library.
+    // Where viewport screenshots go: the data directory's screenshots folder; null without one.
     private java.nio.file.Path screenshots;
-    // An ADT instance entry's toast, raised once its explorer opens (choosing the map clears toasts).
-    private String instanceToast;
+    // Opens a folder in the desktop's file manager; tests replace it.
+    private java.util.function.Consumer<java.nio.file.Path> folderOpener = WorldView::openFolder;
     /** The first-run help is long: it stays up longer than an event toast. */
     static final long HELP_TOAST_NANOS = 10_000_000_000L;
     private WorldSpawnOverlay spawns;
@@ -866,11 +870,23 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 devOverlay);
         StackPane.setAlignment(minimap, Pos.TOP_RIGHT);
         StackPane.setMargin(minimap, new Insets(12));
-        // Interim placement until the HUD layout's slots land: bottom-centre of the viewport.
-        viewport.getChildren().add(toasts);
+        toastLayer.setId("world-toast-layer");
+        toastLayer.setPickOnBounds(false);
+        toastLayer.setMouseTransparent(false);
         StackPane.setAlignment(toasts, Pos.BOTTOM_CENTER);
-        StackPane.setMargin(toasts, new Insets(12, 12, 48, 12));
-        toasts.refocus(viewport::requestFocus);
+        // Bottom-centre of whatever the content shows (viewport or interior), above its rows.
+        javafx.beans.InvalidationListener anchor = o -> anchorToasts();
+        content.heightProperty().addListener(anchor);
+        content.centerProperty().addListener((o, was, now) -> {
+            if (was != null) was.boundsInParentProperty().removeListener(anchor);
+            if (now != null) now.boundsInParentProperty().addListener(anchor);
+            anchorToasts();
+        });
+        anchorToasts();
+        toasts.refocus(() -> {
+            if (explorer) viewport.requestFocus();
+        });
+        placeToasts();
         StackPane.setAlignment(devOverlay, Pos.TOP_LEFT);
         // Below the top-left panels hint (and the Map button that takes its place).
         StackPane.setMargin(devOverlay, new Insets(40, 12, 12, 12));
@@ -979,7 +995,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     showInventory();
                 });
         sidebarPane = sidebar;
-        split = new SplitPane(sidebar, content);
+        // Toasts float above the explorer content, whatever its centre shows.
+        var contentStack = new StackPane(content, toastLayer);
+        split = new SplitPane(sidebar, contentStack);
         split.setDividerPositions(sidebarDivider);
         setCenter(split);
         sceneProperty().addListener((o, was, now) -> {
@@ -1267,6 +1285,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void command(WorldControls.Action action) {
         switch (action) {
             case DEV_OVERLAY -> devOverlay.cycle();
+            case SCREENSHOT -> screenshot();
             default -> {}
         }
     }
@@ -1485,7 +1504,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void selectMap(WorldService.MapInfo map) {
         // Choosing a map leaves any inline interior; it does not return to the open world.
         instances.abandon();
-        toasts.clear();
+        toasts.clearActions();
         if (map.id() != instanceMap) clearInstanceReturn();
         resumeCamera = null;
         pendingJump = null;
@@ -1824,8 +1843,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void showInventory() {
-        // Notices (and their Retry) belong to the explorer session they were raised in.
-        toasts.clear();
+        // A Retry belongs to the explorer session it was raised in; plain notices may stay.
+        toasts.clearActions();
         fullscreen.exit();
         panels(false);
         if (spawns != null) spawns.suspend();
@@ -1918,8 +1937,6 @@ final class WorldView extends BorderPane implements AutoCloseable {
             helpToastShown = true;
             toasts.show(input.controls().help() + " · " + INSPECT_HINT, null, null, HELP_TOAST_NANOS);
         }
-        if (instanceToast != null) toasts.show(instanceToast);
-        instanceToast = null;
         status.setText("Loading terrain tile " + selected.key() + "…");
         if (spawns != null) spawns.resume();
         show(firstFrameActivity, true);
@@ -2005,6 +2022,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (instances.engaged() && !fullscreen.active()) return;
         fullscreen.toggle(getScene() == null ? null : getScene().getWindow(),
                 "World explorer" + (inventory == null ? "" : " · " + inventory.map()));
+        placeToasts();
         clearKeys();
     }
 
@@ -3290,6 +3308,25 @@ final class WorldView extends BorderPane implements AutoCloseable {
         screenshots = folder;
     }
 
+    /** Replaces the file-manager opener; for tests. */
+    void folderOpener(java.util.function.Consumer<java.nio.file.Path> opener) {
+        folderOpener = java.util.Objects.requireNonNull(opener);
+    }
+
+    /** Opens a folder with the desktop, off FX; failures are logged, never thrown. */
+    private static void openFolder(java.nio.file.Path folder) {
+        Thread.ofVirtual().name("world-screenshot-folder").start(() -> {
+            try {
+                if (!java.awt.Desktop.isDesktopSupported()
+                        || !java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.OPEN))
+                    throw new UnsupportedOperationException("opening folders is not supported here");
+                java.awt.Desktop.getDesktop().open(folder.toFile());
+            } catch (Exception failed) {
+                WorldDiagnostics.warn("World screenshot folder could not be opened", failed);
+            }
+        });
+    }
+
     /**
      * Saves the presented frame (the World image only, no HUD) as a PNG in the screenshots
      * folder: pixels are copied on FX, written off it, and a toast says where the file went.
@@ -3302,7 +3339,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             return;
         }
         if (folder == null) {
-            toasts.show("Screenshots need a library folder; this session has none");
+            toasts.show("Screenshots need a data folder; this session has none");
             return;
         }
         int width = (int) frame.getWidth(), height = (int) frame.getHeight();
@@ -3327,14 +3364,28 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     WorldDiagnostics.warn("World screenshot could not be saved", problem);
                     toasts.show("Screenshot not saved: " + WorldDiagnostics.brief(problem));
                 } else {
-                    toasts.show("Screenshot saved: " + file, "Copy path", () -> {
-                        var content = new javafx.scene.input.ClipboardContent();
-                        content.putString(file.toString());
-                        javafx.scene.input.Clipboard.getSystemClipboard().setContent(content);
-                    });
+                    toasts.show("Screenshot saved: " + file.getFileName(), "Open folder",
+                            () -> folderOpener.accept(file.getParent()));
                 }
             });
         });
+    }
+
+    /** Keeps the toasts just above the bottom edge of the content's centre node. */
+    private void anchorToasts() {
+        var center = content.getCenter();
+        double below = fullscreen.active() || center == null ? 0
+                : Math.max(0, content.getHeight() - center.getBoundsInParent().getMaxY());
+        StackPane.setMargin(toasts, new Insets(12, 12, below + 24, 12));
+    }
+
+    /** Toasts live on the content layer, or on the viewport while it is full screen. */
+    private void placeToasts() {
+        var host = fullscreen.active() ? viewport : toastLayer;
+        if (toasts.getParent() == host) return;
+        if (toasts.getParent() instanceof javafx.scene.layout.Pane old) old.getChildren().remove(toasts);
+        host.getChildren().add(toasts);
+        anchorToasts();
     }
 
     /** The toasts, for tests. */
@@ -3525,7 +3576,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 + " returns to this view");
         if (maps.getSelectionModel().getSelectedItem() == map) selectMap(map);
         else maps.getSelectionModel().select(map);
-        instanceToast = "Entering " + link.name();
+        toasts.show("Entering " + link.name());
     }
 
     /** Zone-in to a global-WMO map in place; Leave returns to the open world or the map page. */
@@ -3628,8 +3679,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (back == null) return;
         clearInstanceReturn();
         goToBookmark(back);
-        instanceToast = "Left the instance" + (back.mapName() == null || back.mapName().isBlank()
-                ? "" : " · back in " + back.mapName());
+        toasts.show("Left the instance" + (back.mapName() == null || back.mapName().isBlank()
+                ? "" : " · back in " + back.mapName()));
     }
 
     /** The World view's side of an inline global interior switch. */
@@ -3680,6 +3731,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             content.setCenter(interior.node());
             content.setBottom(new VBox(8, new HBox(10, leaveInstance, instanceArea),
                     audio.node()));
+            toasts.show("Entered " + target.map());
             status.setText("Inside " + target.map() + " · Map #" + target.map().id()
                     + " · Leave instance returns to "
                     + (explorer && inventory != null ? inventory.map().toString() : "the map page"));
