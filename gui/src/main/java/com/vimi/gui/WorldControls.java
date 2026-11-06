@@ -41,7 +41,8 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         SPRINT("Faster (hold; with the wheel: speed)"),
         WALK("Walk on terrain (toggle)"),
         DEV_OVERLAY("Developer overlay (next page)", true),
-        INSPECT_PIN("Inspect card: pin / unpin, or re-open the last", true);
+        INSPECT_PIN("Inspect card: pin / unpin, or re-open the last", true),
+        SCREENSHOT("Save a viewport screenshot", true);
 
         final String label;
         /**
@@ -130,6 +131,7 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
             keys.put(KeyCode.F3, Action.DEV_OVERLAY);
             // I sits in the same place on QWERTY and AZERTY.
             keys.put(KeyCode.I, Action.INSPECT_PIN);
+            keys.put(KeyCode.F12, Action.SCREENSHOT);
             return keys;
         }
     }

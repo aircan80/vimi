@@ -116,6 +116,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // swap of the centre never hides them; in full screen they move onto the viewport.
     private final StackPane toastLayer = new StackPane();
     private boolean helpToastShown, streamFailedToast, stallToast;
+    // Where viewport screenshots go: the data directory's screenshots folder; null without one.
+    private java.nio.file.Path screenshots;
+    // Opens a folder in the desktop's file manager; tests replace it.
+    private java.util.function.Consumer<java.nio.file.Path> folderOpener = WorldView::openFolder;
+    // One screenshot in flight at a time (each holds a full-frame copy); FX-owned.
+    private boolean screenshotSaving;
     /** The first-run help is long: it stays up longer than an event toast. */
     static final long HELP_TOAST_NANOS = 10_000_000_000L;
     private WorldSpawnOverlay spawns;
@@ -611,6 +617,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
      */
     void bookmarks(WorldBookmarkStore store) {
         travel.store(store);
+        screenshots = store == null ? null : store.screenshots();
         if (store == null) return;
         controls(WorldControls.Store.of(store));
     }
@@ -1313,6 +1320,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             case INSPECT_PIN -> {
                 if (camera != null) inspectCard.togglePin(camera.x(), camera.y(), camera.z());
             }
+            case SCREENSHOT -> screenshot();
             default -> {}
         }
     }
@@ -3361,6 +3369,83 @@ final class WorldView extends BorderPane implements AutoCloseable {
     /** The inspect card, for tests. */
     WorldInspectCard inspectCard() {
         return inspectCard;
+    }
+
+    /** Sets the screenshots folder (the library store sets it; tests use a temporary one). */
+    void screenshots(java.nio.file.Path folder) {
+        screenshots = folder;
+    }
+
+    /** Replaces the file-manager opener; for tests. */
+    void folderOpener(java.util.function.Consumer<java.nio.file.Path> opener) {
+        folderOpener = java.util.Objects.requireNonNull(opener);
+    }
+
+    /** Opens a folder with the desktop, off FX; failures are logged, never thrown. */
+    private static void openFolder(java.nio.file.Path folder) {
+        Thread.ofVirtual().name("world-screenshot-folder").start(() -> {
+            try {
+                if (!java.awt.Desktop.isDesktopSupported()
+                        || !java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.OPEN))
+                    throw new UnsupportedOperationException("opening folders is not supported here");
+                java.awt.Desktop.getDesktop().open(folder.toFile());
+            } catch (Exception failed) {
+                WorldDiagnostics.warn("World screenshot folder could not be opened", failed);
+            }
+        });
+    }
+
+    /**
+     * Saves the presented frame (the World image only, no HUD) as a PNG in the screenshots
+     * folder: pixels are copied on FX, written off it, and a toast says where the file went.
+     */
+    void screenshot() {
+        if (closed) return;
+        if (screenshotSaving) {
+            toasts.show("Screenshot still saving");
+            return;
+        }
+        var folder = screenshots;
+        if (!explorer || !(image.getImage() instanceof javafx.scene.image.Image frame)
+                || frame.getPixelReader() == null) {
+            toasts.show("No World frame to save yet");
+            return;
+        }
+        if (folder == null) {
+            toasts.show("Screenshots need a data folder; this session has none");
+            return;
+        }
+        int width = (int) frame.getWidth(), height = (int) frame.getHeight();
+        var argb = new int[width * height];
+        frame.getPixelReader().getPixels(0, 0, width, height,
+                javafx.scene.image.PixelFormat.getIntArgbInstance(), argb, 0, width);
+        // The frame is drawn opaque on screen; the file is too.
+        for (int i = 0; i < argb.length; i++) argb[i] |= 0xff000000;
+        String name = WorldScreenshots.fileName(inventory == null ? null : inventory.map().name(),
+                java.time.ZonedDateTime.now());
+        screenshotSaving = true;
+        Thread.ofVirtual().name("world-screenshot").start(() -> {
+            java.nio.file.Path saved = null;
+            Throwable failure = null;
+            try {
+                saved = WorldScreenshots.save(folder, name, width, height, argb);
+            } catch (Throwable failed) {
+                failure = failed;
+            }
+            var file = saved;
+            var problem = failure;
+            Platform.runLater(() -> {
+                screenshotSaving = false;
+                if (closed) return;
+                if (problem != null) {
+                    WorldDiagnostics.warn("World screenshot could not be saved", problem);
+                    toasts.show("Screenshot not saved: " + WorldDiagnostics.brief(problem));
+                } else {
+                    toasts.show("Screenshot saved: " + file.getFileName(), "Open folder",
+                            () -> folderOpener.accept(file.getParent()));
+                }
+            });
+        });
     }
 
     /** Keeps the toasts just above the bottom edge of the content's centre node. */
