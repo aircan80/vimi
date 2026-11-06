@@ -1,11 +1,13 @@
 package com.vibeminer.rendering.bgfx;
 
+import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_COLOR0;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_NORMAL;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_POSITION;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TEXCOORD0;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TEXCOORD1;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TEXCOORD2;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TYPE_FLOAT;
+import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TYPE_UINT8;
 import static org.lwjgl.bgfx.BGFX.BGFX_BUFFER_NONE;
 import static org.lwjgl.bgfx.BGFX.BGFX_CLEAR_COLOR;
 import static org.lwjgl.bgfx.BGFX.BGFX_CLEAR_DEPTH;
@@ -666,7 +668,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                             valid(
                                     bgfx_create_dynamic_vertex_buffer(
                                             source.vertices.capacity()
-                                                    / WorldStreamObjectsFile.VERTEX_BYTES,
+                                                    / WorldStreamPackedObjects.GPU_VERTEX_BYTES,
                                             layout,
                                             BGFX_BUFFER_NONE));
                 }
@@ -680,10 +682,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             var built = build.building;
             step = "vertices";
             if (build.vertexAt < source.vertices.capacity()) {
-                int count = Math.min(OBJECT_CHUNK, source.vertices.capacity() - build.vertexAt);
+                // Whole vertices only: the chunk is rounded down to the vertex stride.
+                int chunk =
+                        OBJECT_CHUNK
+                                / WorldStreamPackedObjects.GPU_VERTEX_BYTES
+                                * WorldStreamPackedObjects.GPU_VERTEX_BYTES;
+                int count = Math.min(chunk, source.vertices.capacity() - build.vertexAt);
                 bgfx_update_dynamic_vertex_buffer(
                         built.vertices,
-                        build.vertexAt / WorldStreamObjectsFile.VERTEX_BYTES,
+                        build.vertexAt / WorldStreamPackedObjects.GPU_VERTEX_BYTES,
                         bgfx_copy(source.vertices.slice(build.vertexAt, count)));
                 build.vertexAt += count;
                 return count;
@@ -912,8 +919,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         bgfx_vertex_layout_add(layout, BGFX_ATTRIB_NORMAL, 3, BGFX_ATTRIB_TYPE_FLOAT, false, false);
         bgfx_vertex_layout_add(
                 layout, BGFX_ATTRIB_TEXCOORD0, 2, BGFX_ATTRIB_TYPE_FLOAT, false, false);
+        bgfx_vertex_layout_add(layout, BGFX_ATTRIB_COLOR0, 4, BGFX_ATTRIB_TYPE_UINT8, true, false);
         bgfx_vertex_layout_end(layout);
-        if (layout.stride() != WorldStreamObjectsFile.VERTEX_BYTES) {
+        if (layout.stride() != WorldStreamPackedObjects.GPU_VERTEX_BYTES) {
             layout.free();
             throw new IOException("Object vertex layout differs");
         }

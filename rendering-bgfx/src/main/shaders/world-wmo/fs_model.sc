@@ -1,4 +1,4 @@
-$input v_wmoNormal, v_wmoUv, v_wmoDepth, v_wmoRelative
+$input v_wmoNormal, v_wmoUv, v_wmoDepth, v_wmoRelative, v_wmoColour
 #include <bgfx_shader.sh>
 SAMPLER2D(s_wmoDiffuse, 0);
 // x: alpha-test reference (0 never discards); y: 1 outputs sampled alpha for blending, 0 outputs 1;
@@ -37,11 +37,14 @@ void main()
     float additive = step(1.5, u_wmoMaterial.w);
     float unlit = step(0.5, u_wmoMaterial.w - 2.0 * additive);
     float intensity = mix((1.0 / 3.0) + (2.0 / 3.0) * diffuse, 1.0, unlit);
+    // Exterior groups start from the world light and add the texture times the vertex colour
+    // (MOCV, #375); a vertex without a colour adds nothing.
+    vec3 light = vec3_splat(intensity) + v_wmoColour;
     float fog = clamp((v_wmoDepth - u_wmoFogRange.x) / (u_wmoFogRange.y - u_wmoFogRange.x), 0.0, u_wmoFogRange.z);
     // Fog toward the sky at this fragment's own elevation above the camera.
     float elevation = atan2(v_wmoRelative.z, max(length(v_wmoRelative.xy), 1e-6));
     vec3 sky = mix(u_wmoFog.xyz, u_wmoSkyTop.xyz, clamp(elevation / u_wmoFog.w, 0.0, 1.0));
     // Additive light fades with distance; everything else fades into the sky.
-    vec3 rgb = floor(sampled.rgb * 255.0 * intensity * (1.0 - fog) + sky * fog * (1.0 - additive));
+    vec3 rgb = floor(sampled.rgb * 255.0 * light * (1.0 - fog) + sky * fog * (1.0 - additive));
     gl_FragColor = vec4(rgb / 255.0, alpha);
 }

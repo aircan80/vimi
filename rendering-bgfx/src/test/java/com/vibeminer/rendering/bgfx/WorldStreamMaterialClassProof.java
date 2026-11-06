@@ -11,15 +11,17 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Actual GPU proof of the unlit and additive object surfaces (issue #367), on a fresh native
- * context: two camera-facing quads at eye depth 5 over one authored terrain tile, drawn before and
- * after their late objects attach.
+ * Actual GPU proof of the unlit and additive object surfaces (issue #367) and of vertex colours
+ * (issue #375), on a fresh native context: three camera-facing quads at eye depth 5 over one
+ * authored terrain tile, drawn before and after their late objects attach.
  *
  * <ul>
  *   <li>Left, an unlit opaque quad whose normals face away from the light: lit it would be a third
  *       of its texel colour; unlit it is the texel colour exactly.
  *   <li>Right, an unlit additive quad of blue (0, 0, 200) at alpha 128: the frame's pixel becomes
  *       the pixel without it plus 200 x 128 / 255 blue, red and green unchanged.
+ *   <li>Centre, a lit opaque quad facing away from the light (a third of its texel colour) with the
+ *       vertex colour (128, 64, 0): each channel is its texel times a third plus the colour.
  * </ul>
  *
  * Authored data only.
@@ -28,6 +30,9 @@ final class WorldStreamMaterialClassProof {
     private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(424, -242);
     private static final int WIDTH = 800, HEIGHT = 500;
     private static final TerrainCamera VIEW = new TerrainCamera(-20, -2, 20, 0, -0.5);
+
+    /** The centre quad's vertex colour, r | g << 8 | b << 16: (128, 64, 0). */
+    private static final int COLOUR = 128 | 64 << 8;
 
     private WorldStreamMaterialClassProof() {}
 
@@ -42,11 +47,12 @@ final class WorldStreamMaterialClassProof {
         builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(2, 2, 200, 100, 50, 255)));
         builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(2, 2, 0, 0, 200, 128)));
         builder.model();
-        double[][] spans = {{-1.8, -0.6}, {0.6, 1.8}};
-        var vertices = FloatBuffer.allocate(8 * 8);
-        var indices = IntBuffer.allocate(12);
+        double[][] spans = {{-1.8, -0.6}, {0.6, 1.8}, {-0.4, 0.4}};
+        var vertices = FloatBuffer.allocate(12 * 8);
+        var indices = IntBuffer.allocate(18);
+        var colours = IntBuffer.allocate(12);
         double cp = Math.cos(VIEW.pitch()), sp = Math.sin(VIEW.pitch());
-        for (int q = 0; q < 2; q++) {
+        for (int q = 0; q < 3; q++) {
             for (int corner = 0; corner < 4; corner++) {
                 double right = spans[q][corner == 1 || corner == 2 ? 1 : 0];
                 double up = corner < 2 ? -1 : 1, depth = 5;
@@ -56,21 +62,25 @@ final class WorldStreamMaterialClassProof {
                 // Facing away from the fixed light: a lit surface would get a third of its colour.
                 vertices.put(0.408248290463863f).put(0.408248290463863f);
                 vertices.put(-0.816496580927726f).put(.5f).put(.5f);
+                colours.put(q == 2 ? COLOUR : 0);
             }
             int base = q * 4;
             indices.put(base).put(base + 1).put(base + 2).put(base).put(base + 2).put(base + 3);
         }
         vertices.flip();
         indices.flip();
+        colours.flip();
         builder.mesh(
                 vertices,
                 indices,
-                new int[] {0, 6, 0, 6, 6, 1},
+                new int[] {0, 6, 0, 6, 6, 1, 12, 6, 0},
                 new int[] {
                     WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT,
                     // Unlit too, so its full blue is added.
-                    WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT
-                });
+                    WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT,
+                    WorldStreamObjectsFile.OPAQUE
+                },
+                colours);
         builder.placement(
                 0, VIEW.x(), VIEW.y(), VIEW.z(), 1, new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1});
         return builder.build();
@@ -84,7 +94,7 @@ final class WorldStreamMaterialClassProof {
         return pixels.flip();
     }
 
-    /** Returns "unlit=<argb> additive=<before>-><after>" for the pass line. */
+    /** Returns "unlit=<argb> additive=<before>-><after> coloured=<argb>" for the pass line. */
     @SuppressWarnings("try")
     static String run(Path base) throws Exception {
         Path directory = Files.createDirectories(base.resolve("objects-material-classes"));
@@ -154,12 +164,28 @@ final class WorldStreamMaterialClassProof {
                             + Integer.toHexString(was)
                             + " -> "
                             + Integer.toHexString(now));
+            // Lit at a third (facing away from the light) plus the vertex colour, per channel.
+            int coloured = after[row * WIDTH + WIDTH / 2];
+            int[] texel = {200, 100, 50}, colour = {128, 64, 0}, shift = {red, 8, blue};
+            for (int c = 0; c < 3; c++) {
+                int expected = (int) Math.floor(texel[c] * (1 / 3.0 + colour[c] / 255.0));
+                require(
+                        Math.abs((coloured >>> shift[c] & 255) - expected) <= 1,
+                        "Vertex colour adds to the light: "
+                                + Integer.toHexString(coloured)
+                                + " channel "
+                                + c
+                                + " expected "
+                                + expected);
+            }
             return "unlit="
                     + Integer.toHexString(unlit)
                     + " additive="
                     + Integer.toHexString(was)
                     + "->"
-                    + Integer.toHexString(now);
+                    + Integer.toHexString(now)
+                    + " coloured="
+                    + Integer.toHexString(coloured);
         }
     }
 

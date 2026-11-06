@@ -32,6 +32,9 @@ final class WorldStreamObjectsFileTest {
     private static final WorldStreamObjectsFile.Identity IDENTITY =
             new WorldStreamObjectsFile.Identity(NONCE, SCOPE, 42, LEASE, 7, 19);
 
+    /** The quad's vertex colours, {@code r | g << 8 | b << 16} (#375). */
+    static final int[] SMALL_COLOURS = {0x010203, 0, 0xffffff, 0x804020};
+
     /** One model with a single quad mesh drawn by two ranges, two images and two placements. */
     static WorldStreamTileWriter.Exterior small() {
         var builder = WorldStreamTileWriter.Exterior.builder();
@@ -50,7 +53,9 @@ final class WorldStreamObjectsFileTest {
         builder.mesh(
                 FloatBuffer.wrap(vertices),
                 IntBuffer.wrap(new int[] {0, 1, 2, 2, 1, 3}),
-                new int[] {0, 3, 0, 3, 3, 1});
+                new int[] {0, 3, 0, 3, 3, 1},
+                new int[2],
+                IntBuffer.wrap(SMALL_COLOURS));
         builder.placement(0, -100.25, -200.5, 12, 1, 1, 0);
         builder.placement(0, -110.25, -205.5, 13, 1.5, 0, 1);
         return builder.build();
@@ -111,6 +116,8 @@ final class WorldStreamObjectsFileTest {
         assertArrayEquals(written.placements, read.placements);
         assertArrayEquals(written.images, read.images);
         assertArrayEquals(written.vertices, read.vertices);
+        assertArrayEquals(SMALL_COLOURS, written.colours);
+        assertArrayEquals(written.colours, read.colours);
         assertArrayEquals(written.indices, read.indices);
         assertArrayEquals(written.pixels, read.pixels);
         assertEquals(written.draws, read.draws);
@@ -459,7 +466,9 @@ final class WorldStreamObjectsFileTest {
             try (var source = tile.take()) {
                 assertNotNull(source.objects);
                 assertEquals(2, source.objects.placementCount());
-                assertEquals(4 * 32, source.objects.vertices.capacity());
+                assertEquals(
+                        4 * WorldStreamPackedObjects.GPU_VERTEX_BYTES,
+                        source.objects.vertices.capacity());
                 assertEquals(6 * 2, source.objects.indices.capacity());
                 assertEquals(1, source.triangles);
             }
@@ -634,7 +643,8 @@ final class WorldStreamObjectsFileTest {
                 IntBuffer.wrap(new int[] {0, 1, 2, 0, 2, 1, 1, 2, 0, 2, 0, 1}),
                 new int[] {0, 3, 0, 3, 3, 0, 6, 3, 0, 9, 3, 0},
                 new int[] {
-                    WorldStreamObjectsFile.CUTOUT,
+                    // Version 6 (#375): the two-sided flag round-trips.
+                    WorldStreamObjectsFile.CUTOUT | WorldStreamObjectsFile.TWO_SIDED,
                     WorldStreamObjectsFile.BLENDED,
                     // Version 4 (#367): additive and the unlit flag round-trip.
                     WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT,
@@ -645,27 +655,31 @@ final class WorldStreamObjectsFileTest {
         var exterior = builder.build();
         var reference = write(exterior);
         var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
-        assertEquals(WorldStreamObjectsFile.CUTOUT, read.ranges[3]);
+        assertEquals(
+                WorldStreamObjectsFile.CUTOUT | WorldStreamObjectsFile.TWO_SIDED, read.ranges[3]);
+        assertEquals(WorldStreamObjectsFile.CUTOUT, WorldStreamObjectsFile.kind(read.ranges[3]));
         assertEquals(WorldStreamObjectsFile.BLENDED, read.ranges[7]);
         assertEquals(
                 WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT, read.ranges[11]);
         assertEquals(WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT, read.ranges[15]);
-        assertEquals(4, WorldStreamObjectsFile.VERSION);
+        assertEquals(6, WorldStreamObjectsFile.VERSION);
         assertEquals(h, read.placements[8], 0);
         // An unknown class, a scaled matrix or a reflection is refused.
-        var badClass = WorldStreamTileWriter.Exterior.builder();
-        badClass.image(1, 1, ByteBuffer.allocate(4));
-        badClass.model();
-        badClass.mesh(
-                FloatBuffer.wrap(new float[24]),
-                IntBuffer.wrap(new int[] {0, 1, 2}),
-                new int[] {0, 3, 0},
-                // Modulate (4) and unknown flags stay refused.
-                new int[] {4});
-        badClass.placement(0, 0, 0, 0, 1, 1, 0);
-        assertEquals(
-                "Draw range",
-                assertThrows(IllegalArgumentException.class, badClass::build).getMessage());
+        // Modulate (4) and unknown flags stay refused.
+        for (int unknown : new int[] {4, WorldStreamObjectsFile.OPAQUE | 0x400}) {
+            var badClass = WorldStreamTileWriter.Exterior.builder();
+            badClass.image(1, 1, ByteBuffer.allocate(4));
+            badClass.model();
+            badClass.mesh(
+                    FloatBuffer.wrap(new float[24]),
+                    IntBuffer.wrap(new int[] {0, 1, 2}),
+                    new int[] {0, 3, 0},
+                    new int[] {unknown});
+            badClass.placement(0, 0, 0, 0, 1, 1, 0);
+            assertEquals(
+                    "Draw range",
+                    assertThrows(IllegalArgumentException.class, badClass::build).getMessage());
+        }
         for (double[] rotation :
                 new double[][] {
                     {2, 0, 0, 0, 2, 0, 0, 0, 2}, {-1, 0, 0, 0, 1, 0, 0, 0, 1}, new double[9]
@@ -681,6 +695,76 @@ final class WorldStreamObjectsFileTest {
             assertEquals(
                     "Placement transform",
                     assertThrows(IllegalArgumentException.class, bad::build).getMessage());
+        }
+    }
+
+    /**
+     * Issue #375: a mesh without colours reads back as zero colours; a colour with its fourth byte
+     * set, or a colour count that is neither zero nor the vertex count, is refused.
+     */
+    @Test
+    void vertexColoursDefaultToZeroAndAreValidated() throws Exception {
+        var plain = WorldStreamTileWriter.Exterior.builder();
+        plain.image(1, 1, ByteBuffer.allocate(4));
+        plain.model();
+        plain.mesh(
+                FloatBuffer.wrap(new float[24]),
+                IntBuffer.wrap(new int[] {0, 1, 2}),
+                new int[] {0, 3, 0});
+        plain.placement(0, 0, 0, 0, 1, 1, 0);
+        var reference = write(plain.build());
+        var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
+        assertArrayEquals(new int[3], read.colours);
+
+        var short2 = WorldStreamTileWriter.Exterior.builder();
+        short2.image(1, 1, ByteBuffer.allocate(4));
+        short2.model();
+        assertEquals(
+                "Exterior vertex colours",
+                assertThrows(
+                                IllegalArgumentException.class,
+                                () ->
+                                        short2.mesh(
+                                                FloatBuffer.wrap(new float[24]),
+                                                IntBuffer.wrap(new int[] {0, 1, 2}),
+                                                new int[] {0, 3, 0},
+                                                new int[1],
+                                                IntBuffer.wrap(new int[2])))
+                        .getMessage());
+
+        var alpha = WorldStreamTileWriter.Exterior.builder();
+        alpha.image(1, 1, ByteBuffer.allocate(4));
+        alpha.model();
+        alpha.mesh(
+                FloatBuffer.wrap(new float[24]),
+                IntBuffer.wrap(new int[] {0, 1, 2}),
+                new int[] {0, 3, 0},
+                new int[1],
+                IntBuffer.wrap(new int[] {0, 0x01000000, 0}));
+        alpha.placement(0, 0, 0, 0, 1, 1, 0);
+        assertEquals(
+                "Vertex colour",
+                assertThrows(IllegalArgumentException.class, alpha::build).getMessage());
+    }
+
+    /** Issue #375: GPU vertices are the file's eight floats, then the colour bytes R, G, B, 0. */
+    @Test
+    void packedVerticesInterleaveFloatsAndColourBytes() throws Exception {
+        var data = data(small());
+        try (var packed = WorldStreamPackedObjects.pack(data, () -> false)) {
+            assertEquals(36, WorldStreamPackedObjects.GPU_VERTEX_BYTES);
+            assertEquals(4 * 36, packed.vertices.capacity());
+            for (int v = 0; v < 4; v++) {
+                int at = v * 36;
+                for (int i = 0; i < 8; i++) {
+                    assertEquals(data.vertices[v * 8 + i], packed.vertices.getFloat(at + i * 4));
+                }
+                int colour = SMALL_COLOURS[v];
+                assertEquals((byte) colour, packed.vertices.get(at + 32));
+                assertEquals((byte) (colour >> 8), packed.vertices.get(at + 33));
+                assertEquals((byte) (colour >> 16), packed.vertices.get(at + 34));
+                assertEquals(0, packed.vertices.get(at + 35));
+            }
         }
     }
 

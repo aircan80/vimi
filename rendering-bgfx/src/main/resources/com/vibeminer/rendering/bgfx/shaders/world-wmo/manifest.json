@@ -7,7 +7,7 @@
       "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
       "platform": "windows",
       "profile": "s_5_0",
-      "sha256": "3c2ffa557c966610b0ff6892b7fb0b548213cfd61bc319371041b58f7449ee69",
+      "sha256": "630d2c5e17e4e20d010ecb5c4e935b61f4c3050bac75aaca135ebd8c9b83ec30",
       "stage": "fragment"
     },
     "dx11/vs_model.bin": {
@@ -15,7 +15,7 @@
       "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
       "platform": "windows",
       "profile": "s_5_0",
-      "sha256": "1ec5dfd9074f455376802171fa7753f2d589d9c6a7b78078cc4961271270b303",
+      "sha256": "0e4600565b84ee227d5132f96abf813109c23fd92c078cd50c08c97ee2a0bb69",
       "stage": "vertex"
     },
     "glsl/fs_model.bin": {
@@ -23,7 +23,7 @@
       "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
       "platform": "linux",
       "profile": "330",
-      "sha256": "1c7e869e3be7e42308d57dd3feff99c68c7467a55e1f1aeada10a8fea45a0163",
+      "sha256": "cd2af3ada2a990fe575cb35e1cf6517170b8d3b0df4dcaacffe11a9baf7e9708",
       "stage": "fragment"
     },
     "glsl/vs_model.bin": {
@@ -31,7 +31,7 @@
       "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
       "platform": "linux",
       "profile": "330",
-      "sha256": "8ad25bbc42ab20263c3a03b0c6716e21c1e48680bcfd4c039642280ed58d610a",
+      "sha256": "f9ee2037f8c0f74f54e0c44895252d9858ef894dcad02a417fffb4b3394a1291",
       "stage": "vertex"
     },
     "metal/fs_model.bin": {
@@ -39,7 +39,7 @@
       "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
       "platform": "osx",
       "profile": "metal",
-      "sha256": "168aeb8a34503bdef42ac042d71f1a0a5bd2327c4472fd12f7ac898eabb07f7f",
+      "sha256": "32309b1491718d7986fbf2fd714d250b40e51cc93f67f39da8f7d5d0c4e8c6c3",
       "stage": "fragment"
     },
     "metal/vs_model.bin": {
@@ -47,7 +47,7 @@
       "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
       "platform": "osx",
       "profile": "metal",
-      "sha256": "d4110f6dfeb02028b5791c4aa8366d3c038e20c542a6b6e219605dd2b4c7e356",
+      "sha256": "5f395e65680763bbbc797c690078709cfa9925a42968088830986556d4f15d4a",
       "stage": "vertex"
     },
     "spirv/fs_model.bin": {
@@ -55,7 +55,7 @@
       "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
       "platform": "linux",
       "profile": "spirv",
-      "sha256": "dd39ce4746a7de733cb6a7bc600409463dff128790d07030312d32da6b1040c9",
+      "sha256": "bf5671d47545ff624f02ff824dd6e1eb64b550757bc2ae5ffde65bef92e69dad",
       "stage": "fragment"
     },
     "spirv/vs_model.bin": {
@@ -63,16 +63,16 @@
       "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
       "platform": "linux",
       "profile": "spirv",
-      "sha256": "74746a5bc4f2838097e32305f72df5faec64baddb8c4d33228ccfa4da9f0be6c",
+      "sha256": "1fea6d3b68f75d935cdbb06360b1d30a8c96c8e29efe676eb29a043dc1a73a0b",
       "stage": "vertex"
     }
   },
   "format": "vimi-bgfx-shaders-v1",
   "inputs": {
     "bgfx_shader.sh": "5ad79a2ff5d1b1fd1f22d986f2b0b5dc49f89ffd5ce18e57966b6ab894094508",
-    "fs_model.sc": "829f8c6d3a712909de6700296f3675fe0fb5bf13564bcdb5ad6208b989c44fba",
-    "varying.def.sc": "7216028d1f9bb33b5037e29d4f2b3ff0d24b5a7b3f0691f2f4c0dd07e9cf10cd",
-    "vs_model.sc": "64e80293a70459fa3fcb3defde3c064f1406ec3062e8f0442a5aa517c051e8c1"
+    "fs_model.sc": "d37baaac6f3dfa6c6901de5291a9cee53c8b425ba1cd3bc5e162e3fda916f69f",
+    "varying.def.sc": "ebd5f2787081e560e011b5bffe94f8d23d86748a22207ab1109f22412ead7d9d",
+    "vs_model.sc": "e31059b58be9a0a7bdef6d2b5f729393544f486644a6ec2417b96bc2cca75ffd"
   },
   "lwjglVersion": "3.4.3",
   "shadercVersion": "shaderc, bgfx shader compiler tool, version 1.19.156."

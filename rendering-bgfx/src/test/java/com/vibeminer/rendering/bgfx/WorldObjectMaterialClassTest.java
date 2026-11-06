@@ -61,7 +61,11 @@ class WorldObjectMaterialClassTest {
         assertTrue(WorldObjectPicking.validClass(WorldStreamObjectsFile.ADDITIVE | UNLIT));
         assertTrue(WorldObjectPicking.validClass(WorldStreamObjectsFile.OPAQUE));
         assertFalse(WorldObjectPicking.validClass(4), "modulate stays refused");
-        assertFalse(WorldObjectPicking.validClass(0x200), "unknown flag");
+        assertTrue(
+                WorldObjectPicking.validClass(
+                        WorldStreamObjectsFile.CUTOUT | UNLIT | WorldStreamObjectsFile.TWO_SIDED),
+                "two-sided (#375)");
+        assertFalse(WorldObjectPicking.validClass(0x400), "unknown flag");
         assertFalse(WorldObjectPicking.validClass(-1));
         assertEquals(
                 WorldStreamObjectsFile.CUTOUT,

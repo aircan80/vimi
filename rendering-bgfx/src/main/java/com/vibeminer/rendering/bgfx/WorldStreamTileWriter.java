@@ -232,6 +232,7 @@ public final class WorldStreamTileWriter {
                     new java.util.ArrayList<>();
             private final java.util.ArrayList<int[]> images = new java.util.ArrayList<>();
             private final java.util.ArrayList<float[]> vertexBlocks = new java.util.ArrayList<>();
+            private final java.util.ArrayList<int[]> colourBlocks = new java.util.ArrayList<>();
             private final java.util.ArrayList<short[]> indexBlocks = new java.util.ArrayList<>();
             private final java.util.ArrayList<byte[]> pixelBlocks = new java.util.ArrayList<>();
             private int vertices, indices, pixels, draws;
@@ -347,23 +348,40 @@ public final class WorldStreamTileWriter {
             /**
              * As {@link #mesh(java.nio.FloatBuffer, java.nio.IntBuffer, int[])}, with one material
              * class per range: 0 opaque, 1 alpha-key cutout, 2 alpha blended, 3 additive, each
-             * optionally with the unlit flag 0x100 (#367).
+             * optionally with the unlit flag 0x100 (#367) and the two-sided flag 0x200 (#375).
              */
             public void mesh(
                     java.nio.FloatBuffer vertexData,
                     java.nio.IntBuffer indexData,
                     int[] drawRanges,
                     int[] blends) {
+                mesh(vertexData, indexData, drawRanges, blends, java.nio.IntBuffer.allocate(0));
+            }
+
+            /**
+             * As {@link #mesh(java.nio.FloatBuffer, java.nio.IntBuffer, int[], int[])}, with vertex
+             * colours: none (all zero) or one {@code r | g << 8 | b << 16} per vertex (#375).
+             */
+            public void mesh(
+                    java.nio.FloatBuffer vertexData,
+                    java.nio.IntBuffer indexData,
+                    int[] drawRanges,
+                    int[] blends,
+                    java.nio.IntBuffer colourData) {
                 open();
                 Objects.requireNonNull(vertexData);
                 Objects.requireNonNull(indexData);
                 Objects.requireNonNull(drawRanges);
                 Objects.requireNonNull(blends);
+                Objects.requireNonNull(colourData);
                 if (blends.length * 3 != drawRanges.length) {
                     throw new IllegalArgumentException("Exterior range classes");
                 }
                 int vertexFloats = vertexData.remaining(), indexCount = indexData.remaining();
                 int count = vertexFloats / WorldStreamObjectsFile.VERTEX_FLOATS;
+                if (colourData.remaining() != 0 && colourData.remaining() != count) {
+                    throw new IllegalArgumentException("Exterior vertex colours");
+                }
                 if (models.isEmpty()
                         || meshes.size() == WorldStreamObjectsFile.MAX_MESHES
                         || vertexFloats % WorldStreamObjectsFile.VERTEX_FLOATS != 0
@@ -377,6 +395,8 @@ public final class WorldStreamTileWriter {
                 }
                 var floats = new float[vertexFloats];
                 vertexData.duplicate().get(floats);
+                var colours = new int[count];
+                colourData.duplicate().get(colours, 0, colourData.remaining());
                 var shorts = new short[indexCount];
                 var source = indexData.duplicate();
                 for (int i = 0; i < indexCount; i++) {
@@ -402,6 +422,7 @@ public final class WorldStreamTileWriter {
                             });
                 }
                 vertexBlocks.add(floats);
+                colourBlocks.add(colours);
                 indexBlocks.add(shorts);
                 vertices += count;
                 indices += indexCount;
@@ -475,6 +496,12 @@ public final class WorldStreamTileWriter {
                     System.arraycopy(block, 0, vertexData, at, block.length);
                     at += block.length;
                 }
+                var colourData = new int[vertices];
+                at = 0;
+                for (var block : colourBlocks) {
+                    System.arraycopy(block, 0, colourData, at, block.length);
+                    at += block.length;
+                }
                 var indexData = new short[indices];
                 at = 0;
                 for (var block : indexBlocks) {
@@ -496,6 +523,7 @@ public final class WorldStreamTileWriter {
                                 transforms,
                                 imageTable,
                                 vertexData,
+                                colourData,
                                 indexData,
                                 pixelData));
             }

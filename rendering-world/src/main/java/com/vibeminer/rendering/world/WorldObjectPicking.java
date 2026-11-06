@@ -39,6 +39,12 @@ public final class WorldObjectPicking {
      */
     public static final int UNLIT = 0x100;
 
+    /**
+     * Flag for a two-sided surface (MOMT F_UNCULLED, #375). Picking already hits both sides of
+     * every surface, as the pass culls no faces.
+     */
+    public static final int TWO_SIDED = 0x200;
+
     /** The kind of a range class, without its flags. */
     public static int kind(int rangeClass) {
         return rangeClass & 0xff;
@@ -46,7 +52,7 @@ public final class WorldObjectPicking {
 
     /** Whether a range class is a known kind with only known flags. */
     public static boolean validClass(int rangeClass) {
-        return (rangeClass & ~(UNLIT | 0xff)) == 0 && kind(rangeClass) <= ADDITIVE;
+        return (rangeClass & ~(UNLIT | TWO_SIDED | 0xff)) == 0 && kind(rangeClass) <= ADDITIVE;
     }
 
     private static final int VERTEX_FLOATS = 8, PLACEMENT_DOUBLES = 13, RANGE_INTS = 4;
