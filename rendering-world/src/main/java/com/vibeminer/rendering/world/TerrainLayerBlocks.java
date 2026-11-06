@@ -70,15 +70,16 @@ public final class TerrainLayerBlocks {
                             at + b * 8);
                 }
             } else {
-                // The 4 x 4 level's mean colour as one solid block.
-                var four =
+                // A box filter of the level above (the 4 x 4 level, or the 2 x 2 built from it).
+                int above = side(level - 1);
+                var pixels =
                         ObjectTextureFormats.decodeLevel(
                                 ObjectTextureFormats.BC1,
-                                4,
-                                4,
+                                above,
+                                above,
                                 ByteBuffer.wrap(chain),
-                                levelOffset(6));
-                solid(mean(four, 0, 16), chain, at);
+                                levelOffset(level - 1));
+                encodeLevel(halve(pixels, above), side(level), chain, at);
             }
         }
         return chain;
@@ -147,18 +148,29 @@ public final class TerrainLayerBlocks {
     }
 
     /**
-     * Range-fit BC1 in four-colour mode: endpoints are the quantized extremes along the block's
-     * widest channel range, each texel takes the nearest of the four palette colours.
+     * BC1 in four-colour mode: the endpoints are the block's two most distant texels (so a two-
+     * colour block is exact and a gradient keeps its ends), and each texel takes the nearest of the
+     * four palette colours.
      */
     static void encodeBlock(int[] texels, byte[] out, int at) {
-        int[] lo = {255, 255, 255}, hi = {0, 0, 0};
+        int first = 0, second = 0;
+        long widest = -1;
         for (int p = 0; p < 16; p++) {
-            for (int c = 0; c < 3; c++) {
-                lo[c] = Math.min(lo[c], texels[p * 3 + c]);
-                hi[c] = Math.max(hi[c], texels[p * 3 + c]);
+            for (int q = p + 1; q < 16; q++) {
+                long d = 0;
+                for (int c = 0; c < 3; c++) {
+                    long e = texels[p * 3 + c] - texels[q * 3 + c];
+                    d += e * e;
+                }
+                if (d > widest) {
+                    widest = d;
+                    first = p;
+                    second = q;
+                }
             }
         }
-        int c0 = pack(hi), c1 = pack(lo);
+        int c0 = pack(java.util.Arrays.copyOfRange(texels, first * 3, first * 3 + 3));
+        int c1 = pack(java.util.Arrays.copyOfRange(texels, second * 3, second * 3 + 3));
         if (c0 == c1) {
             write(out, at, c0, c1, 0);
             return;
@@ -222,25 +234,6 @@ public final class TerrainLayerBlocks {
             remapped |= (index ^ 1) << (p * 2); // 0<->1, 2<->3
         }
         write(chain, to, c1, c0, remapped);
-    }
-
-    private static void solid(int[] rgb, byte[] out, int at) {
-        int colour = pack(rgb);
-        write(out, at, colour, colour, 0);
-    }
-
-    private static int[] mean(byte[] rgba, int from, int texels) {
-        int[] sum = new int[3];
-        for (int p = 0; p < texels; p++) {
-            for (int c = 0; c < 3; c++) {
-                sum[c] += rgba[(from + p) * 4 + c] & 255;
-            }
-        }
-        return new int[] {
-            (sum[0] + texels / 2) / texels,
-            (sum[1] + texels / 2) / texels,
-            (sum[2] + texels / 2) / texels
-        };
     }
 
     private static byte[] halve(byte[] rgba, int s) {

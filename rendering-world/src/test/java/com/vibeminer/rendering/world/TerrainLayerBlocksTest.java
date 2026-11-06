@@ -112,6 +112,42 @@ final class TerrainLayerBlocksTest {
     }
 
     @Test
+    void missingTinyLevelsAreBoxFilteredFromTheLevelAbove() {
+        // 4 x 4 level: red in columns 0-1, blue in columns 2-3 (selectors 0 and 1).
+        var levels = randomLevels(ObjectTextureFormats.BC1, 7, new Random(3));
+        int selectors = 0;
+        for (int p = 0; p < 16; p++) {
+            selectors |= (p % 4 < 2 ? 0 : 1) << (p * 2);
+        }
+        ByteBuffer.wrap(levels[6])
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .putShort(0, (short) 0xF800)
+                .putShort(2, (short) 0x001F)
+                .putInt(4, selectors);
+        var chain = TerrainLayerBlocks.fromBlocks(ObjectTextureFormats.BC1, levels);
+        var two =
+                ObjectTextureFormats.decodeLevel(
+                        ObjectTextureFormats.BC1,
+                        2,
+                        2,
+                        ByteBuffer.wrap(chain),
+                        TerrainLayerBlocks.levelOffset(7));
+        assertEquals(255, two[0] & 255, "2 x 2 left texel stays red");
+        assertEquals(0, two[2] & 255);
+        assertEquals(0, two[4] & 255, "2 x 2 right texel stays blue");
+        assertEquals(255, two[6] & 255);
+        var one =
+                ObjectTextureFormats.decodeLevel(
+                        ObjectTextureFormats.BC1,
+                        1,
+                        1,
+                        ByteBuffer.wrap(chain),
+                        TerrainLayerBlocks.levelOffset(8));
+        assertEquals(128, one[0] & 255, 6, "1 x 1 is the mean");
+        assertEquals(128, one[2] & 255, 6);
+    }
+
+    @Test
     void encodedPixelsStayCloseAtEveryLevel() {
         // A smooth 64 x 64 gradient, enlarged to 256 and encoded.
         int side = 64;

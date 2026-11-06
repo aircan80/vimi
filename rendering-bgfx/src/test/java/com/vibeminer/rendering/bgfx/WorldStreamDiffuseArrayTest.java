@@ -29,9 +29,11 @@ final class WorldStreamDiffuseArrayTest {
 
     @Test
     void layoutIsAFullChainPerLayerAndAFixedArray() {
-        // 256 x 256 BC1 down to 1 x 1 per layer: about 10.7 MiB for the whole array.
+        // 256 x 256 BC1 down to 1 x 1 per layer: about 10.6 MiB for 255 layers.
         assertEquals(43_704, WorldStreamDiffuseArray.LAYER_BYTES);
-        assertEquals(43_704L * 256, WorldStreamDiffuseArray.ARRAY_BYTES);
+        assertEquals(43_704L * 255, WorldStreamDiffuseArray.ARRAY_BYTES);
+        // 255 is the chunk table's "no layer" marker, never a layer.
+        assertEquals(WorldStreamTileFile.SPLAT_NONE, WorldStreamDiffuseArray.CAPACITY);
         assertTrue(WorldStreamDiffuseArray.ARRAY_BYTES < 11L << 20);
         // The RGBA8 fallback: 128 x 128 down to 1 x 1, about 21.3 MiB.
         assertEquals(87_380, WorldStreamDiffuseArray.FALLBACK_LAYER_BYTES);
@@ -58,6 +60,9 @@ final class WorldStreamDiffuseArrayTest {
         var array = new WorldStreamDiffuseArray();
         var full = array.bind(0, keys(1, 1 + WorldStreamDiffuseArray.CAPACITY));
         assertEquals(WorldStreamDiffuseArray.CAPACITY, full.uploads().size());
+        for (int layer : full.layers()) {
+            assertTrue(layer >= 0 && layer < WorldStreamTileFile.SPLAT_NONE, "layer " + layer);
+        }
         var refused = array.bind(1, List.of(key(5000)));
         assertArrayEquals(new int[] {-1}, refused.layers(), "No free layer: atlas fallback");
         assertTrue(refused.uploads().isEmpty());
@@ -132,6 +137,16 @@ final class WorldStreamDiffuseArrayTest {
         assertEquals(0, array.resident());
         var again = array.bind(0, List.of(key(10)));
         assertEquals(1, again.uploads().size(), "A discarded layer is uploaded again");
+    }
+
+    @Test
+    void sharedLayersUploadEvenWhenTheSlotInputsCannot() {
+        int slot = WorldStreamAtlasMips.STEPS.size() + 1;
+        assertEquals(slot + 3, BgfxWorldStreamRenderer.splatStepCount(true, 3));
+        // Without the slot's mask and table textures, its three new layers still go up: the
+        // parent records them resident once the tile is staged (review of #435).
+        assertEquals(3, BgfxWorldStreamRenderer.splatStepCount(false, 3));
+        assertEquals(0, BgfxWorldStreamRenderer.splatStepCount(false, 0));
     }
 
     @Test

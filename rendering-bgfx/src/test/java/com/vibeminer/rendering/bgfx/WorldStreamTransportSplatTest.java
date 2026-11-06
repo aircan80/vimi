@@ -145,6 +145,60 @@ class WorldStreamTransportSplatTest {
         }
     }
 
+    /**
+     * Past 255 distinct diffuses, every binding still assembles into a valid packet trailer, as
+     * {@link WorldStreamTileWriter.PacketFile#splat} builds it: no layer id is ever {@link
+     * WorldStreamTileFile#SPLAT_NONE}, so no tile fails on its trailer (review of #435).
+     */
+    @Test
+    void layerIdsNeverReachTheNoneMarkerPast255Diffuses() throws Exception {
+        var session = session();
+        try {
+            var reservation = reserve(session);
+            var trailers = new java.util.concurrent.atomic.AtomicInteger();
+            var produced =
+                    reservation.produce(
+                            (destination, stopping) -> {
+                                for (int round = 0; round < 20; round++) {
+                                    // Sixteen new diffuses per packet: 320 in all.
+                                    var binding =
+                                            destination.bindSplat(keys(16, 1000 + round * 16));
+                                    byte[] table = new byte[WorldStreamTileFile.SPLAT_TABLE_BYTES];
+                                    java.util.Arrays.fill(
+                                            table, (byte) WorldStreamTileFile.SPLAT_NONE);
+                                    for (int i = 0; i < binding.layers().length; i++) {
+                                        int layer = binding.layers()[i];
+                                        assertTrue(
+                                                layer >= -1
+                                                        && layer < WorldStreamTileFile.SPLAT_NONE,
+                                                "round " + round + " layer " + layer);
+                                        if (layer >= 0) {
+                                            table[i] = (byte) layer;
+                                        }
+                                    }
+                                    int[] uploads =
+                                            binding.uploads().stream()
+                                                    .mapToInt(Integer::intValue)
+                                                    .toArray();
+                                    new WorldStreamTileFile.Splat(
+                                            table,
+                                            new byte[WorldStreamTileFile.SPLAT_ALPHA_BYTES],
+                                            uploads,
+                                            new byte[uploads.length]
+                                                    [WorldStreamTileFile.SPLAT_LAYER_BYTES]);
+                                    trailers.incrementAndGet();
+                                }
+                                assertEquals(
+                                        WorldStreamDiffuseArray.CAPACITY, session.splatResident());
+                                throw new java.io.IOException("Authored end");
+                            });
+            assertThrows(ExecutionException.class, () -> produced.get(10, TimeUnit.SECONDS));
+            assertEquals(20, trailers.get(), "every binding made a valid trailer");
+        } finally {
+            close(session);
+        }
+    }
+
     @Test
     void aStagedTileKeepsItsLayersForTheNextTile() throws Exception {
         var session = session();
@@ -179,6 +233,19 @@ class WorldStreamTransportSplatTest {
                 /* The authored producer's own end does not undo the staged result. */
             }
             assertEquals(3, session.splatResident(), "A later producer end forgets nothing");
+            assertEquals(3, session.splatReferenced());
+            // The slot's next tile is staged without splat layers (untextured, or no splat
+            // inputs): the old layers stay cached but are no longer pinned by the slot.
+            var bound = WorldStreamTransport.TileReservation.class.getDeclaredField("splatBound");
+            bound.setAccessible(true);
+            bound.setBoolean(reservation, false);
+            var keep =
+                    WorldStreamTransport.Session.class.getDeclaredMethod(
+                            "keepSplat", WorldStreamTransport.TileReservation.class);
+            keep.setAccessible(true);
+            keep.invoke(session, reservation);
+            assertEquals(0, session.splatReferenced(), "An unsplatted successor unpins the slot");
+            assertEquals(3, session.splatResident(), "Unpinned layers stay cached for reuse");
         } finally {
             close(session);
         }

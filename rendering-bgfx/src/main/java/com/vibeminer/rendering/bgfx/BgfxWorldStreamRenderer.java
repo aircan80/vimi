@@ -143,6 +143,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         private final AtomicLong issued = new AtomicLong(), released = new AtomicLong();
         private final AtomicInteger references = new AtomicInteger();
         private int geometryAt, atlasStep, splatStep, splatSteps, tickets;
+
+        // Whether this upload's slot inputs (mask chain, table) go up; shared layers always do.
+        private boolean splatSlot;
         private boolean canceled, finished, successful;
         private volatile String failure;
         // Inline objects named by the tile header; the build owns their packed input.
@@ -643,7 +646,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     }
 
     /**
-     * Shared splat layer array: 256 layers of 256 x 256 BC1 with mips (about 10.7 MiB), or of 128 x
+     * Shared splat layer array: 255 layers of 256 x 256 BC1 with mips (about 10.6 MiB), or of 128 x
      * 128 RGBA8 (about 21.3 MiB) where BC1 arrays are not sampled, created on the first packet that
      * carries splatting inputs, only where 2D arrays are supported.
      */
@@ -714,23 +717,34 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     /** Steps of one packet's splat upload: mask chain, table, then each new layer. */
     private int splatSteps(Upload upload) {
         var source = upload.source;
+        upload.splatSlot = false;
         if (source.splatAlpha == null || !splatReady()) {
             return 0;
         }
         var slot = slots[upload.lease.slot()];
+        upload.splatSlot = true;
         if (slot.splatAlpha == INVALID) {
             try {
                 createSplatTextures(slot);
             } catch (IOException unavailable) {
-                // Optional: this slot keeps its atlas, and no half-created pair survives.
+                // Optional: this slot keeps its atlas, and no half-created pair survives. Its new
+                // shared layers still go up: the parent records them resident either way.
                 if (slot.splatAlpha != INVALID) {
                     bgfx_destroy_texture(slot.splatAlpha);
                 }
                 slot.splatAlpha = slot.splatTable = INVALID;
-                return 0;
+                upload.splatSlot = false;
             }
         }
-        return WorldStreamAtlasMips.STEPS.size() + 1 + source.splatLayers.length;
+        return splatStepCount(upload.splatSlot, source.splatLayers.length);
+    }
+
+    /**
+     * Steps of one packet's splat upload: the slot's mask chain and table when its textures exist,
+     * then every new shared layer, which is uploaded even when the slot's textures are not.
+     */
+    static int splatStepCount(boolean slotInputs, int layers) {
+        return (slotInputs ? WorldStreamAtlasMips.STEPS.size() + 1 : 0) + layers;
     }
 
     private void createSplatTextures(Slot slot) throws IOException {
@@ -763,7 +777,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         var source = upload.source;
         var slot = slots[upload.lease.slot()];
         int step = upload.splatStep++;
-        int alphaSteps = WorldStreamAtlasMips.STEPS.size();
+        int alphaSteps = upload.splatSlot ? WorldStreamAtlasMips.STEPS.size() : 0;
+        int slotSteps = upload.splatSlot ? alphaSteps + 1 : 0;
         if (step < alphaSteps) {
             int bytes = 0;
             for (var slice : WorldStreamAtlasMips.STEPS.get(step)) {
@@ -782,7 +797,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
             return bytes;
         }
-        if (step == alphaSteps) {
+        if (step < slotSteps) {
             bgfx_update_texture_2d(
                     slot.splatTable,
                     0,
@@ -795,7 +810,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     16 * 4);
             return source.splatTable.length;
         }
-        int index = step - alphaSteps - 1;
+        int index = step - slotSteps;
         int layer = source.splatLayers[index];
         var chain = source.splatChains[index];
         if (splatBlocks) {
@@ -1197,7 +1212,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 slot.objects = upload.objects.take();
             }
             slot.ready = true;
-            slot.splatted = upload.splatSteps != 0;
+            slot.splatted = upload.splatSlot;
             upload.successful = true;
         } else if (upload.objects != null) {
             upload.objects.abandon();

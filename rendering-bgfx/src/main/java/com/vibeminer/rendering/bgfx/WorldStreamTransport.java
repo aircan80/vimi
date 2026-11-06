@@ -406,6 +406,10 @@ public final class WorldStreamTransport {
         // Splat layers this reservation's packet uploads; forgotten unless the tile is staged.
         private int[] splatPending = new int[0];
 
+        // Whether this tile bound splat layers at all; a staged tile that did not releases the
+        // slot's previous binding, so an untextured successor never pins old layers forever.
+        private boolean splatBound;
+
         private TileReservation(Session session, WorldStreamParentState.Ticket ticket) {
             this.session = session;
             this.ticket = ticket;
@@ -711,6 +715,7 @@ public final class WorldStreamTransport {
                     }
                 }
                 reservation.splatPending = uploads.stream().mapToInt(Integer::intValue).toArray();
+                reservation.splatBound = true;
                 return new SplatBinding(layers, List.copyOf(uploads));
             }
         }
@@ -729,6 +734,11 @@ public final class WorldStreamTransport {
         private void keepSplat(TileReservation reservation) {
             synchronized (splatLayers) {
                 reservation.splatPending = new int[0];
+                if (!reservation.splatBound) {
+                    // This slot's new tile uses no splat layers: its old ones stay cached but
+                    // become evictable (draw-lifetime pinning is #174 step 2b-2's design).
+                    splatLayers.release(reservation.ticket.lease.slot());
+                }
             }
         }
 
@@ -738,6 +748,13 @@ public final class WorldStreamTransport {
                     splatLayers.discard(layer);
                 }
                 reservation.splatPending = new int[0];
+            }
+        }
+
+        /** Test observation: layers some slot still references. */
+        int splatReferenced() {
+            synchronized (splatLayers) {
+                return splatLayers.referenced();
             }
         }
 

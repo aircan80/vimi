@@ -11,7 +11,7 @@ Every layer diffuse is one `TerrainLayerBlocks` chain: 256 x 256 BC1 with every 
   - BC2 and BC3 keep their colour half. When a colour block's endpoints are not ordered `c0 > c1`, they are swapped and its indices remapped, so the block decodes to the same colours as BC1.
   - Terrain layers are opaque (the atlas composer blends colour only), so no alpha is lost.
   - A missing 2 x 2 or 1 x 1 level becomes one block of the 4 x 4 level's mean colour.
-- **Every other diffuse** (paletted or BGRA, smaller than 256, or with missing mips) is decoded at its largest mip within 256. It is then enlarged with wrapping bilinear filtering, box-mipped and encoded with a range-fit BC1 encoder, which is lossy.
+- **Every other diffuse** (paletted or BGRA, smaller than 256, or with missing mips) is decoded at its largest mip within 256. It is then enlarged with wrapping bilinear filtering, box-mipped and encoded as BC1 (endpoints are each block's two most distant texels), which is lossy.
 
 The parent caches prepared layers by file id and content key: up to 256 entries, about 10.7 MiB.
 
@@ -26,11 +26,11 @@ The parent's `WorldStreamDiffuseArray` decides which diffuse holds which layer. 
 
 ## Child array
 
-The hot child creates one shared 2D array of 256 layers on the first packet that has a splat trailer.
+The hot child creates one shared 2D array of 255 layers (255 is the table's "no layer" marker) on the first packet that has a splat trailer.
 
 | Backend samples BC1 arrays | Array | Size |
 |---|---|---|
-| yes (D3D11, Vulkan on this machine) | 256 x 256 BC1, 9 levels | about 10.7 MiB |
+| yes (D3D11, Vulkan on this machine) | 256 x 256 BC1, 9 levels | about 10.6 MiB |
 | no, or `-Dvimi.world.splat.rgba8=true` | 128 x 128 RGBA8 (the chain's levels 1 to 8, decoded) | about 21.3 MiB |
 
 - The child reports the chosen format once on stderr (`World splat layers: …`).

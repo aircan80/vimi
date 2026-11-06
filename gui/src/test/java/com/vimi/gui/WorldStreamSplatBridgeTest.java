@@ -38,7 +38,7 @@ public final class WorldStreamSplatBridgeTest {
                                 var material = borrow.material();
                                 check(material != null, "Textured authored tile");
                                 var input =
-                                        WorldStreamSourceBridge.splatInput(borrow, material, splat);
+                                        WorldStreamSourceBridge.splatInput(borrow, material, splat, () -> false);
                                 check(
                                         input.fileIds().length == splat.diffuseCount()
                                                 && input.fileIds().length > 0,
@@ -79,6 +79,20 @@ public final class WorldStreamSplatBridgeTest {
                                 check(
                                         counts.fileBlocks() + counts.encoded() == layers.get(),
                                         "Every prepared layer is counted by how it was prepared");
+                                // A stopped producer reads no further diffuse.
+                                var stopped =
+                                        WorldStreamSourceBridge.splatInput(
+                                                borrow, material, splat, () -> true);
+                                try {
+                                    stopped.decode().apply(input.fileIds()[0]);
+                                    // A cached detail needs no read and may still be returned.
+                                } catch (RuntimeException canceled) {
+                                    check(
+                                            canceled instanceof java.util.concurrent.CancellationException
+                                                    || canceled.getCause()
+                                                            instanceof java.util.concurrent.CancellationException,
+                                            "A stopped decode ends as a cancellation: " + canceled);
+                                }
                                 check(
                                         input.decode().apply(0xfffffL).isEmpty(),
                                         "A diffuse outside the material yields no layer");

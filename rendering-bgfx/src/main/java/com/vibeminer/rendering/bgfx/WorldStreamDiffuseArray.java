@@ -24,12 +24,16 @@ import java.util.Set;
 final class WorldStreamDiffuseArray {
     static final int SIDE = TerrainLayerBlocks.SIDE, LEVELS = TerrainLayerBlocks.LEVELS;
 
-    static final int CAPACITY = 256;
+    /**
+     * Layers 0 to 254: the packet's chunk table marks "no layer" with {@link
+     * WorldStreamTileFile#SPLAT_NONE} (255), so 255 is never a layer.
+     */
+    static final int CAPACITY = WorldStreamTileFile.SPLAT_NONE;
 
     /** One BC1 layer with its mip chain, 256 x 256 down to 1 x 1: 43,704 bytes. */
     static final int LAYER_BYTES = TerrainLayerBlocks.CHAIN_BYTES;
 
-    /** The whole BC1 array: 256 layers, about 10.7 MiB. */
+    /** The whole BC1 array: 255 layers, about 10.6 MiB. */
     static final long ARRAY_BYTES = (long) LAYER_BYTES * CAPACITY;
 
     /** RGBA8 fallback layer: the BC1 chain's levels 1 to 8, 128 x 128 down to 1 x 1. */

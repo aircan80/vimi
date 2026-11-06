@@ -908,7 +908,7 @@ final class WorldStreamSourceBridge {
         var splat = borrow.splat();
         if (splat.isPresent() && material != null && texture != null) {
             try {
-                packet.splat(splatInput(borrow, material, splat.get()));
+                packet.splat(splatInput(borrow, material, splat.get(), stopping));
             } catch (RuntimeException failure) {
                 packet.close();
                 throw failure;
@@ -921,7 +921,8 @@ final class WorldStreamSourceBridge {
     static WorldStreamTileWriter.SplatInput splatInput(
             WorldTerrainStreaming.CheckedBorrow borrow,
             WorldTerrainStreaming.Material material,
-            com.vibeminer.rendering.world.TerrainTileSplat splat) {
+            com.vibeminer.rendering.world.TerrainTileSplat splat,
+            BooleanSupplier stopping) {
         long[] ids = splat.diffuseIds();
         String[] keys = new String[ids.length];
         for (int i = 0; i < ids.length; i++) {
@@ -933,9 +934,14 @@ final class WorldStreamSourceBridge {
         }
         byte[] table = new byte[splat.layers().remaining()];
         splat.layers().get(table);
+        // The producer's stop reaches each layer decode: a stopped tile reads no more diffuses.
+        var token = new Cancellation();
         return new WorldStreamTileWriter.SplatInput(ids, keys, table, splat.alpha(),
-                id -> borrow.diffuseDetail(id, Cancellation.NONE)
-                        .map(detail -> new WorldStreamTileWriter.Diffuse(detail.chain())));
+                id -> {
+                    if (stopping.getAsBoolean()) token.cancel();
+                    return borrow.diffuseDetail(id, token)
+                            .map(detail -> new WorldStreamTileWriter.Diffuse(detail.chain()));
+                });
     }
 
     private static WorldStreamTileWriter.Source structural(WorldTerrainStreaming.SourceTuple input) {

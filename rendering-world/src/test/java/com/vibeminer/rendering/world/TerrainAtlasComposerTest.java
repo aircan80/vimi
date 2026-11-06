@@ -82,6 +82,28 @@ class TerrainAtlasComposerTest {
         return WorldTextureFormats.read(out.toByteArray(), () -> false);
     }
 
+    /** Single-layer chunks over 64 diffuses, the reader's MDID bound: chunk o draws o % 64 + 1. */
+    private static WorldTextureFormats.TextureData distinctDiffuses() {
+        var out = new ByteArrayOutputStream();
+        out.writeBytes(part("MVER", ints(18)));
+        out.writeBytes(part("MAMP", ints(0)));
+        int[] ids = new int[TerrainTileSplat.MAX_DIFFUSES];
+        for (int i = 0; i < ids.length; i++) {
+            ids[i] = i + 1;
+        }
+        out.writeBytes(part("MDID", ints(ids)));
+        out.writeBytes(part("MHID", ints(new int[ids.length])));
+        for (int ordinal = 0; ordinal < 256; ordinal++) {
+            var layers = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
+            layers.putInt(ordinal % ids.length).putInt(0).putInt(0).putInt(0);
+            var chunk = new ByteArrayOutputStream();
+            chunk.writeBytes(part("MCLY", layers.array()));
+            chunk.writeBytes(part("MCAL", new byte[0]));
+            out.writeBytes(part("MCNK", chunk.toByteArray()));
+        }
+        return WorldTextureFormats.read(out.toByteArray(), () -> false);
+    }
+
     private static TerrainGrid grid(byte[] firstColors, boolean holes, boolean reverseX) {
         var chunks = new ArrayList<TerrainGrid.Chunk>();
         for (int ordinal = 0; ordinal < 256; ordinal++) {
@@ -199,6 +221,33 @@ class TerrainAtlasComposerTest {
             assertThrows(ReadOnlyBufferException.class, () -> splat.alpha().put(0, (byte) 1));
             // The atlas is unchanged by requesting the splat.
             assertEquals(plain.atlas().pixels(), result.atlas().pixels());
+        }
+    }
+
+    @Test
+    void aFullDiffuseListStillSplatsEveryChunk() {
+        // The reader bounds a tile to 64 diffuse ids, so the composer's own cap (chunks whose new
+        // diffuses would pass the list keep the atlas) is a guard; at the bound, all chunks splat.
+        try (var textures = distinctDiffuses()) {
+            var mips = new java.util.HashMap<Long, TerrainAtlasComposer.DiffuseMip>();
+            for (long id = 1; id <= TerrainTileSplat.MAX_DIFFUSES; id++) {
+                mips.put(id, mip(id, 200, 100, 50));
+            }
+            var result =
+                    TerrainAtlasComposer.compose(
+                            TILE, grid(new byte[0], true, true), textures, mips, true, () -> false);
+            var splat = result.splat();
+            assertEquals(TerrainTileSplat.MAX_DIFFUSES, splat.diffuseCount());
+            int splatted = 0;
+            for (int y = 0; y < 16; y++) {
+                for (int x = 0; x < 16; x++) {
+                    if (splat.layer(x, y, 0) != TerrainTileSplat.NONE) {
+                        splatted++;
+                    }
+                }
+            }
+            assertEquals(256, splatted);
+            assertTrue(result.atlas() != null, "the tile still composes its atlas");
         }
     }
 

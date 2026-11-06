@@ -233,8 +233,22 @@ public final class TerrainAtlasComposer {
                 continue;
             }
             renderChunk(chunk, mips, masks, colors, pixels, canceled);
-            // Splatting draws at most four layers (three masks); wider chunks keep the atlas.
-            if (splat && layers.size() <= 4) {
+            // Splatting draws at most four layers (three masks); wider chunks keep the atlas, and
+            // so does a chunk whose new diffuses would pass the tile's MAX_DIFFUSES list.
+            long added =
+                    splat
+                            ? layers.stream()
+                                    .mapToLong(
+                                            layer ->
+                                                    textures.diffuseIds()
+                                                            .get((int) layer.textureIndex()))
+                                    .distinct()
+                                    .filter(id -> !splatIds.contains(id))
+                                    .count()
+                            : 0;
+            if (splat
+                    && layers.size() <= 4
+                    && splatIds.size() + added <= TerrainTileSplat.MAX_DIFFUSES) {
                 int base = (chunk.y() * 16 + chunk.x()) * 4;
                 for (int i = 0; i < layers.size(); i++) {
                     long id = textures.diffuseIds().get((int) layers.get(i).textureIndex());
