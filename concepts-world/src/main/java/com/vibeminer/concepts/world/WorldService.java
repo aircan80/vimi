@@ -449,6 +449,15 @@ public final class WorldService implements BuildWorld {
                 });
     }
 
+    /** The geometry cache's release revision and listener (#304). */
+    long geometryReleaseRevision() {
+        return cache.releaseRevision();
+    }
+
+    AutoCloseable onGeometryRelease(Runnable listener) {
+        return cache.onRelease(listener);
+    }
+
     /** Private source factories call this only inside withRecordedTile on their source worker. */
     WorldGeometryCache.Prepared prepareGeometry(WorldStreamScopes.TileAdmission admission) {
         return cache.prepare(admission);

@@ -472,6 +472,14 @@ final class WorldPreparedTerrain {
         return scopes.create(comparison, cancel);
     }
 
+    long geometryReleaseRevision() {
+        return world.geometryReleaseRevision();
+    }
+
+    AutoCloseable onGeometryRelease(Runnable listener) {
+        return world.onGeometryRelease(listener);
+    }
+
     void activate(WorldStreamScopes.Scope scope) {
         checkOpen();
         scopes.activate(scope);

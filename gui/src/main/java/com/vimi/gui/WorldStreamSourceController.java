@@ -141,7 +141,7 @@ final class WorldStreamSourceController {
          * reservation was issued. A refusal waits for a change since issue, not since processing,
          * so an FX bump that lands in between still wakes the retry (#305).
          */
-        long issuedPresentation, issuedDemand, issuedSourceRetirement;
+        long issuedPresentation, issuedDemand, issuedSourceRetirement, issuedGeometry;
         CompletableFuture<WorldStreamTransport.Resident> result;
         CompletableFuture<Void> cancellation;
 
@@ -239,7 +239,10 @@ final class WorldStreamSourceController {
             new LinkedHashMap<>();
     private boolean initialBlocked;
     private long initialRetryAt, blockedAt;
-    private boolean blockedOnMaterialPool;
+    private boolean blockedOnMaterialPool, blockedOnGeometry;
+    private long blockedGeometry;
+    /** Wakes the controller when the source's geometry lane releases (#304). */
+    private AutoCloseable geometryWake;
     private long sourceRetirementRevision, blockedSourceRetirement;
     private long blockedCapacity = -1, blockedPresentation = -1, blockedDemand = -1;
     private volatile Throwable terminal;
@@ -572,6 +575,8 @@ final class WorldStreamSourceController {
                     return;
                 }
                 source=capability.orElseThrow();
+                // A GEOMETRY_CREDIT refusal waits for this release instead of re-polling.
+                geometryWake=source.onGeometryRelease(this::kick);
                 // Static diagnostic water joins each actual terrain tile; disable with
                 // -Dvimi.world.water=false.
                 if(!"false".equals(System.getProperty("vimi.world.water")))
@@ -678,6 +683,7 @@ final class WorldStreamSourceController {
                     // Revisions as of issue, read before the pending reservation is dropped (#305).
                     long issuedPresentation = pending.issuedPresentation, issuedDemand = pending.issuedDemand;
                     long issuedSourceRetirement = pending.issuedSourceRetirement;
+                    long issuedGeometry = pending.issuedGeometry;
                     if(creditTarget!=null && same(creditTarget,pending.tile)
                             && refusal.reason()!=WorldStreamTransport.Refusal.RETRY_LATER) creditTarget=null;
                     pending.producer.close();
@@ -709,7 +715,9 @@ final class WorldStreamSourceController {
                     }
                     // This refusal's own unused-credit ACK is not a source-pool wakeup.
                     blockedOnMaterialPool = origin != null && origin.site().equals("MATERIAL_POOL");
+                    blockedOnGeometry = origin != null && origin.site().equals("GEOMETRY_CREDIT");
                     blockedSourceRetirement = issuedSourceRetirement;
+                    blockedGeometry = issuedGeometry;
                     var seam = tileRefusalSeam;
                     if (seam != null) seam.run();
                     blockedAt = clock.getAsLong();
@@ -717,9 +725,9 @@ final class WorldStreamSourceController {
                     // one: a retirement or credit that landed after it was issued (even between
                     // the refusal and this step) must still wake the retry (#283). The
                     // reservation's own drain and retirement are excluded; its unused-credit
-                    // CREDIT arrives as an ordinary capacity change and deliberately wakes one
-                    // retry per refusal, as before (polling while the geometry lane is busy is
-                    // pre-existing and tracked separately).
+                    // CREDIT arrives as an ordinary capacity change and wakes one retry per
+                    // refusal. A GEOMETRY_CREDIT refusal ignores capacity and instead waits on
+                    // the source's geometry release revision, so a busy lane is not polled (#304).
                     // Likewise presentation and demand: both are bumped on the FX thread, so the
                     // values sampled at issue are compared, never the ones current now (#305).
                     blockedCapacity = refusedCapacity;
@@ -808,8 +816,23 @@ final class WorldStreamSourceController {
             publish(Phase.UNAVAILABLE,"Nearest terrain unavailable: "+unavailable.get(key(wanted.getFirst())).site());
             return;
         }
+        long geometry = blockedGeometry;
+        if (blockedOnGeometry) {
+            try {
+                geometry = source.geometryReleaseRevision();
+            } catch (RuntimeException retired) {
+                // A retired source cannot release; retry now so the attempt reports why.
+                geometry = blockedGeometry + 1;
+            }
+        }
         synchronized (lock) {
-            if ((blockedOnMaterialPool || blockedCapacity == session.capacityRevision())
+            // The geometry lane frees only on its own release; capacity and pixels don't help.
+            if (blockedOnGeometry
+                    && blockedGeometry == geometry
+                    && blockedDemand == demandRevision
+                    && clock.getAsLong() - blockedAt < RETRY_NANOS) return;
+            if (!blockedOnGeometry
+                    && (blockedOnMaterialPool || blockedCapacity == session.capacityRevision())
                     && (blockedOnMaterialPool
                             ? blockedSourceRetirement == sourceRetirementRevision
                             : blockedPresentation == presentationRevision)
@@ -887,12 +910,14 @@ final class WorldStreamSourceController {
                 return;
             }
             blockedOnMaterialPool = false;
+            blockedOnGeometry = false;
             pending = new Pending(tile, reservation.orElseThrow(), source, waterReady() ? water : null, scope);
             synchronized (lock) {
                 pending.issuedPresentation = presentationRevision;
                 pending.issuedDemand = demandRevision;
             }
             pending.issuedSourceRetirement = sourceRetirementRevision;
+            pending.issuedGeometry = source.geometryReleaseRevision();
             pending.result = pending.reservation.produce(pending.producer);
             pending.result.whenComplete((ignored, failure) -> kick());
             publish(Phase.PREPARING, "Preparing terrain, textures and upload");
@@ -1435,6 +1460,15 @@ final class WorldStreamSourceController {
         exteriorTried.clear();
         exterior = null;
         if (exteriorWorker != null) exteriorWorker.shutdown();
+        if (geometryWake != null) {
+            try {
+                geometryWake.close();
+            } catch (Exception problem) {
+                if (failure == null) failure = problem;
+                else failure.addSuppressed(problem);
+            }
+            geometryWake = null;
+        }
         source = null;
         water = null;
         waterTables = null;
