@@ -14,10 +14,12 @@ import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.SourceDataLine;
 
 /**
- * Measures an ambience kit change through the real decoder: the authored tone plays as kit A,
- * then the desired kit becomes B. Each file is the real decoder's output repeated to 10 s. Lines are paced like a device with a 250 ms buffer, so each
- * write has a place on the device timeline, and closing a line discards what it still queues. Prints the longest audible gap after the change and
- * the time until kit B plays at full volume; asserts nothing.
+ * Measures World audio through the real decoder on lines paced like a device with a 250 ms
+ * buffer: each write has a place on the device timeline, and closing a line discards what it
+ * still queues. Each file is the real decoder's output repeated. Modes: {@code change} (default)
+ * plays the authored tone as ambience kit A, then switches to kit B, and prints the longest
+ * audible gap after the change and the time until kit B plays at full volume; {@code loop} and
+ * {@code music} are described on their methods. Asserts nothing.
  */
 public final class WorldAudioZoneChangeProbe {
     private WorldAudioZoneChangeProbe() {}
@@ -232,10 +234,10 @@ public final class WorldAudioZoneChangeProbe {
             int full = all.stream().mapToInt(Write::peak).max().orElse(0);
             long audibleUntil = from, gap = 0;
             for (var w : all) {
-                if (w.start() + w.nanos() < from || w.start() > to || w.peak() < full / 20)
+                if (!w.played() || w.end() < from || w.start() > to || w.peak() < full / 20)
                     continue;
                 gap = Math.max(gap, w.start() - audibleUntil);
-                audibleUntil = Math.max(audibleUntil, w.start() + w.nanos());
+                audibleUntil = Math.max(audibleUntil, w.end());
             }
             gaps.add(gap / 1e6);
         }
@@ -262,8 +264,8 @@ public final class WorldAudioZoneChangeProbe {
         var extra = new ArrayList<Double>();
         for (int line = 1; line < lines; line++) {
             int previous = line - 1, next = line;
-            long end = all.stream().filter(w -> w.line() == previous)
-                    .mapToLong(w -> w.start() + w.nanos()).max().orElse(-1);
+            long end = all.stream().filter(w -> w.line() == previous && w.played())
+                    .mapToLong(Write::end).max().orElse(-1);
             long start = all.stream().filter(w -> w.line() == next).mapToLong(Write::start)
                     .min().orElse(-1);
             if (end > 0 && start > 0) extra.add((start - end) / 1e6 - 1000);
