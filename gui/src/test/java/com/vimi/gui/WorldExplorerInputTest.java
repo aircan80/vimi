@@ -131,10 +131,10 @@ public final class WorldExplorerInputTest {
         }
         var commands = java.util.EnumSet.of(WorldControls.Action.MAP_PANEL,
                 WorldControls.Action.HIDE_HUD, WorldControls.Action.DEV_OVERLAY,
-                WorldControls.Action.SCREENSHOT);
+                WorldControls.Action.INSPECT_PIN, WorldControls.Action.SCREENSHOT);
         for (var action : WorldControls.Action.values())
             require(action.command == commands.contains(action),
-                    "Exactly the map panel, hide HUD, developer overlay and screenshot keys are commands: "
+                    "Exactly the map panel, hide HUD, developer overlay, inspect pin and screenshot keys are commands: "
                             + action);
         var host = new Host();
         var input = exact(host);

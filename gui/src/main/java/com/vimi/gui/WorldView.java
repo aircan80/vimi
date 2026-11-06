@@ -914,6 +914,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (explorer) viewport.requestFocus();
         });
         inspectCard.visibleProperty().addListener((o, was, now) -> anchorToasts());
+        // The card follows the HUD's hidden state by listening (it shows and hides itself): hiding
+        // the HUD hides it and keeps it open, showing the HUD shows it again.
+        hud.hiddenProperty().addListener((o, was, now) -> inspectCard.hudHidden(now));
+        inspectCard.hudHidden(hud.hidden());
         toastLayer.setId("world-toast-layer");
         toastLayer.setPickOnBounds(false);
         toastLayer.setMouseTransparent(false);
