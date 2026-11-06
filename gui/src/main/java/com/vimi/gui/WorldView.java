@@ -981,11 +981,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (explorer) viewport.requestFocus();
         });
         placeToasts();
-        minimap.tracking().onShowing(this::clearKeys);
+        // Opening the popup stops flight; a held command key (L) stays held so its repeat is no toggle.
+        minimap.tracking().onShowing(() -> {
+            input.clearMotion();
+            devOverlay.refresh();
+        });
         minimap.tracking().passThrough(event -> {
             var action = input.controls().keys().get(event.getCode());
             return action != null && action.command;
         });
+        minimap.tracking().forward(this::viewportKey);
         // A clicked minimap marker opens the same inspect card as a pick in the world.
         minimap.onMarkerClicked(clicked -> {
             // A marker card wins over any world pick still in flight, and clears its highlight.
@@ -1224,14 +1229,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         e.consume();
                         return;
                     }
-                    input.keyPressed(e.getCode());
-                    devOverlay.refresh();
+                    viewportKey(e);
                     e.consume();
                 });
         viewport.setOnKeyReleased(
                 e -> {
-                    input.keyReleased(e.getCode());
-                    devOverlay.refresh();
+                    viewportKey(e);
                     e.consume();
                 });
         viewport.focusedProperty()
@@ -2183,6 +2186,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
         tileInventory.setScaleY(1);
     }
 
+    /** The viewport's key handling: flight input and HUD commands. */
+    private void viewportKey(javafx.scene.input.KeyEvent e) {
+        if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_PRESSED) input.keyPressed(e.getCode());
+        else if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_RELEASED) input.keyReleased(e.getCode());
+        devOverlay.refresh();
+    }
+
     /**
      * Command keys ({@link WorldControls.Action#command}), once per press. Every command action
      * gets a branch here; one without a route is reported instead of being dropped silently, and
@@ -2193,6 +2203,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
             case MAP_PANEL -> toggleMapPanel();
             case HIDE_HUD -> panels(!panelsHidden);
             case DEV_OVERLAY -> devOverlay.cycle();
+            case SPAWNS -> {
+                if (spawns != null && !spawns.toggle().isDisabled()) spawns.toggle().fire();
+            }
+            case DAY_NIGHT -> audio.cycleSlot();
+            case TRACKING -> minimap.toggleTracking();
+            case MINIMAP -> minimap.toggleShown();
+            // The speed choice box saves the controls from its own action.
+            case SPEED_STROLL, SPEED_MOUNT, SPEED_FLY, SPEED_FAST, SPEED_TURBO -> flightSpeed.setValue(action.speed());
             case INSPECT_PIN -> {
                 if (camera != null) inspectCard.togglePin(camera.x(), camera.y(), camera.z());
             }
