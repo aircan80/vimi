@@ -150,13 +150,16 @@ public final class WorldInstanceUiTest {
             await(() -> inventoryMap(view) == DUNGEON.id() && (boolean) get(view, "explorer")
                     && get(view, "camera") != null && !(boolean) get(view, "scenePreparing"), () -> {
                 require(leave.isVisible(), "Leave is offered inside the instance");
-                leave.fire();
+                var chip = view.lookup("#world-zone-leave");
+                require(chip != null && chip.isVisible(), "The zone text offers Leave next to the zone");
+                ((Button) chip).fire();
                 await(() -> inventoryMap(view) == HOME.id() && (boolean) get(view, "explorer")
                         && get(view, "camera") != null && !(boolean) get(view, "scenePreparing"), () -> {
                     var camera = (TerrainRenderer.Camera) get(view, "camera");
                     require(camera.x() == saved.x() && camera.y() == saved.y(),
                             "Leave returns to the open-world position of entry: " + camera);
                     require(!leave.isVisible(), "No leave after returning");
+                    require(!view.lookup("#world-zone-leave").isVisible(), "No leave chip after returning");
                     enteringBar(view);
                 });
             });

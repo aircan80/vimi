@@ -140,6 +140,37 @@ final class WorldHud extends StackPane {
         status.getChildren().clear();
     }
 
+
+    /** Places {@code node} top-centre (the zone line). */
+    void topCenter(Node node) {
+        place(node, Pos.TOP_CENTER, new Insets(10, 220, 0, 220));
+    }
+
+    /** Places {@code node} bottom-left (the status icon row). */
+    void bottomLeft(Node node) {
+        place(node, Pos.BOTTOM_LEFT, new Insets(10));
+    }
+
+    /** Places {@code node} bottom-right (the coordinates pill). */
+    void bottomRight(Node node) {
+        place(node, Pos.BOTTOM_RIGHT, new Insets(10));
+    }
+
+    /** Places a banner centred a quarter of the way down the view; it never takes input. */
+    void banner(Region node) {
+        node.setMouseTransparent(true);
+        node.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
+        node.translateYProperty().bind(heightProperty().divide(-4));
+        place(node, Pos.CENTER, Insets.EMPTY);
+    }
+
+    private void place(Node node, Pos where, Insets margin) {
+        StackPane.setAlignment(node, where);
+        StackPane.setMargin(node, margin);
+        // Keep the map panel on top of everything else in the HUD.
+        getChildren().add(getChildren().indexOf(panel), node);
+    }
+
     /** Rows under the map name; a hook for other HUD pieces placed top-left. */
     VBox topLeft() {
         return topLeft;

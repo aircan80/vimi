@@ -96,6 +96,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // HUD over the viewport: Map button and map name, status rows, the map panel (M).
     private final WorldHud hud = new WorldHud(this::toggleMapPanel, viewport::requestFocus);
     private final Button panelBack = new Button();
+    // HUD step 2: zone text and banner top-centre, coordinates pill bottom-right.
+    private final WorldZoneText zoneText = new WorldZoneText(() -> this.leaveInstance.fire(), viewport::requestFocus);
+    private final WorldCoordinatesPill coordinates = new WorldCoordinatesPill(viewport::requestFocus);
     // The explorer's one slim bar, and the other control rows behind its "More" toggle.
     private final javafx.scene.control.ToggleButton moreControls = new javafx.scene.control.ToggleButton("More");
     private final VBox moreRows = new VBox(8);
@@ -855,6 +858,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
         heading.getStyleClass().add("h2");
         hud.mapNameLabel().textProperty().bind(heading.textProperty());
         hud.mapKey(mapKey(WorldControls.DEFAULTS));
+        hud.topCenter(zoneText.line());
+        hud.banner(zoneText.banner());
+        hud.bottomRight(coordinates.node());
+        // The full text lines stay the models; the HUD shows the short form and keeps them as tooltips.
+        zoneText.tooltip().textProperty().bind(currentArea.textProperty());
+        coordinates.tooltip().textProperty().bind(position.textProperty());
+        zoneText.leave().visibleProperty().bind(leaveInstance.visibleProperty());
+        zoneText.leave().textProperty().bind(javafx.beans.binding.Bindings.when(
+                leaveInstance.textProperty().isEqualTo("Cancel")).then("Cancel").otherwise("Leave"));
         panelBack.setId("world-map-panel-back");
         panelBack.setFocusTraversable(false);
         panelBack.textProperty().bind(back.textProperty());
@@ -1404,7 +1416,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (spawns != null) spawns.suspend();
         resetInspection();
         retireTextures();
-        currentArea.setText("Terrain area unavailable");
+        showArea(null);
+        coordinates.clear();
         audio.area(null, -1, null);
         minimap.hide();
         retireGpu();
@@ -1922,10 +1935,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         refreshEntrances();
         explorerChrome(true);
         // HUD step 1: one slim bar under the view; every other control row folds behind "More".
-        var bar = new HBox(10, walkMode, new Label("Speed"), flightSpeed, currentArea, position, moreControls);
+        var bar = new HBox(10, walkMode, new Label("Speed"), flightSpeed, moreControls);
         bar.setId("world-hud-bar");
         bar.setAlignment(Pos.CENTER_LEFT);
-        HBox.setHgrow(position, Priority.ALWAYS);
         var inspectHint = new Label(INSPECT_HINT);
         inspectHint.setWrapText(true);
         moreRows.getChildren().setAll(
@@ -1962,6 +1974,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
             return;
         }
         hud.clearStatus();
+        zoneText.reset();
+        coordinates.clear();
         if (!split.getItems().contains(sidebarPane)) {
             split.getItems().addFirst(sidebarPane);
             split.setDividerPositions(sidebarDivider);
@@ -2624,14 +2638,21 @@ final class WorldView extends BorderPane implements AutoCloseable {
         // The instance owns the area and its audio while it is entered.
         if (instances.engaged()) return;
         if (camera==null || catalog==null || inventory==null) {
-            currentArea.setText("Terrain area unavailable");
+            showArea(null);
             audio.area(null, -1, null);
             return;
         }
         var area = com.vibeminer.concepts.world.WorldCurrentArea.locate(
                 inventory.map().id(),camera.x(),camera.y(),loaded.values(),catalog.areaIndex());
-        currentArea.setText(area.label());
+        showArea(area);
         audio.area(handle, inventory.map().id(), area);
+    }
+
+    /** The recorded area under the camera (null: unknown), on the area line and the HUD zone text. */
+    private void showArea(com.vibeminer.concepts.world.WorldCurrentArea.Result area) {
+        currentArea.setText(area == null ? "Terrain area unavailable" : area.label());
+        boolean known = area != null && area.state() == com.vibeminer.concepts.world.WorldCurrentArea.State.KNOWN;
+        zoneText.area(known ? area.chain().stream().map(Object::toString).toList() : java.util.List.of());
     }
 
     private void requestFrame() {
@@ -2671,6 +2692,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         camera.z(),
                         input.effectiveSpeed(),
                         loaded.size()));
+        coordinates.show(camera.x(), camera.y(), camera.z(), tileX(), tileY());
         if (gpu != null && gpuEnabled.isSelected() && gpuScene != null) {
             if (!viewportActive()) {
                 retireGpu();
@@ -2835,7 +2857,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         textureStatus.setText(snapshot.detail());
         retryTextures.setDisable(true);
         if (snapshot.area() != null) {
-            currentArea.setText(snapshot.area().label());
+            showArea(snapshot.area());
             audio.area(inventory == null ? null : handle,
                     inventory == null ? -1 : inventory.map().id(), snapshot.area());
         }
@@ -2844,6 +2866,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 tileX(), tileY(), camera.x(), camera.y(), camera.z(),
                 input.effectiveSpeed(),
                 snapshot.prepared(), snapshot.desired()));
+        if (camera != null) coordinates.show(camera.x(), camera.y(), camera.z(), tileX(), tileY());
         var pending = controller.takePresentation();
         if (pending.isEmpty()) return;
         var frame = pending.get();

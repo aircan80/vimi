@@ -572,6 +572,13 @@ tasks.register('worldInstanceSwitchTest', JavaExec) {
 }
 check.dependsOn worldInstanceSwitchTest
 
+// World HUD pieces (zone text and banner timing, coordinates pill); requires a display.
+tasks.register('worldHudUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldHudUiTest'
+}
+
 // Authored physical terrain coordinates and deterministic keyboard/timer events; requires a display.
 tasks.register('worldNavigationUiTest', JavaExec) {
     dependsOn testClasses
