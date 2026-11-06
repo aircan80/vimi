@@ -16,12 +16,12 @@ import java.util.concurrent.atomic.AtomicReference;
  * tile, then late objects with three camera-facing quads side by side, a cutout quad whose texels
  * are all transparent (discarded: terrain stays), an opaque quad (exact texel colour at full light)
  * and an alpha-blended quad (source-alpha over the terrain pixel). The tile is filled to the
- * placement cap behind the camera, so each frame draws the maximum per-tile placements in both
- * passes. Authored data only.
+ * placement cap behind the camera, so each frame tests the maximum per-tile placements in both
+ * passes and the CPU cull skips all but the first. Authored data only.
  */
 public final class WorldStreamObjectsMaterialProof {
     private static final int WIDTH = 800, HEIGHT = 500;
-    private static final TerrainCamera VIEW = new TerrainCamera(-20, -2, 20, 0, -.5);
+    static final TerrainCamera VIEW = new TerrainCamera(-20, -2, 20, 0, -.5);
 
     @SuppressWarnings("try")
     public static void main(String[] arguments) throws Exception {
@@ -194,7 +194,8 @@ public final class WorldStreamObjectsMaterialProof {
         builder.placement(
                 0, VIEW.x(), VIEW.y(), VIEW.z(), 1, new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1});
         // Fill the tile to the placement cap behind the camera (looking along +x), so every frame
-        // draws all of them in the opaque/cutout pass and again in the sorted blended pass.
+        // tests all of them in the opaque/cutout pass and again in the sorted blended pass; the
+        // CPU cull skips them (WorldStreamObjectsCullProof compares it with culling off).
         while (builder.placementRoom() > 0) {
             int i = builder.placementCount();
             builder.placement(
