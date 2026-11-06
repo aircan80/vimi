@@ -191,6 +191,31 @@ class WorldPresentBudgetTest {
     }
 
     @Test
+    void successiveChildrenShareOneLiveWindowProcedure() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                org.lwjgl.system.Platform.get() == org.lwjgl.system.Platform.WINDOWS);
+        // The class keeps the procedure it was registered with: a child created after an earlier
+        // one closed must not call a procedure freed with that one (an access violation).
+        long parent = WorldStreamWindowProof.parentWindow();
+        try {
+            for (int i = 0; i < 4; i++) {
+                var child = WorldChildWindow.create(parent);
+                WorldStreamWindowProof.showChild(parent, 64 + i, 48);
+                long until = System.nanoTime() + 2_000_000_000L;
+                while (child.clientSize()[0] == 0 && System.nanoTime() < until) {
+                    Thread.sleep(5);
+                }
+                assertEquals(64 + i, child.clientSize()[0], "Child " + i + " is placed and shown");
+                child.close();
+                assertFalse(child.pumping(), "Child " + i + " closed");
+            }
+        } finally {
+            org.lwjgl.system.windows.User32.PostMessage(
+                    null, parent, org.lwjgl.system.windows.User32.WM_CLOSE, 0, 0);
+        }
+    }
+
+    @Test
     void childWindowThreadEndsWhenTheParentIsDestroyed() throws Exception {
         org.junit.jupiter.api.Assumptions.assumeTrue(
                 org.lwjgl.system.Platform.get() == org.lwjgl.system.Platform.WINDOWS);

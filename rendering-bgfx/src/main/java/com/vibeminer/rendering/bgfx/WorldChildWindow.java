@@ -29,18 +29,67 @@ final class WorldChildWindow implements WorldWindowPresentation.Surface {
     private static final int CLOSE = User32.WM_USER + 1;
 
     private final long hwnd, parent;
+
+    /**
+     * The window class is process-wide and keeps the procedure it was registered with, so there is
+     * one procedure for every child this process creates, registered once and never freed. A
+     * per-window procedure would be freed with its window while a later child of the same class
+     * still called it.
+     */
+    private static WindowProc classProcedure;
+
+    /** Each live child's destroyed flag, by handle, for the shared procedure. */
+    private static final java.util.Map<Long, AtomicBoolean> WINDOWS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     private final Thread thread;
-    private final WindowProc proc;
     private final AtomicBoolean destroyed;
     private boolean closed;
 
-    private WorldChildWindow(
-            long hwnd, long parent, Thread thread, WindowProc proc, AtomicBoolean destroyed) {
+    private WorldChildWindow(long hwnd, long parent, Thread thread, AtomicBoolean destroyed) {
         this.hwnd = hwnd;
         this.parent = parent;
         this.thread = thread;
-        this.proc = proc;
         this.destroyed = destroyed;
+    }
+
+    /** Registers the class with the shared procedure, once per process. */
+    private static synchronized void registerClass() throws IOException {
+        if (classProcedure != null) {
+            return;
+        }
+        var procedure = WindowProc.create(WorldChildWindow::procedure);
+        try (var stack = MemoryStack.stackPush()) {
+            var cls =
+                    WNDCLASSEX
+                            .calloc(stack)
+                            .cbSize(WNDCLASSEX.SIZEOF)
+                            .lpfnWndProc(procedure)
+                            .lpszClassName(stack.UTF16(CLASS_NAME));
+            if (User32.RegisterClassEx(null, cls) == 0) {
+                procedure.free();
+                throw new IOException("Child window class registration failed");
+            }
+        }
+        classProcedure = procedure;
+    }
+
+    private static long procedure(long window, int message, long w, long l) {
+        if (message == CLOSE) {
+            User32.DestroyWindow(null, window);
+            return 0;
+        }
+        if (message == User32.WM_NCDESTROY) {
+            // Ours, or the parent's destruction taking its children along. It arrives as a sent
+            // message inside GetMessage, after which nothing is posted: post WM_QUIT (to this,
+            // the window's own thread) so the loop ends.
+            var destroyed = WINDOWS.remove(window);
+            if (destroyed != null) {
+                destroyed.set(true);
+            }
+            postQuitMessage();
+        }
+        return User32.DefWindowProc(window, message, w, l);
     }
 
     static WorldChildWindow create(long parent) throws IOException {
@@ -49,23 +98,7 @@ final class WorldChildWindow implements WorldWindowPresentation.Surface {
         }
         var created = new CompletableFuture<Long>();
         var destroyed = new AtomicBoolean();
-        // The window procedure lives as long as the window; it is freed after the thread ends.
-        var proc =
-                WindowProc.create(
-                        (window, message, w, l) -> {
-                            if (message == CLOSE) {
-                                User32.DestroyWindow(null, window);
-                                return 0;
-                            }
-                            if (message == User32.WM_NCDESTROY) {
-                                // Ours, or the parent's destruction taking its children along.
-                                // It arrives as a sent message inside GetMessage, after which
-                                // nothing is posted: post WM_QUIT so the loop ends.
-                                destroyed.set(true);
-                                postQuitMessage();
-                            }
-                            return User32.DefWindowProc(window, message, w, l);
-                        });
+        registerClass();
         var thread =
                 Thread.ofPlatform()
                         .daemon()
@@ -73,13 +106,6 @@ final class WorldChildWindow implements WorldWindowPresentation.Surface {
                         .start(
                                 () -> {
                                     try (var stack = MemoryStack.stackPush()) {
-                                        var cls =
-                                                WNDCLASSEX
-                                                        .calloc(stack)
-                                                        .cbSize(WNDCLASSEX.SIZEOF)
-                                                        .lpfnWndProc(proc)
-                                                        .lpszClassName(stack.UTF16(CLASS_NAME));
-                                        User32.RegisterClassEx(null, cls);
                                         var area = RECT.calloc(stack);
                                         User32.GetWindowRect(null, parent, area);
                                         long window =
@@ -105,6 +131,7 @@ final class WorldChildWindow implements WorldWindowPresentation.Surface {
                                                             "Child window creation failed"));
                                             return;
                                         }
+                                        WINDOWS.put(window, destroyed);
                                         created.complete(window);
                                         var msg = MSG.calloc(stack);
                                         while (!destroyed.get()
@@ -112,24 +139,19 @@ final class WorldChildWindow implements WorldWindowPresentation.Surface {
                                             User32.TranslateMessage(msg);
                                             User32.DispatchMessage(msg);
                                         }
+                                        // Also when it went with its parent before it was
+                                        // recorded: a loop that ended has no window left.
+                                        WINDOWS.remove(window);
+                                        destroyed.set(true);
                                     } catch (Throwable failure) {
                                         created.completeExceptionally(failure);
                                     }
                                 });
         try {
             return new WorldChildWindow(
-                    created.get(10, TimeUnit.SECONDS), parent, thread, proc, destroyed);
+                    created.get(10, TimeUnit.SECONDS), parent, thread, destroyed);
         } catch (Exception failure) {
-            // No window to own the procedure: end the thread if it is still creating, then free.
             thread.interrupt();
-            try {
-                thread.join(1000);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-            }
-            if (!thread.isAlive()) {
-                proc.free();
-            }
             throw new IOException("Child window creation failed", failure);
         }
     }
@@ -200,9 +222,6 @@ final class WorldChildWindow implements WorldWindowPresentation.Surface {
             thread.join(1000);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
-        }
-        if (!thread.isAlive()) {
-            proc.free();
         }
     }
 }
