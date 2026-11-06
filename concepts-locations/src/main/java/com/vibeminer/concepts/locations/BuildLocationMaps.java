@@ -45,6 +45,16 @@ public interface BuildLocationMaps extends AutoCloseable {
                 MapTypes.WmoGroupAssignments.unsupported(worldMapId));
     }
 
+    /**
+     * The unscoped UiMapAssignment frames of {@code worldMapId}, as recorded (see {@link
+     * MapTypes.WorldFrame}). The default reports the query unsupported.
+     */
+    default CompletableFuture<MapTypes.WorldFrames> worldFrames(
+            long worldMapId, Cancellation token) {
+        java.util.Objects.requireNonNull(token);
+        return CompletableFuture.completedFuture(MapTypes.WorldFrames.unsupported(worldMapId));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

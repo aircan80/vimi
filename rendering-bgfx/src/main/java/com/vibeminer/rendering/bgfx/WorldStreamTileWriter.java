@@ -295,14 +295,22 @@ public final class WorldStreamTileWriter {
                 return placements.size();
             }
 
-            /** Copies one RGBA8 image (power-of-two sides at most 256); returns its index. */
+            /**
+             * Copies one RGBA8 image given as its full packed mip chain (power-of-two sides at most
+             * 256, see {@link com.vibeminer.rendering.world.ObjectTextureMips}); returns its index.
+             */
             public int image(int width, int height, java.nio.ByteBuffer rgba) {
                 open();
                 Objects.requireNonNull(rgba);
-                long count = (long) width * height;
-                if (images.size() == WorldStreamObjectsFile.MAX_IMAGES
-                        || width < 1
+                if (width < 1
                         || height < 1
+                        || width > WorldStreamObjectsFile.MAX_IMAGE_SIDE
+                        || height > WorldStreamObjectsFile.MAX_IMAGE_SIDE) {
+                    throw new IllegalArgumentException("Exterior image exceeds file profile");
+                }
+                long count =
+                        com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(width, height);
+                if (images.size() == WorldStreamObjectsFile.MAX_IMAGES
                         || count > WorldStreamObjectsFile.MAX_PIXELS - pixels
                         || rgba.remaining() != count * 4) {
                     throw new IllegalArgumentException("Exterior image exceeds file profile");

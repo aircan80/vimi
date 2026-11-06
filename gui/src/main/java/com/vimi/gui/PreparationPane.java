@@ -268,6 +268,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
                             WorldSpawnModels.build(work::creaturesHandle, work::filesHandle, job.build().version()),
                             work::revision, javafx.application.Platform::runLater));
                     world.attachSpawns(overlay);
+                    attachWorldRoles(world, work);
                     var generatedStore = work.generatedHandle();
                     world.attachCreatures(new WorldTileCreatures(
                             token -> sources.worldSpawns(job.build(), token),
@@ -332,6 +333,39 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         browsers.get("Tables").searchTable(table);
     }
 
+    /**
+     * Minimap role markers: the Maps placement carried to world yards through the selected build's
+     * recorded assignment frames of the explorer's current map.
+     */
+    private void attachWorldRoles(WorldView view, NativePreparationWork work) {
+        var build = job.build();
+        var locale = job.locale();
+        view.attachRoles(new WorldRoleOverlay((worldMapId, token) -> {
+            var source = work.locationMapsHandle();
+            if (source == null) throw new IllegalStateException("Selected-build map tables are unavailable.");
+            var placement = placeRoles(source, sources.mapRoles(build, locale, token), token);
+            var frames = source.worldFrames(worldMapId, token).join();
+            return new WorldRoleOverlay.Loaded(placement.catalog(),
+                    com.vibeminer.concepts.locations.MapRoles.world(placement, frames));
+        }, () -> java.util.Arrays.asList(sources.mapRolesKey(build), work.revision(),
+                work.locationMapsHandle())));
+    }
+
+    /** Resolves a role catalog in bounded chunks so interactive map requests can interleave. */
+    private static com.vibeminer.concepts.locations.MapRoles.Placement placeRoles(
+            com.vibeminer.concepts.locations.BuildLocationMaps source,
+            com.vibeminer.concepts.locations.MapRoles.Catalog catalog,
+            com.vibeminer.access.Cancellation token) {
+        var locations = com.vibeminer.concepts.locations.MapRoles.locations(catalog);
+        var resolutions = new java.util.ArrayList<com.vibeminer.concepts.locations.MapTypes.Resolution>(locations.size());
+        for (int at = 0; at < locations.size(); at += 512) {
+            token.check();
+            resolutions.addAll(source.resolveAll(
+                    locations.subList(at, Math.min(locations.size(), at + 512)), token).join());
+        }
+        return com.vibeminer.concepts.locations.MapRoles.place(catalog, resolutions);
+    }
+
     /** Quest/service overlays: local prepared Questie roles resolved by the selected build's maps. */
     private void attachMapRoles(MapsView view, NativePreparationWork work) {
         var build = job.build();
@@ -339,16 +373,8 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         view.attachRoles(new MapRoleOverlay(token -> {
             var source = work.locationMapsHandle();
             if (source == null) throw new IllegalStateException("Selected-build map tables are unavailable.");
-            var catalog = sources.mapRoles(build, locale, token);
-            var locations = com.vibeminer.concepts.locations.MapRoles.locations(catalog);
             // Bounded chunks let interactive artwork and location requests interleave on the shared worker.
-            var resolutions = new java.util.ArrayList<com.vibeminer.concepts.locations.MapTypes.Resolution>(locations.size());
-            for (int at = 0; at < locations.size(); at += 512) {
-                token.check();
-                resolutions.addAll(source.resolveAll(
-                        locations.subList(at, Math.min(locations.size(), at + 512)), token).join());
-            }
-            return com.vibeminer.concepts.locations.MapRoles.place(catalog, resolutions);
+            return placeRoles(source, sources.mapRoles(build, locale, token), token);
         }, () -> java.util.Arrays.asList(sources.mapRolesKey(build), work.revision(),
                 work.locationMapsHandle()), view::redraw));
     }

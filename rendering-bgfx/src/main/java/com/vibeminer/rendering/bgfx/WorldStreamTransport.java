@@ -616,6 +616,14 @@ public final class WorldStreamTransport {
         private int outstandingReliable;
         private volatile long capacityRevision;
         private TileReservation tile;
+        // The reservation tile replaced. The parent state admits a successor only once this one's
+        // replies are all accounted for, but a reply it has already accepted may still be on its
+        // way through this reader when the successor is reserved, so replies are matched by
+        // transaction, never by whichever reservation is current.
+        private TileReservation previousTile;
+        // Test seam: runs on the status reader after the parent state accepted a message and
+        // before this session handles it.
+        volatile java.util.function.Consumer<WorldStreamParentState.Change> statusSeam;
         private WorldStreamPacketFile.Moved input;
         private boolean commitRequested;
         private CommitOperation commitOperation;
@@ -1284,6 +1292,7 @@ public final class WorldStreamTransport {
                 if (reserved == null) {
                     return java.util.Optional.empty();
                 }
+                previousTile = tile;
                 tile = new TileReservation(this, reserved);
                 tile.issuedCapacity = capacityRevision;
                 return java.util.Optional.of(tile);
@@ -1341,6 +1350,31 @@ public final class WorldStreamTransport {
                         case RETIRED -> CancellationReason.ALREADY_RETIRED;
                         default -> throw new IllegalArgumentException("Nonterminal cancellation");
                     });
+        }
+
+        /**
+         * The reservation a tile reply names, by transaction: the current one or its predecessor.
+         */
+        private TileReservation reservationFor(long transaction) {
+            synchronized (lock) {
+                if (tile != null && tile.ticket.transaction == transaction) {
+                    return tile;
+                }
+                if (previousTile != null && previousTile.ticket.transaction == transaction) {
+                    return previousTile;
+                }
+                throw new IllegalStateException("Uncorrelated tile status");
+            }
+        }
+
+        private static long transaction(WorldStreamStatus.Message message) {
+            return switch (message) {
+                case WorldStreamStatus.InputConsumed value -> value.transaction();
+                case WorldStreamStatus.Staged value -> value.transaction();
+                case WorldStreamStatus.Rejected value -> value.transaction();
+                case WorldStreamStatus.Canceled value -> value.transaction();
+                default -> throw new IllegalStateException("Status names no tile transaction");
+            };
         }
 
         /**
@@ -1689,6 +1723,10 @@ public final class WorldStreamTransport {
                         return;
                     }
                     var change = state.status(message);
+                    var seam = statusSeam;
+                    if (seam != null) {
+                        seam.accept(change);
+                    }
                     switch (change) {
                         case SESSION -> {
                             handle.initialized();
@@ -1747,32 +1785,31 @@ public final class WorldStreamTransport {
                                 publishCancellation(candidate);
                             }
                         }
-                        case INPUT_TILE ->
-                                enqueueFile(
-                                        () -> {
-                                            WorldStreamPacketFile.Moved owned;
-                                            TileReservation current;
-                                            synchronized (lock) {
-                                                owned = input;
-                                                current = tile;
-                                            }
-                                            if (owned == null) {
-                                                throw new IllegalStateException(
-                                                        "Missing advertised input owner");
-                                            }
-                                            owned.close();
-                                            state.retireTileFile(current.ticket);
-                                            publishCancellation(current);
-                                            capacityChanged();
-                                            synchronized (lock) {
-                                                input = null;
-                                                lock.notifyAll();
-                                            }
-                                        });
+                        case INPUT_TILE -> {
+                            var current = reservationFor(transaction(message));
+                            enqueueFile(
+                                    () -> {
+                                        WorldStreamPacketFile.Moved owned;
+                                        synchronized (lock) {
+                                            owned = input;
+                                        }
+                                        if (owned == null) {
+                                            throw new IllegalStateException(
+                                                    "Missing advertised input owner");
+                                        }
+                                        owned.close();
+                                        state.retireTileFile(current.ticket);
+                                        publishCancellation(current);
+                                        capacityChanged();
+                                        synchronized (lock) {
+                                            input = null;
+                                            lock.notifyAll();
+                                        }
+                                    });
+                        }
                         case STAGED -> {
-                            TileReservation current;
+                            TileReservation current = reservationFor(transaction(message));
                             synchronized (lock) {
-                                current = tile;
                                 if (!current.offerOutstanding) {
                                     throw new IllegalStateException("Missing offer command credit");
                                 }
@@ -1792,9 +1829,8 @@ public final class WorldStreamTransport {
                             }
                         }
                         case CANCELED -> {
-                            TileReservation current;
+                            TileReservation current = reservationFor(transaction(message));
                             synchronized (lock) {
-                                current = tile;
                                 if (!current.cancelOutstanding) {
                                     throw new IllegalStateException(
                                             "Missing cancel command credit");
@@ -1838,10 +1874,9 @@ public final class WorldStreamTransport {
                                         new java.io.IOException("World commit rejected"));
                                 break;
                             }
-                            TileReservation current;
+                            TileReservation current = reservationFor(transaction(message));
                             boolean cancelPending;
                             synchronized (lock) {
-                                current = tile;
                                 if (!current.offerOutstanding) {
                                     throw new IllegalStateException(
                                             "Missing rejected offer credit");
@@ -1857,9 +1892,8 @@ public final class WorldStreamTransport {
                             current.result.completeExceptionally(error);
                         }
                         case CANCEL_REJECTED -> {
-                            TileReservation current;
+                            TileReservation current = reservationFor(transaction(message));
                             synchronized (lock) {
-                                current = tile;
                                 if (!current.cancelOutstanding) {
                                     throw new IllegalStateException("Missing stale cancel credit");
                                 }

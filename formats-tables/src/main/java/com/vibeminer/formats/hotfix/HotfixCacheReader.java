@@ -23,9 +23,22 @@ public final class HotfixCacheReader {
 
     private HotfixCacheReader() {}
 
+    /**
+     * Bounds of one inspection. XFTH v9 does not declare a record count; each record takes at least
+     * a 32-byte header, so the 64 MiB source bound alone would allow about 2.1 million. The record
+     * bound is ours: the index keeps about 200 bytes per record (measured on a real 60,275-record
+     * cache: 12.1 MB), so 262,144 records cost at most about 53 MB while a cache snapshot is open.
+     * Real caches seen so far hold 28k to 60k records.
+     */
     public record Limits(long maxSourceBytes, int maxRecords, int maxRecordBytes) {
+        /** Default record bound. */
+        public static final int MAX_RECORDS = 262_144;
+
+        /** Default source bound. */
+        public static final long MAX_SOURCE_BYTES = 64L << 20;
+
         public Limits() {
-            this(64L << 20, 65536, 1 << 20);
+            this(MAX_SOURCE_BYTES, MAX_RECORDS, 1 << 20);
         }
 
         public Limits {
@@ -248,7 +261,7 @@ public final class HotfixCacheReader {
         while (input.position() < length) {
             token.check();
             if (entries.size() == limits.maxRecords()) {
-                throw fail("LIMIT", "Hotfix record count exceeds its bound");
+                throw recordLimit(input, length, entries.size(), limits, token);
             }
             if (length - input.position() < ENTRY_BYTES) {
                 throw fail("INVALID", "Hotfix entry header is truncated");
@@ -299,6 +312,50 @@ public final class HotfixCacheReader {
                 HexFormat.of().formatHex(header),
                 HexFormat.of().formatHex(input.digest.digest()),
                 entries);
+    }
+
+    /**
+     * Counts the remaining records (headers only, nothing retained) so the refusal can name the
+     * actual count against the bound. A malformed tail still reports at least the bound plus one.
+     */
+    private static HotfixFormatException recordLimit(
+            Input input, long length, int counted, Limits limits, Cancellation token) {
+        long records = counted;
+        try {
+            while (input.position() < length && length - input.position() >= ENTRY_BYTES) {
+                token.check();
+                if (input.integer() != MAGIC) {
+                    break;
+                }
+                input.integer();
+                input.integer();
+                input.integer();
+                input.integer();
+                input.integer();
+                int bytes = input.integer();
+                input.unsignedByte();
+                input.unsignedByte();
+                input.unsignedByte();
+                input.unsignedByte();
+                if (bytes < 0 || bytes > length - input.position()) {
+                    break;
+                }
+                input.payloadDigest(bytes);
+                records++;
+            }
+        } catch (HotfixFormatException malformedTail) {
+            // Keep the count reached so far.
+        }
+        records = Math.max(records, (long) limits.maxRecords() + 1);
+        return new HotfixFormatException(
+                "HOTFIX_RECORD_LIMIT",
+                "Hotfix cache holds "
+                        + records
+                        + " records; at most "
+                        + limits.maxRecords()
+                        + " are read",
+                records,
+                limits.maxRecords());
     }
 
     private static HotfixFormatException fail(String code, String message) {
