@@ -584,7 +584,10 @@ final class WorldStreamSourceController {
                     return;
                 }
                 source=capability.orElseThrow();
-                // A GEOMETRY_CREDIT refusal waits for this release instead of re-polling.
+                // A GEOMETRY_CREDIT refusal waits for this release instead of re-polling. It kicks
+                // on every release, not only while blocked: a filter on blockedOnGeometry would
+                // drop a release landing between issue and the refusal being recorded, and kicks
+                // coalesce in schedule(), so an unneeded one costs a gate check.
                 geometryWake=source.onGeometryRelease(this::kick);
                 // Static diagnostic water joins each actual terrain tile; disable with
                 // -Dvimi.world.water=false.
