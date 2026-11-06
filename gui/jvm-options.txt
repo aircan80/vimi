@@ -1,0 +1,7 @@
+# Desktop app JVM options, shared by `gradlew :gui:run` (gui/build.gradle) and the packaged
+# app (scripts/release/package_app.py). One option per line; lines starting with # are
+# comments, and so is anything after " #" on an option line.
+#
+# Low-pause collector: the World explorer presents up to 60 frames a second, so a long
+# stop-the-world pause shows as a visible hitch. ZGC is generational on JDK 25.
+-XX:+UseZGC
