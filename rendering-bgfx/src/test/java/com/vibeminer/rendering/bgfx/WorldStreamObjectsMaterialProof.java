@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.ObjectTextureFormats;
 import com.vibeminer.rendering.world.TerrainCamera;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
@@ -23,16 +24,31 @@ public final class WorldStreamObjectsMaterialProof {
     private static final int WIDTH = 800, HEIGHT = 500;
     private static final TerrainCamera VIEW = new TerrainCamera(-20, -2, 20, 0, -.5);
 
+    /**
+     * Image formats (issue #374): {@code rgba8} (default), {@code bc} (BC1 opaque and cutout, BC3
+     * blended, uploaded as blocks where the backend samples them) or {@code bc-fallback} (the same
+     * blocks with the child forced onto its RGBA8 decode path).
+     */
+    static final String IMAGES = System.getProperty("vimi.proof.objectImages", "rgba8");
+
+    /** Opaque texel colour: exact in RGBA8 and as the 565 colour (25, 10, 5) BC1 expands. */
+    static final int OPAQUE_R = 206, OPAQUE_G = 40, OPAQUE_B = 41;
+
     @SuppressWarnings("try")
     public static void main(String[] arguments) throws Exception {
         Path output = Path.of(arguments[0]);
         Files.createDirectories(output);
         var process = new AtomicReference<Process>();
+        var backend =
+                WorldStreamTransport.Backend.valueOf(
+                        System.getProperty("vimi.proof.backend", "VULKAN")
+                                .toUpperCase(java.util.Locale.ROOT));
         var prepared =
                 WorldStreamTransport.prepare(
-                        output,
-                        new WorldStreamTransport.Spec(
-                                "ab".repeat(32), 1, WorldStreamTransport.Backend.VULKAN, true));
+                        output, new WorldStreamTransport.Spec("ab".repeat(32), 1, backend, true));
+        if (!List.of("rgba8", "bc", "bc-fallback").contains(IMAGES)) {
+            throw new IllegalArgumentException("vimi.proof.objectImages: rgba8, bc or bc-fallback");
+        }
         var session =
                 prepared.launch(
                         controls -> {
@@ -45,6 +61,11 @@ public final class WorldStreamObjectsMaterialProof {
                                                                     "java")
                                                             .toString(),
                                                     "--enable-native-access=ALL-UNNAMED",
+                                                    "-D"
+                                                            + BgfxWorldStreamRenderer
+                                                                    .OBJECTS_RGBA8_PROPERTY
+                                                            + "="
+                                                            + IMAGES.equals("bc-fallback"),
                                                     "-cp",
                                                     System.getProperty("java.class.path"),
                                                     GpuViewerMain.class.getName()));
@@ -77,10 +98,10 @@ public final class WorldStreamObjectsMaterialProof {
                 near(channel(left, shift), channel(baseLeft, shift), 1, "cutout discards");
             }
             // Opaque at full light and no fog: the texel colour, in either channel order.
-            int r = Math.abs(channel(middle, 16) - 200) <= 1 ? 16 : 0;
-            near(channel(middle, r), 200, 1, "opaque red");
-            near(channel(middle, 8), 40, 1, "opaque green");
-            near(channel(middle, 16 - r), 40, 1, "opaque blue");
+            int r = Math.abs(channel(middle, 16) - OPAQUE_R) <= 1 ? 16 : 0;
+            near(channel(middle, r), OPAQUE_R, 1, "opaque red");
+            near(channel(middle, 8), OPAQUE_G, 1, "opaque green");
+            near(channel(middle, 16 - r), OPAQUE_B, 1, "opaque blue");
             // Blended: 128/255 of blue (0, 0, 255) over the terrain pixel.
             double a = 128 / 255.0;
             int b = 16 - r;
@@ -123,13 +144,28 @@ public final class WorldStreamObjectsMaterialProof {
                     || blended.material() != WorldStreamObjectsFile.BLENDED) {
                 throw new AssertionError("Picked surfaces disagree: " + opaque + " " + blended);
             }
+            // The child names each compressed format's upload path once, at renderer start.
+            String path =
+                    switch (IMAGES) {
+                        case "bc" -> "BC1 compressed, BC2 compressed, BC3 compressed";
+                        case "bc-fallback" -> "BC1 decoded to RGBA8, BC2 decoded to RGBA8";
+                        default -> "World object textures:";
+                    };
+            if (!session.stderrSnapshot().contains(path)) {
+                throw new AssertionError(
+                        "Object texture path not reported: " + session.stderrSnapshot());
+            }
             var receipt = session.closeAsync().get(7, TimeUnit.SECONDS);
             session.completion().get(2, TimeUnit.SECONDS);
             if (receipt.exitCode().orElseThrow() != 0 || process.get().isAlive()) {
                 throw new AssertionError("Actual native process drain disagrees");
             }
             System.out.println(
-                    "WORLD_OBJECT_MATERIALS_PASS placements="
+                    "WORLD_OBJECT_MATERIALS_PASS backend="
+                            + backend
+                            + " images="
+                            + IMAGES
+                            + " placements="
                             + WorldStreamObjectsFile.MAX_PLACEMENTS
                             + " cutout="
                             + Integer.toHexString(left)
@@ -148,15 +184,41 @@ public final class WorldStreamObjectsMaterialProof {
     /** Three quads at eye depth 5, eye-right [-3,-1], [-0.9,0.9] and [1,3], eye-up [-2,2]. */
     static WorldStreamTileWriter.Exterior quads() {
         var builder = WorldStreamTileWriter.Exterior.builder();
-        // The opaque chain has the largest image side, so it is filled in two bounded upload
-        // steps; the blended one is non-square, nine levels of 256 x 64 down to 1 x 1.
-        builder.image(
-                256,
-                256,
-                WorldStreamObjectsFileTest.chain(256, 256, solid(256, 256, 200, 40, 40, 255)));
-        builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(2, 2, 10, 250, 10, 0)));
-        builder.image(
-                256, 64, WorldStreamObjectsFileTest.chain(256, 64, solid(256, 64, 0, 0, 255, 128)));
+        // The opaque chain has the largest image side (two bounded RGBA8 upload steps, one as
+        // BC1); the blended one is non-square, nine levels of 256 x 64 down to 1 x 1.
+        if (IMAGES.equals("rgba8")) {
+            builder.image(
+                    256,
+                    256,
+                    WorldStreamObjectsFileTest.chain(
+                            256, 256, solid(256, 256, OPAQUE_R, OPAQUE_G, OPAQUE_B, 255)));
+            builder.image(
+                    2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(2, 2, 10, 250, 10, 0)));
+            builder.image(
+                    256,
+                    64,
+                    WorldStreamObjectsFileTest.chain(256, 64, solid(256, 64, 0, 0, 255, 128)));
+        } else {
+            int color = 25 << 11 | 10 << 5 | 5, blue = 0x001F;
+            // BC1 four-colour, every selector 0: the opaque colour. BC1 is opaque-only (#374).
+            builder.image(
+                    256,
+                    256,
+                    ObjectTextureFormats.BC1,
+                    blocks(ObjectTextureFormats.BC1, 256, 256, bc1(color, 0, 0)));
+            // BC3 at the smallest compressed side: alpha 0 everywhere, so the cutout discards.
+            builder.image(
+                    4,
+                    4,
+                    ObjectTextureFormats.BC3,
+                    blocks(ObjectTextureFormats.BC3, 4, 4, bc3(0, blue)));
+            // BC3: alpha 128 everywhere (both endpoints), colour blue.
+            builder.image(
+                    256,
+                    64,
+                    ObjectTextureFormats.BC3,
+                    blocks(ObjectTextureFormats.BC3, 256, 64, bc3(128, blue)));
+        }
         builder.model();
         double[][] spans = {{-3, -1}, {-.9, .9}, {1, 3}};
         var vertices = FloatBuffer.allocate(12 * 8);
@@ -218,6 +280,31 @@ public final class WorldStreamObjectsMaterialProof {
         double forward = cp - sp * up, dz = sp + cp * up;
         return com.vibeminer.rendering.world.WorldObjectPicking.pick(
                 tile, VIEW, cy * forward + sy * right, sy * forward - cy * right, dz, 2200);
+    }
+
+    private static byte[] bc1(int c0, int c1, int selectors) {
+        return ByteBuffer.allocate(8)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .putShort((short) c0)
+                .putShort((short) c1)
+                .putInt(selectors)
+                .array();
+    }
+
+    /** One BC3 block of constant alpha and colour. */
+    private static byte[] bc3(int alpha, int color) {
+        var block = ByteBuffer.allocate(16).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        block.put((byte) alpha).put((byte) alpha).put(new byte[6]).put(bc1(color, 0, 0));
+        return block.array();
+    }
+
+    /** A whole compressed chain repeating one block at every block of every level. */
+    private static ByteBuffer blocks(int format, int width, int height, byte[] block) {
+        var chain = ByteBuffer.allocate(ObjectTextureFormats.chainBytes(format, width, height));
+        while (chain.hasRemaining()) {
+            chain.put(block);
+        }
+        return chain.flip();
     }
 
     private static ByteBuffer solid(int width, int height, int r, int g, int b, int a) {
