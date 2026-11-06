@@ -121,7 +121,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         private final WorldStreamPackedTile.Source source;
         private final AtomicLong issued = new AtomicLong(), released = new AtomicLong();
         private final AtomicInteger references = new AtomicInteger();
-        private int geometryAt, atlasStep, tickets;
+        private int geometryAt, atlasStep, splatStep, splatSteps, tickets;
         private boolean canceled, finished, successful;
         private volatile String failure;
         // Inline objects named by the tile header; the build owns their packed input.
@@ -188,6 +188,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     private static final class Slot {
         short buffer = INVALID, texture = INVALID;
+        // Splatting inputs (issue #174 step 2), created on first use: mask chain and layer table.
+        short splatAlpha = INVALID, splatTable = INVALID;
+        boolean splatted;
         WorldStreamState.Lease lease;
         int triangles, water, x, y;
         float anchorX, anchorY;
@@ -486,6 +489,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             var slot = slots[lease.slot()];
             slot.ready = false;
             slot.lease = lease;
+            slot.splatted = false;
+            upload.splatSteps = splatSteps(upload);
             // A new slot generation drops the previous generation's objects, late ones included.
             if (slot.objects != null) {
                 slot.objects.destroy();
@@ -538,7 +543,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 upload.geometryAt += count;
                 bytes += count;
             }
-            if (upload.atlasStep < WorldStreamAtlasMips.STEPS.size()
+            if (upload.atlasStep == WorldStreamAtlasMips.STEPS.size()
+                    && upload.splatStep < upload.splatSteps
+                    && (bytes == 0 || System.nanoTime() - started < 2_000_000)) {
+                bytes += stepSplat(upload);
+            } else if (upload.atlasStep < WorldStreamAtlasMips.STEPS.size()
                     && (bytes == 0 || System.nanoTime() - started < 2_000_000)) {
                 for (var slice : WorldStreamAtlasMips.STEPS.get(upload.atlasStep)) {
                     var data =
@@ -579,7 +588,169 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private static boolean terrainSubmitted(Upload upload) {
         return (upload.source.geometry == null
                         || upload.geometryAt == upload.source.geometry.capacity())
-                && upload.atlasStep == WorldStreamAtlasMips.STEPS.size();
+                && upload.atlasStep == WorldStreamAtlasMips.STEPS.size()
+                && upload.splatStep == upload.splatSteps;
+    }
+
+    /**
+     * Shared splat layer array: 255 layers of 128 x 128 RGBA8 with mips (about 21.3 MiB), created
+     * on the first packet that carries splatting inputs, only where 2D arrays are supported.
+     */
+    private short splatArray = INVALID;
+
+    private boolean splatSupported = true;
+
+    /** Proof observation: whether {@code slot}'s current generation uploaded splat inputs. */
+    boolean splatted(int slot) {
+        requireOwner();
+        return slots[slot].splatted;
+    }
+
+    /** Proof observation: whether the shared splat layer array exists. */
+    boolean splatArrayCreated() {
+        requireOwner();
+        return splatArray != INVALID;
+    }
+
+    private boolean splatReady() {
+        if (splatArray != INVALID) {
+            return true;
+        }
+        if (!splatSupported
+                || (bgfx_get_caps().supported() & org.lwjgl.bgfx.BGFX.BGFX_CAPS_TEXTURE_2D_ARRAY)
+                        == 0) {
+            splatSupported = false;
+            return false;
+        }
+        splatArray =
+                bgfx_create_texture_2d(
+                        WorldStreamDiffuseArray.SIDE,
+                        WorldStreamDiffuseArray.SIDE,
+                        true,
+                        WorldStreamDiffuseArray.CAPACITY,
+                        BGFX_TEXTURE_FORMAT_RGBA8,
+                        BGFX_TEXTURE_NONE,
+                        null,
+                        0);
+        if (splatArray == INVALID) {
+            splatSupported = false;
+            return false;
+        }
+        return true;
+    }
+
+    /** Steps of one packet's splat upload: mask chain, table, then each new layer. */
+    private int splatSteps(Upload upload) {
+        var source = upload.source;
+        if (source.splatAlpha == null || !splatReady()) {
+            return 0;
+        }
+        var slot = slots[upload.lease.slot()];
+        if (slot.splatAlpha == INVALID) {
+            try {
+                createSplatTextures(slot);
+            } catch (IOException unavailable) {
+                // Optional: this slot keeps its atlas, and no half-created pair survives.
+                if (slot.splatAlpha != INVALID) {
+                    bgfx_destroy_texture(slot.splatAlpha);
+                }
+                slot.splatAlpha = slot.splatTable = INVALID;
+                return 0;
+            }
+        }
+        return WorldStreamAtlasMips.STEPS.size() + 1 + source.splatLayers.length;
+    }
+
+    private void createSplatTextures(Slot slot) throws IOException {
+        slot.splatAlpha =
+                valid(
+                        bgfx_create_texture_2d(
+                                WorldStreamAtlasMips.SIDE,
+                                WorldStreamAtlasMips.SIDE,
+                                true,
+                                1,
+                                BGFX_TEXTURE_FORMAT_RGBA8,
+                                BGFX_TEXTURE_NONE,
+                                null,
+                                0));
+        slot.splatTable =
+                valid(
+                        bgfx_create_texture_2d(
+                                16,
+                                16,
+                                false,
+                                1,
+                                BGFX_TEXTURE_FORMAT_RGBA8,
+                                BGFX_TEXTURE_NONE,
+                                null,
+                                0));
+    }
+
+    /** One bounded splat slice; every slice is a bgfx_copy, so it holds no release ticket. */
+    private int stepSplat(Upload upload) {
+        var source = upload.source;
+        var slot = slots[upload.lease.slot()];
+        int step = upload.splatStep++;
+        int alphaSteps = WorldStreamAtlasMips.STEPS.size();
+        if (step < alphaSteps) {
+            int bytes = 0;
+            for (var slice : WorldStreamAtlasMips.STEPS.get(step)) {
+                int side = WorldStreamAtlasMips.side(slice.level());
+                bgfx_update_texture_2d(
+                        slot.splatAlpha,
+                        0,
+                        slice.level(),
+                        0,
+                        slice.row(),
+                        side,
+                        slice.rows(),
+                        copyHeap(source.splatAlpha.slice(slice.offset(), slice.bytes())),
+                        side * 4);
+                bytes += slice.bytes();
+            }
+            return bytes;
+        }
+        if (step == alphaSteps) {
+            bgfx_update_texture_2d(
+                    slot.splatTable,
+                    0,
+                    0,
+                    0,
+                    0,
+                    16,
+                    16,
+                    copyHeap(java.nio.ByteBuffer.wrap(source.splatTable)),
+                    16 * 4);
+            return source.splatTable.length;
+        }
+        int index = step - alphaSteps - 1;
+        int layer = source.splatLayers[index];
+        var chain = source.splatChains[index];
+        for (int level = 0; level < WorldStreamDiffuseArray.LEVELS; level++) {
+            int side = WorldStreamDiffuseArray.side(level);
+            bgfx_update_texture_2d(
+                    splatArray,
+                    layer,
+                    level,
+                    0,
+                    0,
+                    side,
+                    side,
+                    copyHeap(chain.slice(WorldStreamDiffuseArray.offset(level), side * side * 4)),
+                    side * 4);
+        }
+        return WorldStreamDiffuseArray.LAYER_BYTES;
+    }
+
+    /** bgfx_copy reads native memory: stage a heap slice through a short-lived native buffer. */
+    private static org.lwjgl.bgfx.BGFXMemory copyHeap(java.nio.ByteBuffer heap) {
+        var direct = MemoryUtil.memAlloc(heap.remaining());
+        try {
+            direct.put(heap.duplicate()).flip();
+            return bgfx_copy(direct);
+        } finally {
+            MemoryUtil.memFree(direct);
+        }
     }
 
     /**
@@ -855,6 +1026,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 slot.objects = upload.objects.take();
             }
             slot.ready = true;
+            slot.splatted = upload.splatSteps != 0;
             upload.successful = true;
         } else if (upload.objects != null) {
             upload.objects.abandon();
@@ -1316,6 +1488,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             late.build.abandon();
             late = null;
         }
+        if (splatArray != INVALID) {
+            bgfx_destroy_texture(splatArray);
+            splatArray = INVALID;
+        }
         for (var slot : slots) {
             if (slot != null && slot.objects != null) {
                 slot.objects.destroy();
@@ -1326,6 +1502,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     bgfx_destroy_dynamic_vertex_buffer(slot.buffer);
                     slot.buffer = INVALID;
                 }
+                for (short splat : new short[] {slot.splatAlpha, slot.splatTable}) {
+                    if (splat != INVALID) {
+                        bgfx_destroy_texture(splat);
+                    }
+                }
+                slot.splatAlpha = slot.splatTable = INVALID;
                 if (slot.texture != INVALID) {
                     bgfx_destroy_texture(slot.texture);
                     slot.texture = INVALID;
