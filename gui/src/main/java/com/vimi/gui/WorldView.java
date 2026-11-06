@@ -871,7 +871,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         viewport.getChildren().add(inspectCard);
         StackPane.setAlignment(inspectCard, Pos.BOTTOM_LEFT);
         StackPane.setMargin(inspectCard, new Insets(12, 12, 48, 12));
-        inspectCard.refocus(viewport::requestFocus);
+        inspectCard.refocus(() -> {
+            if (explorer) viewport.requestFocus();
+        });
+        inspectCard.visibleProperty().addListener((o, was, now) -> anchorToasts());
         toastLayer.setId("world-toast-layer");
         toastLayer.setPickOnBounds(false);
         toastLayer.setMouseTransparent(false);
@@ -1292,6 +1295,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void command(WorldControls.Action action) {
         switch (action) {
             case DEV_OVERLAY -> devOverlay.cycle();
+            case INSPECT_PIN -> {
+                if (camera != null) inspectCard.togglePin(camera.x(), camera.y(), camera.z());
+            }
             default -> {}
         }
     }
@@ -2641,7 +2647,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         updateCurrentArea();
         minimap.update(handle, inventory, origin, originX, originY,
                 camera.x(), camera.y(), camera.yaw());
-        inspectCard.follow(camera.x(), camera.y());
+        inspectCard.follow(camera.x(), camera.y(), camera.z());
         double targetWidth = Math.max(1, viewport.getWidth()),
                 targetHeight = Math.max(1, viewport.getHeight());
         double scale = Math.min(1, Math.min(800 / targetWidth, 500 / targetHeight));
@@ -2907,7 +2913,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         stallWatchdog.requested(streamingControl);
         minimap.update(handle, inventory, origin, originX, originY,
                 camera.x(), camera.y(), camera.yaw());
-        inspectCard.follow(camera.x(), camera.y());
+        inspectCard.follow(camera.x(), camera.y(), camera.z());
     }
 
     /**
@@ -3162,7 +3168,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void inspected(WorldInspection.Content content) {
         inspection.setText(content.detail());
         inspectCard.show(content, camera == null ? Double.NaN : camera.x(),
-                camera == null ? Double.NaN : camera.y());
+                camera == null ? Double.NaN : camera.y(), camera == null ? Double.NaN : camera.z());
     }
 
     /** A declared spawn's card, with its role layers and faction when the roles layer lists it. */
@@ -3297,8 +3303,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     }
                 } catch (Throwable failure) {
                     object = null;
-                    text = WorldInspection.note("Inspection failed: " + (failure.getMessage() == null
-                            ? failure.getClass().getSimpleName() : failure.getMessage()));
+                    text = WorldInspection.note("Inspection failed: " + WorldDiagnostics.brief(failure));
                 }
                 var result = text;
                 var selected = object;
@@ -3308,7 +3313,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     boolean resident = selected != null
                             && residentObjects().stream().anyMatch(tile -> tile == selected.tile());
                     inspected(selected != null && !resident ? new WorldInspection.Content(result.kind(),
-                            result.title(), "its tile is no longer resident", result.lines(), result.file(),
+                            result.title(), result.subtitle() + " · its tile is no longer resident",
+                            result.lines(), result.file(),
                             result.detail() + " · its tile is no longer resident", result.npcId()) : result);
                     objectSelection.select(resident ? selected : null);
                 });
@@ -3347,7 +3353,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var center = content.getCenter();
         double below = fullscreen.active() || center == null ? 0
                 : Math.max(0, content.getHeight() - center.getBoundsInParent().getMaxY());
-        StackPane.setMargin(toasts, new Insets(12, 12, below + 24, 12));
+        // While the inspect card is open the toasts keep clear of its bottom-left column.
+        double left = inspectCard.isVisible() ? WorldInspectCard.WIDTH + 24 : 12;
+        StackPane.setMargin(toasts, new Insets(12, 12, below + 24, left));
     }
 
     /** Toasts live on the content layer, or on the viewport while it is full screen. */

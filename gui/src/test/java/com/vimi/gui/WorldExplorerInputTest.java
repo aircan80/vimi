@@ -171,6 +171,16 @@ public final class WorldExplorerInputTest {
         var older = WorldControls.decode("v1;keys=W:FORWARD;actions=FORWARD,BACK,WALK");
         require(older.keys().get(KeyCode.F3) == WorldControls.Action.DEV_OVERLAY,
                 "Stored controls from before the overlay gain its default key: " + older.keys());
+        for (var layout : WorldControls.Layout.values())
+            require(layout.keys().get(KeyCode.I) == WorldControls.Action.INSPECT_PIN,
+                    layout + " binds I to the inspect card pin");
+        var pins = new Host();
+        var pinInput = exact(pins);
+        pinInput.keyPressed(KeyCode.I);
+        pinInput.keyPressed(KeyCode.I);
+        require(pins.commands.equals(List.of(WorldControls.Action.INSPECT_PIN))
+                        && pinInput.axes().equals(ExplorerMotion.Input.NONE),
+                "I commands the card once per press and moves nothing: " + pins.commands);
         require(WorldControls.DEFAULTS.help().contains("F3 developer overlay"),
                 "Help names the overlay key: " + WorldControls.DEFAULTS.help());
     }

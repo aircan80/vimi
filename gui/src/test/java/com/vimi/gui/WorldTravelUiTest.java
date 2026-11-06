@@ -193,24 +193,53 @@ public final class WorldTravelUiTest {
                 false, false, true, null));
         require(inspection.getText().equals(before), "A click on the card never inspects the world behind it");
         var camera = (TerrainRenderer.Camera) get(view, "camera");
-        card.follow(camera.x() + WorldInspectCard.FOLLOW_YARDS / 2, camera.y());
-        require(card.isVisible(), "A short move keeps the card");
-        card.togglePin(camera.x(), camera.y());
-        require(card.pinned(), "The pin key pins the open card");
-        card.follow(camera.x() + 500, camera.y());
-        require(card.isVisible(), "A pinned card stays while flying");
+        double x = camera.x(), y = camera.y(), z = camera.z();
         var input = (WorldExplorerInput) get(view, "input");
+        java.util.function.Consumer<javafx.scene.input.KeyCode> press = code -> {
+            javafx.event.Event.fireEvent(viewport, new javafx.scene.input.KeyEvent(
+                    javafx.scene.input.KeyEvent.KEY_PRESSED, "", "", code, false, false, false, false));
+            javafx.event.Event.fireEvent(viewport, new javafx.scene.input.KeyEvent(
+                    javafx.scene.input.KeyEvent.KEY_RELEASED, "", "", code, false, false, false, false));
+        };
+        // While the card is open, the toasts keep clear of its column.
+        var toasts = view.toasts();
+        toasts.show("Authored notice");
+        view.applyCss();
+        view.layout();
+        var cardBox = card.localToScene(card.getLayoutBounds());
+        var toastBox = toasts.localToScene(toasts.getLayoutBounds());
+        require(toastBox.getMinX() >= cardBox.getMaxX(),
+                "Toasts never cover the card column: toasts " + toastBox + " card " + cardBox);
+        toasts.clear();
+        card.follow(x + WorldInspectCard.FOLLOW_YARDS / 2, y, z);
+        require(card.isOpen(), "A short move keeps the card");
+        card.follow(x, y, z + WorldInspectCard.FOLLOW_YARDS);
+        require(!card.isOpen(), "Distance is 3D: climbing 40 yd closes an unpinned card");
+        press.accept(javafx.scene.input.KeyCode.I);
+        require(card.isOpen() && card.pinned() && card.content().kind() == WorldInspection.Kind.TERRAIN
+                        && !input.keysHeld(),
+                "With nothing open, I re-opens the last card pinned, holding no key");
+        card.update(WorldInspection.note("Nothing picked · sky"));
+        card.close();
+        press.accept(javafx.scene.input.KeyCode.I);
+        require(card.isOpen() && card.content().kind() == WorldInspection.Kind.TERRAIN,
+                "A note never replaces the card I re-opens");
+        card.follow(x + 500, y, z);
+        require(card.isOpen(), "A pinned card stays while flying");
+        card.hudHidden(true);
+        require(card.isOpen() && !card.isVisible(), "Hiding the HUD hides the card, which stays open");
         javafx.event.Event.fireEvent(viewport, new javafx.scene.input.KeyEvent(
                 javafx.scene.input.KeyEvent.KEY_PRESSED, "", "", javafx.scene.input.KeyCode.ESCAPE,
                 false, false, false, false));
-        require(!card.isVisible() && !input.keysHeld(), "Escape closes the card first and holds no key");
-        card.togglePin(camera.x(), camera.y());
-        require(card.isVisible() && card.pinned() && card.content().kind() == WorldInspection.Kind.TERRAIN,
-                "With nothing open, the pin key re-opens the last card pinned");
-        card.togglePin(camera.x(), camera.y());
-        require(!card.pinned(), "And unpins it");
-        card.follow(camera.x() + WorldInspectCard.FOLLOW_YARDS, camera.y());
-        require(!card.isVisible(), "An unpinned card closes after travelling away");
+        require(!card.isOpen() && !input.keysHeld(), "Escape closes the card first, even hidden, and holds no key");
+        press.accept(javafx.scene.input.KeyCode.I);
+        require(card.isOpen() && !card.isVisible(), "I works while the HUD is hidden");
+        card.hudHidden(false);
+        require(card.isVisible(), "Showing the HUD shows the open card again");
+        press.accept(javafx.scene.input.KeyCode.I);
+        require(!card.pinned(), "I unpins it");
+        card.follow(x + WorldInspectCard.FOLLOW_YARDS, y, z);
+        require(!card.isOpen() && !card.isVisible(), "An unpinned card closes after travelling away");
         javafx.event.Event.fireEvent(viewport, new javafx.scene.input.KeyEvent(
                 javafx.scene.input.KeyEvent.KEY_PRESSED, "", "", javafx.scene.input.KeyCode.ESCAPE,
                 false, false, false, false));

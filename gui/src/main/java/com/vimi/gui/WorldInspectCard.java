@@ -21,8 +21,9 @@ import javafx.scene.layout.VBox;
 /**
  * The World explorer's inspect card: what the last click picked, as a small panel over the
  * viewport (type chip, title, subtitle, short lines, game file, Pin / Copy / close). An unpinned
- * card closes once the camera has travelled {@link #FOLLOW_YARDS} from where it opened; a pinned
- * one stays until it is closed. The card keeps its own clicks (they are meant for it, not the
+ * card closes once the camera has travelled {@link #FOLLOW_YARDS} (in 3D) from where it opened; a
+ * pinned one stays until it is closed. Whether the card is open is its own state: hiding the HUD
+ * only hides it from view ({@link #hudHidden}), so travel, Escape and the pin key keep working. The card keeps its own clicks (they are meant for it, not the
  * world behind), is never focus-traversable, and gives focus back to the viewport after each
  * action. FX-owned.
  */
@@ -36,7 +37,8 @@ final class WorldInspectCard extends VBox {
     private Runnable refocus = () -> {};
     private Consumer<String> clipboard = WorldInspectCard::systemClipboard;
     private WorldInspection.Content content, last;
-    private double openedX = Double.NaN, openedY = Double.NaN;
+    private double openedX = Double.NaN, openedY = Double.NaN, openedZ = Double.NaN;
+    private boolean open, hudHidden;
 
     WorldInspectCard() {
         setId("world-inspect-card");
@@ -116,22 +118,36 @@ final class WorldInspectCard extends VBox {
         clipboard = Objects.requireNonNull(next);
     }
 
-    /** Shows a new pick, opened at camera position x/y (NaN: never closes by travel). */
-    void show(WorldInspection.Content next, double cameraX, double cameraY) {
+    /** Shows a new pick, opened at the camera position (NaN: never closes by travel). */
+    void show(WorldInspection.Content next, double cameraX, double cameraY, double cameraZ) {
         pin.setSelected(false);
         openedX = cameraX;
         openedY = cameraY;
+        openedZ = cameraZ;
         present(next);
     }
 
-    /** Refreshes the shown card when the same pick gains facts (e.g. a resolved model). */
+    /** Refreshes the open card when the same pick gains facts (e.g. a resolved model). */
     void update(WorldInspection.Content next) {
-        if (content != null && isVisible()) present(next);
-        else last = Objects.requireNonNull(next);
+        if (content != null && open) present(next);
+        else if (next.kind() != WorldInspection.Kind.NOTE) last = Objects.requireNonNull(next);
+    }
+
+    /** The HUD is hidden (or shown again): the card hides from view but stays open. */
+    void hudHidden(boolean hidden) {
+        hudHidden = hidden;
+        setVisible(open && !hudHidden);
+    }
+
+    /** True while a card is open, whether or not the HUD shows it. */
+    boolean isOpen() {
+        return open;
     }
 
     private void present(WorldInspection.Content next) {
-        content = last = Objects.requireNonNull(next);
+        content = Objects.requireNonNull(next);
+        // A note ("nothing picked") never replaces the card the pin key re-opens.
+        if (next.kind() != WorldInspection.Kind.NOTE) last = next;
         chip.setText(next.kind().chip);
         title.setText(next.title());
         subtitle.setText(next.subtitle());
@@ -151,14 +167,16 @@ final class WorldInspectCard extends VBox {
         file.setManaged(hasFile);
         pin.setDisable(next.kind() == WorldInspection.Kind.NOTE);
         setAccessibleText("Inspect card: " + next.kind().chip + ", " + next.title());
-        setVisible(true);
+        open = true;
+        setVisible(!hudHidden);
     }
 
     /** Closes the card; true when it was open (so Escape stops here). */
     boolean close() {
-        if (!isVisible()) return false;
+        if (!open) return false;
         content = null;
         pin.setSelected(false);
+        open = false;
         setVisible(false);
         return true;
     }
@@ -168,32 +186,33 @@ final class WorldInspectCard extends VBox {
         if (!pinned()) close();
     }
 
-    /** The camera moved: an unpinned card closes once it is {@link #FOLLOW_YARDS} away. */
-    void follow(double cameraX, double cameraY) {
-        if (!isVisible() || pinned() || Double.isNaN(openedX)) return;
-        if (Math.hypot(cameraX - openedX, cameraY - openedY) >= FOLLOW_YARDS) close();
+    /** The camera moved: an unpinned card closes once it is {@link #FOLLOW_YARDS} away in 3D. */
+    void follow(double cameraX, double cameraY, double cameraZ) {
+        if (!open || pinned() || Double.isNaN(openedX)) return;
+        double dx = cameraX - openedX, dy = cameraY - openedY, dz = cameraZ - openedZ;
+        if (Math.sqrt(dx * dx + dy * dy + dz * dz) >= FOLLOW_YARDS) close();
     }
 
     /**
      * The pin key: pins or unpins the open card; with none open, re-opens the last one pinned.
      */
-    void togglePin(double cameraX, double cameraY) {
-        if (isVisible()) {
+    void togglePin(double cameraX, double cameraY, double cameraZ) {
+        if (open) {
             if (!pin.isDisabled()) pin.setSelected(!pin.isSelected());
             return;
         }
         if (last == null) return;
-        show(last, cameraX, cameraY);
-        pin.setSelected(last.kind() != WorldInspection.Kind.NOTE);
+        show(last, cameraX, cameraY, cameraZ);
+        pin.setSelected(true);
     }
 
     boolean pinned() {
-        return isVisible() && pin.isSelected();
+        return open && pin.isSelected();
     }
 
-    /** The shown content, null when closed; for tests. */
+    /** The open content, null when closed; for tests. */
     WorldInspection.Content content() {
-        return isVisible() ? content : null;
+        return open ? content : null;
     }
 
     private static void systemClipboard(String text) {
