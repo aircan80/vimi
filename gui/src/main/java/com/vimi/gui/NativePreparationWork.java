@@ -678,7 +678,14 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             token.check();
             return found;
         }
-        return BuildTactKeys.withDelivered(found, delivered);
+        try {
+            return BuildTactKeys.withDelivered(found, delivered);
+        } finally {
+            // The key set holds its own copies; the delivered blocks are not needed any more.
+            for (var block : delivered) {
+                block.clear();
+            }
+        }
     }
 
     /** Cached generated key graphs only; never invokes normal table preparation or source refresh. */
@@ -690,6 +697,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         }
         try (var bootstrap = openTables(tablesService(token, TableRole.LOCAL_BASE), token)) {
             var found = BuildTactKeys.loadPreparedLocal(bootstrap, token).join();
+            // No delivered keys here: LOCAL_BASE has no hotfix overlay and this path never
+            // decodes the client cache. keys() joins them on the overlay handle.
             applyBuildKeys(found, issues, token);
         }
         return List.copyOf(issues);

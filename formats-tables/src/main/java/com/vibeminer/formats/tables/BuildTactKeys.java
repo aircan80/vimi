@@ -178,8 +178,11 @@ public final class BuildTactKeys {
         var keys = new HashMap<Long, byte[]>(found.keys);
         var conflicts = new HashSet<String>(found.conflicts());
         int skipped = found.skippedZero();
+        // Clones taken from the blocks; zeroed once the key set has made its own copies.
+        var copies = new java.util.ArrayList<byte[]>();
         for (var block : delivered) {
             byte[] key = block.key();
+            copies.add(key);
             boolean zero = true;
             for (byte b : key) {
                 zero &= b == 0;
@@ -198,15 +201,20 @@ public final class BuildTactKeys {
                 conflicts.add(name);
             }
         }
-        return new KeySet(
-                keys,
-                found.keyTable(),
-                found.lookupTable(),
-                skipped,
-                found.unmatched(),
-                found.unknown(),
-                conflicts.stream().sorted().toList(),
-                found.malformed());
+        var joined =
+                new KeySet(
+                        keys,
+                        found.keyTable(),
+                        found.lookupTable(),
+                        skipped,
+                        found.unmatched(),
+                        found.unknown(),
+                        conflicts.stream().sorted().toList(),
+                        found.malformed());
+        for (byte[] copy : copies) {
+            Arrays.fill(copy, (byte) 0);
+        }
+        return joined;
     }
 
     /** Prepared local graphs only; unavailable build keys do not prevent use of community keys. */

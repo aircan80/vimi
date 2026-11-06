@@ -27,7 +27,9 @@ public final class DeliveredKeysTest {
 
         var joined = NativePreparationWork.withDeliveredKeys(
                 tables(() -> CompletableFuture.completedFuture(block)), found, Cancellation.NONE);
-        check(joined.count() == 2 && joined.find(10) != null, "a delivered key joins the build keys");
+        check(joined.count() == 2 && joined.find(10)[1] == 3, "a delivered key joins the build keys");
+        check(java.util.Arrays.equals(block.getFirst().key(), new byte[16]),
+                "the delivered block is zeroed once the key set holds its own copy");
 
         var failed = NativePreparationWork.withDeliveredKeys(
                 tables(() -> CompletableFuture.failedFuture(new IllegalStateException("authored"))),

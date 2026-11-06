@@ -61,6 +61,11 @@ public final class HotfixRowDecoder {
             return key.clone();
         }
 
+        /** Zeroes this record's key once key loading has copied it; best effort. */
+        public void clear() {
+            java.util.Arrays.fill(key, (byte) 0);
+        }
+
         @Override
         public String toString() {
             return "OptionalKey[redacted]";
