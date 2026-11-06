@@ -318,9 +318,11 @@ final class SpellTextTest {
         assertEquals("?", SpellText.project(100, "${$s1}", huge, List.of()).display());
         var percent = new SpellText.Amount(new BigDecimal("5"), List.of(), null, true, null);
         var values = new SpellText.Values(Map.of(100L, Map.of(0, percent)), Map.of());
-        var result = SpellText.project(100, "${$s1*2}%", values, List.of());
-        assertEquals("?%", result.display());
-        assertTrue(result.substitutions().getFirst().issue().contains("plain percentage"));
+        // A percentage-only operand resolves only where the expression is printed with %.
+        assertEquals("10%", SpellText.project(100, "${$s1*2}%", values, List.of()).display());
+        var result = SpellText.project(100, "${$s1*2} points", values, List.of());
+        assertEquals("? points", result.display());
+        assertTrue(result.substitutions().getFirst().issue().contains("only as a percentage"));
         var exact = SpellText.project(100, "${10/4}.2", huge, List.of());
         assertEquals("2.50", exact.display());
         var repeating = SpellText.project(100, "${10000000/3}.9", huge, List.of());

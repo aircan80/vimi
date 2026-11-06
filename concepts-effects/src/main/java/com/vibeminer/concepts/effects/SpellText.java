@@ -130,7 +130,7 @@ final class SpellText {
      * parentheses and effect amount tokens ({@code $s1}, {@code $m2}, {@code $123s1}) are
      * evaluated; anything else leaves the whole expression unknown.
      */
-    private record Expression(String raw, String body, Integer decimals) implements Part {}
+    private record Expression(String raw, String body, Integer decimals, int end) implements Part {}
 
     private record Literal(String text) implements Part {}
 
@@ -305,6 +305,15 @@ final class SpellText {
                     String value = null;
                     String issue = evaluation.issue();
                     BigDecimal number = evaluation.value();
+                    if (number != null
+                            && evaluation.percentageOnly()
+                            && (expression.end() >= template.length()
+                                    || template.charAt(expression.end()) != '%')) {
+                        number = null;
+                        issue =
+                                "Spell power could raise an amount in this expression; it is"
+                                        + " shown only as a percentage";
+                    }
                     if (number != null) {
                         if (number.signum() < 0) {
                             issue = "Negative expression results are not shown";
@@ -496,8 +505,8 @@ final class SpellText {
                                     && (token.end() == template.length()
                                             || template.charAt(token.end()) != '%')) {
                                 issue =
-                                        "This fixed scalar profile requires a literal percent"
-                                                + " suffix";
+                                        "Spell power could raise this amount; it is shown only"
+                                                + " as a percentage";
                             }
                             BigDecimal shown = amount.base() == null ? null : amount.base().abs();
                             if (issue == null && shown != null && token.kind() == 'o') {
@@ -704,7 +713,7 @@ final class SpellText {
             }
             return new Found(
                     new Expression(
-                            raw.substring(at, stop), raw.substring(i + 1, end - 1), decimals),
+                            raw.substring(at, stop), raw.substring(i + 1, end - 1), decimals, stop),
                     stop);
         }
         if (c == '?') {
