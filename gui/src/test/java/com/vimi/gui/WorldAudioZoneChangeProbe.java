@@ -203,6 +203,12 @@ public final class WorldAudioZoneChangeProbe {
         }
     }
 
+    private static int opened() {
+        synchronized (WRITES) {
+            return lines;
+        }
+    }
+
     private static List<Write> writes() {
         synchronized (WRITES) {
             return WRITES.stream().sorted(java.util.Comparator.comparingLong(Write::start))
@@ -239,6 +245,8 @@ public final class WorldAudioZoneChangeProbe {
                 gap = Math.max(gap, w.start() - audibleUntil);
                 audibleUntil = Math.max(audibleUntil, w.end());
             }
+            // Silence running to the end of the window counts as a gap too.
+            gap = Math.max(gap, to - audibleUntil);
             gaps.add(gap / 1e6);
         }
         System.out.printf("World audio multi-file ambience loop over %d runs: longest audible gap"
@@ -258,11 +266,14 @@ public final class WorldAudioZoneChangeProbe {
         playback.music.track(new WorldAreaAudio.Track(WorldAreaAudio.Kind.MUSIC, 10, "Zone A", 5,
                 100, List.of(1000L), 1000, 1000), source);
         playback.music.enabled(true);
-        Thread.sleep((runs + 1) * 2300L);
+        // Each track opens a line: wait for runs + 1 tracks, so exactly runs pauses are measured.
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos((runs + 1) * 10L);
+        while (opened() < runs + 1 && System.nanoTime() < deadline) Thread.sleep(50);
         playback.closeAsync().get(10, TimeUnit.SECONDS);
         var all = writes();
         var extra = new ArrayList<Double>();
-        for (int line = 1; line < lines; line++) {
+        int tracks = Math.min(opened(), runs + 1);
+        for (int line = 1; line < tracks; line++) {
             int previous = line - 1, next = line;
             long end = all.stream().filter(w -> w.line() == previous && w.played())
                     .mapToLong(Write::end).max().orElse(-1);

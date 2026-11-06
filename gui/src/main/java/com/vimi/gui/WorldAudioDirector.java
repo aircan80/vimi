@@ -138,6 +138,12 @@ final class WorldAudioDirector {
             resolved = null;
             failures = 0;
             settled();
+        } else if (!musicOn && !ambienceOn) {
+            // Nothing plays: a pending plan is dropped, and a late completion is ignored.
+            generation++;
+            if (request != null) request.cancel();
+            request = null;
+            resolved = null;
         }
         refresh();
     }
