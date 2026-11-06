@@ -136,6 +136,36 @@ final class WorldStreamTileSplatTest {
     }
 
     @Test
+    void splatBeforeSlopedManyLayerWaterRoundTrips() throws Exception {
+        // #463's water: corner heights differ per quad and a tile may carry many layers; the splat
+        // trailer still comes first and both read back exactly from one packet.
+        var tile = WorldStreamTileFileTest.full(false);
+        var header = WorldStreamTileFileTest.header(tile, true);
+        var terrain =
+                WorldStreamTileFile.write(
+                        directory, header, tile, WorldStreamTileFileTest.atlas(), () -> false);
+        var base = WorldStreamTileWaterTest.water(5, 0);
+        float[] positions = base.positions().clone();
+        for (int vertex = 0; vertex < positions.length / 3; vertex++) {
+            positions[vertex * 3 + 2] = 11 + vertex * .25f;
+        }
+        var water = new WorldStreamTileFile.Water(positions, base.depths(), base.indices(), 5);
+        var splat = splat(4, 201, 7);
+        var withSplat =
+                WorldStreamTileFile.appendSplat(path(), terrain, header, splat, () -> false);
+        var full = WorldStreamTileFile.appendWater(path(), withSplat, header, water, () -> false);
+        assertEquals(
+                terrain.length() + splat.bytes() + WorldStreamTileFile.waterBytes(20, 30),
+                full.length());
+        try (var payload = WorldStreamTileFile.read(path(), full, () -> false)) {
+            assertArrayEquals(new int[] {4, 201, 7}, payload.splat().layers());
+            assertArrayEquals(positions, payload.water().positions());
+            assertArrayEquals(base.indices(), payload.water().indices());
+            assertEquals(5, payload.water().layers(), "one layer per quad, as #463 allows");
+        }
+    }
+
+    @Test
     void splatAndWaterTrailersRoundTripInOrder() throws Exception {
         var tile = WorldStreamTileFileTest.full(false);
         var header = WorldStreamTileFileTest.header(tile, true);

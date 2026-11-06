@@ -823,7 +823,7 @@ final class WorldStreamObjectsFileTest {
         }
         var origin = new TerrainScene.Origin(0, 0, 0);
         try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
-            var frame = BgfxWorldStreamRenderer.ObjectFrame.on(stack);
+            var frame = BgfxWorldStreamRenderer.ObjectFrame.on(stack, false);
             long pointer = stack.getPointer();
             for (int pass = 0; pass < 2; pass++) {
                 for (int p = 0; p < placements; p++) {

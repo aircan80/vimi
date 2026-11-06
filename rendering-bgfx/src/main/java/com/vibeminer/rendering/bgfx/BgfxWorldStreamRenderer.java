@@ -65,6 +65,7 @@ import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_end;
 import com.vibeminer.rendering.world.ObjectTextureFormats;
 import com.vibeminer.rendering.world.TerrainCamera;
 import com.vibeminer.rendering.world.TerrainScene;
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -433,6 +434,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private short program = INVALID, skyProgram = INVALID, template = INVALID;
     private short eye = INVALID, projection = INVALID, rebase = INVALID, atlasUniform = INVALID;
     private short sampler = INVALID, sky = INVALID;
+    // Fog shared by terrain, objects and the sky's horizon (WorldFog).
+    private short worldFog = INVALID, worldFogRange = INVALID, worldSkyTop = INVALID;
+    private short skyTop = INVALID, skyHorizon = INVALID, skyView = INVALID;
+    private short wmoFog = INVALID, wmoFogRange = INVALID, wmoSkyTop = INVALID;
+    // Read once per frame; #177 sets it from the light tables (fog(WorldFog)).
+    private WorldFog fog = WorldFog.STREAM;
+    // Samples of the target this renderer draws into; above 1, cutouts use alpha to coverage.
+    private int targetSamples = 1;
     // Optional exterior objects pass (existing world-wmo shaders); INVALID program disables it.
     private short wmoProgram = INVALID, wmoEye = INVALID, wmoProjection = INVALID;
     private short wmoModel = INVALID, wmoNormal = INVALID, wmoSampler = INVALID;
@@ -518,6 +527,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             atlasUniform = valid(bgfx_create_uniform("u_worldAtlas", BGFX_UNIFORM_TYPE_VEC4, 1));
             sampler = valid(bgfx_create_uniform("s_worldAtlas", BGFX_UNIFORM_TYPE_SAMPLER, 1));
             sky = valid(bgfx_create_uniform("u_terrainMode", BGFX_UNIFORM_TYPE_VEC4, 1));
+            worldFog = valid(bgfx_create_uniform("u_worldFog", BGFX_UNIFORM_TYPE_VEC4, 1));
+            worldSkyTop = valid(bgfx_create_uniform("u_worldSkyTop", BGFX_UNIFORM_TYPE_VEC4, 1));
+            worldFogRange =
+                    valid(bgfx_create_uniform("u_worldFogRange", BGFX_UNIFORM_TYPE_VEC4, 1));
+            skyTop = valid(bgfx_create_uniform("u_skyTop", BGFX_UNIFORM_TYPE_VEC4, 1));
+            skyHorizon = valid(bgfx_create_uniform("u_skyHorizon", BGFX_UNIFORM_TYPE_VEC4, 1));
+            skyView = valid(bgfx_create_uniform("u_skyView", BGFX_UNIFORM_TYPE_VEC4, 1));
             if (session.exteriorObjects()) {
                 objectPass(profile);
             }
@@ -554,6 +570,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             wmoNormal = valid(bgfx_create_uniform("u_wmoNormal", BGFX_UNIFORM_TYPE_MAT4, 1));
             wmoSampler = valid(bgfx_create_uniform("s_wmoDiffuse", BGFX_UNIFORM_TYPE_SAMPLER, 1));
             wmoMaterial = valid(bgfx_create_uniform("u_wmoMaterial", BGFX_UNIFORM_TYPE_VEC4, 1));
+            wmoFog = valid(bgfx_create_uniform("u_wmoFog", BGFX_UNIFORM_TYPE_VEC4, 1));
+            wmoSkyTop = valid(bgfx_create_uniform("u_wmoSkyTop", BGFX_UNIFORM_TYPE_VEC4, 1));
+            wmoFogRange = valid(bgfx_create_uniform("u_wmoFogRange", BGFX_UNIFORM_TYPE_VEC4, 1));
         } catch (IOException | RuntimeException failed) {
             destroyObjectPass();
             System.err.println(objectsReason("pass unavailable", wmoFamily, step, failed));
@@ -566,13 +585,23 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             bgfx_destroy_program(wmoProgram);
         }
         for (short uniform :
-                new short[] {wmoEye, wmoProjection, wmoModel, wmoNormal, wmoSampler, wmoMaterial}) {
+                new short[] {
+                    wmoEye,
+                    wmoProjection,
+                    wmoModel,
+                    wmoNormal,
+                    wmoSampler,
+                    wmoMaterial,
+                    wmoFog,
+                    wmoSkyTop,
+                    wmoFogRange
+                }) {
             if (uniform != INVALID) {
                 bgfx_destroy_uniform(uniform);
             }
         }
         wmoProgram = wmoEye = wmoProjection = wmoModel = wmoNormal = wmoSampler = INVALID;
-        wmoMaterial = INVALID;
+        wmoMaterial = wmoFog = wmoFogRange = wmoSkyTop = INVALID;
     }
 
     Upload begin(WorldStreamPackedTile packed) {
@@ -1227,6 +1256,21 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         return WorldStreamStatus.LateOutcome.ATTACHED;
     }
 
+    /** The fog and sky of the next frames; #177 feeds it from the light tables. */
+    void fog(WorldFog value) {
+        requireOwner();
+        fog = java.util.Objects.requireNonNull(value);
+    }
+
+    /** The sample count of the target the owner created; above 1 enables alpha to coverage. */
+    void targetSamples(int samples) {
+        requireOwner();
+        if (samples < 1) {
+            throw new IllegalArgumentException("Target samples");
+        }
+        targetSamples = samples;
+    }
+
     /** Object counts of the last {@link #draw}. */
     FrameCounts frameCounts() {
         requireOwner();
@@ -1435,14 +1479,43 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     Ticket draw(TerrainCamera camera, long cameraRevision, long policy, int width, int height) {
         requireOwner();
         requireOpen();
+        if (cameraRevision <= 0 || policy <= 0 || !WorldFrameLimits.fits(width, height)) {
+            throw new IllegalArgumentException("Frame ticket bounds");
+        }
+        return drawView(camera, cameraRevision, policy, width, height, width, height);
+    }
+
+    /**
+     * #381 spike: draw into a window's backbuffer at its own size (up to 8192 per side). The
+     * projection keeps the window's aspect; its matrix depends on the ratio only.
+     */
+    Ticket drawWindow(
+            TerrainCamera camera, long cameraRevision, long policy, int width, int height) {
+        requireOwner();
+        requireOpen();
         if (cameraRevision <= 0
                 || policy <= 0
                 || width < 1
-                || width > 800
+                || width > 8192
                 || height < 1
-                || height > 500) {
-            throw new IllegalArgumentException("Frame ticket bounds");
+                || height > 8192) {
+            throw new IllegalArgumentException("Window frame bounds");
         }
+        double fit = Math.min(1, Math.min(1280.0 / width, 960.0 / height));
+        int projectionWidth = Math.max(1, (int) Math.round(width * fit));
+        int projectionHeight = Math.max(1, (int) Math.round(height * fit));
+        return drawView(
+                camera, cameraRevision, policy, width, height, projectionWidth, projectionHeight);
+    }
+
+    private Ticket drawView(
+            TerrainCamera camera,
+            long cameraRevision,
+            long policy,
+            int width,
+            int height,
+            int projectionWidth,
+            int projectionHeight) {
         bgfx_set_view_rect(0, 0, 0, width, height);
         bgfx_set_view_mode(0, BGFX_VIEW_MODE_SEQUENTIAL);
         bgfx_set_view_clear(0, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x000000ff, 0, 0);
@@ -1453,7 +1526,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             var matrix = stack.mallocFloat(16).put(camera.modelToEye(origin)).flip();
             var project =
                     stack.mallocFloat(16)
-                            .put(TerrainCamera.reversedProjection(width, height))
+                            .put(
+                                    TerrainCamera.reversedProjection(
+                                            projectionWidth, projectionHeight))
                             .flip();
             var shift =
                     stack.mallocFloat(4)
@@ -1474,7 +1549,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             if (wmoProgram != INVALID) {
                 frameUniform(wmoEye, matrix);
                 frameUniform(wmoProjection, project);
+                bgfx_set_uniform(wmoFog, stack.floats(fog.fogUniform()), 1);
+                bgfx_set_uniform(wmoSkyTop, stack.floats(fog.topUniform()), 1);
+                bgfx_set_uniform(wmoFogRange, stack.floats(fog.rangeUniform()), 1);
             }
+            bgfx_set_uniform(worldFog, stack.floats(fog.fogUniform()), 1);
+            bgfx_set_uniform(worldSkyTop, stack.floats(fog.topUniform()), 1);
+            bgfx_set_uniform(worldFogRange, stack.floats(fog.rangeUniform()), 1);
             for (var lease : active) {
                 var slot = slots[lease.slot()];
                 if (slot.triangles == 0) {
@@ -1497,7 +1578,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
             // One fixed set of object uniform buffers per frame: per-placement work allocates
             // nothing on the frame's MemoryStack, whatever the number of placements.
-            var frame = wmoProgram == INVALID ? null : ObjectFrame.on(stack);
+            var frame = wmoProgram == INVALID ? null : ObjectFrame.on(stack, targetSamples > 1);
             var view =
                     objectCulling ? WorldStreamObjectCulling.View.of(camera, width, height) : null;
             framePlacements = frameCulled = frameObjectSubmits = 0;
@@ -1515,13 +1596,19 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             // come before water, which writes depth (the sky would then be rejected under it),
             // and before blended objects, which blend over whatever is behind them.
             bgfx_set_uniform(
-                    sky, stack.floats(0, height, bgfx_get_caps().originBottomLeft() ? 1 : 0, 0), 1);
+                    sky,
+                    stack.floats(width, height, bgfx_get_caps().originBottomLeft() ? 1 : 0, 1),
+                    1);
+            // The horizon gradient: the sky meets the terrain and object fog in one colour.
+            bgfx_set_uniform(skyTop, stack.floats(fog.topUniform()), 1);
+            bgfx_set_uniform(skyHorizon, stack.floats(fog.horizonUniform()), 1);
+            bgfx_set_uniform(skyView, stack.floats(fog.viewUniform(camera.pitch(), width)), 1);
             bgfx_set_vertex_buffer(0, template, 0, 3);
             bgfx_set_state(SKY_STATE, 0);
             bgfx_submit(0, skyProgram, 0, BGFX_DISCARD_ALL);
-            // Static diagnostic water after ALL opaque terrain: nearest flat surface wins under
-            // strict reversed depth, so coincident duplicates cannot blend twice. RGB only keeps
-            // the opaque output alpha.
+            // Static diagnostic water after ALL opaque terrain: the nearest surface wins under
+            // strict reversed depth, so coincident duplicates (shared chunk edges, or two source
+            // layers at one height) cannot blend twice. RGB only keeps the opaque output alpha.
             for (var lease : active) {
                 var slot = slots[lease.slot()];
                 if (slot.water == 0) {
@@ -1578,6 +1665,28 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     static final int OBJECT_SAMPLER_FLAGS =
             org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIN_ANISOTROPIC
                     | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MAG_ANISOTROPIC;
+
+    /**
+     * The u_wmoMaterial value of cutout ranges. Multisampled, z turns the alpha test into an alpha
+     * to coverage ramp around the same reference, so leaf and grate edges resolve smoothly;
+     * single-sampled, the plain alpha test.
+     */
+    static float[] cutoutMaterial(boolean coverage) {
+        return new float[] {CUTOUT_REFERENCE, 0, coverage ? 1 : 0, 0};
+    }
+
+    /**
+     * Cutout draw state. With alpha to coverage the shader's alpha sets the sample mask, and alpha
+     * is not written, so the frame's output alpha stays opaque.
+     */
+    static long cutoutState(boolean coverage) {
+        return coverage
+                ? BGFX_STATE_WRITE_RGB
+                        | BGFX_STATE_WRITE_Z
+                        | BGFX_STATE_DEPTH_TEST_GREATER
+                        | org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_ALPHA_TO_COVERAGE
+                : BgfxWorldWmoPass.DRAW_STATE;
+    }
 
     /** Blend state: depth tested, no depth or alpha write, source-alpha over. */
     static final long BLENDED_STATE =
@@ -1700,16 +1809,27 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     static final class ObjectFrame {
         final java.nio.FloatBuffer model, normal, opaque, cutout, blend;
 
-        private ObjectFrame(MemoryStack stack) {
+        final long cutoutState;
+
+        private ObjectFrame(MemoryStack stack, boolean coverage) {
             model = stack.mallocFloat(16);
             normal = stack.mallocFloat(16);
             opaque = stack.floats(0, 0, 0, 0);
-            cutout = stack.floats(CUTOUT_REFERENCE, 0, 0, 0);
+            cutout = stack.floats(cutoutMaterial(coverage));
             blend = stack.floats(0, 1, 0, 0);
+            cutoutState = cutoutState(coverage);
         }
 
-        static ObjectFrame on(MemoryStack stack) {
-            return new ObjectFrame(stack);
+        /** {@code coverage}: the target is multisampled, so cutouts use alpha to coverage. */
+        static ObjectFrame on(MemoryStack stack, boolean coverage) {
+            return new ObjectFrame(stack, coverage);
+        }
+
+        /** The draw state of one range class outside the blended pass. */
+        long state(int kind) {
+            return kind == WorldStreamObjectsFile.CUTOUT
+                    ? cutoutState
+                    : BgfxWorldWmoPass.DRAW_STATE;
         }
 
         /** Writes placement p's matrices into this frame's buffers. */
@@ -1765,7 +1885,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         wmoSampler,
                         objects.textures[objects.ranges[r * stride + 2]],
                         OBJECT_SAMPLER_FLAGS);
-                bgfx_set_state(blendedPass ? BLENDED_STATE : BgfxWorldWmoPass.DRAW_STATE, 0);
+                bgfx_set_state(blendedPass ? BLENDED_STATE : frame.state(kind), 0);
                 bgfx_submit(0, wmoProgram, 0, BGFX_DISCARD_ALL);
                 frameObjectSubmits++;
             }
@@ -1982,7 +2102,21 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 }
             }
         }
-        for (short uniform : new short[] {eye, projection, rebase, atlasUniform, sampler, sky}) {
+        for (short uniform :
+                new short[] {
+                    eye,
+                    projection,
+                    rebase,
+                    atlasUniform,
+                    sampler,
+                    sky,
+                    worldFog,
+                    worldFogRange,
+                    worldSkyTop,
+                    skyTop,
+                    skyHorizon,
+                    skyView
+                }) {
             if (uniform != INVALID) {
                 bgfx_destroy_uniform(uniform);
             }

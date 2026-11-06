@@ -615,6 +615,30 @@ public final class WorldTerrainStreaming {
         }
     }
 
+    /**
+     * Revision of the shared terrain geometry lane's releases. A tile refused at {@code
+     * GEOMETRY_CREDIT} can only succeed after it moves, so wait on it instead of retrying (#304).
+     */
+    public long geometryReleaseRevision() {
+        try {
+            return source().geometryReleaseRevision();
+        } catch (RuntimeException failure) {
+            throw WorldSourceRefusals.boundary(failure);
+        }
+    }
+
+    /**
+     * Runs {@code listener} after each geometry lane or output release, on the releasing thread and
+     * outside any source lock. The listener must only signal; close the result to remove it.
+     */
+    public AutoCloseable onGeometryRelease(Runnable listener) {
+        try {
+            return source().onGeometryRelease(Objects.requireNonNull(listener));
+        } catch (RuntimeException failure) {
+            throw WorldSourceRefusals.boundary(failure);
+        }
+    }
+
     public void activate(Scope scope) {
         try {
             source().activate(Objects.requireNonNull(scope).token);
@@ -640,6 +664,19 @@ public final class WorldTerrainStreaming {
             WorldFormats.Tile comparison,
             Cancellation cancel,
             WorldExteriorObjects.ImageDetail detail) {
+        return prepareExteriorObjects(scope, comparison, cancel, detail, false);
+    }
+
+    /**
+     * As above; {@code interiors} also draws interior WMO groups, for dungeon and raid maps (#280),
+     * within the budgets each building's exterior groups leave.
+     */
+    public WorldExteriorObjects.TileObjects prepareExteriorObjects(
+            Scope scope,
+            WorldFormats.Tile comparison,
+            Cancellation cancel,
+            WorldExteriorObjects.ImageDetail detail,
+            boolean interiors) {
         Objects.requireNonNull(detail);
         Objects.requireNonNull(scope);
         Objects.requireNonNull(comparison);
@@ -651,7 +688,7 @@ public final class WorldTerrainStreaming {
             throw new IllegalArgumentException("Tile coordinate profile");
         }
         try {
-            return source().exteriorObjects(scope.token, comparison, cancel, detail);
+            return source().exteriorObjects(scope.token, comparison, cancel, detail, interiors);
         } catch (RuntimeException failure) {
             throw WorldSourceRefusals.boundary(failure);
         }
