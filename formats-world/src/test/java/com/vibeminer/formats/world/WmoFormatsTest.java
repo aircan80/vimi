@@ -664,7 +664,7 @@ class WmoFormatsTest {
                 join(
                         root(),
                         chunk("MOPV", portalVertices()),
-                        chunk("MOPT", portal(0, 4, 1, -0.5f)),
+                        chunk("MOPT", portal(0, 4, 1, 0)),
                         chunk("MOPR", join(portalRef(0, 0, 1), portalRef(0, 0, -1))));
         var portals = WmoFormats.root(bytes, () -> false).portals();
         assertTrue(portals.declared() && portals.retained());
@@ -672,7 +672,7 @@ class WmoFormatsTest {
         assertEquals(new WorldPlacements.Vec3(0, 1, 2), portals.vertex(2));
         assertEquals(
                 java.util.List.of(
-                        new WmoFormats.Portal(0, 4, new WorldPlacements.Vec3(1, 0, 0), -0.5f)),
+                        new WmoFormats.Portal(0, 4, new WorldPlacements.Vec3(1, 0, 0), 0)),
                 portals.portals());
         // The side word is signed and raw.
         assertEquals(
@@ -715,6 +715,36 @@ class WmoFormatsTest {
             assertTrue(parsed.portals().declared());
             assertFalse(parsed.portals().retained());
             assertTrue(parsed.portals().portals().isEmpty());
+        }
+        // Zero-length declarations are retained and empty.
+        var empty =
+                WmoFormats.root(
+                                join(
+                                        root(),
+                                        chunk("MOPV", new byte[0]),
+                                        chunk("MOPT", new byte[0]),
+                                        chunk("MOPR", new byte[0])),
+                                () -> false)
+                        .portals();
+        assertTrue(empty.declared() && empty.retained());
+        assertEquals(0, empty.vertexCount());
+        assertTrue(empty.portals().isEmpty() && empty.refs().isEmpty());
+        // One past each ceiling: declared but not retained.
+        var overVertices = new byte[12 * (WmoFormats.MAX_PORTAL_VERTICES + 1)];
+        var overPortals = new byte[20 * (WmoFormats.MAX_PORTALS + 1)];
+        for (int i = 0; i <= WmoFormats.MAX_PORTALS; i++) {
+            System.arraycopy(portal(0, 4, 1, 0), 0, overPortals, i * 20, 20);
+        }
+        var overRefs = new byte[8 * (WmoFormats.MAX_PORTAL_REFS + 1)];
+        for (var over :
+                new byte[][] {
+                    join(root(), chunk("MOPV", overVertices), quad, ref),
+                    join(root(), vertices, chunk("MOPT", overPortals), ref),
+                    join(root(), vertices, quad, chunk("MOPR", overRefs))
+                }) {
+            var parsed = WmoFormats.root(over, () -> false);
+            assertTrue(parsed.portals().declared());
+            assertFalse(parsed.portals().retained());
         }
         // Over the fact budget: declared but not retained, and the root still parses.
         var tight = new WmoFormats.Limits(1 << 20, 1 << 20, 8, 24, 8, 16384, 16384, 64, 1, 4096);
