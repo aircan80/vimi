@@ -1182,10 +1182,13 @@ public final class WorldStreamSourceControllerTest {
                             == WorldStreamSourceController.Phase.READY);
             fixture.controller.neighborhood(fixture.tiles);
             fixture.until(() -> Files.exists(held));
-            // The first step after the transport delivered the rejection sees the tile gone.
+            // The step that handles the completed rejection is the first to see the tile gone.
+            // The seam asks the pending preparation itself: the transport completes the result
+            // (which wakes this step) before it counts the rejection, so a seam keyed on the
+            // transport's counter could miss that step under load (Linux CI).
             fixture.controller.demandSeam =
                     () -> {
-                        if (fixture.gpu.session.rejectedTiles() > 0
+                        if (fixture.controller.pendingRejectedByHelper()
                                 && switched.compareAndSet(false, true)) {
                             fixture.controller.neighborhood(List.of(fixture.tiles.get(0)));
                         }

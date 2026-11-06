@@ -1548,6 +1548,15 @@ final class WorldStreamSourceController {
         }
     }
 
+    /**
+     * Test seam, controller thread only (from {@link #demandSeam}): whether the pending
+     * preparation has already ended in a helper rejection, so this step handles it.
+     */
+    boolean pendingRejectedByHelper() {
+        var current = pending;
+        return current != null && rejectedByHelper(current.result);
+    }
+
     /** Test observation: helper rejections that arrived for tiles out of demand. */
     int rejectionsOutOfDemand() {
         return rejectionsOutOfDemand.get();
