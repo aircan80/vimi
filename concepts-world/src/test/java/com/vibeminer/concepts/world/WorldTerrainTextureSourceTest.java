@@ -1400,4 +1400,123 @@ class WorldTerrainTextureSourceTest {
         assertEquals(0, files.borrowedClosed.get());
         pool.closeAsync().get(5, TimeUnit.SECONDS);
     }
+
+    private int stats(Files files, long id) {
+        return files.stats.getOrDefault(id, new AtomicInteger()).get();
+    }
+
+    @Test
+    void wdtInventoryIsReadOncePerContentKeyAndReadAgainAfterItChanges() throws Exception {
+        var files = new Files();
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try {
+            for (int i = 0; i < 3; i++) {
+                try (var result = read(source)) {
+                    assertEquals(
+                            WorldTerrainTextureSource.State.READY,
+                            result.tiles().getFirst().state());
+                }
+            }
+            assertEquals(1, files.opens(1));
+            // A new WDT content key misses the cache and is read and parsed again.
+            files.changedId = 1;
+            files.changeAfterRead = true;
+            try (var result = read(source)) {
+                assertEquals(
+                        WorldTerrainTextureSource.State.READY, result.tiles().getFirst().state());
+            }
+            assertEquals(2, files.opens(1));
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+        assertEquals(files.totalOpens(), files.closed.get());
+    }
+
+    @Test
+    void eachSourceIsStatedForItsReadAndOnceAtPublicationAndBatchEnd() throws Exception {
+        var files = new Files();
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try {
+            try (var result = read(source)) {
+                assertEquals(
+                        WorldTerrainTextureSource.State.READY, result.tiles().getFirst().state());
+            }
+            // WDT: read, inventory-cache check, publication, batch end. Others: read,
+            // publication, batch end. No per-read or per-decode revalidation.
+            assertEquals(4, stats(files, 1));
+            for (long id : new long[] {2, 3, 10, 11}) {
+                assertEquals(3, stats(files, id), "source " + id);
+            }
+            try (var result = read(source)) {
+                assertEquals(
+                        WorldTerrainTextureSource.State.READY, result.tiles().getFirst().state());
+            }
+            // Warm: cached inventory and atlas; the WDT is not re-read.
+            assertEquals(7, stats(files, 1));
+            assertEquals(1, files.opens(1));
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void preparedRootIsUsedWithoutReadingTheRootAgainButStillRevalidated() throws Exception {
+        var files = new Files();
+        var grid = WorldFormats.adtGrid(files.sources.get(2L), () -> false);
+        String fingerprint =
+                com.vibeminer.rendering.world.TerrainGeometryFingerprint.sha256(
+                        TILE.x(), TILE.y(), grid);
+        var binding =
+                new WorldTerrainTextureSource.FileBinding(
+                        2,
+                        String.format("%032x", 2),
+                        files.sources.get(2L).length,
+                        (long) files.sources.get(2L).length,
+                        8 << 20);
+        var root = new WorldTerrainTextureSource.PreparedRoot(binding, grid, fingerprint);
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            source.readOwned(
+                                    MAP,
+                                    List.of(new WorldFormats.Tile(7, 19, 5, 0, 0, 0, 0, 3, 0, 0)),
+                                    Cancellation.NONE,
+                                    p -> {},
+                                    root));
+            var owned = source.readOwned(MAP, List.of(TILE), Cancellation.NONE, p -> {}, root);
+            try (var result = owned.awaitResult()) {
+                var tile = result.tiles().getFirst();
+                assertEquals(WorldTerrainTextureSource.State.READY, tile.state());
+                assertEquals(fingerprint, tile.receipt().geometrySha256());
+                assertEquals(binding, tile.receipt().root());
+            } finally {
+                owned.awaitDrained();
+            }
+            assertEquals(0, files.opens(2));
+            // Not read, but checked with the tile's other sources (publication, batch end).
+            assertEquals(2, stats(files, 2));
+            // A changed root is still caught.
+            files.changedId = 2;
+            files.changeAfterRead = true;
+            files.opens.computeIfAbsent(2L, ignored -> new AtomicInteger()).incrementAndGet();
+            var changed = source.readOwned(MAP, List.of(TILE), Cancellation.NONE, p -> {}, root);
+            try {
+                assertThrows(
+                        java.util.concurrent.ExecutionException.class,
+                        () -> changed.result().get(5, TimeUnit.SECONDS));
+            } finally {
+                changed.awaitDrained();
+            }
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
 }

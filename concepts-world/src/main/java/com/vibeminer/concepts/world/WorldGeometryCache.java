@@ -1,5 +1,6 @@
 package com.vibeminer.concepts.world;
 
+import com.vibeminer.formats.world.TerrainGrid;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.rendering.world.TerrainGeometryFingerprint;
 import com.vibeminer.rendering.world.TerrainScene;
@@ -32,6 +33,8 @@ final class WorldGeometryCache {
         private final String key;
         private WorldService.LoadedTile loaded;
         private TerrainScene.Tile nativeTile;
+        // The same checked root walk's native grid, for the tile's material read.
+        private TerrainGrid grid;
         private RootProof proof;
         private int pins;
 
@@ -95,6 +98,21 @@ final class WorldGeometryCache {
                 throw new IllegalStateException("Geometry output closed");
             }
             return entry.proof.fingerprint();
+        }
+
+        /**
+         * The proven root's grid and fingerprint for the material read, or null when this entry has
+         * no grid (a legacy entry); the material read then reads the root itself.
+         */
+        synchronized WorldTerrainTextureSource.PreparedRoot materialRoot() {
+            if (closed || owner.closed) {
+                throw new IllegalStateException("Geometry output closed");
+            }
+            if (entry.grid == null || entry.proof == null) {
+                return null;
+            }
+            return new WorldTerrainTextureSource.PreparedRoot(
+                    rootBinding(), entry.grid, entry.proof.fingerprint());
         }
 
         synchronized WorldTerrainTextureSource.FileBinding rootBinding() {
@@ -255,17 +273,19 @@ final class WorldGeometryCache {
         try {
             WorldService.LoadedTile loaded;
             TerrainScene.Tile nativeTile;
+            TerrainGrid grid;
             RootProof proof;
             try (var root = admission.readRecorded(WorldStreamScopes.RecordedInput.ROOT)) {
-                WorldFormats.TerrainAreas parsed;
+                WorldFormats.TerrainAreasGrid parsed;
                 try {
                     parsed =
-                            WorldFormats.adtTile(
+                            WorldFormats.adtTileGrid(
                                     root.bytes(), admission.cancellation()::isCanceled);
                 } catch (IllegalArgumentException unsupportedProfile) {
                     throw WorldSourceRefusals.at(WorldSourceRefusals.Site.TERRAIN_PROFILE);
                 }
                 nativeTile = new TerrainScene.Tile(tuple.x(), tuple.y(), parsed.terrain());
+                grid = parsed.grid();
                 String fingerprint = TerrainGeometryFingerprint.sha256(nativeTile);
                 proof =
                         new RootProof(
@@ -293,6 +313,7 @@ final class WorldGeometryCache {
             }
             var next = new Entry(key, loaded);
             next.nativeTile = nativeTile;
+            next.grid = grid;
             next.proof = proof;
             synchronized (this) {
                 checkOpen();

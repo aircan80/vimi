@@ -157,6 +157,48 @@ final class WorldStreamScopesTest {
     }
 
     @Test
+    void streamedTileReadsItsRootOnceAndMaterialReusesTheGeometryParse() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var pool = new TerrainAtlasPool();
+        var world = new WorldService(tables.handle(), files.files(), pool);
+        try {
+            var source = world.terrainStreaming().orElseThrow();
+            var scope = source.createScope(REQUEST, Cancellation.NONE);
+            int wdtOpens = -1;
+            for (int round = 0; round < 2; round++) {
+                try (var written =
+                        source.prepareAndWrite(
+                                scope,
+                                TILE,
+                                Cancellation.NONE,
+                                (borrow, cancel) -> {
+                                    assertEquals(
+                                            WorldTerrainStreaming.Outcome.TEXTURED,
+                                            borrow.facts().outcome());
+                                    assertEquals(
+                                            WorldTerrainTextureSource.State.READY,
+                                            borrow.facts().materialState());
+                                    return (AutoCloseable) () -> {};
+                                })) {
+                    assertTrue(written.isOpen());
+                }
+                // Geometry reads the root once; the material read reuses that parse.
+                assertEquals(1, files.opens(2), "round " + round);
+                if (round == 0) {
+                    wdtOpens = files.opens(1);
+                }
+            }
+            // The material WDT inventory is cached for the second tile preparation.
+            assertEquals(wdtOpens, files.opens(1));
+        } finally {
+            world.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+            tables.close();
+        }
+    }
+
+    @Test
     void publicPartialMaterialKeepsNullableCompositionCacheAndExplicitCoverage() throws Exception {
         var files = new WorldTerrainTextureSourceTest.Files();
         files.sources.remove(11L);
