@@ -77,6 +77,7 @@ public final class WorldStreamSourceControllerTest {
         refusedCommitRetriesWhenItsRetirementKickWasAlreadyConsumed();
         materialPoolRefusalRetriesOnItsDeadline();
         anIdleViewRunsNoStepOnTicksAndScansAreasOnlyWhenTheCameraMoves();
+        aSkyFrameThatChangesTheStepsInputsStartsAStep();
         borrowedTilesAreNeverDroppedToMakeRoom();
         tilesKeepStreamingWhileAFrameIsBorrowed();
         aBorrowedFrameKeepsTheSourcesOfTheTableItShows();
@@ -386,6 +387,67 @@ public final class WorldStreamSourceControllerTest {
         } finally {
             Files.deleteIfExists(holdCredit);
             held.close();
+            fixture.close();
+        }
+    }
+
+    /**
+     * #366 review: a sky-only frame that changes what the step decides (sky newly pending, or the
+     * old pins released) starts a full step, even when it arrives on the frame-only path that
+     * runs none itself. Nothing is presented here, so no acceptance kick can stand in for it.
+     */
+    private static void aSkyFrameThatChangesTheStepsInputsStartsAStep() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 18);
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 9));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 9);
+            // A disjoint demand loads up to the source bound, then waits for accepted pixels.
+            fixture.controller.neighborhood(fixture.tiles.subList(9, 18));
+            fixture.until(() -> fixture.pool.stats().leaseClaims() == 12);
+            long[] last = {-1};
+            long[] quietSince = {System.nanoTime()};
+            fixture.until(() -> {
+                long now = fixture.controller.steps.get();
+                if (now != last[0]) {
+                    last[0] = now;
+                    quietSince[0] = System.nanoTime();
+                }
+                return System.nanoTime() - quietSince[0] > TimeUnit.MILLISECONDS.toNanos(300);
+            });
+            check(fixture.controller.skyWakeAtStep.get() < 0, "No sky frame yet");
+            // Turn the sky on, then free the presentation slot without any kick, so the next
+            // frame hint reaches the frame-only path with a sky frame.
+            Files.write(fixture.directory.resolve("authored-sky"), new byte[0]);
+            Thread.sleep(100);
+            var lock = WorldStreamSourceController.class.getDeclaredField("lock");
+            var queued = WorldStreamSourceController.class.getDeclaredField("queued");
+            var frameField = WorldStreamSourceController.Presentation.class.getDeclaredField("frame");
+            lock.setAccessible(true);
+            queued.setAccessible(true);
+            frameField.setAccessible(true);
+            synchronized (lock.get(fixture.controller)) {
+                var held = (WorldStreamSourceController.Presentation) queued.get(fixture.controller);
+                if (held != null) {
+                    ((WorldStreamTransport.Frame) frameField.get(held)).release();
+                    queued.set(fixture.controller, null);
+                }
+            }
+            // A new camera sent straight to the session (the controller is not told, so it gets
+            // no kick): the child draws a fresh sky frame and its FRAME hint is the only event.
+            var cameraField = WorldStreamSourceController.class.getDeclaredField("camera");
+            cameraField.setAccessible(true);
+            var known = (WorldStreamTransport.Camera) cameraField.get(fixture.controller);
+            fixture.gpu.session.camera(new WorldStreamTransport.Camera(known.revision() + 1,
+                    known.policy(), known.width(), known.height(), known.view()));
+            fixture.until(() -> fixture.controller.skyWakeAtStep.get() >= 0);
+            long woke = fixture.controller.skyWakeAtStep.get();
+            fixture.until(() -> fixture.controller.steps.get() > woke);
+        } finally {
             fixture.close();
         }
     }

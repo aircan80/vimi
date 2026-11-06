@@ -220,6 +220,7 @@ final class WorldStreamSourceController {
     private volatile boolean pulseArmed;
     // Diagnostics and tests: steps run and ground/area recomputations (#366).
     final java.util.concurrent.atomic.AtomicLong steps = new java.util.concurrent.atomic.AtomicLong(),
+            skyWakeAtStep = new java.util.concurrent.atomic.AtomicLong(-1),
             areaScans = new java.util.concurrent.atomic.AtomicLong();
     // Worker-only: the camera and table the ground and area were last computed for.
     private WorldStreamTransport.Camera areaCamera;
@@ -970,7 +971,11 @@ final class WorldStreamSourceController {
             if (blockedOnGeometry
                     && blockedGeometry == geometry
                     && blockedDemand == demandRevision
-                    && clock.getAsLong() - blockedAt < RETRY_NANOS) return;
+                    && clock.getAsLong() - blockedAt < RETRY_NANOS) {
+                // The release listener normally wakes it; the timeout stays the fallback.
+                wakeAt(blockedAt + RETRY_NANOS);
+                return;
+            }
             if (!blockedOnGeometry
                     && (blockedOnMaterialPool || blockedCapacity == session.capacityRevision())
                     && (blockedOnMaterialPool
@@ -993,13 +998,19 @@ final class WorldStreamSourceController {
                     entry->containsResident(wanted,entry.resident())).toList());
             // A tile the borrowed frame shows is kept like a presented one (#366): dropping it frees
             // nothing until the borrow ends, so it is never the release a shrink commit counts on.
-            boolean releases=current.stream().anyMatch(entry->!subset.contains(entry) && !presented.contains(entry)
-                    && !borrowedTable.contains(entry));
+            // Both are written by the FX side under the lock: read one consistent pair.
+            List<Entry> shown, borrowing;
+            synchronized (lock) {
+                shown = presented;
+                borrowing = borrowedTable;
+            }
+            boolean releases=current.stream().anyMatch(entry->!subset.contains(entry) && !shown.contains(entry)
+                    && !borrowing.contains(entry));
             if(needsUsefulFrame && !releases) {
                 Entry victim=null;
                 int farthest=-1;
                 for(var entry:current) {
-                    if(presented.contains(entry) || borrowedTable.contains(entry)
+                    if(shown.contains(entry) || borrowing.contains(entry)
                             || !wanted.isEmpty() && same(wanted.getFirst(),entry.resident())) continue;
                     int rank=wanted.size();
                     for(int i=0;i<wanted.size();i++) if(same(wanted.get(i),entry.resident())) { rank=i; break; }
@@ -1391,7 +1402,10 @@ final class WorldStreamSourceController {
                 // This may run on the frame-only path, which runs no full step: a newly pending
                 // sky or released pins must still reach one, which may now make room or retire
                 // the old sources (#366).
-                if(changed) wake.set(true);
+                if(changed) {
+                    skyWakeAtStep.set(steps.get()); // diagnostics and tests: the step count at this wake
+                    wake.set(true);
+                }
                 return;
             }
             skyPending=false;
