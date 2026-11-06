@@ -95,6 +95,10 @@ final class WorldStreamLaunchOwner {
         private final AtomicBoolean initialized = new AtomicBoolean();
         private volatile boolean startupDone;
         private final AtomicBoolean stopping = new AtomicBoolean();
+        // Runs once, without a lock, when stopping first becomes true (or at once if it already
+        // is). Must not block.
+        private final java.util.concurrent.CopyOnWriteArrayList<Runnable> stopListeners =
+                new java.util.concurrent.CopyOnWriteArrayList<>();
         private final CompletableFuture<Void> childExited = new CompletableFuture<>();
         private final CompletableFuture<Drain> actualDrain = new CompletableFuture<>();
         private final CompletableFuture<Drain> boundedClose = new CompletableFuture<>();
@@ -126,6 +130,14 @@ final class WorldStreamLaunchOwner {
 
         boolean stopping() {
             return stopping.get();
+        }
+
+        /** Wake-up hook for parked owner workers: runs once when stopping begins. */
+        void onStopping(Runnable listener) {
+            stopListeners.add(listener);
+            if (stopping.get() && stopListeners.remove(listener)) {
+                listener.run();
+            }
         }
 
         IOException failure() {
@@ -249,6 +261,11 @@ final class WorldStreamLaunchOwner {
         /** Never joins, closes a pipe, waits for a Process or calls user code on the caller. */
         CompletableFuture<Drain> closeAsync() {
             if (stopping.compareAndSet(false, true)) {
+                for (var listener : stopListeners) {
+                    if (stopListeners.remove(listener)) {
+                        listener.run();
+                    }
+                }
                 Thread.ofVirtual()
                         .name("world-v2-parent-close-deadline")
                         .start(
