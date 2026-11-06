@@ -2529,14 +2529,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         detail);
         stallWatchdog.reset();
         streaming = new WorldStreamSourceController(request, scope -> {
-            var owner = new WorldStreamGpuOwner(gpuService, scope);
+            var owner = new WorldStreamGpuOwner(gpuService, scope, detail);
             return new WorldStreamSourceController.GpuOwner() {
                 public CompletableFuture<com.vibeminer.rendering.bgfx.WorldStreamTransport.Session> session() {
                     return owner.session();
                 }
                 public CompletableFuture<Void> closeAsync() { return owner.closeAsync(); }
             };
-        }, streamingEvents, Platform::runLater, System::nanoTime, preparer);
+        }, streamingEvents, Platform::runLater, System::nanoTime, preparer,
+                WorldStreamGpuOwner.VIEW_DISTANCE.residents());
         if (camera != null) {
             streamCamera();
             streamNeighborhood();
@@ -2689,7 +2690,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (streaming == null || camera == null || inventory == null) return;
         int x = tileX(), y = tileY();
         streaming.neighborhood(WorldStreamNeighborhood.select(
-                inventory.world().tiles(), x, y, camera.yaw()));
+                inventory.world().tiles(), x, y, camera.yaw(), WorldStreamGpuOwner.VIEW_DISTANCE));
     }
 
     private void retireGpu() {
