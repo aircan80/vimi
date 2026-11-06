@@ -41,7 +41,7 @@ final class WorldPick {
 
     /**
      * Ray through a viewport pixel, inverting the explorer's frame fit (centered, aspect kept) and
-     * the terrain renderer's eye convention (focal length 0.8 frame widths). Empty for letterbox
+     * the terrain renderer's eye convention ({@link TerrainCamera#focalPixels}). Empty for letterbox
      * pixels and degenerate sizes.
      */
     static Optional<Ray> ray(TerrainRenderer.Camera camera, double frameWidth, double frameHeight,
@@ -53,7 +53,7 @@ final class WorldPick {
         double left = (viewWidth - frameWidth * scale) / 2, top = (viewHeight - frameHeight * scale) / 2;
         double fx = (px - left) / scale, fy = (py - top) / scale;
         if (fx < 0 || fx > frameWidth || fy < 0 || fy > frameHeight) return Optional.empty();
-        double focal = frameWidth * .8;
+        double focal = TerrainCamera.focalPixels(frameWidth);
         double right = (fx - frameWidth * .5) / focal, up = (frameHeight * .5 - fy) / focal, depth = 1;
         double cy = Math.cos(camera.yaw()), sy = Math.sin(camera.yaw());
         double cp = Math.cos(camera.pitch()), sp = Math.sin(camera.pitch());
