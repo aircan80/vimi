@@ -258,8 +258,9 @@ public final class WmoFormats {
 
     /**
      * One MOPT portal: a polygon of {@code vertexCount} MOPV vertices from {@code firstVertex}, in
-     * WMO-local axes, and its recorded plane {@code normal . p + distance = 0}. The plane is not
-     * recomputed from the vertices or normalized.
+     * WMO-local axes, and its raw recorded C4Plane ({@code normal}, {@code distance}). The plane is
+     * not recomputed from the vertices, normalized or checked against them; which side its sign
+     * puts a group on is the traversal's convention, confirmed there against real data.
      */
     public record Portal(int firstVertex, int vertexCount, Vec3 normal, float distance) {}
 
@@ -280,7 +281,12 @@ public final class WmoFormats {
      * fewer than three vertices, a vertex range outside MOPV or a non-finite vertex or plane; when
      * a reference names a portal outside MOPT or a group outside the MOHD group count; or when they
      * do not fit the root fact budget. A root that qualifies without its portals is never declined
-     * because of them.
+     * because of them. Zero-length MOPV, MOPT and MOPR are retained and empty.
+     *
+     * <p>Deliberately not checked here: the MOHD portal count against the MOPT records (only the
+     * records are used), and each group's MOGP {@code firstPortal}/{@code portalCount} range
+     * against MOPR, which needs the group files; the portal traversal checks those ranges.
+     * Retention is all or nothing: one bad portal leaves the whole set not retained.
      */
     public static final class Portals {
         private static final Portals ABSENT =
