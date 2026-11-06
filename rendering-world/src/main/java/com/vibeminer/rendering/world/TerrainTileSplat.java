@@ -32,6 +32,35 @@ public final class TerrainTileSplat {
 
     public static final int NONE = 255;
 
+    /**
+     * The mask side a tile gets (issue #174 step 2b-2, lead decision): HIGH (1024) only on the HIGH
+     * texture tier and inside the NEAR radius; FAR's outer ring uses STANDARD (512) even on HIGH,
+     * which keeps FAR + HIGH near 53 + 20 MiB of masks instead of 139 MiB.
+     */
+    public static int maskSide(boolean high, boolean outerRing) {
+        return high && !outerRing ? HIGH_MASK : STANDARD_MASK;
+    }
+
+    /**
+     * Whether a tile at offset ({@code dx}, {@code dy}) from the camera's tile lies past the square
+     * {@code nearRadius} (1 for NEAR's 3 x 3): FAR's outer ring.
+     */
+    public static boolean outerRing(int dx, int dy, int nearRadius) {
+        if (nearRadius < 0) {
+            throw new IllegalArgumentException("Invalid near radius");
+        }
+        return Math.max(Math.abs(dx), Math.abs(dy)) > nearRadius;
+    }
+
+    /**
+     * GPU bytes of one slot's mask texture with its full mip chain: 1,398,100 at 512, 5,592,404 at
+     * 1024. Charged per slot with terrain, like the atlas, not against the objects budget.
+     */
+    public static long maskChainBytes(int side) {
+        alphaBytes(side);
+        return ObjectTextureMips.chainPixels(side, side) * 4L;
+    }
+
     /** RGBA8 bytes of a mask map of {@code side}; only the two mask sides are valid. */
     public static int alphaBytes(int side) {
         if (side != STANDARD_MASK && side != HIGH_MASK) {

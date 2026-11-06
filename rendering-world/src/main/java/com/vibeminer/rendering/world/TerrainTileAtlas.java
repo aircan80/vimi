@@ -87,13 +87,21 @@ public final class TerrainTileAtlas {
     }
 
     /** The largest {@link #retainedBytes()} with a full splat: 256 mappings, 64 diffuses. */
-    public static final long MAX_RETAINED_BYTES =
-            PIXEL_BYTES
-                    + 32L
-                    + 256 * 64L
-                    + 256
-                    + 64L
-                    + TerrainTileSplat.MAX_DIFFUSES * 8L
-                    + TerrainTileSplat.LAYER_BYTES
-                    + TerrainTileSplat.MAX_ALPHA_BYTES;
+    public static final long MAX_RETAINED_BYTES = maxRetainedBytes(TerrainTileSplat.HIGH_MASK);
+
+    /**
+     * The largest {@link #retainedBytes()} of an atlas whose splat mask has {@code maskSide}
+     * ({@link TerrainTileSplat#STANDARD_MASK} or {@link TerrainTileSplat#HIGH_MASK}), or of one
+     * without splatting inputs when {@code maskSide} is 0.
+     */
+    public static long maxRetainedBytes(int maskSide) {
+        long atlas = PIXEL_BYTES + 32L + 256 * 64L + 256;
+        return maskSide == 0
+                ? atlas
+                : atlas
+                        + 64L
+                        + TerrainTileSplat.MAX_DIFFUSES * 8L
+                        + TerrainTileSplat.LAYER_BYTES
+                        + TerrainTileSplat.alphaBytes(maskSide);
+    }
 }

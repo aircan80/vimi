@@ -299,6 +299,35 @@ class TerrainAtlasComposerTest {
     }
 
     @Test
+    void maskTierRuleKeepsHighInsideTheNearRadiusOnly() {
+        assertEquals(TerrainTileSplat.HIGH_MASK, TerrainTileSplat.maskSide(true, false));
+        assertEquals(TerrainTileSplat.STANDARD_MASK, TerrainTileSplat.maskSide(true, true));
+        assertEquals(TerrainTileSplat.STANDARD_MASK, TerrainTileSplat.maskSide(false, false));
+        assertEquals(TerrainTileSplat.STANDARD_MASK, TerrainTileSplat.maskSide(false, true));
+        // NEAR is the 3 x 3 around the camera tile (radius 1); FAR's 5 x 5 adds the outer ring.
+        assertFalse(TerrainTileSplat.outerRing(0, 0, 1));
+        assertFalse(TerrainTileSplat.outerRing(-1, 1, 1));
+        assertTrue(TerrainTileSplat.outerRing(2, 0, 1));
+        assertTrue(TerrainTileSplat.outerRing(-2, -2, 1));
+        assertThrows(IllegalArgumentException.class, () -> TerrainTileSplat.outerRing(0, 0, -1));
+        // Measured in the splat proof: one slot's mask chain at each side.
+        assertEquals(1_398_100L, TerrainTileSplat.maskChainBytes(TerrainTileSplat.STANDARD_MASK));
+        assertEquals(5_592_404L, TerrainTileSplat.maskChainBytes(TerrainTileSplat.HIGH_MASK));
+        assertThrows(IllegalArgumentException.class, () -> TerrainTileSplat.maskChainBytes(768));
+        // FAR + HIGH: 9 inner HIGH slots and 16 outer STANDARD (25 active tiles).
+        long far = 0;
+        for (int dy = -2; dy <= 2; dy++) {
+            for (int dx = -2; dx <= 2; dx++) {
+                far +=
+                        TerrainTileSplat.maskChainBytes(
+                                TerrainTileSplat.maskSide(
+                                        true, TerrainTileSplat.outerRing(dx, dy, 1)));
+            }
+        }
+        assertEquals(9 * 5_592_404L + 16 * 1_398_100L, far);
+    }
+
+    @Test
     void splatRefusesInvalidShapes() {
         var layers = new byte[TerrainTileSplat.LAYER_BYTES];
         var alpha = new byte[TerrainTileSplat.ALPHA_BYTES];

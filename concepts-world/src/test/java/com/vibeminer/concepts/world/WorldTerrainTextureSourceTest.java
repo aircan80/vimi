@@ -1217,7 +1217,10 @@ class WorldTerrainTextureSourceTest {
             assertEquals(WorldTerrainTextureSource.State.READY, result.tiles().getFirst().state());
             assertEquals(8, result.tiles().getFirst().receipt().diffuse().size());
             assertEquals(7_379_048, files.sources.get(3L).length);
-            assertEquals(TerrainAtlasPool.ENTRY_BYTES, pool.stats().chargedBytes());
+            // A published atlas without splatting inputs is charged as one, not at the maximum.
+            assertEquals(
+                    com.vibeminer.rendering.world.TerrainTileAtlas.maxRetainedBytes(0),
+                    pool.stats().chargedBytes());
         } finally {
             source.closeAsync().get(5, TimeUnit.SECONDS);
             pool.closeAsync().get(5, TimeUnit.SECONDS);
