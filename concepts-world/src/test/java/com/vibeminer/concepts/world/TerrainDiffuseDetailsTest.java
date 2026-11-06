@@ -160,6 +160,33 @@ final class TerrainDiffuseDetailsTest {
     }
 
     @Test
+    void aDiffuseLargerThanOneMebibyteDecodesFromItsSelectedMipRange() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        long id = 12;
+        byte[] large = blpChain(1024);
+        assertTrue(large.length > 1 << 20, "A full 1024 BC2 chain exceeds the old 1 MiB cap");
+        files.sources.put(id, large);
+        var source = new WorldTerrainTextureSource(files.files(), new TerrainAtlasPool());
+        try {
+            var request =
+                    new WorldTerrainTextureSource.Request(
+                            source, null, List.of(), Cancellation.NONE, progress -> {}, false);
+            var binding =
+                    new WorldTerrainTextureSource.FileBinding(
+                            id,
+                            key(id),
+                            large.length,
+                            (long) large.length,
+                            WorldTerrainTextureSource.DIFFUSE_SOURCE_LIMIT);
+            var detail = source.detail(binding, request);
+            assertEquals(128, detail.side());
+            assertEquals((byte) 0xff, detail.pixels().get(0), "Level 3 (128) is red");
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void aContentKeyChangeDuringTheReadFailsAndCachesNothing() throws Exception {
         var files = new WorldTerrainTextureSourceTest.Files();
         long id = 10;
