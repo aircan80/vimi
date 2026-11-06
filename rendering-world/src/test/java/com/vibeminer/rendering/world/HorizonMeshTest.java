@@ -202,4 +202,73 @@ class HorizonMeshTest {
         assertEquals(289 * 1024, full.triangleCount());
         assertTrue(full.payloadBytes() < 6 << 20, "bytes " + full.payloadBytes());
     }
+
+    @Test
+    void everySkirtFacesItsFullDetailNeighbour() {
+        var tiles = new HashSet<Integer>();
+        for (int x = 9; x <= 11; x++) {
+            for (int y = 9; y <= 11; y++) {
+                tiles.add(key(x, y));
+            }
+        }
+        // Only the centre is full detail: its four neighbours each get one skirt.
+        var mesh =
+                HorizonMesh.build(
+                        lowRes(tiles, -1), 10, 10, 1, (x, y) -> x == 10 && y == 10, () -> false);
+        var p = mesh.positions();
+        var i = mesh.indices();
+        double centreX = (32 - 10 - .5) * T, centreY = (32 - 10 - .5) * T;
+        int skirts = 0;
+        for (int t = 0; t < mesh.triangleCount(); t++) {
+            int a = i.get(t * 3), b = i.get(t * 3 + 1), c = i.get(t * 3 + 2);
+            skirts++;
+            double ux = p.get(b * 3) - p.get(a * 3),
+                    uy = p.get(b * 3 + 1) - p.get(a * 3 + 1),
+                    uz = p.get(b * 3 + 2) - p.get(a * 3 + 2);
+            double vx = p.get(c * 3) - p.get(a * 3),
+                    vy = p.get(c * 3 + 1) - p.get(a * 3 + 1),
+                    vz = p.get(c * 3 + 2) - p.get(a * 3 + 2);
+            double nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+            if (Math.abs(nz) > 1e-6 * Math.hypot(nx, ny) + 1e-9) {
+                skirts--;
+                continue; // a surface triangle; skirts are vertical
+            }
+            // Toward the full-detail centre tile from this triangle's first vertex.
+            double tx = centreX - p.get(a * 3), ty = centreY - p.get(a * 3 + 1);
+            assertTrue(nx * tx + ny * ty > 0, "skirt triangle " + t + " faces away");
+        }
+        assertEquals(4 * 32, skirts);
+    }
+
+    /** One authored ADT chunk (index 0, 0) at the client's origin for tile x, y. */
+    private static byte[] adtChunk(int x, int y) {
+        var b = ByteBuffer.allocate(12 + 8 + 128 + 8 + 145 * 4).order(ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0x4d564552).putInt(4).putInt(18);
+        b.putInt(0x4d434e4b).putInt(128 + 8 + 145 * 4);
+        int start = b.position();
+        b.putFloat(start + 104, (float) ((32 - x) * T))
+                .putFloat(start + 108, (float) ((32 - y) * T))
+                .putFloat(start + 112, 100);
+        b.position(start + 128);
+        b.putInt(0x4d435654).putInt(145 * 4);
+        return b.array();
+    }
+
+    @Test
+    void horizonCornersLandOnTheSameSpotsAsTheAdtGridOfTheirTile() {
+        var mesh =
+                HorizonMesh.build(
+                        lowRes(Set.of(key(30, 40)), -1), 30, 40, 0, (x, y) -> false, () -> false);
+        var chunk = WorldFormats.adtGrid(adtChunk(30, 40), () -> false).chunks().getFirst();
+        var p = mesh.positions();
+        // Horizon corner (0, 0) is the chunk's first sample; corner (1, 1) is the chunk's last
+        // outer sample (row 16, column 8), one chunk further along both axes.
+        int[][] pairs = {{0, 0, 0, 0}, {1, 1, 16, 8}, {0, 1, 0, 8}, {1, 0, 16, 0}};
+        for (int[] pair : pairs) {
+            int v = (pair[0] * 17 + pair[1]) * 3;
+            var sample = chunk.position(pair[2], pair[3]);
+            assertEquals(sample.x(), p.get(v), 1e-3, "x at " + pair[0] + "," + pair[1]);
+            assertEquals(sample.y(), p.get(v + 1), 1e-3, "y at " + pair[0] + "," + pair[1]);
+        }
+    }
 }
