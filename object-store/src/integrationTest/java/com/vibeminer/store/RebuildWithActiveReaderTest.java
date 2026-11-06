@@ -28,6 +28,16 @@ final class RebuildWithActiveReaderTest {
 
     @Test
     void rebuildCompletesWhileAReaderReadsContinuouslyAndTheReaderContinues() throws Exception {
+        rebuildWithReaders(1);
+    }
+
+    /** Overlapping reads from several threads must not starve the replace (#480 review). */
+    @Test
+    void rebuildCompletesWhileFourReaderThreadsReadContinuously() throws Exception {
+        rebuildWithReaders(4);
+    }
+
+    private void rebuildWithReaders(int threads) throws Exception {
         var first = ObjectStore.open(folder).join();
         first.put(List.of(new PutObject(key(bytes), bytes)), true, NONE).join();
         first.closeAsync().join();
@@ -36,25 +46,28 @@ final class RebuildWithActiveReaderTest {
         var reads = new AtomicInteger();
         var after = new AtomicInteger();
         var rebuilt = new AtomicBoolean();
-        var loop =
-                Thread.ofPlatform()
-                        .start(
-                                () -> {
-                                    while (!stop.get()) {
-                                        try {
-                                            var read = reader.read(key(bytes), NONE).join();
-                                            if (read.bytes() != null) {
-                                                reads.incrementAndGet();
-                                                if (rebuilt.get()) {
-                                                    after.incrementAndGet();
+        var loops = new java.util.ArrayList<Thread>();
+        for (int t = 0; t < threads; t++) {
+            loops.add(
+                    Thread.ofPlatform()
+                            .start(
+                                    () -> {
+                                        while (!stop.get()) {
+                                            try {
+                                                var read = reader.read(key(bytes), NONE).join();
+                                                if (read.bytes() != null) {
+                                                    reads.incrementAndGet();
+                                                    if (rebuilt.get()) {
+                                                        after.incrementAndGet();
+                                                    }
                                                 }
+                                            } catch (RuntimeException transientDuringSwitch) {
+                                                // A read racing the switch may fail; the next opens
+                                                // anew.
                                             }
-                                        } catch (RuntimeException transientDuringSwitch) {
-                                            // A read racing the switch may fail; the next opens
-                                            // anew.
                                         }
-                                    }
-                                });
+                                    }));
+        }
         ObjectStore writer = null;
         try {
             while (reads.get() < 50) {
@@ -64,18 +77,24 @@ final class RebuildWithActiveReaderTest {
             try (NativeSqlite db = new NativeSqlite(folder.resolve("objects.sqlite3"), false)) {
                 db.exec("UPDATE store SET clean_close=5");
             }
+            long opening = System.nanoTime();
             writer = ObjectStore.open(folder).get(30, TimeUnit.SECONDS);
             assertTrue(writer.openReport().indexRebuilt());
+            assertTrue(
+                    System.nanoTime() - opening < TimeUnit.SECONDS.toNanos(8),
+                    "the rebuild only got through near its 10 s bound");
             rebuilt.set(true);
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
             while (after.get() < 20 && System.nanoTime() < deadline) {
                 Thread.sleep(5);
             }
-            assertTrue(after.get() >= 20, "the reader did not continue on the new index");
+            assertTrue(after.get() >= 20, "the readers did not continue on the new index");
             assertArrayEquals(bytes, writer.read(key(bytes), NONE).join().bytes());
         } finally {
             stop.set(true);
-            loop.join();
+            for (var loop : loops) {
+                loop.join();
+            }
             reader.closeAsync().join();
             if (writer != null) {
                 writer.closeAsync().join();
@@ -87,13 +106,15 @@ final class RebuildWithActiveReaderTest {
     void indexFilesKeptInUsePastTheBoundRefuseWithAReason() throws Exception {
         var store = ObjectStore.open(folder).join();
         try {
-            store.indexInUseWaitNanos = TimeUnit.MILLISECONDS.toNanos(100);
+            store.retryIndexInUse = true; // The Windows behaviour, on any platform.
+            long bound = TimeUnit.MILLISECONDS.toNanos(100);
             var attempts = new AtomicInteger();
             var refused =
                     assertThrows(
                             StoreException.class,
                             () ->
                                     store.whileIndexInUse(
+                                            System.nanoTime() + bound,
                                             () -> {
                                                 attempts.incrementAndGet();
                                                 throw new FileSystemException(
@@ -110,6 +131,7 @@ final class RebuildWithActiveReaderTest {
                             StoreException.class,
                             () ->
                                     store.whileIndexInUse(
+                                            System.nanoTime() + bound,
                                             () -> {
                                                 denied.incrementAndGet();
                                                 throw new java.nio.file.AccessDeniedException("x");
@@ -122,6 +144,7 @@ final class RebuildWithActiveReaderTest {
                     java.nio.file.NoSuchFileException.class,
                     () ->
                             store.whileIndexInUse(
+                                    System.nanoTime() + bound,
                                     () -> {
                                         other.incrementAndGet();
                                         throw new java.nio.file.NoSuchFileException("x");
@@ -130,11 +153,25 @@ final class RebuildWithActiveReaderTest {
                     IOException.class,
                     () ->
                             store.whileIndexInUse(
+                                    System.nanoTime() + bound,
                                     () -> {
                                         other.incrementAndGet();
                                         throw new IOException("injected");
                                     }));
             assertEquals(2, other.get());
+            // Elsewhere an open file can be replaced: such a failure is real and not retried.
+            store.retryIndexInUse = false;
+            var posix = new AtomicInteger();
+            assertThrows(
+                    FileSystemException.class,
+                    () ->
+                            store.whileIndexInUse(
+                                    System.nanoTime() + bound,
+                                    () -> {
+                                        posix.incrementAndGet();
+                                        throw new FileSystemException("objects.sqlite3");
+                                    }));
+            assertEquals(1, posix.get());
         } finally {
             store.closeAsync().join();
         }

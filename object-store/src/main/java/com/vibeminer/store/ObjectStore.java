@@ -561,11 +561,23 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 atMaintenance(MaintenancePoint.REBUILD_BEFORE_REPLACE);
                 // Keep the previous main index until the atomic switch. An interruption
                 // must not create a gap between deleting the old file and installing the new one.
-                for (String suffix : List.of("-wal", "-shm")) {
-                    Path sidecar = folder.resolve("objects.sqlite3" + suffix);
-                    whileIndexInUse(() -> io.delete(sidecar));
+                // One shared bound for the sidecar deletes and the replace.
+                long deadline = System.nanoTime() + indexInUseWaitNanos;
+                try {
+                    for (String suffix : List.of("-wal", "-shm")) {
+                        Path sidecar = folder.resolve("objects.sqlite3" + suffix);
+                        whileIndexInUse(deadline, () -> io.delete(sidecar));
+                    }
+                    whileIndexInUse(deadline, () -> io.replace(rebuilding, indexPath));
+                } catch (StoreException inUse) {
+                    // Best effort: without the rebuild file, readers stop waiting for us.
+                    try {
+                        Files.deleteIfExists(rebuilding);
+                    } catch (IOException cleanup) {
+                        inUse.addSuppressed(cleanup);
+                    }
+                    throw inUse;
                 }
-                whileIndexInUse(() -> io.replace(rebuilding, indexPath));
                 atMaintenance(MaintenancePoint.REBUILD_REPLACED);
                 io.syncDirectory(folder);
             } else {
@@ -726,38 +738,45 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     /** Longest a rebuild waits for other processes to release the index files. */
     static final long INDEX_IN_USE_WAIT_NANOS = TimeUnit.SECONDS.toNanos(10);
 
-    // Test seam: shorter waits.
+    /** Longest a read waits for another process's rebuild before it reads anyway. */
+    static final long REBUILD_READ_WAIT_NANOS = TimeUnit.SECONDS.toNanos(10);
+
+    // Test seams: shorter waits, and the Windows-only retry enabled on any platform.
     long indexInUseWaitNanos = INDEX_IN_USE_WAIT_NANOS;
+    long rebuildReadWaitNanos = REBUILD_READ_WAIT_NANOS;
+    boolean retryIndexInUse =
+            System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
 
     interface IndexFileAction {
         void run() throws IOException;
     }
 
     /**
-     * Runs {@code action} on the index files, retrying while another process holds them open. On
-     * Windows a reader's open handle makes a delete fail with a sharing violation (a plain {@link
-     * java.nio.file.FileSystemException}) and a replace with {@link
-     * java.nio.file.AccessDeniedException}; readers see the rebuild file and stop pooling
-     * connections, so their handles go away between reads. Other failures (a missing file, an
-     * injected or plain I/O error) are not retried. Past the bound the rebuild refuses with {@code
-     * OBJECT_STORE_INDEX_IN_USE}.
+     * Runs {@code action} on the index files, retrying until {@code deadline} while another process
+     * holds them open. Only on Windows, where a reader's open handle makes a delete fail with a
+     * sharing violation (a plain {@link java.nio.file.FileSystemException}) and a replace with
+     * {@link java.nio.file.AccessDeniedException}; elsewhere an open file can be replaced, so such
+     * failures are real and are thrown at once. Other failures (a missing file, a plain or injected
+     * I/O error) are never retried. Readers in other processes wait while the rebuild file exists
+     * (see {@link #rebuildPending}), so the handles go away. Past the deadline the rebuild refuses
+     * with {@code OBJECT_STORE_INDEX_IN_USE}, keeping the last failure as its cause.
      */
-    void whileIndexInUse(IndexFileAction action) throws IOException {
-        long deadline = System.nanoTime() + indexInUseWaitNanos;
+    void whileIndexInUse(long deadline, IndexFileAction action) throws IOException {
         while (true) {
             try {
                 action.run();
                 return;
             } catch (java.nio.file.FileSystemException busy) {
-                if (busy.getClass() != java.nio.file.FileSystemException.class
-                        && !(busy instanceof java.nio.file.AccessDeniedException)) {
+                if (!retryIndexInUse
+                        || busy.getClass() != java.nio.file.FileSystemException.class
+                                && !(busy instanceof java.nio.file.AccessDeniedException)) {
                     throw busy;
                 }
                 if (System.nanoTime() - deadline >= 0) {
                     throw new StoreException(
                             "OBJECT_STORE_INDEX_IN_USE",
                             "Index rebuild could not replace the index files: another process"
-                                    + " kept them open, or access was denied",
+                                    + " kept them open",
                             busy);
                 }
                 try {
@@ -900,7 +919,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
      */
     private <T> T pooledRead(Cancellation cancellation, ReadWork<T> work) throws Exception {
         Object identity = indexIdentity();
-        boolean pooling = !immutable && !rebuildPending();
+        boolean pooling = !immutable && !awaitRebuild(cancellation);
         ReadConnections.Pooled connection = pooling ? readConnections.take(identity) : null;
         boolean poolable = true;
         if (connection == null) {
@@ -920,19 +939,17 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         }
     }
 
+    private volatile boolean rebuildChecked, rebuildSeen;
     private volatile long rebuildCheckedAt;
-    private volatile boolean rebuildSeen;
 
     /**
      * Whether another process is rebuilding this store's index (its rebuild file exists), checked
-     * at most every 100 ms. While it is, reads use a fresh connection each and pool none, so no
-     * handle stays open between reads to block the rebuild's delete and replace (#458); the idle
-     * pool is retired when the rebuild is first seen. A writer's own reads never overlap its
-     * rebuild, which runs before the store opens.
+     * at most every 100 ms. The idle pool is retired when a rebuild is first seen. A writer's own
+     * reads never overlap its rebuild, which runs before the store opens.
      */
     private boolean rebuildPending() {
         long now = System.nanoTime();
-        if (now - rebuildCheckedAt < TimeUnit.MILLISECONDS.toNanos(100)) {
+        if (rebuildChecked && now - rebuildCheckedAt < TimeUnit.MILLISECONDS.toNanos(100)) {
             return rebuildSeen;
         }
         boolean seen = Files.exists(folder.resolve("objects.sqlite3.rebuild"));
@@ -941,7 +958,31 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         }
         rebuildSeen = seen;
         rebuildCheckedAt = now;
+        rebuildChecked = true;
         return seen;
+    }
+
+    /**
+     * While another process rebuilds the index, waits (bounded by {@link #rebuildReadWaitNanos})
+     * before opening any connection, so the rebuild gets a window with no reader handle open to
+     * delete and replace the index files (#458); the read then opens a fresh connection on the new
+     * index. Returns whether the rebuild was still pending, in which case the read pools nothing.
+     */
+    private boolean awaitRebuild(Cancellation cancellation) throws InterruptedException {
+        if (!rebuildPending()) {
+            return false;
+        }
+        long deadline = System.nanoTime() + rebuildReadWaitNanos;
+        while (System.nanoTime() - deadline < 0) {
+            cancellation.check();
+            Thread.sleep(20);
+            if (!Files.exists(folder.resolve("objects.sqlite3.rebuild"))) {
+                rebuildSeen = false;
+                rebuildCheckedAt = System.nanoTime();
+                return false;
+            }
+        }
+        return true;
     }
 
     // Set once the file system reports no file identity (Windows): identity checks are skipped.
