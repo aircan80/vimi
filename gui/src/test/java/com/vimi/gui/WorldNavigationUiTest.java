@@ -211,8 +211,7 @@ public final class WorldNavigationUiTest {
                 require(!view.lookup("#world-minimap").isVisible(),"Retired source cannot reveal minimap after resize");
                 require(((javafx.scene.control.Label)view.lookup("#world-current-area")).getText().equals("Terrain area unavailable"),"Retired source cannot retain current-area name");
                 require(fixture.minimapCalls.get()==before,"Retired source cannot request artwork after resize");
-                require(RACE_CHECKED.get(),"The asynchronous controls load race was checked");
-                DONE.complete(null);
+                await(fixture,RACE_CHECKED::get,() -> DONE.complete(null));
             });
     }
 
@@ -252,9 +251,8 @@ public final class WorldNavigationUiTest {
         invert.fire();
         require(savedSlow.size()==1,"The edit saves at once");
         require(input(view).controls().invertY(),"The edit applies");
-        // The load completes on another thread after the edit.
-        new Thread(() -> slow.complete(stored.encode())).start();
-        try { slow.get(5,TimeUnit.SECONDS); } catch (Exception error) { throw new AssertionError(error); }
+        // The load completes after the edit; its result is applied on a later FX turn.
+        slow.complete(stored.encode());
         var fast=new java.util.concurrent.CompletableFuture<String>();
         Platform.runLater(() -> {
             try {
@@ -266,8 +264,7 @@ public final class WorldNavigationUiTest {
                     public java.util.concurrent.CompletableFuture<String> load() { return fast; }
                     public void save(String value) { throw new AssertionError("A load never saves"); }
                 });
-                new Thread(() -> fast.complete(stored.encode())).start();
-                fast.get(5,TimeUnit.SECONDS);
+                fast.complete(stored.encode());
                 Platform.runLater(() -> {
                     try {
                         require(input(view).controls().equals(stored),"A load before any edit applies");
