@@ -663,6 +663,10 @@ final class RaceAppearance {
                     case "ItemAppearance" -> "481C4281";
                     case "ItemDisplayInfo" -> "9F3AB8A9";
                     case "ItemDisplayInfoMaterialRes" -> "AA462C0E";
+                    // Humanoid NPC appearances (#385).
+                    case "CreatureDisplayInfoExtra" -> "4D9FE25C";
+                    case "CreatureDisplayInfoOption" -> "2F331C33";
+                    case "NPCModelItemSlotDisplayInfo" -> "C2057F5B";
                     default -> null;
                 };
         return expected != null && layouts.contains(expected);

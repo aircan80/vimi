@@ -1,6 +1,8 @@
 package com.vibeminer.concepts.races;
 
 import com.vibeminer.access.Cancellation;
+import com.vibeminer.concepts.core.RelationIndexes;
+import com.vibeminer.formats.db2.Db2Types;
 import com.vibeminer.formats.tables.TableTypes;
 import java.util.ArrayList;
 import java.util.List;
@@ -14,11 +16,15 @@ import java.util.function.LongFunction;
  * (#385): the race model variant for the recorded race and sex, the recorded customization choices
  * ({@code CreatureDisplayInfoOption}), the equipped item displays ({@code
  * NPCModelItemSlotDisplayInfo}) and the client's own pre-baked texture ({@code
- * BakeMaterialResourcesID} through {@code TextureFileData}), which already composites skin, face
- * and armour. It refuses, with a stated reason, only what drawing cannot do without: the pre-baked
- * texture, the race model (ChrModel) and known customization choices. Item records it cannot use
- * exactly are left out and counted ({@link Spec#omittedItems}); the bake already shows their
- * texture, only their geometry is missing. Nothing is guessed.
+ * BakeMaterialResourcesID} through {@code TextureFileData}, whose row ID is the file), which
+ * already composites skin, face and armour. It refuses, with a stated reason, only what drawing
+ * cannot do without: the pre-baked texture, the race model (ChrModel) and known customization
+ * choices. Item records it cannot use exactly are left out and counted ({@link Spec#omittedItems});
+ * the bake already shows their texture, only their geometry is missing.
+ *
+ * <p>The per-NPC rows are found through indexed reverse relations ({@link RelationIndexes}), one
+ * index per table and column for the component, never a scan per NPC. The three NPC tables are
+ * pinned to their reviewed layouts ({@link RaceAppearance#supports}).
  */
 public final class RaceNpcs {
     /** One equipped item display in an NPC item slot. */
@@ -56,23 +62,25 @@ public final class RaceNpcs {
         }
     }
 
-    /** Bounds on the rows read for one NPC (they are filtered by the NPC's ID). */
+    /** Bounds on the rows one NPC may relate to. */
     static final int MAX_OPTIONS = 256, MAX_ITEMS = 64, MAX_BAKE_FILES = 16;
 
     private RaceNpcs() {}
 
     /**
      * Resolves one {@code CreatureDisplayInfoExtra} row. {@code variants} lists the race's model
-     * variants ({@link RaceMedia#variants}); a table that cannot be read propagates as the races
-     * component's own unavailable result.
+     * variants ({@link RaceMedia#variants}). A table or index the store cannot answer for now
+     * propagates as the races component's unreadable result, never as a refusal.
      */
     static Resolution resolve(
             RacesService tables,
+            RelationIndexes relations,
             long extendedDisplayInfoId,
             LongFunction<List<RaceMediaTypes.Variant>> variants,
             Cancellation token,
             List<String> issues) {
         var extras = tables.schema("CreatureDisplayInfoExtra", token, issues);
+        RaceAppearance.requireProfile(extras);
         extras.reference("DisplayRaceID", "ChrRaces");
         extras.field("DisplaySexID", true);
         extras.field("BakeMaterialResourcesID", true);
@@ -90,24 +98,6 @@ public final class RaceNpcs {
         if (bake <= 0) {
             return Resolution.refused("there is no pre-baked NPC texture");
         }
-        int omitted = 0;
-        if (extras.has("NPCItemDisplay")) {
-            // Older layouts list items inline; only the separate slot table is reviewed, so inline
-            // items are left out and counted.
-            int length =
-                    extras.schema.columns().stream()
-                            .filter(column -> column.name().equals("NPCItemDisplay"))
-                            .findFirst()
-                            .orElseThrow()
-                            .arrayLength();
-            extras.field("NPCItemDisplay", true, length);
-            for (int i = 0; i < length; i++) {
-                String column = length == 1 ? "NPCItemDisplay" : "NPCItemDisplay[" + i + "]";
-                if (extras.number(extra, column) != 0) {
-                    omitted++;
-                }
-            }
-        }
         RaceMediaTypes.Variant variant = null;
         for (var candidate : variants.apply(race)) {
             if (candidate.sex() == sex) {
@@ -121,21 +111,20 @@ public final class RaceNpcs {
             return Resolution.refused("there is no race model for the recorded race and sex");
         }
         // Customization choices: one per option; two different choices for one option refuse.
-        var options =
-                tables.read(
-                        "CreatureDisplayInfoOption",
-                        MAX_OPTIONS,
-                        token,
-                        issues,
-                        List.of(equals("CreatureDisplayInfoExtraID", extendedDisplayInfoId)));
+        var options = tables.schema("CreatureDisplayInfoOption", token, issues);
+        RaceAppearance.requireProfile(options);
         options.reference("CreatureDisplayInfoExtraID", "CreatureDisplayInfoExtra");
         options.reference("ChrCustomizationOptionID", "ChrCustomizationOption");
         options.reference("ChrCustomizationChoiceID", "ChrCustomizationChoice");
         var choices = new TreeMap<Long, Long>();
-        for (var row : options.rows) {
-            if (options.number(row, "CreatureDisplayInfoExtraID") != extendedDisplayInfoId) {
-                continue;
-            }
+        for (var row :
+                related(
+                        relations,
+                        options,
+                        "CreatureDisplayInfoExtraID",
+                        extendedDisplayInfoId,
+                        MAX_OPTIONS,
+                        token)) {
             long option = options.number(row, "ChrCustomizationOptionID");
             long choice = options.number(row, "ChrCustomizationChoiceID");
             Long before = choices.put(option, choice);
@@ -143,26 +132,20 @@ public final class RaceNpcs {
                 return Resolution.refused("the customization choices are unknown");
             }
         }
-        // Equipped items: one display per slot.
-        var slots =
-                tables.read(
-                        "NPCModelItemSlotDisplayInfo",
-                        MAX_ITEMS,
-                        token,
-                        issues,
-                        List.of(equals("NpcModelID", extendedDisplayInfoId)));
+        // Equipped items: one display per slot; anything else is left out and counted.
+        var slots = tables.schema("NPCModelItemSlotDisplayInfo", token, issues);
+        RaceAppearance.requireProfile(slots);
         slots.reference("NpcModelID", "CreatureDisplayInfoExtra");
         slots.reference("ItemDisplayInfoID", "ItemDisplayInfo");
         slots.field("ItemSlot", true);
+        int omitted = 0;
         var bySlot = new TreeMap<Integer, Long>();
-        for (var row : slots.rows) {
-            if (slots.number(row, "NpcModelID") != extendedDisplayInfoId) {
-                continue;
-            }
+        for (var row :
+                related(relations, slots, "NpcModelID", extendedDisplayInfoId, MAX_ITEMS, token)) {
             long slot = slots.number(row, "ItemSlot");
             long display = slots.number(row, "ItemDisplayInfoID");
             if (slot < 0 || slot > 255 || display <= 0) {
-                omitted++; // an item slot outside the reviewed profile
+                omitted++; // a slot outside the reviewed profile
                 continue;
             }
             Long before = bySlot.putIfAbsent((int) slot, display);
@@ -179,26 +162,22 @@ public final class RaceNpcs {
                 omitted++;
             }
         }
-        // The pre-baked texture: exactly one file for the material resource.
-        var bakes =
-                tables.read(
-                        "TextureFileData",
-                        MAX_BAKE_FILES,
-                        token,
-                        issues,
-                        List.of(equals("MaterialResourcesID", bake)));
-        bakes.field("MaterialResourcesID", true);
-        bakes.reference("FileDataID", "FileData");
+        // The pre-baked texture: the diffuse (UsageType 0) file of the material resource, whose
+        // TextureFileData row ID is the file; more than one refuses.
+        var textures = tables.schema("TextureFileData", token, issues);
+        RaceAppearance.requireProfile(textures);
+        textures.field("UsageType", true);
+        textures.field("MaterialResourcesID", true);
         long file = 0;
-        for (var row : bakes.rows) {
-            if (bakes.number(row, "MaterialResourcesID") != bake) {
+        for (var row :
+                related(relations, textures, "MaterialResourcesID", bake, MAX_BAKE_FILES, token)) {
+            if (textures.number(row, "UsageType") != 0) {
                 continue;
             }
-            long candidate = bakes.number(row, "FileDataID");
-            if (candidate <= 0 || file != 0 && file != candidate) {
+            if (row.id() < 1 || row.id() > 0xffffffffL || file != 0 && file != row.id()) {
                 return Resolution.refused("there is no single pre-baked NPC texture");
             }
-            file = candidate;
+            file = row.id();
         }
         if (file == 0) {
             return Resolution.refused("there is no pre-baked NPC texture");
@@ -218,8 +197,43 @@ public final class RaceNpcs {
                 null);
     }
 
-    private static TableTypes.Filter equals(String column, long value) {
-        return new TableTypes.Filter(
-                column, TableTypes.FilterOp.EQUALS, Long.toString(value), null);
+    /**
+     * The rows of {@code data} whose {@code column} is {@code key}, through the component's reverse
+     * relation index. More rows than {@code bound} is outside the reviewed profile.
+     */
+    private static List<Db2Types.Row> related(
+            RelationIndexes relations,
+            RacesService.Data data,
+            String column,
+            long key,
+            int bound,
+            Cancellation token) {
+        var lookup =
+                relations
+                        .lookup(
+                                data.name,
+                                column,
+                                key,
+                                bound,
+                                TableTypes.Priority.INTERACTIVE,
+                                token)
+                        .join();
+        switch (lookup.state()) {
+            case OK -> {}
+            case NOT_READABLE, STALE ->
+                    throw new RacesService.Unreadable(
+                            data.name + "." + column + " relation is " + lookup.state());
+            default ->
+                    throw data.unsupported(
+                            column + " relation is " + lookup.state() + ": " + lookup.message());
+        }
+        if (lookup.matches() > bound) {
+            throw data.unsupported(column + " relates more rows than the reviewed bound");
+        }
+        if (lookup.table() != null && lookup.table().state() != TableTypes.State.READY) {
+            // A partial table may miss this NPC's rows: not known, so outside the profile.
+            throw data.unsupported(data.name + " is " + lookup.table().state());
+        }
+        return lookup.rows().stream().map(TableTypes.Row::row).toList();
     }
 }

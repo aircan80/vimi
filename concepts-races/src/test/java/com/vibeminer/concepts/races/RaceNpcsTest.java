@@ -38,8 +38,20 @@ final class RaceNpcsTest {
         return new Db2Types.Row(id, false, null, text, List.of());
     }
 
+    /** The reviewed layout of each table (RaceAppearance.supports). */
+    private static String layout(String name) {
+        return switch (name) {
+            case "CreatureDisplayInfoExtra" -> "4D9FE25C";
+            case "CreatureDisplayInfoOption" -> "2F331C33";
+            case "NPCModelItemSlotDisplayInfo" -> "C2057F5B";
+            case "TextureFileData" -> "BD7C74C2";
+            default -> throw new IllegalArgumentException(name);
+        };
+    }
+
     private static MemoryTables.FakeTable table(
             long id, String name, List<Field> fields, List<Db2Types.Row> rows) {
+        String layout = layout(name);
         var columns = new ArrayList<Db2Types.Column>();
         var schema = new ArrayList<TableSchema.SchemaColumn>();
         for (var field : fields) {
@@ -68,7 +80,7 @@ final class RaceNpcsTest {
                         TableTypes.State.READY,
                         true,
                         null,
-                        new TableTypes.Counts(rows.size(), rows.size(), 0, 0, "fixture", "L"),
+                        new TableTypes.Counts(rows.size(), rows.size(), 0, 0, "fixture", layout),
                         "c".repeat(32));
         return new MemoryTables.FakeTable(
                 entry,
@@ -76,7 +88,7 @@ final class RaceNpcsTest {
                 rows,
                 new TableSchema(
                         schema,
-                        List.of("L"),
+                        List.of(layout),
                         TableSchema.SchemaMatch.BUILD,
                         WowLocale.parse("enUS"),
                         null),
@@ -134,8 +146,13 @@ final class RaceNpcsTest {
                 table(
                         4,
                         "TextureFileData",
-                        List.of(reference("FileDataID", "FileData"), number("MaterialResourcesID")),
-                        List.of(row(1, 9000, 900), row(2, 9010, 901), row(3, 9011, 901))));
+                        // The row ID is the file; UsageType 0 is the diffuse bake (9001 is not).
+                        List.of(number("UsageType"), number("MaterialResourcesID")),
+                        List.of(
+                                row(9000, 0, 900),
+                                row(9001, 2, 900),
+                                row(9010, 0, 901),
+                                row(9011, 0, 901))));
     }
 
     private static final RaceMediaTypes.Variant MALE =
@@ -148,12 +165,37 @@ final class RaceNpcsTest {
                         .forBuild(BUILD, "enUS", Cancellation.NONE)
                         .join()
                         .tables()) {
+            var service = new RacesService(tables);
             return RaceNpcs.resolve(
-                    new RacesService(tables),
+                    service,
+                    service.relations,
                     id,
                     race -> variants,
                     Cancellation.NONE,
                     new ArrayList<>());
+        }
+    }
+
+    @Test
+    void manyNpcsShareOneIndexPerRelationInsteadOfScanningPerNpc() {
+        try (var tables =
+                new MemoryTables()
+                        .add(BUILD, "enUS", tables())
+                        .forBuild(BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .tables()) {
+            var service = new RacesService(tables);
+            for (long id : new long[] {50, 52, 50}) {
+                RaceNpcs.resolve(
+                        service,
+                        service.relations,
+                        id,
+                        race -> List.of(MALE),
+                        Cancellation.NONE,
+                        new ArrayList<>());
+            }
+            // Options, item slots and texture files: one index each, built once.
+            assertEquals(3, service.relations.builds());
         }
     }
 
