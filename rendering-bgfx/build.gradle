@@ -387,6 +387,25 @@ tasks.register('nativeGpuWorldStreamObjectsProof', JavaExec) {
     args layout.buildDirectory.dir('native-world-stream-objects').get().asFile.absolutePath
 }
 
+// Appearance proof (#379): authored World scenes rendered by the real helper and compared with
+// per-backend reference images. -PappearanceBackend=VULKAN|D3D11 (default VULKAN);
+// -PappearanceUpdate=true rewrites the references instead of comparing (docs/world-appearance-tests.md).
+tasks.register('nativeGpuWorldAppearanceProof', JavaExec) {
+    group = 'verification'
+    description = 'Compares authored World terrain and object frames with per-backend reference images.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyWorldWmoShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldAppearanceProof'
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    def backend = providers.gradleProperty('appearanceBackend').getOrElse('VULKAN')
+    def update = providers.gradleProperty('appearanceUpdate').map { it == 'true' }.getOrElse(false)
+    args layout.buildDirectory.dir('native-world-appearance').get().asFile.absolutePath,
+        backend,
+        file('src/test/resources/com/vibeminer/rendering/bgfx/appearance').absolutePath,
+        update ? 'update' : 'compare'
+}
+
 // Isolated candidate recipe: eight test-resource blobs, hardware proof remains separate.
 tasks.register('verifyGlobalCandidateShaders', Exec) {
     commandLine pythonExecutable.get(), rootProject.file('scripts/rendering/compile_bgfx_world_global_candidate.py').absolutePath, '--include-dx11', '--verify'
