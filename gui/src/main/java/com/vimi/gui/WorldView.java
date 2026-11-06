@@ -2220,6 +2220,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     /** The menu opened: held keys and mouse look end, so nothing moves behind it. */
     private void menuOpened() {
         clearKeys();
+        // Nothing of the HUD stays over the menu: B pressed in the tracking popup opens the menu.
+        minimap.tracking().hide();
     }
 
     private void menuClosed() {
@@ -2321,6 +2323,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
      * command runs behind it); releases still pass, so nothing stays held.
      */
     private void viewportKey(javafx.scene.input.KeyEvent e) {
+        // The bookmarks key's press latch also follows keys forwarded from the tracking popup,
+        // which never pass the scene filter, so a held B stays one press there too.
+        if (input.controls().keys().get(e.getCode()) == WorldControls.Action.BOOKMARKS) {
+            if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_PRESSED) bookmarksKeyHeld = true;
+            else if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_RELEASED) bookmarksKeyHeld = false;
+        }
         if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_PRESSED) {
             if (!menu.shown()) input.keyPressed(e.getCode());
         }

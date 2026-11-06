@@ -127,6 +127,7 @@ public final class WorldHudKeysUiTest {
                     // With the Escape menu open, a command key forwarded from the popup does nothing.
                     var menu = (WorldGameMenu) get("menu");
                     menu.open();
+                    require(!view.minimap().tracking().showing(), "Opening the menu closes the tracking popup");
                     var withMenu = audio.slot();
                     Event.fireEvent(popup.getScene(), new KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.T,
                             false, false, false, false));
@@ -141,7 +142,7 @@ public final class WorldHudKeysUiTest {
                             false, false, false, false));
                 }
                 require(!input.keysHeld(), "Nothing stays held after the scene keys");
-                press(KeyCode.L);
+                if (view.minimap().tracking().showing()) press(KeyCode.L);
             });
             await(() -> !view.minimap().tracking().showing());
             // With the minimap hidden by N, the tracking icon shows it again and opens the popup.
@@ -158,6 +159,25 @@ public final class WorldHudKeysUiTest {
                 press(KeyCode.L);
             });
             await(() -> !view.minimap().tracking().showing());
+            // B pressed while the tracking popup is open: the menu opens on Bookmarks and the
+            // popup closes, so nothing of the HUD stays over the menu.
+            fx(() -> {
+                ((javafx.scene.Node) get("viewport")).requestFocus();
+                press(KeyCode.L);
+            });
+            await(() -> view.minimap().tracking().showing());
+            fx(() -> {
+                var menu = (WorldGameMenu) get("menu");
+                key(KeyCode.B, true);
+                require(menu.shown() && menu.current() == WorldGameMenu.Page.BOOKMARKS
+                                && !view.minimap().tracking().showing(),
+                        "B from the open popup opens Bookmarks and closes the popup");
+                key(KeyCode.B, true);
+                require(menu.shown(), "Its auto-repeat keeps the menu open");
+                key(KeyCode.B, false);
+                press(KeyCode.B);
+                require(!menu.shown(), "B closes the menu");
+            });
             System.out.println("World HUD keys PASS: V spawns toggle, T day/night cycle, 1-5 speed presets"
                     + " persisted, N minimap hide/show (ignored with the HUD hidden), L tracking popup open/close,"
                     + " HUD keys through the popup before its controls, movement kept in the popup, B bookmarks"
