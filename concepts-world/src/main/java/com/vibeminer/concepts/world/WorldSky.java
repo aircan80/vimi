@@ -21,9 +21,14 @@ import java.util.Objects;
  * GameFalloffEnd}), the parameter set in {@code LightParamsID[0]}, the timed LightData keys of that
  * set, and a map's fixed time ({@code Map.TimeOfDayOverride}).
  *
- * <p>What is this module's model and not a recorded rule: light weights fall linearly from 1 at the
- * inner radius to 0 at the outer radius over 3D distance; when positional weights add up to more
- * than 1 they are scaled to sum to 1; the map's single zero-position, zero-radius light takes the
+ * <p>Falloff matches the established reference behaviour: a light is a sphere around its centre,
+ * with weight 1 inside the inner radius falling linearly to 0 at the outer radius over 3D distance
+ * (the wowdev wiki's Light page; Noggit's {@code Skies::findSkyWeights}). Lights recorded deeper
+ * below the terrain than their outer radius are consistent with that: they are underground volumes.
+ *
+ * <p>What is this module's model and not a recorded rule: when positional weights add up to more
+ * than 1 they are scaled to sum to 1 (Noggit instead lets the smaller light take precedence and
+ * scales the larger ones down); the map's single zero-position, zero-radius light takes the
  * remaining weight; channels interpolate linearly between the two keys around the requested time,
  * wrapping at midnight. Only parameter slot 0 is read, because the meaning of the other slots is
  * not recorded in the tables.

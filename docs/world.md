@@ -87,13 +87,21 @@ These rules come from the tables:
 - Colour cells have an empty top byte and are read as `0xRRGGBB`. Under this
   reading, sky colours in the recorded data are mostly blue-dominant.
 
+The falloff follows established reference behaviour rather than the tables:
+
+- **Falloff:** a light is a sphere. Its weight is 1 within its inner radius and
+  drops linearly to 0 at its outer radius, over 3D distance. The wowdev wiki's
+  Light page describes the sphere; Noggit's `Skies::findSkyWeights` uses the same
+  3D distance and linear falloff. Six recorded lights sit deeper below the
+  terrain than their outer radius, which only makes sense in 3D, as underground
+  volumes.
+
 These rules are this module's model, not recorded rules:
 
-- **Falloff:** a light's weight is 1 within its inner radius and drops linearly
-  to 0 at its outer radius, over 3D distance.
 - **Overlap:** if overlapping positioned lights add up to more than 1, they are
   scaled to sum to 1. Otherwise the map's single map-wide light takes the
-  remaining weight.
+  remaining weight. Noggit differs here: the smaller light takes precedence and
+  the larger ones are scaled down within its falloff band.
 - **Time:** channels interpolate linearly between the two keys around the
   requested time, wrapping at midnight.
 - **Parameter slot:** only parameter slot 0 is read. The tables don't record what
