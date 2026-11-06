@@ -26,6 +26,30 @@ class WorldStreamFrameOrderTest {
         }
     }
 
+    /**
+     * Issue #489: the blend key's position bits hold every session slot and its placement bits
+     * every placement of a tile. Only compile-time constants are read, so a slot or placement
+     * increase fails this test instead of the renderer's class initialization.
+     */
+    @Test
+    void blendKeyBudgetHoldsEverySlotAndPlacement() {
+        int positionBits =
+                BgfxWorldStreamRenderer.BLEND_ENTRY_BITS
+                        - BgfxWorldStreamRenderer.BLEND_PLACEMENT_BITS;
+        assertTrue(
+                WorldStreamState.SLOTS <= 1 << positionBits,
+                WorldStreamState.SLOTS
+                        + " slots need more than "
+                        + positionBits
+                        + " position bits");
+        assertTrue(
+                WorldStreamObjectsFile.MAX_PLACEMENTS
+                        <= 1 << BgfxWorldStreamRenderer.BLEND_PLACEMENT_BITS,
+                "Placements exceed the blend key's placement bits");
+        // Dropped mantissa bits stay far below any distance the sort must tell apart.
+        assertTrue(BgfxWorldStreamRenderer.BLEND_ENTRY_BITS <= 20, "Blend key precision");
+    }
+
     @Test
     void blendKeyRefusesWhatItCannotEncode() {
         assertThrows(

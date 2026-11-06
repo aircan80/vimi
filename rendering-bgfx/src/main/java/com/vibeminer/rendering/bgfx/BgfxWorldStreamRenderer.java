@@ -81,7 +81,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * WorldStreamObjectsFile#MAX_BYTES} of GPU vertices, indices and RGBA8 textures with their full
      * mip chains (the version 3 maximum profile with HIGH chains is about 27 MB). Real tiles stay
      * far below that, so instead of a per-slot worst case the objects share {@link
-     * #OBJECT_BUDGET_BYTES}, charged in Stats.objectBytes.
+     * #OBJECT_BUDGET_BYTES}, charged in Stats.objectBytes. The owner's x4 multisampled colour and
+     * depth target adds about 11 MB on top (issue #357).
      */
     static final int SLOT_COUNT = WorldStreamState.SLOTS, INSTANCE_BYTES = 48;
 
@@ -105,10 +106,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private static final short INVALID = -1;
 
     /**
-     * Trilinear over the worker-built mip chain (issue #174); clamp keeps each tile from sampling
-     * the opposite edge of its own atlas.
+     * Anisotropic over the worker-built mip chain with linear mips (issues #174, #357; the owner
+     * resets with BGFX_RESET_MAXANISOTROPY); clamp keeps each tile from sampling the opposite edge
+     * of its own atlas.
      */
-    static final int SAMPLER_FLAGS = BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
+    static final int SAMPLER_FLAGS =
+            BGFX_SAMPLER_U_CLAMP
+                    | BGFX_SAMPLER_V_CLAMP
+                    | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIN_ANISOTROPIC
+                    | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MAG_ANISOTROPIC;
 
     record Ticket(long camera, long content, long policy, int width, int height) {}
 
@@ -1180,10 +1186,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             com.vibeminer.rendering.world.ObjectTextureMips.CUTOUT_REFERENCE;
 
     /**
-     * Object textures: trilinear (linear min, mag and mip, the zero flags) over each image's mip
-     * chain, with repeat addressing because model texture coordinates tile (issue #265).
+     * Object textures: anisotropic min and mag with linear mips over each image's mip chain (issues
+     * #265, #357), with repeat addressing because model texture coordinates tile.
      */
-    static final int OBJECT_SAMPLER_FLAGS = 0;
+    static final int OBJECT_SAMPLER_FLAGS =
+            org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIN_ANISOTROPIC
+                    | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MAG_ANISOTROPIC;
 
     /** Blend state: depth tested, no depth or alpha write, source-alpha over. */
     static final long BLENDED_STATE =
@@ -1195,9 +1203,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /**
      * Bits of a blend key holding its entry: the tile's position in the active (producer) order
-     * above the placement's bits.
+     * above the placement's bits. Five position bits hold FAR's 26 slots (#276); #440 widens the
+     * placement bits when tiles may carry more placements.
      */
-    static final int BLEND_ENTRY_BITS = 14, BLEND_PLACEMENT_BITS = 10;
+    static final int BLEND_ENTRY_BITS = 15, BLEND_PLACEMENT_BITS = 10;
 
     static {
         // The key's entry bits must hold every active position and every placement of a tile.
@@ -1212,7 +1221,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * the lowest {@link #BLEND_ENTRY_BITS} replaced by the inverted entry. Non-negative doubles
      * order like their bits, so an ascending sort read backwards is farthest first, and equal
      * distances keep active-order-then-placement order, as the stable sort this replaced did. The
-     * dropped mantissa bits are 2^-38 relative.
+     * dropped mantissa bits are 2^-37 relative.
      */
     static long blendKey(double squaredDistance, int position, int placement) {
         if (!(squaredDistance >= 0)
