@@ -818,7 +818,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         keyBindings.setOnAction(e -> {
             clearKeys();
             new WorldKeyBindings(input.controls())
-                    .edit(getScene() == null ? null : getScene().getWindow())
+                    .edit(keyBindingsOwner())
                     .ifPresent(edited -> {
                         if (!edited.equals(input.controls())) {
                             showControls(edited);
@@ -2150,6 +2150,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
         menu.page(WorldGameMenu.Page.INSTANCES).getChildren().setAll(instanceStatus,
                 new HBox(8, entrances, enterInstance), leaveInstance);
         menu.lastEntry(back);
+    }
+
+    /**
+     * The Key bindings dialog's owner: the viewport's window, so the dialog opens on top of the
+     * full-screen stage while full screen (the menu page that opens it is on that stage too).
+     */
+    javafx.stage.Window keyBindingsOwner() {
+        var scene = viewport.getScene() != null ? viewport.getScene() : getScene();
+        return scene == null ? null : scene.getWindow();
     }
 
     /** The click-to-inspect hint, under the key help in the Controls page footer. */

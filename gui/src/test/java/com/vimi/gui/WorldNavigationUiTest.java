@@ -836,6 +836,7 @@ public final class WorldNavigationUiTest {
         release(viewport,KeyCode.F11);
         require(full.active() && full.stage().getFullScreenExitKeyCombination()==javafx.scene.input.KeyCombination.NO_MATCH,
                 "Full screen, with the platform's Escape exit turned off");
+        require(view.keyBindingsOwner()==full.stage(),"In full screen the Key bindings dialog is owned by the full-screen stage");
         invoke(view,"toggleMapPanel");
         require(hud.panelShown(),"Map panel open in full screen");
         press(viewport,KeyCode.ESCAPE,false);
@@ -850,6 +851,7 @@ public final class WorldNavigationUiTest {
         require(!menu.shown() && full.active(),"Then the menu, from a page too, still in full screen");
         for (int i=0;i<5;i++) press(viewport,KeyCode.ESCAPE,false);
         require(!full.active() && content.getCenter()==viewport,"With nothing open, Escape leaves full screen last");
+        require(view.keyBindingsOwner()==view.getScene().getWindow(),"In the window the dialog is owned by the app window");
         require(!menu.shown(),"A held Escape does not go on to open the menu");
         release(viewport,KeyCode.ESCAPE);
         press(viewport,KeyCode.ESCAPE,false);
