@@ -110,6 +110,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // Transient notices over the viewport (HUD step 6); first-run help is shown once per view.
     private final WorldToasts toasts = new WorldToasts();
     private boolean helpToastShown, streamFailedToast, stallToast;
+    // An ADT instance entry's toast, raised once its explorer opens (choosing the map clears toasts).
+    private String instanceToast;
+    /** The first-run help is long: it stays up longer than an event toast. */
+    static final long HELP_TOAST_NANOS = 10_000_000_000L;
     private WorldSpawnOverlay spawns;
     private WorldRoleOverlay roles;
     // Highlight of the picked object; FX overlay only, cleared by terrain, sky and marker clicks.
@@ -1452,6 +1456,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void selectMap(WorldService.MapInfo map) {
         // Choosing a map leaves any inline interior; it does not return to the open world.
         instances.abandon();
+        toasts.clear();
         if (map.id() != instanceMap) clearInstanceReturn();
         resumeCamera = null;
         pendingJump = null;
@@ -1790,6 +1795,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void showInventory() {
+        // Notices (and their Retry) belong to the explorer session they were raised in.
+        toasts.clear();
         fullscreen.exit();
         panels(false);
         if (spawns != null) spawns.suspend();
@@ -1880,8 +1887,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         resetInspection();
         if (!helpToastShown) {
             helpToastShown = true;
-            toasts.show(input.controls().help() + " · " + INSPECT_HINT);
+            toasts.show(input.controls().help() + " · " + INSPECT_HINT, null, null, HELP_TOAST_NANOS);
         }
+        if (instanceToast != null) toasts.show(instanceToast);
+        instanceToast = null;
         status.setText("Loading terrain tile " + selected.key() + "…");
         if (spawns != null) spawns.resume();
         show(firstFrameActivity, true);
@@ -2889,7 +2898,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         retryGpu.setDisable(busy && !hint);
         // One toast per failure or stall episode, not per snapshot.
         boolean failed = snapshot.phase() == WorldStreamSourceController.Phase.FAILED;
-        if (failed && !streamFailedToast) toasts.show("GPU World failed: " + snapshot.detail(), "Retry", retryGpu::fire);
+        if (failed && !streamFailedToast) toasts.show(snapshot.detail(), "Retry", retryGpu::fire);
         if (hint && !stallToast) toasts.show(STALL_HINT, "Retry", retryGpu::fire);
         streamFailedToast = failed;
         stallToast = hint;
@@ -3430,6 +3439,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 + " returns to this view");
         if (maps.getSelectionModel().getSelectedItem() == map) selectMap(map);
         else maps.getSelectionModel().select(map);
+        instanceToast = "Entering " + link.name();
     }
 
     /** Zone-in to a global-WMO map in place; Leave returns to the open world or the map page. */
@@ -3532,6 +3542,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (back == null) return;
         clearInstanceReturn();
         goToBookmark(back);
+        instanceToast = "Left the instance" + (back.mapName() == null || back.mapName().isBlank()
+                ? "" : " · back in " + back.mapName());
     }
 
     /** The World view's side of an inline global interior switch. */
@@ -3582,7 +3594,6 @@ final class WorldView extends BorderPane implements AutoCloseable {
             content.setCenter(interior.node());
             content.setBottom(new VBox(8, new HBox(10, leaveInstance, instanceArea),
                     audio.node()));
-            toasts.show("Entered " + target.map());
             status.setText("Inside " + target.map() + " · Map #" + target.map().id()
                     + " · Leave instance returns to "
                     + (explorer && inventory != null ? inventory.map().toString() : "the map page"));

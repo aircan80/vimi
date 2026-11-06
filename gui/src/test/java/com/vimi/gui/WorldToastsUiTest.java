@@ -148,6 +148,22 @@ public final class WorldToastsUiTest {
             require(threw, "An action needs its callback");
             toasts.show(" ");
             require(texts(toasts).equals(List.of("Plain")), "Blank texts are ignored");
+            toasts.show("Plain  ");
+            require(texts(toasts).equals(List.of("Plain")), "Repeats match after stripping");
+            toasts.show("Again", "Retry", () -> toasts.show("Again", "Retry", () -> {}));
+            world.applyCss();
+            world.layout();
+            ((Button) toasts.lookup(".world-toast-action")).fire();
+            require(texts(toasts).equals(List.of("Plain", "Again")),
+                    "An action that raises the same notice keeps the new one: " + texts(toasts));
+            toasts.clear();
+            toasts.show("Long", null, null, 10 * S);
+            now += 5 * S;
+            toasts.pulse();
+            require(texts(toasts).equals(List.of("Long")), "A longer life outlasts 4 s");
+            now += 5 * S;
+            toasts.pulse();
+            require(toasts.toasts().isEmpty(), "And still ends");
             toasts.clear();
             require(toasts.toasts().isEmpty() && !toasts.isVisible(), "Clear removes every toast");
         } finally {
@@ -174,8 +190,28 @@ public final class WorldToastsUiTest {
         require(texts.size() == 2 && texts.getLast().startsWith("Mouse look: cursor capture unavailable"),
                 "The cursor-capture fallback shows a toast: " + texts);
         require(toasts.getParent() == view.lookup("#world-viewport"), "Toasts sit over the viewport");
-        var before = (TerrainRenderer.Camera) get("camera");
-        require(before != null, "Explorer camera present");
+        // Stream failures toast once per failure episode, not once per snapshot.
+        toasts.clear();
+        streamStatus(WorldStreamSourceController.Phase.FAILED, "World streaming failed: authored");
+        streamStatus(WorldStreamSourceController.Phase.FAILED, "World streaming failed: authored");
+        require(texts(toasts).equals(List.of("World streaming failed: authored")),
+                "One toast per failure, without a doubled prefix: " + texts(toasts));
+        streamStatus(WorldStreamSourceController.Phase.STARTING, "Starting");
+        streamStatus(WorldStreamSourceController.Phase.FAILED, "World viewer failed: again");
+        require(texts(toasts).equals(List.of("World streaming failed: authored", "World viewer failed: again")),
+                "A new failure episode toasts again: " + texts(toasts));
+        require(toasts.toasts().stream().allMatch(t -> "Retry".equals(t.action())), "Failures offer Retry");
+        toasts.clear();
+    }
+
+    private static void streamStatus(WorldStreamSourceController.Phase phase, String detail) {
+        try {
+            var method = WorldView.class.getDeclaredMethod("streamStatus", WorldStreamSourceController.Snapshot.class);
+            method.setAccessible(true);
+            method.invoke(view, new WorldStreamSourceController.Snapshot(phase, detail, 0, 0, null, null));
+        } catch (ReflectiveOperationException error) {
+            throw new AssertionError(error);
+        }
     }
 
     private static List<String> texts(WorldToasts toasts) {

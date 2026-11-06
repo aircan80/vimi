@@ -33,12 +33,13 @@ final class WorldToasts extends VBox {
     private final class Shown {
         final Toast toast;
         final javafx.scene.layout.StackPane node;
-        long since;
+        long since, life;
 
-        Shown(Toast toast, javafx.scene.layout.StackPane node, long since) {
+        Shown(Toast toast, javafx.scene.layout.StackPane node, long since, long life) {
             this.toast = toast;
             this.node = node;
             this.since = since;
+            this.life = life;
         }
     }
 
@@ -80,12 +81,20 @@ final class WorldToasts extends VBox {
 
     /** Shows a notice; {@code action} labels a button that runs {@code run} (both or neither). */
     void show(String text, String action, Runnable run) {
+        show(text, action, run, SHOW_NANOS);
+    }
+
+    /** Shows a notice for {@code life} nanoseconds instead of the usual four seconds. */
+    void show(String text, String action, Runnable run, long life) {
         if (text == null || text.isBlank()) return;
         if ((action == null) != (run == null)) throw new IllegalArgumentException("Action and run go together");
+        if (life <= FADE_NANOS) throw new IllegalArgumentException("A toast lives longer than its fade");
+        text = text.strip();
         long now = clock.getAsLong();
         for (var each : shown) {
             if (each.toast.text().equals(text) && Objects.equals(each.toast.action(), action)) {
                 each.since = now;
+                each.life = Math.max(each.life, life);
                 // A repeat moves to the newest place, so the oldest still leaves first.
                 shown.remove(each);
                 shown.add(each);
@@ -94,8 +103,8 @@ final class WorldToasts extends VBox {
                 return;
             }
         }
-        var toast = new Toast(text.strip(), action, run);
-        shown.add(new Shown(toast, node(toast), now));
+        var toast = new Toast(text, action, run);
+        shown.add(new Shown(toast, node(toast), now, life));
         while (shown.size() > LIMIT) shown.removeFirst();
         layoutToasts();
         timer.start();
@@ -125,9 +134,10 @@ final class WorldToasts extends VBox {
             button.getStyleClass().add("world-toast-action");
             button.setFocusTraversable(false);
             button.setStyle("-fx-font-size: 11px;");
+            // Dismiss first, so an action that raises the same notice again keeps the new one.
             button.setOnAction(event -> {
-                toast.run().run();
                 dismiss(toast);
+                toast.run().run();
                 refocus.run();
             });
             button.addEventHandler(KeyEvent.ANY, KeyEvent::consume);
@@ -147,9 +157,9 @@ final class WorldToasts extends VBox {
     /** Drops expired toasts and fades the ones in their last moments; the timer calls it. */
     void pulse() {
         long now = clock.getAsLong();
-        boolean removed = shown.removeIf(each -> now - each.since >= SHOW_NANOS);
+        boolean removed = shown.removeIf(each -> now - each.since >= each.life);
         for (var each : shown) {
-            long left = SHOW_NANOS - (now - each.since);
+            long left = each.life - (now - each.since);
             each.node.setOpacity(left >= FADE_NANOS ? 1 : Math.max(0, (double) left / FADE_NANOS));
         }
         if (removed) layoutToasts();
