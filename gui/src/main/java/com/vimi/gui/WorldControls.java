@@ -39,12 +39,23 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         LOOK_UP("Look up"),
         LOOK_DOWN("Look down"),
         SPRINT("Faster (hold; with the wheel: speed)"),
-        WALK("Walk on terrain (toggle)");
+        WALK("Walk on terrain (toggle)"),
+        DEV_OVERLAY("Developer overlay (next page)", true);
 
         final String label;
+        /**
+         * Fires once per physical press (key repeat ignored) through {@link
+         * WorldExplorerInput.Host#triggered}, instead of being held like a movement key.
+         */
+        final boolean trigger;
 
         Action(String label) {
+            this(label, false);
+        }
+
+        Action(String label, boolean trigger) {
             this.label = label;
+            this.trigger = trigger;
         }
     }
 
@@ -114,6 +125,8 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
             keys.put(KeyCode.DOWN, Action.LOOK_DOWN);
             keys.put(KeyCode.SHIFT, Action.SPRINT);
             keys.put(KeyCode.F, Action.WALK);
+            // Function keys sit in the same place on every layout.
+            keys.put(KeyCode.F3, Action.DEV_OVERLAY);
             return keys;
         }
     }
@@ -216,7 +229,8 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
                 + "/" + keysOf.apply(Action.LOOK_UP) + "/" + keysOf.apply(Action.LOOK_DOWN) + " to look · "
                 + keysOf.apply(Action.SPRINT) + " faster · wheel zooms"
                 + (modifier == null ? "" : " · " + modifier.getName() + "+wheel changes speed")
-                + " · " + keysOf.apply(Action.WALK) + " walks · click inspects · Keys… rebinds";
+                + " · " + keysOf.apply(Action.WALK) + " walks · click inspects · "
+                + keysOf.apply(Action.DEV_OVERLAY) + " developer overlay · Keys… rebinds";
     }
 
     String encode() {
