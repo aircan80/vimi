@@ -99,13 +99,18 @@ public final class WorldNativePresenterTest {
     /** The child starts hidden, but a hide before any show still reaches it, once. */
     private static void hideWorksBeforeTheFirstShow() {
         var windows = new Fake();
-        var presenter = new WorldNativePresenter(windows);
+        long[] now = {0};
+        var presenter = new WorldNativePresenter(windows, () -> now[0]);
         presenter.parent(77);
         presenter.hide();
+        presenter.hide();
         require(windows.calls.equals(List.of("find 77 " + WorldNativePresenter.CHILD_CLASS)),
-                "No child yet: nothing to hide: " + windows.calls);
+                "No child yet: nothing to hide, and the lookup is throttled: " + windows.calls);
         windows.child = 99;
         windows.calls.clear();
+        presenter.hide();
+        require(windows.calls.isEmpty(), "Still throttled: " + windows.calls);
+        now[0] += WorldNativePresenter.HIDE_LOOKUP_NANOS;
         presenter.hide();
         presenter.hide();
         require(windows.calls.equals(List.of("find 77 " + WorldNativePresenter.CHILD_CLASS, "hide 99")),
@@ -116,6 +121,16 @@ public final class WorldNativePresenterTest {
         windows.calls.clear();
         presenter.hide();
         require(windows.calls.equals(List.of("hide 99")), "Hidden again after a show: " + windows.calls);
+        // A refused placement forgets the child, its placement and its visibility.
+        windows.refusePlace = true;
+        require(presenter.show(new WorldNativePresenter.Placement(5, 5, 5, 5))
+                == WorldNativePresenter.Result.REFUSED, "Refused");
+        windows.refusePlace = false;
+        windows.calls.clear();
+        presenter.show(new WorldNativePresenter.Placement(1, 2, 3, 4));
+        require(windows.calls.equals(List.of("find 77 " + WorldNativePresenter.CHILD_CLASS,
+                "place 99 1,2 3x4", "show 99")),
+                "After a refusal the old placement is not assumed: placed and shown again: " + windows.calls);
     }
 
     private static void frameSize() {

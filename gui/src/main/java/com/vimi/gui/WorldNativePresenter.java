@@ -90,22 +90,32 @@ final class WorldNativePresenter {
         }
     }
 
+    /** How often {@link #hide} looks for a child it does not know yet. */
+    static final long HIDE_LOOKUP_NANOS = 500_000_000L;
+
     private final Windows windows;
+    private final java.util.function.LongSupplier clock;
     private long parent, child;
+    private long hideLookupAt;
+    private boolean hideLookedUp;
     private Placement placed;
     private boolean shown, hidden;
 
     WorldNativePresenter(Windows windows) {
+        this(windows, System::nanoTime);
+    }
+
+    WorldNativePresenter(Windows windows, java.util.function.LongSupplier clock) {
         this.windows = Objects.requireNonNull(windows);
+        this.clock = Objects.requireNonNull(clock);
     }
 
     /** Uses the application window {@code handle} as the parent the helper's child lives in. */
     void parent(long handle) {
         if (handle != parent) {
             parent = handle;
-            child = 0;
-            placed = null;
-            shown = hidden = false;
+            forgetChild();
+            hideLookedUp = false;
         }
     }
 
@@ -124,7 +134,7 @@ final class WorldNativePresenter {
         if (window == 0) return Result.NO_CHILD;
         if (!placement.equals(placed)) {
             if (!windows.place(window, placement)) {
-                child = 0;
+                forgetChild();
                 return Result.REFUSED;
             }
             placed = placement;
@@ -144,8 +154,22 @@ final class WorldNativePresenter {
     void hide() {
         shown = false;
         if (hidden) return;
+        if (child == 0) {
+            // Unknown child: look it up at most every HIDE_LOOKUP_NANOS while hidden.
+            long now = clock.getAsLong();
+            if (hideLookedUp && now - hideLookupAt < HIDE_LOOKUP_NANOS) return;
+            hideLookedUp = true;
+            hideLookupAt = now;
+        }
         long window = child();
         if (window != 0 && windows.show(window, false)) hidden = true;
+    }
+
+    /** The child is unknown again (new parent, refused): nothing about it is assumed. */
+    private void forgetChild() {
+        child = 0;
+        placed = null;
+        shown = hidden = false;
     }
 
     boolean shown() {

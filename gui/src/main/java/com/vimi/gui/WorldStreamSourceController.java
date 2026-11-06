@@ -67,6 +67,8 @@ final class WorldStreamSourceController {
 
     private volatile java.util.function.LongConsumer presentedListener;
     private final java.util.concurrent.atomic.AtomicLong latestNative = new java.util.concurrent.atomic.AtomicLong();
+    // #381: the content the helper last reported presenting natively; -1 before any (lock).
+    private long nativeContent = -1;
     private final java.util.concurrent.atomic.AtomicBoolean nativePosted = new java.util.concurrent.atomic.AtomicBoolean();
 
     /**
@@ -77,18 +79,12 @@ final class WorldStreamSourceController {
      * the latest camera, coalesced to one posted task at a time.
      */
     void presentedNatively(long camera, long content) {
-        boolean accepted = false;
+        boolean accepted;
         synchronized (lock) {
-            if (!closing && currentReceipt != null && currentReceipt.contentRevision() == content
-                    && (acceptedReceipt != currentReceipt || historicalRaster
-                            || !presented.equals(current))) {
-                historicalRaster = false;
-                acceptedSequence++;
-                acceptedReceipt = currentReceipt;
-                presented = List.copyOf(current);
-                presentationRevision++;
-                accepted = true;
-            }
+            // Kept: the helper presents one interval after COMMITTED and may report it before the
+            // worker has recorded the receipt; it never repeats it for a still camera.
+            nativeContent = content;
+            accepted = acceptNativeLocked();
         }
         if (accepted) kick();
         latestNative.set(camera);
@@ -488,6 +484,25 @@ final class WorldStreamSourceController {
         kick();
     }
 
+    /**
+     * Under the lock: accepts the content the helper last reported presenting natively once it is
+     * the current receipt and drawable as readback pixels must be (see {@link #drawableLocked}).
+     * Rechecked when the report arrives, when a receipt is recorded and on every worker step.
+     */
+    private boolean acceptNativeLocked() {
+        if (closing || nativeContent < 0 || currentReceipt == null
+                || currentReceipt.contentRevision() != nativeContent) return false;
+        if (acceptedReceipt == currentReceipt && !historicalRaster && presented.equals(current))
+            return false;
+        if (!drawableLocked()) return false;
+        historicalRaster = false;
+        acceptedSequence++;
+        acceptedReceipt = currentReceipt;
+        presented = List.copyOf(current);
+        presentationRevision++;
+        return true;
+    }
+
     private boolean validPresentation(Presentation value) {
         if (closing
                 || borrowed != value
@@ -498,6 +513,11 @@ final class WorldStreamSourceController {
                 || camera.width() != value.width()
                 || camera.height() != value.height()
                 || currentReceipt != value.frame.content()) return false;
+        return drawableLocked();
+    }
+
+    /** Under the lock: the current receipt draws terrain where the camera is, from open sources. */
+    private boolean drawableLocked() {
         // A valid receipt can still draw only sky after motion beyond its resident neighborhood.
         // Keep the last readable pixels until the nearest requested recorded tile is GPU-current.
         if(!desired.isEmpty() && current.stream().noneMatch(entry->same(desired.getFirst(),entry.resident()))) return false;
@@ -605,6 +625,11 @@ final class WorldStreamSourceController {
     }
 
     private void step() {
+        boolean nativeAccepted;
+        synchronized (lock) {
+            nativeAccepted = acceptNativeLocked();
+        }
+        if (nativeAccepted) kick();
         if (!initialized) {
             if (initialBlocked && clock.getAsLong() - initialRetryAt < RETRY_NANOS) return;
             if(source==null) {
@@ -814,7 +839,9 @@ final class WorldStreamSourceController {
                 currentReceipt = receipt;
                 skySuppressed=false;
                 committing = List.of();
+                nativeAccepted = acceptNativeLocked();
             }
+            if (nativeAccepted) kick();
             commit = null;
             pollFrame();
         }

@@ -51,6 +51,7 @@ public final class WorldStreamSourceControllerTest {
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         nativePresentationAcceptsCurrentContentAndRelievesTwelveOwners();
         nativePresentationWithAStillCameraAcceptsEachCommit();
+        nativeReportBeforeTheReceiptIsStillAccepted();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
         sameResidentCameraFrameDoesNotRetryMaterialPool();
@@ -1130,6 +1131,30 @@ public final class WorldStreamSourceControllerTest {
             check(
                     fixture.pool.stats().leaseClaims() == 9,
                     "Final accepted table retires outgoing sources without a new camera event");
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * #381: the helper presents one interval after COMMITTED and its report can reach the
+     * controller before the worker records the receipt. With a still camera it is never repeated,
+     * so it must still be accepted once the receipt is recorded. The report is sent exactly once,
+     * before the first commit exists.
+     */
+    private static void nativeReportBeforeTheReceiptIsStillAccepted() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 9);
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            check(fixture.controller.currentContentRevision() < 0, "No receipt yet");
+            // Content revisions count commits from 1; the first commit is content 1.
+            fixture.controller.presentedNatively(1, 1);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 1));
+            fixture.until(() -> fixture.controller.currentContentRevision() == 1
+                    && fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY);
+            check(fixture.controller.snapshot().prepared() == 1, "The one tile is presented natively");
         } finally {
             fixture.close();
         }
