@@ -202,11 +202,7 @@ final class WorldStreamSession {
                     advertiseCredit();
                     if (window == null) {
                         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
-                    } else if (window.park() > 0) {
-                        // Native presentation normally waits in advance(); an occluded window
-                        // presents at once, so idle about a frame instead of spinning.
-                        LockSupport.parkNanos(window.park());
-                    }
+                    } // Native presentation: advance() paces itself on the display.
                 }
                 requestClose();
                 decoderCanceled.set(true);

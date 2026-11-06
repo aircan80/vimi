@@ -351,6 +351,11 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             if (!renderedThisFrame) {
                 window.clearUndrawn();
             }
+            // A covered or minimised window presents without waiting: pace presents instead.
+            long pace = window.paceNanos(System.nanoTime());
+            if (pace > 0) {
+                java.util.concurrent.locks.LockSupport.parkNanos(pace);
+            }
             currentFrame = bgfx_frame(BGFX_FRAME_NONE);
             renderedThisFrame = false;
             renderer.pollUploads();

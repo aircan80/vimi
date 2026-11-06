@@ -66,23 +66,25 @@ final class WorldWindowPresentation implements AutoCloseable {
         return false;
     }
 
-    /** A present returning this soon after the last one did not wait for the display. */
-    static final long UNPACED_NANOS = 2_000_000;
-
-    /** How long to idle then: one 60 Hz frame from the previous present. */
+    /** The loop's frame period: 60 Hz, the readback loop's draw cap too. */
     static final long IDLE_FRAME_NANOS = 16_666_667;
 
-    /**
-     * Park time after a present that came {@code interval} after the previous one. An occluded or
-     * minimised window lets DXGI present return at once; without this the loop would spin a core.
-     */
-    static long unpacedPark(long interval) {
-        return interval >= 0 && interval < UNPACED_NANOS ? IDLE_FRAME_NANOS - interval : 0;
-    }
+    /** The shortest interval between presents while the window has area: 3/4 of a frame. */
+    static final long MIN_PRESENT_NANOS = IDLE_FRAME_NANOS * 3 / 4;
 
-    /** Idle after a present: a whole frame while the window has no area, else as unpaced. */
-    static long idleNanos(long interval, boolean hasArea) {
-        return hasArea ? unpacedPark(interval) : IDLE_FRAME_NANOS;
+    /**
+     * How long to wait before the next present, {@code since} after the previous one. A covered,
+     * locked or minimised window lets flip-model present return at once, and a frame alone costs
+     * only a few milliseconds, so without pacing the loop would draw at hundreds of hertz. Presents
+     * are therefore at least 3/4 of a frame apart (at most 80 per second when unpaced; with vsync
+     * the 4 ms slack before the next vblank keeps 60 Hz), and a whole frame apart while the window
+     * has no area.
+     */
+    static long paceNanos(long since, boolean hasArea) {
+        if (since < 0) {
+            return 0;
+        }
+        return Math.max(0, (hasArea ? MIN_PRESENT_NANOS : IDLE_FRAME_NANOS) - since);
     }
 
     /** What a reported window size means for the swap chain. */
@@ -113,7 +115,6 @@ final class WorldWindowPresentation implements AutoCloseable {
         void close();
     }
 
-    private long park;
     private boolean hasArea = true, closed;
     private static final short BACKBUFFER = (short) 0xffff;
 
@@ -205,7 +206,6 @@ final class WorldWindowPresentation implements AutoCloseable {
 
     /** Called after each {@code bgfx_frame} (which waited for the display). */
     void presented(long now) {
-        park = idleNanos(lastPresent == 0 ? Long.MAX_VALUE : now - lastPresent, hasArea);
         if (probe != null && lastPresent != 0 && draws > 0) {
             intervals.add(now - lastPresent);
         }
@@ -216,9 +216,9 @@ final class WorldWindowPresentation implements AutoCloseable {
         }
     }
 
-    /** Nanoseconds the loop should idle after the last present (0 when vsync paced it). */
-    long park() {
-        return park;
+    /** Nanoseconds to wait before the next present at {@code now}; 0 before the first. */
+    long paceNanos(long now) {
+        return lastPresent == 0 ? 0 : paceNanos(now - lastPresent, hasArea);
     }
 
     @Override

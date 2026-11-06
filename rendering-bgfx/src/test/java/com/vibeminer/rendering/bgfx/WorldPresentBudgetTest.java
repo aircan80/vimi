@@ -110,51 +110,81 @@ class WorldPresentBudgetTest {
         org.junit.jupiter.api.Assertions.assertArrayEquals(
                 new int[] {800, 600}, presentation.frameSize(), "Unchanged size: draw, no reset");
         long t = 1_000_000_000L;
+        assertEquals(0, presentation.paceNanos(t), "Nothing presented yet: no wait");
         presentation.presented(t);
-        presentation.presented(t + 16_600_000);
-        assertEquals(0, presentation.park(), "Vsync-paced presents never park");
+        assertEquals(0, presentation.paceNanos(t + 16_600_000), "Vsync-paced: no wait");
         surface.size = new int[] {0, 0};
         assertEquals(null, presentation.frameSize(), "Minimised: nothing to draw, no reset");
-        presentation.presented(t + 16_700_000);
         assertEquals(
-                WorldWindowPresentation.IDLE_FRAME_NANOS,
-                presentation.park(),
-                "No area: idle a whole frame per loop");
-        surface.size = new int[] {800, 600};
-        presentation.frameSize();
-        presentation.presented(t + 16_800_000);
-        assertEquals(
-                WorldWindowPresentation.IDLE_FRAME_NANOS - 100_000,
-                presentation.park(),
-                "Occluded (present at once): idle to one frame");
+                WorldWindowPresentation.IDLE_FRAME_NANOS - 1_000_000,
+                presentation.paceNanos(t + 1_000_000),
+                "No area: presents a whole frame apart");
         presentation.close();
         presentation.close();
         assertEquals(1, surface.closes, "Close is idempotent");
     }
 
     @Test
-    void idleIsAWholeFrameWithoutAreaElseOnlyWhenUnpaced() {
-        assertEquals(
-                WorldWindowPresentation.IDLE_FRAME_NANOS,
-                WorldWindowPresentation.idleNanos(16_000_000, false));
-        assertEquals(0, WorldWindowPresentation.idleNanos(16_000_000, true));
-        assertEquals(
-                WorldWindowPresentation.IDLE_FRAME_NANOS - 1_000_000,
-                WorldWindowPresentation.idleNanos(1_000_000, true));
-        assertEquals(0, WorldWindowPresentation.idleNanos(Long.MAX_VALUE, true), "First present");
+    void aCoveredWindowDrawingFastIsPacedNotSpun() {
+        // Fake clock: a covered window presents at once and a frame costs 5 ms. The loop waits
+        // paceNanos before each present, so presents are at least 3/4 of a frame apart.
+        var presentation = new WorldWindowPresentation(new FakeSurface());
+        try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            presentation.configure(org.lwjgl.bgfx.BGFXInit.calloc(stack));
+        }
+        presentation.frameSize();
+        long t = 1_000_000_000L, previous = 0;
+        int presents = 0;
+        while (t < 2_000_000_000L) {
+            t += 5_000_000; // the frame's work
+            t += presentation.paceNanos(t); // wait, then present (returns at once)
+            presentation.presented(t);
+            if (previous != 0) {
+                assertTrue(
+                        t - previous >= WorldWindowPresentation.MIN_PRESENT_NANOS,
+                        "Presents at least 3/4 of a frame apart: " + (t - previous));
+            }
+            previous = t;
+            presents++;
+        }
+        assertTrue(presents <= 81, "At most 80 presents a second when unpaced: " + presents);
+        presentation.close();
     }
 
     @Test
-    void anUnpacedPresentIdlesAboutAFrame() {
-        assertEquals(0, WorldWindowPresentation.unpacedPark(16_600_000), "Vsync-paced: no park");
+    void paceIsTheRemainderOfThreeQuartersOrAWholeFrame() {
+        assertEquals(0, WorldWindowPresentation.paceNanos(16_000_000, true), "Paced by vsync");
+        assertEquals(0, WorldWindowPresentation.paceNanos(13_000_000, true));
         assertEquals(
-                0,
-                WorldWindowPresentation.unpacedPark(4_000_000),
-                "A 240 Hz display is still paced");
+                WorldWindowPresentation.MIN_PRESENT_NANOS - 5_000_000,
+                WorldWindowPresentation.paceNanos(5_000_000, true),
+                "Covered: topped up");
         assertEquals(
-                WorldWindowPresentation.IDLE_FRAME_NANOS - 300_000,
-                WorldWindowPresentation.unpacedPark(300_000),
-                "Occluded: idle to one 60 Hz frame");
+                WorldWindowPresentation.IDLE_FRAME_NANOS - 5_000_000,
+                WorldWindowPresentation.paceNanos(5_000_000, false),
+                "No area: a whole frame");
+        assertEquals(0, WorldWindowPresentation.paceNanos(-1, true));
+    }
+
+    @Test
+    void childWindowThreadEndsWhenTheParentIsDestroyed() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                org.lwjgl.system.Platform.get() == org.lwjgl.system.Platform.WINDOWS);
+        long parent = WorldStreamWindowProof.parentWindow();
+        var child = WorldChildWindow.create(parent);
+        assertTrue(child.pumping(), "The child's message thread runs");
+        // Destroying the parent sends WM_NCDESTROY to the child (on its own thread).
+        org.lwjgl.system.windows.User32.PostMessage(
+                null, parent, org.lwjgl.system.windows.User32.WM_CLOSE, 0, 0);
+        long until = System.nanoTime() + 2_000_000_000L;
+        while (child.pumping() && System.nanoTime() < until) {
+            Thread.sleep(10);
+        }
+        assertFalse(child.pumping(), "WM_NCDESTROY ends the message loop (PostQuitMessage)");
+        assertEquals(0, child.clientSize()[0], "A destroyed child reports no area");
+        long start = System.nanoTime();
+        child.close();
+        assertTrue(System.nanoTime() - start < 200_000_000L, "Close does not wait on a dead loop");
     }
 
     @Test

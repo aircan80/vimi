@@ -152,7 +152,7 @@ public final class WorldStreamWindowProof {
     }
 
     /** A visible top-level Win32 window on its own message thread, standing in for the stage. */
-    private static long parentWindow() throws Exception {
+    static long parentWindow() throws Exception {
         var created = new CompletableFuture<Long>();
         Thread.ofPlatform()
                 .daemon()

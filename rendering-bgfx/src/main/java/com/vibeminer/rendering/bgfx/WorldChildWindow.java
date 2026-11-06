@@ -58,7 +58,10 @@ final class WorldChildWindow implements WorldWindowPresentation.Surface {
                             }
                             if (message == User32.WM_NCDESTROY) {
                                 // Ours, or the parent's destruction taking its children along.
+                                // It arrives as a sent message inside GetMessage, after which
+                                // nothing is posted: post WM_QUIT so the loop ends.
                                 destroyed.set(true);
+                                postQuitMessage();
                             }
                             return User32.DefWindowProc(window, message, w, l);
                         });
@@ -128,6 +131,30 @@ final class WorldChildWindow implements WorldWindowPresentation.Surface {
                 proc.free();
             }
             throw new IOException("Child window creation failed", failure);
+        }
+    }
+
+    /** True while the window's message thread runs; for tests. */
+    boolean pumping() {
+        return thread.isAlive();
+    }
+
+    /** user32 PostQuitMessage(0), which LWJGL does not bind; through java.lang.foreign. */
+    @SuppressWarnings("restricted")
+    private static void postQuitMessage() {
+        try {
+            var linker = java.lang.foreign.Linker.nativeLinker();
+            var user32 =
+                    java.lang.foreign.SymbolLookup.libraryLookup(
+                            "user32", java.lang.foreign.Arena.global());
+            var post =
+                    linker.downcallHandle(
+                            user32.find("PostQuitMessage").orElseThrow(),
+                            java.lang.foreign.FunctionDescriptor.ofVoid(
+                                    java.lang.foreign.ValueLayout.JAVA_INT));
+            post.invokeExact(0);
+        } catch (Throwable unavailable) {
+            // The loop also checks the destroyed flag after each message.
         }
     }
 
