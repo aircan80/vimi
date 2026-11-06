@@ -668,6 +668,13 @@ tasks.register('worldStreamImagePresentationTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldStreamImagePresentationTest'
 }
 check.dependsOn worldStreamImagePresentationTest
+// Render-scale changes (monitor moves) re-request World frames; no window needed.
+tasks.register('worldRenderScaleWatchTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldRenderScaleWatchTest'
+}
+check.dependsOn worldRenderScaleWatchTest
 tasks.register('worldStreamSourceControllerTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath

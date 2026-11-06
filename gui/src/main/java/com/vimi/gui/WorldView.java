@@ -968,6 +968,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
             e.consume();
         });
         viewport.widthProperty().addListener((o, a, b) -> requestFrame());
+        // #370: a monitor move or display-scale change resizes the native-resolution frame.
+        new WorldRenderScaleWatch<javafx.stage.Window>(
+                sceneProperty().flatMap(javafx.scene.Scene::windowProperty),
+                window -> new WorldRenderScaleWatch.Scales(
+                        window.renderScaleXProperty(), window.renderScaleYProperty()),
+                this::requestFrame);
         viewport.heightProperty().addListener((o, a, b) -> requestFrame());
         timer =
                 new AnimationTimer() {
