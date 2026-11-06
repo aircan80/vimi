@@ -55,6 +55,8 @@ public final class WorldStreamSourceControllerTest {
         bumpBetweenIssueAndRefusalStillWakesRetry("output", false);
         bumpBetweenIssueAndRefusalStillWakesRetry("output", true);
         bumpBetweenIssueAndRefusalStillWakesRetry("pool", false);
+        bumpBetweenIssueAndRefusalStillWakesRetry("geometry", false, true);
+        bumpBetweenIssueAndRefusalStillWakesRetry("output", true, true);
         busyGeometryLaneIsNotPolledAndItsReleaseWakesTheTile();
         sameResidentCameraFrameDoesNotRetryMaterialPool();
         transportFrameSignalQueuesPresentationWithoutAnyPulse();
@@ -474,6 +476,15 @@ public final class WorldStreamSourceControllerTest {
      */
     private static void bumpBetweenIssueAndRefusalStillWakesRetry(
             String site, boolean presentation) throws Exception {
+        bumpBetweenIssueAndRefusalStillWakesRetry(site, presentation, false);
+    }
+
+    /**
+     * With {@code beforeIssue}, the bump lands earlier: after the step read its demand and pixels
+     * but before it issued the reservation, so the tile was still chosen from the old ones.
+     */
+    private static void bumpBetweenIssueAndRefusalStillWakesRetry(
+            String site, boolean presentation, boolean beforeIssue) throws Exception {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
         var held = new java.util.concurrent.atomic.AtomicReference<AutoCloseable>(
                 switch (site) {
@@ -485,7 +496,8 @@ public final class WorldStreamSourceControllerTest {
         boolean materialPool = site.equals("pool");
         Path holdCredit = fixture.directory.resolve("authored-hold-unused-credit");
         var refused = new java.util.concurrent.atomic.AtomicReference<Object>();
-        String label = site + (presentation ? ", presentation bump" : ", demand bump");
+        String label = site + (presentation ? ", presentation bump" : ", demand bump")
+                + (beforeIssue ? " before issue" : "");
         try {
             Files.writeString(holdCredit, "hold");
             var revision = WorldStreamSourceController.class.getDeclaredField(
@@ -493,13 +505,10 @@ public final class WorldStreamSourceControllerTest {
             revision.setAccessible(true);
             var lockField = WorldStreamSourceController.class.getDeclaredField("lock");
             lockField.setAccessible(true);
-            Runnable seam = () -> {
-                if (refused.get() != null) return;
+            var bumped = new java.util.concurrent.atomic.AtomicBoolean();
+            Runnable bump = () -> {
+                if (!bumped.compareAndSet(false, true)) return;
                 try {
-                    var reservationField = fixture.gpu.session.getClass().getDeclaredField("tile");
-                    reservationField.setAccessible(true);
-                    // The refused reservation is still the session's latest one here.
-                    refused.set(reservationField.get(fixture.gpu.session));
                     long before;
                     synchronized (lockField.get(fixture.controller)) {
                         before = revision.getLong(fixture.controller);
@@ -520,6 +529,11 @@ public final class WorldStreamSourceControllerTest {
                     throw new AssertionError(failure);
                 }
             };
+            Runnable seam = () -> {
+                if (refused.get() != null) return;
+                refused.set(Boolean.TRUE);
+                if (!beforeIssue) bump.run();
+            };
             fixture.start(scope -> {
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
                 while (fixture.controller == null && System.nanoTime() < deadline)
@@ -536,9 +550,11 @@ public final class WorldStreamSourceControllerTest {
                         throw new AssertionError(failure);
                     }
                 }
+                if (beforeIssue) fixture.controller.tileIssueSeam = bump;
                 return fixture.gpu.start(scope);
             });
             fixture.until(() -> refused.get() != null);
+            check(bumped.get(), "The bump ran: " + label);
             var pool = WorldStreamSourceController.class.getDeclaredField("blockedOnMaterialPool");
             pool.setAccessible(true);
             check(pool.getBoolean(fixture.controller) == materialPool, "Refusal site: " + label);
