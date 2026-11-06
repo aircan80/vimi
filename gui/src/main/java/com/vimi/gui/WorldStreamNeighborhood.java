@@ -35,7 +35,8 @@ final class WorldStreamNeighborhood {
         double forwardX = -Math.cos(yaw), forwardY = -Math.sin(yaw);
         return recorded.stream()
                 .filter(tile -> ring(tile, cameraX, cameraY) <= radius)
-                // Whole rings first, so the inner 3 x 3 still loads before the outer ring.
+                // The camera tile first, then whole rings around the predicted tile; with the camera
+                // still (ahead = camera tile) the inner 3 x 3 loads before the outer ring.
                 .sorted(Comparator.comparingInt((WorldFormats.Tile tile) ->
                                 tile.x() == cameraX && tile.y() == cameraY ? 0 : 1)
                         .thenComparingInt(tile -> ring(tile, aheadX, aheadY))
@@ -69,11 +70,14 @@ final class WorldStreamNeighborhood {
     /**
      * Tile-space camera motion (#366): a smoothed velocity in tiles per second and the tile the
      * camera is predicted to reach after {@link #LEAD_SECONDS}, about one tile's measured
-     * reserve-to-staged latency. The prediction never reaches past the view radius; a jump of a
-     * tile or more between samples, or a gap of a second or more, restarts it at rest.
+     * reserve-to-staged latency. The prediction never reaches past the view radius. A sample less
+     * than {@link #MIN_SAMPLE_SECONDS} after the last one (a wheel zoom between refreshes, say) only
+     * moves the position, never the velocity; a jump of a tile or more, or {@link #STALE_SECONDS}
+     * without a sample, restarts it at rest.
      */
     static final class Motion {
         static final double LEAD_SECONDS = 1.2, SMOOTHING = 0.3;
+        static final double MIN_SAMPLE_SECONDS = 0.05, STALE_SECONDS = 0.5;
         private double lastX, lastY, velocityX, velocityY;
         private long lastNanos;
         private boolean seeded;
@@ -84,9 +88,14 @@ final class WorldStreamNeighborhood {
                 throw new IllegalArgumentException("World camera tile position");
             }
             double seconds = (nanos - lastNanos) / 1e9;
+            if (seeded && seconds >= 0 && seconds < MIN_SAMPLE_SECONDS) {
+                // Too close to the last sample to measure speed: predict from the new position
+                // and keep measuring the next velocity from the last full sample.
+                return predict(x, y, radius);
+            }
             if (!seeded
                     || seconds <= 0
-                    || seconds >= 1
+                    || seconds >= STALE_SECONDS
                     || Math.abs(x - lastX) >= 1
                     || Math.abs(y - lastY) >= 1) {
                 velocityX = 0;
@@ -99,6 +108,10 @@ final class WorldStreamNeighborhood {
             lastY = y;
             lastNanos = nanos;
             seeded = true;
+            return predict(x, y, radius);
+        }
+
+        private int[] predict(double x, double y, int radius) {
             double dx = Math.clamp(velocityX * LEAD_SECONDS, -radius, radius);
             double dy = Math.clamp(velocityY * LEAD_SECONDS, -radius, radius);
             return new int[] {(int) Math.floor(x + dx), (int) Math.floor(y + dy)};

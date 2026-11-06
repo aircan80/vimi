@@ -116,6 +116,23 @@ public final class WorldStreamNeighborhoodTest {
         // About 0.8 tiles/s x 1.2 s ahead of x = 34.9: the tile at 35.86, clamped to the radius.
         require(ahead[0] == 35 && ahead[1] == 32,
                 "Steady motion predicts the tile about a lead ahead: " + ahead[0] + "," + ahead[1]);
+        // A wheel zoom 10 ms after a sample moves the camera 0.05 tiles: position only. Measured,
+        // it would read as 5 tiles/s and push the prediction past a whole extra tile.
+        var zoomed = new WorldStreamNeighborhood.Motion();
+        double z = 32.5;
+        for (int i = 0; i <= 30; i++) {
+            ahead = zoomed.ahead(z, 32.5, t + i * tick, 2);
+            if (i < 30) z += 0.08; // 0.8 tiles a second
+        }
+        ahead = zoomed.ahead(z + 0.05, 32.5, t + 30 * tick + 10_000_000L, 2);
+        require(ahead[0] == (int) Math.floor(z + 0.05 + 0.96) && ahead[1] == 32,
+                "A sample within 50 ms never spikes the velocity: " + ahead[0]);
+        // The next full sample still measures from the last full one, at the steady speed.
+        ahead = zoomed.ahead(z + 0.08, 32.5, t + 31 * tick, 2);
+        require(ahead[0] == (int) Math.floor(z + 0.08 + 0.96), "Speed stays steady: " + ahead[0]);
+        // No sample for 0.6 s: the camera has stopped, the prediction is the camera tile.
+        ahead = zoomed.ahead(z + 0.08, 32.5, t + 31 * tick + 600_000_000L, 2);
+        require(ahead[0] == (int) Math.floor(z + 0.08), "A stale velocity decays to rest");
         var fast = new WorldStreamNeighborhood.Motion();
         double fx = 10.5;
         for (int i = 0; i <= 30; i++) {
