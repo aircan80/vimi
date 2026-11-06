@@ -17,8 +17,9 @@ public final class WorldInspectionTest {
         creatureModel();
         npcSpawn();
         notes();
+        minimapMarkers();
         System.out.println("World inspection cards: terrain, building, doodad, set doodad, creature model,"
-                + " NPC spawn and notes passed");
+                + " NPC spawn, minimap markers and notes passed");
     }
 
     private static void terrain() {
@@ -117,6 +118,25 @@ public final class WorldInspectionTest {
         require(bare.title().equals("NPC 1") && bare.subtitle().startsWith("name unknown")
                         && bare.lines().size() == 1 && bare.lines().getFirst().startsWith("tile "),
                 "Without NPC, roles or counts only what is known shows: " + bare);
+    }
+
+    private static void minimapMarkers() {
+        var placement = MapRoleOverlayTest.placement("v1.0.10", 1429,
+                List.of(MapRoleOverlayTest.npc(2, 4, (List<Object>) null, 25, 25)));
+        var marker = placement.markers(1429, java.util.EnumSet.allOf(
+                com.vibeminer.concepts.locations.MapRoles.Layer.class)).getFirst();
+        var role = WorldInspection.marker(new WorldMinimap.Clicked(marker, null, "NPC 2 details"));
+        require(role.kind() == WorldInspection.Kind.MARKER && role.npcId() == marker.npc().id()
+                        && role.subtitle().endsWith("minimap role marker") && role.detail().equals("NPC 2 details")
+                        && role.lines().stream().anyMatch(line -> line.startsWith("roles ")),
+                "A role marker card: " + role);
+        var link = new com.vibeminer.concepts.world.WorldInstanceLinks.Link(33, "Authored Depths",
+                com.vibeminer.concepts.world.WorldInstanceLinks.Kind.RAID, null,
+                new com.vibeminer.concepts.world.WorldInstanceLinks.Entrance(0, 100, 200), null);
+        var entrance = WorldInspection.marker(new WorldMinimap.Clicked(null, link, "Authored Depths entrance"));
+        require(entrance.kind() == WorldInspection.Kind.ENTRANCE && entrance.title().equals("Authored Depths")
+                        && entrance.subtitle().startsWith("raid entrance") && entrance.lines().getFirst().equals("Map #33"),
+                "An entrance card: " + entrance);
     }
 
     private static void notes() {

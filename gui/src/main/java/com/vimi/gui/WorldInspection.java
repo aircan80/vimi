@@ -24,6 +24,8 @@ final class WorldInspection {
         DOODAD("Doodad"),
         CREATURE("Creature model"),
         SPAWN("NPC spawn"),
+        MARKER("Minimap NPC"),
+        ENTRANCE("Entrance"),
         OBJECT("Object"),
         NOTE("Inspect");
 
@@ -47,6 +49,36 @@ final class WorldInspection {
             lines = List.copyOf(lines);
             Objects.requireNonNull(detail);
         }
+    }
+
+    /** A clicked minimap marker: a role NPC or an instance entrance, with its hover text. */
+    static Content marker(WorldMinimap.Clicked clicked) {
+        if (clicked.entrance() != null) {
+            var link = clicked.entrance();
+            var at = link.entrance();
+            var lines = new ArrayList<String>();
+            lines.add("Map #" + link.mapId());
+            if (at != null) lines.add(WorldPick.tile(at.x(), at.y())
+                    + String.format(Locale.ROOT, " · x %.0f · y %.0f", at.x(), at.y()));
+            return new Content(Kind.ENTRANCE, link.name(),
+                    (link.kind() == com.vibeminer.concepts.world.WorldInstanceLinks.Kind.RAID ? "raid" : "dungeon")
+                            + " entrance · recorded Map corpse position", lines, null, clicked.description(), 0);
+        }
+        var npc = clicked.role().npc();
+        var lines = new ArrayList<String>();
+        var roles = npc.layers().stream().sorted().map(MapRoleOverlay::label).toList();
+        if (!roles.isEmpty()) lines.add("roles " + String.join(", ", roles));
+        String faction = switch (npc.friendly()) {
+            case ALLIANCE -> "Alliance";
+            case HORDE -> "Horde";
+            case BOTH -> "Alliance and Horde";
+            case UNKNOWN -> null;
+        };
+        if (faction != null) lines.add("faction " + faction);
+        return new Content(Kind.MARKER, npc.name() == null || npc.name().isBlank() ? "NPC " + npc.id() : npc.name(),
+                (npc.subname() == null || npc.subname().isBlank() ? "" : "<" + npc.subname() + "> · ")
+                        + "NPC ID " + npc.id() + " · minimap role marker",
+                lines, null, clicked.description() == null ? "NPC " + npc.id() : clicked.description(), npc.id());
     }
 
     /** A message rather than a pick (nothing hit, not ready, failed). */

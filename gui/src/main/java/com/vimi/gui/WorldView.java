@@ -896,6 +896,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (explorer) viewport.requestFocus();
         });
         minimap.tracking().onShowing(this::clearKeys);
+        minimap.tracking().passThrough(event -> {
+            var action = input.controls().keys().get(event.getCode());
+            return action != null && action.command;
+        });
+        // A clicked minimap marker opens the same inspect card as a pick in the world.
+        minimap.onMarkerClicked(clicked -> inspected(WorldInspection.marker(clicked)));
         StackPane.setAlignment(devOverlay, Pos.TOP_LEFT);
         // Below the top-left panels hint (and the Map button that takes its place).
         StackPane.setMargin(devOverlay, new Insets(40, 12, 12, 12));
