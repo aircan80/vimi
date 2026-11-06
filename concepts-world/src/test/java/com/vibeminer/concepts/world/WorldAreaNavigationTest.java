@@ -277,6 +277,13 @@ class WorldAreaNavigationTest {
                                 var ref = (FileTypes.FileRef) args[0];
                                 long id = ref.fileDataId();
                                 byte[] bytes = payloads.get(id);
+                                if (method.getName().equals("stat")) {
+                                    // Full stats are not needed: answer as if the file were
+                                    // unknown.
+                                    return CompletableFuture.completedFuture(
+                                            new FileTypes.FileStat(
+                                                    FileTypes.FileLookupState.UNKNOWN_FILE, null));
+                                }
                                 if (method.getName().equals("stat")
                                         || method.getName().equals("statContent")) {
                                     int calls =
