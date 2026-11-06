@@ -1329,6 +1329,7 @@ final class WorldStreamSourceController {
             if(hasPresented && latest!=null && latest.view().pitch()<0 && pendingWanted
                     && WorldStreamBackground.matchesBasicSky(candidate.pixels(),candidate.width(),
                             candidate.height(),()->closing)) {
+                boolean changed=!skySuppressed;
                 skySuppressed=true;
                 synchronized(lock) {
                     if(!closing && borrowed==null && queued==null && entries.size()>=maxEntries
@@ -1337,10 +1338,14 @@ final class WorldStreamSourceController {
                         // No new receipt/sequence is acknowledged and no new pixels are displayed.
                         presented=List.of();
                         historicalRaster=true;
+                        changed=true;
                     }
                 }
                 drop(candidate, "sky");
                 publish(Phase.PREPARING,"Loading terrain in viewing direction");
+                // The frame-only path runs no full step: a new sky suppression or released pins must
+                // still reach one, which may now make room or retire the old sources (#366).
+                if(changed) wake.set(true);
                 return;
             }
             skySuppressed=false;
