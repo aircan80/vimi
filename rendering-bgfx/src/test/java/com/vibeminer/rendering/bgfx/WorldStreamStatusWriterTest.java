@@ -73,7 +73,7 @@ class WorldStreamStatusWriterTest {
         writer.reliable("SESSION TERRAIN_BASIC_V1");
         assertTrue(output.entered.await(2, TimeUnit.SECONDS));
         for (int i = 1; i <= 500; i++) {
-            assertTrue(writer.presented(i));
+            assertTrue(writer.presented(i, 7));
         }
         assertEquals(1, clock.outstanding(), "Presented hints never take reliable credit");
         output.release.countDown();
@@ -82,13 +82,14 @@ class WorldStreamStatusWriterTest {
             Thread.sleep(1);
         }
         assertEquals(
-                java.util.List.of("SESSION TERRAIN_BASIC_V1", "PRESENTED 500"), output.lines());
+                java.util.List.of("SESSION TERRAIN_BASIC_V1", "PRESENTED 500 7"), output.lines());
         writer.quiet();
-        assertFalse(writer.presented(501));
+        assertFalse(writer.presented(501, 7));
         writer.reliable("CLOSED");
         writer.finish().get(3, TimeUnit.SECONDS);
         assertEquals("CLOSED", output.lines().getLast());
-        assertThrows(IllegalArgumentException.class, () -> writer.presented(0));
+        assertThrows(IllegalArgumentException.class, () -> writer.presented(0, 1));
+        assertThrows(IllegalArgumentException.class, () -> writer.presented(1, -1));
     }
 
     @Test

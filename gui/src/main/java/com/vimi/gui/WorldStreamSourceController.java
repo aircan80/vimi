@@ -66,6 +66,47 @@ final class WorldStreamSourceController {
     }
 
     private volatile java.util.function.LongConsumer presentedListener;
+    private final java.util.concurrent.atomic.AtomicLong latestNative = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicBoolean nativePosted = new java.util.concurrent.atomic.AtomicBoolean();
+
+    /**
+     * #381: a frame the helper presented into its child window for {@code camera} over content
+     * {@code content}. When that is the current committed content, it is accepted exactly like a
+     * presented readback frame (the current table becomes the presented one), so the phase
+     * reaches READY and capacity waiting on accepted pixels is relieved. The FX listener is told
+     * the latest camera, coalesced to one posted task at a time.
+     */
+    void presentedNatively(long camera, long content) {
+        boolean accepted = false;
+        synchronized (lock) {
+            if (!closing && currentReceipt != null && currentReceipt.contentRevision() == content
+                    && (acceptedReceipt != currentReceipt || historicalRaster
+                            || !presented.equals(current))) {
+                historicalRaster = false;
+                acceptedSequence++;
+                acceptedReceipt = currentReceipt;
+                presented = List.copyOf(current);
+                presentationRevision++;
+                accepted = true;
+            }
+        }
+        if (accepted) kick();
+        latestNative.set(camera);
+        if (presentedListener != null && nativePosted.compareAndSet(false, true)) {
+            fxPost.accept(() -> {
+                nativePosted.set(false);
+                var listener = presentedListener;
+                if (listener != null) listener.accept(latestNative.get());
+            });
+        }
+    }
+
+    /** The current committed content revision, or -1 before the first commit; for tests. */
+    long currentContentRevision() {
+        synchronized (lock) {
+            return currentReceipt == null ? -1 : currentReceipt.contentRevision();
+        }
+    }
 
     /**
      * #381, native presentation: {@code listener} runs on the FX thread with the camera revision
@@ -627,11 +668,8 @@ final class WorldStreamSourceController {
                 if(camera!=null && !closing) opened.camera(camera);
             }
             session.onFrame(this::frameArrived);
-            // #381: native presentation reports presented camera revisions instead of frames.
-            session.onPresented(revision -> {
-                var listener = presentedListener;
-                if (listener != null) fxPost.accept(() -> listener.accept(revision));
-            });
+            // #381: native presentation reports presented frames instead of mapping frames.
+            session.onPresented(this::presentedNatively);
             session.initialized().whenComplete((ignored, failure) -> kick());
             session.completion()
                     .whenComplete(

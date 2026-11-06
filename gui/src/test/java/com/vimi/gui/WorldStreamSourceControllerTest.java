@@ -49,6 +49,7 @@ public final class WorldStreamSourceControllerTest {
         missingRootIsFinitePerDemandAndDoesNotInvalidateCurrentScope();
         missingNearestIsFiniteUnavailableWithoutFillingOutputUnion();
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
+        nativePresentationAcceptsCurrentContentAndRelievesTwelveOwners();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
         sameResidentCameraFrameDoesNotRetryMaterialPool();
@@ -1133,6 +1134,51 @@ public final class WorldStreamSourceControllerTest {
         }
     }
 
+    /**
+     * #381, window mode: no mapping frames are taken; PRESENTED for the current content is the
+     * acceptance. READY is reached, and with thirteen owners capacity waits only until the window
+     * presents the current content, as with accepted readback pixels.
+     */
+    private static void nativePresentationAcceptsCurrentContentAndRelievesTwelveOwners()
+            throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 13);
+        var presentedCameras = new java.util.ArrayList<Long>();
+        try {
+            fixture.start();
+            fixture.controller.onPresented(presentedCameras::add);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 9));
+            fixture.untilNativePresented(
+                    () ->
+                            fixture.controller.snapshot().phase()
+                                            == WorldStreamSourceController.Phase.READY
+                                    && fixture.controller.snapshot().prepared() == 9);
+            check(!presentedCameras.isEmpty(), "Presented cameras reach the FX listener");
+            fixture.controller.presentedNatively(1, 999_999);
+            check(fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY,
+                    "Presenting other content accepts nothing");
+            fixture.controller.neighborhood(fixture.tiles.subList(4, 13));
+            fixture.until(
+                    () ->
+                            fixture.controller.snapshot().phase()
+                                            == WorldStreamSourceController.Phase.WAITING_CAPACITY
+                                    && fixture.pool.stats().leaseClaims() == 12);
+            check(fixture.files.opens(1024) == 0,
+                    "No thirteenth owner while the window still shows the old content");
+            fixture.untilNativePresented(
+                    () ->
+                            fixture.controller.snapshot().phase()
+                                    == WorldStreamSourceController.Phase.READY);
+            check(fixture.files.opens(1024) > 0,
+                    "The window presenting current content unblocks the remaining sources");
+            check(fixture.pool.stats().leaseClaims() == 9,
+                    "The presented table retires outgoing sources");
+        } finally {
+            fixture.close();
+        }
+    }
+
     private static void sameResidentCameraFrameDoesNotRetryMaterialPool() throws Exception {
         var fixture=new Fixture(new AuthoredTerrainSource.Files(),2);
         AutoCloseable held=null;
@@ -1495,6 +1541,17 @@ public final class WorldStreamSourceControllerTest {
                                                 controller.discard(frame);
                                             }
                                         });
+                        return condition.getAsBoolean();
+                    });
+        }
+
+        /** #381 window mode: the helper reports PRESENTED for the current content each poll. */
+        void untilNativePresented(BooleanSupplier condition) throws Exception {
+            var camera = new AtomicLong();
+            until(
+                    () -> {
+                        long content = controller.currentContentRevision();
+                        if (content >= 0) controller.presentedNatively(camera.incrementAndGet(), content);
                         return condition.getAsBoolean();
                     });
         }

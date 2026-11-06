@@ -49,6 +49,12 @@ public final class WorldStreamTransport {
         }
     }
 
+    /** #381: a frame the helper presented into its child window. */
+    @FunctionalInterface
+    public interface PresentedListener {
+        void presented(long camera, long content);
+    }
+
     /** Must return every spawned child, or throw only when no child was spawned. */
     @FunctionalInterface
     public interface Starter {
@@ -583,7 +589,7 @@ public final class WorldStreamTransport {
         // so a lost or absent hint costs at most the old poll interval.
         private final WorldFrameSignal frameSignal = new WorldFrameSignal();
         private volatile Runnable frameListener;
-        private volatile java.util.function.LongConsumer presentedListener;
+        private volatile PresentedListener presentedListener;
         // Test seams: the reader's fallback wait, and completion when the reader has returned.
         volatile long framePollMillis = FRAME_POLL_MILLIS;
         final CompletableFuture<Void> framesReaderDone = new CompletableFuture<>();
@@ -1120,10 +1126,11 @@ public final class WorldStreamTransport {
         }
 
         /**
-         * #381, native presentation: runs on the status reader with the camera revision of each
-         * frame the helper presented into its child window. It must not block.
+         * #381, native presentation: runs on the status reader with the camera and content
+         * revisions of each frame the helper presented into its child window. It must not block; a
+         * throw is logged and does not end the session.
          */
-        public void onPresented(java.util.function.LongConsumer listener) {
+        public void onPresented(PresentedListener listener) {
             presentedListener = listener;
         }
 
@@ -1687,7 +1694,17 @@ public final class WorldStreamTransport {
                         case PRESENTED -> {
                             var listener = presentedListener;
                             if (listener != null) {
-                                listener.accept(((WorldStreamStatus.Presented) message).camera());
+                                var presented = (WorldStreamStatus.Presented) message;
+                                try {
+                                    listener.presented(presented.camera(), presented.content());
+                                } catch (RuntimeException failure) {
+                                    // A consumer's fault must not end the status reader.
+                                    System.getLogger(WorldStreamTransport.class.getName())
+                                            .log(
+                                                    System.Logger.Level.WARNING,
+                                                    "World presented listener failed",
+                                                    failure);
+                                }
                             }
                         }
                         case INPUT_COMMIT -> {

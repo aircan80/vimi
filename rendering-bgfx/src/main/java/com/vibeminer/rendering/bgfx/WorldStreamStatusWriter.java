@@ -82,14 +82,15 @@ final class WorldStreamStatusWriter {
     }
 
     /**
-     * #381: latest-value hint that the child window presented a frame drawn for {@code camera}.
-     * Replaces any unwritten older one; never reserves reliable credit.
+     * #381: latest-value hint that the child window presented a frame drawn for {@code camera} over
+     * content revision {@code content}. Replaces any unwritten older one; never reserves reliable
+     * credit.
      */
-    boolean presented(long camera) {
-        if (camera < 1) {
+    boolean presented(long camera, long content) {
+        if (camera < 1 || content < 0) {
             throw new IllegalArgumentException("Invalid presented camera");
         }
-        byte[] bytes = line("PRESENTED " + camera);
+        byte[] bytes = line("PRESENTED " + camera + " " + content);
         synchronized (lock) {
             if (finishing || quiet) {
                 return false;

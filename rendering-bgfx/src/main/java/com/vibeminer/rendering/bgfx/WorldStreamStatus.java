@@ -31,9 +31,10 @@ final class WorldStreamStatus {
 
     /**
      * #381, native presentation only: non-reliable latest value, the child window's swap chain
-     * presented a frame drawn for {@code camera} (a camera revision). No mapping is involved.
+     * presented a frame drawn for {@code camera} (a camera revision) over committed content
+     * revision {@code content}. No mapping is involved.
      */
-    record Presented(WorldStreamState.Nonce nonce, long camera) implements Message {}
+    record Presented(WorldStreamState.Nonce nonce, long camera, long content) implements Message {}
 
     enum InputKind {
         TILE,
@@ -171,8 +172,8 @@ final class WorldStreamStatus {
                     yield new CameraApplied(nonce, policy, width, height);
                 }
                 case "PRESENTED" -> {
-                    arity(p, 4);
-                    yield new Presented(nonce, positive(p[3]));
+                    arity(p, 5);
+                    yield new Presented(nonce, positive(p[3]), number(p[4]));
                 }
                 case "FRAME" -> {
                     arity(p, 4);

@@ -344,7 +344,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return presentedCamera;
     }
 
-    private long presentedCamera;
+    private long presentedCamera, presentedContent;
+
+    /** #381: content revision of the latest scene frame presented into the window. */
+    long presentedContent() {
+        return presentedContent;
+    }
 
     /** True in native presentation: frames go to the child window, never to the mapping. */
     boolean presentsToWindow() {
@@ -370,6 +375,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             window.presented(System.nanoTime());
             if (drew) {
                 presentedCamera = submittedCamera;
+                presentedContent = submittedContent;
             }
             return false;
         }

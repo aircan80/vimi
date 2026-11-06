@@ -90,9 +90,11 @@ public final class WorldStreamWindowProof {
             var sentAt = new java.util.concurrent.ConcurrentHashMap<Long, Long>();
             var presentedLatency = new java.util.concurrent.ConcurrentLinkedQueue<Long>();
             var presentedCount = new AtomicLong();
+            var presentedContent = new AtomicLong(-1);
             session.onPresented(
-                    camera -> {
+                    (camera, content) -> {
                         presentedCount.incrementAndGet();
+                        presentedContent.set(content);
                         var at = sentAt.remove(camera);
                         if (at != null) {
                             presentedLatency.add(System.nanoTime() - at);
@@ -101,7 +103,7 @@ public final class WorldStreamWindowProof {
             sentAt.put(1L, System.nanoTime());
             session.camera(new WorldStreamTransport.Camera(1, 1, 800, 500, view(1)));
             long commitStart = System.nanoTime();
-            session.commit(1, resident).get(10, TimeUnit.SECONDS);
+            var receipt = session.commit(1, resident).get(10, TimeUnit.SECONDS);
             double commitMs = (System.nanoTime() - commitStart) / 1e6;
             var running = new AtomicBoolean(true);
             var revision = new AtomicLong(1);
@@ -146,6 +148,18 @@ public final class WorldStreamWindowProof {
                         sorted.size());
                 if (presentedCount.get() == 0) {
                     throw new AssertionError("No PRESENTED status reached the parent");
+                }
+                System.out.println(
+                        "PRESENTED_CONTENT "
+                                + (presentedContent.get() == receipt.contentRevision()
+                                        ? "PASS"
+                                        : "FAIL")
+                                + " last="
+                                + presentedContent.get()
+                                + " receipt="
+                                + receipt.contentRevision());
+                if (presentedContent.get() != receipt.contentRevision()) {
+                    throw new AssertionError("PRESENTED content does not match the commit receipt");
                 }
             }
             System.out.printf(
