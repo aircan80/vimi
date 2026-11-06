@@ -167,9 +167,13 @@ final class WorldTileCreatures implements AutoCloseable {
     interface Previews {
         DisplayModelTypes.Preview preview(long displayId, Cancellation token) throws Exception;
 
-        /** The display's Stand sequence over the same rest surface as {@link #preview}. */
+        /**
+         * The display's Stand sequence over the same rest surface as {@link #preview}. A source
+         * without idle sequences answers UNSUPPORTED, a lasting answer cached with the model.
+         */
         default DisplayModelTypes.Idle idle(long displayId, Cancellation token) throws Exception {
-            return DisplayModelTypes.Idle.unavailable("Idle animation is not provided by this source.");
+            return new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.UNSUPPORTED, null, null,
+                    "Idle animation is not provided by this source.");
         }
     }
 
@@ -215,8 +219,16 @@ final class WorldTileCreatures implements AutoCloseable {
         }
     }
 
-    /** A display's conversion: a model, or the bucket that refuses it. */
-    record Converted(Model model, Count refusal, String detail) {
+    /**
+     * A display's conversion: a model, or the bucket that refuses it. {@code transientPose} marks a
+     * model drawn in its rest pose only because its Stand sequence could not be read yet; it is
+     * drawn on this tile but not cached, so a later tile asks again.
+     */
+    record Converted(Model model, Count refusal, String detail, boolean transientPose) {
+        Converted(Model model, Count refusal, String detail) {
+            this(model, refusal, detail, false);
+        }
+
         Converted {
             if ((model == null) == (refusal == null)) throw new IllegalArgumentException("Inconsistent conversion");
         }
@@ -490,6 +502,7 @@ final class WorldTileCreatures implements AutoCloseable {
             // Not cached: a failed read may succeed on the next tile.
             return Converted.refused(Count.FAILED, failed.getClass().getSimpleName());
         }
+        if (converted.transientPose()) return converted; // asked again on a later tile
         synchronized (this) {
             if (!closed) models.put(display, converted);
         }
@@ -499,18 +512,23 @@ final class WorldTileCreatures implements AutoCloseable {
     /**
      * Converts the preview in its Stand pose (issue #377): the display's idle sequence evaluated at
      * its first frame, baked once on the CPU. When there is no qualified Stand sequence for the
-     * same rest surface, the rest pose is converted and the reason recorded on the model. A busy
-     * or closed reader propagates (nothing is cached); any other idle failure keeps the rest pose.
+     * same rest surface, the rest pose is converted and the reason recorded on the model. An
+     * UNSUPPORTED sequence or one for another rest surface is a lasting answer and is cached with
+     * the model. An UNAVAILABLE sequence ("could not be read; retry can reassess it") or an idle
+     * read failure draws the rest pose on this tile only: it is not cached. A busy or closed reader
+     * and a cancellation propagate.
      */
     Converted stand(long display, DisplayModelTypes.Preview preview, Cancellation token) throws Exception {
         if (preview == null || preview.appearance() == null) return convert(preview, token);
         String restPose;
+        boolean retry = false;
         var appearance = preview.appearance();
         try {
             var idle = previews.idle(display, token);
             token.check();
             if (idle == null || idle.state() != DisplayModelTypes.IdleState.AVAILABLE) {
                 restPose = idle == null ? "no idle result" : idle.message();
+                retry = idle == null || idle.state() == DisplayModelTypes.IdleState.UNAVAILABLE;
             } else if (!idle.animation().matches(appearance)) {
                 restPose = "the Stand sequence belongs to another rest surface";
             } else {
@@ -519,13 +537,14 @@ final class WorldTileCreatures implements AutoCloseable {
             }
         } catch (Exception failed) {
             token.check();
-            if (busy(failed)) throw failed;
+            if (busy(failed) || failed instanceof CancellationException) throw failed;
             restPose = "Stand pose failed: " + failed.getClass().getSimpleName();
+            retry = true;
         }
         var converted = convert(new DisplayModelTypes.Preview(preview.state(), preview.reference(), appearance,
                 preview.visibleParts(), preview.issues(), preview.restored(), preview.message()), token);
         return converted.model() == null || restPose == null ? converted
-                : new Converted(converted.model().withRestPose(restPose), null, null);
+                : new Converted(converted.model().withRestPose(restPose), null, null, retry);
     }
 
     /** Whether a preview failure is the component's busy or closed refusal, however wrapped. */

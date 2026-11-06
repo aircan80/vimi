@@ -40,6 +40,7 @@ public final class WorldTileCreaturesTest {
         aDenseNeighbourNoLongerStarvesTheTilesOwnSpawns();
         busyOrClosedPreviewsCostNoBudget();
         creaturesStandInTheirIdlePoseOrSayWhyNot();
+        unreadableStandSequencesAreAskedAgainButUnsupportedOnesAreKept();
         cutoutReductionKeepsThinStrands();
         appendDrawsOnlyQualifiedSpawnsOfTheTile();
         buildingsKeepTheirBudgetFirst();
@@ -349,6 +350,41 @@ public final class WorldTileCreaturesTest {
         var busy = busyIdle.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
         require(busy.count(WorldTileCreatures.Count.PREVIEWS_BUSY) == 2 && busy.drawn() == 0,
                 "A busy idle read is a busy preview, not a rest pose");
+    }
+
+    private static void unreadableStandSequencesAreAskedAgainButUnsupportedOnesAreKept() throws Exception {
+        var appearance = standing();
+        var available = new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.AVAILABLE, null, lift(appearance),
+                "Stand");
+        // UNAVAILABLE ("retry can reassess it"): this tile draws the rest pose, the next tile asks again.
+        var asked = new AtomicInteger();
+        var streaming = standingCreatures(() -> asked.incrementAndGet() == 1
+                ? new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.UNAVAILABLE, null, null,
+                        "Model source is incomplete")
+                : available);
+        var first = streaming.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(first.drawn() == 2 && first.restPosed() == 2 && asked.get() == 1,
+                "An unreadable Stand sequence draws the rest pose on this tile");
+        var second = streaming.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(second.drawn() == 2 && second.restPosed() == 0 && asked.get() == 2,
+                "It is not cached: the next tile reads it again and stands");
+        // UNSUPPORTED is a lasting answer, cached with the model.
+        var unsupportedAsked = new AtomicInteger();
+        var unsupported = standingCreatures(() -> {
+            unsupportedAsked.incrementAndGet();
+            return new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.UNSUPPORTED, null, null,
+                    "Bone 3 uses a cylindrical billboard");
+        });
+        unsupported.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        var again = unsupported.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(again.restPosed() == 2 && unsupportedAsked.get() == 1, "An unsupported sequence is cached");
+        // A cancellation from a closed component is not a stated rest pose.
+        var closed = standingCreatures(() -> {
+            throw new CancellationException("Creature models closed");
+        });
+        var refused = closed.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(refused.drawn() == 0 && refused.count(WorldTileCreatures.Count.FAILED) == 2,
+                "A closed component's cancellation propagates as a failed read");
     }
     private static void appendDrawsOnlyQualifiedSpawnsOfTheTile() {
         var previews = new AtomicInteger();
