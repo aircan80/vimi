@@ -419,14 +419,23 @@ public final class WorldHudUiTest {
         var widgets = hud.lookup("#world-hud-widgets");
         require(hud.getChildren().indexOf(widgets) < hud.getChildren().indexOf(column),
                 "The left column stays above the placed widgets");
+        // The icon row sits in the bottom-left stack (under the inspect card's slot), inside the
+        // widget layer; the others are direct children of the layer.
+        var bottomLeft = hud.lookup("#world-hud-bottom-left");
+        require(icons.getParent() == bottomLeft && bottomLeft.getParent() == widgets, "The icon row is in the bottom-left stack");
         for (var node : List.of(zone, icons, pill, banner))
-            require(node.getParent() == widgets && node.isVisible() && widgets.isVisible(), "Placed and shown: " + node.getText());
+            require(isWithin(node, widgets) && node.isVisible() && widgets.isVisible(), "Placed and shown: " + node.getText());
         hud.hidden(true);
         for (var node : List.of(zone, icons, pill, banner))
-            require(!node.getParent().isVisible(), "Hidden with the HUD: " + node.getText());
+            require(isWithin(node, widgets) && !widgets.isVisible(), "Hidden with the HUD: " + node.getText());
         require(dev.getParent().isVisible() && hud.isVisible(), "The developer slot stays while hidden");
         hud.hidden(false);
         require(widgets.isVisible(), "Shown again with the HUD");
+    }
+
+    private static boolean isWithin(javafx.scene.Node node, javafx.scene.Node ancestor) {
+        for (var at = node; at != null; at = at.getParent()) if (at == ancestor) return true;
+        return false;
     }
 
     private static void click(javafx.scene.Node node) {
