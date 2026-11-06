@@ -248,9 +248,19 @@ public final class WorldNavigationUiTest {
         require(overlay==null,"The status overlay is not in the window");
         var shown=full.stage().getScene().getRoot().lookup("#world-fullscreen-status");
         require(shown!=null && shown.isVisible(),"Full screen shows a status line");
+        var line=(javafx.scene.control.Label)shown;
+        var inspection=(javafx.scene.control.Label)get(view,"inspection");
+        String inspected=inspection.getText();
+        inspection.setText((String)getStatic("INSPECT_HINT"));
+        require(line.getText().isEmpty() && line.getOpacity()==0,"The full-screen line never shows the click hint");
+        inspection.setText("Terrain · tile 7,19");
+        require(line.getText().equals("Terrain · tile 7,19") && line.getOpacity()==1,"It shows an inspect result");
+        inspection.setText(inspected);
         require(full.stage().getScene().getStylesheets().equals(home.getStylesheets()),"Full screen keeps the app's styles");
+        // Our own move to the full-screen stage takes focus from the viewport; the F11 latch stays.
+        invoke(view,"viewportFocusLost");
         for (int i=0;i<30;i++) press(full.stage().getScene().getRoot(),KeyCode.F11,false);
-        require(full.active(),"Holding F11 (key repeat) never toggles back");
+        require(full.active(),"Holding F11 (key repeat) never toggles back, even across the stage's focus change");
         release(full.stage().getScene().getRoot(),KeyCode.F11);
         press(full.stage().getScene().getRoot(),KeyCode.F11,false);
         require(!full.active() && viewport.getScene()==home && content.getCenter()==viewport,
@@ -304,8 +314,74 @@ public final class WorldNavigationUiTest {
         press(viewport,KeyCode.F11,false);
         release(viewport,KeyCode.F11);
         require(!full.active() && content.getCenter()==viewport,"Left full screen");
+        wasdMovesAfterFullscreen(view,viewport);
+        // Alt+Z first, then F11: the hint follows into full screen and names the right keys there.
+        press(viewport,KeyCode.Z,true);
+        release(viewport,KeyCode.Z);
+        require(!hud.isVisible() && hint.isVisible() && ((javafx.scene.control.Label)hint).getText().equals(WorldView.PANELS_HINT),
+                "Hidden HUD in the window: "+((javafx.scene.control.Label)hint).getText());
+        press(viewport,KeyCode.F11,false);
+        release(viewport,KeyCode.F11);
+        require(full.active() && !hud.isVisible() && hint.isVisible()
+                        && full.stage().getScene().getRoot().lookup("#world-panels-hint")==hint
+                        && ((javafx.scene.control.Label)hint).getText().equals(WorldView.PANELS_HINT_FULLSCREEN),
+                "F11 with the HUD hidden: one hint, on the full-screen stage, saying how to leave: "
+                        +((javafx.scene.control.Label)hint).getText());
+        press(viewport,KeyCode.Z,true);
+        release(viewport,KeyCode.Z);
+        require(hud.isVisible() && !hint.isVisible(),"Alt+Z shows the HUD in full screen; no stale hint");
+        press(viewport,KeyCode.Z,true);
+        release(viewport,KeyCode.Z);
+        full.exit();
+        require(!full.active() && hint.isVisible() && ((javafx.scene.control.Label)hint).getText().equals(WorldView.PANELS_HINT),
+                "Leaving full screen another way (Esc, close) brings the window hint back");
+        press(viewport,KeyCode.Z,true);
+        release(viewport,KeyCode.Z);
+        require(hud.isVisible() && !hint.isVisible(),"HUD shown again");
+        // A latch whose release went elsewhere is cleared when the viewport loses focus.
+        press(viewport,KeyCode.Z,true);
+        require(!hud.isVisible(),"Alt+Z held");
+        set(view,"layoutToggledAt",Long.MIN_VALUE/2); // no full-screen move just happened
+        invoke(view,"viewportFocusLost");
+        press(viewport,KeyCode.Z,true);
+        release(viewport,KeyCode.Z);
+        require(hud.isVisible(),"After a focus loss the next Alt+Z press counts, even without a release first");
         key(viewport,KeyCode.ALT,false);
         closeEndsFullscreen();
+        leavingTheSceneEndsFullscreen();
+    }
+
+    /** WASD reaches flight input straight after full screen ends: the camera moves. */
+    private static void wasdMovesAfterFullscreen(WorldView view, Node viewport) {
+        var input=input(view);
+        var start=(TerrainRenderer.Camera)get(view,"camera");
+        input.idle();
+        key(viewport,KeyCode.W,true);
+        require(input.keysHeld(),"W is held after leaving full screen");
+        long now=System.nanoTime();
+        input.pulse(now);
+        input.pulse(now+100_000_000L);
+        var moved=(TerrainRenderer.Camera)get(view,"camera");
+        key(viewport,KeyCode.W,false);
+        require(moved.x()!=start.x() || moved.y()!=start.y(),"W moved the camera after full screen: "+start+" -> "+moved);
+        input.clear();
+        set(view,"camera",start);
+    }
+
+    /** A view taken out of its scene while full screen ends full screen and closes the stage. */
+    private static void leavingTheSceneEndsFullscreen() {
+        var other=new WorldView(() -> null, () -> 0);
+        var scene=new Scene(other,320,240);
+        set(other,"explorer",true);
+        var full=(WorldFullscreen)get(other,"fullscreen");
+        full.windowed(true);
+        invoke(other,"toggleFullscreen");
+        require(full.active() && other.getScene()==scene,"Throwaway view in full screen");
+        var stage=full.stage();
+        scene.setRoot(new javafx.scene.layout.Pane());
+        require(other.getScene()==null && !full.active() && !stage.isShowing(),
+                "Leaving the scene ends full screen and closes its stage");
+        other.close();
     }
 
     /**
@@ -321,11 +397,15 @@ public final class WorldNavigationUiTest {
         require(split.getItems().size()==1 && split.getItems().getFirst()==content && sidebar.getParent()==null,
                 "The map list is not in the split while exploring");
         require(content.getTop()==null && content.getCenter()==viewport,"Nothing sits above the viewport");
-        // Acceptance: the view takes at least 80% of the window (it was about 27%).
+        // Acceptance: the view takes at least 80% of the window (it was about 27%). This scene is
+        // the World view alone, without the app's header and tabs, so it guards the layout, not
+        // the share of a real window. The bar under the view is at most one row of controls.
         view.getScene().getRoot().applyCss();
         view.getScene().getRoot().layout();
         double share=viewport.getWidth()*viewport.getHeight()/(view.getScene().getWidth()*view.getScene().getHeight());
-        require(share>=.8,"The viewport takes "+Math.round(share*100)+"% of the window");
+        require(share>=.85,"The viewport takes "+Math.round(share*100)+"% of the World view (no app chrome)");
+        var bottomHeight=((javafx.scene.layout.Region)content.getBottom()).getHeight();
+        require(bottomHeight<=48,"The bottom is one slim row: "+bottomHeight+" px");
         System.out.println("World HUD step 1: the viewport takes "+Math.round(share*100)+"% of a "
                 +(int)view.getScene().getWidth()+"x"+(int)view.getScene().getHeight()+" window");
         var hud=view.lookup("#world-hud");
@@ -350,8 +430,17 @@ public final class WorldNavigationUiTest {
                 "#world-key-bindings-open","#world-look-status","#world-audio","#world-gpu-enabled",
                 "#world-object-textures","#world-gpu-retry","#world-gpu-status","#world-texture-status",
                 "#world-texture-retry","#world-instance-entrances","#world-instance-enter","#world-instance-leave",
-                "#world-instance-status","#world-back"})
+                "#world-instance-status","#world-back","#world-gpu-activity","#world-texture-activity"})
             require(view.lookup(id)!=null && isWithin(view.lookup(id),rows),"Still reachable under More: "+id);
+        require(isWithin((Node)get(view,"keyHelp"),rows),"The key help line is under More");
+        for (var name : new String[] {"spawns","roles"}) {
+            var overlay=get(view,name);
+            if (overlay==null) continue;
+            try {
+                var controls=(Node)overlay.getClass().getDeclaredMethod("controls").invoke(overlay);
+                require(isWithin(controls,rows),"The "+name+" controls are under More");
+            } catch (ReflectiveOperationException error) { throw new AssertionError(error); }
+        }
         more.fire();
         require(rows.isVisible() && rows.isManaged(),"More shows every other control");
         require(view.getScene().getFocusOwner()==viewport,"Focus returns to the viewport after More");
@@ -387,6 +476,39 @@ public final class WorldNavigationUiTest {
                 && ((Node)get(view,"tileInventory")).getScaleX()==1,"M again closes it; the tile inventory is unscaled again");
         mapButton.fire();
         require(panel.isVisible() && view.getScene().getFocusOwner()==viewport,"The Map button opens it; focus stays on the world");
+        // The panel sits under the Map row and the status rows in one column; it never covers them.
+        view.getScene().getRoot().applyCss();
+        view.getScene().getRoot().layout();
+        var statusChip=view.lookup("#world-hud-status");
+        double statusBottom=statusChip.localToScene(statusChip.getLayoutBounds()).getMaxY();
+        double panelTop=panel.localToScene(panel.getLayoutBounds()).getMinY();
+        require(statusChip.isVisible() && panelTop>=statusBottom,"The panel starts below the status rows: "+panelTop+" >= "+statusBottom);
+        // Hooks for other HUD pieces: rows join the left column above the panel, with the HUD's
+        // input rules; the core rows stay; the hidden state is read-only for followers.
+        var hudNode=(WorldHud)get(view,"hud");
+        var extra=new javafx.scene.control.Label("extra row");
+        hudNode.addTopLeft(extra);
+        var column=(javafx.scene.layout.VBox)view.lookup("#world-hud-top-left");
+        require(column.getChildren().indexOf(extra)==column.getChildren().indexOf(panel)-1,"Added rows go above the map panel");
+        key(extra,KeyCode.W,true);
+        require(!input(view).keysHeld(),"Added rows stop flight keys");
+        key(extra,KeyCode.W,false);
+        hudNode.removeTopLeft(panel);
+        hudNode.removeTopLeft(statusChip);
+        require(column.getChildren().contains(panel) && column.getChildren().contains(statusChip),"Core rows cannot be removed");
+        hudNode.removeTopLeft(extra);
+        require(!column.getChildren().contains(extra),"Added rows can be removed");
+        require(!(hudNode.hiddenProperty() instanceof javafx.beans.value.WritableBooleanValue),"Followers get a read-only hidden state");
+        // Alt+Z with the panel open closes it, so the next M opens it again.
+        press(viewport,KeyCode.Z,true);
+        release(viewport,KeyCode.Z);
+        require(!panel.isVisible() && sidebar.getParent()==null,"Hiding the HUD closes the map panel");
+        press(viewport,KeyCode.Z,true);
+        release(viewport,KeyCode.Z);
+        key(viewport,KeyCode.ALT,false);
+        key(viewport,KeyCode.M,true);
+        key(viewport,KeyCode.M,false);
+        require(panel.isVisible(),"The next M opens the panel at once");
         mapButton.fire();
         require(!panel.isVisible(),"The Map button closes it");
     }
@@ -774,6 +896,9 @@ public final class WorldNavigationUiTest {
     }
     private static Object get(WorldView view,String name) {
         try{return field(name).get(view);}catch(IllegalAccessException error){throw new AssertionError(error);}
+    }
+    private static Object getStatic(String name) {
+        try{return field(name).get(null);}catch(IllegalAccessException error){throw new AssertionError(error);}
     }
     private static void set(WorldView view,String name,Object value) {
         try{field(name).set(view,value);}catch(IllegalAccessException error){throw new AssertionError(error);}

@@ -1,8 +1,8 @@
 package com.vimi.gui;
 
 import java.util.Objects;
-import javafx.beans.property.BooleanProperty;
-import javafx.beans.property.SimpleBooleanProperty;
+import javafx.beans.property.ReadOnlyBooleanProperty;
+import javafx.beans.property.ReadOnlyBooleanWrapper;
 import javafx.css.PseudoClass;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -28,9 +28,20 @@ import javafx.scene.layout.VBox;
  * working. The panel is the one exception: its search field and map list take focus while the
  * user works in them.
  *
- * <p>Hook points for other HUD pieces: {@link #topLeft()} takes more rows under the map name
- * (e.g. a developer overlay), and {@link #hiddenProperty()} is the single "HUD hidden" state that
- * other overlays (e.g. the minimap cluster) can follow. FX thread only.
+ * <p>Hook points for other HUD pieces:
+ *
+ * <ul>
+ *   <li>{@link #addTopLeft} adds a row under the status line, above the map panel, in the same
+ *       left column, so the panel never covers it. The row hides with the HUD; an overlay that
+ *       must stay visible when the HUD is hidden (the developer overlay, toasts) belongs outside
+ *       the HUD as its own viewport child.
+ *   <li>{@link #hiddenProperty()} is the single, read-only "HUD hidden" state. Followers that
+ *       manage their own visibility (the minimap shows and hides itself) must not bind
+ *       {@code visible} to it: AND it with their own state in a listener, or bind {@code opacity}
+ *       and {@code mouseTransparent} instead.
+ * </ul>
+ *
+ * <p>FX thread only.
  */
 final class WorldHud extends StackPane {
     private static final PseudoClass OPEN = PseudoClass.getPseudoClass("selected-panel");
@@ -41,7 +52,7 @@ final class WorldHud extends StackPane {
     private final VBox topLeft;
     private final VBox panel = new VBox(10);
     private final Runnable refocus;
-    private final BooleanProperty hidden = new SimpleBooleanProperty(this, "hidden");
+    private final ReadOnlyBooleanWrapper hidden = new ReadOnlyBooleanWrapper(this, "hidden");
 
     /**
      * {@code onMap} runs when the Map button is pressed (the view opens or closes the panel);
@@ -84,10 +95,14 @@ final class WorldHud extends StackPane {
         status.getChildren().addListener(
                 (javafx.collections.ListChangeListener<Node>) change -> status.setVisible(!status.getChildren().isEmpty()));
 
-        topLeft = new VBox(6, identity, status);
+        // One left column: the Map row, the status rows, any added rows, then the map panel, which
+        // takes the height that is left, so it never covers the rows above it.
+        topLeft = new VBox(6, identity, status, panel);
         topLeft.setId("world-hud-top-left");
         topLeft.setPickOnBounds(false);
-        topLeft.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
+        topLeft.setFillWidth(false);
+        topLeft.setMaxWidth(Region.USE_PREF_SIZE);
+        VBox.setVgrow(panel, javafx.scene.layout.Priority.ALWAYS);
         StackPane.setAlignment(topLeft, Pos.TOP_LEFT);
         StackPane.setMargin(topLeft, new Insets(10));
 
@@ -99,11 +114,10 @@ final class WorldHud extends StackPane {
         panel.setMinWidth(240);
         panel.setVisible(false);
         panel.managedProperty().bind(panel.visibleProperty());
+        panel.setMaxHeight(Double.MAX_VALUE);
         stopInput(panel);
-        StackPane.setAlignment(panel, Pos.TOP_LEFT);
-        StackPane.setMargin(panel, new Insets(52, 0, 10, 10));
 
-        getChildren().addAll(topLeft, panel);
+        getChildren().add(topLeft);
     }
 
     /**
@@ -140,9 +154,22 @@ final class WorldHud extends StackPane {
         status.getChildren().clear();
     }
 
-    /** Rows under the map name; a hook for other HUD pieces placed top-left. */
-    VBox topLeft() {
-        return topLeft;
+    /**
+     * Adds a row to the left column, under the status rows and above the map panel. The row gets
+     * the HUD input rules ({@link #stopInput}); buttons in it should still hand focus back with
+     * {@link #refocus()} after a click.
+     */
+    void addTopLeft(Node row) {
+        Objects.requireNonNull(row);
+        if (row.getParent() == topLeft) return;
+        stopInput(row);
+        topLeft.getChildren().add(topLeft.getChildren().indexOf(panel), row);
+    }
+
+    /** Removes a row added with {@link #addTopLeft}; the Map row, status and panel stay. */
+    void removeTopLeft(Node row) {
+        if (row == panel || row == status || row == topLeft.getChildren().getFirst()) return;
+        topLeft.getChildren().remove(row);
     }
 
     boolean panelShown() {
@@ -167,9 +194,12 @@ final class WorldHud extends StackPane {
         map.pseudoClassStateChanged(OPEN, false);
     }
 
-    /** The single "HUD hidden" state (Alt+Z); toasts and developer pages do not follow it. */
-    BooleanProperty hiddenProperty() {
-        return hidden;
+    /**
+     * The single "HUD hidden" state (Alt+Z), read-only: only the view sets it, through
+     * {@link #hidden(boolean)}. See the class notes for how followers should use it.
+     */
+    ReadOnlyBooleanProperty hiddenProperty() {
+        return hidden.getReadOnlyProperty();
     }
 
     boolean hidden() {
