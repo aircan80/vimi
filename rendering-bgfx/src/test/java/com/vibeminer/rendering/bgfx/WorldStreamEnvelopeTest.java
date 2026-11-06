@@ -22,7 +22,7 @@ final class WorldStreamEnvelopeTest {
         byte[] bytes = WorldStreamEnvelope.encode(session);
         assertEquals(512, bytes.length);
         assertEquals(
-                "56494d4957535332020000000002000029000000000000004d00000000000000",
+                "56494d4957535332030000000002000029000000000000004d00000000000000",
                 HexFormat.of().formatHex(bytes, 0, 32));
         assertEquals(SCOPE, HexFormat.of().formatHex(bytes, 32, 64));
         var values = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);

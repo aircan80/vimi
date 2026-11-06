@@ -179,6 +179,9 @@ final class WorldStreamSourceController {
     // Worker-owned: at most one late exterior delivery, and the residents already tried.
     private ExecutorService exteriorWorker;
     private Exterior exterior;
+    // Worker-owned: residents refused for the objects GPU budget, with the demand revision of the
+    // refusal. They are offered again once the demand changes (the camera moved).
+    private final IdentityHashMap<Entry, Long> exteriorBudget = new IdentityHashMap<>();
     private final java.util.Set<Entry> exteriorTried =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Events events;
@@ -914,6 +917,7 @@ final class WorldStreamSourceController {
             for (var entry : current) {
                 if (!same(tile, entry.resident())
                         || exteriorTried.contains(entry)
+                        || budgetDeferred(entry)
                         || entry.resident().exteriorObjects()
                                 != WorldStreamTransport.ExteriorObjects.NONE) continue;
                 var work = new Exterior(entry);
@@ -930,6 +934,17 @@ final class WorldStreamSourceController {
                 return;
             }
         }
+    }
+
+    /** A budget-refused resident waits until the demand changes after its refusal. */
+    private boolean budgetDeferred(Entry entry) {
+        Long refused = exteriorBudget.get(entry);
+        if (refused == null) return false;
+        long revision;
+        synchronized (lock) { revision = demandRevision; }
+        if (refused == revision) return true;
+        exteriorBudget.remove(entry);
+        return false;
     }
 
     /** Advances the one late exterior delivery; its failures never reach terrain. */
@@ -979,6 +994,17 @@ final class WorldStreamSourceController {
             changed();
             return;
         }
+        var outcome = work.attached;
+        if (!outcome.isCompletedExceptionally()
+                && outcome.join() == WorldStreamTransport.ObjectsOutcome.BUDGET) {
+            // Not a fault: the shared GPU budget was full. Offer it again after the camera moves,
+            // when the demand order (nearest first) has changed and residents may have retired.
+            long revision;
+            synchronized (lock) { revision = demandRevision; }
+            exteriorBudget.put(work.entry, revision);
+            changed();
+            return;
+        }
         exteriorTried.add(work.entry);
         try {
             switch (work.attached.join()) {
@@ -995,7 +1021,7 @@ final class WorldStreamSourceController {
                             "World exterior objects delivery failed; tile kept as terrain only", null);
                     work.entry.source().exteriorFailedLate();
                 }
-                case DROPPED -> {}
+                case DROPPED, BUDGET -> {}
             }
         } catch (RuntimeException failed) {
             // A stopping session cancels delivery; anything else fails only these objects.
@@ -1314,6 +1340,7 @@ final class WorldStreamSourceController {
             sourceRetirementRevision++;
             entries.remove(entry.resident());
             exteriorTried.remove(entry);
+            exteriorBudget.remove(entry);
         }
     }
 
@@ -1424,6 +1451,7 @@ final class WorldStreamSourceController {
         }
         entries.clear();
         exteriorTried.clear();
+        exteriorBudget.clear();
         exterior = null;
         if (exteriorWorker != null) exteriorWorker.shutdown();
         source = null;

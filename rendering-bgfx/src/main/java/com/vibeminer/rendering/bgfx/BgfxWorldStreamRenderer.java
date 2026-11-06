@@ -213,7 +213,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         private WorldStreamPackedObjects source;
         private SlotObjects building;
         private int vertexAt, indexAt, image;
-        private boolean failed;
+        private boolean failed, budget;
 
         ObjectsBuild(WorldStreamPackedObjects source) {
             this.source = java.util.Objects.requireNonNull(source);
@@ -350,6 +350,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private final java.util.ArrayList<Double> blendDistances = new java.util.ArrayList<>();
     private final WorldStreamEnvelope.Session session;
     private final Slot[] slots;
+    // The session tier's shared objects budget; only a native proof lowers it.
+    private long objectBudget;
     private final AtomicReference<Upload> uploading = new AtomicReference<>();
     private final AtomicLong callbackCount = new AtomicLong();
     private final AtomicReference<String> callbackFailure = new AtomicReference<>();
@@ -376,6 +378,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         this.session = java.util.Objects.requireNonNull(session);
         // A near session allocates fewer slots of the same fixed size; never more than the ceiling.
         slots = new Slot[session.slots()];
+        objectBudget = session.objectBudgetBytes();
         try {
             var caps = bgfx_get_caps();
             BgfxTerrainRenderer.requireCapabilities(
@@ -607,7 +610,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         try {
             if (build.building == null) {
                 long need = source.payloadBytes();
-                if (!objectsFit(session.objectBudgetBytes(), reservedObjectBytes(), need)) {
+                if (!objectsFit(objectBudget, reservedObjectBytes(), need)) {
+                    build.budget = true;
                     build.fail();
                     return 0;
                 }
@@ -763,7 +767,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             return WorldStreamStatus.LateOutcome.DROPPED;
         }
         if (upload.build.failed) {
-            return WorldStreamStatus.LateOutcome.FAILED;
+            return upload.build.budget
+                    ? WorldStreamStatus.LateOutcome.BUDGET
+                    : WorldStreamStatus.LateOutcome.FAILED;
         }
         slots[upload.lease.slot()].objects = upload.build.take();
         objectsRevision++;
@@ -1295,6 +1301,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     /** Whether {@code need} more GPU bytes fit beside {@code reserved} under {@code budget}. */
     static boolean objectsFit(long budget, long reserved, long need) {
         return need >= 0 && reserved >= 0 && need <= budget - reserved;
+    }
+
+    /** Test seam: a native proof fills past a small budget without hundreds of MiB of objects. */
+    void objectBudgetForProof(long bytes) {
+        requireOwner();
+        if (bytes < 0 || bytes > session.objectBudgetBytes()) {
+            throw new IllegalArgumentException("Proof budget above the session budget");
+        }
+        objectBudget = bytes;
     }
 
     private long reservedObjectBytes() {

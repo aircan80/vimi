@@ -9,10 +9,10 @@ import java.util.List;
 final class WorldStreamNeighborhood {
     private WorldStreamNeighborhood() {}
 
-    /** The far 5 x 5 neighborhood (issue #173); see the view-distance overload. */
+    /** The product default, NEAR (3 x 3); see the view-distance overload. */
     static List<WorldFormats.Tile> select(List<WorldFormats.Tile> recorded,
             int cameraX, int cameraY, double yaw) {
-        return select(recorded, cameraX, cameraY, yaw, WorldStreamTransport.ViewDistance.FAR);
+        return select(recorded, cameraX, cameraY, yaw, WorldStreamTransport.ViewDistance.NEAR);
     }
 
     static List<WorldFormats.Tile> select(List<WorldFormats.Tile> recorded,

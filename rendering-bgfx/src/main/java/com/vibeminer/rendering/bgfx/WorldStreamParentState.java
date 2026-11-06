@@ -301,6 +301,12 @@ final class WorldStreamParentState {
         if (member == null || member.owner != owner) {
             throw new IllegalArgumentException("Foreign late objects resident");
         }
+        if (member.late == WorldStreamStatus.LateOutcome.BUDGET) {
+            // A budget refusal attached nothing; the same generation may be offered again.
+            member.lateRequested = false;
+            member.lateSent = false;
+            member.late = null;
+        }
         if (member.objects != 0 || member.lateRequested) {
             throw new IllegalArgumentException("Resident objects already requested or inline");
         }

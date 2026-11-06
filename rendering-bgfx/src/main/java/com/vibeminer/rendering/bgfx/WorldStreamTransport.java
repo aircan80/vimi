@@ -183,7 +183,12 @@ public final class WorldStreamTransport {
         /** Writing, reading or uploading the objects failed; the terrain tile is untouched. */
         FAILED,
         /** The resident was no longer active (retired or its slot reused); nothing attached. */
-        DROPPED
+        DROPPED,
+        /**
+         * The session's objects GPU budget was exhausted; nothing attached, terrain untouched. The
+         * same resident may be offered again, e.g. once it moves inward or residents retire.
+         */
+        BUDGET
     }
 
     public enum Refusal {
@@ -686,6 +691,8 @@ public final class WorldStreamTransport {
         private volatile long childPid;
         private volatile boolean stderrAttached;
         private final java.util.concurrent.atomic.AtomicLong objectsWriteFailures =
+                new java.util.concurrent.atomic.AtomicLong();
+        private final java.util.concurrent.atomic.AtomicLong rendererObjectsBudget =
                 new java.util.concurrent.atomic.AtomicLong();
         private final java.util.concurrent.atomic.AtomicLong rendererObjectsFailures =
                 new java.util.concurrent.atomic.AtomicLong();
@@ -1896,6 +1903,8 @@ public final class WorldStreamTransport {
                             }
                             if (outcome == WorldStreamStatus.LateOutcome.FAILED) {
                                 rendererObjectsFailed();
+                            } else if (outcome == WorldStreamStatus.LateOutcome.BUDGET) {
+                                rendererObjectsBudget();
                             }
                         }
                         case CREDIT -> capacityChanged();
@@ -1974,6 +1983,25 @@ public final class WorldStreamTransport {
                 objectsDiagnostic.complete(record);
                 System.getLogger(WorldStreamTransport.class.getName())
                         .log(System.Logger.Level.WARNING, record);
+            } catch (RuntimeException | Error ignored) {
+                // Diagnostic delivery cannot interrupt objects delivery.
+            }
+        }
+
+        private void rendererObjectsBudget() {
+            long count = rendererObjectsBudget.incrementAndGet();
+            if (!cadenceLogged(count)) {
+                return;
+            }
+            try {
+                System.getLogger(WorldStreamTransport.class.getName())
+                        .log(
+                                System.Logger.Level.INFO,
+                                "World exterior objects budget exhausted ("
+                                        + count
+                                        + (count == 1 ? " tile" : " tiles")
+                                        + " this session); tiles kept as terrain only, retried"
+                                        + " as the camera moves");
             } catch (RuntimeException | Error ignored) {
                 // Diagnostic delivery cannot interrupt objects delivery.
             }

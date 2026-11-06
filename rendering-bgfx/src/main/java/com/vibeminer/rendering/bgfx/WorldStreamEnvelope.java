@@ -17,6 +17,12 @@ final class WorldStreamEnvelope {
     /** Fixed envelope size; a commit of MAX_ACTIVE 16-byte members needs 72 + 400 bytes. */
     static final int BYTES = 512;
 
+    /**
+     * Layout version: 3 since issue #173 (512 bytes, session view distance and object texture
+     * tier). A helper from another build fails as a version mismatch, not as invalid caps.
+     */
+    static final int VERSION = 3;
+
     // Terrain 2,284,544B plus the optional 622,720B static water trailer.
     static final int MAX_PACKET_BYTES = 2_907_264;
     private static final byte[] SESSION_MAGIC = "VIMIWSS2".getBytes(StandardCharsets.US_ASCII);
@@ -130,7 +136,7 @@ final class WorldStreamEnvelope {
 
     static byte[] encode(Session session) {
         var out = buffer();
-        out.put(SESSION_MAGIC).putInt(2).putInt(BYTES);
+        out.put(SESSION_MAGIC).putInt(VERSION).putInt(BYTES);
         nonce(out, session.nonce());
         out.put(HexFormat.of().parseHex(session.scope()));
         out.putInt(1).putInt(1).putInt(1).putInt(session.exteriorObjects() ? 2 : 1);
@@ -173,7 +179,7 @@ final class WorldStreamEnvelope {
 
     static byte[] encode(Commit commit) {
         var out = buffer();
-        out.put(COMMIT_MAGIC).putInt(2).putInt(BYTES);
+        out.put(COMMIT_MAGIC).putInt(VERSION).putInt(BYTES);
         nonce(out, commit.nonce());
         out.putLong(commit.transaction()).putLong(commit.expected()).putLong(commit.next());
         out.putLong(commit.policy()).putInt(commit.members().size()).putInt(0);
@@ -229,7 +235,9 @@ final class WorldStreamEnvelope {
         for (byte expected : magic) {
             require(in.get() == expected, "Wrong envelope mode");
         }
-        require(in.getInt() == 2 && in.getInt() == BYTES, "Wrong envelope version");
+        require(
+                in.getInt() == VERSION && in.getInt() == BYTES,
+                "Wrong envelope version (parent and World helper differ)");
         return in;
     }
 
