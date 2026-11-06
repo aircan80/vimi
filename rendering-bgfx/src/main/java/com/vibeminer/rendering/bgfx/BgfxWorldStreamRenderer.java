@@ -1380,6 +1380,20 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 decodedImages);
     }
 
+    /**
+     * The compressed object texture formats this renderer uploads as blocks, one bit per {@link
+     * ObjectTextureFormats} code; reported to the parent in SESSION (issue #374).
+     */
+    int objectFormatMask() {
+        int mask = 0;
+        for (int f = ObjectTextureFormats.BC1; f <= ObjectTextureFormats.BC3; f++) {
+            if (objectFormats[f]) {
+                mask |= 1 << f;
+            }
+        }
+        return mask;
+    }
+
     /** The bgfx texture format of an object texture format. */
     static int bgfxFormat(int format) {
         return switch (format) {

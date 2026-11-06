@@ -51,6 +51,9 @@ final class WorldStreamSession {
     private WorldStreamControl.LateObjects objectsCommand;
     private BgfxWorldStreamRenderer.LateUpload lateUpload;
     private volatile boolean failed;
+
+    // Compressed object formats the renderer samples (bit per code), set before any decode.
+    private volatile int objectFormats;
     private volatile long closeStarted;
     private CompletableFuture<Decoded> decoding;
     private WorldStreamControl.Command decodedCommand, deferred;
@@ -108,10 +111,14 @@ final class WorldStreamSession {
         Thread.ofVirtual().name("world-v2-independent-watchdog").start(() -> watch(terminate));
         try (var owner = new WorldStreamNativeOwner(session, frames, backend)) {
             try {
+                // The profile, then the compressed object texture formats sampled as blocks: the
+                // parent charges those images their compressed bytes (#374).
+                objectFormats = owner.objectFormatMask();
                 send(
-                        session.exteriorObjects()
-                                ? "SESSION TERRAIN_EXTERIOR_V1"
-                                : "SESSION TERRAIN_BASIC_V1");
+                        (session.exteriorObjects()
+                                        ? "SESSION TERRAIN_EXTERIOR_V1 "
+                                        : "SESSION TERRAIN_BASIC_V1 ")
+                                + objectFormats);
                 advertiseCredit();
                 while (!closing.get()) {
                     if (mailbox.closing() || status.failure() != null) {

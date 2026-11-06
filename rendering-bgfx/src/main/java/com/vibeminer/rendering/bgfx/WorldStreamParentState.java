@@ -97,6 +97,7 @@ final class WorldStreamParentState {
     private WorldStreamState.Lease credit;
     private long serial, transaction, content;
     private boolean hello, closed, childGone;
+    private int objectFormats;
     private Ticket ticket;
     private Commit commit;
     private List<Resident> active = List.of();
@@ -371,6 +372,7 @@ final class WorldStreamParentState {
                     value.exteriorObjects() == session.exteriorObjects(),
                     "Session profile differs");
             hello = true;
+            objectFormats = value.objectFormats();
             return Change.SESSION;
         }
         require(hello, "Status before session");
@@ -557,6 +559,14 @@ final class WorldStreamParentState {
             return Cancellation.RETIRED;
         }
         return Cancellation.PENDING;
+    }
+
+    /**
+     * The compressed object texture formats the child samples as blocks (one bit per {@link
+     * com.vibeminer.rendering.world.ObjectTextureFormats} code), from its SESSION status.
+     */
+    synchronized int objectFormats() {
+        return objectFormats;
     }
 
     synchronized List<Resident> active() {
