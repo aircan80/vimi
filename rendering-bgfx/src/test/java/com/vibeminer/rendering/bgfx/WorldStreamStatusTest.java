@@ -69,7 +69,7 @@ class WorldStreamStatusTest {
                         "SESSION OTHER",
                         "SESSION",
                         "CREDIT 01 0 1",
-                        "CREDIT 1 10 1",
+                        "CREDIT 1 26 1",
                         "CREDIT 0 0 1",
                         "CREDIT 1 0 0",
                         "CREDIT +1 0 1",

@@ -2456,7 +2456,7 @@ public final class WorldExteriorObjects {
                 try {
                     declared =
                             Blp2Decoder.readMipsSynchronous(
-                                    AssetSource.bytes(raw),
+                                    AssetSource.borrowed(raw),
                                     IMAGE_LIMITS,
                                     token,
                                     Blp2Types.MipProfile.STRICT);
@@ -2570,9 +2570,10 @@ public final class WorldExteriorObjects {
             }
             List<Blp2Types.Mip> declared;
             try {
+                // Synchronous: the borrowed source is done with raw before the blocks are copied.
                 declared =
                         Blp2Decoder.readMipsSynchronous(
-                                AssetSource.bytes(raw),
+                                AssetSource.borrowed(raw),
                                 IMAGE_LIMITS,
                                 token,
                                 Blp2Types.MipProfile.STRICT);
@@ -2625,7 +2626,7 @@ public final class WorldExteriorObjects {
             try {
                 image =
                         Blp2Decoder.decodeSynchronous(
-                                AssetSource.bytes(raw),
+                                AssetSource.borrowed(raw),
                                 level,
                                 IMAGE_LIMITS,
                                 token,
@@ -2897,7 +2898,7 @@ public final class WorldExteriorObjects {
             try {
                 var mip =
                         Blp2Decoder.decodeSynchronous(
-                                AssetSource.bytes(raw),
+                                AssetSource.borrowed(raw),
                                 level,
                                 IMAGE_LIMITS,
                                 token,

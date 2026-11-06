@@ -15,6 +15,84 @@ import java.util.concurrent.CompletableFuture;
  * and retains its permit until terminatedAndDrained completes successfully.
  */
 public final class WorldStreamTransport {
+    /** Hard ceiling on residents one commit may name: the far 5 x 5 neighborhood. */
+    public static final int MAX_RESIDENTS = WorldStreamState.MAX_ACTIVE;
+
+    /** One tile beside the active residents is staged while the next commit is prepared. */
+    public static final int MAX_PREPARED = MAX_RESIDENTS + 1;
+
+    /**
+     * Tile neighborhood a session keeps resident (issue #173). Every slot is the same fixed size,
+     * so NEAR needs 10 slots and FAR 26; FAR costs about 2.6 times the terrain GPU memory.
+     */
+    public enum ViewDistance {
+        /** The 3 x 3 neighborhood: 9 residents, 10 slots. */
+        NEAR(1, WorldStreamEnvelope.Session.NEAR_ACTIVE),
+        /** The 5 x 5 neighborhood: 25 residents, 26 slots. */
+        FAR(2, WorldStreamState.MAX_ACTIVE);
+        private final int radius, residents;
+
+        ViewDistance(int radius, int residents) {
+            this.radius = radius;
+            this.residents = residents;
+        }
+
+        /** Tiles on each side of the camera tile. */
+        public int radius() {
+            return radius;
+        }
+
+        /** Most residents one commit may name. */
+        public int residents() {
+            return residents;
+        }
+
+        /** Renderer slots: every resident plus one staged. */
+        public int slots() {
+            return residents + 1;
+        }
+
+        static ViewDistance of(int residents) {
+            for (var value : values()) {
+                if (value.residents == residents) {
+                    return value;
+                }
+            }
+            throw new IllegalArgumentException("Unknown view distance");
+        }
+    }
+
+    /**
+     * Exterior object texture tier (#267 wires its image detail here). It selects the session's
+     * shared objects GPU budget: STANDARD 192 MiB, HIGH 256 MiB.
+     */
+    public enum ObjectTextures {
+        STANDARD(WorldStreamEnvelope.Session.STANDARD_TEXTURES),
+        HIGH(WorldStreamEnvelope.Session.HIGH_TEXTURES);
+
+        private final int code;
+
+        ObjectTextures(int code) {
+            this.code = code;
+        }
+
+        /** GPU bytes all exterior object sets of a session may reserve together. */
+        public long budgetBytes() {
+            return code == WorldStreamEnvelope.Session.HIGH_TEXTURES
+                    ? WorldStreamEnvelope.Session.HIGH_OBJECT_BUDGET
+                    : WorldStreamEnvelope.Session.STANDARD_OBJECT_BUDGET;
+        }
+
+        static ObjectTextures of(int code) {
+            for (var value : values()) {
+                if (value.code == code) {
+                    return value;
+                }
+            }
+            throw new IllegalArgumentException("Unknown object texture tier");
+        }
+    }
+
     /** Fallback frame poll when no FRAME hint arrives; hints normally wake the reader first. */
     static final long FRAME_POLL_MILLIS = 33;
 
@@ -30,13 +108,40 @@ public final class WorldStreamTransport {
      * packet may carry one immutable objects file drawn after terrain.
      */
     public record Spec(
-            String scopeSha256, long initialPolicy, Backend backend, boolean exteriorObjects) {
+            String scopeSha256,
+            long initialPolicy,
+            Backend backend,
+            boolean exteriorObjects,
+            ViewDistance viewDistance,
+            ObjectTextures objectTextures) {
         public Spec(String scopeSha256, long initialPolicy, Backend backend) {
             this(scopeSha256, initialPolicy, backend, false);
         }
 
+        public Spec(
+                String scopeSha256, long initialPolicy, Backend backend, boolean exteriorObjects) {
+            this(scopeSha256, initialPolicy, backend, exteriorObjects, ViewDistance.NEAR);
+        }
+
+        public Spec(
+                String scopeSha256,
+                long initialPolicy,
+                Backend backend,
+                boolean exteriorObjects,
+                ViewDistance viewDistance) {
+            this(
+                    scopeSha256,
+                    initialPolicy,
+                    backend,
+                    exteriorObjects,
+                    viewDistance,
+                    ObjectTextures.STANDARD);
+        }
+
         public Spec {
             Objects.requireNonNull(backend);
+            Objects.requireNonNull(viewDistance);
+            Objects.requireNonNull(objectTextures);
             new WorldStreamEnvelope.Session(
                     new WorldStreamState.Nonce(1, 1), scopeSha256, initialPolicy);
         }
@@ -81,7 +186,12 @@ public final class WorldStreamTransport {
         /** Writing, reading or uploading the objects failed; the terrain tile is untouched. */
         FAILED,
         /** The resident was no longer active (retired or its slot reused); nothing attached. */
-        DROPPED
+        DROPPED,
+        /**
+         * The session's objects GPU budget was exhausted; nothing attached, terrain untouched. The
+         * same resident may be offered again, e.g. once it moves inward or residents retire.
+         */
+        BUDGET
     }
 
     public enum Refusal {
@@ -447,8 +557,17 @@ public final class WorldStreamTransport {
             return content;
         }
 
+        /** Read-only pixels; throws once {@link #release()} returned them for reuse. */
         public java.nio.IntBuffer pixels() {
             return frame.pixels();
+        }
+
+        /**
+         * The one owner calls this when it no longer reads {@link #pixels()}, so a later frame can
+         * reuse the array. Idempotent; an unreleased frame is ordinary garbage.
+         */
+        public void release() {
+            frame.release();
         }
     }
 
@@ -537,7 +656,9 @@ public final class WorldStreamTransport {
                         new WorldStreamState.Nonce(high, low),
                         spec.scopeSha256(),
                         spec.initialPolicy(),
-                        spec.exteriorObjects());
+                        spec.exteriorObjects(),
+                        spec.viewDistance().residents(),
+                        spec.objectTextures().code);
         String backend =
                 spec.backend() == Backend.DEFAULT
                         ? null
@@ -597,6 +718,8 @@ public final class WorldStreamTransport {
         private volatile long childPid;
         private volatile boolean stderrAttached;
         private final java.util.concurrent.atomic.AtomicLong objectsWriteFailures =
+                new java.util.concurrent.atomic.AtomicLong();
+        private final java.util.concurrent.atomic.AtomicLong rendererObjectsBudget =
                 new java.util.concurrent.atomic.AtomicLong();
         private final java.util.concurrent.atomic.AtomicLong rendererObjectsFailures =
                 new java.util.concurrent.atomic.AtomicLong();
@@ -770,6 +893,25 @@ public final class WorldStreamTransport {
             return descriptor.exteriorObjects();
         }
 
+        /** This session's resident neighborhood; commits name at most its residents. */
+        public ViewDistance viewDistance() {
+            return ViewDistance.of(descriptor.maxActive());
+        }
+
+        /**
+         * Revision of objects budget releases: it moves when a resident whose objects were drawn is
+         * replaced in its slot. A set refused with {@link ObjectsOutcome#BUDGET} is worth offering
+         * again only after it moves.
+         */
+        public long objectsReleaseRevision() {
+            return state.objectsReleases();
+        }
+
+        /** This session's object texture tier, which sets its shared objects GPU budget. */
+        public ObjectTextures objectTextures() {
+            return ObjectTextures.of(descriptor.objectTextures());
+        }
+
         /** Protocol success is separate from process/resource drain. */
         public CompletableFuture<Void> completion() {
             return completion.copy();
@@ -778,7 +920,7 @@ public final class WorldStreamTransport {
         /** Bounded array snapshot on caller; validation/publication and all IO run off caller. */
         public CompletableFuture<CommitReceipt> commit(long policy, Resident... ordered) {
             Objects.requireNonNull(ordered);
-            if (ordered.length > 9 || policy < descriptor.policy()) {
+            if (ordered.length > descriptor.maxActive() || policy < descriptor.policy()) {
                 throw new IllegalArgumentException("World commit bounds");
             }
             var snapshot = ordered.clone();
@@ -1109,10 +1251,11 @@ public final class WorldStreamTransport {
             synchronized (lock) {
                 var result = latestFrame;
                 latestFrame = null;
-                if (result == null
-                        || closing
-                        || owner.stopping()
-                        || !frames.presented(result.frame.metadata())) {
+                if (result == null) {
+                    return java.util.Optional.empty();
+                }
+                if (closing || owner.stopping() || !frames.presented(result.frame.metadata())) {
+                    result.release();
                     return java.util.Optional.empty();
                 }
                 return java.util.Optional.of(result);
@@ -1149,9 +1292,16 @@ public final class WorldStreamTransport {
                                 && currentReceipt.contentRevision()
                                         == candidate.metadata().content()
                                 && frames.current(candidate.metadata())) {
+                            // An untaken older frame is superseded: its array returns to the pool.
+                            if (latestFrame != null) {
+                                latestFrame.release();
+                            }
                             latestFrame = new Frame(candidate, currentReceipt);
                             offered = true;
                         }
+                    }
+                    if (!offered) {
+                        candidate.release();
                     }
                 }
                 var listener = frameListener;
@@ -1603,6 +1753,9 @@ public final class WorldStreamTransport {
             synchronized (lock) {
                 closing = true;
                 pendingCamera = null;
+                if (latestFrame != null) {
+                    latestFrame.release();
+                }
                 latestFrame = null;
                 lock.notifyAll();
             }
@@ -1871,6 +2024,8 @@ public final class WorldStreamTransport {
                             }
                             if (outcome == WorldStreamStatus.LateOutcome.FAILED) {
                                 rendererObjectsFailed();
+                            } else if (outcome == WorldStreamStatus.LateOutcome.BUDGET) {
+                                rendererObjectsBudget();
                             }
                         }
                         case CREDIT -> capacityChanged();
@@ -1949,6 +2104,25 @@ public final class WorldStreamTransport {
                 objectsDiagnostic.complete(record);
                 System.getLogger(WorldStreamTransport.class.getName())
                         .log(System.Logger.Level.WARNING, record);
+            } catch (RuntimeException | Error ignored) {
+                // Diagnostic delivery cannot interrupt objects delivery.
+            }
+        }
+
+        private void rendererObjectsBudget() {
+            long count = rendererObjectsBudget.incrementAndGet();
+            if (!cadenceLogged(count)) {
+                return;
+            }
+            try {
+                System.getLogger(WorldStreamTransport.class.getName())
+                        .log(
+                                System.Logger.Level.INFO,
+                                "World exterior objects budget exhausted ("
+                                        + count
+                                        + (count == 1 ? " tile" : " tiles")
+                                        + " this session); tiles kept as terrain only, retried"
+                                        + " as the camera moves");
             } catch (RuntimeException | Error ignored) {
                 // Diagnostic delivery cannot interrupt objects delivery.
             }
