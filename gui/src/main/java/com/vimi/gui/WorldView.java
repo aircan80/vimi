@@ -2469,7 +2469,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void viewportFocusLost() {
         clearKeys();
         if (System.nanoTime() - layoutToggledAt > LAYOUT_FOCUS_SETTLE_NANOS)
-            fullscreenKeyHeld = panelsKeyHeld = escapeKeyHeld = false;
+            fullscreenKeyHeld = panelsKeyHeld = escapeKeyHeld = bookmarksKeyHeld = false;
     }
 
     /**

@@ -243,6 +243,16 @@ public final class WorldHudKeysUiTest {
                 "B opens the menu on its Bookmarks page");
         key(KeyCode.B, true);
         require(menu.shown(), "B's auto-repeat does not close it again");
+        // Losing focus while B is down (its release goes elsewhere) resets the latch, so the
+        // next press is a press, not a repeat.
+        menu.page(WorldGameMenu.Page.BOOKMARKS).lookup(".text-field").requestFocus();
+        require(!((javafx.scene.Node) get("viewport")).isFocused(), "The viewport lost focus");
+        ((javafx.scene.Node) get("viewport")).requestFocus();
+        key(KeyCode.B, true);
+        require(!menu.shown(), "After a focus loss the next B is a fresh press and closes the menu");
+        key(KeyCode.B, false);
+        key(KeyCode.B, true);
+        require(menu.shown() && menu.current() == WorldGameMenu.Page.BOOKMARKS, "B opens it again");
         key(KeyCode.B, false);
         var first = menu.page(WorldGameMenu.Page.BOOKMARKS).getChildren().getFirst();
         require("world-save-bookmark".equals(first.getId()), "Save current view stays the first row: " + first);
