@@ -166,6 +166,22 @@ public final class WorldSpawns {
          * placed at a guessed floor.
          */
         public Nearby near(long mapId, double x, double y, double radius, int limit) {
+            return near(mapId, x, y, radius, limit, spawn -> true);
+        }
+
+        /**
+         * As {@link #near(long, double, double, double, int)}, over only the points {@code keep}
+         * accepts: rejected points are neither placed, counted without height nor counted beyond
+         * the limit, so a caller's own area is not starved by points it would discard.
+         */
+        public Nearby near(
+                long mapId,
+                double x,
+                double y,
+                double radius,
+                int limit,
+                java.util.function.Predicate<Spawn> keep) {
+            Objects.requireNonNull(keep);
             LocationTypes.validId(mapId, true);
             if (!Double.isFinite(x)
                     || !Double.isFinite(y)
@@ -194,7 +210,7 @@ public final class WorldSpawns {
                     }
                     for (var spawn : points) {
                         double dx = spawn.x() - x, dy = spawn.y() - y;
-                        if (dx * dx + dy * dy > squared) {
+                        if (dx * dx + dy * dy > squared || !keep.test(spawn)) {
                             continue;
                         }
                         if (spawn.z() == null) {

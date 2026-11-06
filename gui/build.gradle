@@ -75,7 +75,10 @@ dependencies {
 application {
     mainClass = 'com.vimi.gui.Launcher'
     applicationName = 'vimi-gui-prototype'
-    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED']
+    // Shared with the packaged app (scripts/release/package_app.py); see the file's comments.
+    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED'] +
+            providers.fileContents(layout.projectDirectory.file('jvm-options.txt')).asText.get()
+                    .readLines()*.replaceFirst(/(^|\s)#.*$/, '')*.trim().findAll { it }
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -356,6 +359,14 @@ tasks.register('worldPickTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldPickTest'
 }
 check.dependsOn worldPickTest
+
+// Stream camera revisions and presented-frame overlay projection; no display.
+tasks.register('worldCameraRingTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldCameraRingTest'
+}
+check.dependsOn worldCameraRingTest
 
 // Explorer key/mouse/wheel mapping and pulse cadence against a recording host; no display.
 tasks.register('worldExplorerInputTest', JavaExec) {
@@ -816,3 +827,12 @@ tasks.register('globalInteriorFloorsTest', JavaExec) {
     mainClass = 'com.vimi.gui.GlobalInteriorFloorsTest'
 }
 check.dependsOn globalInteriorFloorsTest
+
+// Optional: measures a World ambience kit change through the real decoder on device-paced lines.
+tasks.register('worldAudioZoneChangeProbe', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldAudioZoneChangeProbe'
+    systemProperty 'vimi.audioFixture',
+            rootProject.file('formats-audio/src/test/resources/audio/authored-tone.ogg').path
+}

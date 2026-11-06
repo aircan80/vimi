@@ -3,6 +3,7 @@ package com.vibeminer.formats.world;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
@@ -10,7 +11,26 @@ import java.util.function.BooleanSupplier;
 
 /** Narrow split ADT18 basic-coverage facts; never client height-shader/material authority. */
 public final class WorldTextureFormats {
-    public static final String REVISION = "adt18-split-basic-coverage-v1";
+    public static final String REVISION = "adt18-split-basic-coverage-v2";
+
+    /** MPHD flags that select 8-bit (4096-byte) alpha maps: big alpha or height texturing. */
+    public static final long BIG_ALPHA_FLAGS = 0x4 | 0x80;
+
+    /** Root MCNK flag: a 4-bit alpha map already holds its own last row and column. */
+    public static final long DO_NOT_FIX_ALPHA_MAP = 0x8000;
+
+    /** MCLY flag: this layer blends through an alpha map. */
+    public static final long USE_ALPHA_MAP = 0x100;
+
+    /** MCLY flag: this layer's alpha map is run-length compressed. */
+    public static final long ALPHA_COMPRESSED = 0x200;
+
+    /** MCLY layer animation bits (rotation, speed and enable). */
+    public static final long ANIMATION_FLAGS = 0x7f;
+
+    /** MCLY overbright bit. */
+    public static final long OVERBRIGHT = 0x80;
+
     public static final int MAX_SOURCE_BYTES = 8 << 20;
     public static final int MAX_MASK_SCRATCH = 7 * 4096;
     public static final int MAX_METADATA_BYTES = 1 << 20;
@@ -24,9 +44,25 @@ public final class WorldTextureFormats {
 
     private WorldTextureFormats() {}
 
+    /** How a map stores uncompressed alpha maps, derived from its WDT MPHD flags. */
+    public enum AlphaFormat {
+        /** 4096 bytes, one 8-bit value per texel. */
+        BIG_8BIT,
+        /** 2048 bytes, two 4-bit values per byte, low nibble first. */
+        SMALL_4BIT;
+
+        public static AlphaFormat of(long mphdFlags) {
+            return (mphdFlags & BIG_ALPHA_FLAGS) != 0 ? BIG_8BIT : SMALL_4BIT;
+        }
+    }
+
     public record Inventory(WorldFormats.World world, long flags) {
         public Inventory {
             Objects.requireNonNull(world);
+        }
+
+        public AlphaFormat alphaFormat() {
+            return AlphaFormat.of(flags);
         }
     }
 
@@ -37,11 +73,25 @@ public final class WorldTextureFormats {
         LAYER_FLAGS,
         TEXTURE_REFERENCE,
         MASK_INTERVAL,
-        MASK_ENCODING,
-        MASK_SUM
+        MASK_ENCODING
     }
 
-    public record Layer(long textureIndex, long flags, long alphaOffset, int effectId) {}
+    public record Layer(long textureIndex, long flags, long alphaOffset, int effectId) {
+        /** Animation bits; carried, not yet rendered. */
+        public long animation() {
+            return flags & ANIMATION_FLAGS;
+        }
+
+        /** Carried, not yet rendered. */
+        public boolean overbright() {
+            return (flags & OVERBRIGHT) != 0;
+        }
+
+        /** The layer's 0x200 bit; it means RLE only in an 8-bit alpha layout. */
+        public boolean compressed() {
+            return (flags & ALPHA_COMPRESSED) != 0;
+        }
+    }
 
     public record ChunkTexture(int ordinal, List<Layer> layers, ChunkIssue issue) {
         public ChunkTexture {
@@ -105,8 +155,9 @@ public final class WorldTextureFormats {
             }
             input.position(part.data().end());
         }
-        if (!maid || flags == null || flags != 0x3ca) {
-            throw invalid("Unsupported basic-coverage WDT flags");
+        // Any MPHD flags are accepted; only the alpha map layout depends on them.
+        if (!maid || flags == null) {
+            throw invalid("Split texture inventory requires MPHD and MAID");
         }
         return new Inventory(world, flags);
     }
@@ -114,17 +165,35 @@ public final class WorldTextureFormats {
     /** Owns one defensive source copy. Alpha decoding never retains a caller's scratch buffer. */
     public static final class TextureData implements AutoCloseable {
         private byte[] source;
+        private final AlphaFormat format;
+        private final int amplifier;
         private final List<Long> diffuse, heights;
         private final List<ChunkSlice> chunks;
         private final List<ChunkTexture> metadata;
 
         private TextureData(
-                byte[] source, List<Long> diffuse, List<Long> heights, List<ChunkSlice> chunks) {
+                byte[] source,
+                AlphaFormat format,
+                int amplifier,
+                List<Long> diffuse,
+                List<Long> heights,
+                List<ChunkSlice> chunks) {
             this.source = source;
+            this.format = format;
+            this.amplifier = amplifier;
             this.diffuse = List.copyOf(diffuse);
             this.heights = List.copyOf(heights);
             this.chunks = List.copyOf(chunks);
             this.metadata = chunks.stream().map(ChunkSlice::metadata).toList();
+        }
+
+        public AlphaFormat alphaFormat() {
+            return format;
+        }
+
+        /** MAMP texture amplifier (0 when absent); carried, not yet applied. */
+        public int amplifier() {
+            return amplifier;
         }
 
         public List<Long> diffuseIds() {
@@ -151,8 +220,22 @@ public final class WorldTextureFormats {
                             .sum();
         }
 
+        /**
+         * Decodes as if the root MCNK flags were 0, the common case: a 4-bit map's last row and
+         * column are fixed. Pass the real flags when they are known.
+         */
+        public AlphaResult decodeAlphas(int ordinal, ByteBuffer target, BooleanSupplier canceled) {
+            return decodeAlphas(ordinal, 0, target, canceled);
+        }
+
+        /**
+         * Writes one 64x64 8-bit mask per overlay layer. {@code rootChunkFlags} are the root ADT
+         * MCNK flags: without {@link #DO_NOT_FIX_ALPHA_MAP}, a 4-bit map's last row and column
+         * repeat the ones before them, as the client does. Weights summing past 255 are kept as
+         * stored; the consumer clamps the base layer weight.
+         */
         public synchronized AlphaResult decodeAlphas(
-                int ordinal, ByteBuffer target, BooleanSupplier canceled) {
+                int ordinal, long rootChunkFlags, ByteBuffer target, BooleanSupplier canceled) {
             Objects.requireNonNull(target);
             Objects.requireNonNull(canceled);
             check(canceled);
@@ -171,6 +254,7 @@ public final class WorldTextureFormats {
             if (target.isReadOnly() || target.remaining() < count * 4096) {
                 throw new IllegalArgumentException("Insufficient writable mask scratch");
             }
+            boolean fix = (rootChunkFlags & DO_NOT_FIX_ALPHA_MAP) == 0;
             for (int layer = 1; layer < row.layers().size(); layer++) {
                 check(canceled);
                 var entry = row.layers().get(layer);
@@ -181,30 +265,24 @@ public final class WorldTextureFormats {
                                         + (int) row.layers().get(layer + 1).alphaOffset()
                                 : chunk.alpha().end();
                 boolean valid;
-                if (entry.flags() == 0x100) {
+                // Compression applies only to 8-bit maps; a 4-bit layout is always 2048 raw
+                // bytes, whatever the layer's 0x200 bit says.
+                if (format == AlphaFormat.BIG_8BIT && entry.compressed()) {
+                    valid = rle(source, at, end, target, canceled);
+                } else if (format == AlphaFormat.BIG_8BIT) {
                     valid = end - at == 4096;
                     if (valid) {
                         target.put(source, at, 4096);
                     }
                 } else {
-                    valid = rle(source, at, end, target, canceled);
+                    valid = end - at == 2048;
+                    if (valid) {
+                        nibbles(source, at, target, fix);
+                    }
                 }
                 if (!valid) {
                     target.position(start);
                     return new AlphaResult(0, ChunkIssue.MASK_ENCODING);
-                }
-            }
-            for (int pixel = 0; pixel < 4096; pixel++) {
-                if (pixel % 256 == 0) {
-                    check(canceled);
-                }
-                int sum = 0;
-                for (int layer = 0; layer < count; layer++) {
-                    sum += target.get(start + layer * 4096 + pixel) & 255;
-                }
-                if (sum > 255) {
-                    target.position(start);
-                    return new AlphaResult(0, ChunkIssue.MASK_SUM);
                 }
             }
             return new AlphaResult(count, ChunkIssue.NONE);
@@ -216,16 +294,42 @@ public final class WorldTextureFormats {
         }
     }
 
+    /** Reads a map whose uncompressed alpha maps are 8-bit. */
     public static TextureData read(byte[] bytes, BooleanSupplier canceled) {
+        return read(bytes, AlphaFormat.BIG_8BIT, canceled);
+    }
+
+    /**
+     * Reads one split tex0 ADT from a private copy of {@code bytes}. Chunks the coverage preview
+     * does not use (MTXF, MTXP, MCSH, MCMT, ...) are skipped; MAMP and MHID are optional and
+     * carried as data.
+     */
+    public static TextureData read(byte[] bytes, AlphaFormat format, BooleanSupplier canceled) {
         Objects.requireNonNull(bytes);
+        Objects.requireNonNull(format);
         Objects.requireNonNull(canceled);
         check(canceled);
         if (bytes.length < 12 || bytes.length > MAX_SOURCE_BYTES) {
             throw invalid("Texture source bound");
         }
-        byte[] owned = bytes.clone();
+        return adopt(bytes.clone(), format, canceled);
+    }
+
+    /**
+     * As {@link #read(byte[], AlphaFormat, BooleanSupplier)}, but takes ownership of {@code owned}
+     * without copying it. The caller must not keep, share or modify the array.
+     */
+    public static TextureData adopt(byte[] owned, AlphaFormat format, BooleanSupplier canceled) {
+        Objects.requireNonNull(owned);
+        Objects.requireNonNull(format);
+        Objects.requireNonNull(canceled);
+        check(canceled);
+        if (owned.length < 12 || owned.length > MAX_SOURCE_BYTES) {
+            throw invalid("Texture source bound");
+        }
         var input = ByteBuffer.wrap(owned).order(ByteOrder.LITTLE_ENDIAN);
-        boolean version = false, amplitude = false;
+        boolean version = false, amplified = false;
+        int amplifier = 0;
         List<Long> diffuse = null, heights = null;
         var rawChunks = new ArrayList<Slice>();
         int count = 0;
@@ -244,10 +348,12 @@ public final class WorldTextureFormats {
                     version = true;
                 }
                 case MAMP -> {
-                    if (amplitude || s.length() != 4 || input.getInt(s.start()) != 0) {
-                        throw invalid("Unique MAMP0 required");
+                    // One amplifier byte, then padding.
+                    if (amplified || s.length() < 1 || s.length() > 4) {
+                        throw invalid("Unique MAMP required");
                     }
-                    amplitude = true;
+                    amplifier = input.get(s.start()) & 255;
+                    amplified = true;
                 }
                 case MDID -> {
                     if (diffuse != null) {
@@ -267,16 +373,19 @@ public final class WorldTextureFormats {
                     }
                     rawChunks.add(s);
                 }
-                default -> throw invalid("Unsupported texture top-level chunk");
+                default -> {
+                    // Not needed for layer coverage; skipped, still bounded by the chunk count.
+                }
             }
             input.position(s.end());
         }
+        if (heights == null && diffuse != null) {
+            // No height textures declared: carried as zero IDs, one per diffuse.
+            heights = Collections.nCopies(diffuse.size(), 0L);
+        }
         if (!version
-                || !amplitude
                 || diffuse == null
-                || heights == null
                 || diffuse.size() != heights.size()
-                || heights.stream().anyMatch(id -> id != 0)
                 || rawChunks.size() != 256) {
             throw invalid("Incomplete split basic-coverage texture declarations");
         }
@@ -285,7 +394,7 @@ public final class WorldTextureFormats {
             check(canceled);
             chunks.add(textureChunk(input, rawChunks.get(i), i, diffuse));
         }
-        var result = new TextureData(owned, diffuse, heights, chunks);
+        var result = new TextureData(owned, format, amplifier, diffuse, heights, chunks);
         if (result.metadataBytes() > MAX_METADATA_BYTES) {
             throw invalid("Texture metadata byte bound");
         }
@@ -305,21 +414,28 @@ public final class WorldTextureFormats {
                     break;
                 }
                 var p = part(input, bounds.end());
-                if (p.tag() == MCLY && layers == null) {
-                    layers = p.data();
-                } else {
-                    if (p.tag() == MCAL && alpha == null) {
-                        alpha = p.data();
-                    } else {
+                if (p.tag() == MCLY) {
+                    if (layers != null) {
                         issue = ChunkIssue.CHUNK_SHAPE;
                     }
+                    layers = p.data();
+                } else if (p.tag() == MCAL) {
+                    if (alpha != null) {
+                        issue = ChunkIssue.CHUNK_SHAPE;
+                    }
+                    alpha = p.data();
                 }
+                // MCSH, MCMT and other sub-chunks do not affect layer coverage.
                 input.position(p.data().end());
             }
         } catch (IllegalArgumentException invalid) {
             issue = ChunkIssue.CHUNK_SHAPE;
         }
         var entries = new ArrayList<Layer>();
+        if (alpha == null && layers != null && layers.length() == 16) {
+            // A lone base layer needs no alpha maps, so MCAL may be omitted.
+            alpha = new Slice(layers.end(), layers.end());
+        }
         if (layers == null
                 || alpha == null
                 || layers.length() < 16
@@ -337,7 +453,8 @@ public final class WorldTextureFormats {
             }
             for (int i = 0; i < entries.size(); i++) {
                 var l = entries.get(i);
-                if (i == 0 ? l.flags() != 0 : l.flags() != 0x100 && l.flags() != 0x300) {
+                // Animation, overbright and reflection bits are carried, not refused.
+                if (i > 0 && (l.flags() & USE_ALPHA_MAP) == 0) {
                     issue = ChunkIssue.LAYER_FLAGS;
                 }
                 if (l.textureIndex() >= diffuse.size()
@@ -350,9 +467,7 @@ public final class WorldTextureFormats {
                     issue = ChunkIssue.MASK_INTERVAL;
                 }
             }
-            if (entries.size() == 1 && alpha.length() != 0) {
-                issue = ChunkIssue.MASK_INTERVAL;
-            }
+            // A lone base layer has no masks; any MCAL bytes there are ignored, as the client does.
         }
         return new ChunkSlice(new ChunkTexture(ordinal, entries, issue), alpha);
     }
@@ -387,6 +502,24 @@ public final class WorldTextureFormats {
             produced += count;
         }
         return at == end;
+    }
+
+    /** Expands one 2048-byte 4-bit map to 64x64 8-bit values, low nibble first. */
+    private static void nibbles(byte[] source, int at, ByteBuffer target, boolean fix) {
+        int base = target.position();
+        for (int i = 0; i < 2048; i++) {
+            int packed = source[at + i] & 255;
+            target.put((byte) ((packed & 15) * 17));
+            target.put((byte) ((packed >>> 4) * 17));
+        }
+        if (fix) {
+            for (int row = 0; row < 64; row++) {
+                target.put(base + row * 64 + 63, target.get(base + row * 64 + 62));
+            }
+            for (int column = 0; column < 64; column++) {
+                target.put(base + 63 * 64 + column, target.get(base + 62 * 64 + column));
+            }
+        }
     }
 
     private static List<Long> ids(ByteBuffer input, Slice bounds) {

@@ -118,7 +118,11 @@ final class WorldStreamParentFrameGate {
         }
         var frame = file.readLatest(afterSequence, snapshot);
         synchronized (this) {
-            return frame != null && current(frame.metadata()) ? frame : null;
+            if (frame != null && !current(frame.metadata())) {
+                frame.release();
+                return null;
+            }
+            return frame;
         }
     }
 
