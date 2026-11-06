@@ -360,12 +360,42 @@ class WorldExteriorObjectsTest {
             }
             assertEquals(set.vertices(), snapshot.get("objects.count.vertices").sum());
             assertEquals(1, snapshot.get("objects.tile.total").count());
+            int buildingModels = 0, doodadModels = 0;
+            for (var model : set.models()) {
+                if (model.doodad()) doodadModels++;
+                else buildingModels++;
+            }
+            assertEquals(buildingModels, snapshot.get("objects.models.buildingsPerTile").sum());
+            assertEquals(doodadModels, snapshot.get("objects.models.doodadsPerTile").sum());
+            var perModel = snapshot.get("objects.models.placementsPerModel");
+            assertEquals(set.placements().size(), perModel == null ? 0 : perModel.sum());
             assertTrue(snapshot.get("source.read.BASIC_EXTERIOR").count() > 0);
             assertTrue(snapshot.get("objects.phase.buildings").count() == 1);
         } finally {
             WorldStageTimings.enable(false);
             WorldStageTimings.reset();
         }
+    }
+
+    @Test
+    void modelUseCountsDistinctModelsDrawsAndPlacementsLargestFirst() {
+        // Models: 0 building (3 ranges), 1 doodad (2 ranges), 2 doodad (1 range, unused).
+        var use =
+                WorldExteriorObjects.ModelUse.of(
+                        new int[] {3, 2, 1},
+                        new boolean[] {false, true, true},
+                        new int[] {1, 0, 1, 1, 0, 1});
+        assertEquals(1, use.buildingModels());
+        assertEquals(1, use.doodadModels());
+        assertEquals(2 * 3 + 4 * 2, use.draws());
+        assertEquals(3 + 2, use.instancedDraws());
+        assertTrue(Arrays.equals(new int[] {4, 2}, use.placementsPerModel()));
+        var empty = WorldExteriorObjects.ModelUse.of(new int[0], new boolean[0], new int[0]);
+        assertEquals(0, empty.draws());
+        assertEquals(0, empty.placementsPerModel().length);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldExteriorObjects.ModelUse.of(new int[1], new boolean[0], new int[0]));
     }
 
     @Test
