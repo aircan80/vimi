@@ -730,6 +730,7 @@ final class GpuPreviewService {
         Throwable unavailable = null;
         String message = "Interior renderer unavailable";
         try {
+            String backend = backendName(requestedBackend());
             var parent = temporaryParent == null
                     ? Path.of(System.getProperty("java.io.tmpdir")) : temporaryParent;
             request.publish(State.PREPARING, "Reading the instance interior from client data…");
@@ -748,7 +749,7 @@ final class GpuPreviewService {
             if (request.stopping) return;
             request.publish(State.STARTING, "Starting GPU interior renderer…");
             session = com.vibeminer.rendering.bgfx.WorldGlobalTransport.launch(
-                    parent, owned.input(), null, globalStarter);
+                    parent, owned.input(), backend, globalStarter);
             if (!request.stopping) {
                 try {
                     request.global.opened().accept(new GlobalOpened(session, initial, outline));
@@ -978,6 +979,7 @@ final class GpuPreviewService {
         Throwable failure = null;
         try {
             if (request.stopping) return;
+            requestedBackend(); // an invalid override fails before any scene file is written
             directory =
                     temporaryParent == null
                             ? Files.createTempDirectory("vimi-gpu-")
@@ -1270,6 +1272,12 @@ final class GpuPreviewService {
     }
 
     private static Process startChild(Path scene, Path frames, boolean terrain, Path textures) throws IOException {
+        return new ProcessBuilder(childCommand(scene, frames, terrain, textures, requestedBackend())).start();
+    }
+
+    /** The whole inline child command line: launcher, scene, frames, parent and backend. */
+    static List<String> childCommand(Path scene, Path frames, boolean terrain, Path textures,
+            com.vibeminer.rendering.bgfx.WorldStreamTransport.Backend backend) {
         var command = nativeCommand();
         command.add(terrain ? "--terrain-scene" : "--scene");
         command.add(scene.toAbsolutePath().toString());
@@ -1281,7 +1289,36 @@ final class GpuPreviewService {
         command.add(frames.toAbsolutePath().toString());
         command.add("--parent-pid");
         command.add(Long.toString(ProcessHandle.current().pid()));
-        return new ProcessBuilder(command).start();
+        command.addAll(backendArguments(backend));
+        return command;
+    }
+
+    /**
+     * The {@code vimi.gpu.backend} / {@code VIMI_GPU_BACKEND} override for inline and interior
+     * children; an invalid value fails the request with the value named.
+     */
+    static com.vibeminer.rendering.bgfx.WorldStreamTransport.Backend requestedBackend() throws IOException {
+        try {
+            return WorldStreamGpuOwner.configuredBackend();
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException(invalid.getMessage(), invalid);
+        }
+    }
+
+    /** A child's backend name as its {@code --backend} takes it; null for the platform default. */
+    static String backendName(com.vibeminer.rendering.bgfx.WorldStreamTransport.Backend backend) {
+        return backend == com.vibeminer.rendering.bgfx.WorldStreamTransport.Backend.DEFAULT
+                ? null
+                : backend.name().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /**
+     * The inline child's {@code --backend} arguments for the {@code vimi.gpu.backend} override,
+     * named as the streaming child takes them; none for the platform default.
+     */
+    static List<String> backendArguments(com.vibeminer.rendering.bgfx.WorldStreamTransport.Backend backend) {
+        String name = backendName(backend);
+        return name == null ? List.of() : List.of("--backend", name);
     }
 
     private static Process startGlobalChild(List<String> arguments) throws IOException {
