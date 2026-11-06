@@ -194,28 +194,139 @@ final class ReadConnectionPoolTest {
     }
 
     @Test
-    void connectionsDoNotOutliveAnAccessModeSwitch() throws Exception {
+    void idleConnectionsExpireAndAReplacedIndexFileIsNeverReused() throws Exception {
         open(new Options());
-        store.read(key(bytes), NONE).join();
-        var pool = new ReadConnections(4);
-        var writable = new ReadConnections.Pooled(store.openReader(), false, pool.generation());
-        pool.give(writable, true, false);
-        assertEquals(1, pool.idle());
-        assertNull(pool.take(true), "a WAL-mode connection served an immutable read");
+        long[] now = {0};
+        var pool = new ReadConnections(4, () -> now[0]);
+        pool.idleTtlNanos = 100;
+        Object first = "inode-1", second = "inode-2";
+        var a = new ReadConnections.Pooled(store.openReader(), pool.generation(), first);
+        pool.give(a, true);
+        now[0] = 50;
+        assertSame(a, pool.take(first));
+        pool.give(a, true);
+        now[0] = 200;
+        assertNull(pool.take(first), "an expired connection was reused");
         assertEquals(0, pool.idle());
-        var again = new ReadConnections.Pooled(store.openReader(), false, pool.generation());
-        pool.give(again, true, true);
-        assertEquals(0, pool.idle(), "a connection returned after the switch was pooled");
-        var current = new ReadConnections.Pooled(store.openReader(), true, pool.generation());
-        pool.give(current, true, true);
-        assertSame(current, pool.take(true));
-        pool.give(current, true, true);
+        var b = new ReadConnections.Pooled(store.openReader(), pool.generation(), first);
+        var c = new ReadConnections.Pooled(store.openReader(), pool.generation(), first);
+        pool.give(b, true);
+        pool.give(c, true);
+        assertNull(pool.take(second), "a connection on a replaced index file was reused");
+        assertEquals(0, pool.idle());
+        var d = new ReadConnections.Pooled(store.openReader(), pool.generation(), null);
+        pool.give(d, true);
+        assertSame(d, pool.take(null), "no identity reported: not compared");
+        pool.give(d, true);
+        now[0] = 1000;
+        pool.sweep();
+        assertEquals(0, pool.idle());
         pool.close();
+        var late = new ReadConnections.Pooled(store.openReader(), pool.generation(), null);
+        pool.give(late, true);
         assertEquals(0, pool.idle());
-        var late = new ReadConnections.Pooled(store.openReader(), true, pool.generation());
-        pool.give(late, true, true);
-        assertEquals(0, pool.idle());
-        assertNull(pool.take(true));
+    }
+
+    @Test
+    void sweeperClosesIdleConnectionsAfterTheirLifetime() throws Exception {
+        open(new Options());
+        store.readConnections.idleTtlNanos = TimeUnit.MILLISECONDS.toNanos(50);
+        store.read(key(bytes), NONE).join();
+        assertEquals(1, store.readConnections.idle());
+        waitForNoIdle(store);
+        store.read(key(bytes), NONE).join();
+        assertEquals(2, opens.get());
+    }
+
+    @Test
+    void pooledConnectionsSeeLaterWritesFromTheWriterAndAReadOnlyView() {
+        open(new Options());
+        byte[] later = {9, 8, 7};
+        store.read(key(bytes), NONE).join();
+        ReadOnlyStore view = ObjectStore.openReadOnly(folder, new Options()).join();
+        try {
+            var viewOpens = new AtomicInteger();
+            view.inner().readerOpenProbe = viewOpens::incrementAndGet;
+            assertArrayEquals(bytes, view.read(key(bytes), NONE).join().bytes());
+            assertFalse(view.has(key(later), NONE).join());
+            store.put(List.of(new PutObject(key(later), later)), true, NONE).join();
+            assertArrayEquals(later, store.read(key(later), NONE).join().bytes());
+            assertArrayEquals(later, view.read(key(later), NONE).join().bytes());
+            assertEquals(1, opens.get(), "the writer's reads reused one pooled connection");
+            assertEquals(1, viewOpens.get(), "the read-only view reused one pooled connection");
+        } finally {
+            view.closeAsync().join();
+        }
+    }
+
+    @Test
+    void idlePooledConnectionsDoNotBlockAWalTruncateCheckpoint() throws Exception {
+        open(new Options());
+        ReadOnlyStore view = ObjectStore.openReadOnly(folder, new Options()).join();
+        try {
+            for (int i = 0; i < 5; i++) {
+                store.read(key(bytes), NONE).join();
+                view.read(key(bytes), NONE).join();
+            }
+            assertEquals(1, store.readConnections.idle());
+            assertEquals(1, view.inner().readConnections.idle());
+            try (NativeSqlite checkpoint = new NativeSqlite(store.indexPath, false)) {
+                Object[] row = checkpoint.query("PRAGMA wal_checkpoint(TRUNCATE)").getFirst();
+                assertEquals(0L, row[0], "checkpoint was busy");
+            }
+            assertEquals(0, java.nio.file.Files.size(folder.resolve("objects.sqlite3-wal")));
+            assertArrayEquals(bytes, view.read(key(bytes), NONE).join().bytes());
+        } finally {
+            view.closeAsync().join();
+        }
+    }
+
+    /** Another process's rebuild replaces the index: an idle reader must not pin or reuse it. */
+    @Test
+    void writerRebuildWithALivePooledReader() throws Exception {
+        open(new Options());
+        store.closeAsync().get(10, TimeUnit.SECONDS);
+        ReadOnlyStore view = ObjectStore.openReadOnly(folder, new Options()).join();
+        try {
+            var inner = view.inner();
+            var viewOpens = new AtomicInteger();
+            inner.readerOpenProbe = viewOpens::incrementAndGet;
+            boolean identities =
+                    java.nio.file.Files.readAttributes(
+                                            store.indexPath,
+                                            java.nio.file.attribute.BasicFileAttributes.class)
+                                    .fileKey()
+                            != null;
+            if (!identities) {
+                // Windows: an open handle would block the rebuild, so idle ones must expire.
+                inner.readConnections.idleTtlNanos = TimeUnit.MILLISECONDS.toNanos(50);
+            }
+            assertArrayEquals(bytes, view.read(key(bytes), NONE).join().bytes());
+            assertEquals(1, inner.readConnections.idle());
+            if (!identities) {
+                waitForNoIdle(inner);
+            }
+            for (String name : List.of("objects.sqlite3", "objects.sqlite3-wal")) {
+                java.nio.file.Files.deleteIfExists(folder.resolve(name));
+            }
+            store = ObjectStore.open(folder, new Options()).join();
+            store.readerOpenProbe = opens::incrementAndGet;
+            assertTrue(store.openReport().indexRebuilt());
+            assertArrayEquals(bytes, view.read(key(bytes), NONE).join().bytes());
+            assertEquals(2, viewOpens.get(), "the reader reused a connection on the old index");
+        } finally {
+            view.closeAsync().join();
+        }
+    }
+
+    private static void waitForNoIdle(ObjectStore target) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (target.readConnections.idle() > 0) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("Idle connections never expired");
+            }
+            Thread.sleep(10);
+        }
     }
 
     private static void await(CountDownLatch latch) {

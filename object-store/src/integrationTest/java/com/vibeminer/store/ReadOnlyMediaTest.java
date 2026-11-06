@@ -65,7 +65,7 @@ final class ReadOnlyMediaTest {
     }
 
     @Test
-    void immutableFallbackReadsReuseOneImmutableConnection() throws Exception {
+    void immutableFallbackReadsAreNeverPooled() throws Exception {
         createClosedStore();
         try (ReadOnlyPermissions ignored = new ReadOnlyPermissions(folder)) {
             ReadOnlyStore reader = ObjectStore.openReadOnly(folder, new Options()).join();
@@ -77,8 +77,8 @@ final class ReadOnlyMediaTest {
                     assertArrayEquals(bytes, reader.read(key(bytes), NONE).join().bytes());
                 }
                 assertTrue(inner.immutable);
-                assertEquals(1, opens.get());
-                assertEquals(1, inner.readConnections.idle());
+                assertEquals(5, opens.get(), "immutable connections keep stale page caches");
+                assertEquals(0, inner.readConnections.idle());
                 assertFalse(Files.exists(folder.resolve("objects.sqlite3-shm")));
             } finally {
                 reader.closeAsync().join();
