@@ -244,12 +244,26 @@ public final class WorldTerrainTextureSource {
         }
     }
 
+    /**
+     * {@code emptyChunks} have no texture layers, so nothing to draw. READY means every chunk is
+     * drawn or empty, with at least one drawn.
+     */
     public record TileResult(
             WorldFormats.Tile tile,
             State state,
             Receipt receipt,
             int supportedChunks,
+            int emptyChunks,
             List<Issue> issues) {
+        public TileResult(
+                WorldFormats.Tile tile,
+                State state,
+                Receipt receipt,
+                int supportedChunks,
+                List<Issue> issues) {
+            this(tile, state, receipt, supportedChunks, 0, issues);
+        }
+
         public TileResult {
             Objects.requireNonNull(tile);
             Objects.requireNonNull(state);
@@ -257,10 +271,13 @@ public final class WorldTerrainTextureSource {
             if (issues.size() > 320
                     || supportedChunks < 0
                     || supportedChunks > 256
+                    || emptyChunks < 0
+                    || supportedChunks + emptyChunks > 256
                     || ((state == State.READY || state == State.PARTIAL) != (receipt != null))
-                    // READY: every chunk drawn or with nothing to draw (no layers).
-                    || (state == State.READY && supportedChunks == 0)
-                    || (state == State.PARTIAL && (supportedChunks == 0 || supportedChunks == 256))
+                    || (state == State.READY
+                            && (supportedChunks == 0 || supportedChunks + emptyChunks != 256))
+                    || (state == State.PARTIAL
+                            && (supportedChunks == 0 || supportedChunks + emptyChunks == 256))
                     || ((state == State.UNAVAILABLE || state == State.POOL_BUSY)
                             && supportedChunks != 0)) {
                 throw new IllegalArgumentException("Invalid texture tile result");
@@ -990,10 +1007,30 @@ public final class WorldTerrainTextureSource {
                         hit.lease().close();
                         throw changed;
                     }
-                    int[] drawn = {0};
-                    hit.lease().withAtlas(atlas -> drawn[0] = atlas.supportedChunks());
+                    int[] counts = {0, 0};
+                    hit.lease()
+                            .withAtlas(
+                                    atlas -> {
+                                        counts[0] = atlas.supportedChunks();
+                                        counts[1] = atlas.emptyChunks();
+                                    });
+                    // A complete cached atlas has no refusals, only chunks with no layers; name
+                    // them again from this read's tex0 so diagnostics match a fresh composition.
+                    var empty = new ArrayList<Issue>();
+                    for (var chunk : data.chunks()) {
+                        if (chunk.issue() == WorldTextureFormats.ChunkIssue.NO_LAYERS) {
+                            empty.add(
+                                    new Issue(
+                                            Reason.CHUNK,
+                                            chunk.ordinal(),
+                                            0,
+                                            TerrainAtlasComposer.Reason.TEXTURE_METADATA,
+                                            WorldTextureFormats.ChunkIssue.NO_LAYERS));
+                        }
+                    }
                     return new Outcome(
-                            new TileResult(tile, State.READY, hit.receipt(), drawn[0], List.of()),
+                            new TileResult(
+                                    tile, State.READY, hit.receipt(), counts[0], counts[1], empty),
                             hit.lease());
                 }
             }
@@ -1071,6 +1108,7 @@ public final class WorldTerrainTextureSource {
                                 complete ? State.READY : State.PARTIAL,
                                 receipt,
                                 composition.supportedChunks(),
+                                composition.atlas().emptyChunks(),
                                 issues),
                         lease);
             }
