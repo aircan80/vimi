@@ -305,6 +305,18 @@ final class WorldFrameFileV2 implements AutoCloseable {
                     throw new IllegalArgumentException("Nonopaque World pixels");
                 }
             }
+        } else {
+            // Cheap tripwire: a renderer change that writes alpha below 255 fails the helper
+            // loudly instead of showing a see-through viewport.
+            int pixels = length / 4, stride = alphaStride(pixels);
+            for (int i = 0; i < pixels; i += stride) {
+                if (bgra.get(bgra.position() + i * 4 + 3) != (byte) 255) {
+                    throw new IllegalArgumentException("Nonopaque World pixels");
+                }
+            }
+            if (bgra.get(bgra.limit() - 1) != (byte) 255) {
+                throw new IllegalArgumentException("Nonopaque World pixels");
+            }
         }
         long stamp = ticket.sequence() << 1;
         long offset = HEADER_BYTES + ((ticket.sequence() - 1) % SLOTS) * SLOT_BYTES;
@@ -359,7 +371,7 @@ final class WorldFrameFileV2 implements AutoCloseable {
         return null;
     }
 
-    private Frame read(Candidate candidate, Barrier barrier) {
+    private Frame read(Candidate candidate, Barrier barrier) throws IOException {
         long offset = candidate.offset();
         byte[] bytes = mapping.asSlice(offset, HEADER_BYTES).toArray(ValueLayout.JAVA_BYTE);
         var header = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
@@ -407,7 +419,30 @@ final class WorldFrameFileV2 implements AutoCloseable {
             pool.recycle(pixels);
             return null;
         }
+        // The copy is consistent, so sampled nonopaque pixels are a real renderer fault: loud.
+        boolean opaque = pixels[count - 1] >>> 24 == 255;
+        for (int i = 0, stride = alphaStride(count); opaque && i < count; i += stride) {
+            opaque = pixels[i] >>> 24 == 255;
+        }
+        if (!opaque) {
+            pool.recycle(pixels);
+            throw new NonopaqueFrameException(metadata.sequence());
+        }
         return new Frame(metadata, pixels, pool);
+    }
+
+    /** About 64 evenly spaced alpha samples per frame, plus the last pixel. */
+    static int alphaStride(int pixels) {
+        return Math.max(1, pixels / 64);
+    }
+
+    /** A published, consistent frame has nonopaque pixels: a renderer contract violation. */
+    static final class NonopaqueFrameException extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        NonopaqueFrameException(long sequence) {
+            super("World frame " + sequence + " has nonopaque pixels");
+        }
     }
 
     private boolean verified(byte[] header, int[] pixels, int count, int expectedCrc) {

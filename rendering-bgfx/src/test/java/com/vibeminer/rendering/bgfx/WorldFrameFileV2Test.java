@@ -161,21 +161,104 @@ final class WorldFrameFileV2Test {
     }
 
     @Test
-    void debugVerificationRejectsNonopaquePixelsOnBothSides() throws Exception {
+    void nonopaquePixelsFailLoudlyInEveryMode() throws Exception {
         Path path = directory.resolve("alpha");
         try (var writer = verifying(path);
                 var plain = WorldFrameFileV2.open(path, NONCE, SCOPE)) {
+            // Both writers refuse: the verifying one scans every pixel, the default one samples.
             assertThrows(
                     IllegalArgumentException.class,
                     () -> writer.write(ticket(1, 1, 1, 1, 1, 1), pixels(0x7f112233)));
-            // The default writer neither scans alpha nor checksums.
-            plain.write(ticket(1, 1, 1, 1, 1, 1), pixels(0x7f112233));
-            assertEquals(0x7f112233, plain.readLatest(0, barrier(1, 1)).pixels().get(0));
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> plain.write(ticket(1, 1, 1, 1, 1, 1), pixels(0x7f112233)));
+            var big = ByteBuffer.allocate(800 * 4).order(ByteOrder.LITTLE_ENDIAN);
+            for (int i = 0; i < 800; i++) {
+                big.putInt(i == 799 ? 0x00112233 : 0xff112233);
+            }
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> plain.write(ticket(1, 1, 1, 1, 800, 1), big.flip()),
+                    "the last pixel is always sampled");
             // A verifying reader skips the CRC of an unchecksummed slot, so modes can mix.
+            plain.write(ticket(1, 1, 1, 1, 1, 1), pixels(0xff112233));
             assertEquals(1, writer.readLatest(0, barrier(1, 1)).metadata().sequence());
-            writer.write(ticket(2, 2, 1, 1, 1, 1), pixels(0xff112233));
+            // A consistent published slot with nonopaque pixels is a renderer fault: the
+            // default reader throws instead of presenting a see-through frame.
+            plain.write(ticket(2, 2, 1, 1, 1, 1), pixels(0xff112233));
             overwrite(path, 64L + WorldFrameFileV2.SLOT_BYTES + 64, pixels(0x7f112233));
-            assertNull(writer.readLatest(1, barrier(1, 1)), "checksummed slot alpha changed");
+            var failure =
+                    assertThrows(
+                            WorldFrameFileV2.NonopaqueFrameException.class,
+                            () -> plain.readLatest(1, barrier(1, 1)));
+            assertTrue(failure.getMessage().contains("frame 2"));
+            assertEquals(1, plain.pool().retained(), "the refused array returns to the pool");
+            // The verifying reader drops that unchecksummed slot the same loud way.
+            assertThrows(
+                    WorldFrameFileV2.NonopaqueFrameException.class,
+                    () -> writer.readLatest(1, barrier(1, 1)));
+            writer.write(ticket(3, 3, 1, 1, 1, 1), pixels(0xff112233));
+            overwrite(path, 64L + 2L * WorldFrameFileV2.SLOT_BYTES + 64, pixels(0x7f112233));
+            assertNull(writer.readLatest(2, barrier(1, 1)), "checksummed slot alpha changed");
+        }
+    }
+
+    @Test
+    void sampledAlphaStrideCoversAFrameEvenly() {
+        assertEquals(1, WorldFrameFileV2.alphaStride(1));
+        assertEquals(1, WorldFrameFileV2.alphaStride(64));
+        assertEquals(6250, WorldFrameFileV2.alphaStride(800 * 500));
+    }
+
+    @Test
+    void seqlockStressNeverYieldsMixedPixelsWithPooledArrays() throws Exception {
+        Path path = directory.resolve("stress");
+        int frames = 3000;
+        try (var writer = WorldFrameFileV2.create(path, NONCE, SCOPE);
+                var reader = WorldFrameFileV2.open(path, NONCE, SCOPE)) {
+            var producing =
+                    java.util.concurrent.CompletableFuture.runAsync(
+                            () -> {
+                                try {
+                                    var buffer =
+                                            ByteBuffer.allocate(32 * 32 * 4)
+                                                    .order(ByteOrder.LITTLE_ENDIAN);
+                                    for (int sequence = 1; sequence <= frames; sequence++) {
+                                        buffer.clear();
+                                        for (int i = 0; i < 1024; i++) {
+                                            buffer.putInt(0xff000000 | sequence);
+                                        }
+                                        writer.write(
+                                                ticket(sequence, sequence, sequence, 1, 32, 32),
+                                                buffer.flip());
+                                    }
+                                } catch (IOException error) {
+                                    throw new java.io.UncheckedIOException(error);
+                                }
+                            });
+            var bounds = new WorldFrameFileV2.Barrier(1, 32, 32, 1, frames, 0, frames);
+            long last = 0;
+            int accepted = 0;
+            while (last < frames) {
+                if (producing.isCompletedExceptionally()) {
+                    producing.join();
+                }
+                var frame = reader.readLatest(last, bounds);
+                if (frame == null) {
+                    Thread.onSpinWait();
+                    continue;
+                }
+                last = frame.metadata().sequence();
+                accepted++;
+                var data = frame.pixels();
+                while (data.hasRemaining()) {
+                    assertEquals(0xff000000 | (int) last, data.get(), "frame " + last);
+                }
+                frame.release();
+            }
+            producing.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(accepted > 0);
+            assertTrue(reader.pool().allocations() <= 1, "released arrays are reused");
         }
     }
 

@@ -436,7 +436,7 @@ final class WorldStreamSourceController {
                 validated = false;
             }
         }
-        value.frame.release();
+        drop(value.frame, "discard");
         kick();
     }
 
@@ -461,7 +461,7 @@ final class WorldStreamSourceController {
         synchronized (lock) {
             if (closing) return drained.copy();
             closing = true;
-            if (queued != null) queued.frame.release();
+            if (queued != null) drop(queued.frame, "close");
             queued = null;
         }
         // This private token has only the actual engine's coalesced metadata cancellation listener.
@@ -1127,6 +1127,16 @@ final class WorldStreamSourceController {
                                 + ")");
     }
 
+    /** Test seam: every frame released without presentation, with its drop path's name. */
+    volatile java.util.function.BiConsumer<String, WorldStreamTransport.Frame> dropSeam;
+
+    /** The one release point for frames the controller owns. */
+    private void drop(WorldStreamTransport.Frame frame, String path) {
+        frame.release();
+        var seam = dropSeam;
+        if (seam != null) seam.accept(path, frame);
+    }
+
     private void pollFrame() {
         if (commit != null) return;
         synchronized (lock) {
@@ -1135,7 +1145,7 @@ final class WorldStreamSourceController {
         var frame = session.takeLatestFrame();
         if (frame.isPresent()) {
             var candidate=frame.orElseThrow();
-            if(candidate.content()!=currentReceipt) { candidate.release(); return; }
+            if(candidate.content()!=currentReceipt) { drop(candidate, "content"); return; }
             var latest=camera;
             boolean pendingWanted, hasPresented;
             synchronized(lock) {
@@ -1156,7 +1166,7 @@ final class WorldStreamSourceController {
                         historicalRaster=true;
                     }
                 }
-                candidate.release();
+                drop(candidate, "sky");
                 publish(Phase.PREPARING,"Loading terrain in viewing direction");
                 return;
             }
@@ -1164,7 +1174,7 @@ final class WorldStreamSourceController {
             synchronized (lock) {
                 if (!closing)
                     queued = new Presentation(candidate, request.viewGeneration());
-                else candidate.release();
+                else drop(candidate, "closing");
             }
             changed();
         }
@@ -1408,7 +1418,7 @@ final class WorldStreamSourceController {
         }
         synchronized (lock) {
             if (borrowed != null) return;
-            if (queued != null) queued.frame.release();
+            if (queued != null) drop(queued.frame, "retire");
             queued = null;
             current = List.of();
             objects = List.of();
