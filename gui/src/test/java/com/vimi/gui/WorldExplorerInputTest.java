@@ -19,7 +19,13 @@ public final class WorldExplorerInputTest {
         keysMapToClampedAxes();
         walkToggleIgnoresKeyRepeat();
         clearDropsHeldKeys();
-        mouseDragLooksTowardTheDragSide();
+        onlyTheRightButtonLooks();
+        capturedLookRecentresAndIgnoresTheSyntheticMove();
+        lookIsCoalescedToOneCameraUpdatePerPulse();
+        sensitivityAndInvertYApply();
+        uncapturedLookFallsBackToRelativeMovement();
+        clearEndsTheLookAndDropsPendingMovement();
+        controlsEncodeDecodeLeniently();
         onlyAStillPrimaryClickInspects();
         shiftWheelAdjustsBoundedSpeed();
         wheelDollysAlongTheViewAndIgnoresBadInput();
@@ -27,8 +33,9 @@ public final class WorldExplorerInputTest {
         pulseRequestsFramesAtCadenceAndNearbyLoadsThrottled();
         idleRestartsIntegrationAtZeroSeconds();
         System.out.println(
-                "World explorer input: key axes, walk toggle, look drag, inspect click, wheel,"
-                        + " speed, pulse cadence and idle passed");
+                "World explorer input: key axes, walk toggle, right-button captured look,"
+                        + " per-pulse look coalescing, sensitivity/invert-Y, controls codec,"
+                        + " inspect click, wheel, speed, pulse cadence and idle passed");
     }
 
     /** Records hook calls; the camera is the only mutable view state the input touches. */
@@ -37,6 +44,7 @@ public final class WorldExplorerInputTest {
         boolean wheelReady = true, fast = true;
         final List<String> calls = new ArrayList<>();
         int toggles;
+        final List<Boolean> cursor = new ArrayList<>();
 
         @Override public TerrainRenderer.Camera camera() { return camera; }
         @Override public void camera(TerrainRenderer.Camera next) { camera = next; }
@@ -48,6 +56,7 @@ public final class WorldExplorerInputTest {
         @Override public void requestFrame() { calls.add("frame"); }
         @Override public void abandonUnusableCandidate() { calls.add("abandon"); }
         @Override public void loadNext() { calls.add("nearby"); }
+        @Override public void cursorHidden(boolean hidden) { cursor.add(hidden); }
 
         long count(String call) {
             return calls.stream().filter(call::equals).count();
@@ -109,22 +118,158 @@ public final class WorldExplorerInputTest {
                 "Clear drops every held key");
     }
 
-    private static void mouseDragLooksTowardTheDragSide() {
+    /** Records cursor warps; {@code lands} decides whether a warp succeeds. */
+    static final class Pointer implements WorldExplorerInput.Pointer {
+        final List<double[]> warps = new ArrayList<>();
+        boolean lands = true;
+
+        @Override public boolean warp(double screenX, double screenY) {
+            warps.add(new double[] {screenX, screenY});
+            return lands;
+        }
+
+        double[] last() {
+            return warps.getLast();
+        }
+    }
+
+    private static void onlyTheRightButtonLooks() {
+        require(WorldExplorerInput.looks(MouseButton.SECONDARY), "Right button looks");
+        require(!WorldExplorerInput.looks(MouseButton.PRIMARY), "Left button never looks");
+        require(!WorldExplorerInput.looks(MouseButton.MIDDLE), "Middle button never looks");
         var host = new Host();
         var input = exact(host);
-        input.mousePressed(50, 50);
-        input.mouseDragged(75, 40);
-        require(Math.abs(host.camera.yaw() + 25 * WorldExplorerInput.LOOK_PER_PIXEL) < 1e-12,
-                "Dragging right turns right (negative yaw): " + host.camera.yaw());
-        require(Math.abs(host.camera.pitch() - 10 * WorldExplorerInput.LOOK_PER_PIXEL) < 1e-12,
-                "Dragging up pitches up: " + host.camera.pitch());
-        require(host.count("frame") == 1, "Each drag requests one frame");
-        input.mouseDragged(75, 40);
-        require(Math.abs(host.camera.yaw() + 25 * WorldExplorerInput.LOOK_PER_PIXEL) < 1e-12,
-                "Drag deltas are relative to the previous event");
-        host.camera = null;
-        input.mouseDragged(0, 0);
-        require(host.camera == null && host.count("frame") == 2, "No camera: drag is ignored");
+        input.lookMoved(500, 500);
+        input.pulse(1_000_000_000L);
+        require(host.camera.equals(START) && host.calls.isEmpty(),
+                "Moves without a held right button never look");
+    }
+
+    private static void capturedLookRecentresAndIgnoresTheSyntheticMove() {
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = exact(host);
+        input.pointer(pointer);
+        input.lookPressed(130, 140, 400, 300);
+        require(input.looking() && host.cursor.equals(List.of(true)), "Look hides the cursor");
+        require(pointer.warps.size() == 1 && pointer.last()[0] == 400 && pointer.last()[1] == 300,
+                "Look moves the cursor to the view centre");
+        input.lookMoved(400, 300);
+        require(pointer.warps.size() == 1, "The warp's own move event is ignored");
+        input.lookMoved(425, 290);
+        require(pointer.warps.size() == 2 && pointer.last()[0] == 400 && pointer.last()[1] == 300,
+                "Each real move re-centres the cursor");
+        input.lookMoved(400, 300);
+        input.pulse(1_000_000_000L);
+        double s = WorldControls.DEFAULT_SENSITIVITY;
+        require(near(host.camera.yaw(), -25 * s) && near(host.camera.pitch(), 10 * s),
+                "Right turns right and up looks up, measured from the centre: " + host.camera);
+        input.lookReleased();
+        require(!input.looking() && host.cursor.equals(List.of(true, false)), "Release shows the cursor");
+        require(pointer.last()[0] == 130 && pointer.last()[1] == 140,
+                "Release returns the cursor to where the look began");
+        input.lookReleased();
+        require(host.cursor.size() == 2, "A second release does nothing");
+    }
+
+    private static void lookIsCoalescedToOneCameraUpdatePerPulse() {
+        var host = new Host();
+        var input = exact(host);
+        input.pointer(new Pointer());
+        input.lookPressed(400, 300, 400, 300);
+        for (int i = 0; i < 50; i++) input.lookMoved(401, 300);
+        require(host.camera.equals(START) && host.calls.isEmpty(),
+                "Mouse events alone never touch the camera or request frames");
+        input.pulse(1_000_000_000L);
+        require(near(host.camera.yaw(), -50 * WorldControls.DEFAULT_SENSITIVITY),
+                "All 50 moves land in one pulse");
+        require(host.calls.equals(List.of("frame")), "One frame per pulse: " + host.calls);
+        host.calls.clear();
+        input.pulse(1_016_000_000L);
+        require(host.calls.isEmpty(), "Nothing owed: no frame");
+        // Look while flying: the look is shown at once, not held back by the movement cadence.
+        input.holdCadence();
+        input.keyPressed(KeyCode.W);
+        input.pulse(1_032_000_000L);
+        host.calls.clear();
+        input.lookMoved(390, 300);
+        input.pulse(1_048_000_000L);
+        require(host.count("frame") == 1, "A look frames even inside the cadence: " + host.calls);
+    }
+
+    private static void sensitivityAndInvertYApply() {
+        var host = new Host();
+        var input = exact(host);
+        input.pointer(new Pointer());
+        input.controls(WorldControls.DEFAULTS.withSensitivity(.01).withInvertY(true));
+        input.lookPressed(400, 300, 400, 300);
+        input.lookMoved(410, 280);
+        input.pulse(1_000_000_000L);
+        require(near(host.camera.yaw(), -.1) && near(host.camera.pitch(), -.2),
+                "Sensitivity scales and invert-Y flips pitch only: " + host.camera);
+    }
+
+    private static void uncapturedLookFallsBackToRelativeMovement() {
+        var host = new Host();
+        var pointer = new Pointer();
+        pointer.lands = false;
+        var input = exact(host);
+        input.pointer(pointer);
+        input.lookPressed(130, 140, 400, 300);
+        input.lookMoved(150, 140);
+        input.lookMoved(160, 130);
+        input.pulse(1_000_000_000L);
+        double s = WorldControls.DEFAULT_SENSITIVITY;
+        require(near(host.camera.yaw(), -30 * s) && near(host.camera.pitch(), 10 * s),
+                "Without a warp each move is measured from the previous one: " + host.camera);
+        require(pointer.warps.size() == 1, "A failed warp is not retried during the look");
+        input.lookReleased();
+        require(pointer.warps.size() == 1, "Nothing to restore when the cursor never moved");
+
+        // A warp that starts working and then fails mid-look continues relatively.
+        var flaky = new Pointer();
+        var other = new Host();
+        var second = exact(other);
+        second.pointer(flaky);
+        second.lookPressed(10, 10, 400, 300);
+        flaky.lands = false;
+        second.lookMoved(405, 300);
+        second.lookMoved(415, 300);
+        second.pulse(1_000_000_000L);
+        require(near(other.camera.yaw(), -15 * s), "Relative after a failed re-centre: " + other.camera);
+    }
+
+    private static void clearEndsTheLookAndDropsPendingMovement() {
+        var host = new Host();
+        var input = exact(host);
+        input.pointer(new Pointer());
+        input.lookPressed(400, 300, 400, 300);
+        input.lookMoved(450, 300);
+        input.clear();
+        require(!input.looking() && host.cursor.equals(List.of(true, false)),
+                "Focus loss ends the look and shows the cursor");
+        input.pulse(1_000_000_000L);
+        require(host.camera.equals(START), "Pending look is dropped with the keys");
+    }
+
+    private static void controlsEncodeDecodeLeniently() {
+        var custom = new WorldControls(.011, true);
+        require(WorldControls.decode(custom.encode()).equals(custom), "Round trip: " + custom.encode());
+        require(WorldControls.decode(null).equals(WorldControls.DEFAULTS), "Nothing stored: defaults");
+        require(WorldControls.decode("v9;sensitivity=0.01").equals(WorldControls.DEFAULTS),
+                "Another version: defaults");
+        require(WorldControls.decode("v1;sensitivity=abc;invertY=true;future=1;junk")
+                        .equals(new WorldControls(WorldControls.DEFAULT_SENSITIVITY, true)),
+                "A malformed value keeps its default; unknown keys are ignored");
+        require(new WorldControls(5, false).sensitivity() == WorldControls.MAX_SENSITIVITY
+                        && new WorldControls(-1, false).sensitivity() == WorldControls.MIN_SENSITIVITY
+                        && new WorldControls(Double.NaN, false).sensitivity()
+                                == WorldControls.DEFAULT_SENSITIVITY,
+                "Sensitivity is clamped and never non-finite");
+        var store = WorldControls.memory();
+        require(store.load() == null, "An empty store loads nothing");
+        store.save(custom.encode());
+        require(WorldControls.decode(store.load()).equals(custom), "The memory store keeps the value");
     }
 
     private static void onlyAStillPrimaryClickInspects() {
@@ -192,7 +337,8 @@ public final class WorldExplorerInputTest {
         input.pulse(1_100_000_000L);
         require(Math.abs(host.camera.x() - START.x() - 8) < 1e-9, "W flies 80 yd/s north");
         require(Math.abs(host.camera.z() - START.z() - 8) < 1e-9, "Space climbs at flight speed");
-        require(Math.abs(host.camera.yaw() - .1) < 1e-12, "Left turns 1 rad/s");
+        require(Math.abs(host.camera.yaw() - ExplorerMotion.TURN_RATE * .1) < 1e-12,
+                "Left turns at the keyboard turn rate");
         input.keyReleased(KeyCode.W);
         input.keyReleased(KeyCode.SPACE);
         input.keyReleased(KeyCode.LEFT);
@@ -246,6 +392,10 @@ public final class WorldExplorerInputTest {
         host.camera = null;
         input.pulse(9_050_000_000L);
         require(host.camera == null, "No camera: the pulse does nothing");
+    }
+
+    private static boolean near(double a, double b) {
+        return Math.abs(a - b) < 1e-12;
     }
 
     private static void require(boolean condition, String message) {

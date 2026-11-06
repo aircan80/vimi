@@ -248,7 +248,7 @@ public final class WorldNavigationUiTest {
             key(viewport,code,false);
             var moved=(TerrainRenderer.Camera)get(view,"camera");
             if (code == KeyCode.LEFT || code == KeyCode.RIGHT) {
-                double wanted = code == KeyCode.LEFT ? .1 : -.1;
+                double wanted = (code == KeyCode.LEFT ? .1 : -.1) * com.vibeminer.rendering.world.ExplorerMotion.TURN_RATE;
                 require(Math.abs(moved.yaw()-wanted)<1e-12,"Actual turn key geographic yaw: "+code);
                 var nativeCamera=com.vibeminer.rendering.world.TerrainCamera.from(moved);
                 var east=nativeCamera.eye(start.x()+10,start.y()-4,start.z());
@@ -264,11 +264,20 @@ public final class WorldNavigationUiTest {
         for (double delta : new double[] {-25,25}) {
             var start=new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,0,0);
             set(view,"camera",start);
-            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_PRESSED,50,50);
-            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_DRAGGED,50+delta,50);
-            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_RELEASED,50+delta,50);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_PRESSED,50,50,javafx.scene.input.MouseButton.PRIMARY);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_DRAGGED,50+delta,50,javafx.scene.input.MouseButton.PRIMARY);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_RELEASED,50+delta,50,javafx.scene.input.MouseButton.PRIMARY);
+            timer.handle(2_200_000_000L);
+            require(start.equals(get(view,"camera")),"Left drag never looks");
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_PRESSED,50,50,javafx.scene.input.MouseButton.SECONDARY);
+            require(viewport.getCursor()==javafx.scene.Cursor.NONE,"Right-button look hides the cursor");
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_DRAGGED,50+delta,50,javafx.scene.input.MouseButton.SECONDARY);
+            require(start.equals(get(view,"camera")),"Look waits for the next pulse");
+            timer.handle(2_300_000_000L);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_RELEASED,50+delta,50,javafx.scene.input.MouseButton.SECONDARY);
+            require(viewport.getCursor()==null,"Releasing the right button shows the cursor");
             var moved=(TerrainRenderer.Camera)get(view,"camera");
-            require(Math.abs(moved.yaw()+delta*.006)<1e-12,"Mouse drag turns toward actual screen side");
+            require(Math.abs(moved.yaw()+delta*WorldControls.DEFAULT_SENSITIVITY)<1e-12,"Right-button look turns toward actual screen side");
         }
         var before = new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,.7,-.8);
         set(view,"camera",before);
@@ -362,10 +371,12 @@ public final class WorldNavigationUiTest {
         return bytes.array();
     }
 
-    private static void mouse(Node node,javafx.event.EventType<javafx.scene.input.MouseEvent> type,double x,double y) {
-        Event.fireEvent(node,new javafx.scene.input.MouseEvent(type,x,y,x,y,javafx.scene.input.MouseButton.PRIMARY,1,
-                false,false,false,false,type!=javafx.scene.input.MouseEvent.MOUSE_RELEASED,
-                false,false,false,false,true,new PickResult(node,x,y)));
+    private static void mouse(Node node,javafx.event.EventType<javafx.scene.input.MouseEvent> type,double x,double y,
+            javafx.scene.input.MouseButton button) {
+        boolean down=type!=javafx.scene.input.MouseEvent.MOUSE_RELEASED;
+        Event.fireEvent(node,new javafx.scene.input.MouseEvent(type,x,y,x,y,button,1,
+                false,false,false,false,down&&button==javafx.scene.input.MouseButton.PRIMARY,
+                false,down&&button==javafx.scene.input.MouseButton.SECONDARY,false,false,true,new PickResult(node,x,y)));
     }
 
     private static void scroll(Node target,double delta,boolean shift) {

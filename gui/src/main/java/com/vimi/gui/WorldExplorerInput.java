@@ -11,9 +11,15 @@ import javafx.scene.input.MouseButton;
 
 /**
  * Explorer keyboard, mouse-look, wheel and per-pulse motion state, separated from {@link WorldView}
- * so the input mapping is testable without a JavaFX toolkit. It holds held keys, the look-drag
- * anchor, flight speed and the {@link ExplorerMotion} integrator; the view forwards raw event
+ * so the input mapping is testable without a JavaFX toolkit. It holds held keys, the mouse-look
+ * capture, flight speed and the {@link ExplorerMotion} integrator; the view forwards raw event
  * values and supplies the camera, ground and frame/discovery hooks through {@link Host}.
+ *
+ * <p>Mouse look follows the game client: it is active only while the right button is held, the
+ * cursor is hidden, and when the {@link Pointer} can warp it is re-centred after every move so
+ * it never leaves the view; on release it returns to where the look began. Movement is summed
+ * between pulses and applied once per pulse, so a burst of mouse events costs one camera update
+ * and at most one frame request.
  */
 final class WorldExplorerInput {
     /** View hooks; every method is called on the FX thread from an input event or pulse. */
@@ -39,10 +45,19 @@ final class WorldExplorerInput {
         void abandonUnusableCandidate();
 
         void loadNext();
+
+        /** Hides the cursor over the view while mouse look is held; shows it again after. */
+        void cursorHidden(boolean hidden);
     }
 
-    /** Radians of look per pixel of mouse drag. */
-    static final double LOOK_PER_PIXEL = .006;
+    /** Moves the system cursor; false when this platform cannot place it (e.g. no robot). */
+    @FunctionalInterface
+    interface Pointer {
+        boolean warp(double screenX, double screenY);
+
+        /** No cursor placement: mouse look then uses relative movement without re-centring. */
+        Pointer NONE = (x, y) -> false;
+    }
 
     /** Default, minimum and maximum flight speed in yards per second. */
     static final double DEFAULT_SPEED = 80, MIN_SPEED = 10, MAX_SPEED = 800;
@@ -54,8 +69,14 @@ final class WorldExplorerInput {
     private final Host host;
     private final ExplorerMotion motion = new ExplorerMotion();
     private final Set<KeyCode> keys = new HashSet<>();
-    private double mouseX, mouseY, speed = DEFAULT_SPEED;
+    private double speed = DEFAULT_SPEED;
     private long lastTick, lastRender, lastNearby;
+    private WorldControls controls = WorldControls.DEFAULTS;
+    private Pointer pointer = Pointer.NONE;
+    // Mouse look: reference point for the next delta (the warp centre, or the last position when
+    // the cursor cannot be warped), where the look began, and pixels owed to the next pulse.
+    private boolean looking, warping;
+    private double lookX, lookY, anchorX, anchorY, pendingX, pendingY;
 
     WorldExplorerInput(Host host) {
         this.host = Objects.requireNonNull(host);
@@ -69,6 +90,18 @@ final class WorldExplorerInput {
     void motion(boolean walk, boolean smooth) {
         motion.mode(walk ? ExplorerMotion.Mode.WALK : ExplorerMotion.Mode.FLY);
         motion.smooth(smooth);
+    }
+
+    WorldControls controls() {
+        return controls;
+    }
+
+    void controls(WorldControls next) {
+        controls = Objects.requireNonNull(next);
+    }
+
+    void pointer(Pointer next) {
+        pointer = Objects.requireNonNull(next);
     }
 
     double speed() {
@@ -98,10 +131,12 @@ final class WorldExplorerInput {
         keys.remove(code);
     }
 
-    /** Drops held keys and retained velocity, e.g. on focus loss or a hidden viewport. */
+    /** Drops held keys, retained velocity and any mouse look, e.g. on focus loss. */
     void clear() {
         keys.clear();
         motion.reset();
+        lookReleased();
+        pendingX = pendingY = 0;
     }
 
     /** Forgets the previous pulse time so the next pulse integrates zero seconds. */
@@ -109,18 +144,54 @@ final class WorldExplorerInput {
         lastTick = 0;
     }
 
-    void mousePressed(double x, double y) {
-        mouseX = x;
-        mouseY = y;
+    boolean looking() {
+        return looking;
     }
 
-    void mouseDragged(double x, double y) {
-        var camera = host.camera();
-        if (camera == null) return;
-        host.camera(camera.look((mouseX - x) * LOOK_PER_PIXEL, (mouseY - y) * LOOK_PER_PIXEL));
-        mouseX = x;
-        mouseY = y;
-        host.requestFrame();
+    /** Whether a press of {@code button} starts mouse look: only the right (secondary) button. */
+    static boolean looks(MouseButton button) {
+        return button == MouseButton.SECONDARY;
+    }
+
+    /**
+     * Right button pressed at a screen position: hide the cursor and, when possible, move it to
+     * the view centre so that every later move is measured from there.
+     */
+    void lookPressed(double screenX, double screenY, double centerX, double centerY) {
+        if (looking) return;
+        looking = true;
+        anchorX = screenX;
+        anchorY = screenY;
+        warping = pointer.warp(centerX, centerY);
+        lookX = warping ? centerX : screenX;
+        lookY = warping ? centerY : screenY;
+        host.cursorHidden(true);
+    }
+
+    /**
+     * A move while looking. A move to the reference point itself is the event our own warp
+     * produced and is ignored. When a warp fails the look continues with relative movement.
+     */
+    void lookMoved(double screenX, double screenY) {
+        if (!looking) return;
+        double dx = screenX - lookX, dy = screenY - lookY;
+        if (!Double.isFinite(dx) || !Double.isFinite(dy) || dx == 0 && dy == 0) return;
+        pendingX += dx;
+        pendingY += dy;
+        if (!warping || !pointer.warp(lookX, lookY)) {
+            warping = false;
+            lookX = screenX;
+            lookY = screenY;
+        }
+    }
+
+    /** Right button released (or focus lost): restore the cursor where the look began. */
+    void lookReleased() {
+        if (!looking) return;
+        looking = false;
+        if (warping) pointer.warp(anchorX, anchorY);
+        warping = false;
+        host.cursorHidden(false);
     }
 
     /** True when a click should inspect: primary button released without movement. */
@@ -168,8 +239,9 @@ final class WorldExplorerInput {
     }
 
     /**
-     * One animation pulse with a camera present: integrates held keys, then requests a frame at
-     * the movement cadence (always for the final resting step) and nearby loading at most every
+     * One animation pulse with a camera present: applies the mouse look summed since the last
+     * pulse, integrates held keys, then requests a frame (always after a look or for the final
+     * resting step, otherwise at the movement cadence) and nearby loading at most every
      * {@link #NEARBY_NANOS}.
      */
     void pulse(long now) {
@@ -177,6 +249,14 @@ final class WorldExplorerInput {
         if (camera == null) return;
         double dt = lastTick == 0 ? 0 : Math.min(.1, (now - lastTick) / 1e9);
         lastTick = now;
+        boolean looked = pendingX != 0 || pendingY != 0;
+        if (looked) {
+            double s = controls.sensitivity();
+            // Mouse right turns right (negative yaw); mouse up looks up unless inverted.
+            camera = camera.look(-pendingX * s, (controls.invertY() ? pendingY : -pendingY) * s);
+            pendingX = pendingY = 0;
+            host.camera(camera);
+        }
         var input = axes();
         boolean steering =
                 input.forward() != 0
@@ -184,14 +264,20 @@ final class WorldExplorerInput {
                         || input.vertical() != 0
                         || input.turn() != 0
                         || input.tilt() != 0;
-        if (!steering && !motion.coasting() && motion.mode() != ExplorerMotion.Mode.WALK) return;
+        if (!steering && !motion.coasting() && motion.mode() != ExplorerMotion.Mode.WALK) {
+            if (looked) host.requestFrame();
+            return;
+        }
         var stepped = motion.step(camera, input, dt, speed, host.ground());
         host.groundStatus(stepped.ground());
-        if (!stepped.moved()) return;
+        if (!stepped.moved()) {
+            if (looked) host.requestFrame();
+            return;
+        }
         host.camera(stepped.camera());
         long cadence = host.fastCadence() ? FAST_CADENCE_NANOS : SLOW_CADENCE_NANOS;
-        // The final settling/coasting step is always shown, not dropped by cadence.
-        if (now - lastRender > cadence || stepped.resting()) {
+        // A look and the final settling/coasting step are always shown, not dropped by cadence.
+        if (looked || now - lastRender > cadence || stepped.resting()) {
             lastRender = now;
             host.requestFrame();
         }

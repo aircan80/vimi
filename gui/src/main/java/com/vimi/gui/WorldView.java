@@ -123,6 +123,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
             objectTextures = new javafx.scene.control.ChoiceBox<>();
     private final CheckBox walkMode = new CheckBox("Walk on terrain (F)");
     private final CheckBox smoothMotion = new CheckBox("Smooth motion");
+    private final javafx.scene.control.Slider lookSensitivity = new javafx.scene.control.Slider(
+            WorldControls.MIN_SENSITIVITY, WorldControls.MAX_SENSITIVITY, WorldControls.DEFAULT_SENSITIVITY);
+    private final CheckBox invertLook = new CheckBox("Invert mouse Y");
+    // Session-only unless the application view installs the user's preferences.
+    private WorldControls.Store controlsStore = WorldControls.memory();
     private final Label motionStatus = new Label("Free flight · no collision");
     private final WorldExplorerInput input = new WorldExplorerInput(new WorldExplorerInput.Host() {
         @Override public TerrainRenderer.Camera camera() { return camera; }
@@ -138,6 +143,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         @Override public void requestFrame() { WorldView.this.requestFrame(); }
         @Override public void abandonUnusableCandidate() { WorldView.this.abandonUnusableCandidate(); }
         @Override public void loadNext() { WorldView.this.loadNext(); }
+        @Override public void cursorHidden(boolean hidden) {
+            viewport.setCursor(hidden ? javafx.scene.Cursor.NONE : null);
+        }
     });
     private final WorldTravelPanel travel = new WorldTravelPanel(this::goToBookmark, this::goToCoordinates);
     private final Button saveBookmark = new Button("Bookmark this view");
@@ -482,6 +490,50 @@ final class WorldView extends BorderPane implements AutoCloseable {
         buildLabel = job.build().version() + " · " + job.locale();
         locationMaps =
                 () -> job.work() instanceof NativePreparationWork w ? w.locationMapsHandle() : null;
+        controlsStore = WorldControls.preferences();
+        showControls(WorldControls.decode(controlsStore.load()));
+        input.pointer(robotPointer());
+    }
+
+    /**
+     * Places the system cursor with the JavaFX robot for mouse-look capture. A platform that
+     * cannot (no robot, or the cursor does not land where asked, as on some Wayland sessions)
+     * reports false and mouse look falls back to relative movement.
+     */
+    private static WorldExplorerInput.Pointer robotPointer() {
+        return new WorldExplorerInput.Pointer() {
+            private javafx.scene.robot.Robot robot;
+            private boolean unavailable;
+
+            @Override public boolean warp(double screenX, double screenY) {
+                if (unavailable) return false;
+                try {
+                    if (robot == null) robot = new javafx.scene.robot.Robot();
+                    robot.mouseMove(screenX, screenY);
+                    var at = robot.getMousePosition();
+                    if (Math.abs(at.getX() - screenX) <= 1 && Math.abs(at.getY() - screenY) <= 1) return true;
+                } catch (RuntimeException failed) {
+                    WorldDiagnostics.warn("Mouse-look cursor capture is unavailable", failed);
+                }
+                unavailable = true;
+                return false;
+            }
+        };
+    }
+
+    /** Shows and applies control preferences without saving them again. */
+    private void showControls(WorldControls controls) {
+        input.controls(controls);
+        lookSensitivity.setValue(controls.sensitivity());
+        invertLook.setSelected(controls.invertY());
+    }
+
+    private void controlsChanged() {
+        var next = input.controls().withSensitivity(lookSensitivity.getValue())
+                .withInvertY(invertLook.isSelected());
+        if (next.equals(input.controls())) return;
+        input.controls(next);
+        controlsStore.save(next.encode());
     }
 
     /** Uses the application's bookmark store; the view's own session store is replaced. */
@@ -576,6 +628,19 @@ final class WorldView extends BorderPane implements AutoCloseable {
         smoothMotion.setFocusTraversable(false);
         smoothMotion.setSelected(true);
         smoothMotion.setOnAction(e -> motionChanged());
+        lookSensitivity.setId("world-look-sensitivity");
+        lookSensitivity.setFocusTraversable(false);
+        lookSensitivity.setPrefWidth(110);
+        lookSensitivity.setAccessibleText("Mouse-look sensitivity");
+        lookSensitivity.valueChangingProperty().addListener((o, was, changing) -> {
+            if (!changing) controlsChanged();
+        });
+        lookSensitivity.valueProperty().addListener((o, a, b) -> {
+            if (!lookSensitivity.isValueChanging()) controlsChanged();
+        });
+        invertLook.setId("world-invert-look");
+        invertLook.setFocusTraversable(false);
+        invertLook.setOnAction(e -> controlsChanged());
         motionStatus.setId("world-motion-status");
         saveBookmark.setId("world-save-bookmark");
         saveBookmark.setFocusTraversable(false);
@@ -854,14 +919,21 @@ final class WorldView extends BorderPane implements AutoCloseable {
         viewport.setOnMousePressed(
                 e -> {
                     viewport.requestFocus();
-                    input.mousePressed(e.getX(), e.getY());
+                    if (WorldExplorerInput.looks(e.getButton())) {
+                        var center = viewport.localToScreen(viewport.getWidth() / 2, viewport.getHeight() / 2);
+                        if (center != null) input.lookPressed(e.getScreenX(), e.getScreenY(), center.getX(), center.getY());
+                    }
+                });
+        viewport.setOnMouseReleased(
+                e -> {
+                    if (WorldExplorerInput.looks(e.getButton())) input.lookReleased();
                 });
         viewport.setOnMouseClicked(
                 e -> {
                     if (WorldExplorerInput.inspects(e.getButton(), e.isStillSincePress()))
                         inspect(e.getSceneX(), e.getSceneY());
                 });
-        viewport.setOnMouseDragged(e -> input.mouseDragged(e.getX(), e.getY()));
+        viewport.setOnMouseDragged(e -> input.lookMoved(e.getScreenX(), e.getScreenY()));
         viewport.setOnScroll(e -> {
             input.scroll(e.getDeltaY(), e.isShiftDown());
             e.consume();
@@ -1690,10 +1762,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 10,
                                 back,
                                 new Label(
-                                        "WASD move · Space/E up · Q/X down · drag or arrows to look · Shift"
-                                                + " faster · wheel zooms · Shift+wheel changes speed"
-                                                + " · F walks")),
+                                        "WASD move · Space/E up · Q/X down · hold the right mouse button or"
+                                                + " arrows to look · Shift faster · wheel zooms · Shift+wheel"
+                                                + " changes speed · F walks · click inspects")),
                         new HBox(10, walkMode, smoothMotion, motionStatus, saveBookmark),
+                        new HBox(8, new Label("Look sensitivity"), lookSensitivity, invertLook),
                         currentArea,
                         inspection,
                         audio.node(),
