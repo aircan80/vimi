@@ -181,7 +181,20 @@ public final class WorldNavigationUiTest {
         await(fixture,() -> settled(view,expected),() -> {
             invoke(view,"requestFrame");
             String expectedArea=dx==0?(dy==0?"Elwynn Forest · Northshire Valley":"Elwynn Forest · Northshire Valley · Northshire Abbey"):"Elwynn Forest · Eastvale Logging Camp";
-            require(((javafx.scene.control.Label)view.lookup("#world-current-area")).getText().equals("Terrain area: "+expectedArea),"Moving camera updates recorded zone/subzone: "+expectedArea);
+            require(((javafx.scene.control.Label)get(view,"currentArea")).getText().equals("Terrain area: "+expectedArea),"Moving camera updates recorded zone/subzone: "+expectedArea);
+            // HUD step 2: the zone line shows the zone and the most specific area at once.
+            var chain=expectedArea.split(" · ");
+            var zone=(javafx.scene.control.Label)view.lookup("#world-zone-name");
+            var subzone=(javafx.scene.control.Label)view.lookup("#world-zone-subzone");
+            var banner=(javafx.scene.control.Label)view.lookup("#world-zone-banner");
+            require(zone.getText().equals(chain[0]) && subzone.getText().equals(chain[chain.length-1]) && subzone.isVisible(),
+                    "Zone line: "+zone.getText()+" / "+subzone.getText());
+            require(banner.getText().equals(chain[chain.length-1]),"The banner names the area entered: "+banner.getText());
+            var camera=(TerrainRenderer.Camera)get(view,"camera");
+            var pill=(javafx.scene.control.Label)view.lookup("#world-coordinates");
+            require(pill.isVisible() && pill.getText().startsWith(String.format(java.util.Locale.ROOT,"x %.1f  y %.1f  alt %.1f",camera.x(),camera.y(),camera.z()))
+                            && pill.getText().contains("\ntile "),
+                    "The coordinates pill follows the camera: "+pill.getText());
             move(view,fixture,index+1);
         });
     }
@@ -214,7 +227,10 @@ public final class WorldNavigationUiTest {
                 viewport.resize(viewport.getWidth()+17,viewport.getHeight()+11);
                 invoke(view,"requestFrame");
                 require(!view.lookup("#world-minimap").isVisible(),"Retired source cannot reveal minimap after resize");
-                require(((javafx.scene.control.Label)view.lookup("#world-current-area")).getText().equals("Terrain area unavailable"),"Retired source cannot retain current-area name");
+                require(((javafx.scene.control.Label)get(view,"currentArea")).getText().equals("Terrain area unavailable")
+                                && ((javafx.scene.control.Label)view.lookup("#world-zone-name")).getText().isEmpty()
+                                && !view.lookup("#world-zone-text").isVisible(),
+                        "Retired source cannot retain current-area name, on the area line or the zone line");
                 require(fixture.minimapCalls.get()==before,"Retired source cannot request artwork after resize");
                 showInventoryEndsFullscreen(view);
                 await(fixture,RACE_CHECKED::get,() -> DONE.complete(null));
@@ -423,8 +439,35 @@ public final class WorldNavigationUiTest {
         var more=(javafx.scene.control.ToggleButton)view.lookup("#world-hud-more");
         var rows=view.lookup("#world-hud-more-rows");
         require(isWithin(bar,content.getBottom()) && isWithin(rows,content.getBottom()),"Slim bar and More rows are the bottom");
-        for (var id : new String[] {"#world-walk-mode","#world-flight-speed","#world-current-area","#world-position"})
+        for (var id : new String[] {"#world-walk-mode","#world-flight-speed"})
             require(isWithin(view.lookup(id),bar),"In the slim bar: "+id);
+        // HUD step 2: the area and position lines leave the bar; the zone text and the coordinates
+        // pill show them over the view and keep the full lines as their tooltips.
+        require(view.lookup("#world-current-area")==null && view.lookup("#world-position")==null,
+                "The full area and position lines are no longer rows");
+        var zoneLine=view.lookup("#world-zone-text");
+        var pill=(javafx.scene.control.Label)view.lookup("#world-coordinates");
+        require(isWithin(zoneLine,hud) && isWithin(pill,hud) && isWithin(view.lookup("#world-zone-banner"),hud),"Zone text, banner and pill are HUD overlays");
+        require(pill.getTooltip().getText().equals(((javafx.scene.control.Label)get(view,"position")).getText())
+                        && !pill.getTooltip().getText().isBlank(),
+                "The pill's tooltip is the full position line: "+pill.getTooltip().getText());
+        // The copy goes through the view's hook, so the test never needs the system clipboard
+        // (unavailable on a locked desktop); the system clipboard itself is an owner check.
+        var copied=new java.util.concurrent.atomic.AtomicReference<String>();
+        view.coordinatesCopy(copied::set);
+        mouse(pill,javafx.scene.input.MouseEvent.MOUSE_PRESSED,4,4,javafx.scene.input.MouseButton.PRIMARY);
+        require(!input(view).looking(),"A press on the pill is not mouse look");
+        mouse(pill,javafx.scene.input.MouseEvent.MOUSE_RELEASED,4,4,javafx.scene.input.MouseButton.PRIMARY);
+        Event.fireEvent(pill,new javafx.scene.input.MouseEvent(javafx.scene.input.MouseEvent.MOUSE_CLICKED,4,4,4,4,
+                javafx.scene.input.MouseButton.PRIMARY,1,false,false,false,false,false,false,false,false,false,true,
+                new PickResult(pill,4,4)));
+        var camera=(TerrainRenderer.Camera)get(view,"camera");
+        require(String.format(java.util.Locale.ROOT,"%.1f %.1f %.1f",camera.x(),camera.y(),camera.z()).equals(copied.get()),
+                "A click copies x y z: "+copied.get());
+        require(com.vibeminer.concepts.world.WorldBookmarks.parseCoordinates(copied.get()).isPresent(),
+                "The travel panel reads the copied coordinates back");
+        require(view.getScene().getFocusOwner()==viewport,"Focus stays on the viewport after copying");
+        view.coordinatesCopy(WorldCoordinatesPill::systemClipboard);
         require(!more.isSelected() && !rows.isVisible() && !rows.isManaged() && !more.isFocusTraversable(),"More starts collapsed");
         for (var id : new String[] {"#world-smooth-motion","#world-motion-status","#world-save-bookmark",
                 "#world-hide-panels","#world-fullscreen","#world-look-sensitivity","#world-invert-look",

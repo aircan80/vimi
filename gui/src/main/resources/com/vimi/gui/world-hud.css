@@ -35,3 +35,28 @@
     -fx-padding: 10;
     -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.45), 12, 0.2, 0, 2);
 }
+
+.world-hud-zone {
+    -fx-text-fill: #f6e7b4;
+    -fx-font-size: 1.25em;
+    -fx-font-weight: bold;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.9), 4, 0.5, 0, 1);
+}
+
+.world-hud-subzone {
+    -fx-text-fill: #f2f5f2;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.9), 4, 0.5, 0, 1);
+}
+
+.world-hud-banner {
+    -fx-text-fill: #f6e7b4;
+    -fx-font-size: 28px;
+    -fx-font-weight: bold;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.9), 8, 0.5, 0, 2);
+}
+
+.world-hud-coordinates {
+    -fx-font-family: monospace;
+    -fx-text-alignment: right;
+    -fx-alignment: center-right;
+}

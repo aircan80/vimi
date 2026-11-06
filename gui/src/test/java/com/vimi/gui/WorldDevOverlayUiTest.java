@@ -106,7 +106,8 @@ public final class WorldDevOverlayUiTest {
                 "F3 opens the Stream page");
         require(overlay().headerText().contains("[1 Stream]") && overlay().headerText().endsWith("F3: next"),
                 "Header: " + overlay().headerText());
-        var position = ((Label) view.lookup("#world-position")).getText();
+        // HUD step 2: the position line is the coordinates pill's tooltip, no longer a row.
+        var position = ((Label) get("position")).getText();
         require(overlay().text().startsWith("tile      7,19\ncamera    x "),
                 "Stream page starts with the labelled position:\n" + overlay().text());
         require(overlay().text().contains(position.substring(position.indexOf("x "),
@@ -155,7 +156,7 @@ public final class WorldDevOverlayUiTest {
                         && !overlay().isFocusTraversable(),
                 "Only the overlay's buttons take the mouse");
         for (var id : List.of("#world-gpu-status", "#world-texture-status", "#world-look-status",
-                "#world-position", "#world-gpu-retry", "#world-texture-retry")) {
+                "#world-coordinates", "#world-gpu-retry", "#world-texture-retry")) {
             require(view.lookup(id) != null, "The existing control stays: " + id);
         }
         var viewport = view.lookup("#world-viewport");

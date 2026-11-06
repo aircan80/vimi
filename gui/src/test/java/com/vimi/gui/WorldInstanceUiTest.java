@@ -179,13 +179,16 @@ public final class WorldInstanceUiTest {
                 require(toasts.getScene() != null && toasts.isVisible() && toasts.toasts().stream()
                                 .anyMatch(t -> t.text().startsWith("Entering ")),
                         "Entering an instance shows a visible toast: " + toasts.toasts());
-                leave.fire();
+                var chip = view.lookup("#world-zone-leave");
+                require(chip != null && chip.isVisible(), "The zone text offers Leave next to the zone");
+                ((Button) chip).fire();
                 await(() -> inventoryMap(view) == HOME.id() && (boolean) get(view, "explorer")
                         && get(view, "camera") != null && !(boolean) get(view, "scenePreparing"), () -> {
                     var camera = (TerrainRenderer.Camera) get(view, "camera");
                     require(camera.x() == saved.x() && camera.y() == saved.y(),
                             "Leave returns to the open-world position of entry: " + camera);
                     require(!leave.isVisible(), "No leave after returning");
+                    require(!view.lookup("#world-zone-leave").isVisible(), "No leave chip after returning");
                     var back = view.toasts();
                     require(back.getScene() != null && back.isVisible() && back.toasts().stream()
                                     .anyMatch(t -> t.text().startsWith("Left the instance")),
