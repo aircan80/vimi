@@ -233,6 +233,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         /** The current image's chain as uploaded: its packed input, or its RGBA8 decode. */
         private java.nio.ByteBuffer imageData;
 
+        /** The current image's upload format ({@link ObjectTextureFormats}). */
+        private int imageFormat;
+
         private int imageStep;
         private boolean failed;
 
@@ -705,6 +708,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         compressedImages++;
                     }
                     build.imageData = chain;
+                    build.imageFormat = format;
                     build.imagePlan =
                             WorldStreamObjectMips.plan(format, width, height, OBJECT_CHUNK);
                     build.imageStep = 0;
@@ -732,7 +736,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                                     width, slice.level()),
                             slice.rows(),
                             bgfx_copy(build.imageData.slice(slice.offset(), slice.bytes())),
-                            slice.pitch());
+                            updatePitch(build.imageFormat, slice));
                     count += slice.bytes();
                 }
                 built.bytes += count;
@@ -1378,6 +1382,16 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 objectBytes(upload),
                 compressedImages,
                 decodedImages);
+    }
+
+    /**
+     * The pitch argument of one upload slice. Compressed slices pass UINT16_MAX, so bgfx derives
+     * the source pitch from the format, its default path, and never sizes a staging copy as texel
+     * rows times a block-row pitch. RGBA8 slices pass their texel-row pitch. The layout ladders of
+     * nativeGpuWorldStreamObjectsProof check every block of every level on Vulkan and D3D11.
+     */
+    static int updatePitch(int format, WorldStreamObjectMips.Slice slice) {
+        return ObjectTextureFormats.compressed(format) ? 0xFFFF : slice.pitch();
     }
 
     /** The bgfx texture format of an object texture format. */
