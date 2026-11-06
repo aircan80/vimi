@@ -242,6 +242,8 @@ final class WorldStreamSourceController {
     private boolean blockedOnMaterialPool;
     private long sourceRetirementRevision, blockedSourceRetirement;
     private long blockedCapacity = -1, blockedPresentation = -1, blockedDemand = -1;
+    /** Presentation and demand revisions as of this step's own reads (worker thread only). */
+    private long stepPresentation, stepDemand;
     private volatile Throwable terminal;
     private volatile String unavailableDetail;
     private CompletableFuture<Void> physicalClosing;
@@ -256,6 +258,9 @@ final class WorldStreamSourceController {
     // Test seam: runs on the worker after a RETRY_LATER tile-preparation refusal, before it is
     // recorded.
     volatile Runnable tileRefusalSeam;
+    // Test seam: runs on the worker after this step read its demand and got a tile reservation,
+    // just before the reservation records its revisions and starts.
+    volatile Runnable tileIssueSeam;
 
     WorldStreamSourceController(
             Request request, GpuStarter starter, Events events, Consumer<Runnable> fxPost) {
@@ -560,6 +565,10 @@ final class WorldStreamSourceController {
     }
 
     private void step() {
+        synchronized (lock) {
+            // Pixels this step decides from; a later FX acceptance must still wake a refusal.
+            stepPresentation = presentationRevision;
+        }
         if (!initialized) {
             if (initialBlocked && clock.getAsLong() - initialRetryAt < RETRY_NANOS) return;
             if(source==null) {
@@ -886,12 +895,14 @@ final class WorldStreamSourceController {
                 publish(Phase.WAITING_CAPACITY, "Waiting for GPU upload capacity");
                 return;
             }
+            var issueSeam = tileIssueSeam;
+            if (issueSeam != null) issueSeam.run();
             blockedOnMaterialPool = false;
             pending = new Pending(tile, reservation.orElseThrow(), source, waterReady() ? water : null, scope);
-            synchronized (lock) {
-                pending.issuedPresentation = presentationRevision;
-                pending.issuedDemand = demandRevision;
-            }
+            // Revisions of the pixels and demand this tile was chosen from, not of now: a bump
+            // landing later in this step must still wake a refusal.
+            pending.issuedPresentation = stepPresentation;
+            pending.issuedDemand = stepDemand;
             pending.issuedSourceRetirement = sourceRetirementRevision;
             pending.result = pending.reservation.produce(pending.producer);
             pending.result.whenComplete((ignored, failure) -> kick());
@@ -1328,6 +1339,8 @@ final class WorldStreamSourceController {
 
     private List<WorldFormats.Tile> demand() {
         synchronized (lock) {
+            // The revision of exactly this demand, read atomically with it (#305).
+            stepDemand = demandRevision;
             return desired;
         }
     }
