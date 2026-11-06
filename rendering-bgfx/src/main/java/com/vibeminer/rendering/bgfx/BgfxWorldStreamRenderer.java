@@ -65,6 +65,7 @@ import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_end;
 import com.vibeminer.rendering.world.ObjectTextureFormats;
 import com.vibeminer.rendering.world.TerrainCamera;
 import com.vibeminer.rendering.world.TerrainScene;
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -1120,12 +1121,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     Ticket draw(TerrainCamera camera, long cameraRevision, long policy, int width, int height) {
         requireOwner();
         requireOpen();
-        if (cameraRevision <= 0
-                || policy <= 0
-                || width < 1
-                || width > 800
-                || height < 1
-                || height > 500) {
+        if (cameraRevision <= 0 || policy <= 0 || !WorldFrameLimits.fits(width, height)) {
             throw new IllegalArgumentException("Frame ticket bounds");
         }
         bgfx_set_view_rect(0, 0, 0, width, height);

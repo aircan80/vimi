@@ -2672,10 +2672,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
      * one quiet pulse ({@link WorldResizeDebounce}) so a window drag bumps the policy once.
      */
     void streamingSize() {
-        double targetWidth = Math.max(1, viewport.getWidth());
-        double targetHeight = Math.max(1, viewport.getHeight());
-        double scale = Math.min(1, Math.min(800 / targetWidth, 500 / targetHeight));
-        streamingResize.offer(Math.max(1, (int) (targetWidth * scale)), Math.max(1, (int) (targetHeight * scale)));
+        // Native resolution: the viewport times the window's render scale on each axis (HiDPI),
+        // within the one shared frame cap; the ImageView fits it back to layout size.
+        var window = getScene() == null ? null : getScene().getWindow();
+        var frame = com.vibeminer.rendering.world.WorldFrameLimits.frame(
+                viewport.getWidth(), viewport.getHeight(),
+                window == null ? 1 : window.getRenderScaleX(),
+                window == null ? 1 : window.getRenderScaleY(), 1);
+        streamingResize.offer(frame.width(), frame.height());
         int width = streamingResize.width(), height = streamingResize.height();
         if (streamingWidth != 0 && (width != streamingWidth || height != streamingHeight)) streamingPolicy++;
         streamingWidth = width;
