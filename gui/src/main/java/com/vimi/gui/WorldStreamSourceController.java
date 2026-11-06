@@ -144,6 +144,12 @@ final class WorldStreamSourceController {
         final WorldStreamTransport.TileReservation reservation;
         final WorldStreamSourceBridge.Producer producer;
         volatile boolean useful = true;
+        /**
+         * Presentation, demand and source-retirement revisions sampled under the lock when this
+         * reservation was issued. A refusal waits for a change since issue, not since processing,
+         * so an FX bump that lands in between still wakes the retry (#305).
+         */
+        long issuedPresentation, issuedDemand, issuedSourceRetirement;
         CompletableFuture<WorldStreamTransport.Resident> result;
         CompletableFuture<Void> cancellation;
 
@@ -254,6 +260,8 @@ final class WorldStreamSourceController {
     private boolean blockedOnMaterialPool;
     private long sourceRetirementRevision, blockedSourceRetirement;
     private long blockedCapacity = -1, blockedPresentation = -1, blockedDemand = -1;
+    /** Presentation and demand revisions as of this step's own reads (worker thread only). */
+    private long stepPresentation, stepDemand;
     private volatile Throwable terminal;
     private volatile String unavailableDetail;
     private CompletableFuture<Void> physicalClosing;
@@ -273,6 +281,9 @@ final class WorldStreamSourceController {
     // Test seam: runs on the worker after a RETRY_LATER tile-preparation refusal, before it is
     // recorded.
     volatile Runnable tileRefusalSeam;
+    // Test seam: runs on the worker after this step read its demand and got a tile reservation,
+    // just before the reservation records its revisions and starts.
+    volatile Runnable tileIssueSeam;
 
     WorldStreamSourceController(
             Request request, GpuStarter starter, Events events, Consumer<Runnable> fxPost) {
@@ -624,6 +635,10 @@ final class WorldStreamSourceController {
     }
 
     private void step() {
+        synchronized (lock) {
+            // Pixels this step decides from; a later FX acceptance must still wake a refusal.
+            stepPresentation = presentationRevision;
+        }
         if (!initialized) {
             if (initialBlocked && clock.getAsLong() - initialRetryAt < RETRY_NANOS) return;
             if(source==null) {
@@ -739,6 +754,9 @@ final class WorldStreamSourceController {
                     int failedTile = key(pending.tile);
                     // Read while the refused reservation is still at hand (#283).
                     long refusedCapacity = pending.reservation.capacityBaseline();
+                    // Revisions as of issue, read before the pending reservation is dropped (#305).
+                    long issuedPresentation = pending.issuedPresentation, issuedDemand = pending.issuedDemand;
+                    long issuedSourceRetirement = pending.issuedSourceRetirement;
                     if(creditTarget!=null && same(creditTarget,pending.tile)
                             && refusal.reason()!=WorldStreamTransport.Refusal.RETRY_LATER) creditTarget=null;
                     pending.producer.close();
@@ -770,7 +788,7 @@ final class WorldStreamSourceController {
                     }
                     // This refusal's own unused-credit ACK is not a source-pool wakeup.
                     blockedOnMaterialPool = origin != null && origin.site().equals("MATERIAL_POOL");
-                    blockedSourceRetirement = sourceRetirementRevision;
+                    blockedSourceRetirement = issuedSourceRetirement;
                     var seam = tileRefusalSeam;
                     if (seam != null) seam.run();
                     blockedAt = clock.getAsLong();
@@ -781,11 +799,11 @@ final class WorldStreamSourceController {
                     // CREDIT arrives as an ordinary capacity change and deliberately wakes one
                     // retry per refusal, as before (polling while the geometry lane is busy is
                     // pre-existing and tracked separately).
+                    // Likewise presentation and demand: both are bumped on the FX thread, so the
+                    // values sampled at issue are compared, never the ones current now (#305).
                     blockedCapacity = refusedCapacity;
-                    synchronized (lock) {
-                        blockedPresentation = presentationRevision;
-                        blockedDemand = demandRevision;
-                    }
+                    blockedPresentation = issuedPresentation;
+                    blockedDemand = issuedDemand;
                     publish(Phase.WAITING_CAPACITY, "Waiting for streaming resource capacity");
                     return;
                 }
@@ -953,8 +971,15 @@ final class WorldStreamSourceController {
                 publish(Phase.WAITING_CAPACITY, "Waiting for GPU upload capacity");
                 return;
             }
+            var issueSeam = tileIssueSeam;
+            if (issueSeam != null) issueSeam.run();
             blockedOnMaterialPool = false;
             pending = new Pending(tile, reservation.orElseThrow(), source, waterReady() ? water : null, scope);
+            // Revisions of the pixels and demand this tile was chosen from, not of now: a bump
+            // landing later in this step must still wake a refusal.
+            pending.issuedPresentation = stepPresentation;
+            pending.issuedDemand = stepDemand;
+            pending.issuedSourceRetirement = sourceRetirementRevision;
             pending.result = pending.reservation.produce(pending.producer);
             pending.result.whenComplete((ignored, failure) -> kick());
             publish(Phase.PREPARING, "Preparing terrain, textures and upload");
@@ -1433,6 +1458,8 @@ final class WorldStreamSourceController {
 
     private List<WorldFormats.Tile> demand() {
         synchronized (lock) {
+            // The revision of exactly this demand, read atomically with it (#305).
+            stepDemand = demandRevision;
             return desired;
         }
     }

@@ -51,6 +51,11 @@ public final class WorldStreamSourceControllerTest {
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
+        bumpBetweenIssueAndRefusalStillWakesRetry(false, false);
+        bumpBetweenIssueAndRefusalStillWakesRetry(false, true);
+        bumpBetweenIssueAndRefusalStillWakesRetry(true, false);
+        bumpBetweenIssueAndRefusalStillWakesRetry(false, false, true);
+        bumpBetweenIssueAndRefusalStillWakesRetry(false, true, true);
         sameResidentCameraFrameDoesNotRetryMaterialPool();
         transportFrameSignalQueuesPresentationWithoutAnyPulse();
         steadyCameraFramesReuseAFewPixelArrays();
@@ -555,6 +560,91 @@ public final class WorldStreamSourceControllerTest {
         }
     }
 
+
+    /**
+     * #305: a presentation or demand bump that lands after a tile reservation was issued but
+     * before its refusal is processed still wakes the retry. The clock never advances and the
+     * refusal's own unused credit is held, so only the bump inside the window can wake it.
+     */
+    private static void bumpBetweenIssueAndRefusalStillWakesRetry(
+            boolean materialPool, boolean presentation) throws Exception {
+        bumpBetweenIssueAndRefusalStillWakesRetry(materialPool, presentation, false);
+    }
+
+    /**
+     * With {@code beforeIssue}, the bump lands earlier: after the step read its demand and pixels
+     * but before it issued the reservation, so the tile was still chosen from the old ones.
+     */
+    private static void bumpBetweenIssueAndRefusalStillWakesRetry(
+            boolean materialPool, boolean presentation, boolean beforeIssue) throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        AutoCloseable held = materialPool
+                ? AuthoredTerrainPoolPressure.hold(fixture.pool)
+                : com.vibeminer.concepts.world.AuthoredGeometryPressure.hold(fixture.world);
+        Path holdCredit = fixture.directory.resolve("authored-hold-unused-credit");
+        var refused = new java.util.concurrent.atomic.AtomicReference<Object>();
+        String label = (materialPool ? "material pool" : "geometry lane")
+                + (presentation ? ", presentation bump" : ", demand bump")
+                + (beforeIssue ? " before issue" : "");
+        try {
+            Files.writeString(holdCredit, "hold");
+            var revision = WorldStreamSourceController.class.getDeclaredField(
+                    presentation ? "presentationRevision" : "demandRevision");
+            revision.setAccessible(true);
+            var lockField = WorldStreamSourceController.class.getDeclaredField("lock");
+            lockField.setAccessible(true);
+            var bumped = new java.util.concurrent.atomic.AtomicBoolean();
+            Runnable bump = () -> {
+                if (!bumped.compareAndSet(false, true)) return;
+                try {
+                    long before;
+                    synchronized (lockField.get(fixture.controller)) {
+                        before = revision.getLong(fixture.controller);
+                    }
+                    if (presentation) {
+                        // Stands in for an FX presented() acceptance: same field, same lock.
+                        synchronized (lockField.get(fixture.controller)) {
+                            revision.setLong(fixture.controller, before + 1);
+                        }
+                    } else {
+                        fixture.controller.neighborhood(fixture.tiles.subList(0, 2));
+                    }
+                    synchronized (lockField.get(fixture.controller)) {
+                        check(revision.getLong(fixture.controller) == before + 1,
+                                "The bump landed inside the refusal window: " + label);
+                    }
+                } catch (ReflectiveOperationException failure) {
+                    throw new AssertionError(failure);
+                }
+            };
+            Runnable seam = () -> {
+                if (refused.get() != null) return;
+                refused.set(Boolean.TRUE);
+                if (!beforeIssue) bump.run();
+            };
+            fixture.start(scope -> {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (fixture.controller == null && System.nanoTime() < deadline)
+                    java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                fixture.controller.tileRefusalSeam = seam;
+                if (beforeIssue) fixture.controller.tileIssueSeam = bump;
+                return fixture.gpu.start(scope);
+            });
+            fixture.until(() -> refused.get() != null);
+            check(bumped.get(), "The bump ran: " + label);
+            var pool = WorldStreamSourceController.class.getDeclaredField("blockedOnMaterialPool");
+            pool.setAccessible(true);
+            check(pool.getBoolean(fixture.controller) == materialPool, "Refusal site: " + label);
+            // The retry gate opened: the step went on to ask for a new reservation, which the
+            // still-held unused credit refuses. Without the bump it keeps waiting on capacity.
+            fixture.until(() -> fixture.controller.snapshot().detail()
+                    .equals("Waiting for GPU upload capacity"));
+        } finally {
+            Files.deleteIfExists(holdCredit);
+            held.close();
+            fixture.close();
+        }
+    }
     private static void enqueueHeldFile(WorldStreamTransport.Session session,
             java.util.concurrent.CountDownLatch entered,java.util.concurrent.CountDownLatch release) throws Exception {
         var method=session.getClass().getDeclaredMethod("enqueueFile",Runnable.class);method.setAccessible(true);
