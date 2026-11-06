@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -497,22 +498,8 @@ final class WorldTileCreatures implements AutoCloseable {
             return Converted.refused(Count.CHARACTER_APPEARANCE, "extended display info is not evaluated");
         var appearance = preview.appearance();
         var mesh = appearance.mesh();
-        if (reference.creatureGeosetDataId() == null)
-            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "creature geoset data could not be read");
-        if (reference.creatureGeosetDataId() != 0)
-            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "geoset visibility is not evaluated");
-        if (reference.displayGeosets() == null)
-            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "display geoset selections are unknown");
-        if (reference.displayGeosets())
-            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "display geoset selections are not evaluated");
-        // Each group with sections must have its x00 default; otherwise which variant shows is a guess.
-        var defaults = new java.util.TreeMap<Integer, Boolean>();
-        for (var part : mesh.parts()) defaults.merge(part.id() / 100, part.id() % 100 == 0, Boolean::logicalOr);
-        for (var group : defaults.entrySet()) {
-            if (!group.getValue())
-                return Converted.refused(Count.VISIBILITY_UNRESOLVED,
-                        "geoset group " + group.getKey() + " has no default x00 section");
-        }
+        var visible = visibleGeosets(reference, mesh);
+        if (visible.refusal() != null) return Converted.refused(Count.VISIBILITY_UNRESOLVED, visible.refusal());
         var surfaces = new HashMap<Integer, MeshAppearance.Surface>();
         for (var surface : appearance.surfaces()) surfaces.put(surface.sectionIndex(), surface);
         var cards = new HashSet<Integer>();
@@ -531,8 +518,8 @@ final class WorldTileCreatures implements AutoCloseable {
         for (int ordinal = 0; ordinal < mesh.parts().size(); ordinal++) {
             token.check();
             var part = mesh.parts().get(ordinal);
-            // Default geosets only: not a surface omission, the section is hidden by design.
-            if (part.id() % 100 != 0) continue;
+            // Hidden geosets are not surface omissions: the section is hidden by the chosen geosets.
+            if (!visible.ids().contains(part.id())) continue;
             var surface = surfaces.get(ordinal);
             var blend = surface == null ? null : surface.material().blend();
             if (surface == null
@@ -599,6 +586,45 @@ final class WorldTileCreatures implements AutoCloseable {
         return new Converted(new Model(vertexArray, indices.stream().mapToInt(Integer::intValue).toArray(),
                 ranges.stream().mapToInt(Integer::intValue).toArray(),
                 blends.stream().mapToInt(Integer::intValue).toArray(), images, omitted), null, null);
+    }
+
+    /** The geoset IDs a model draws, or why that cannot be decided from recorded facts. */
+    record Geosets(Set<Integer> ids, String refusal) {}
+
+    /**
+     * Which geoset sections draw (#361). Each group of sections (geoset ID / 100) shows one variant:
+     * the display's own choice when it records one (CreatureDisplayInfoGeosetData, as group =
+     * GeosetIndex + 1 and section = group * 100 + value), otherwise the group's x00 section. A
+     * choice is never guessed: an unreadable CreatureGeosetDataID, unknown or conflicting display
+     * rows, a non-zero CreatureGeosetDataID without display rows (the ID only says that rows exist),
+     * a chosen variant the model does not have, and a group without its x00 default all refuse.
+     */
+    static Geosets visibleGeosets(DisplayModelTypes.Reference reference, com.vibeminer.rendering.models.PreviewMesh mesh) {
+        if (reference.creatureGeosetDataId() == null)
+            return new Geosets(Set.of(), "creature geoset data could not be read");
+        var chosen = reference.displayGeosets();
+        if (chosen == null) return new Geosets(Set.of(), "display geoset selections are unknown");
+        if (reference.creatureGeosetDataId() != 0 && chosen.isEmpty())
+            return new Geosets(Set.of(), "creature geoset data is recorded but the display has no geoset rows");
+        var present = new java.util.TreeMap<Integer, java.util.TreeSet<Integer>>();
+        for (var part : mesh.parts()) present.computeIfAbsent(part.id() / 100, g -> new java.util.TreeSet<>()).add(part.id());
+        var ids = new HashSet<Integer>();
+        for (var choice : chosen.entrySet()) {
+            int group = choice.getKey(), value = choice.getValue();
+            if (value == DisplayModelTypes.Reference.CONFLICTING_GEOSET)
+                return new Geosets(Set.of(), "the display's geoset rows conflict for group " + group);
+            if (!present.containsKey(group)) continue; // the model has no such group: nothing to show
+            if (!present.get(group).contains(group * 100 + value))
+                return new Geosets(Set.of(), "geoset " + (group * 100 + value) + " chosen by the display is not in the model");
+        }
+        for (var group : present.entrySet()) {
+            Integer value = chosen.get(group.getKey());
+            int id = group.getKey() * 100 + (value == null ? 0 : value);
+            if (!group.getValue().contains(id))
+                return new Geosets(Set.of(), "geoset group " + group.getKey() + " has no default x00 section");
+            ids.add(id);
+        }
+        return new Geosets(Set.copyOf(ids), null);
     }
 
     /** {@link #reduce(MeshAppearance.Texture, int, Cancellation)} for an opaque surface. */
