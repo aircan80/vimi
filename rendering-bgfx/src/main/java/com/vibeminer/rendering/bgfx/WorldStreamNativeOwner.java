@@ -238,6 +238,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                                             1,
                                             BGFX_TEXTURE_FORMAT_D32F,
                                             depthFlags(MSAA_SAMPLES))));
+            renderer.targetSamples(samples);
             if (samples == 1) {
                 // A device fact, not a failure: the World draws single-sampled, as before.
                 System.err.println("World render target: multisampling unavailable, 1 sample");
