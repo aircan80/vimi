@@ -237,8 +237,11 @@ final class WorldStreamSession {
      * Keeps a steady display-rate phase while drawing continuously, so the ~1 ms loop park does not
      * stretch every interval; restarts the phase after an idle gap.
      */
+    // Past this lateness the phase restarts: a stalled loop gets no wasted catch-up draw.
+    static final long CATCH_UP_LIMIT = DRAW_INTERVAL * 5 / 4;
+
     static long nextDrawBase(long previous, long now) {
-        return now - previous < 2 * DRAW_INTERVAL ? previous + DRAW_INTERVAL : now;
+        return now - previous < CATCH_UP_LIMIT ? previous + DRAW_INTERVAL : now;
     }
 
     private void readControls(InputStream input) {

@@ -583,6 +583,9 @@ public final class WorldStreamTransport {
         // so a lost or absent hint costs at most the old poll interval.
         private final WorldFrameSignal frameSignal = new WorldFrameSignal();
         private volatile Runnable frameListener;
+        // Test seams: the reader's fallback wait, and completion when the reader has returned.
+        volatile long framePollMillis = FRAME_POLL_MILLIS;
+        final CompletableFuture<Void> framesReaderDone = new CompletableFuture<>();
         // Diagnostics only: bounded helper stderr, logged on abnormal end and with renderer
         // objects failures; never protocol.
         private final HelperStderrTail stderrTail = new HelperStderrTail();
@@ -656,6 +659,8 @@ public final class WorldStreamTransport {
 
         private void launched(WorldStreamLaunchOwner.Handle handle) {
             owner = handle;
+            // Every stop (close, child exit, worker failure) wakes a parked frame reader.
+            handle.onStopping(this::frameSignaled);
             handle.childExited().thenRun(this::childExited);
             handle.boundedClose()
                     .whenComplete(
@@ -1114,8 +1119,16 @@ public final class WorldStreamTransport {
         }
 
         private void pollFrames(WorldStreamLaunchOwner.Handle handle) throws Exception {
+            try {
+                readFrames(handle);
+            } finally {
+                framesReaderDone.complete(null);
+            }
+        }
+
+        private void readFrames(WorldStreamLaunchOwner.Handle handle) throws Exception {
             long after = 0;
-            while (!handle.stopping()) {
+            while (!handle.stopping() && !closing) {
                 var candidate = frames.readLatest(handle.files().frames(), after);
                 boolean offered = false;
                 if (candidate != null) {
@@ -1134,9 +1147,18 @@ public final class WorldStreamTransport {
                 }
                 var listener = frameListener;
                 if (offered && listener != null) {
-                    listener.run();
+                    try {
+                        listener.run();
+                    } catch (RuntimeException failure) {
+                        // A consumer's fault must not end the frame reader or the session.
+                        System.getLogger(WorldStreamTransport.class.getName())
+                                .log(
+                                        System.Logger.Level.WARNING,
+                                        "World frame listener failed",
+                                        failure);
+                    }
                 }
-                frameSignal.await(FRAME_POLL_MILLIS);
+                frameSignal.await(framePollMillis);
             }
         }
 

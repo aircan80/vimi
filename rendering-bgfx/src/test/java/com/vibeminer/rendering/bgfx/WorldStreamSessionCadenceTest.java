@@ -11,7 +11,7 @@ class WorldStreamSessionCadenceTest {
     @Test
     void childDrawCapIsTheSixtyHertzDisplayRate() {
         assertEquals(TimeUnit.SECONDS.toNanos(1) / 60, INTERVAL);
-        assertEquals(30, WorldStreamTransport.FRAME_POLL_MILLIS, 3, "fallback poll only");
+        assertEquals(33, WorldStreamTransport.FRAME_POLL_MILLIS, "fallback poll only");
     }
 
     @Test
@@ -23,6 +23,19 @@ class WorldStreamSessionCadenceTest {
         }
         // 600 draws keep 600 intervals of phase: no cumulative overshoot.
         assertEquals(1_000_000_000L + 600 * INTERVAL, base);
+    }
+
+    @Test
+    void aStallBeyondAQuarterIntervalRestartsThePhaseWithoutACatchUpDraw() {
+        long base = 3_000_000_000L;
+        for (long stall : new long[] {25_000_000L, 30_000_000L}) {
+            long now = base + stall;
+            assertEquals(now, WorldStreamSession.nextDrawBase(base, now), stall + " ns stall");
+        }
+        // Up to 1.25 intervals late keeps the phase (ordinary loop overshoot).
+        long late = base + WorldStreamSession.CATCH_UP_LIMIT - 1;
+        assertEquals(base + INTERVAL, WorldStreamSession.nextDrawBase(base, late));
+        assertEquals(INTERVAL * 5 / 4, WorldStreamSession.CATCH_UP_LIMIT);
     }
 
     @Test
