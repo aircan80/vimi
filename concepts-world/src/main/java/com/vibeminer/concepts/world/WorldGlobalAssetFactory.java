@@ -21,7 +21,6 @@ import java.util.Objects;
 
 /** G1 source/ancestry/material inspection only. No mesh, image payload, packet or public facade. */
 final class WorldGlobalAssetFactory {
-    static final String PROFILE = "GLOBAL_UNLIT_MATERIALS_V3";
     private static final WmoFormats.Limits ROOT_LIMITS =
             new WmoFormats.Limits(
                     GlobalInteriorLimits.ROOT_BYTES,

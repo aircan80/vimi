@@ -282,9 +282,14 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
         try (var stack = MemoryStack.stackPush()) {
             var e = stack.mallocFloat(16).put(camera.modelToEye()).flip();
             var p = stack.mallocFloat(16).put(projectionMatrix).flip();
+            // Every material vector once per draw: per-batch stack values would pass the 64 KiB
+            // stack at the 4,096-batch limit.
+            var materials = MaterialVectors.on(stack);
             var batches = data.batches();
             // Opaque and cutout first, then alpha-blended, then additive, each in recorded order:
             // the outdoor objects' order (#449), so both paths draw a material the same way.
+            // Blended batches are not depth-sorted among themselves: recorded (file) order, as
+            // within one outdoor model.
             for (int pass = 0; pass < 3; pass++) {
                 for (int b = 0; b < batches.size(); b++) {
                     int rangeClass = batchClasses[b];
@@ -294,7 +299,7 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
                     var batch = batches.get(b);
                     bgfx_set_uniform(eye, e, 1);
                     bgfx_set_uniform(projection, p, 1);
-                    bgfx_set_uniform(material, stack.floats(materialUniform(rangeClass)), 1);
+                    bgfx_set_uniform(material, materials.of(rangeClass), 1);
                     bgfx_set_vertex_buffer(0, vertices, 0, vertexCount);
                     bgfx_set_index_buffer(indices, batch.firstIndex(), batch.indexCount());
                     bgfx_set_texture(
@@ -346,6 +351,30 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
                     new float[] {0, 1, 0, 0};
             default -> new float[] {0, 0, 0, 0};
         };
+    }
+
+    /** One draw's material vectors, one per distinct {@link #materialUniform}, on its stack. */
+    static final class MaterialVectors {
+        private final java.nio.FloatBuffer opaque, cutout, blended;
+
+        private MaterialVectors(MemoryStack stack) {
+            opaque = stack.floats(materialUniform(WorldObjectPicking.OPAQUE));
+            cutout = stack.floats(materialUniform(WorldObjectPicking.CUTOUT));
+            blended = stack.floats(materialUniform(WorldObjectPicking.BLENDED));
+        }
+
+        static MaterialVectors on(MemoryStack stack) {
+            return new MaterialVectors(stack);
+        }
+
+        /** The vector of a range class; allocates nothing. */
+        java.nio.FloatBuffer of(int rangeClass) {
+            return switch (WorldObjectPicking.kind(rangeClass)) {
+                case WorldObjectPicking.CUTOUT -> cutout;
+                case WorldObjectPicking.BLENDED, WorldObjectPicking.ADDITIVE -> blended;
+                default -> opaque;
+            };
+        }
     }
 
     /** Draw state: the outdoor objects' blend states for blended and additive surfaces. */

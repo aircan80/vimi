@@ -17,6 +17,39 @@ class GlobalWmoMaterialTest {
         assertEquals(2, BgfxGlobalWmoRenderer.pass(WmoMaterialClass.of(0x1, 3)));
     }
 
+    /**
+     * At the batch limit, every draw pass reads the same three preallocated vectors: the per-batch
+     * path allocates nothing, so a 64 KiB stack holds any interior (#482 review).
+     */
+    @Test
+    void materialVectorsAreAllocatedOncePerDrawAtTheBatchLimit() {
+        var stack = org.lwjgl.system.MemoryStack.create(64 * 1024);
+        try (var frame = stack.push()) {
+            frame.mallocFloat(16);
+            frame.mallocFloat(16);
+            var vectors = BgfxGlobalWmoRenderer.MaterialVectors.on(frame);
+            long pointer = frame.getPointer();
+            int[] classes = {
+                WmoMaterialClass.of(0, 0),
+                WmoMaterialClass.of(0x4, 1),
+                WmoMaterialClass.of(0, 2),
+                WmoMaterialClass.of(0x1, 3)
+            };
+            for (int pass = 0; pass < 3; pass++) {
+                for (int b = 0;
+                        b < com.vibeminer.rendering.world.GlobalInteriorLimits.BATCHES;
+                        b++) {
+                    int rangeClass = classes[b % classes.length];
+                    var vector = vectors.of(rangeClass);
+                    float[] value = new float[4];
+                    vector.get(0, value);
+                    assertArrayEquals(BgfxGlobalWmoRenderer.materialUniform(rangeClass), value);
+                }
+            }
+            assertEquals(pointer, frame.getPointer(), "No stack allocation per batch");
+        }
+    }
+
     @Test
     void materialUniformAndStateMatchTheOutdoorObjects() {
         assertArrayEquals(

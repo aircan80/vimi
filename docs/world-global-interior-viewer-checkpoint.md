@@ -230,7 +230,11 @@ collision walls.
 - **Draw.** The child draws opaque and cutout batches first, then alpha-blended, then additive,
   each in recorded order, with the outdoor objects' blend states. Cutouts discard below alpha
   0.5. Opaque materials ignore texel alpha. The viewer stays unlit, and nothing is culled, so the
-  unlit and two-sided flags change nothing here.
+  unlit and two-sided flags change nothing here. The material vectors are allocated once per
+  draw, so the 4,096-batch limit fits the native stack.
+- **Known limit: no depth sort.** Blended and additive batches draw in recorded (file) order, as
+  within one outdoor model, not sorted back to front. Overlapping glass or glows can layer in the
+  wrong order; sorting by group or batch bounds is a follow-up.
 - **Left out.** Blend modes above additive (modulate and its variants, not pinned), and blended
   surfaces without a texture, are counted. The status line says how many were not drawn.
 - **Proof.** `nativeGpuGlobalWmoProof` (Vulkan) draws one front triangle of each class, recorded
