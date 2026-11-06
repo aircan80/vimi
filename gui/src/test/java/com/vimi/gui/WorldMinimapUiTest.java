@@ -53,6 +53,7 @@ public final class WorldMinimapUiTest {
             orientationAndNeighborPlacement();
             cameraForwardCardinalLandmarks();
             delayedLatestSourceAndHide();
+            roleMarkersFollowTheMinimapAndHover();
             synchronousProviderCancellation();
             fx(
                     () -> {
@@ -61,7 +62,7 @@ public final class WorldMinimapUiTest {
                     });
             System.out.println(
                     "WorldMinimapUiTest PASS: axes, artwork, facing, bounded"
-                            + " latest/source/hide/close/cancel");
+                            + " latest/source/hide/close/cancel, role markers and hover");
         } finally {
             Platform.exit();
         }
@@ -285,6 +286,83 @@ public final class WorldMinimapUiTest {
                             !map.isVisible() && !busy(),
                             "close rejects late completion and resume");
                 });
+    }
+
+    /**
+     * One authored vendor 60 yards north of the player (world X is north). Its minimap marker is
+     * drawn above the center north-up and keeps its heading-relative place when the map rotates;
+     * hover and the faction filter follow every repaint.
+     */
+    private static void roleMarkersFollowTheMinimapAndHover() throws Exception {
+        var source = new Provider();
+        source.immediate = image(0xff223038, 0xff223038, 0xff223038, 0xff223038);
+        var inventory = inventory(List.of(ORIGIN));
+        double px = X - SIDE / 2, py = Y - SIDE / 2;
+        var placement = MapRoleOverlayTest.placement("v1.0.10", 1429,
+                List.of(MapRoleOverlayTest.npc(2, 4, (List<Object>) null, 25, 25)));
+        var marker = placement.markers(1429, java.util.EnumSet.allOf(
+                com.vibeminer.concepts.locations.MapRoles.Layer.class)).getFirst();
+        var loads = new AtomicInteger();
+        var overlay = new WorldRoleOverlay((worldMapId, token) -> {
+            require(!Platform.isFxApplicationThread(), "role load off FX");
+            loads.incrementAndGet();
+            return new WorldRoleOverlay.Loaded(placement.catalog(),
+                    new com.vibeminer.concepts.locations.MapRoles.WorldPlacement(worldMapId,
+                            List.of(new com.vibeminer.concepts.locations.MapRoles.WorldMarker(
+                                    marker, px + 60, py, 7)), 1, 0, 0, List.of()));
+        }, () -> "authored");
+        fx(() -> {
+            map.hide();
+            map.attachRoles(overlay);
+            update(source, inventory, px, py, 0);
+            var orientation = (ChoiceBox<?>) map.lookup("#world-minimap-orientation");
+            orientation.getSelectionModel().select(0);
+            overlay.toggle(com.vibeminer.concepts.locations.MapRoles.Layer.VENDOR).setSelected(true);
+        });
+        await(() -> overlay.drawn().size() == 1, "role marker placed off FX");
+        double scale = 2 * WorldMinimap.RADIUS / SIDE;
+        int mx = (int) Math.round(WorldMinimap.CENTER), my = (int) Math.round(WorldMinimap.CENTER - 60 * scale);
+        fx(() -> {
+            var color = snapshot().getPixelReader().getColor(mx, my);
+            require(color.getGreen() > color.getBlue() && color.getGreen() > .6,
+                    "vendor marker drawn north of the player: " + color);
+            var status = overlay.status().getText();
+            require(status.contains("1 in view of 1 on this map")
+                    && status.contains("1 marker without a unique world point")
+                    && status.endsWith("minimap only: Questie positions record no height"), status);
+            hoverAt(mx, my);
+            var tip = map.roleTipText();
+            require(tip != null && tip.startsWith("NPC 2") && tip.contains("carried to world yards"),
+                    "minimap hover: " + tip);
+            // Heading west (yaw pi/2) in heading-up mode: north is now to the right.
+            ((ChoiceBox<?>) map.lookup("#world-minimap-orientation")).getSelectionModel().select(1);
+            update(source, inventory, px, py, Math.PI / 2);
+            require(map.roleTipText() == null, "tooltip re-checked after the map rotates");
+            int rx = (int) Math.round(WorldMinimap.CENTER + 60 * scale), ry = (int) Math.round(WorldMinimap.CENTER);
+            var rotated = snapshot().getPixelReader().getColor(rx, ry);
+            require(rotated.getGreen() > rotated.getBlue() && rotated.getGreen() > .6,
+                    "marker turns with the heading-up map: " + rotated);
+            hoverAt(rx, ry);
+            require(map.roleTipText() != null, "hover uses the rotated position");
+            overlay.faction().setValue(MapRoleOverlay.Faction.HORDE);
+            require(overlay.drawn().isEmpty() && map.roleTipText() == null,
+                    "faction filter hides the marker and its tooltip");
+            overlay.faction().setValue(MapRoleOverlay.Faction.ALL);
+            require(overlay.drawn().size() == 1 && loads.get() == 1, "filter never reloads");
+            ((ChoiceBox<?>) map.lookup("#world-minimap-orientation")).getSelectionModel().select(0);
+            overlay.toggle(com.vibeminer.concepts.locations.MapRoles.Layer.VENDOR).setSelected(false);
+            require(overlay.drawn().isEmpty() && map.roleTipText() == null, "markers off");
+        });
+    }
+
+    private static void hoverAt(double x, double y) {
+        var canvas = (Canvas) map.lookup("#world-minimap-canvas");
+        var screen = canvas.localToScreen(x, y);
+        var scene = canvas.localToScene(x, y);
+        canvas.fireEvent(new javafx.scene.input.MouseEvent(
+                javafx.scene.input.MouseEvent.MOUSE_MOVED, scene.getX(), scene.getY(),
+                screen.getX(), screen.getY(), javafx.scene.input.MouseButton.NONE, 0,
+                false, false, false, false, false, false, false, false, false, false, null));
     }
 
     private static void update(

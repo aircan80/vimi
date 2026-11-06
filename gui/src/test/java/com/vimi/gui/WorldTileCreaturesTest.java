@@ -35,6 +35,9 @@ public final class WorldTileCreaturesTest {
         conversionKeepsOpaqueSurfacesAndDropsCards();
         conversionRefusesWhatItCannotDraw();
         texturesReduceToPowerOfTwoOpaqueImages();
+        alphaKeyedSurfacesDrawAsCutoutKeepingAlpha();
+        defaultGeosetsDrawWithoutCreatureGeosetData();
+        cutoutReductionKeepsThinStrands();
         appendDrawsOnlyQualifiedSpawnsOfTheTile();
         buildingsKeepTheirBudgetFirst();
         cachesPerRevisionAndRetriesFailures();
@@ -51,12 +54,14 @@ public final class WorldTileCreaturesTest {
         var converted = WorldTileCreatures.convert(preview(7, 0L, 0L, appearance(true)), Cancellation.NONE);
         require(converted.model() != null, "An opaque creature converts: " + converted.detail());
         var model = converted.model();
-        require(model.indices().length == 3, "Only the opaque triangle remains");
+        require(model.indices().length == 6, "The opaque and the alpha-keyed triangle remain");
         require(model.vertexCount() == 3, "Vertices are compacted to the drawn triangles");
-        require(model.omittedSurfaces() == 3, "Alpha-keyed, unbound and card sections are counted");
-        require(model.ranges().length == 3 && model.ranges()[0] == 0 && model.ranges()[1] == 3
-                && model.ranges()[2] == 0, "One range binds the one used image");
-        require(model.images().size() == 1, "Only used textures are carried");
+        require(model.omittedSurfaces() == 2, "Unbound and card sections are counted");
+        require(java.util.Arrays.equals(model.ranges(), new int[] {0, 3, 0, 3, 3, 1}),
+                "One range per drawn section, each binding its own image");
+        require(java.util.Arrays.equals(model.blends(), new int[] {WorldTileCreatures.OPAQUE,
+                WorldTileCreatures.CUTOUT}), "The alpha-keyed section is a cutout range");
+        require(model.images().size() == 2, "One texture used opaque and cutout carries one image per class");
         float[] v = model.vertices();
         require(v[0] == 0 && v[1] == 0 && v[2] == 0 && v[5] == 1 && v[6] == 0 && v[7] == 0,
                 "Position, normal and uv are kept in M2 model space");
@@ -69,10 +74,14 @@ public final class WorldTileCreaturesTest {
                 == WorldTileCreatures.Count.CHARACTER_APPEARANCE, "Unknown extended display info is refused");
         require(WorldTileCreatures.convert(preview(7, 0L, 3L, appearance(true)), Cancellation.NONE).refusal()
                 == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED, "Geoset data is refused");
-        require(WorldTileCreatures.convert(preview(7, 0L, 0L, geosets()), Cancellation.NONE).refusal()
-                == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED, "Nonzero geoset parts are refused");
-        require(WorldTileCreatures.convert(preview(7, 0L, 0L, appearance(false)), Cancellation.NONE).refusal()
-                == WorldTileCreatures.Count.NO_OPAQUE_SURFACE, "No opaque surface is refused");
+        require(WorldTileCreatures.convert(preview(7, 0L, 3L, geosets()), Cancellation.NONE).refusal()
+                == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED, "Recorded geoset data is still refused");
+        require(WorldTileCreatures.convert(preview(7, 0L, 0L, additiveOnly()), Cancellation.NONE).refusal()
+                == WorldTileCreatures.Count.NO_OPAQUE_SURFACE, "No opaque or alpha-keyed surface is refused");
+        var hidden = WorldTileCreatures.convert(preview(7, 0L, 0L, hiddenGeosets()), Cancellation.NONE);
+        require(hidden.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
+                        && hidden.detail().contains("group 1 has no default"),
+                "A group with only x01 is refused, never drawn as a guessed variant: " + hidden.detail());
         var missing = new DisplayModelTypes.Preview(DisplayModelTypes.State.UNAVAILABLE, null, null, Set.of(),
                 List.of(), false, "Model read is ABSENT");
         var refused = WorldTileCreatures.convert(missing, Cancellation.NONE);
@@ -84,7 +93,10 @@ public final class WorldTileCreaturesTest {
         int[] argb = new int[300 * 6];
         for (int i = 0; i < argb.length; i++) argb[i] = 0x10ff8040;
         var image = WorldTileCreatures.reduce(new MeshAppearance.Texture(300, 6, argb), Cancellation.NONE);
-        require(image.width() == 128 && image.height() == 4, "Sides become powers of two of at most 128");
+        require(image.width() == 256 && image.height() == 4, "Sides become powers of two of at most 256");
+        var large = WorldTileCreatures.reduce(new MeshAppearance.Texture(1024, 512, new int[1024 * 512]),
+                Cancellation.NONE);
+        require(large.width() == 256 && large.height() == 256, "Each side is capped at 256");
         require((image.rgba()[0] & 255) == 0xff && (image.rgba()[1] & 255) == 0x80
                 && (image.rgba()[2] & 255) == 0x40 && (image.rgba()[3] & 255) == 255,
                 "Box filtering keeps a flat colour and forces alpha opaque");
@@ -92,9 +104,75 @@ public final class WorldTileCreaturesTest {
                 new int[] {0xff000000, 0xffffffff, 0xff000000, 0xffffffff}), Cancellation.NONE);
         require(small.width() == 2 && (small.rgba()[4] & 255) == 255, "Small images are kept exactly");
         require(image.rgba().length
-                        == com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(128, 4) * 4
+                        == com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(256, 4) * 4
                         && small.rgba().length == (4 + 1) * 4,
                 "Creature images carry their generated mip chain");
+    }
+
+    private static void alphaKeyedSurfacesDrawAsCutoutKeepingAlpha() {
+        // Left half transparent black, right half opaque white: a 4 x 1 texture reduced to 2 x 1
+        // keeps the alpha and does not darken the opaque texels with the transparent ones.
+        var texture = new MeshAppearance.Texture(4, 1, new int[] {0x00000000, 0x00000000, 0xffffffff, 0x80ffffff});
+        var cutout = WorldTileCreatures.reduce(texture, WorldTileCreatures.CUTOUT, Cancellation.NONE);
+        byte[] rgba = cutout.rgba();
+        require(cutout.width() == 4 && (rgba[3] & 255) == 0 && (rgba[11] & 255) == 255
+                && (rgba[15] & 255) == 0x80, "Cutout images keep their alpha");
+        int[] edge = new int[512];
+        edge[255] = 0xffffffff;
+        var reduced = WorldTileCreatures.reduce(new MeshAppearance.Texture(512, 1, edge),
+                WorldTileCreatures.CUTOUT, Cancellation.NONE);
+        byte[] r = reduced.rgba();
+        // Texel 127 averages source 254 (transparent black) and 255 (opaque white).
+        require(reduced.width() == 256 && (r[127 * 4] & 255) == 255 && (r[127 * 4 + 3] & 255) == 128,
+                "Colour is weighted by alpha, alpha is the plain mean");
+        var opaque = WorldTileCreatures.reduce(texture, WorldTileCreatures.OPAQUE, Cancellation.NONE);
+        require((opaque.rgba()[3] & 255) == 255, "Opaque images still force alpha");
+        // The cutout range reaches the objects file with its class.
+        var model = WorldTileCreatures.convert(preview(7, 0L, 0L, cutoutOnly()), Cancellation.NONE).model();
+        require(model != null && java.util.Arrays.equals(model.blends(), new int[] {WorldTileCreatures.CUTOUT}),
+                "A model with only alpha-keyed surfaces draws as cutout");
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        var creatures = new WorldTileCreatures(token -> index(List.of(
+                WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0))), () -> "r1",
+                (npc, token) -> qualified(7, null), (display, token) -> preview(display, 0L, 0L, cutoutOnly()));
+        require(creatures.append(builder, 0, TILE, Cancellation.NONE).drawn() == 1, "The cutout creature is placed");
+        require(builder.build().draws() == 1, "Its one cutout range is drawn");
+    }
+
+    private static void defaultGeosetsDrawWithoutCreatureGeosetData() {
+        var converted = WorldTileCreatures.convert(preview(7, 0L, 0L, geosets()), Cancellation.NONE);
+        var model = converted.model();
+        require(model != null, "Default geosets draw: " + converted.detail());
+        // Parts 0 (id 0) and 1 (id 100) draw; part 2 (id 101, the x01 variant of group 1) is hidden
+        // and not counted as an omitted surface.
+        require(java.util.Arrays.equals(model.ranges(), new int[] {0, 3, 0, 3, 3, 0})
+                && model.omittedSurfaces() == 0, "Only x00 sections draw");
+        var unreadable = WorldTileCreatures.convert(preview(7, 0L, null, geosets()), Cancellation.NONE);
+        require(unreadable.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
+                && unreadable.detail().contains("could not be read"), "An unreadable CreatureGeosetDataID is refused");
+        var own = WorldTileCreatures.convert(preview(7, 0L, 0L, true, geosets()), Cancellation.NONE);
+        require(own.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
+                && own.detail().contains("not evaluated"), "A display with its own geoset rows is refused");
+        var unknown = WorldTileCreatures.convert(preview(7, 0L, 0L, null, geosets()), Cancellation.NONE);
+        require(unknown.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
+                && unknown.detail().contains("unknown"), "Unknown display geoset rows are refused");
+    }
+
+    private static void cutoutReductionKeepsThinStrands() {
+        // Scattered one-texel opaque strands, 1/8 of the texels, reduced 1024 -> 256: a 4 x 4 box
+        // holds about two of them, alpha about 32, so plain averaging fails almost every texel.
+        int side = 1024;
+        int[] argb = new int[side * side];
+        var random = new java.util.Random(7);
+        for (int i = 0; i < argb.length; i++) if (random.nextInt(8) == 0) argb[i] = 0xff806040;
+        var image = WorldTileCreatures.reduce(new MeshAppearance.Texture(side, side, argb),
+                WorldTileCreatures.CUTOUT, Cancellation.NONE);
+        require(image.width() == 256, "Reduced to 256");
+        double coverage = com.vibeminer.rendering.world.ObjectTextureMips.coverage(image.rgba(), 0, 256 * 256);
+        require(Math.abs(coverage - 0.125) < 0.03, "The top level keeps the source coverage: " + coverage);
+        var opaque = WorldTileCreatures.reduce(new MeshAppearance.Texture(side, side, argb),
+                WorldTileCreatures.OPAQUE, Cancellation.NONE);
+        require((opaque.rgba()[3] & 255) == 255, "Opaque images are not rescaled");
     }
 
     private static void appendDrawsOnlyQualifiedSpawnsOfTheTile() {
@@ -126,7 +204,7 @@ public final class WorldTileCreaturesTest {
                 "Each drawn placement records its spawn, NPC record, display choice and scale in file order");
         require(summary.plus(summary).placed().isEmpty(), "A summed outcome carries no per-tile records");
         var exterior = builder.build();
-        require(exterior.placements() == 2 && exterior.draws() == 2, "One range per placement");
+        require(exterior.placements() == 2 && exterior.draws() == 4, "Two ranges (opaque and cutout) per placement");
         var transform = WorldTileCreatures.transform(
                 index(List.of(WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0)))
                         .near(0, -100, -100, 1, 1).placed().getFirst(), qualified(7, 1.5));
@@ -390,8 +468,14 @@ public final class WorldTileCreaturesTest {
     }
 
     static DisplayModelTypes.Preview preview(long display, Long extended, Long geosets, MeshAppearance appearance) {
+        return preview(display, extended, geosets, false, appearance);
+    }
+
+    /** {@code displayGeosets}: whether the display has CreatureDisplayInfoGeosetData rows (null unknown). */
+    static DisplayModelTypes.Preview preview(long display, Long extended, Long geosets, Boolean displayGeosets,
+            MeshAppearance appearance) {
         return new DisplayModelTypes.Preview(DisplayModelTypes.State.PARTIAL,
-                new DisplayModelTypes.Reference(display, 20, 123456, List.of(), extended, geosets),
+                new DisplayModelTypes.Reference(display, 20, 123456, List.of(), extended, geosets, displayGeosets),
                 appearance, Set.of(0), List.of(), false, null);
     }
 
@@ -419,11 +503,41 @@ public final class WorldTileCreaturesTest {
                 List.of(texture), cards);
     }
 
+    /** Three one-triangle parts with geoset IDs 0, 100 and 101 (group 1 has x00 and x01), all opaque. */
     static MeshAppearance geosets() {
+        var mesh = new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, new int[] {0, 1, 2, 0, 2, 1, 1, 0, 2},
+                List.of(new PreviewMesh.Part(0, 0, 3), new PreviewMesh.Part(100, 3, 3),
+                        new PreviewMesh.Part(101, 6, 3)));
+        return new MeshAppearance(mesh, new float[6], List.of(new MeshAppearance.Surface(0, 0, true, true, false),
+                new MeshAppearance.Surface(1, 0, true, true, false), new MeshAppearance.Surface(2, 0, true, true, false)),
+                List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})));
+    }
+
+    /** One opaque part on geoset 101 only: nothing in the default set. */
+    static MeshAppearance hiddenGeosets() {
         var mesh = new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, new int[] {0, 1, 2},
                 List.of(new PreviewMesh.Part(101, 0, 3)));
         return new MeshAppearance(mesh, new float[6], List.of(new MeshAppearance.Surface(0, 0, true, true, false)),
                 List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})));
+    }
+
+    /** One part on an unlit additive surface. */
+    static MeshAppearance additiveOnly() {
+        var mesh = new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, new int[] {0, 1, 2},
+                List.of(new PreviewMesh.Part(0, 0, 3)));
+        var additive = new MeshAppearance.Material(MeshAppearance.Combiner.DIFFUSE,
+                List.of(new MeshAppearance.TextureStage(0, MeshAppearance.Coordinate.UV0, true, true)),
+                MeshAppearance.Lighting.UNLIT, MeshAppearance.Blend.ADDITIVE);
+        return new MeshAppearance(mesh, new float[6], List.of(new MeshAppearance.Surface(0, additive)),
+                List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})));
+    }
+
+    /** One alpha-keyed part. */
+    static MeshAppearance cutoutOnly() {
+        var mesh = new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, new int[] {0, 1, 2},
+                List.of(new PreviewMesh.Part(0, 0, 3)));
+        return new MeshAppearance(mesh, new float[6], List.of(new MeshAppearance.Surface(0, 0, true, true, true)),
+                List.of(new MeshAppearance.Texture(2, 2, new int[] {0, -1, -1, 0})));
     }
 
     private static void require(boolean condition, String message) {

@@ -138,6 +138,26 @@ says when more NPCs are in reach than are listed. Drawn markers are bucketed in 
 every repaint (zoom, filter, layer or placement change) and hides when nothing
 drawn is under the pointer any more.
 
+## World explorer minimap role markers
+
+The World explorer's minimap can draw the same quest giver, vendor, trainer and
+flight master markers, with its own layer toggles and faction choice in the
+explorer footer. Each placed Maps marker is carried to world yards through the
+selected build's recorded unscoped `UiMapAssignment` frames for the explorer's
+current map (`MapRoles.world`, `MapTypes.WorldFrame.toWorld`). The inverse is the
+exact algebraic inverse of the projection the resolver already applies
+(`WorldFrame.toUi`); both use the same frame record. A marker gets a world point
+only when every invertible frame of its UiMap that contains it gives the same
+point (within 0.01 yards). Markers outside every frame, with conflicting frames
+or with only degenerate frames are counted in the status line and not drawn.
+Markers of UiMaps with no frame on the current map belong to other maps and are
+not counted.
+
+Questie records no height, so these markers are drawn on the 2D minimap only and
+never in the 3D viewport; no terrain height is looked up or guessed. Hover
+details and the faction filter work as on Maps, and the tooltip is re-checked
+after every minimap repaint (movement, rotation, filter or layer change).
+
 ## Provider boundaries and selection
 
 `LocationSources` accepts the already selected prepared version/snapshot; it never

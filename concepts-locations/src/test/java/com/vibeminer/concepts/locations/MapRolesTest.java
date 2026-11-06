@@ -226,4 +226,113 @@ final class MapRolesTest {
                     MapRoles.Friendly.UNKNOWN, MapRoles.friendly(other), String.valueOf(other));
         }
     }
+
+    private static MapTypes.WorldFrame frame(
+            long id,
+            long uiMap,
+            double uiMinX,
+            double uiMinY,
+            double uiMaxX,
+            double uiMaxY,
+            double minX,
+            double minY,
+            double maxX,
+            double maxY) {
+        return new MapTypes.WorldFrame(
+                id, uiMap, 1, uiMinX, uiMinY, uiMaxX, uiMaxY, minX, minY, maxX, maxY);
+    }
+
+    @Test
+    void worldFrameInverseRoundTripsWithinTolerance() {
+        var random = new java.util.Random(7);
+        for (int trial = 0; trial < 200; trial++) {
+            double ax = random.nextDouble(), bx = random.nextDouble();
+            double ay = random.nextDouble(), by = random.nextDouble();
+            if (Math.abs(ax - bx) < 1e-3 || Math.abs(ay - by) < 1e-3) {
+                continue;
+            }
+            double minX = -20000 + random.nextDouble() * 20000,
+                    minY = -20000 + random.nextDouble() * 20000;
+            var f =
+                    frame(
+                            trial,
+                            1,
+                            ax,
+                            ay,
+                            bx,
+                            by,
+                            minX,
+                            minY,
+                            minX + 1 + random.nextDouble() * 9000,
+                            minY + 1 + random.nextDouble() * 9000);
+            double wx = f.minX() + random.nextDouble() * (f.maxX() - f.minX());
+            double wy = f.minY() + random.nextDouble() * (f.maxY() - f.minY());
+            var ui = f.toUi(wx, wy);
+            var back = f.toWorld(ui[0], ui[1]);
+            assertEquals(wx, back[0], 1e-6, "x round trip");
+            assertEquals(wy, back[1], 1e-6, "y round trip");
+            var again = f.toUi(back[0], back[1]);
+            assertEquals(ui[0], again[0], 1e-9);
+            assertEquals(ui[1], again[1], 1e-9);
+        }
+        var flat = frame(1, 1, 0, 0, 1, 1, 10, 10, 10, 20);
+        assertTrue(!flat.invertible() && flat.toWorld(.5, .5) == null);
+        var collapsedUi = frame(1, 1, .5, 0, .5, 1, 0, 0, 10, 10);
+        assertTrue(!collapsedUi.invertible() && collapsedUi.toWorld(.5, .5) == null);
+        assertTrue(frame(1, 1, 0, 0, .5, .5, 0, 0, 10, 10).toWorld(.75, .25) == null, "outside UI");
+    }
+
+    @Test
+    void roleMarkersGetAWorldPointOnlyFromAgreeingRecordedFrames() {
+        var rows = new java.util.ArrayList<Map<String, Object>>();
+        for (long id = 2; id <= 6; id++) {
+            rows.add(npc(id, 4L, null));
+        }
+        var catalog = catalog(QuestieTypes.Flavor.FOREVER, MapRoles.REVIEWED_RELEASE, rows);
+        var locations = MapRoles.locations(catalog);
+        var resolutions = new java.util.ArrayList<MapTypes.Resolution>();
+        double[][] at = {{.25, .25}, {.75, .75}, {.5, .5}, {.9, .9}, {.4, .4}};
+        long[] maps = {10, 10, 11, 12, 13};
+        for (int i = 0; i < locations.size(); i++) {
+            resolutions.add(
+                    resolved(locations.get(i), List.of(candidate(maps[i], at[i][0], at[i][1]))));
+        }
+        var placement = MapRoles.place(catalog, resolutions);
+        var frames =
+                new MapTypes.WorldFrames(
+                        MapTypes.State.READY,
+                        1,
+                        List.of(
+                                // UiMap 10: one frame covering everything.
+                                frame(100, 10, 0, 0, 1, 1, 0, 0, 1000, 1000),
+                                // UiMap 11: two frames that disagree on the point.
+                                frame(110, 11, 0, 0, 1, 1, 0, 0, 1000, 1000),
+                                frame(111, 11, 0, 0, 1, 1, 0, 0, 2000, 2000),
+                                // UiMap 12: a frame that does not contain .9,.9.
+                                frame(120, 12, 0, 0, .5, .5, 0, 0, 500, 500),
+                                // UiMap 13: only a degenerate frame contains the point.
+                                frame(130, 13, 0, 0, 1, 1, 0, 0, 0, 1000)),
+                        List.of(),
+                        null);
+        var world = MapRoles.world(placement, frames);
+        assertEquals(2, world.markers().size());
+        var first = world.markers().getFirst();
+        // toUi: ui.x = relY*uiMin.x + (1-relY)*uiMax.x, so ui (.25,.25) is world (750,750).
+        assertEquals(750, first.x(), 1e-9);
+        assertEquals(750, first.y(), 1e-9);
+        assertEquals(100, first.assignmentId());
+        assertEquals(1, world.ambiguous());
+        assertEquals(1, world.outside());
+        assertEquals(1, world.degenerate());
+        var otherMap =
+                MapRoles.world(
+                        placement,
+                        new MapTypes.WorldFrames(
+                                MapTypes.State.READY, 2, List.of(), List.of(), null));
+        assertTrue(
+                otherMap.markers().isEmpty()
+                        && otherMap.outside() == 0
+                        && otherMap.ambiguous() == 0,
+                "UiMaps without frames on a map are not counted");
+    }
 }

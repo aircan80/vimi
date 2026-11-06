@@ -35,7 +35,14 @@ public final class WorldGpuUiTest {
     private static final AtomicReference<WorldView> VIEW = new AtomicReference<>();
     private static final AtomicReference<Stage> STAGE = new AtomicReference<>();
     private static final CompletableFuture<Void> DONE = new CompletableFuture<>();
+    private static final AtomicReference<String> BACKEND = new AtomicReference<>("");
     private static GpuPreviewService service;
+
+    /**
+     * The service's ready status, followed by the backend the child reports (the platform default,
+     * Direct3D 11 on Windows), so the proof accepts whichever backend the platform qualifies.
+     */
+    private static final String GPU_READY = "Inline GPU renderer ready · ";
 
     public static void main(String[] args) throws Exception {
         Platform.startup(
@@ -69,8 +76,10 @@ public final class WorldGpuUiTest {
         }
         require(children().isEmpty(), "Owned renderer exited after FX close");
         System.out.println(
-                "World actual GPU FX: Vulkan accepted pixel upload, camera/resize persistence,"
-                    + " hide/resume, software toggle and owner drain passed");
+                "World actual GPU FX: "
+                        + BACKEND.get()
+                        + " accepted pixel upload, camera/resize persistence,"
+                        + " hide/resume, software toggle and owner drain passed");
     }
 
     private static void start() {
@@ -421,11 +430,16 @@ public final class WorldGpuUiTest {
     }
 
     private static boolean ready(WorldView view) {
-        return view.lookup("#world-frame") instanceof ImageView image
-                && image.getImage() != null
-                && view.lookup("#world-gpu-status") instanceof Label label
-                && label.getText().contains("Vulkan")
-                && !view.lookup("#world-gpu-activity").isVisible();
+        boolean ready =
+                view.lookup("#world-frame") instanceof ImageView image
+                        && image.getImage() != null
+                        && view.lookup("#world-gpu-status") instanceof Label label
+                        && label.getText().startsWith(GPU_READY)
+                        && !view.lookup("#world-gpu-activity").isVisible();
+        if (ready) {
+            BACKEND.set(((Label) view.lookup("#world-gpu-status")).getText().substring(GPU_READY.length()));
+        }
+        return ready;
     }
 
     private static KeyEvent key(javafx.event.EventType<KeyEvent> type, KeyCode code) {
@@ -433,22 +447,7 @@ public final class WorldGpuUiTest {
     }
 
     private static Set<Long> children() {
-        return ProcessHandle.current()
-                .children()
-                .filter(ProcessHandle::isAlive)
-                .filter(
-                        p ->
-                                p.info()
-                                        .command()
-                                        .map(
-                                                command ->
-                                                        Path.of(command)
-                                                                .getFileName()
-                                                                .toString()
-                                                                .equals("java"))
-                                        .orElse(false))
-                .map(ProcessHandle::pid)
-                .collect(java.util.stream.Collectors.toSet());
+        return RendererChildren.live();
     }
 
     private static long hash(ImageView image) {

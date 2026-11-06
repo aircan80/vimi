@@ -40,6 +40,11 @@ final class WorldMinimap extends VBox implements AutoCloseable {
     private final ThreadPoolExecutor cancellation = executor("world-minimap-cancel");
     private View view;
     private Job active;
+    private WorldRoleOverlay roles;
+    /** Role marker details under the pointer; shown and moved by hand, not installed. */
+    private final javafx.scene.control.Tooltip roleTip = new javafx.scene.control.Tooltip();
+    /** Last pointer over the canvas: canvas x/y and screen x/y; null when outside. */
+    private double[] pointer;
     private long generation;
     private boolean closed;
 
@@ -87,7 +92,17 @@ final class WorldMinimap extends VBox implements AutoCloseable {
                         + " 5;");
         canvas.setId("world-minimap-canvas");
         canvas.setAccessibleText("North-up minimap; player centered");
-        canvas.setMouseTransparent(true);
+        // Pointer moves only feed the role tooltip; every mouse event still bubbles to the viewport.
+        canvas.setOnMouseMoved(event -> {
+            pointer = new double[] {event.getX(), event.getY(), event.getScreenX(), event.getScreenY()};
+            hover();
+        });
+        canvas.setOnMouseExited(event -> {
+            pointer = null;
+            roleTip.hide();
+        });
+        roleTip.setWrapText(true);
+        roleTip.setMaxWidth(360);
         orientation.setId("world-minimap-orientation");
         orientation.getItems().setAll("North up", "Heading up");
         orientation.setValue("North up");
@@ -123,6 +138,35 @@ final class WorldMinimap extends VBox implements AutoCloseable {
                 new ArrayBlockingQueue<>(1),
                 Thread.ofPlatform().daemon().name(name).factory(),
                 new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    /** Mounts minimap role markers; their controls are placed by the caller. FX thread. */
+    void attachRoles(WorldRoleOverlay overlay) {
+        roleTip.hide();
+        roles = overlay;
+        overlay.bindRedraw(this::redraw);
+        redraw();
+    }
+
+    /** The role tooltip's text while it is showing, else null; for tests. */
+    String roleTipText() {
+        return roleTip.isShowing() ? roleTip.getText() : null;
+    }
+
+    /** Shows, moves, updates or hides the role tooltip against what is drawn now. */
+    private void hover() {
+        String text = roles == null || pointer == null || view == null
+                ? null : roles.hoverText(pointer[0], pointer[1]);
+        if (text == null) {
+            roleTip.hide();
+            return;
+        }
+        if (!text.equals(roleTip.getText())) roleTip.setText(text);
+        if (!roleTip.isShowing()) roleTip.show(canvas, pointer[2] + 14, pointer[3] + 14);
+        else {
+            roleTip.setAnchorX(pointer[2] + 14);
+            roleTip.setAnchorY(pointer[3] + 14);
+        }
     }
 
     void update(
@@ -309,6 +353,13 @@ final class WorldMinimap extends VBox implements AutoCloseable {
                 double top = screenX(maxX(tile, view.origin(), view.originX()), view.x());
                 g.drawImage(artwork.image(), left, top, 2 * RADIUS, 2 * RADIUS);
             }
+            if (roles != null && view.inventory().map() != null) {
+                var current = view;
+                roles.paint(g, current.inventory().map().id(),
+                        (worldX, worldY) -> new double[] {
+                            screenY(worldY, current.y()), screenX(worldX, current.x())},
+                        CENTER, RADIUS, rotation);
+            }
         }
         g.restore();
         g.setStroke(Color.web("#a6b9b7"));
@@ -345,9 +396,11 @@ final class WorldMinimap extends VBox implements AutoCloseable {
                                 : orientation.getValue() + (missing > 0 ? " · partial artwork" : ""));
         setAccessibleText(orientation.getValue() + " minimap. " + message.getText());
         canvas.setAccessibleText(orientation.getValue() + " minimap; player centered");
+        hover();
     }
 
     void hide() {
+        roleTip.hide();
         generation++;
         view = null;
         cache.clear();
@@ -370,6 +423,7 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         if (closed) return;
         hide();
         closed = true;
+        if (roles != null) roles.close();
         worker.shutdown();
         cancellation.shutdown();
     }
