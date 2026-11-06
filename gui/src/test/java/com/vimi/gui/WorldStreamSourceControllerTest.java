@@ -90,7 +90,7 @@ public final class WorldStreamSourceControllerTest {
         var preempted = new java.util.concurrent.atomic.AtomicInteger();
         var blocked = new java.util.concurrent.atomic.AtomicBoolean();
         var early = new java.util.concurrent.atomic.AtomicBoolean();
-        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) -> {
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats) -> {
             // The child logs each commit before acknowledging it.
             if (fixture.commitLines().isEmpty()) early.set(true);
             entered.incrementAndGet();
@@ -134,7 +134,7 @@ public final class WorldStreamSourceControllerTest {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 3);
         fixture.exteriors = true;
         var prepared = new java.util.concurrent.ConcurrentLinkedQueue<Integer>();
-        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) -> {
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats) -> {
             prepared.add(tile.y());
             return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored")
                     .withPicks(tile, java.util.List.of(WorldObjectPicksTest.building(
@@ -171,7 +171,7 @@ public final class WorldStreamSourceControllerTest {
     private static void lateObjectFailuresStayIsolatedFromTerrain() throws Exception {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
         fixture.exteriors = true;
-        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) -> {
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats) -> {
             if (tile.y() == 19) throw new IllegalStateException("authored preparation failure");
             return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
         };
@@ -202,7 +202,7 @@ public final class WorldStreamSourceControllerTest {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 10);
         fixture.exteriors = true;
         // Only the first tile has buildings, so the only delivery is the one that goes stale.
-        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) ->
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats) ->
                 tile.y() == 19
                         ? new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored")
                         : new WorldStreamSourceBridge.ExteriorCopy(null, 0, false, "none");
@@ -1391,7 +1391,7 @@ public final class WorldStreamSourceControllerTest {
         }
 
         void start(WorldStreamSourceController.GpuStarter starter, Runnable beforeController) {
-            start(starter, beforeController, WorldStreamSourceBridge::prepareExterior);
+            start(starter, beforeController, (source, scope, tile, cancellation, formats) -> WorldStreamSourceBridge.prepareExterior(source, scope, tile, cancellation));
         }
 
         void start(WorldStreamSourceController.GpuStarter starter, Runnable beforeController,

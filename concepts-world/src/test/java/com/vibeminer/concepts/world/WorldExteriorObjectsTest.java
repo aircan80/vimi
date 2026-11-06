@@ -257,6 +257,101 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    /** One opaque building image from {@code file}, for a session sampling {@code formats}. */
+    private static WorldExteriorObjects.TileObjects sampling(int formats, byte[] file) {
+        var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)));
+        f.files.sources.put(ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0))));
+        f.files.sources.put(GROUP, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+        f.files.sources.put(IMAGE, file);
+        try {
+            return f.runSampling(formats);
+        } finally {
+            f.close();
+        }
+    }
+
+    @Test
+    void aSessionSamplingBc1TakesTheLargerSideAtItsCompressedCost() {
+        int bc1 = 1 << com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        byte[] file = blp(1024, 1024, 11, 0x07e0);
+        try (var set = sampling(bc1, file)) {
+            var image = set.images().getFirst();
+            assertEquals(512, image.width(), "a sampled BC1 chain reaches the 512 side");
+            assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.BC1, image.format());
+            assertEquals(bc1, set.compressedFormats());
+            // Charged as uploaded: its stored bytes in RGBA8 texel units, not 512 x 512.
+            assertEquals(
+                    com.vibeminer.rendering.world.ObjectTextureFormats.chainBytes(
+                                    com.vibeminer.rendering.world.ObjectTextureFormats.BC1,
+                                    512,
+                                    512)
+                            / 4,
+                    set.pixels());
+            // The 512 level is never decoded to RGBA8: only the registration decode ran.
+            assertEquals(1, set.levelDecodes);
+            assertEquals(255, image.rgba().get(1) & 255, "green");
+        }
+        try (var set = sampling(0, file)) {
+            // A session that decodes BC1 keeps the RGBA8 cap and charge: 256 at most.
+            assertEquals(256, set.images().getFirst().width());
+            assertEquals(0, set.compressedFormats());
+        }
+    }
+
+    @Test
+    void unusableBlocksAtALargerSideFallBackToRgbaWithinItsCap() {
+        int bc1 = 1 << com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        byte[] file = blp(1024, 1024, 11, 0x07e0);
+        // Level 2 (the 256 side) points inside the header: the 512 chain cannot be carried.
+        ByteBuffer.wrap(file).order(ByteOrder.LITTLE_ENDIAN).putInt(20 + 2 * 4, 100);
+        try (var set = sampling(bc1, file)) {
+            var image = set.images().getFirst();
+            assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, image.format());
+            assertTrue(image.width() <= 256, "RGBA8 stays within its side cap: " + image.width());
+        }
+    }
+
+    @Test
+    void unusableBlocksBelowTheRegistrationLevelStillFallBack() {
+        int bc3 = com.vibeminer.rendering.world.ObjectTextureFormats.BC3;
+        // The material pool holds 3 cutout 256^2 and 28 cutout 256x128 RGBA8 chains ahead of one
+        // blended 256^2 BC3 chain; by the 128 round the pool has too little left to raise the
+        // BC3 chain past 64, below its 128 registration level. Its 32 x 32 level points inside
+        // the header, so the blocks are unusable and the RGBA8 fallback needs the registration
+        // pixels, which the release step must keep for a sampled chain.
+        var materials = new ArrayList<Material>();
+        var batches = new ArrayList<Batch>();
+        materials.add(new Material(0, IMAGE, 0));
+        batches.add(new Batch(0, 3, 0, 0));
+        for (int i = 0; i < 32; i++) {
+            materials.add(new Material(i < 31 ? 1 : 2, 6000 + i, 0));
+            batches.add(new Batch((i + 1) * 3, 3, 0, i + 1));
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(1, new long[] {GROUP}, materials));
+            f.files.sources.put(GROUP, group(EXT, 3, 33, batches));
+            f.files.sources.put(IMAGE, blp(64, 64, 7, 0x07e0));
+            for (int i = 0; i < 31; i++) {
+                f.files.sources.put(6000L + i, blp(256, i < 3 ? 256 : 128, 3, i));
+            }
+            byte[] blended = blp3(256, 256, 9, 0x07e0);
+            ByteBuffer.wrap(blended).order(ByteOrder.LITTLE_ENDIAN).putInt(20 + 3 * 4, 100);
+            f.files.sources.put(6031L, blended);
+            try (var set = f.runSampling(1 << bc3)) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
+                var image =
+                        set.images().stream()
+                                .filter(i -> i.id() == 6031L)
+                                .findFirst()
+                                .orElseThrow();
+                assertEquals(64, image.width(), "drawn below its 128 registration level");
+                assertEquals(
+                        com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, image.format());
+                assertEquals(255, image.rgba().get(1) & 255, "green");
+            }
+        }
+    }
+
     @Test
     void opaqueDxtWithItsWholeChainIsCarriedAsTheFilesOwnBlocks() {
         byte[] file = blp(256, 256, 9, 0x07e0);
@@ -387,6 +482,19 @@ class WorldExteriorObjectsTest {
                     Cancellation.NONE,
                     WorldExteriorObjects.ModelReader.STANDARD,
                     detail);
+        }
+
+        /** A run for a GPU session that samples {@code formats} as blocks (#374). */
+        WorldExteriorObjects.TileObjects runSampling(int formats) {
+            return WorldExteriorObjects.prepare(
+                    engine,
+                    scope,
+                    TILE,
+                    Cancellation.NONE,
+                    WorldExteriorObjects.ModelReader.STANDARD,
+                    WorldExteriorObjects.ImageDetail.STANDARD,
+                    WorldExteriorObjects.RETAINED_SOURCE_BYTES,
+                    formats);
         }
 
         WorldExteriorObjects.TileObjects run(WorldExteriorObjects.ModelReader reader) {

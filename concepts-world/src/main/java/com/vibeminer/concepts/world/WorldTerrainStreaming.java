@@ -559,6 +559,21 @@ public final class WorldTerrainStreaming {
             WorldFormats.Tile comparison,
             Cancellation cancel,
             WorldExteriorObjects.ImageDetail detail) {
+        return prepareExteriorObjects(scope, comparison, cancel, detail, 0);
+    }
+
+    /**
+     * As above, for a GPU session whose child samples {@code compressedFormats} as blocks (bit per
+     * {@link com.vibeminer.rendering.world.ObjectTextureFormats} code, from its SESSION status):
+     * chains carried in those formats are charged their stored bytes and may take the larger sides
+     * (#374). The set reports the mask its objects file must be built with.
+     */
+    public WorldExteriorObjects.TileObjects prepareExteriorObjects(
+            Scope scope,
+            WorldFormats.Tile comparison,
+            Cancellation cancel,
+            WorldExteriorObjects.ImageDetail detail,
+            int compressedFormats) {
         Objects.requireNonNull(detail);
         Objects.requireNonNull(scope);
         Objects.requireNonNull(comparison);
@@ -570,7 +585,8 @@ public final class WorldTerrainStreaming {
             throw new IllegalArgumentException("Tile coordinate profile");
         }
         try {
-            return source().exteriorObjects(scope.token, comparison, cancel, detail);
+            return source().exteriorObjects(
+                            scope.token, comparison, cancel, detail, compressedFormats);
         } catch (RuntimeException failure) {
             throw WorldSourceRefusals.boundary(failure);
         }

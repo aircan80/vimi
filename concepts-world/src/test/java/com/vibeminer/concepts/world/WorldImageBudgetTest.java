@@ -129,4 +129,28 @@ class WorldImageBudgetTest {
                         Blp2Types.MipProfile.STRICT);
         assertEquals(3, WorldImageBudget.recordedLevels(declared));
     }
+
+    @Test
+    void compressedRequestsCostTheirBlocksAndRgbaKeepsItsCap() {
+        int bc1 = com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        var compressed = new WorldImageBudget.Request(1024, 1024, 11, bc1, Integer.MAX_VALUE);
+        var rgba =
+                new WorldImageBudget.Request(
+                        1024,
+                        1024,
+                        11,
+                        com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8,
+                        256);
+        int[] sides = {512, 256, 128, 64, 32};
+        // A budget of one 256^2 RGBA8 chain: the BC1 request reaches 512 (1/8 the bytes).
+        long budget = WorldImageBudget.cost(256, 256, 0);
+        org.junit.jupiter.api.Assertions.assertArrayEquals(
+                new int[] {1}, WorldImageBudget.allocate(List.of(compressed), budget, sides));
+        // The RGBA8 request stops at its own 256 cap even with room for more.
+        org.junit.jupiter.api.Assertions.assertArrayEquals(
+                new int[] {2}, WorldImageBudget.allocate(List.of(rgba), budget * 16, sides));
+        // Levels under one block are charged as RGBA8.
+        org.junit.jupiter.api.Assertions.assertEquals(
+                WorldImageBudget.cost(1024, 1024, 9), compressed.cost(9));
+    }
 }

@@ -21,12 +21,51 @@ public final class WorldImageBudget {
     /**
      * One texture to place: its level-0 size and how many levels it can take. Priority is the order
      * of the request list, highest first.
+     *
+     * <p>{@code format} is the compressed format ({@link
+     * com.vibeminer.rendering.world.ObjectTextureFormats}) the chain is uploaded in as blocks, or
+     * RGBA8 (issue #374). A compressed chain is charged its stored bytes / 4, so the budget counts
+     * GPU bytes in RGBA8 texel units; only levels with both sides at least 4 can be blocks, smaller
+     * ones are charged as RGBA8. {@code maxSide} caps the side this request may reach below the
+     * allowed sides (RGBA8 chains keep the smaller caps).
      */
-    public record Request(long width, long height, int levels) {
+    public record Request(long width, long height, int levels, int format, int maxSide) {
         public Request {
-            if (width < 1 || height < 1 || levels < 1 || levels > MAX_LEVELS) {
+            if (width < 1
+                    || height < 1
+                    || levels < 1
+                    || levels > MAX_LEVELS
+                    || !com.vibeminer.rendering.world.ObjectTextureFormats.valid(format)
+                    || maxSide < 1) {
                 throw new IllegalArgumentException("Invalid image request");
             }
+        }
+
+        /** An RGBA8 request with no side cap of its own. */
+        public Request(long width, long height, int levels) {
+            this(
+                    width,
+                    height,
+                    levels,
+                    com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8,
+                    Integer.MAX_VALUE);
+        }
+
+        /** What a chain from {@code level} down costs, in RGBA8 texel units of GPU bytes. */
+        long cost(int level) {
+            int w = (int) Math.max(1, width >> level), h = (int) Math.max(1, height >> level);
+            if (com.vibeminer.rendering.world.ObjectTextureFormats.compressed(format)
+                    && w >= 4
+                    && h >= 4) {
+                return com.vibeminer.rendering.world.ObjectTextureFormats.chainBytes(format, w, h)
+                        / 4;
+            }
+            return WorldImageBudget.cost(width, height, level);
+        }
+
+        /** The level this request takes for an allowed {@code side}, within its own cap. */
+        int level(int side) {
+            return levelFor(width, height, Math.min(side, maxSide), levels);
         }
     }
 
@@ -80,8 +119,8 @@ public final class WorldImageBudget {
         int smallest = sides[sides.length - 1];
         for (int i = 0; i < n; i++) {
             var r = requests.get(i);
-            level[i] = levelFor(r.width(), r.height(), smallest, r.levels());
-            long cost = cost(r.width(), r.height(), level[i]);
+            level[i] = r.level(smallest);
+            long cost = r.cost(level[i]);
             if (total + cost > budget) {
                 // Its smallest level does not fit beside the higher-priority images already
                 // placed; a later, smaller image may still fit.
@@ -96,12 +135,11 @@ public final class WorldImageBudget {
                     continue;
                 }
                 var r = requests.get(i);
-                int next = levelFor(r.width(), r.height(), sides[round], r.levels());
+                int next = r.level(sides[round]);
                 if (next >= level[i]) {
                     continue;
                 }
-                long delta =
-                        cost(r.width(), r.height(), next) - cost(r.width(), r.height(), level[i]);
+                long delta = r.cost(next) - r.cost(level[i]);
                 if (total + delta <= budget) {
                     level[i] = next;
                     total += delta;

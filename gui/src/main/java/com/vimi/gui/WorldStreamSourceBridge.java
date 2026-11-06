@@ -318,11 +318,16 @@ final class WorldStreamSourceBridge {
      */
     @FunctionalInterface
     interface ExteriorPreparer {
+        /**
+         * {@code objectFormats}: the BC formats the session's child samples as blocks (bit per
+         * format code, {@code WorldStreamTransport.Session.objectFormats()}), 0 for RGBA8 only.
+         */
         ExteriorCopy prepare(
                 WorldTerrainStreaming source,
                 WorldTerrainStreaming.Scope scope,
                 WorldFormats.Tile tile,
-                Cancellation cancellation);
+                Cancellation cancellation,
+                int objectFormats);
     }
 
     /** Appends one tile's creatures after its buildings; only cancellation may propagate. */
@@ -372,13 +377,25 @@ final class WorldStreamSourceBridge {
             Cancellation cancellation,
             CreatureAppender creatures,
             WorldExteriorObjects.ImageDetail detail) {
+        return prepareExterior(source, scope, tile, cancellation, creatures, detail, 0);
+    }
+
+    /** As above, for a session whose child samples {@code objectFormats} as blocks (#374). */
+    static ExteriorCopy prepareExterior(
+            WorldTerrainStreaming source,
+            WorldTerrainStreaming.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation cancellation,
+            CreatureAppender creatures,
+            WorldExteriorObjects.ImageDetail detail,
+            int objectFormats) {
         WorldExteriorObjects.TileObjects set = null;
         try {
             boolean failed = false;
             String note;
             var summary = ExteriorSummary.NONE;
             try {
-                set = source.prepareExteriorObjects(scope, tile, cancellation, detail);
+                set = source.prepareExteriorObjects(scope, tile, cancellation, detail, objectFormats);
                 logModelFailure(set);
                 summary = ExteriorSummary.of(set);
                 note = note(summary);
@@ -411,11 +428,18 @@ final class WorldStreamSourceBridge {
             java.util.function.BiConsumer<WorldStreamTileWriter.Exterior.Builder, Cancellation> meshes,
             int[] modelDraws,
             List<Placed> placements,
-            int buildings) {
+            int buildings,
+            int compressedFormats) {
         ObjectSet {
             Objects.requireNonNull(meshes);
             modelDraws = modelDraws.clone();
             placements = List.copyOf(placements);
+        }
+
+        /** A set charged for a session that samples no BC format. */
+        ObjectSet(java.util.function.BiConsumer<WorldStreamTileWriter.Exterior.Builder, Cancellation> meshes,
+                int[] modelDraws, List<Placed> placements, int buildings) {
+            this(meshes, modelDraws, placements, buildings, 0);
         }
 
         /** The neutral set's images, models and placements, with each placement's source. */
@@ -431,7 +455,7 @@ final class WorldStreamSourceBridge {
                         p.scale(), p.rotation().rowMajor(), WorldObjectPicks.Recorder.exterior(set, p, parents)));
             }
             return new ObjectSet((builder, cancellation) -> copyMeshes(builder, set, cancellation), draws, placed,
-                    WorldStreamSourceBridge.buildings(set));
+                    WorldStreamSourceBridge.buildings(set), set.compressedFormats());
         }
     }
 
@@ -462,14 +486,15 @@ final class WorldStreamSourceBridge {
         boolean empty = failed || set.placements().isEmpty();
         if (creatures == null) {
             if (empty) return new ExteriorCopy(null, 0, failed, note).withSummary(summary);
-            var builder = WorldStreamTileWriter.Exterior.builder();
+            // The objects file charges images as the set was charged (#374).
+            var builder = WorldStreamTileWriter.Exterior.builder(set.compressedFormats());
             copyInto(builder, set, cancellation, capped, recorded);
             return new ExteriorCopy(builder.build(), set.buildings(), false, note)
                     .withSummary(summary.capped(capped[0], capped[1]))
                     .withPicks(tile, recorded.sources());
         }
         var result = assemble(empty ? null : builder -> copyInto(builder, set, cancellation, capped, recorded),
-                failed, note, creatures, tile, cancellation);
+                failed, note, creatures, tile, cancellation, set == null ? 0 : set.compressedFormats());
         // A building failure inside assemble leaves no buildings or doodads to describe.
         if (result.failed() && !failed) return result.withSummary(ExteriorSummary.NONE).withPicks(tile, List.of());
         return result.withSummary(result.exterior() == null && !empty
@@ -491,7 +516,19 @@ final class WorldStreamSourceBridge {
             CreatureAppender creatures,
             WorldFormats.Tile tile,
             Cancellation cancellation) {
-        var builder = WorldStreamTileWriter.Exterior.builder();
+        return assemble(buildings, failed, note, creatures, tile, cancellation, 0);
+    }
+
+    /** As above, building an objects file that charges {@code compressedFormats} as blocks. */
+    static ExteriorCopy assemble(
+            Consumer<WorldStreamTileWriter.Exterior.Builder> buildings,
+            boolean failed,
+            String note,
+            CreatureAppender creatures,
+            WorldFormats.Tile tile,
+            Cancellation cancellation,
+            int compressedFormats) {
+        var builder = WorldStreamTileWriter.Exterior.builder(compressedFormats);
         int count = 0;
         if (buildings != null) {
             try {
@@ -502,7 +539,7 @@ final class WorldStreamSourceBridge {
                 failed = true;
                 note = "exterior objects failed: canceled outside this tile";
                 buildings = null;
-                builder = WorldStreamTileWriter.Exterior.builder();
+                builder = WorldStreamTileWriter.Exterior.builder(compressedFormats);
             } catch (RuntimeException failure) {
                 cancellation.check();
                 failed = true;
@@ -510,7 +547,7 @@ final class WorldStreamSourceBridge {
                 WorldDiagnostics.degraded("exterior objects",
                         "World exterior objects copy failed; tile kept as terrain only", failure);
                 buildings = null;
-                builder = WorldStreamTileWriter.Exterior.builder();
+                builder = WorldStreamTileWriter.Exterior.builder(compressedFormats);
             }
         }
         WorldTileCreatures.Summary summary;
@@ -538,7 +575,7 @@ final class WorldStreamSourceBridge {
         // The builder may hold a partial or invalid creature model: rebuild buildings alone.
         if (buildings == null) return new ExteriorCopy(null, 0, failed, note, summary);
         try {
-            var alone = WorldStreamTileWriter.Exterior.builder();
+            var alone = WorldStreamTileWriter.Exterior.builder(compressedFormats);
             buildings.accept(alone);
             if (alone.placementCount() == 0) return new ExteriorCopy(null, 0, failed, note, summary);
             return new ExteriorCopy(alone.build(), alone.placementCount(), failed, note, summary);

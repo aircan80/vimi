@@ -2400,12 +2400,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
         long creatureMap = inventory.map().id();
         var detail = objectTextures.getValue();
         WorldStreamSourceBridge.ExteriorPreparer preparer = creatureSource == null
-                ? (source, scope, tile, cancellation) -> WorldStreamSourceBridge.prepareExterior(
-                        source, scope, tile, cancellation, null, detail)
-                : (source, scope, tile, cancellation) -> WorldStreamSourceBridge.prepareExterior(
+                ? (source, scope, tile, cancellation, formats) -> WorldStreamSourceBridge.prepareExterior(
+                        source, scope, tile, cancellation, null, detail, formats)
+                : (source, scope, tile, cancellation, formats) -> WorldStreamSourceBridge.prepareExterior(
                         source, scope, tile, cancellation,
                         (builder, owned, token) -> creatureSource.append(builder, creatureMap, owned, token),
-                        detail);
+                        detail, formats);
         stallWatchdog.reset();
         streaming = new WorldStreamSourceController(request, scope -> {
             var owner = new WorldStreamGpuOwner(gpuService, scope);
