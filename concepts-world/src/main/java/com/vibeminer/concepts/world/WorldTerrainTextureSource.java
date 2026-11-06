@@ -1163,7 +1163,8 @@ public final class WorldTerrainTextureSource {
         if (id <= 0 || id > 0xffff_ffffL) {
             throw new SourceFailure(Reason.UNBOUND);
         }
-        var result = files.stat(FileTypes.FileRef.id(id), request.token).join();
+        // Index facts only (state, id, size, content key): no listfile names or format sniff.
+        var result = files.statContent(FileTypes.FileRef.id(id), request.token).join();
         request.check();
         request.observeLookup(id, limit, result);
         if (result.state() != FileTypes.FileLookupState.FOUND || result.file() == null) {

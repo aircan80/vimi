@@ -566,13 +566,12 @@ final class WorldStreamScopesTest {
                 assertEquals(
                         List.of("statContent", "openRead", "statContent"), forId, calls.toString());
             }
-            // The scopes' material re-check of the diffuse textures (10, 11) and the proof
-            // revalidation of the WDT use index facts only. The texture source's own reads still
-            // do a full stat before reading.
+            // Every lookup while preparing a terrain tile (scopes' proofs, root reuse, material
+            // re-checks, binding revalidation and the texture source's reads) uses index facts
+            // only: no full stat with listfile names or a format sniff.
             assertTrue(calls.contains("statContent:10"), calls.toString());
-            assertTrue(calls.contains("statContent:11"), calls.toString());
-            var last = calls.stream().filter(call -> call.endsWith(":1")).toList();
-            assertEquals("statContent:1", last.getLast(), calls.toString());
+            assertFalse(
+                    calls.stream().anyMatch(call -> call.startsWith("stat:")), calls.toString());
         } finally {
             world.closeAsync().get(5, TimeUnit.SECONDS);
             pool.closeAsync().get(5, TimeUnit.SECONDS);
