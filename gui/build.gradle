@@ -75,7 +75,10 @@ dependencies {
 application {
     mainClass = 'com.vimi.gui.Launcher'
     applicationName = 'vimi-gui-prototype'
-    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED']
+    // Shared with the packaged app (scripts/release/package_app.py); see the file's comments.
+    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED'] +
+            providers.fileContents(layout.projectDirectory.file('jvm-options.txt')).asText.get()
+                    .readLines()*.replaceFirst(/(^|\s)#.*$/, '')*.trim().findAll { it }
 }
 
 tasks.withType(JavaCompile).configureEach {
