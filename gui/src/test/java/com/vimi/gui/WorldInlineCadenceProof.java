@@ -76,9 +76,7 @@ public final class WorldInlineCadenceProof {
                             if (children.stream().anyMatch(Process::isAlive))
                                 throw new AssertionError("Native overlap");
                             var command = new ArrayList<String>();
-                            command.add(
-                                    Path.of(System.getProperty("java.home"), "bin", "java")
-                                            .toString());
+                            command.add(RendererChildren.launcherPath());
                             command.addAll(
                                     List.of(
                                             "--enable-native-access=ALL-UNNAMED",

@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import static org.lwjgl.bgfx.BGFX.BGFX_RENDERER_TYPE_DIRECT3D11;
 import static org.lwjgl.bgfx.BGFX.BGFX_RENDERER_TYPE_VULKAN;
 
 import com.vibeminer.rendering.world.TerrainCamera;
@@ -21,11 +22,34 @@ import javax.imageio.ImageIO;
 public final class WorldStreamNativeProof {
     static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(123, -456);
     static final String SCOPE = "cd".repeat(32);
-    private static final WorldStreamEnvelope.Session SESSION =
+    static final WorldStreamEnvelope.Session SESSION =
             new WorldStreamEnvelope.Session(NONCE, SCOPE, 1);
     private static final TerrainCamera CAMERA = new TerrainCamera(-100, -10, 50, 0, -.6);
     private static final int WIDTH = 256, HEIGHT = 256;
-    private static long camera = 1, sequence;
+
+    /**
+     * The proof backend: Vulkan unless the {@code vimi.worldProof.backend} system property is
+     * {@code d3d11} (Gradle: {@code -PworldProofBackend=d3d11}).
+     */
+    static final WorldStreamTransport.Backend PROOF_BACKEND =
+            proofBackend(System.getProperty("vimi.worldProof.backend", "vulkan"));
+
+    /** The bgfx renderer type of {@link #PROOF_BACKEND}, for in-process native owners. */
+    static final int BACKEND =
+            PROOF_BACKEND == WorldStreamTransport.Backend.D3D11
+                    ? BGFX_RENDERER_TYPE_DIRECT3D11
+                    : BGFX_RENDERER_TYPE_VULKAN;
+
+    /** The one parser of the proof backend property, shared by every World GPU proof. */
+    static WorldStreamTransport.Backend proofBackend(String name) {
+        return switch (name) {
+            case "vulkan" -> WorldStreamTransport.Backend.VULKAN;
+            case "d3d11" -> WorldStreamTransport.Backend.D3D11;
+            default -> throw new IllegalArgumentException("Unknown proof backend " + name);
+        };
+    }
+
+    static long camera = 1, sequence;
 
     /** A splat trailer the next textured {@link #prepare} appends (splat upload proof). */
     static volatile WorldStreamTileFile.Splat splatForNextPrepare;
@@ -166,7 +190,7 @@ public final class WorldStreamNativeProof {
         return WorldStreamPackedTile.prepare(input, () -> false);
     }
 
-    private static CompletableFuture<WorldStreamPackedTile> prepare(
+    static CompletableFuture<WorldStreamPackedTile> prepare(
             ExecutorService worker,
             Path path,
             long tx,
@@ -186,12 +210,11 @@ public final class WorldStreamNativeProof {
                 worker);
     }
 
-    private static WorldStreamControl.Camera command(
-            long revision, int width, int height, long policy) {
+    static WorldStreamControl.Camera command(long revision, int width, int height, long policy) {
         return new WorldStreamControl.Camera(NONCE, revision, policy, width, height, CAMERA);
     }
 
-    private static WorldFrameFileV2.Frame read(WorldFrameFileV2 reader, long content, long floor)
+    static WorldFrameFileV2.Frame read(WorldFrameFileV2 reader, long content, long floor)
             throws Exception {
         var frame =
                 reader.readLatest(
@@ -204,7 +227,7 @@ public final class WorldStreamNativeProof {
         return frame;
     }
 
-    private static void upload(
+    static void upload(
             WorldStreamNativeOwner owner,
             WorldStreamPackedTile packed,
             WorldFrameFileV2 reader,
@@ -232,7 +255,7 @@ public final class WorldStreamNativeProof {
         require(upload.successful() != cancel, "Upload terminal state");
     }
 
-    private static WorldFrameFileV2.Frame accepted(
+    static WorldFrameFileV2.Frame accepted(
             WorldStreamNativeOwner owner, WorldFrameFileV2 reader, long content) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         // Reuse the same camera revision after COMMIT: standing-still content must produce a frame.
@@ -339,8 +362,7 @@ public final class WorldStreamNativeProof {
                                     180,
                                     true)
                             .get(20, TimeUnit.SECONDS);
-            try (var owner =
-                    new WorldStreamNativeOwner(SESSION, frames, BGFX_RENDERER_TYPE_VULKAN)) {
+            try (var owner = new WorldStreamNativeOwner(SESSION, frames, BACKEND)) {
                 upload(owner, first, reader, 0, false);
                 var active = new ArrayList<WorldStreamState.Lease>();
                 active.add(new WorldStreamState.Lease(0, 1, 1));
@@ -406,12 +428,13 @@ public final class WorldStreamNativeProof {
                     }
                     var stats = owner.stats();
                     require(
-                            stats.dynamicBuffers() == 10
-                                    && stats.backingBuffers() == stats.contextBuffers() + 11,
+                            stats.dynamicBuffers() == SESSION.slots()
+                                    && stats.backingBuffers()
+                                            == stats.contextBuffers() + SESSION.slots() + 1,
                             "Fixed native buffer counts " + stats);
                     require(
-                            stats.textures() == stats.contextTextures() + 15,
-                            "Ten atlases plus five fixed target/readbacks");
+                            stats.textures() == stats.contextTextures() + SESSION.slots() + 5,
+                            "One atlas per slot plus five fixed target/readbacks");
                     require(
                             stats.upload().references() == 0
                                     && stats.upload().liveUploadBytes() == 0,
@@ -490,7 +513,9 @@ public final class WorldStreamNativeProof {
                                 && closingUpload.retainedInputBytes() == 0,
                         "Shutdown callback/input drain");
                 System.out.println(
-                        "WORLD_NATIVE_OWNER_PASS pid="
+                        "WORLD_NATIVE_OWNER_PASS backend="
+                                + System.getProperty("vimi.worldProof.backend", "vulkan")
+                                + " pid="
                                 + pid
                                 + " replacements=104 content="
                                 + content
@@ -506,10 +531,10 @@ public final class WorldStreamNativeProof {
         try (var nextFrames =
                         WorldFrameFileV2.create(
                                 directory.resolve("frames-successor"), nextNonce, SCOPE);
-                var successor =
-                        new WorldStreamNativeOwner(
-                                nextSession, nextFrames, BGFX_RENDERER_TYPE_VULKAN)) {
-            require(successor.stats().dynamicBuffers() == 10, "Successor context resources");
+                var successor = new WorldStreamNativeOwner(nextSession, nextFrames, BACKEND)) {
+            require(
+                    successor.stats().dynamicBuffers() == SESSION.slots(),
+                    "Successor context resources");
         }
         // Exterior object culling on a further fresh context: draw counts and pixels, culled and
         // not.

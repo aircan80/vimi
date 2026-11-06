@@ -72,7 +72,7 @@ final class WorldStreamSession {
         this.session = Objects.requireNonNull(session);
         this.directory = Objects.requireNonNull(directory).toAbsolutePath().normalize();
         mailbox = new WorldControlMailbox(session.nonce());
-        state = new WorldStreamState(session.nonce());
+        state = new WorldStreamState(session.nonce(), session.maxActive());
         status = new WorldStreamStatusWriter(session.nonce(), output, deadline);
     }
 
@@ -654,7 +654,7 @@ final class WorldStreamSession {
                 return;
             }
             var decoded = result.commit();
-            List<WorldStreamState.Lease> table = new ArrayList<>(9);
+            List<WorldStreamState.Lease> table = new ArrayList<>(session.maxActive());
             for (var member : decoded.members()) {
                 var lease =
                         state.active().stream()

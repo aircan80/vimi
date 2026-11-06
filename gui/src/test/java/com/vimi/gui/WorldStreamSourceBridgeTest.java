@@ -82,6 +82,14 @@ public final class WorldStreamSourceBridgeTest {
         if (System.getProperty("vimi.world.creatures") == null) {
             check(!WorldStreamGpuOwner.CREATURES, "The default GUI session draws no creature models");
         }
+        var highSpec = WorldStreamGpuOwner.spec("0".repeat(64),
+                com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH);
+        check(highSpec.objectTextures() == com.vibeminer.rendering.bgfx.WorldStreamTransport.ObjectTextures.HIGH,
+                "HIGH object textures select the HIGH objects budget");
+        check(WorldStreamGpuOwner.spec("0".repeat(64),
+                        com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.STANDARD).objectTextures()
+                        == com.vibeminer.rendering.bgfx.WorldStreamTransport.ObjectTextures.STANDARD,
+                "STANDARD object textures keep the STANDARD budget");
         var spec = WorldStreamGpuOwner.spec("0".repeat(64));
         check(spec.exteriorObjects() == WorldStreamGpuOwner.EXTERIORS,
                 "The GUI session profile follows the property");

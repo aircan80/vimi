@@ -528,6 +528,7 @@ public final class WorldTerrainTextureSource {
         final CompletableFuture<List<Observation>> observations = new CompletableFuture<>();
         private final ArrayList<Observation> observing;
         final boolean strictFailures;
+        final PreparedRoot preparedRoot;
         Cancellation.Registration registration;
         volatile boolean canceled;
         volatile Throwable cancellationFailure;
@@ -541,12 +542,24 @@ public final class WorldTerrainTextureSource {
                 Cancellation caller,
                 Consumer<Progress> progress,
                 boolean strictFailures) {
+            this(source, map, tiles, caller, progress, strictFailures, null);
+        }
+
+        Request(
+                WorldTerrainTextureSource source,
+                WorldService.MapInfo map,
+                List<WorldFormats.Tile> tiles,
+                Cancellation caller,
+                Consumer<Progress> progress,
+                boolean strictFailures,
+                PreparedRoot preparedRoot) {
             this.source = source;
             this.map = map;
             this.tiles = tiles;
             this.caller = caller;
             this.progress = progress;
             this.strictFailures = strictFailures;
+            this.preparedRoot = preparedRoot;
             observing = strictFailures ? new ArrayList<>() : null;
         }
 
@@ -610,6 +623,36 @@ public final class WorldTerrainTextureSource {
     }
 
     private record ReadSource(FileBinding binding, byte[] bytes) {}
+
+    /**
+     * A root ADT the caller already read, parsed and fingerprinted from one checked admission. The
+     * material read uses it instead of reading, parsing and hashing the same root again; the root
+     * binding is still revalidated with every other source before publication.
+     */
+    record PreparedRoot(FileBinding binding, TerrainGrid grid, String geometrySha256) {
+        PreparedRoot {
+            Objects.requireNonNull(binding);
+            Objects.requireNonNull(grid);
+            Objects.requireNonNull(geometrySha256);
+            if (grid.chunks().size() != 256 || !geometrySha256.matches("[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("Invalid prepared root");
+            }
+        }
+    }
+
+    /**
+     * Largest root ADT accepted, the same as the streaming geometry admission, so a root the
+     * geometry draws is never refused for textures only because the material read it itself.
+     */
+    static final int ROOT_SOURCE_LIMIT = 8 << 20;
+
+    private record CachedInventory(FileBinding binding, WorldTextureFormats.Inventory inventory) {}
+
+    private static final int INVENTORY_CACHE = 4;
+
+    // WDT inventories by map and WDT file, reused while the WDT's content key is unchanged.
+    private final java.util.LinkedHashMap<String, CachedInventory> inventories =
+            new java.util.LinkedHashMap<>(8, .75f, true);
 
     private record Outcome(TileResult metadata, TerrainAtlasPool.Lease lease) {}
 
@@ -712,7 +755,22 @@ public final class WorldTerrainTextureSource {
         if (tiles.size() != 1) {
             throw new IllegalArgumentException("Owned material operation requires one tile");
         }
-        return beginRead(map, tiles, token, progress, true);
+        return beginRead(map, tiles, token, progress, true, null);
+    }
+
+    /** As above, reusing the caller's checked root parse and fingerprint for this tile. */
+    Operation readOwned(
+            WorldService.MapInfo map,
+            List<WorldFormats.Tile> tiles,
+            Cancellation token,
+            Consumer<Progress> progress,
+            PreparedRoot root) {
+        Objects.requireNonNull(tiles);
+        Objects.requireNonNull(root);
+        if (tiles.size() != 1 || tiles.getFirst().rootId() != root.binding().fileId()) {
+            throw new IllegalArgumentException("Owned material operation requires its one root");
+        }
+        return beginRead(map, tiles, token, progress, true, root);
     }
 
     public CompletableFuture<BatchResult> read(
@@ -720,7 +778,7 @@ public final class WorldTerrainTextureSource {
             List<WorldFormats.Tile> tiles,
             Cancellation token,
             Consumer<Progress> progress) {
-        return beginRead(map, tiles, token, progress, false).result();
+        return beginRead(map, tiles, token, progress, false, null).result();
     }
 
     private Operation beginRead(
@@ -728,7 +786,8 @@ public final class WorldTerrainTextureSource {
             List<WorldFormats.Tile> tiles,
             Cancellation token,
             Consumer<Progress> progress,
-            boolean strictFailures) {
+            boolean strictFailures,
+            PreparedRoot preparedRoot) {
         Objects.requireNonNull(map);
         Objects.requireNonNull(tiles);
         Objects.requireNonNull(token);
@@ -745,7 +804,8 @@ public final class WorldTerrainTextureSource {
             }
             seen[key] = true;
         }
-        var request = new Request(this, map, snapshot, token, progress, strictFailures);
+        var request =
+                new Request(this, map, snapshot, token, progress, strictFailures, preparedRoot);
         request.registration = token.onCancel(() -> tasks.cancel(request));
         request.future.whenComplete(
                 (result, failure) -> {
@@ -778,18 +838,15 @@ public final class WorldTerrainTextureSource {
         boolean transferred = false;
         try {
             request.report(Stage.INVENTORY, 0, 0);
-            ReadSource wdt;
+            FileBinding wdt;
             WorldTextureFormats.Inventory inventory;
             try {
                 if (request.map.wdtId() == null || request.map.wdtId() <= 0) {
                     throw new SourceFailure(Reason.ABSENT);
                 }
-                wdt = readBytes(request.map.wdtId(), 1 << 20, request);
-                try {
-                    inventory = WorldTextureFormats.inventory(wdt.bytes(), request::canceled);
-                } catch (IllegalArgumentException invalid) {
-                    throw new SourceFailure(Reason.INVENTORY_PROFILE);
-                }
+                var cached = inventory(request);
+                wdt = cached.binding();
+                inventory = cached.inventory();
             } catch (RuntimeException unavailable) {
                 propagateCancellation(request, unavailable);
                 Reason reason = reason(request, unavailable, Reason.INVENTORY_PROFILE);
@@ -811,7 +868,7 @@ public final class WorldTerrainTextureSource {
                 }
                 Outcome loaded;
                 try {
-                    loaded = loadTile(request, i, tile, wdt.binding(), inventory.alphaFormat());
+                    loaded = loadTile(request, i, tile, wdt, inventory.alphaFormat());
                 } catch (RuntimeException unavailable) {
                     propagateCancellation(request, unavailable);
                     loaded =
@@ -868,18 +925,27 @@ public final class WorldTerrainTextureSource {
             throw new SourceFailure(Reason.ABSENT);
         }
         request.report(Stage.GRID, tileIndex, 0);
-        var root = readBytes(tile.rootId(), 2 << 20, request);
+        FileBinding root;
         TerrainGrid grid;
         String geometry;
-        try {
-            grid = WorldFormats.adtGrid(root.bytes(), request::canceled);
-            geometry = TerrainGeometryFingerprint.sha256(tile.x(), tile.y(), grid);
-        } catch (IllegalArgumentException invalid) {
-            throw new SourceFailure(Reason.ROOT_PROFILE);
+        var prepared = request.preparedRoot;
+        if (prepared != null && prepared.binding().fileId() == tile.rootId()) {
+            root = prepared.binding();
+            grid = prepared.grid();
+            geometry = prepared.geometrySha256();
+        } else {
+            var read = readBytes(tile.rootId(), ROOT_SOURCE_LIMIT, request);
+            root = read.binding();
+            try {
+                grid = WorldFormats.adtGrid(read.bytes(), request::canceled);
+                geometry = TerrainGeometryFingerprint.sha256(tile.x(), tile.y(), grid);
+            } catch (IllegalArgumentException invalid) {
+                throw profileFailure(root, Reason.ROOT_PROFILE, request);
+            }
         }
         request.report(Stage.TEXTURES, tileIndex, 0);
         var texture = readBytes(tile.tex0Id(), WorldTextureFormats.MAX_SOURCE_BYTES, request);
-        try (var data = readTextureData(texture.bytes(), alphaFormat, request)) {
+        try (var data = readTextureData(texture, alphaFormat, request)) {
             boolean[] used = new boolean[data.diffuseIds().size()];
             for (var chunk : data.chunks()) {
                 if (chunk.issue() == WorldTextureFormats.ChunkIssue.NONE) {
@@ -912,7 +978,7 @@ public final class WorldTerrainTextureSource {
                                     request.map.id(),
                                     tile,
                                     wdt,
-                                    root.binding(),
+                                    root,
                                     texture.binding(),
                                     stats.values().stream().toList(),
                                     geometry)
@@ -986,11 +1052,13 @@ public final class WorldTerrainTextureSource {
                                 request.map.id(),
                                 tile,
                                 wdt,
-                                root.binding(),
+                                root,
                                 texture.binding(),
                                 mipBindings,
                                 geometry,
                                 key);
+                // Every source this tile read, checked once before publication; reads and
+                // decodes no longer revalidate one by one.
                 revalidate(receipt.bindings(), request);
                 request.check();
                 boolean complete = composition.supportedChunks() == 256;
@@ -1011,13 +1079,22 @@ public final class WorldTerrainTextureSource {
         }
     }
 
-    private static WorldTextureFormats.TextureData readTextureData(
-            byte[] bytes, WorldTextureFormats.AlphaFormat alphaFormat, Request request) {
+    private WorldTextureFormats.TextureData readTextureData(
+            ReadSource texture, WorldTextureFormats.AlphaFormat alphaFormat, Request request) {
         try {
-            return WorldTextureFormats.read(bytes, alphaFormat, request::canceled);
+            return WorldTextureFormats.adopt(texture.bytes(), alphaFormat, request::canceled);
         } catch (IllegalArgumentException invalid) {
-            throw new SourceFailure(Reason.TEXTURE_PROFILE);
+            throw profileFailure(texture.binding(), Reason.TEXTURE_PROFILE, request);
         }
+    }
+
+    /**
+     * Reads no longer revalidate one by one, so bytes that fail to parse may come from a source
+     * that changed after its stat. Report that as CHANGED, not as a profile refusal.
+     */
+    private SourceFailure profileFailure(FileBinding binding, Reason profile, Request request) {
+        revalidate(List.of(binding), request);
+        return new SourceFailure(profile);
     }
 
     private record Decoded(TerrainAtlasComposer.DiffuseMip pixels, MipBinding binding) {}
@@ -1050,6 +1127,7 @@ public final class WorldTerrainTextureSource {
                     || image.baseWidth() != image.baseHeight()) {
                 throw new SourceFailure(Reason.DIFFUSE_PROFILE);
             }
+            // Revalidated with the tile's other sources before publication.
             FileBinding actual =
                     new FileBinding(
                             before.fileId(),
@@ -1057,7 +1135,6 @@ public final class WorldTerrainTextureSource {
                             stream.length(),
                             before.declaredSize(),
                             before.sourceLimit());
-            revalidate(List.of(actual), request);
             var profile =
                     image.mipFlags() == 2
                             ? TerrainAtlasComposer.MipProfile.DECLARED_HANDMADE_V1
@@ -1240,7 +1317,13 @@ public final class WorldTerrainTextureSource {
     }
 
     private ReadSource readBytes(long id, int limit, Request request) {
-        var before = stat(id, limit, request);
+        return readBytes(stat(id, limit, request), request);
+    }
+
+    /** Reads one stat'ed source; the caller revalidates it with the tile's other sources. */
+    private ReadSource readBytes(FileBinding before, Request request) {
+        long id = before.fileId();
+        int limit = before.sourceLimit();
         var opened = files.openRead(FileTypes.FileRef.id(id), request.token).join();
         try (var stream = opened.stream()) {
             request.observeOpen(id, opened);
@@ -1264,9 +1347,45 @@ public final class WorldTerrainTextureSource {
                             stream.length(),
                             before.declaredSize(),
                             before.sourceLimit());
-            revalidate(List.of(binding), request);
             return new ReadSource(binding, target.array());
         }
+    }
+
+    /**
+     * The map's WDT inventory. A cached inventory is reused only while a fresh stat reports the
+     * same content key and declared size; otherwise the WDT is read and parsed again.
+     */
+    private CachedInventory inventory(Request request) {
+        long id = request.map.wdtId();
+        String key = request.map.id() + ":" + id;
+        var before = stat(id, 1 << 20, request);
+        synchronized (inventories) {
+            var cached = inventories.get(key);
+            if (cached != null
+                    && cached.binding().contentKey().equals(before.contentKey())
+                    && Objects.equals(cached.binding().declaredSize(), before.declaredSize())) {
+                return cached;
+            }
+        }
+        var wdt = readBytes(before, request);
+        WorldTextureFormats.Inventory parsed;
+        try {
+            parsed = WorldTextureFormats.inventory(wdt.bytes(), request::canceled);
+        } catch (IllegalArgumentException invalid) {
+            throw profileFailure(wdt.binding(), Reason.INVENTORY_PROFILE, request);
+        }
+        // Checked like every other source before this request uses or caches it.
+        revalidate(List.of(wdt.binding()), request);
+        var fresh = new CachedInventory(wdt.binding(), parsed);
+        synchronized (inventories) {
+            inventories.put(key, fresh);
+            if (inventories.size() > INVENTORY_CACHE) {
+                var eldest = inventories.keySet().iterator();
+                eldest.next();
+                eldest.remove();
+            }
+        }
+        return fresh;
     }
 
     private static void validateStream(

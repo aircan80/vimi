@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -34,9 +35,10 @@ import java.util.function.Supplier;
  * the terrain child draws them in its own depth-shared object pass (issue #175, third slice).
  *
  * <p>Only a spawn with a recorded height whose NPC has a {@link CreatureModelPolicy} QUALIFIED
- * display is drawn. The display's static rest-pose preview must need no character appearance and
- * no surface-visibility choice (without CreatureGeosetData, only the default geosets {@code id % 100
- * == 0} are drawn); only its opaque and alpha-keyed (cutout) diffuse surfaces are drawn, with
+ * display is drawn. The display's static preview must need no character appearance, and each
+ * geoset group draws one variant decided from recorded facts ({@link #visibleGeosets}: the
+ * display's own geoset rows, otherwise the group's x00 section); only its opaque and alpha-keyed
+ * (cutout) diffuse surfaces are drawn, with
  * textures reduced to at most {@value #IMAGE_SIDE} pixels a side. Facing is not recorded by the source, so every
  * model faces native north. Each spawn belongs to exactly one tile (the filename-index rule), and
  * selection is nearest to the tile centre first, so it never depends on the camera. Everything
@@ -69,6 +71,8 @@ final class WorldTileCreatures implements AutoCloseable {
         VISIBILITY_UNRESOLVED("surface visibility unresolved"),
         NO_OPAQUE_SURFACE("no opaque or alpha-keyed textured surface"),
         MODEL_UNAVAILABLE("model unavailable"),
+        /** The preview component was busy or closed; not cached and costs no preview budget. */
+        PREVIEWS_BUSY("model reader busy or closed"),
         CAPPED("over the tile budget"),
         FAILED("lookup failed");
 
@@ -319,11 +323,17 @@ final class WorldTileCreatures implements AutoCloseable {
         if (spawns.spawns() == 0) return Summary.failed("no prepared spawn source");
         double size = WorldFormats.TILE_SIZE;
         double centerX = (31.5 - tile.x()) * size, centerY = (31.5 - tile.y()) * size;
-        var nearby = spawns.near(mapId, centerX, centerY, size * Math.sqrt(.5) + 1, WorldSpawns.MAX_NEARBY);
+        // Only this tile's own points take the query's limit: a dense neighbour tile inside the
+        // circle around the tile can no longer starve them.
+        var nearby = spawns.near(mapId, centerX, centerY, size * Math.sqrt(.5) + 1, WorldSpawns.MAX_NEARBY,
+                spawn -> WorldBookmarks.tileIndex(spawn.x()) == tile.x()
+                        && WorldBookmarks.tileIndex(spawn.y()) == tile.y());
         var counts = new int[Count.values().length];
         var added = new HashMap<Long, Integer>();
         var placed = new java.util.ArrayList<WorldObjectPicks.Creature>();
         int placements = 0, previewsTried = 0;
+        // Displays whose preview was busy on this tile: not asked again for every later spawn.
+        var busyDisplays = new HashSet<Long>();
         for (var spawn : nearby.placed()) {
             token.check();
             if (WorldBookmarks.tileIndex(spawn.x()) != tile.x() || WorldBookmarks.tileIndex(spawn.y()) != tile.y()) continue;
@@ -358,6 +368,10 @@ final class WorldTileCreatures implements AutoCloseable {
                 synchronized (this) {
                     converted = models.get(display);
                 }
+                if (converted == null && busyDisplays.contains(display)) {
+                    counts[Count.PREVIEWS_BUSY.ordinal()]++;
+                    continue;
+                }
                 if (converted == null) {
                     if (previewsTried == TILE_PREVIEWS) {
                         counts[Count.CAPPED.ordinal()]++;
@@ -365,6 +379,11 @@ final class WorldTileCreatures implements AutoCloseable {
                     }
                     previewsTried++;
                     converted = load(display, token);
+                    // A busy or closed reader learned nothing: refund the preview it cost.
+                    if (converted.refusal() == Count.PREVIEWS_BUSY) {
+                        previewsTried--;
+                        busyDisplays.add(display);
+                    }
                 }
                 if (converted.refusal() != null) {
                     counts[converted.refusal().ordinal()]++;
@@ -429,6 +448,8 @@ final class WorldTileCreatures implements AutoCloseable {
         } catch (Exception failed) {
             // Only this tile's cancellation propagates; a closed or retired component is a failure.
             token.check();
+            if (busy(failed))
+                return Converted.refused(Count.PREVIEWS_BUSY, failed.getClass().getSimpleName());
             WorldDiagnostics.degraded("creature models", "World creature model read failed", failed);
             // Not cached: a failed read may succeed on the next tile.
             return Converted.refused(Count.FAILED, failed.getClass().getSimpleName());
@@ -437,6 +458,14 @@ final class WorldTileCreatures implements AutoCloseable {
             if (!closed) models.put(display, converted);
         }
         return converted;
+    }
+
+    /** Whether a preview failure is the component's busy or closed refusal, however wrapped. */
+    static boolean busy(Throwable failure) {
+        for (int depth = 0; failure != null && depth < 8; depth++, failure = failure.getCause()) {
+            if (failure instanceof DisplayModelTypes.ServiceUnavailable) return true;
+        }
+        return false;
     }
 
     private static int add(WorldStreamTileWriter.Exterior.Builder builder, Model model) {
@@ -456,10 +485,8 @@ final class WorldTileCreatures implements AutoCloseable {
     /**
      * The tile-independent BASIC conversion of one display's static preview. Refuses character
      * appearance, models without an opaque or alpha-keyed diffuse surface, and every geoset choice
-     * it cannot make from recorded facts: a recorded or unreadable CreatureGeosetDataID, a display
-     * with (or not known to lack) its own CreatureDisplayInfoGeosetData rows, and a geoset group
-     * that has sections but no x00 section. Otherwise only the x00 sections draw (ID 0 or a
-     * multiple of 100: the group's default), never a guessed variant.
+     * it cannot make from recorded facts ({@link #visibleGeosets}). Each geoset group draws the
+     * display's own choice where it records one, otherwise its x00 section; never a guessed variant.
      */
     static Converted convert(DisplayModelTypes.Preview preview, Cancellation token) {
         if (preview == null || preview.appearance() == null || preview.reference() == null)
@@ -470,22 +497,8 @@ final class WorldTileCreatures implements AutoCloseable {
             return Converted.refused(Count.CHARACTER_APPEARANCE, "extended display info is not evaluated");
         var appearance = preview.appearance();
         var mesh = appearance.mesh();
-        if (reference.creatureGeosetDataId() == null)
-            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "creature geoset data could not be read");
-        if (reference.creatureGeosetDataId() != 0)
-            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "geoset visibility is not evaluated");
-        if (reference.displayGeosets() == null)
-            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "display geoset selections are unknown");
-        if (reference.displayGeosets())
-            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "display geoset selections are not evaluated");
-        // Each group with sections must have its x00 default; otherwise which variant shows is a guess.
-        var defaults = new java.util.TreeMap<Integer, Boolean>();
-        for (var part : mesh.parts()) defaults.merge(part.id() / 100, part.id() % 100 == 0, Boolean::logicalOr);
-        for (var group : defaults.entrySet()) {
-            if (!group.getValue())
-                return Converted.refused(Count.VISIBILITY_UNRESOLVED,
-                        "geoset group " + group.getKey() + " has no default x00 section");
-        }
+        var visible = visibleGeosets(reference, mesh);
+        if (visible.refusal() != null) return Converted.refused(Count.VISIBILITY_UNRESOLVED, visible.refusal());
         var surfaces = new HashMap<Integer, MeshAppearance.Surface>();
         for (var surface : appearance.surfaces()) surfaces.put(surface.sectionIndex(), surface);
         var cards = new HashSet<Integer>();
@@ -504,8 +517,8 @@ final class WorldTileCreatures implements AutoCloseable {
         for (int ordinal = 0; ordinal < mesh.parts().size(); ordinal++) {
             token.check();
             var part = mesh.parts().get(ordinal);
-            // Default geosets only: not a surface omission, the section is hidden by design.
-            if (part.id() % 100 != 0) continue;
+            // Hidden geosets are not surface omissions: the section is hidden by the chosen geosets.
+            if (!visible.ids().contains(part.id())) continue;
             var surface = surfaces.get(ordinal);
             var blend = surface == null ? null : surface.material().blend();
             if (surface == null
@@ -572,6 +585,49 @@ final class WorldTileCreatures implements AutoCloseable {
         return new Converted(new Model(vertexArray, indices.stream().mapToInt(Integer::intValue).toArray(),
                 ranges.stream().mapToInt(Integer::intValue).toArray(),
                 blends.stream().mapToInt(Integer::intValue).toArray(), images, omitted), null, null);
+    }
+
+    /** The geoset IDs a model draws, or why that cannot be decided from recorded facts. */
+    record Geosets(Set<Integer> ids, String refusal) {}
+
+    /**
+     * Which geoset sections draw (#361). Each group of sections (geoset ID / 100) shows one variant:
+     * the display's own choice when it records one (CreatureDisplayInfoGeosetData, as group =
+     * GeosetIndex + 1 and section = group * 100 + value), otherwise the group's x00 section. A
+     * choice is never guessed: an unreadable CreatureGeosetDataID, unknown or conflicting display
+     * rows, a chosen variant the model does not have, and a group without its x00 default all
+     * refuse. A non-zero CreatureGeosetDataID without rows for this display refuses too. The ID is
+     * recorded per model (CreatureModelData) while the rows are per display, so it does not prove
+     * that this display has rows: a sibling display of the same model may rely on the defaults.
+     * Which rule the client applies there (and whether it defaults creature groups to x00 or x01)
+     * is not settled; until it is, that case is refused rather than guessed.
+     */
+    static Geosets visibleGeosets(DisplayModelTypes.Reference reference, com.vibeminer.rendering.models.PreviewMesh mesh) {
+        if (reference.creatureGeosetDataId() == null)
+            return new Geosets(Set.of(), "creature geoset data could not be read");
+        var chosen = reference.displayGeosets();
+        if (chosen == null) return new Geosets(Set.of(), "display geoset selections are unknown");
+        if (reference.creatureGeosetDataId() != 0 && chosen.isEmpty())
+            return new Geosets(Set.of(), "the model records geoset data but this display has no geoset rows");
+        var present = new java.util.TreeMap<Integer, java.util.TreeSet<Integer>>();
+        for (var part : mesh.parts()) present.computeIfAbsent(part.id() / 100, g -> new java.util.TreeSet<>()).add(part.id());
+        var ids = new HashSet<Integer>();
+        for (var choice : chosen.entrySet()) {
+            int group = choice.getKey(), value = choice.getValue();
+            if (value == DisplayModelTypes.Reference.CONFLICTING_GEOSET)
+                return new Geosets(Set.of(), "the display's geoset rows conflict for group " + group);
+            if (!present.containsKey(group)) continue; // the model has no such group: nothing to show
+            if (!present.get(group).contains(group * 100 + value))
+                return new Geosets(Set.of(), "geoset " + (group * 100 + value) + " chosen by the display is not in the model");
+        }
+        for (var group : present.entrySet()) {
+            Integer value = chosen.get(group.getKey());
+            int id = group.getKey() * 100 + (value == null ? 0 : value);
+            if (!group.getValue().contains(id))
+                return new Geosets(Set.of(), "geoset group " + group.getKey() + " has no default x00 section");
+            ids.add(id);
+        }
+        return new Geosets(Set.copyOf(ids), null);
     }
 
     /** {@link #reduce(MeshAppearance.Texture, int, Cancellation)} for an opaque surface. */
