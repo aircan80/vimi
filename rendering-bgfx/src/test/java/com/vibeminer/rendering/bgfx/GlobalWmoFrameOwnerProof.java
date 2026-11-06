@@ -7,6 +7,7 @@ import static org.lwjgl.bgfx.BGFX.bgfx_init;
 import static org.lwjgl.bgfx.BGFX.bgfx_init_ctor;
 import static org.lwjgl.bgfx.BGFX.bgfx_shutdown;
 
+import com.vibeminer.rendering.world.TerrainCamera;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -102,9 +103,16 @@ public final class GlobalWmoFrameOwnerProof {
                     var pixels = frame.pixels();
                     for (int y : new int[] {height / 4, height * 3 / 4}) {
                         for (int x : new int[] {width / 4, width * 3 / 4}) {
-                            double nativeY = camera.y() - (x + .5 - width * .5) * 10 / (width * .8);
+                            double nativeY =
+                                    camera.y()
+                                            - (x + .5 - width * .5)
+                                                    * 10
+                                                    / TerrainCamera.focalPixels(width);
                             double nativeZ =
-                                    camera.z() - (y + .5 - height * .5) * 10 / (width * .8);
+                                    camera.z()
+                                            - (y + .5 - height * .5)
+                                                    * 10
+                                                    / TerrainCamera.focalPixels(width);
                             double u = (nativeY + 10) / 20, v = (nativeZ + 10) / 20;
                             int actual = pixels.get(y * width + x);
                             for (int c = 0; c < 3; c++) {

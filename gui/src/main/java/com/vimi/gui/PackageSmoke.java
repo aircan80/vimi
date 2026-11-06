@@ -103,7 +103,12 @@ final class PackageSmoke {
                         + escape(System.getProperty("os.arch"))
                         + "\",\"ui\":"
                         + ui
-                        + ",\"nativeRuntime\":true,\"shaderBlobs\":"
+                        + ",\"collectors\":\""
+                        + escape(String.join(",", java.lang.management.ManagementFactory
+                                .getGarbageCollectorMXBeans().stream()
+                                .map(java.lang.management.GarbageCollectorMXBean::getName)
+                                .toList()))
+                        + "\",\"nativeRuntime\":true,\"shaderBlobs\":"
                         + com.vibeminer.rendering.bgfx.GpuRuntimeProbe.PACKAGED_SHADER_BLOBS
                         + "}";
         int report = options.indexOf("--smoke-report");
