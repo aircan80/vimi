@@ -26,6 +26,8 @@ public final class WorldAudioZoneChangeProbe {
 
     private static final List<Write> WRITES = new ArrayList<>();
     private static int lines;
+    /** Length of each repeated file. */
+    private static int seconds = 10;
 
     /** A line that plays written frames in real time behind a 250 ms buffer. */
     private static SourceDataLine paced(AudioFormat format) {
@@ -92,7 +94,7 @@ public final class WorldAudioZoneChangeProbe {
                 all.write(block, 0, count);
         }
         byte[] once = all.toByteArray();
-        long total = (long) rate * channels * 2 * 10;
+        long total = (long) rate * channels * 2 * seconds;
         return new WorldAudioPlayback.Pcm() {
             long position;
 
@@ -120,6 +122,15 @@ public final class WorldAudioZoneChangeProbe {
         WorldAudioPlayback.Source source = (id, token) -> CompletableFuture.completedFuture(
                 new WorldAreaAudio.AudioFile(id, WorldAreaAudio.FileState.READ, tone, null));
         int runs = args.length > 0 ? Integer.parseInt(args[0]) : 5;
+        String mode = args.length > 1 ? args[1] : "change";
+        if (mode.equals("loop")) {
+            loop(source, runs);
+            return;
+        }
+        if (mode.equals("music")) {
+            music(source, runs);
+            return;
+        }
         var gaps = new ArrayList<Double>();
         var fulls = new ArrayList<Double>();
         for (int run = 0; run < runs; run++) {
@@ -165,5 +176,83 @@ public final class WorldAudioZoneChangeProbe {
         }
         System.out.printf("World audio zone change over %d runs: longest audible gap %s ms;"
                 + " change to new kit at full volume %s ms%n", runs, gaps, fulls);
+    }
+
+    private static void reset() {
+        synchronized (WRITES) {
+            WRITES.clear();
+            lines = 0;
+        }
+    }
+
+    private static List<Write> writes() {
+        synchronized (WRITES) {
+            return WRITES.stream().sorted(java.util.Comparator.comparingLong(Write::start))
+                    .toList();
+        }
+    }
+
+    /**
+     * A two-file ambience kit of 1 s files loops for 8 s after its fade-in: prints the longest
+     * audible gap between files.
+     */
+    private static void loop(WorldAudioPlayback.Source source, int runs) throws Exception {
+        seconds = 1;
+        var gaps = new ArrayList<Double>();
+        for (int run = 0; run < runs; run++) {
+            reset();
+            var playback = new WorldAudioPlayback(() -> 2, WorldAudioZoneChangeProbe::paced,
+                    WorldAudioZoneChangeProbe::repeated, status -> {});
+            playback.ambience.volume(1);
+            playback.ambience.track(new WorldAreaAudio.Track(WorldAreaAudio.Kind.AMBIENCE, 10,
+                    "Zone A", 5, 100, List.of(1000L, 1001L), 0, 0), source);
+            playback.ambience.enabled(true);
+            Thread.sleep(2000);
+            long from = System.nanoTime();
+            Thread.sleep(8000);
+            long to = System.nanoTime();
+            playback.closeAsync().get(10, TimeUnit.SECONDS);
+            var all = writes();
+            int full = all.stream().mapToInt(Write::peak).max().orElse(0);
+            long audibleUntil = from, gap = 0;
+            for (var w : all) {
+                if (w.start() + w.nanos() < from || w.start() > to || w.peak() < full / 20)
+                    continue;
+                gap = Math.max(gap, w.start() - audibleUntil);
+                audibleUntil = Math.max(audibleUntil, w.start() + w.nanos());
+            }
+            gaps.add(gap / 1e6);
+        }
+        System.out.printf("World audio multi-file ambience loop over %d runs: longest audible gap"
+                + " %s ms%n", runs, gaps);
+    }
+
+    /**
+     * Music of 1 s files with a recorded 1000 ms silence: prints how much longer than the
+     * recorded silence each pause between tracks lasts on the device timeline.
+     */
+    private static void music(WorldAudioPlayback.Source source, int runs) throws Exception {
+        seconds = 1;
+        reset();
+        var playback = new WorldAudioPlayback(() -> 2, WorldAudioZoneChangeProbe::paced,
+                WorldAudioZoneChangeProbe::repeated, status -> {});
+        playback.music.volume(1);
+        playback.music.track(new WorldAreaAudio.Track(WorldAreaAudio.Kind.MUSIC, 10, "Zone A", 5,
+                100, List.of(1000L), 1000, 1000), source);
+        playback.music.enabled(true);
+        Thread.sleep((runs + 1) * 2300L);
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        var all = writes();
+        var extra = new ArrayList<Double>();
+        for (int line = 1; line < lines; line++) {
+            int previous = line - 1, next = line;
+            long end = all.stream().filter(w -> w.line() == previous)
+                    .mapToLong(w -> w.start() + w.nanos()).max().orElse(-1);
+            long start = all.stream().filter(w -> w.line() == next).mapToLong(Write::start)
+                    .min().orElse(-1);
+            if (end > 0 && start > 0) extra.add((start - end) / 1e6 - 1000);
+        }
+        System.out.printf("World audio music: pause beyond the recorded 1000 ms silence %s ms%n",
+                extra);
     }
 }
