@@ -83,7 +83,9 @@ These rules come from the tables:
   scales fit far fewer lights.
 - A light with zero coordinates and zero radii is the map-wide light.
 - Times count half-minutes over a 2880-step day.
-- A non-negative `Map.TimeOfDayOverride` fixes that map's time.
+- A non-negative `Map.TimeOfDayOverride` fixes that map's time. Its unit is
+  assumed to be the same half-minute step as `LightData.Time`; the tables don't
+  record it.
 - Colour cells have an empty top byte and are read as `0xRRGGBB`. Under this
   reading, sky colours in the recorded data are mostly blue-dominant.
 
@@ -107,16 +109,28 @@ These rules are this module's model, not recorded rules:
 - **Parameter slot:** only parameter slot 0 is read. The tables don't record what
   the other slots mean.
 
+A map with no map-wide light falls back to Light 1, as the client's documented
+rule says: "If there is no (0,0,0) entry for a continent, use m_ID == 1 as
+fallback" (the wowdev wiki's Light structure).
+
 Some cases have no answer in the tables:
 
 - A map with several map-wide lights. Which one applies may depend on zone
   lights or player conditions, which are not read here.
-- A map with no map-wide light.
+- A map with no map-wide light when Light 1 isn't recorded either.
 - A parameter set without LightData rows.
 
 In these cases the result names the gap and blends only the lights that remain.
-If no light remains, the result is unavailable, so callers keep their own
-fallback.
+It doesn't hide the gap by renormalising: `coverage` says how much of the
+position the recorded lights cover. Callers mix their own fallback in by
+`1 - coverage`, so the sky never snaps at a light's outer radius. If no light
+remains, the result is unavailable (coverage 0).
+
+`FogEnd` 0 means the row records no distance fog (3,362 of 6,008 rows in
+70790). Fog distance and scaler are averaged only over keys and lights that
+record fog. `fogShare` is how much of the value had recorded fog, so a key
+without fog never pulls the distance toward 0. A share of 0 means no recorded
+fog, and callers keep their own.
 
 ## Click to inspect
 

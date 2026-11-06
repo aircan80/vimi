@@ -157,18 +157,24 @@ final class WorldSkyTables {
         var mapTimes = new HashMap<Long, Integer>();
         if (map != null) {
             unreadable = 0;
-            for (var row : map.rows(tables, WorldSky.MAX_MAPS, token)) {
-                try {
-                    long value = map.integer(row, "TimeOfDayOverride", -1);
-                    if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
-                        throw new Unreadable();
+            try {
+                for (var row : map.rows(tables, WorldSky.MAX_MAPS, token)) {
+                    try {
+                        long value = map.integer(row, "TimeOfDayOverride", -1);
+                        if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+                            throw new Unreadable();
+                        }
+                        mapTimes.put(row.id(), (int) value);
+                    } catch (Unreadable failure) {
+                        unreadable++;
                     }
-                    mapTimes.put(row.id(), (int) value);
-                } catch (Unreadable failure) {
-                    unreadable++;
                 }
+                count(issues, unreadable, "Map rows have an unreadable fixed time.");
+            } catch (Unavailable failure) {
+                // Only the fixed times are lost; the sky itself does not depend on Map.
+                mapTimes.clear();
+                issues.add("Map fixed times are unavailable: " + failure.getMessage());
             }
-            count(issues, unreadable, "Map rows have an unreadable fixed time.");
         }
         return WorldSky.Index.of(lights, keys, mapTimes, issues);
     }

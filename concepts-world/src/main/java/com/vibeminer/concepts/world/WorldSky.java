@@ -19,7 +19,8 @@ import java.util.Objects;
  * <p>What the tables decide: which Light rows belong to a map ({@code ContinentID}), each light's
  * centre and its inner and outer radius ({@code GameCoords}, {@code GameFalloffStart}, {@code
  * GameFalloffEnd}), the parameter set in {@code LightParamsID[0]}, the timed LightData keys of that
- * set, and a map's fixed time ({@code Map.TimeOfDayOverride}).
+ * set, and a map's fixed time ({@code Map.TimeOfDayOverride}). The fixed time is assumed to count
+ * the same half-minute steps as {@code LightData.Time} (0..2879); the tables don't record its unit.
  *
  * <p>Falloff matches the established reference behaviour: a light is a sphere around its centre,
  * with weight 1 inside the inner radius falling linearly to 0 at the outer radius over 3D distance
@@ -40,6 +41,13 @@ public final class WorldSky {
     public static final int NOON = DAY / 2;
     public static final int MAX_LIGHTS = 65536, MAX_KEYS = 65536, MAX_MAPS = 65536;
     public static final int MAX_CONTRIBUTIONS = 64;
+
+    /**
+     * The light a map without its own map-wide light falls back to, per the client's documented
+     * rule ("If there is no (0,0,0) entry for a continent, use m_ID == 1 as fallback", the wowdev
+     * wiki's Light structure).
+     */
+    public static final long FALLBACK_LIGHT = 1;
 
     private WorldSky() {}
 
@@ -81,7 +89,13 @@ public final class WorldSky {
         }
     }
 
-    /** Sky and fog channels; colours are recorded 0xRRGGBB values. */
+    /**
+     * Sky and fog channels; colours are recorded 0xRRGGBB values. A recorded {@code FogEnd} of 0
+     * (or less) means the row records no distance fog. {@code fogShare} is how much of this value
+     * had recorded fog (0..1): fog distance and scaler are averaged over that share only, so a key
+     * or light without fog never pulls the distance toward 0. A share of 0 means no recorded fog
+     * here; callers keep their own fog, or blend it in by {@code 1 - fogShare}.
+     */
     public record Sample(
             int skyTop,
             int skyMiddle,
@@ -90,16 +104,46 @@ public final class WorldSky {
             int skySmog,
             int skyFog,
             double fogEnd,
-            double fogScaler) {
+            double fogScaler,
+            double fogShare) {
         public Sample {
             for (int colour : new int[] {skyTop, skyMiddle, skyBand1, skyBand2, skySmog, skyFog}) {
                 if ((colour & 0xff00_0000) != 0) {
                     throw new IllegalArgumentException("Colour is not 0xRRGGBB");
                 }
             }
-            if (!Double.isFinite(fogEnd) || !Double.isFinite(fogScaler)) {
+            if (!Double.isFinite(fogEnd)
+                    || !Double.isFinite(fogScaler)
+                    || !(fogShare >= 0 && fogShare <= 1)) {
                 throw new IllegalArgumentException("Invalid fog values");
             }
+        }
+
+        /** A recorded LightData row: it has fog exactly when its {@code FogEnd} is positive. */
+        public Sample(
+                int skyTop,
+                int skyMiddle,
+                int skyBand1,
+                int skyBand2,
+                int skySmog,
+                int skyFog,
+                double fogEnd,
+                double fogScaler) {
+            this(
+                    skyTop,
+                    skyMiddle,
+                    skyBand1,
+                    skyBand2,
+                    skySmog,
+                    skyFog,
+                    fogEnd > 0 ? fogEnd : 0,
+                    fogEnd > 0 ? fogScaler : 0,
+                    fogEnd > 0 ? 1 : 0);
+        }
+
+        /** True when part of this value has recorded distance fog. */
+        public boolean hasFog() {
+            return fogShare > 0;
         }
 
         /** Weighted average; weights sum to 1 and each colour channel is rounded once. */
@@ -107,7 +151,7 @@ public final class WorldSky {
             if (samples.size() == 1) {
                 return samples.getFirst();
             }
-            double[] sum = new double[6 * 3 + 2];
+            double[] sum = new double[6 * 3 + 3];
             for (int i = 0; i < samples.size(); i++) {
                 var s = samples.get(i);
                 int[] colours = {
@@ -118,8 +162,11 @@ public final class WorldSky {
                         sum[c * 3 + b] += ((colours[c] >> (16 - 8 * b)) & 0xff) * weights[i];
                     }
                 }
-                sum[18] += s.fogEnd * weights[i];
-                sum[19] += s.fogScaler * weights[i];
+                // Fog averages over the fog-bearing share of each sample only.
+                double fog = s.fogShare * weights[i];
+                sum[18] += s.fogEnd * fog;
+                sum[19] += s.fogScaler * fog;
+                sum[20] += fog;
             }
             int[] out = new int[6];
             for (int c = 0; c < 6; c++) {
@@ -128,10 +175,27 @@ public final class WorldSky {
                     out[c] |= value << (16 - 8 * b);
                 }
             }
-            return new Sample(out[0], out[1], out[2], out[3], out[4], out[5], sum[18], sum[19]);
+            double share = Math.min(1, sum[20]);
+            return sum[20] > 0
+                    ? new Sample(
+                            out[0],
+                            out[1],
+                            out[2],
+                            out[3],
+                            out[4],
+                            out[5],
+                            sum[18] / sum[20],
+                            sum[19] / sum[20],
+                            share)
+                    : new Sample(out[0], out[1], out[2], out[3], out[4], out[5], 0, 0, 0);
         }
 
+        /**
+         * Interpolates from {@code a} to {@code b}; a key without fog contributes no fog distance,
+         * only a smaller fog share.
+         */
         static Sample mix(Sample a, Sample b, double f) {
+            double wa = (1 - f) * a.fogShare, wb = f * b.fogShare, share = wa + wb;
             return new Sample(
                     colour(a.skyTop, b.skyTop, f),
                     colour(a.skyMiddle, b.skyMiddle, f),
@@ -139,8 +203,9 @@ public final class WorldSky {
                     colour(a.skyBand2, b.skyBand2, f),
                     colour(a.skySmog, b.skySmog, f),
                     colour(a.skyFog, b.skyFog, f),
-                    a.fogEnd + (b.fogEnd - a.fogEnd) * f,
-                    a.fogScaler + (b.fogScaler - a.fogScaler) * f);
+                    share > 0 ? (a.fogEnd * wa + b.fogEnd * wb) / share : 0,
+                    share > 0 ? (a.fogScaler * wa + b.fogScaler * wb) / share : 0,
+                    Math.min(1, share));
         }
 
         private static int colour(int a, int b, double f) {
@@ -175,12 +240,20 @@ public final class WorldSky {
         }
     }
 
+    /**
+     * {@code sample} blends only the recorded lights that contribute. {@code coverage} (0..1) is
+     * their total share of this position: below 1 where part of the position has no recorded light
+     * (a positional light fading out on a map without a usable map-wide light, or a set without
+     * LightData). Callers mix their own fallback in by {@code 1 - coverage}, so the sky never snaps
+     * at a light's outer radius.
+     */
     public record Result(
             State state,
             long mapId,
             int time,
             boolean timeFixedByMap,
             Sample sample,
+            double coverage,
             List<Contribution> contributions,
             List<String> issues) {
         public Result {
@@ -188,6 +261,8 @@ public final class WorldSky {
             contributions = List.copyOf(contributions);
             issues = List.copyOf(issues);
             if ((state == State.UNAVAILABLE) != (sample == null)
+                    || !(coverage >= 0 && coverage <= 1)
+                    || (state == State.UNAVAILABLE) != (coverage == 0)
                     || contributions.size() > MAX_CONTRIBUTIONS
                     || time < 0
                     || time >= DAY) {
@@ -211,6 +286,10 @@ public final class WorldSky {
             if (timeFixedByMap) {
                 text.append(" (map time)");
             }
+            if (coverage < 1) {
+                text.append(
+                        String.format(java.util.Locale.ROOT, " · %.0f%% covered", coverage * 100));
+            }
             if (state == State.PARTIAL) {
                 text.append(" · partial");
             }
@@ -225,18 +304,21 @@ public final class WorldSky {
         private final Map<Long, List<Key>> keys;
         private final Map<Long, Integer> mapTimes;
         private final List<String> sourceIssues;
+        private final Light fallback;
 
         private Index(
                 Map<Long, List<Light>> positional,
                 Map<Long, List<Light>> defaults,
                 Map<Long, List<Key>> keys,
                 Map<Long, Integer> mapTimes,
-                List<String> sourceIssues) {
+                List<String> sourceIssues,
+                Light fallback) {
             this.positional = positional;
             this.defaults = defaults;
             this.keys = keys;
             this.mapTimes = mapTimes;
             this.sourceIssues = List.copyOf(sourceIssues);
+            this.fallback = fallback;
         }
 
         /**
@@ -263,10 +345,14 @@ public final class WorldSky {
             var defaults = new HashMap<Long, List<Light>>();
             var seenLights = new java.util.HashSet<Long>();
             int unusable = 0;
+            Light fallback = null;
             for (var light : lights) {
                 Objects.requireNonNull(light);
                 if (!seenLights.add(light.id())) {
                     throw new IllegalArgumentException("Duplicate light row " + light.id());
+                }
+                if (light.id() == FALLBACK_LIGHT) {
+                    fallback = light;
                 }
                 if (light.mapDefault()) {
                     defaults.computeIfAbsent(light.mapId(), id -> new ArrayList<>()).add(light);
@@ -325,7 +411,8 @@ public final class WorldSky {
                     Map.copyOf(defaults),
                     Map.copyOf(byParam),
                     Map.copyOf(times),
-                    issues);
+                    issues,
+                    fallback);
         }
 
         private static void freeze(Map<Long, List<Light>> map) {
@@ -405,8 +492,16 @@ public final class WorldSky {
                                     + " records "
                                     + candidates.size()
                                     + " map-wide lights; which applies is not recorded here.");
+                } else if (fallback != null) {
+                    // The client's documented rule: a map without a map-wide light uses Light 1.
+                    weighted.add(new Weighted(fallback, 1 - total));
                 } else {
-                    issues.add("Map " + mapId + " records no map-wide light.");
+                    issues.add(
+                            "Map "
+                                    + mapId
+                                    + " records no map-wide light, and Light "
+                                    + FALLBACK_LIGHT
+                                    + " (the fallback) is not recorded.");
                 }
             }
             weighted.sort(
@@ -450,10 +545,12 @@ public final class WorldSky {
                         time,
                         fixed != null,
                         null,
+                        0,
                         List.of(),
                         List.copyOf(issues));
             }
-            // Missing shares (no map-wide light, or a set without keys) renormalise the rest.
+            // The sample blends the contributing lights; missing shares (no usable map-wide light,
+            // or a set without keys) are reported as uncovered, not hidden by renormalising.
             var weights = new double[parts.size()];
             for (int i = 0; i < weights.length; i++) {
                 weights[i] = parts.get(i).weight() / used;
@@ -465,6 +562,7 @@ public final class WorldSky {
                     time,
                     fixed != null,
                     blended,
+                    Math.min(1, used),
                     parts,
                     List.copyOf(issues));
         }

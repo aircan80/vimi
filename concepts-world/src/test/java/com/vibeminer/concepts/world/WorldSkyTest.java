@@ -80,21 +80,27 @@ final class WorldSkyTest {
         assertEquals(2, inside.contributions().getFirst().lightId());
         assertEquals(grey(200, 1000), inside.sample());
 
-        // Distance 200 is halfway between the inner radius 100 and the outer radius 300.
+        // Distance 200 is halfway between the inner radius 100 and the outer radius 300. The
+        // map-wide light records no fog (FogEnd 0): the fog distance stays the positional
+        // light's own, over half the blend, instead of being averaged down to 500.
         var half = sky.at(0, 800, 0, 0, 0);
         assertEquals(2, half.contributions().size());
         assertEquals(0.5, half.contributions().get(0).weight(), 1e-12);
-        assertEquals(grey(100, 500), half.sample());
+        assertEquals(1.0, half.coverage(), 1e-12);
+        int mid = 100 << 16 | 100 << 8 | 100;
+        assertEquals(
+                new WorldSky.Sample(mid, mid, mid, mid, mid, mid, 1000, 0.5, 0.5), half.sample());
 
         // The radius is 3D: the same horizontal spot 300 above is outside.
         var above = sky.at(0, 1000, 0, 300, 0);
         assertEquals(List.of(1L), above.contributions().stream().map(c -> c.lightId()).toList());
         assertTrue(above.contributions().getFirst().mapDefault());
 
+        // Map 5 records no map-wide light: the client's rule falls back to Light 1.
         var other = sky.at(5, 1000, 0, 0, 0);
-        assertEquals(WorldSky.State.UNAVAILABLE, other.state());
-        assertNull(other.sample());
-        assertTrue(other.issues().getFirst().contains("no map-wide light"));
+        assertEquals(WorldSky.State.READY, other.state());
+        assertEquals(List.of(1L), other.contributions().stream().map(x -> x.lightId()).toList());
+        assertEquals(1.0, other.coverage(), 1e-12);
     }
 
     @Test
@@ -174,5 +180,82 @@ final class WorldSkyTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new WorldSky.Sample(0x0100_0000, 0, 0, 0, 0, 0, 0, 0));
+    }
+
+    @Test
+    void keysWithoutFogNeverAverageTheFogDistanceDown() {
+        var sky =
+                index(
+                        List.of(),
+                        List.of(
+                                new WorldSky.Key(1, 1, 0, grey(0, 0)),
+                                new WorldSky.Key(2, 1, 1000, grey(100, 1000)),
+                                new WorldSky.Key(3, 2, 0, grey(0, 0)),
+                                new WorldSky.Key(4, 2, 1000, grey(100, 0))));
+        // Halfway from a fogless key to a key at 1000: the distance is 1000, over half the value.
+        var mid = sky.sample(1, 500).sample();
+        assertEquals(1000, mid.fogEnd(), 1e-9);
+        assertEquals(0.5, mid.fogShare(), 1e-9);
+        assertTrue(mid.hasFog());
+        // Two fogless keys: no recorded fog at all.
+        var none = sky.sample(2, 500).sample();
+        assertFalse(none.hasFog());
+        assertEquals(0, none.fogEnd());
+        // A recorded row with FogEnd 0 carries no fog scaler either.
+        assertEquals(0, grey(5, 0).fogScaler());
+        assertFalse(grey(5, 0).hasFog());
+    }
+
+    @Test
+    void uncoveredSharesAreReportedSoTheCallerCanBlendItsFallback() {
+        // Map 3 records two map-wide lights (ambiguous) and Light 1 is not on it, so a fading
+        // positional light covers only its own weight, and the rest is left to the caller.
+        var sky =
+                index(
+                        List.of(
+                                defaultLight(10, 3, 100),
+                                defaultLight(11, 3, 101),
+                                at(12, 3, 0, 100, 300, 200)),
+                        List.of(new WorldSky.Key(1, 200, 0, grey(200, 1000))));
+        var half = sky.at(3, 200, 0, 0, 0);
+        assertEquals(WorldSky.State.PARTIAL, half.state());
+        assertEquals(0.5, half.coverage(), 1e-12);
+        assertEquals(grey(200, 1000), half.sample(), "the sample is the covered lights only");
+        assertTrue(half.label().contains("50% covered"), half.label());
+        // Approaching the outer radius the coverage fades instead of snapping.
+        var edge = sky.at(3, 298, 0, 0, 0);
+        assertEquals(0.01, edge.coverage(), 1e-9);
+        var outside = sky.at(3, 300, 0, 0, 0);
+        assertEquals(WorldSky.State.UNAVAILABLE, outside.state());
+        assertEquals(0, outside.coverage());
+        // Without Light 1 recorded, a map with no map-wide light says so.
+        var bare =
+                index(
+                        List.of(at(12, 4, 0, 100, 300, 200)),
+                        List.of(new WorldSky.Key(1, 200, 0, grey(200, 1000))));
+        var lone = bare.at(4, 200, 0, 0, 0);
+        assertTrue(lone.issues().getFirst().contains("Light 1 (the fallback) is not recorded"));
+        assertEquals(0.5, lone.coverage(), 1e-12);
+    }
+
+    @Test
+    void radiusAndTimeEdges() {
+        var light = at(1, 0, 0, 100, 300, 1);
+        assertEquals(1.0, WorldSky.weight(light, 100, 0, 0), "exactly the inner radius is full");
+        assertEquals(0.0, WorldSky.weight(light, 300, 0, 0), "exactly the outer radius is none");
+        var hard = at(2, 0, 0, 200, 200, 1);
+        assertEquals(1.0, WorldSky.weight(hard, 200, 0, 0), "equal radii: a hard edge, inside");
+        assertEquals(0.0, WorldSky.weight(hard, 200.001, 0, 0), "equal radii: outside");
+        // After the last key the value runs on to the first key of the next day.
+        var sky =
+                index(
+                        List.of(),
+                        List.of(
+                                new WorldSky.Key(1, 1, 600, grey(0, 0)),
+                                new WorldSky.Key(2, 1, 1800, grey(240, 0))));
+        var late = sky.sample(1, 2400);
+        assertEquals(List.of(2L, 1L), late.dataRows());
+        // 1800 -> 600 spans 1680; 2400 is 600 of them past 1800.
+        assertEquals(Math.round(240 * (1 - 600.0 / 1680)), late.sample().skyTop() & 0xff);
     }
 }
