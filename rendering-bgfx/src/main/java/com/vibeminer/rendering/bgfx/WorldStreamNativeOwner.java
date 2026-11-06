@@ -225,6 +225,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.finishLate(upload, live);
     }
 
+    /** Test seam for native proofs; see {@link BgfxWorldStreamRenderer#objectBudgetForProof}. */
+    void objectBudgetForProof(long bytes) {
+        requireOpen();
+        renderer.objectBudgetForProof(bytes);
+    }
+
     void commit(long expected, long next, List<WorldStreamState.Lease> table) {
         requireOpen();
         renderer.commit(expected, next, table);
@@ -356,6 +362,18 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     // correct across bgfx's uint32 frame wrap; unsigned absolute ordering does not.
     static boolean readbackReady(int current, int ready) {
         return current - ready >= 0;
+    }
+
+    /** Exterior object counts of the last drawn frame. */
+    BgfxWorldStreamRenderer.FrameCounts frameCounts() {
+        requireOpen();
+        return renderer.frameCounts();
+    }
+
+    /** Proof seam only: see {@link BgfxWorldStreamRenderer#objectCulling}. */
+    void objectCulling(boolean enabled) {
+        requireOpen();
+        renderer.objectCulling(enabled);
     }
 
     Stats stats() {

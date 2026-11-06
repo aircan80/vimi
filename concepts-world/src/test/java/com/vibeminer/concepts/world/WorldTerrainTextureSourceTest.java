@@ -978,7 +978,8 @@ class WorldTerrainTextureSourceTest {
         for (int mode = 0; mode < 6; mode++) {
             var files = new Files();
             if (mode == 0) {
-                files.sources.put(1L, wdt(0x3ca ^ 0x80));
+                // A WDT without MAID names no tex0 companions.
+                files.sources.put(1L, java.util.Arrays.copyOf(wdt(0x3ca), 12 + 40 + 8 + 4096 * 8));
             }
             if (mode == 1) {
                 files.protectedId = 2;
@@ -1166,6 +1167,11 @@ class WorldTerrainTextureSourceTest {
         }
         files.sources.put(1L, manyWdt(tiles));
         var source = new WorldTerrainTextureSource(files.files(), pool);
+        // Capacity beyond the legacy nine current plus nine pending is held by other borrowers.
+        var others = new ArrayList<TerrainAtlasPool.Reservation>();
+        for (int i = 18; i < TerrainAtlasPool.MAX_ENTRIES; i++) {
+            others.add(pool.reserve().orElseThrow());
+        }
         try (var current =
                         source.read(MAP, tiles.subList(0, 9), Cancellation.NONE, p -> {})
                                 .get(10, TimeUnit.SECONDS);
@@ -1174,7 +1180,7 @@ class WorldTerrainTextureSourceTest {
                                 .get(10, TimeUnit.SECONDS)) {
             assertEquals(9, current.tiles().size());
             assertEquals(9, pending.tiles().size());
-            assertEquals(18, pool.stats().entries());
+            assertEquals(TerrainAtlasPool.MAX_ENTRIES, pool.stats().entries());
             assertEquals(18, pool.stats().leaseClaims());
             assertEquals(18, pool.stats().cachedEntries());
             try (var refused =
@@ -1185,13 +1191,48 @@ class WorldTerrainTextureSourceTest {
                         refused.tiles().getFirst().state());
                 assertTrue(refused.retainAtlas(tiles.getLast().x(), tiles.getLast().y()).isEmpty());
             }
-            assertEquals(18, pool.stats().entries());
+            assertEquals(TerrainAtlasPool.MAX_ENTRIES, pool.stats().entries());
             assertEquals(18, pool.stats().cachedEntries());
         } finally {
+            for (var other : others) {
+                other.close();
+            }
             source.closeAsync().get(5, TimeUnit.SECONDS);
             pool.closeAsync().get(5, TimeUnit.SECONDS);
         }
         assertEquals(files.totalOpens(), files.closed.get());
+    }
+
+    @Test
+    void mapsWithoutBigAlphaFlagsReadFourBitAlphaMapsAndAnyOtherFlags() throws Exception {
+        for (int flags : new int[] {0, 0x2, 0x3ca ^ 0x80}) {
+            var files = new Files();
+            files.sources.put(1L, wdt(flags));
+            var out = new ByteArrayOutputStream();
+            out.writeBytes(part("MVER", ints(18)));
+            out.writeBytes(part("MDID", ints(10, 11)));
+            for (int i = 0; i < 256; i++) {
+                var chunk = new ByteArrayOutputStream();
+                chunk.writeBytes(part("MCLY", ints(0, 0, 0, 0, 1, 0x100, 0, 0)));
+                byte[] alpha = new byte[2048];
+                java.util.Arrays.fill(alpha, (byte) 0x88);
+                chunk.writeBytes(part("MCAL", alpha));
+                chunk.writeBytes(part("MCSH", new byte[512]));
+                out.writeBytes(part("MCNK", chunk.toByteArray()));
+            }
+            files.sources.put(3L, out.toByteArray());
+            var pool = new TerrainAtlasPool();
+            var source = new WorldTerrainTextureSource(files.files(), pool);
+            try (var result = read(source)) {
+                var tile = result.tiles().getFirst();
+                assertEquals(WorldTerrainTextureSource.State.READY, tile.state());
+                assertEquals(256, tile.supportedChunks());
+            } finally {
+                source.closeAsync().get(5, TimeUnit.SECONDS);
+                pool.closeAsync().get(5, TimeUnit.SECONDS);
+            }
+            assertEquals(files.totalOpens(), files.closed.get());
+        }
     }
 
     @Test
