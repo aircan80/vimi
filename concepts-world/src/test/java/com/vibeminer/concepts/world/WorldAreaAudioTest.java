@@ -340,6 +340,34 @@ final class WorldAreaAudioTest {
     }
 
     @Test
+    void audioReadsLookUpIndexFactsOnly() {
+        var calls = new java.util.concurrent.ConcurrentLinkedQueue<String>();
+        var files =
+                (com.vibeminer.files.BuildFiles)
+                        java.lang.reflect.Proxy.newProxyInstance(
+                                WorldAreaAudioTest.class.getClassLoader(),
+                                new Class<?>[] {com.vibeminer.files.BuildFiles.class},
+                                (proxy, method, args) -> {
+                                    calls.add(method.getName());
+                                    if (method.getName().equals("statContent")) {
+                                        return java.util.concurrent.CompletableFuture
+                                                .completedFuture(
+                                                        new com.vibeminer.files.FileTypes.FileStat(
+                                                                com.vibeminer.files.FileTypes
+                                                                        .FileLookupState
+                                                                        .UNKNOWN_FILE,
+                                                                null));
+                                    }
+                                    return java.util.concurrent.CompletableFuture.failedFuture(
+                                            new IllegalStateException(
+                                                    "unexpected " + method.getName()));
+                                });
+        var file = WorldAreaAudio.read(files, 9001, Cancellation.NONE);
+        assertEquals(WorldAreaAudio.FileState.UNAVAILABLE, file.state());
+        assertEquals(java.util.List.of("statContent"), java.util.List.copyOf(calls));
+    }
+
+    @Test
     void absentBuildFilesAreUnavailableRatherThanSilent() {
         var file = WorldAreaAudio.read(null, 9001, Cancellation.NONE);
         assertEquals(WorldAreaAudio.FileState.UNAVAILABLE, file.state());

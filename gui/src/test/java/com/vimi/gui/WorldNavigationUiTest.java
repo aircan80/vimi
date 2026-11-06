@@ -202,6 +202,7 @@ public final class WorldNavigationUiTest {
 
     private static void finish(WorldView view, Fixture fixture) {
             controls(view);
+            streamingSizeIsDebouncedPerPulse(view);
             fullscreenAndPanels(view);
             invoke(view,"requestFrame");
             await(fixture,() -> !view.lookup("#world-minimap-activity").isVisible(),() -> {
@@ -312,6 +313,37 @@ public final class WorldNavigationUiTest {
 
     private static boolean viewportActive(WorldView view) {
         try{var m=WorldView.class.getDeclaredMethod("viewportActive");m.setAccessible(true);return (boolean)m.invoke(view);}
+        catch(ReflectiveOperationException error){throw new AssertionError(error);}
+    }
+
+    /** The stream request size: first size at once, a new size after one quiet pulse, reset. */
+    private static void streamingSizeIsDebouncedPerPulse(WorldView view) {
+        var viewport=(javafx.scene.layout.Region)view.lookup("#world-viewport");
+        invoke(view,"resetStreamingSize");
+        require((long)get(view,"streamingPolicy")==1 && (int)get(view,"streamingWidth")==0,"Reset starts at policy 1 without a size");
+        viewport.resize(640,400);
+        invoke(view,"streamingSize");
+        require((int)get(view,"streamingWidth")==640 && (int)get(view,"streamingHeight")==400
+                && (long)get(view,"streamingPolicy")==1,"The first size applies at once without a policy bump");
+        for (int step=1; step<=5; step++) {
+            viewport.resize(640+step*10,400+step*4);
+            invoke(view,"streamingSize");
+            require(!pulse(view),"A size still changing never settles");
+        }
+        require((int)get(view,"streamingWidth")==640 && (long)get(view,"streamingPolicy")==1,
+                "During the drag the old size and policy are requested");
+        require(pulse(view),"After one quiet pulse the new size settles and a camera request is made");
+        invoke(view,"streamingSize");
+        // 690 x 420 fits the 800 x 500 cap unscaled.
+        require((int)get(view,"streamingWidth")==690 && (int)get(view,"streamingHeight")==420
+                && (long)get(view,"streamingPolicy")==2,"The settled size is sent once, with one policy bump");
+        require(!pulse(view),"Nothing more owed");
+        invoke(view,"resetStreamingSize");
+        require((long)get(view,"streamingPolicy")==1 && (int)get(view,"streamingWidth")==0,"A new stream resets");
+    }
+
+    private static boolean pulse(WorldView view) {
+        try{var m=WorldView.class.getDeclaredMethod("streamingSizePulse");m.setAccessible(true);return (boolean)m.invoke(view);}
         catch(ReflectiveOperationException error){throw new AssertionError(error);}
     }
 
