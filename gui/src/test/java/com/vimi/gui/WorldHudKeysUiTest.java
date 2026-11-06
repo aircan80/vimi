@@ -323,6 +323,10 @@ public final class WorldHudKeysUiTest {
         press(KeyCode.B);
         require(menu.shown() && menu.current() == WorldGameMenu.Page.BOOKMARKS,
                 "From the main column, B goes to the Bookmarks page");
+        menu.open(WorldGameMenu.Page.CONTROLS);
+        press(KeyCode.B);
+        require(menu.shown() && menu.current() == WorldGameMenu.Page.BOOKMARKS,
+                "From another page, B switches to the Bookmarks page");
         press(KeyCode.B);
         require(!menu.shown() && !input.keysHeld(), "And closes it again, holding nothing");
     }
