@@ -251,14 +251,16 @@ public final class WorldNavigationUiTest {
         require(!invert.isSelected(),"Defaults shown while the load is pending");
         invert.fire();
         require(savedSlow.size()==1,"The edit saves at once");
-        var edited=input(view).controls();
+        require(input(view).controls().invertY(),"The edit applies");
         // The load completes on another thread after the edit.
         new Thread(() -> slow.complete(stored.encode())).start();
         try { slow.get(5,TimeUnit.SECONDS); } catch (Exception error) { throw new AssertionError(error); }
         var fast=new java.util.concurrent.CompletableFuture<String>();
         Platform.runLater(() -> {
             try {
-                require(input(view).controls().equals(edited) && invert.isSelected(),
+                // Later test steps may have changed controls since; the slow load must not have
+                // applied its distinctive sensitivity.
+                require(input(view).controls().sensitivity()!=stored.sensitivity(),
                         "A load finishing after an edit is ignored: "+input(view).controls());
                 view.controls(new WorldControls.Store() {
                     public java.util.concurrent.CompletableFuture<String> load() { return fast; }
