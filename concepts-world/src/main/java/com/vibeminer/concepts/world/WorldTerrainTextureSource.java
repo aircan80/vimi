@@ -642,9 +642,11 @@ public final class WorldTerrainTextureSource {
 
     /**
      * Largest diffuse BLP file accepted. Terrain diffuses are 1024 or 2048 square BC3 chains up to
-     * about 5.6 MiB, but the decoder reads only the header and the one small mip it decodes, and
-     * the decoded stream keeps one BLTE chunk, so memory is bounded by the mip limits rather than
-     * by this file size.
+     * about 5.6 MiB. The decoder reads only the header and the one small mip it decodes, but the
+     * decoded stream holds the BLTE chunk that mip lies in, so the transient cost per diffuse is
+     * one decoded chunk: at most the file size, so at most this bound (BLTE chunks are capped at 16
+     * MiB). Diffuses are decoded one at a time. Any later caller that reads a whole diffuse binding
+     * into memory would pull up to this many bytes.
      */
     static final int DIFFUSE_SOURCE_LIMIT = 8 << 20;
 

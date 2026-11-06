@@ -242,6 +242,11 @@ class WorldTerrainTextureSourceTest {
         final Map<Long, AtomicInteger> stats = new ConcurrentHashMap<>(),
                 opens = new ConcurrentHashMap<>();
         final AtomicInteger closed = new AtomicInteger(), borrowedClosed = new AtomicInteger();
+
+        /** Bytes served by read() per file, across every stream opened for it. */
+        final Map<Long, java.util.concurrent.atomic.AtomicLong> bytesRead =
+                new ConcurrentHashMap<>();
+
         volatile long protectedId, changedId, wrongId;
 
         /** Opens that fail with a state and code instead of returning a stream. */
@@ -324,6 +329,10 @@ class WorldTerrainTextureSourceTest {
                     int count = Math.min(target.remaining(), bytes.length - position);
                     target.put(bytes, position, count);
                     position += count;
+                    bytesRead
+                            .computeIfAbsent(
+                                    id, ignored -> new java.util.concurrent.atomic.AtomicLong())
+                            .addAndGet(count);
                     return CompletableFuture.completedFuture(count);
                 }
 
@@ -1688,5 +1697,69 @@ class WorldTerrainTextureSourceTest {
                 pool.closeAsync().get(5, TimeUnit.SECONDS);
             }
         }
+    }
+
+    @Test
+    void aLargeDiffuseReadsOnlyItsHeaderAndSmallMipAndTheBoundIsInclusive() throws Exception {
+        byte[] large = blpChain(0xf800, 2048);
+        var files = new Files();
+        files.sources.put(10L, large);
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try (var result = read(source)) {
+            assertEquals(WorldTerrainTextureSource.State.READY, result.tiles().getFirst().state());
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+        // 148-byte header plus the 16-byte 4x4 block level, out of about 5.3 MiB. This authored
+        // stream has no BLTE chunks; on real files the decoded chunk holding the mip is the cost.
+        long served = files.bytesRead.get(10L).get();
+        assertTrue(served <= 4096, "bytes read " + served + " of " + large.length);
+        // Exactly 8 MiB passes the size bound and reaches the decoder, which refuses this
+        // padded chain on its own profile (DIFFUSE_PROFILE), not LIMIT.
+        var exact = new Files();
+        exact.sources.put(10L, java.util.Arrays.copyOf(large, 8 << 20));
+        var exactPool = new TerrainAtlasPool();
+        var exactSource = new WorldTerrainTextureSource(exact.files(), exactPool);
+        try (var result = read(exactSource)) {
+            var reasons =
+                    result.tiles().getFirst().issues().stream()
+                            .filter(issue -> issue.fileId() == 10)
+                            .map(WorldTerrainTextureSource.Issue::reason)
+                            .toList();
+            assertEquals(List.of(WorldTerrainTextureSource.Reason.DIFFUSE_PROFILE), reasons);
+        } finally {
+            exactSource.closeAsync().get(5, TimeUnit.SECONDS);
+            exactPool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void aLargeDiffuseWithATruncatedMipOffsetIsRefusedCleanly() throws Exception {
+        byte[] large = blpChain(0xf800, 2048);
+        // Point the 4x4 level (level 9) past the end of the file.
+        ByteBuffer.wrap(large).order(ByteOrder.LITTLE_ENDIAN).putInt(20 + 9 * 4, large.length + 64);
+        var files = new Files();
+        files.sources.put(10L, large);
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try (var result = read(source)) {
+            var tile = result.tiles().getFirst();
+            assertTrue(tile.state() != WorldTerrainTextureSource.State.READY);
+            assertTrue(
+                    tile.issues().stream()
+                            .anyMatch(
+                                    issue ->
+                                            issue.fileId() == 10
+                                                    && issue.reason()
+                                                            == WorldTerrainTextureSource.Reason
+                                                                    .DIFFUSE_PROFILE));
+            assertEquals(0, pool.stats().leaseClaims());
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+        assertEquals(files.totalOpens(), files.closed.get());
     }
 }
