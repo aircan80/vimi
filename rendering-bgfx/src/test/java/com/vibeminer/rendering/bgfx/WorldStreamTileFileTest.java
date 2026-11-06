@@ -182,7 +182,7 @@ final class WorldStreamTileFileTest {
                 WorldStreamTileFile.write(directory, header(tile, false), tile, null, () -> false);
         byte[] bytes = Files.readAllBytes(path());
         var input = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
-        assertEquals(4096 + 48, bytes.length);
+        assertEquals(4096 + 48 + 3 * 8, bytes.length);
         assertEquals(7, input.getInt(92));
         assertEquals(19, input.getInt(96));
         assertEquals(2, input.getInt(200));
@@ -216,7 +216,7 @@ final class WorldStreamTileFileTest {
         var pixels = atlas();
         var expected =
                 WorldStreamTileFile.write(directory, header(tile, true), tile, pixels, () -> false);
-        assertEquals(2_284_544, Files.size(path()));
+        assertEquals(2_581_504, Files.size(path()));
         assertEquals(0, pixels.position());
         var decoded = WorldStreamTileFile.read(path(), expected, () -> false);
         assertEquals(37120, decoded.tile().vertexCount());

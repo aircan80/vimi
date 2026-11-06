@@ -450,6 +450,18 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.frameCounts();
     }
 
+    /** The World light of the next frames (#373); #177 feeds it from the light tables. */
+    void light(WorldLight value) {
+        requireOpen();
+        renderer.light(value);
+    }
+
+    /** Proof seam only: see {@link BgfxWorldStreamRenderer#terrainLighting}. */
+    void terrainLighting(boolean enabled) {
+        requireOpen();
+        renderer.terrainLighting(enabled);
+    }
+
     /** Proof seam only: see {@link BgfxWorldStreamRenderer#objectCulling}. */
     void objectCulling(boolean enabled) {
         requireOpen();

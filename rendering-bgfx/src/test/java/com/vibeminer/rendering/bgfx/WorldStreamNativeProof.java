@@ -51,6 +51,18 @@ public final class WorldStreamNativeProof {
 
     private static long camera = 1, sequence;
 
+    /**
+     * The MCCV colour (red, green, blue) every vertex of the next {@link #prepare} carries, or null
+     * for none (#373, splat upload proof).
+     */
+    static volatile int[] mccvForNextPrepare;
+
+    /**
+     * Every fixture vertex's MCNR normal (#373): straight toward {@link WorldLight#FIXED}, so the
+     * fixed light leaves the fixture colours exactly as they are (ambient + diffuse = 1).
+     */
+    static final byte[] FIXTURE_NORMAL = {-52, -52, 104};
+
     /** A splat trailer the next textured {@link #prepare} appends (splat upload proof). */
     static volatile WorldStreamTileFile.Splat splatForNextPrepare;
 
@@ -74,7 +86,7 @@ public final class WorldStreamNativeProof {
         }
     }
 
-    private static TerrainScene.Tile tile(int x, int y) {
+    private static TerrainScene.Tile tile(int x, int y, int[] mccv) {
         var base = WorldStreamTileFileTest.full(false);
         var vertices = new float[base.vertexCount() * 3];
         base.vertices().get(vertices);
@@ -91,7 +103,17 @@ public final class WorldStreamNativeProof {
                 }
             }
         }
-        return TerrainScene.Tile.copyOf(x, y, vertices, indices, 256);
+        byte[] attributes = new byte[base.vertexCount() * 8];
+        for (int v = 0; v < base.vertexCount(); v++) {
+            System.arraycopy(FIXTURE_NORMAL, 0, attributes, v * 8, 3);
+            if (mccv != null) {
+                attributes[v * 8 + 4] = (byte) mccv[0];
+                attributes[v * 8 + 5] = (byte) mccv[1];
+                attributes[v * 8 + 6] = (byte) mccv[2];
+                attributes[v * 8 + 7] = (byte) 255;
+            }
+        }
+        return TerrainScene.Tile.copyOf(x, y, vertices, indices, 256, attributes);
     }
 
     private static WorldStreamTileFile.Source structural(long id) {
@@ -139,7 +161,9 @@ public final class WorldStreamNativeProof {
         require(
                 !Thread.currentThread().getName().equals("main"),
                 "Packing must be off native owner");
-        var tile = tile(x, y);
+        var mccv = mccvForNextPrepare;
+        mccvForNextPrepare = null;
+        var tile = tile(x, y, mccv);
         var diffuse =
                 new WorldStreamTileFile.Source(
                         4,
@@ -309,6 +333,59 @@ public final class WorldStreamNativeProof {
                 "Committed pixels " + Integer.toHexString(pixel));
     }
 
+    /** The last terrain lighting check's pixels, for the pass line. */
+    static String lightingPixels = "";
+
+    /**
+     * Issue #373: terrain is lit by its MCNR normal. The fixture normal points at the fixed light,
+     * so the fixed light keeps (180, 20, 30). A light from straight above gives ambient plus
+     * diffuse times the normal's z, 104 / |(-52, -52, 104)|, which the flat-ground normal derived
+     * from the heights would not (it would stay 180). Lighting off draws the albedo.
+     */
+    private static void lighting(WorldStreamNativeOwner owner, WorldFrameFileV2 reader)
+            throws Exception {
+        var overhead =
+                new WorldLight(
+                        new float[] {0, 0, 1},
+                        new float[] {2 / 3f, 2 / 3f, 2 / 3f},
+                        new float[] {1 / 3f, 1 / 3f, 1 / 3f});
+        double z = 104 / Math.sqrt(52 * 52 * 2 + 104 * 104);
+        double factor = 1 / 3.0 + 2 / 3.0 * z;
+        owner.light(overhead);
+        owner.submit(command(++camera, WIDTH, HEIGHT, 1));
+        int lit = accepted(owner, reader, 1).pixels().get(128 * WIDTH + 128);
+        int[] expected = {
+            (int) Math.floor(180 * factor),
+            (int) Math.floor(20 * factor),
+            (int) Math.floor(30 * factor)
+        };
+        require(
+                Math.abs((lit >>> 16 & 255) - expected[0]) <= 1
+                        && Math.abs((lit >>> 8 & 255) - expected[1]) <= 1
+                        && Math.abs((lit & 255) - expected[2]) <= 1,
+                "MCNR-lit terrain "
+                        + Integer.toHexString(lit)
+                        + " expected "
+                        + java.util.Arrays.toString(expected));
+        owner.terrainLighting(false);
+        owner.submit(command(++camera, WIDTH, HEIGHT, 1));
+        int off = accepted(owner, reader, 1).pixels().get(128 * WIDTH + 128);
+        owner.terrainLighting(true);
+        owner.light(WorldLight.FIXED);
+        owner.submit(command(++camera, WIDTH, HEIGHT, 1));
+        color(accepted(owner, reader, 1), 180);
+        require(
+                Math.abs((off >>> 16 & 255) - 180) <= 1
+                        && Math.abs((off >>> 8 & 255) - 20) <= 1
+                        && Math.abs((off & 255) - 30) <= 1,
+                "Terrain lighting off draws the albedo " + Integer.toHexString(off));
+        lightingPixels =
+                " terrainLit="
+                        + Integer.toHexString(lit)
+                        + " terrainUnlit="
+                        + Integer.toHexString(off);
+    }
+
     private static void geographicSides(
             WorldStreamNativeOwner owner, WorldFrameFileV2 reader, Path directory)
             throws Exception {
@@ -403,6 +480,7 @@ public final class WorldStreamNativeProof {
                 image.setRGB(0, 0, WIDTH, HEIGHT, pixels, 0, WIDTH);
                 ImageIO.write(image, "png", directory.resolve("world-stream-native.png").toFile());
                 geographicSides(owner, reader, directory);
+                lighting(owner, reader);
                 var reusedLease = new WorldStreamState.Lease(0, 2, 2);
                 var reused =
                         prepare(worker, directory, 2, reusedLease, 7, 19, 60, true)
@@ -553,7 +631,8 @@ public final class WorldStreamNativeProof {
                                 + " framesDuringUploads="
                                 + framesDuringUploads
                                 + " stats="
-                                + finalStats);
+                                + finalStats
+                                + lightingPixels);
             }
         }
         // Fresh session mapping and completed prior shutdown are required for a successor context.

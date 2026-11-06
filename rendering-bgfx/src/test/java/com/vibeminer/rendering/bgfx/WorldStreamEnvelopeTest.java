@@ -33,7 +33,7 @@ final class WorldStreamEnvelopeTest {
         assertEquals(9, values.getInt(100));
         assertEquals(WorldStreamEnvelope.MAX_PACKET_BYTES, values.getInt(104));
         assertEquals(
-                2_907_264 + WorldStreamTileFile.MAX_SPLAT_BYTES,
+                3_204_224 + WorldStreamTileFile.MAX_SPLAT_BYTES,
                 WorldStreamEnvelope.MAX_PACKET_BYTES);
         assertEquals(
                 session,

@@ -1304,6 +1304,21 @@ final class GpuPreviewService {
      */
     static final List<String> HELPER_JVM_OPTIONS = List.of("-XX:+UseZGC", "-Xmx1g");
 
+    /** Renderer switches the World helper reads itself; forwarded when the application sets them. */
+    static final List<String> HELPER_PROPERTIES = List.of("vimi.world.terrainLighting");
+
+    /** {@code -Dname=value} for each set helper property, in {@link #HELPER_PROPERTIES} order. */
+    static List<String> forwardedProperties(java.util.function.UnaryOperator<String> lookup) {
+        var result = new ArrayList<String>();
+        for (String name : HELPER_PROPERTIES) {
+            String value = lookup.apply(name);
+            if (value != null) {
+                result.add("-D" + name + "=" + value);
+            }
+        }
+        return List.copyOf(result);
+    }
+
     private static ArrayList<String> nativeCommand() {
         var command = new ArrayList<String>();
         boolean windows =
@@ -1314,6 +1329,7 @@ final class GpuPreviewService {
         if (System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT).contains("mac"))
             command.add("-XstartOnFirstThread");
         command.addAll(HELPER_JVM_OPTIONS);
+        command.addAll(forwardedProperties(System::getProperty));
         command.add("--enable-native-access=ALL-UNNAMED");
         command.add("-cp");
         command.add(System.getProperty("java.class.path"));

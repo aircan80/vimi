@@ -56,11 +56,24 @@ public final class WorldFormats {
     }
 
     public static final class Terrain {
+        /**
+         * Bytes per vertex of {@link #attributes()} (issue #373): the MCNR normal as three signed
+         * bytes (all zero when the chunk has none), a zero byte, then the MCCV colour as red,
+         * green, blue and 255 (all four zero when the chunk has none).
+         */
+        public static final int ATTRIBUTE_BYTES = 8;
+
         private final float[] vertices;
         private final int[] triangles;
         private final int chunks;
+        private final byte[] attributes;
 
         public Terrain(float[] vertices, int[] triangles, int chunks) {
+            this(vertices, triangles, chunks, new byte[0]);
+        }
+
+        /** {@code attributes}: empty, or {@link #ATTRIBUTE_BYTES} per vertex. */
+        public Terrain(float[] vertices, int[] triangles, int chunks, byte[] attributes) {
             if (vertices.length == 0
                     || vertices.length % 3 != 0
                     || vertices.length > 256 * 145 * 3
@@ -80,13 +93,23 @@ public final class WorldFormats {
                     throw new IllegalArgumentException("Invalid terrain index");
                 }
             }
+            if (attributes.length != 0
+                    && attributes.length != vertices.length / 3 * ATTRIBUTE_BYTES) {
+                throw new IllegalArgumentException("Invalid terrain attributes");
+            }
             this.vertices = vertices.clone();
             this.triangles = triangles.clone();
             this.chunks = chunks;
+            this.attributes = attributes.clone();
         }
 
         public float[] vertices() {
             return vertices.clone();
+        }
+
+        /** Per-vertex normals and colours ({@link #ATTRIBUTE_BYTES} each), or empty. */
+        public byte[] attributes() {
+            return attributes.clone();
         }
 
         public int[] triangles() {
@@ -282,6 +305,7 @@ public final class WorldFormats {
         var grids = captureGrid ? new ArrayList<TerrainGrid.Chunk>() : null;
         var vertices = geometry ? new FloatBuilder() : null;
         var indices = geometry ? new IndexBuilder() : null;
+        var attributes = geometry ? new AttributeBuilder() : null;
         var areas = new ArrayList<AreaChunk>();
         boolean[] seen = new boolean[256];
         int chunks = 0;
@@ -321,14 +345,14 @@ public final class WorldFormats {
                             throw invalid("ADT heights");
                         }
                         height = sub.start;
-                    } else if (captureGrid && sub.tag == 0x4d434356) {
+                    } else if ((captureGrid || geometry) && sub.tag == 0x4d434356) {
                         if (sub.size != 580 || color != -1 || badColors) {
                             badColors = true;
                             color = -1;
                         } else {
                             color = sub.start;
                         }
-                    } else if (captureGrid && sub.tag == 0x4d434e52) {
+                    } else if ((captureGrid || geometry) && sub.tag == 0x4d434e52) {
                         // 145 x int8[3]; files pad MCNR to 448 bytes.
                         if (sub.size < TerrainGrid.NORMAL_BYTES
                                 || sub.size > 448
@@ -360,6 +384,19 @@ public final class WorldFormats {
                         coordinate(vz);
                         if (geometry) {
                             vertices.vertex(vx, vy, vz);
+                            // Malformed MCNR or MCCV count as absent for the mesh (#373).
+                            int a = attributes.grow();
+                            if (normal >= 0 && !badNormals) {
+                                attributes.bytes[a] = bytes[normal + at * 3];
+                                attributes.bytes[a + 1] = bytes[normal + at * 3 + 1];
+                                attributes.bytes[a + 2] = bytes[normal + at * 3 + 2];
+                            }
+                            if (color >= 0 && !badColors) {
+                                attributes.bytes[a + 4] = bytes[color + at * 4 + 2];
+                                attributes.bytes[a + 5] = bytes[color + at * 4 + 1];
+                                attributes.bytes[a + 6] = bytes[color + at * 4];
+                                attributes.bytes[a + 7] = (byte) 255;
+                            }
                         }
                     }
                 }
@@ -462,9 +499,28 @@ public final class WorldFormats {
             return new ParsedAdt(null, metadata, captureGrid ? new TerrainGrid(grids) : null);
         }
         return new ParsedAdt(
-                new Terrain(vertices.take(), indices.take(), chunks),
+                new Terrain(vertices.take(), indices.take(), chunks, attributes.take()),
                 metadata,
                 captureGrid ? new TerrainGrid(grids) : null);
+    }
+
+    /** Growing per-vertex attribute bytes, {@link Terrain#ATTRIBUTE_BYTES} per vertex. */
+    private static final class AttributeBuilder {
+        byte[] bytes = new byte[145 * Terrain.ATTRIBUTE_BYTES];
+        int size;
+
+        /** Appends one zeroed vertex; returns its first byte. */
+        int grow() {
+            if (size + Terrain.ATTRIBUTE_BYTES > bytes.length) {
+                bytes = java.util.Arrays.copyOf(bytes, bytes.length * 2);
+            }
+            size += Terrain.ATTRIBUTE_BYTES;
+            return size - Terrain.ATTRIBUTE_BYTES;
+        }
+
+        byte[] take() {
+            return java.util.Arrays.copyOf(bytes, size);
+        }
     }
 
     /** Lazy bounded primitive ownership; invalid/small inputs never reserve a full tile. */
