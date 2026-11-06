@@ -27,7 +27,7 @@ public final class ObjectTextureMips {
     public static final float CUTOUT_REFERENCE = 0.5f;
 
     /** Cutout passes at {@code alpha >= 128}: the 8-bit value the shader's 0.5 test accepts. */
-    static final int CUTOUT_ALPHA = 128;
+    public static final int CUTOUT_ALPHA = 128;
 
     /** Material classes, matching the World objects file. */
     public static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2;

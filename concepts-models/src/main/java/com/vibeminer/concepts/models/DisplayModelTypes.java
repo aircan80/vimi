@@ -12,6 +12,25 @@ import java.util.Set;
 public final class DisplayModelTypes {
     private DisplayModelTypes() {}
 
+    /**
+     * The preview component cannot take the request now: its queue is full ({@code closed} false)
+     * or it is closed. Nothing about the display was learned.
+     */
+    public static final class ServiceUnavailable extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
+        private final boolean closed;
+
+        public ServiceUnavailable(String message, boolean closed, Throwable cause) {
+            super(message, cause);
+            this.closed = closed;
+        }
+
+        public boolean closed() {
+            return closed;
+        }
+    }
+
     public enum State {
         READY,
         PARTIAL,
