@@ -68,4 +68,22 @@ class WorldObjectInstancesTest {
                         placementModels, new boolean[7], 3, starts, order));
         assertArrayEquals(new int[] {0, 0, 0, 0}, starts);
     }
+
+    @Test
+    void transientBudgetHoldsAFrameOfInstancesAtTheCaps() {
+        int frame = BgfxWorldStreamRenderer.MAX_FRAME_INSTANCE_BYTES;
+        assertEquals(
+                9 * WorldStreamObjectsFile.MAX_PLACEMENTS * WorldObjectInstances.STRIDE * 2, frame);
+        int bgfxDefault = 6 << 20;
+        // Never below bgfx's default, and always a whole frame of instances plus 1 MiB.
+        assertEquals(
+                Math.max(bgfxDefault, frame + (1 << 20)),
+                WorldStreamNativeOwner.transientVertexBytes(bgfxDefault));
+        assertEquals(frame + (1 << 20), WorldStreamNativeOwner.transientVertexBytes(0));
+        // At #440's raised caps (4,160 placements per tile) a frame needs about 3.6 MB: with the
+        // extra MiB it still fits bgfx's default budget, and the init raises it otherwise.
+        int raised = 9 * 4160 * WorldObjectInstances.STRIDE * 2;
+        org.junit.jupiter.api.Assertions.assertTrue(
+                raised + (1 << 20) <= bgfxDefault, "raised caps fit");
+    }
 }

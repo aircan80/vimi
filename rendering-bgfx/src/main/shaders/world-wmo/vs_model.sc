@@ -11,8 +11,10 @@ void main()
     vec4 relative = vec4(dot(i_data0, p), dot(i_data1, p), dot(i_data2, p), 1.0);
     vec4 eye = mul(u_wmoEye, relative);
     gl_Position = mul(u_wmoProjection, eye);
-    // Uniform scale and an orthonormal rotation: the fragment shader normalises.
-    v_wmoNormal = vec3(dot(i_data0.xyz, a_normal), dot(i_data1.xyz, a_normal), dot(i_data2.xyz, a_normal));
+    // Uniform scale times an orthonormal rotation: dividing by the scale (any row's length)
+    // keeps the normal's own length, so the fragment shader's zero-length cutoff is unchanged.
+    vec3 n = vec3(dot(i_data0.xyz, a_normal), dot(i_data1.xyz, a_normal), dot(i_data2.xyz, a_normal));
+    v_wmoNormal = n * inversesqrt(max(dot(i_data0.xyz, i_data0.xyz), 1e-12));
     v_wmoUv = a_texcoord0;
     v_wmoDepth = -eye.z;
     // Position relative to the model origin, which the hot pass places at the camera.

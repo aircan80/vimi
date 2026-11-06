@@ -79,7 +79,7 @@ final class BgfxWorldWmoPass implements AutoCloseable {
     private final Thread owner = Thread.currentThread();
     private final TerrainScene.Origin origin;
     private final BasicWmoData.Metadata metadata;
-    private final FloatBuffer modelTransform, normalTransform;
+    private final FloatBuffer modelTransform;
     private final int vertexCount;
     private final short[] textures = new short[6];
     private GpuWorldWmoAnnex.Decoded data;
@@ -88,8 +88,6 @@ final class BgfxWorldWmoPass implements AutoCloseable {
     private short vertices = INVALID, indices = INVALID, program = INVALID;
     private short eye = INVALID,
             projection = INVALID,
-            model = INVALID,
-            normal = INVALID,
             sampler = INVALID,
             material = INVALID,
             fog = INVALID,
@@ -98,6 +96,14 @@ final class BgfxWorldWmoPass implements AutoCloseable {
     private long meshBytes, textureBytes;
     private int liveStaging, peakMeshStaging, peakTextureStaging;
     private boolean closed;
+
+    // Frames drawn without the building because no transient instance data was left (#382).
+    private long skippedFrames;
+
+    /** Frames that could not draw the building for lack of transient instance data. */
+    long skippedFrames() {
+        return skippedFrames;
+    }
 
     /** Actual annex/base pairing completes before native allocation; no neutral DTO constructor. */
     static BgfxWorldWmoPass readBound(
@@ -130,7 +136,6 @@ final class BgfxWorldWmoPass implements AutoCloseable {
         this.metadata = decoded.metadata();
         this.origin = origin;
         modelTransform = GpuWorldWmoAnnex.modelToOrigin(metadata);
-        normalTransform = normalMatrix(metadata.placement());
         vertexCount = decoded.positions().remaining() / 3;
         Arrays.fill(textures, INVALID);
         try {
@@ -298,6 +303,8 @@ final class BgfxWorldWmoPass implements AutoCloseable {
             if (org.lwjgl.bgfx.BGFX.bgfx_get_avail_instance_data_buffer(
                             1, WorldObjectInstances.STRIDE)
                     < 1) {
+                // No transient instance room this frame: the frame shows no building, counted.
+                skippedFrames++;
                 return;
             }
             org.lwjgl.bgfx.BGFX.bgfx_alloc_instance_data_buffer(
@@ -322,12 +329,6 @@ final class BgfxWorldWmoPass implements AutoCloseable {
                 bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
             }
         }
-    }
-
-    static FloatBuffer normalMatrix(BasicWmoData.Placement p) {
-        float co = (float) p.cosine(), si = (float) p.sine();
-        return FloatBuffer.wrap(new float[] {-co, -si, 0, 0, si, -co, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1})
-                .asReadOnlyBuffer();
     }
 
     int imageCount() {
@@ -391,15 +392,12 @@ final class BgfxWorldWmoPass implements AutoCloseable {
             bgfx_destroy_program(program);
             program = INVALID;
         }
-        for (short u :
-                new short[] {
-                    eye, projection, model, normal, sampler, material, fog, fogRange, skyTop
-                }) {
+        for (short u : new short[] {eye, projection, sampler, material, fog, fogRange, skyTop}) {
             if (u != INVALID) {
                 bgfx_destroy_uniform(u);
             }
         }
-        eye = projection = model = normal = sampler = material = fog = fogRange = skyTop = INVALID;
+        eye = projection = sampler = material = fog = fogRange = skyTop = INVALID;
         data = null;
         batches = List.of();
         materialImages = new int[0];

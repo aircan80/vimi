@@ -93,6 +93,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     static final int MAX_TICKETS = 64;
 
+    /**
+     * Instance data of one frame at the caps (#382): every placement of nine active tiles, once in
+     * the opaque/cutout pass and once in the sorted pass.
+     */
+    static final int MAX_FRAME_INSTANCE_BYTES =
+            9 * WorldStreamObjectsFile.MAX_PLACEMENTS * WorldObjectInstances.STRIDE * 2;
+
     /** One geometry upload slice in bytes: whole vertices and whole indices. */
     static final int GEOMETRY_CHUNK = 6144 * WorldStreamPackedTile.VERTEX_BYTES;
 
@@ -346,8 +353,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         /** Per model: whether any of its ranges is drawn in the opaque/cutout pass. */
         final boolean[] unsortedModels;
 
-        /** Per-frame grouping scratch (#382): visibility, placements by model, model starts. */
-        final boolean[] visible;
+        /**
+         * Per-frame grouping scratch (#382): visibility, placements dropped this frame for lack of
+         * instance data (so the sorted pass skips them too), placements by model, model starts.
+         */
+        final boolean[] visible, dropped;
 
         final int[] order, starts;
         short vertices = INVALID, indices = INVALID;
@@ -393,6 +403,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 }
             }
             visible = new boolean[placementModels.length];
+            dropped = new boolean[placementModels.length];
             order = new int[placementModels.length];
             starts = new int[models.length / 2 + 1];
         }
@@ -452,6 +463,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private boolean closed, callbackFreed, objectCulling = true, objectInstancing = true;
     private FrameCounts lastFrame = new FrameCounts(0, 0, 0, 0, 0, 0, 0, 0, 0);
     private int frameInstances, frameInstancesDropped;
+    // Proof seam: at most this many instances per frame (bgfx's own budget still applies).
+    private int instanceLimit = Integer.MAX_VALUE;
     private int frameChunks, frameChunksCulled, frameTerrainSubmits;
     private int framePlacements, frameCulled, frameObjectSubmits, frameCameraUniforms;
     // The u_wmoMaterial class last set this frame, or -1.
@@ -927,6 +940,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     void objectInstancing(boolean enabled) {
         requireOwner();
         objectInstancing = enabled;
+    }
+
+    /** Proof seam: caps the instances drawn per frame, to exercise the overflow path. */
+    void instanceLimit(int limit) {
+        requireOwner();
+        instanceLimit = limit;
     }
 
     /** Changes whenever late objects become drawable, so an unchanged camera redraws once. */
@@ -1454,7 +1473,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
             for (int p = 0; p < objects.placementModels.length; p++) {
                 if (!objects.blendedModels[objects.placementModels[p]]
-                        || view != null && !view.visible(objects.spheres, p)) {
+                        || view != null && !view.visible(objects.spheres, p)
+                        || objects.unsortedModels[objects.placementModels[p]]
+                                && objects.dropped[p]) {
                     continue;
                 }
                 int at = p * WorldStreamObjectsFile.PLACEMENT_DOUBLES;
@@ -1492,6 +1513,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         for (int p = 0; p < placements; p++) {
             framePlacements++;
             objects.visible[p] = view == null || view.visible(objects.spheres, p);
+            objects.dropped[p] = false;
             if (!objects.visible[p]) {
                 frameCulled++;
             }
@@ -1572,9 +1594,16 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             TerrainScene.Origin origin,
             boolean blendedPass) {
         int available =
-                org.lwjgl.bgfx.BGFX.bgfx_get_avail_instance_data_buffer(
-                        count, WorldObjectInstances.STRIDE);
+                Math.min(
+                        org.lwjgl.bgfx.BGFX.bgfx_get_avail_instance_data_buffer(
+                                count, WorldObjectInstances.STRIDE),
+                        Math.max(0, instanceLimit - frameInstances));
         if (available < count) {
+            // Decided once per placement per frame: the sorted pass skips these placements too,
+            // so a placement never draws its glass without its walls.
+            for (int i = available; i < count; i++) {
+                objects.dropped[order[first + i]] = true;
+            }
             frameInstancesDropped += count - available;
             count = available;
         }

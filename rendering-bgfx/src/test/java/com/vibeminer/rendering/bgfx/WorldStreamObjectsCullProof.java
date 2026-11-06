@@ -94,6 +94,17 @@ final class WorldStreamObjectsCullProof {
             var each = owner.frameCounts();
             owner.objectInstancing(true);
             owner.objectCulling(true);
+            // Instance data overflow (#382), decided once per placement per frame: with no
+            // instances left, the visible placement draws neither its walls nor its glass.
+            owner.instanceLimit(0);
+            frame(owner, reader, NONCE, WorldStreamObjectsMaterialProof.VIEW);
+            var starved = owner.frameCounts();
+            owner.instanceLimit(Integer.MAX_VALUE);
+            require(
+                    starved.objectSubmits() == 0
+                            && starved.instancesDropped() == 1
+                            && starved.instances() == 0,
+                    "Overflowed placement skipped in both passes " + starved);
             int placements = exterior.placements();
             require(
                     culled.placements() == placements && all.placements() == placements,

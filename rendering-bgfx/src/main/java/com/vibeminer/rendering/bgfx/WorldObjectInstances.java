@@ -23,18 +23,16 @@ final class WorldObjectInstances {
     static void put(double[] placements, int p, TerrainScene.Origin origin, ByteBuffer out) {
         int at = p * WorldStreamObjectsFile.PLACEMENT_DOUBLES;
         double s = placements[at + 3];
-        double[] offset = {
-            placements[at] - origin.x(),
-            placements[at + 1] - origin.y(),
-            placements[at + 2] - origin.z()
-        };
-        for (int row = 0; row < 3; row++) {
-            int r = at + 4 + row * 3;
-            out.putFloat((float) (s * placements[r]))
-                    .putFloat((float) (s * placements[r + 1]))
-                    .putFloat((float) (s * placements[r + 2]))
-                    .putFloat((float) offset[row]);
-        }
+        row(out, s, placements, at + 4, placements[at] - origin.x());
+        row(out, s, placements, at + 7, placements[at + 1] - origin.y());
+        row(out, s, placements, at + 10, placements[at + 2] - origin.z());
+    }
+
+    private static void row(ByteBuffer out, double s, double[] placements, int r, double offset) {
+        out.putFloat((float) (s * placements[r]))
+                .putFloat((float) (s * placements[r + 1]))
+                .putFloat((float) (s * placements[r + 2]))
+                .putFloat((float) offset);
     }
 
     /** Writes the instance rows of a column-major 4 x 4 affine matrix (the cold WMO pass). */
