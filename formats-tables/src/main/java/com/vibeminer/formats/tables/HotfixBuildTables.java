@@ -279,6 +279,10 @@ public final class HotfixBuildTables implements BuildTables {
     int fitScans;
     // Set while compiling when the raw-column fit scan was inconclusive.
     private boolean fitInconclusive;
+    // Set while compiling when this base's raw-column check was given up on, with the raw
+    // candidate columns that stay refused because of it.
+    private boolean fitGaveUp;
+    private Set<Integer> fitCandidates = Set.of();
     // Consecutive inconclusive fit scans per base identity (insertion order, bounded), for the
     // back-off and the give-up cap. A completed scan, or a new base for the table, drops it.
     private final Map<String, Integer> fitFailures = new LinkedHashMap<>();
@@ -715,7 +719,10 @@ public final class HotfixBuildTables implements BuildTables {
         }
         compiles++;
         fitInconclusive = false;
+        fitGaveUp = false;
+        fitCandidates = Set.of();
         HotfixRowDecoder.Layout layout = null;
+        String layoutReason = null;
         try {
             layout =
                     new HotfixRowDecoder.Layout(
@@ -726,6 +733,29 @@ public final class HotfixBuildTables implements BuildTables {
                             fittedRawColumns(metadata, priority, token));
         } catch (HotfixRowDecoder.Invalid unsupported) {
             // Selected IDs remain masked UNKNOWN; never fall back to stale base values.
+        }
+        if (fitGaveUp && layout != null) {
+            // Name the give-up only when the refused raw columns are the sole layout mismatch:
+            // validate once with them admitted (an empty body, so no row is decoded).
+            try {
+                HotfixRowDecoder.decode(
+                        new HotfixRowDecoder.Layout(
+                                metadata.schema(),
+                                metadata.header(),
+                                metadata.raw().flags(),
+                                metadata.raw().idFieldIndex(),
+                                fitCandidates),
+                        hash,
+                        0,
+                        ByteBuffer.allocate(0),
+                        new HotfixRowDecoder.Limits(),
+                        token);
+                layoutReason = HotfixViewInfo.RAW_SCAN_GAVE_UP;
+            } catch (HotfixRowDecoder.Invalid probe) {
+                if (probe.reason() != HotfixRowDecoder.Reason.COLUMNS) {
+                    layoutReason = HotfixViewInfo.RAW_SCAN_GAVE_UP;
+                }
+            }
         }
         var changes = new HashMap<Long, Change>();
         var regions = new HashMap<Long, Integer>();
@@ -794,7 +824,11 @@ public final class HotfixBuildTables implements BuildTables {
                     }
                 } catch (com.vibeminer.formats.hotfix.HotfixRowDecoder.Invalid invalid) {
                     kind = Kind.UNKNOWN;
-                    undecoded = invalid.detail();
+                    undecoded =
+                            layoutReason != null
+                                            && invalid.reason() == HotfixRowDecoder.Reason.COLUMNS
+                                    ? layoutReason
+                                    : invalid.detail();
                 }
             } else if (entry.state() == HotfixCacheReader.State.DELETE) {
                 kind = Kind.DELETE;
@@ -975,8 +1009,10 @@ public final class HotfixBuildTables implements BuildTables {
         if (cached != null) {
             return cached;
         }
+        fitCandidates = Set.copyOf(candidates);
         if (fitFailures.getOrDefault(metadata.identity(), 0) >= FIT_SCANS_MAX) {
             // Given up on this base: its raw columns stay refused without another scan.
+            fitGaveUp = true;
             return Set.of();
         }
         Set<Integer> fitted;
@@ -1015,6 +1051,7 @@ public final class HotfixBuildTables implements BuildTables {
         fitFailures.put(identity, failures);
         // The last allowed scan schedules no re-scan: the base is given up on.
         fitInconclusive = failures < FIT_SCANS_MAX;
+        fitGaveUp = !fitInconclusive;
         return Set.of();
     }
 

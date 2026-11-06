@@ -991,6 +991,14 @@ class HotfixBuildTablesTest {
                 maxScanRows);
     }
 
+    private static String rawReason(BuildTables tables) {
+        return tables.hotfixInfo(TableTypes.Ref.id(100), 7L, P, Cancellation.NONE)
+                .join()
+                .orElseThrow()
+                .row()
+                .reason();
+    }
+
     private static TableTypes.RowOutcome rawRow(BuildTables tables) {
         return tables.get(TableTypes.Ref.id(100), 7, P, Cancellation.NONE).join().outcome();
     }
@@ -1083,6 +1091,7 @@ class HotfixBuildTablesTest {
                     };
             assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables));
             assertEquals(1, hot.fitScans);
+            assertEquals("COLUMNS", rawReason(tables), "backing off is not a give-up");
             long second = java.util.concurrent.TimeUnit.SECONDS.toNanos(1);
             for (int scans = 1; scans < HotfixBuildTables.FIT_SCANS_MAX; scans++) {
                 // 5 s, doubling: 10, 20, 40, 80, 160, then capped at 300 instead of 320.
@@ -1103,6 +1112,8 @@ class HotfixBuildTablesTest {
                     hot.fitScans,
                     "given up on this base, even after its view is rebuilt");
             assertEquals(1, hot.fitBackOffs());
+            assertEquals(
+                    HotfixViewInfo.RAW_SCAN_GAVE_UP, rawReason(tables), "the give-up is visible");
         }
         try (var tables = rawByte(9, entry(0x11223344L, 1, 7, 1, u8(255)))) {
             var hot = (HotfixBuildTables) tables;
