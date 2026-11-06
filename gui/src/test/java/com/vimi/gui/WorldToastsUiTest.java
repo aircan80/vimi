@@ -66,10 +66,11 @@ public final class WorldToastsUiTest {
             fx(() -> ((Button) view.lookup("#world-open")).fire());
             await(() -> get("camera") != null && !(boolean) get("scenePreparing"));
             fx(WorldToastsUiTest::viewShowsHelpAndCaptureToasts);
+            screenshotSavesTheFrameOnly();
             fx(WorldToastsUiTest::toastsFollowFullScreenAndSurviveTheInteriorSwap);
             System.out.println("World toasts PASS: 4 s life and fade, stack of 3 oldest-first, repeat"
                     + " restart, action run/dismiss/refocus, event isolation, click-through backing,"
-                    + " first-run help and capture-fallback toasts in the World view");
+                    + " first-run help, capture-fallback, failure-episode and screenshot toasts in the World view");
         } finally {
             fx(() -> { if (view != null) view.close(); if (stage != null) stage.close(); });
             Platform.exit();
@@ -214,6 +215,68 @@ public final class WorldToastsUiTest {
         toasts.clear();
     }
 
+    /** F12's action: the presented frame, unchanged, as a PNG in the folder, with a toast. */
+    private static void screenshotSavesTheFrameOnly() throws Exception {
+        var root = java.nio.file.Files.createTempDirectory("vimi-world-screenshot-ui");
+        var opened = new ArrayList<java.nio.file.Path>();
+        try {
+            fx(() -> {
+                view.toasts().clear();
+                view.screenshots(null);
+                view.screenshot();
+                require(texts(view.toasts()).equals(List.of("Screenshots need a data folder; this session has none")),
+                        "Without a library the toast says so: " + texts(view.toasts()));
+                view.toasts().clear();
+                view.screenshots(WorldScreenshots.folder(root));
+                view.folderOpener(opened::add);
+                // F12 is the screenshot command: a real key event on the viewport.
+                var viewport = view.lookup("#world-viewport");
+                Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.F12, false, false, false, false));
+                Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_RELEASED, "", "", KeyCode.F12, false, false, false, false));
+                // A second press while the first is still writing (same FX turn) does not queue.
+                view.screenshot();
+                require(texts(view.toasts()).contains("Screenshot still saving"),
+                        "One screenshot in flight at a time: " + texts(view.toasts()));
+            });
+            await(() -> texts(view.toasts()).stream().anyMatch(t -> t.startsWith("Screenshot saved: ")));
+            fx(() -> {
+                var toast = view.toasts().toasts().getLast();
+                require("Open folder".equals(toast.action()), "The saved toast offers Open folder");
+                String name = toast.text().substring("Screenshot saved: ".length());
+                var file = WorldScreenshots.folder(root).resolve(name);
+                require(java.nio.file.Files.isRegularFile(file) && name.startsWith("vimi-world-authored-"),
+                        "Saved in the screenshots folder under the map's name, toast names the file: " + name);
+                require(!input().keysHeld(), "F12 is not a held key");
+                toast.run().run();
+                require(opened.equals(List.of(WorldScreenshots.folder(root))), "Open folder opens the screenshots folder");
+                try (var files = java.nio.file.Files.list(WorldScreenshots.folder(root))) {
+                    require(files.filter(f -> f.toString().endsWith(".png")).count() == 1,
+                            "Only the first press wrote a file");
+                } catch (java.io.IOException error) {
+                    throw new AssertionError(error);
+                }
+                var frame = ((javafx.scene.image.ImageView) get("image")).getImage();
+                try {
+                    var saved = javax.imageio.ImageIO.read(file.toFile());
+                    require(saved.getWidth() == (int) frame.getWidth() && saved.getHeight() == (int) frame.getHeight(),
+                            "The file has the frame's size");
+                    var reader = frame.getPixelReader();
+                    for (int y = 0; y < saved.getHeight(); y += Math.max(1, saved.getHeight() / 7))
+                        for (int x = 0; x < saved.getWidth(); x += Math.max(1, saved.getWidth() / 7))
+                            require(saved.getRGB(x, y) == (reader.getArgb(x, y) | 0xff000000),
+                                    "The file holds the frame's pixels only (no HUD) at " + x + "," + y);
+                } catch (java.io.IOException error) {
+                    throw new AssertionError(error);
+                }
+                view.toasts().clear();
+            });
+        } finally {
+            try (var walk = java.nio.file.Files.walk(root)) {
+                walk.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+            }
+        }
+    }
+
     /**
      * In full screen the toasts move onto the viewport (in its own stage) and back after; an
      * instance interior replacing the viewport keeps them, so its "Entered" toast is seen.
@@ -292,6 +355,10 @@ public final class WorldToastsUiTest {
         }
         var local = node.sceneToLocal(sceneX, sceneY);
         return local != null && node.contains(local) ? node : null;
+    }
+
+    private static WorldExplorerInput input() {
+        return (WorldExplorerInput) get("input");
     }
 
     private static Object get(String name) {

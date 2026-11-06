@@ -383,6 +383,14 @@ tasks.register('worldExplorerInputTest', JavaExec) {
 }
 check.dependsOn worldExplorerInputTest
 
+// Viewport screenshot names and PNG files in a temporary folder; no display.
+tasks.register('worldScreenshotsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldScreenshotsTest'
+}
+check.dependsOn worldScreenshotsTest
+
 // Minimap rim streaming ring: fraction, hold after full and fade; no display.
 tasks.register('worldMinimapRingTest', JavaExec) {
     dependsOn testClasses
