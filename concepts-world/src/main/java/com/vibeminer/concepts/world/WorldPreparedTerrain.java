@@ -611,13 +611,15 @@ final class WorldPreparedTerrain {
         if (!materials.matchesNamespace(namespace.build(), namespace.locale())) {
             throw new IllegalStateException("Configured material namespace differs");
         }
+        var map = new WorldService.MapInfo(namespace.mapId(), null, null, 0, namespace.wdtId());
+        // Reuse the geometry's checked root parse and fingerprint instead of a second read.
+        var root = owned.geometry.materialRoot();
         var operation =
-                materials.readOwned(
-                        new WorldService.MapInfo(
-                                namespace.mapId(), null, null, 0, namespace.wdtId()),
-                        List.of(tile),
-                        admission.cancellation(),
-                        p -> {});
+                root != null && root.binding().fileId() == tile.rootId()
+                        ? materials.readOwned(
+                                map, List.of(tile), admission.cancellation(), p -> {}, root)
+                        : materials.readOwned(
+                                map, List.of(tile), admission.cancellation(), p -> {});
         WorldTerrainTextureSource.BatchResult batch = null;
         try {
             Throwable materialFailure = null;
@@ -675,6 +677,9 @@ final class WorldPreparedTerrain {
                     || receipt.textures().fileId() != tile.tex0Id()) {
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MATERIAL_BINDING);
             }
+            // With a prepared root both sides come from the geometry cache's single walk, so
+            // this holds by construction; the cache asserts (enabled in tests) that the grid and
+            // the mesh of that walk fingerprint alike, so a parser divergence still fails there.
             if (!receipt.geometrySha256().equals(owned.geometry.fingerprint())) {
                 throw new IllegalStateException(
                         "Material geometry disagrees with the same root source");
