@@ -3103,10 +3103,11 @@ class WorldExteriorObjectsTest {
      * Files whose group reads each take a while and are counted while open, so overlapping reads
      * are visible. Serial reads never have two groups open at once.
      */
-    private static final class SlowGroups extends WorldTerrainTextureSourceTest.Files {
+    private static class SlowGroups extends WorldTerrainTextureSourceTest.Files {
         final AtomicInteger open = new AtomicInteger(), peak = new AtomicInteger();
         final AtomicInteger groupOpens = new AtomicInteger();
-        volatile Runnable onGroupOpen = () -> {};
+        volatile java.util.function.IntConsumer onGroupOpen = ignored -> {};
+        volatile long delay = 20;
 
         @Override
         com.vibeminer.files.FileReadStream open(long id, Cancellation cancel) {
@@ -3114,11 +3115,11 @@ class WorldExteriorObjectsTest {
             if (id < GROUP + 10 || id >= GROUP + 100) {
                 return actual;
             }
-            groupOpens.incrementAndGet();
-            onGroupOpen.run();
+            int opened = groupOpens.incrementAndGet();
+            onGroupOpen.accept(opened);
             peak.accumulateAndGet(open.incrementAndGet(), Math::max);
             try {
-                Thread.sleep(20);
+                Thread.sleep(delay);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }
@@ -3205,8 +3206,8 @@ class WorldExteriorObjectsTest {
         var files = new SlowGroups();
         var token = new Cancellation();
         files.onGroupOpen =
-                () -> {
-                    if (files.groupOpens.get() == 2) {
+                opened -> {
+                    if (opened == 2) { // this open's own count, not a racy re-read
                         token.cancel();
                     }
                 };
@@ -3227,6 +3228,144 @@ class WorldExteriorObjectsTest {
             try (var set = f.run()) {
                 assertEquals(12, set.models().getFirst().meshes().size());
             }
+        }
+    }
+
+    @Test
+    void readAheadFasterThanParsingStillReadsEveryGroupOnce() {
+        // No delay: reads finish long before parsing reaches them, more groups than the window.
+        var files = new SlowGroups();
+        files.delay = 0;
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+            f.files.sources.put(
+                    ROOT, root(manyGroups(files, 3 * WorldStreamScopes.Prefetcher.WINDOW)));
+            try (var set = f.run()) {
+                assertEquals(
+                        3 * WorldStreamScopes.Prefetcher.WINDOW,
+                        set.models().getFirst().meshes().size());
+            }
+            assertEquals(
+                    3 * WorldStreamScopes.Prefetcher.WINDOW,
+                    files.groupOpens.get(),
+                    "the read the consumer needs next is never dropped and read again");
+            assertEquals(0, files.open.get());
+            assertTrue(f.engine.prefetchPeakHeldBytes.get() > 0, "read-ahead held bytes");
+            assertTrue(
+                    f.engine.prefetchPeakHeldBytes.get()
+                            <= WorldStreamScopes.Prefetcher.HELD_BYTES
+                                    + (long) WorldStreamScopes.Prefetcher.READS
+                                            * f.files.sources.get(GROUP + 10).length,
+                    "held bytes stay within the budget plus the reads in flight");
+        }
+    }
+
+    @Test
+    void aRootCappedMidwayWithdrawsItsReadAheadAndFetchesNoFurtherGroup() {
+        // Seven 16384-vertex groups exceed the vertex budget: the first root caps at its seventh
+        // group. A second root then keeps the operation reading, so capped hints left queued
+        // would still be fetched ahead of its groups.
+        var files = new SlowGroups();
+        files.delay = 30;
+        long second = 800;
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8), Modf.of(second, 2, 0x8)), files)) {
+            var capped = manyGroups(files, 20);
+            for (long id : capped) {
+                files.sources.put(id, group(EXT, 16384, 1, List.of(new Batch(0, 3, 0, 0))));
+            }
+            f.files.sources.put(ROOT, root(capped));
+            var kept = new long[] {GROUP + 50, GROUP + 51, GROUP + 52, GROUP + 53};
+            for (long id : kept) {
+                files.sources.put(id, group(EXT));
+            }
+            f.files.sources.put(second, root(kept));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(1, set.models().size());
+                assertEquals(second, set.models().getFirst().rootId());
+            }
+            int cappedOpens = 0;
+            for (long id : capped) {
+                cappedOpens += files.opens(id);
+            }
+            // Seven consumed, plus at most the reads already started when the cap was decided.
+            assertTrue(
+                    cappedOpens <= 7 + WorldStreamScopes.Prefetcher.WINDOW,
+                    "capped root groups opened: " + cappedOpens);
+            for (long id : kept) {
+                assertEquals(1, files.opens(id), "kept group " + id);
+            }
+            assertEquals(0, files.open.get(), "withdrawn reads are closed");
+        }
+    }
+
+    @Test
+    @SuppressWarnings("try")
+    void withdrawnReadAheadStartsNoFurtherReadAndClosesWhatRan() throws Exception {
+        // Directly on one operation: hint twelve slow groups, withdraw once four are running.
+        var files = new SlowGroups();
+        files.delay = 50;
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+            var ids = manyGroups(files, 12);
+            var observed = new int[2];
+            try (var ignored =
+                    f.engine.withRecordedTile(
+                            f.scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
+                            Cancellation.NONE,
+                            admission -> {
+                                for (long id : ids) {
+                                    admission.prefetch(id, WorldStreamScopes.DerivedKind.WMO_GROUP);
+                                }
+                                long deadline = System.nanoTime() + 5_000_000_000L;
+                                while (files.groupOpens.get() < WorldStreamScopes.Prefetcher.READS
+                                        && System.nanoTime() < deadline) {
+                                    Thread.onSpinWait();
+                                }
+                                admission.cancelPrefetch();
+                                observed[0] = files.groupOpens.get();
+                                observed[1] = files.open.get();
+                                try {
+                                    Thread.sleep(200);
+                                } catch (InterruptedException interrupted) {
+                                    throw new AssertionError(interrupted);
+                                }
+                                return () -> {};
+                            })) {
+                assertEquals(WorldStreamScopes.Prefetcher.READS, observed[0]);
+                assertEquals(0, observed[1], "withdrawal waits for and closes the running reads");
+                assertEquals(
+                        observed[0],
+                        files.groupOpens.get(),
+                        "no withdrawn hint starts later, even while the operation goes on");
+            }
+        }
+    }
+
+    @Test
+    void aReadAheadThatFailsIsOnlyAMissAndTheConsumersOwnReadDecides() {
+        // The first open of one group fails (store queue pressure, say); that open is the
+        // read-ahead's, so the consumer reads it again and the whole set still draws.
+        long flaky = GROUP + 10;
+        var failedOnce = new java.util.concurrent.atomic.AtomicBoolean();
+        var files =
+                new SlowGroups() {
+                    @Override
+                    com.vibeminer.files.FileReadStream open(long id, Cancellation cancel) {
+                        if (id == flaky && failedOnce.compareAndSet(false, true)) {
+                            throw new IllegalStateException("authored transient store failure");
+                        }
+                        return super.open(id, cancel);
+                    }
+                };
+        files.delay = 0;
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+            f.files.sources.put(ROOT, root(manyGroups(files, 6)));
+            try (var set = f.run()) {
+                assertEquals(6, set.models().getFirst().meshes().size());
+            }
+            assertTrue(failedOnce.get(), "the read-ahead met the failure");
+            assertEquals(1, files.opens(flaky), "one successful open: the consumer's own");
         }
     }
 }

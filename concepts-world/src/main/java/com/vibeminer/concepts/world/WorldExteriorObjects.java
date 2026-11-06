@@ -1283,7 +1283,13 @@ public final class WorldExteriorObjects {
                         count(Count.PLACEMENT_CAPPED);
                         continue;
                     }
-                    state = readRoot(rootId);
+                    try {
+                        state = readRoot(rootId);
+                    } finally {
+                        // A root that stops early (capped or failed) leaves group hints behind:
+                        // withdraw them so none of its groups is fetched after all (#371).
+                        admission.cancelPrefetch();
+                    }
                     rootStates.put(rootId, state);
                 }
                 switch (state) {
