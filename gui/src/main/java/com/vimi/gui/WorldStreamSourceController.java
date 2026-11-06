@@ -252,6 +252,10 @@ final class WorldStreamSourceController {
     private volatile List<WorldFormats.AreaMetadata> areas = List.of();
     private CompletableFuture<WorldStreamTransport.CommitReceipt> commit;
     private WorldStreamTransport.CommitReceipt currentReceipt, acceptedReceipt;
+    // The table and receipt the borrowed frame was drawn from (#366): a commit may replace
+    // current while FX holds the frame, and its handshake is judged against what it shows.
+    private List<Entry> borrowedTable = List.of();
+    private WorldStreamTransport.CommitReceipt borrowedReceipt;
     private Entry staged;
     private final LinkedHashMap<Integer, WorldStreamSourceBridge.RefusalMetadata> unavailable =
             new LinkedHashMap<>();
@@ -468,6 +472,8 @@ final class WorldStreamSourceController {
             borrowed = queued;
             queued = null;
             validated = false;
+            borrowedTable = current;
+            borrowedReceipt = currentReceipt;
             return Optional.of(borrowed);
         }
     }
@@ -489,11 +495,14 @@ final class WorldStreamSourceController {
                 if (accepted) {
                     historicalRaster=false;
                     acceptedSequence = value.sequence();
-                    acceptedReceipt = currentReceipt;
-                    // Sky-only pixels show no resident terrain, so they pin no resident.
-                    presented = value.skyOnly ? List.of() : List.copyOf(current);
+                    acceptedReceipt = borrowedReceipt;
+                    // Sky-only pixels show no resident terrain, so they pin no resident; otherwise
+                    // the frame pins exactly the table it was drawn from (#366).
+                    presented = value.skyOnly ? List.of() : List.copyOf(borrowedTable);
                     presentationRevision++;
                 }
+                borrowedTable = List.of();
+                borrowedReceipt = null;
             }
         }
         // Keep the label true to what is now on screen until the worker's next publication:
@@ -525,6 +534,8 @@ final class WorldStreamSourceController {
             if (borrowed == value) {
                 borrowed = null;
                 validated = false;
+                borrowedTable = List.of();
+                borrowedReceipt = null;
             }
         }
         drop(value.frame, "discard");
@@ -540,14 +551,15 @@ final class WorldStreamSourceController {
                 || camera.policy() != value.policy()
                 || camera.width() != value.width()
                 || camera.height() != value.height()
-                || currentReceipt != value.frame.content()) return false;
+                || borrowedReceipt != value.frame.content()) return false;
         // A valid receipt can still draw only sky after motion beyond its resident neighborhood.
         // Keep the last readable pixels until the nearest requested recorded tile is GPU-current.
-        // A nearest tile the helper keeps rejecting will not become current (#365): show the
-        // neighbours instead of holding the last pixels forever.
-        if(!desired.isEmpty() && current.stream().noneMatch(entry->same(desired.getFirst(),entry.resident()))
+        // Judged on the table the frame shows, which a later commit does not change. A nearest
+        // tile the helper keeps rejecting will not become current (#365): show the neighbours
+        // instead of holding the last pixels forever.
+        if(!desired.isEmpty() && borrowedTable.stream().noneMatch(entry->same(desired.getFirst(),entry.resident()))
                 && helperRejections.getOrDefault(key(desired.getFirst()),0) < MAX_HELPER_REJECTIONS) return false;
-        for (var entry : current) if (!entry.source().isOpen()) return false;
+        for (var entry : borrowedTable) if (!entry.source().isOpen()) return false;
         return true;
     }
 
@@ -867,9 +879,10 @@ final class WorldStreamSourceController {
         }
         if (commit != null) {
             if (!commit.isDone()) return;
-            synchronized (lock) {
-                if (borrowed != null) return;
-            }
+            // No wait for a frame the FX side still borrows (#366). The borrow keeps the table
+            // and receipt it was drawn from: its handshake is judged against those, an accepted
+            // frame records exactly the table it shows, and retirement keeps that table's
+            // sources until the borrow ends.
             WorldStreamTransport.CommitReceipt receipt;
             try { receipt=commit.join(); }
             catch(CompletionException failure) {
@@ -960,12 +973,16 @@ final class WorldStreamSourceController {
             boolean needsUsefulFrame=missingCenter || skyPending;
             var subset=new ArrayList<>(current.stream().filter(
                     entry->containsResident(wanted,entry.resident())).toList());
-            boolean releases=current.stream().anyMatch(entry->!subset.contains(entry) && !presented.contains(entry));
+            // A tile the borrowed frame shows is kept like a presented one (#366): dropping it frees
+            // nothing until the borrow ends, so it is never the release a shrink commit counts on.
+            boolean releases=current.stream().anyMatch(entry->!subset.contains(entry) && !presented.contains(entry)
+                    && !borrowedTable.contains(entry));
             if(needsUsefulFrame && !releases) {
                 Entry victim=null;
                 int farthest=-1;
                 for(var entry:current) {
-                    if(presented.contains(entry) || !wanted.isEmpty() && same(wanted.getFirst(),entry.resident())) continue;
+                    if(presented.contains(entry) || borrowedTable.contains(entry)
+                            || !wanted.isEmpty() && same(wanted.getFirst(),entry.resident())) continue;
                     int rank=wanted.size();
                     for(int i=0;i<wanted.size();i++) if(same(wanted.get(i),entry.resident())) { rank=i; break; }
                     if(rank>farthest) { farthest=rank; victim=entry; }
@@ -1237,13 +1254,19 @@ final class WorldStreamSourceController {
     }
 
     private String readyDetail() {
-        int textured = 0, partial = 0, height = 0, watered = 0;
+        int textured = 0, partial = 0, height = 0, watered = 0, waterNoted = 0;
+        String waterIssue = "";
         int buildingTiles = 0, buildingFailures = 0, creatureTiles = 0;
         var objects = WorldStreamSourceBridge.ExteriorSummary.NONE;
         var creatures = WorldTileCreatures.Summary.NONE;
         String reason = "";
         for (var entry : current) {
             if (entry.source().waterCells() > 0) watered++;
+            var issues = entry.source().waterIssues();
+            if (!issues.isEmpty()) {
+                waterNoted++;
+                if (waterIssue.isEmpty()) waterIssue = issues.getFirst();
+            }
             var tileCreatures = entry.source().creatures();
             if (tileCreatures.drawn() > 0) creatureTiles++;
             creatures = creatures.plus(tileCreatures);
@@ -1282,6 +1305,8 @@ final class WorldStreamSourceController {
                 + " height fallback"
                 + (reason.isEmpty() ? "" : "; " + reason)
                 + (watered == 0 ? "" : "; static diagnostic water on " + watered)
+                + (waterNoted == 0 ? "" : "; water source notes on " + plural(waterNoted, "tile")
+                        + " (" + waterIssue + ")")
                 + (buildingTiles == 0 ? "" : objectsDetail(objects, buildingTiles))
                 + (buildingFailures == 0 ? "" : "; building objects failed on " + buildingFailures)
                 + creatureDetail(creatures, creatureTiles)
@@ -1496,6 +1521,7 @@ final class WorldStreamSourceController {
             for (var entry : entries.values()) {
                 if (!current.contains(entry)
                         && !presented.contains(entry)
+                        && !borrowedTable.contains(entry)
                         && !committing.contains(entry)
                         && entry != staged) remove.add(entry);
             }

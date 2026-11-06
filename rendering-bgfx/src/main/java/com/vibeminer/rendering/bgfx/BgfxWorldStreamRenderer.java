@@ -1124,6 +1124,40 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         if (cameraRevision <= 0 || policy <= 0 || !WorldFrameLimits.fits(width, height)) {
             throw new IllegalArgumentException("Frame ticket bounds");
         }
+        return drawView(camera, cameraRevision, policy, width, height, width, height);
+    }
+
+    /**
+     * #381 spike: draw into a window's backbuffer at its own size (up to 8192 per side). The
+     * projection keeps the window's aspect; its matrix depends on the ratio only.
+     */
+    Ticket drawWindow(
+            TerrainCamera camera, long cameraRevision, long policy, int width, int height) {
+        requireOwner();
+        requireOpen();
+        if (cameraRevision <= 0
+                || policy <= 0
+                || width < 1
+                || width > 8192
+                || height < 1
+                || height > 8192) {
+            throw new IllegalArgumentException("Window frame bounds");
+        }
+        double fit = Math.min(1, Math.min(1280.0 / width, 960.0 / height));
+        int projectionWidth = Math.max(1, (int) Math.round(width * fit));
+        int projectionHeight = Math.max(1, (int) Math.round(height * fit));
+        return drawView(
+                camera, cameraRevision, policy, width, height, projectionWidth, projectionHeight);
+    }
+
+    private Ticket drawView(
+            TerrainCamera camera,
+            long cameraRevision,
+            long policy,
+            int width,
+            int height,
+            int projectionWidth,
+            int projectionHeight) {
         bgfx_set_view_rect(0, 0, 0, width, height);
         bgfx_set_view_mode(0, BGFX_VIEW_MODE_SEQUENTIAL);
         bgfx_set_view_clear(0, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x000000ff, 0, 0);
@@ -1134,7 +1168,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             var matrix = stack.mallocFloat(16).put(camera.modelToEye(origin)).flip();
             var project =
                     stack.mallocFloat(16)
-                            .put(TerrainCamera.reversedProjection(width, height))
+                            .put(
+                                    TerrainCamera.reversedProjection(
+                                            projectionWidth, projectionHeight))
                             .flip();
             var shift =
                     stack.mallocFloat(4)
@@ -1200,9 +1236,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             bgfx_set_vertex_buffer(0, template, 0, 3);
             bgfx_set_state(SKY_STATE, 0);
             bgfx_submit(0, skyProgram, 0, BGFX_DISCARD_ALL);
-            // Static diagnostic water after ALL opaque terrain: nearest flat surface wins under
-            // strict reversed depth, so coincident duplicates cannot blend twice. RGB only keeps
-            // the opaque output alpha.
+            // Static diagnostic water after ALL opaque terrain: the nearest surface wins under
+            // strict reversed depth, so coincident duplicates (shared chunk edges, or two source
+            // layers at one height) cannot blend twice. RGB only keeps the opaque output alpha.
             for (var lease : active) {
                 var slot = slots[lease.slot()];
                 if (slot.water == 0) {
