@@ -13,7 +13,9 @@ public final class WorldStreamImagePresentationTest {
         original.getPixelWriter().setArgb(0, 0, 0xff0000ff);
         original.getPixelWriter().setArgb(1, 0, 0xff0000ff);
         image.setImage(original);
-        var presentation = new WorldStreamImagePresentation(image);
+        // setPixels mode: needs no JavaFX toolkit. The PixelBuffer mode (the default) is
+        // covered with the toolkit by WorldStreamImagePresentationUiTest.
+        var presentation = new WorldStreamImagePresentation(image, true);
         check(!presentation.present(2, 1, pixels(0xffff0000), () -> true, () -> false),
                 "Rejected final acceptance cannot publish pixels");
         check(image.getImage() == original && original.getPixelReader().getArgb(0, 0) == 0xff0000ff,
