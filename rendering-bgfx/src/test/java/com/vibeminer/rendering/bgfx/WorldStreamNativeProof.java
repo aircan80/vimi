@@ -78,6 +78,19 @@ public final class WorldStreamNativeProof {
             int red,
             boolean textured)
             throws Exception {
+        return prepare(NONCE, directory, tx, lease, x, y, red, textured);
+    }
+
+    static WorldStreamPackedTile prepare(
+            WorldStreamState.Nonce nonce,
+            Path directory,
+            long tx,
+            WorldStreamState.Lease lease,
+            int x,
+            int y,
+            int red,
+            boolean textured)
+            throws Exception {
         require(
                 !Thread.currentThread().getName().equals("main"),
                 "Packing must be off native owner");
@@ -97,7 +110,7 @@ public final class WorldStreamNativeProof {
                         0);
         var header =
                 new WorldStreamTileFile.Header(
-                        NONCE,
+                        nonce,
                         SCOPE,
                         tx,
                         lease,
@@ -485,5 +498,8 @@ public final class WorldStreamNativeProof {
                     successor.stats().dynamicBuffers() == SESSION.slots(),
                     "Successor context resources");
         }
+        // Exterior object culling on a further fresh context: draw counts and pixels, culled and
+        // not.
+        WorldStreamObjectsCullProof.run(directory);
     }
 }

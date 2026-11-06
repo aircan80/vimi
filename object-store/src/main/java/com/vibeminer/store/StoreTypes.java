@@ -137,8 +137,15 @@ public final class StoreTypes {
             long liveBytes,
             Instant createdAt) {}
 
-    /** packHandles bounds retained read channels; existing constructors default to 64. */
-    public record Options(Kind kind, long maxPackBytes, Clock clock, int packHandles) {
+    /**
+     * Store options. {@code packHandles} bounds retained read channels; existing constructors
+     * default to 64. {@code readers} bounds both the read worker threads and the idle read
+     * connections they reuse; existing constructors default to {@link #DEFAULT_READERS}.
+     */
+    public record Options(Kind kind, long maxPackBytes, Clock clock, int packHandles, int readers) {
+        /** Read workers and pooled read connections per store unless configured. */
+        public static final int DEFAULT_READERS = 8;
+
         public Options {
             java.util.Objects.requireNonNull(kind);
             java.util.Objects.requireNonNull(clock);
@@ -148,6 +155,13 @@ public final class StoreTypes {
             if (maxPackBytes < 64) {
                 throw new IllegalArgumentException("Pack limit must be at least 64 bytes");
             }
+            if (readers < 1 || readers > 256) {
+                throw new IllegalArgumentException("Reader count must be between 1 and 256");
+            }
+        }
+
+        public Options(Kind kind, long maxPackBytes, Clock clock, int packHandles) {
+            this(kind, maxPackBytes, clock, packHandles, DEFAULT_READERS);
         }
 
         public Options(Kind kind, long maxPackBytes, Clock clock) {
