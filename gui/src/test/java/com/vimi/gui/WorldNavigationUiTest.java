@@ -223,7 +223,8 @@ public final class WorldNavigationUiTest {
             public java.util.concurrent.CompletableFuture<String> load() { return java.util.concurrent.CompletableFuture.completedFuture(null); }
             public void save(String value) { saved.add(value); }
         });
-        var stored=WorldControls.DEFAULTS.withSensitivity(.013).withInvertY(true);
+        var stored=WorldControls.DEFAULTS.withSensitivity(.013).withInvertY(true).withSpeed(WorldControls.Speed.TURBO)
+                .withKeys(WorldControls.Layout.AZERTY.keys());
         view.showControls(stored);
         var invert=(javafx.scene.control.CheckBox)view.lookup("#world-invert-look");
         var slider=(javafx.scene.control.Slider)view.lookup("#world-look-sensitivity");
@@ -231,6 +232,11 @@ public final class WorldNavigationUiTest {
         require(invert.isSelected() && Math.abs(slider.getValue()-.013)<1e-12 && input(view).controls().equals(stored),
                 "Stored invert-Y and sensitivity both apply");
         require(slider.getBlockIncrement()==.001,"Slider steps suit its range");
+        @SuppressWarnings("unchecked")
+        var speed=(javafx.scene.control.ChoiceBox<WorldControls.Speed>)view.lookup("#world-flight-speed");
+        require(speed.getValue()==WorldControls.Speed.TURBO,"The stored speed preset shows");
+        require(view.lookupAll(".label").stream().anyMatch(n -> n instanceof javafx.scene.control.Label l
+                && l.getText().startsWith("Z Q S D move")),"The key help follows the stored bindings");
         invert.fire();
         require(saved.size()==1 && WorldControls.decode(saved.getFirst()).equals(stored.withInvertY(false)),
                 "A user change saves the whole value: "+saved);
@@ -328,6 +334,8 @@ public final class WorldNavigationUiTest {
         require(speedChoice.getValue()==input(view).controls().speed(),"The speed control shows the Shift+wheel preset");
         speedChoice.setValue(WorldControls.Speed.TURBO);
         require(input(view).speed()==200,"Choosing a preset sets the flight speed");
+        speedChoice.setValue(WorldControls.DEFAULTS.speed());
+        require(input(view).speed()==WorldControls.Speed.FLY.yardsPerSecond,"The preset control is reset after the test");
         keyBindingEditor();
         scroll(viewport,Double.NaN,false);
         require(restored.equals(get(view,"camera")),"Nonfinite wheel input is ignored");
@@ -348,6 +356,9 @@ public final class WorldNavigationUiTest {
         editor.captured(press);
         require(press.isConsumed(),"A captured key never reaches the dialog buttons");
         require(editor.controls().keys().get(KeyCode.I)==WorldControls.Action.FORWARD,"Captured key binds");
+        editor.capture(WorldControls.Action.BACK);
+        editor.captured(new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.W,false,false,false,false));
+        require(editor.hint().startsWith("W moved from Forward to Back."),"A moved key is named: "+editor.hint());
         var idle=new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.K,false,false,false,false);
         editor.captured(idle);
         require(!idle.isConsumed() && !editor.controls().keys().containsKey(KeyCode.K),"Without a capture keys pass through");

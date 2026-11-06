@@ -38,7 +38,7 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         TURN_RIGHT("Turn right"),
         LOOK_UP("Look up"),
         LOOK_DOWN("Look down"),
-        SPRINT("Faster (hold)"),
+        SPRINT("Faster (hold; with the wheel: speed)"),
         WALK("Walk on terrain (toggle)");
 
         final String label;
@@ -50,7 +50,7 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
 
     /** Flight speed presets in yards per second; walking on terrain keeps its own speed. */
     enum Speed {
-        WALK("Walk", 7),
+        STROLL("Stroll", 7),
         MOUNT("Mount", 14),
         FLY("Fly", 20),
         FAST("Fast", 60),
@@ -190,20 +190,55 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         return result;
     }
 
+    /**
+     * The modifier the SPRINT action is bound to (Shift or Control), so the wheel can change speed
+     * with it; null when sprint is bound to no modifier.
+     */
+    KeyCode sprintModifier() {
+        for (var e : keys.entrySet()) {
+            if (e.getValue() == Action.SPRINT
+                    && (e.getKey() == KeyCode.SHIFT || e.getKey() == KeyCode.CONTROL))
+                return e.getKey();
+        }
+        return null;
+    }
+
+    /** The explorer's one-line key help, from the current bindings. */
+    String help() {
+        var bound = byAction();
+        java.util.function.Function<Action, String> keysOf = action -> bound.get(action).isEmpty()
+                ? "unbound" : bound.get(action).stream().map(KeyCode::getName).collect(Collectors.joining("/"));
+        var modifier = sprintModifier();
+        return keysOf.apply(Action.FORWARD) + " " + keysOf.apply(Action.LEFT) + " "
+                + keysOf.apply(Action.BACK) + " " + keysOf.apply(Action.RIGHT) + " move · "
+                + keysOf.apply(Action.UP) + " up · " + keysOf.apply(Action.DOWN) + " down · hold a mouse"
+                + " button or " + keysOf.apply(Action.TURN_LEFT) + "/" + keysOf.apply(Action.TURN_RIGHT)
+                + "/" + keysOf.apply(Action.LOOK_UP) + "/" + keysOf.apply(Action.LOOK_DOWN) + " to look · "
+                + keysOf.apply(Action.SPRINT) + " faster · wheel zooms"
+                + (modifier == null ? "" : " · " + modifier.getName() + "+wheel changes speed")
+                + " · " + keysOf.apply(Action.WALK) + " walks · click inspects · Keys… rebinds";
+    }
+
     String encode() {
         return String.format(
                 Locale.ROOT,
-                "%s;sensitivity=%s;invertY=%b;speed=%s;keys=%s",
+                "%s;sensitivity=%s;invertY=%b;speed=%s;keys=%s;actions=%s",
                 VERSION,
                 sensitivity,
                 invertY,
                 speed.name(),
                 keys.entrySet().stream()
                         .map(e -> e.getKey().name() + ":" + e.getValue().name())
-                        .collect(Collectors.joining(",")));
+                        .collect(Collectors.joining(",")),
+                java.util.Arrays.stream(Action.values()).map(Enum::name).collect(Collectors.joining(",")));
     }
 
-    /** Lenient decode: anything unreadable keeps its default. Null or another version: defaults. */
+    /**
+     * Lenient decode: anything unreadable keeps its default. Null or another version: defaults.
+     * Bindings: a non-empty stored list that yields no usable binding falls back to the defaults.
+     * Actions the stored value did not know about (listed in {@code actions=}; for older values,
+     * those with no stored key) get their default keys, unless a stored binding uses the key.
+     */
     static WorldControls decode(String text) {
         if (text == null) return DEFAULTS;
         var parts = text.split(";", -1);
@@ -212,6 +247,7 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         boolean invertY = false;
         Speed speed = Speed.FLY;
         Map<KeyCode, Action> keys = DEFAULTS.keys;
+        String storedKeys = null, storedActions = null;
         for (int i = 1; i < parts.length; i++) {
             int at = parts[i].indexOf('=');
             if (at < 0) continue;
@@ -226,11 +262,32 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
                 }
                 case "invertY" -> invertY = value.equals("true");
                 case "speed" -> speed = named(Speed.class, value, Speed.FLY);
-                case "keys" -> keys = keys(value);
+                case "keys" -> storedKeys = value;
+                case "actions" -> storedActions = value;
                 default -> {}
             }
         }
+        if (storedKeys != null) keys = merged(storedKeys, storedActions);
         return new WorldControls(sensitivity, invertY, speed, keys);
+    }
+
+    private static Map<KeyCode, Action> merged(String storedKeys, String storedActions) {
+        var stored = keys(storedKeys);
+        if (stored.isEmpty() && !storedKeys.isEmpty()) return DEFAULTS.keys;
+        var known = java.util.EnumSet.noneOf(Action.class);
+        if (storedActions != null) {
+            for (var name : storedActions.split(",", -1)) {
+                var action = named(Action.class, name, null);
+                if (action != null) known.add(action);
+            }
+        } else {
+            known.addAll(stored.values());
+        }
+        var result = new LinkedHashMap<>(stored);
+        DEFAULTS.keys.forEach((code, action) -> {
+            if (!known.contains(action) && !result.containsKey(code)) result.put(code, action);
+        });
+        return result;
     }
 
     private static Map<KeyCode, Action> keys(String value) {

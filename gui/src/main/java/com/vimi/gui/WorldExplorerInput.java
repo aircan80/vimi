@@ -263,10 +263,17 @@ final class WorldExplorerInput {
         return button == MouseButton.PRIMARY && stillSincePress;
     }
 
-    /** Wheel dolly, or flight speed with Shift. Non-finite and zero deltas are ignored. */
-    void scroll(double delta, boolean shift) {
+    /**
+     * Wheel dolly, or a speed preset step while the sprint modifier (Shift, or whatever modifier
+     * SPRINT is bound to) or the held sprint key is down.
+     */
+    void scroll(double delta, boolean shift, boolean control) {
         if (!Double.isFinite(delta) || delta == 0) return;
-        if (shift) {
+        var modifier = controls.sprintModifier();
+        boolean speedWheel = held(WorldControls.Action.SPRINT)
+                || shift && modifier == KeyCode.SHIFT
+                || control && modifier == KeyCode.CONTROL;
+        if (speedWheel) {
             var next = controls.speed().step(delta > 0 ? 1 : -1);
             if (next != controls.speed()) {
                 controls = controls.withSpeed(next);

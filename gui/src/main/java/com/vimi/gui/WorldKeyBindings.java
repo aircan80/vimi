@@ -27,6 +27,7 @@ final class WorldKeyBindings {
     private final List<Button> addButtons = new ArrayList<>();
     private WorldControls controls;
     private WorldControls.Action capturing;
+    private String moved;
 
     WorldKeyBindings(WorldControls initial) {
         controls = initial;
@@ -64,6 +65,11 @@ final class WorldKeyBindings {
         return controls;
     }
 
+    /** The hint line under the bindings; for tests. */
+    String hint() {
+        return hint.getText();
+    }
+
     /** Starts waiting for the key to add to {@code action}. */
     void capture(WorldControls.Action action) {
         capturing = action;
@@ -80,7 +86,11 @@ final class WorldKeyBindings {
                 hint.setText(code.getName() + " can't be bound; press another key or Escape.");
                 return;
             }
+            var previous = controls.keys().get(code);
             controls = controls.bind(code, capturing);
+            moved = previous != null && previous != capturing
+                    ? code.getName() + " moved from " + previous.label + " to " + capturing.label + "."
+                    : null;
         }
         capturing = null;
         refresh();
@@ -107,9 +117,10 @@ final class WorldKeyBindings {
             addButtons.add(add);
             grid.addRow(row++, new Label(action.label), keys, add, clear);
         }
-        hint.setText(capturing == null
-                ? "Escape, F11, Alt and system keys are reserved."
-                : "Press the key for " + capturing.label.toLowerCase(java.util.Locale.ROOT)
-                        + ", or Escape to cancel.");
+        hint.setText(capturing != null
+                ? "Press the key for " + capturing.label.toLowerCase(java.util.Locale.ROOT)
+                        + ", or Escape to cancel."
+                : moved != null ? moved + " Escape, F11, Alt and system keys are reserved."
+                : "Escape, F11, Alt and system keys are reserved.");
     }
 }

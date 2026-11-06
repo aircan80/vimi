@@ -130,6 +130,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             new javafx.scene.control.ChoiceBox<>(javafx.collections.FXCollections.observableArrayList(
                     WorldControls.Speed.values()));
     private final Button keyBindings = new Button("Keys…");
+    private final Label keyHelp = new Label(WorldControls.DEFAULTS.help());
     // Session-only until the application's library store is installed (bookmarks(...)).
     private WorldControls.Store controlsStore = WorldControls.memory();
     private boolean showingControls, controlsEdited, captureFallbackLogged;
@@ -540,6 +541,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         showingControls = true;
         try {
             input.controls(controls);
+            keyHelp.setText(controls.help());
             invertLook.setSelected(controls.invertY());
             flightSpeed.setValue(controls.speed());
             lookSensitivity.setValue(controls.sensitivity());
@@ -998,7 +1000,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (center != null) input.lookMoved(e.getScreenX(), e.getScreenY(), center.getX(), center.getY());
         });
         viewport.setOnScroll(e -> {
-            input.scroll(e.getDeltaY(), e.isShiftDown());
+            input.scroll(e.getDeltaY(), e.isShiftDown(), e.isControlDown());
             e.consume();
         });
         viewport.widthProperty().addListener((o, a, b) -> requestFrame());
@@ -1833,10 +1835,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         new HBox(
                                 10,
                                 back,
-                                new Label(
-                                        "WASD move · Space/E up · Q/X down · hold the right mouse button or"
-                                                + " arrows to look · Shift faster · wheel zooms · Shift+wheel"
-                                                + " changes speed · F walks · click inspects · Keys… rebinds")),
+                                keyHelp),
                         new HBox(10, walkMode, smoothMotion, motionStatus, saveBookmark),
                         new HBox(8, new Label("Speed"), flightSpeed, new Label("Look sensitivity"),
                                 lookSensitivity, invertLook, keyBindings),
