@@ -1,0 +1,170 @@
+package com.vibeminer.rendering.bgfx;
+
+import static org.lwjgl.bgfx.BGFX.BGFX_RENDERER_TYPE_VULKAN;
+import static org.lwjgl.bgfx.BGFX.bgfx_get_stats;
+
+import java.nio.IntBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * Actual Vulkan proof of CPU exterior object culling on the production native owner: one authored
+ * terrain tile with the material proof's late objects (three camera-facing quads in placement 0,
+ * then the tile filled to the placement cap behind the camera). With culling on, only placement 0
+ * is drawn; with it off, every placement is. Both frames must have identical pixels, and the bgfx
+ * draw counts must drop by the culled placements' submits. Authored data only.
+ */
+final class WorldStreamObjectsCullProof {
+    private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(321, -654);
+    private static final int WIDTH = 800, HEIGHT = 500;
+    private static long camera, sequence;
+
+    private WorldStreamObjectsCullProof() {}
+
+    private static void require(boolean value, String message) {
+        if (!value) {
+            throw new AssertionError(message);
+        }
+    }
+
+    record Result(int drawsCulled, int drawsAll, BgfxWorldStreamRenderer.FrameCounts culled) {}
+
+    @SuppressWarnings("try")
+    static Result run(Path base) throws Exception {
+        Path directory = Files.createDirectories(base.resolve("objects-cull"));
+        var session = new WorldStreamEnvelope.Session(NONCE, WorldStreamNativeProof.SCOPE, 1, true);
+        var lease = new WorldStreamState.Lease(0, 1, 1);
+        var exterior = WorldStreamObjectsMaterialProof.quads();
+        WorldStreamPackedTile tile;
+        WorldStreamPackedObjects objects;
+        try (var worker =
+                Executors.newSingleThreadExecutor(
+                        Thread.ofPlatform().daemon().name("world-cull-pack").factory())) {
+            tile =
+                    worker.submit(
+                                    () ->
+                                            WorldStreamNativeProof.prepare(
+                                                    NONCE, directory, 1, lease, 7, 19, 120, true))
+                            .get(20, TimeUnit.SECONDS);
+            objects =
+                    worker.submit(() -> WorldStreamPackedObjects.pack(exterior.data(), () -> false))
+                            .get(20, TimeUnit.SECONDS);
+        }
+        Path mapping = directory.resolve("frames-cull");
+        try (var frames = WorldFrameFileV2.create(mapping, NONCE, WorldStreamNativeProof.SCOPE);
+                var reader = WorldFrameFileV2.open(mapping, NONCE, WorldStreamNativeProof.SCOPE);
+                var owner =
+                        new WorldStreamNativeOwner(session, frames, BGFX_RENDERER_TYPE_VULKAN)) {
+            var upload = owner.begin(tile);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+            while (!upload.finished()) {
+                owner.step(upload);
+                owner.advance();
+                require(System.nanoTime() < deadline, "Terrain upload did not drain");
+            }
+            require(upload.successful(), "Terrain upload failed");
+            owner.commit(0, 1, List.of(lease));
+            var late = owner.beginLate(lease, objects);
+            while (!late.ready()) {
+                owner.stepLate(late);
+                owner.advance();
+                require(System.nanoTime() < deadline, "Late objects did not build");
+            }
+            require(
+                    owner.finishLate(late, true) == WorldStreamStatus.LateOutcome.ATTACHED,
+                    "Late objects attach");
+            var culledFrame = frame(owner, reader);
+            int drawsCulled = culledFrame.draws;
+            var culled = owner.frameCounts();
+            owner.objectCulling(false);
+            var allFrame = frame(owner, reader);
+            int drawsAll = allFrame.draws;
+            var all = owner.frameCounts();
+            owner.objectCulling(true);
+            int placements = exterior.placements();
+            require(
+                    culled.placements() == placements && all.placements() == placements,
+                    "Placements tested " + culled + " " + all);
+            // Placement 0 draws its cutout and opaque ranges, then its blended one; the rest are
+            // behind the camera.
+            require(
+                    culled.culled() == placements - 1 && culled.objectSubmits() == 3,
+                    "Culled counts " + culled);
+            require(
+                    all.culled() == 0 && all.objectSubmits() == 3 * placements,
+                    "Unculled counts " + all);
+            require(
+                    drawsAll - drawsCulled == all.objectSubmits() - culled.objectSubmits(),
+                    "bgfx draw counts " + drawsCulled + " " + drawsAll);
+            var a = culledFrame.pixels;
+            var b = allFrame.pixels;
+            int differing = 0;
+            for (int i = 0; i < WIDTH * HEIGHT; i++) {
+                if (a.get(i) != b.get(i)) {
+                    differing++;
+                }
+            }
+            require(differing == 0, "Culling changed " + differing + " pixels");
+            // The opaque quad in the middle is drawn (material proof colour), so the comparison is
+            // not of two empty frames.
+            int middle = a.get(HEIGHT / 2 * WIDTH + 400);
+            int red = Math.max(middle >>> 16 & 255, middle & 255);
+            require(
+                    Math.abs(red - 200) <= 1 && Math.abs((middle >>> 8 & 255) - 40) <= 1,
+                    "Visible placement drawn " + Integer.toHexString(middle));
+            System.out.println(
+                    "WORLD_OBJECT_CULL_PASS placements="
+                            + placements
+                            + " culled="
+                            + culled.culled()
+                            + " objectSubmits="
+                            + culled.objectSubmits()
+                            + "/"
+                            + all.objectSubmits()
+                            + " bgfxDraws="
+                            + drawsCulled
+                            + "/"
+                            + drawsAll);
+            return new Result(drawsCulled, drawsAll, culled);
+        }
+    }
+
+    private record Drawn(int draws, IntBuffer pixels) {}
+
+    /** Submits one new camera revision and returns its bgfx draw count and published pixels. */
+    private static Drawn frame(WorldStreamNativeOwner owner, WorldFrameFileV2 reader)
+            throws Exception {
+        long revision = ++camera;
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        var command =
+                new WorldStreamControl.Camera(
+                        NONCE, revision, 1, WIDTH, HEIGHT, WorldStreamObjectsMaterialProof.VIEW);
+        while (!owner.submit(command)) {
+            owner.advance();
+            require(System.nanoTime() < deadline, "Camera submit");
+        }
+        // bgfx double-buffers its frames: the stats of the frame rendered by this advance are
+        // reported once the next frame has been swapped in.
+        owner.advance();
+        owner.advance();
+        int draws = bgfx_get_stats().numDraw();
+        while (System.nanoTime() < deadline) {
+            var frame =
+                    reader.readLatest(
+                            sequence,
+                            new WorldFrameFileV2.Barrier(
+                                    1, WIDTH, HEIGHT, revision, revision, 1, 1));
+            if (frame != null) {
+                sequence = frame.metadata().sequence();
+                var pixels = IntBuffer.allocate(WIDTH * HEIGHT);
+                pixels.put(frame.pixels()).flip();
+                return new Drawn(draws, pixels);
+            }
+            owner.advance();
+        }
+        throw new AssertionError("No frame for camera " + revision);
+    }
+}
