@@ -21,6 +21,7 @@ import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -187,6 +188,54 @@ public final class WorldExteriorObjects {
     /** M2 bone flags that billboard (spherical or cylindrical); no view policy here. */
     private static final long BILLBOARD = 0x78;
 
+    /**
+     * Bones that billboard or inherit a billboard: a bone whose own flags carry {@link #BILLBOARD}
+     * and every descendant of one, since a child's transform composes its parent's camera-facing
+     * rotation. Empty when the model has no billboard bone; a parent cycle stops the walk.
+     *
+     * <p>Together with {@link #billboardWeighted} (any non-zero weight) this deliberately leaves
+     * out more rather than less: a triangle only partly bound to a camera-facing bone would be
+     * drawn static at a wrong place, while leaving it out only loses a part the profile cannot draw
+     * correctly anyway.
+     */
+    static BitSet billboardBones(List<M2Types.Bone> bones) {
+        var result = new BitSet(bones.size());
+        boolean any = false;
+        for (var bone : bones) {
+            any |= (bone.flags() & BILLBOARD) != 0;
+        }
+        if (!any) {
+            return result;
+        }
+        for (int index = 0; index < bones.size(); index++) {
+            int steps = 0;
+            for (int at = index;
+                    at >= 0 && at < bones.size() && steps++ <= bones.size();
+                    at = bones.get(at).parent()) {
+                if ((bones.get(at).flags() & BILLBOARD) != 0) {
+                    result.set(index);
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Whether a vertex has a non-zero weight on a bone in {@code billboard}. Bone indices outside
+     * the model's bones are not billboards (they were never checked before this rule either).
+     */
+    static boolean billboardWeighted(M2Types.Vertex vertex, BitSet billboard) {
+        for (int k = 0; k < 4; k++) {
+            int weight = (int) (vertex.boneWeights() >>> (k * 8) & 255);
+            int bone = (int) (vertex.boneIndices() >>> (k * 8) & 255);
+            if (weight != 0 && billboard.get(bone)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static final M2Types.Limits MODEL_LIMITS =
             new M2Types.Limits(
                     2L << 20, 32L << 20, 65_536, 65_536, 196_608, 256, 256, 512, 32, 32, 128, 4096,
@@ -292,13 +341,34 @@ public final class WorldExteriorObjects {
         MODEL_DRAWN,
         /** Malformed, or outside the reader ceilings. */
         MODEL_FAILED,
-        /** Parsed, but no SKIN, billboard bones, an unsupported version or zero normals. */
+        /** Parsed, but no SKIN, an unsupported version or zero normals. */
         MODEL_UNSUPPORTED,
+        /**
+         * Parsed and otherwise admitted, but every admitted triangle is weighted to a billboard
+         * bone, so nothing static is left to draw. Unlike the other refused models, its batch
+         * buckets (MODEL_BATCH_BILLBOARD, MODEL_BATCH_UNSUPPORTED, MODEL_TRIANGLE_BILLBOARD) are
+         * kept, so real-data counts show what billboards still cost.
+         */
+        MODEL_ALL_BILLBOARD,
         MODEL_UNAVAILABLE,
         MODEL_CAPPED,
         MODEL_EMPTY,
         MODEL_BATCH_DRAWN,
         MODEL_BATCH_UNSUPPORTED,
+        /**
+         * An otherwise admitted doodad batch omitted because every one of its triangles has a
+         * vertex weighted to a billboard bone (or a descendant of one). Billboards turn to face the
+         * camera, which the static BASIC profile does not evaluate; the rest of the model draws.
+         */
+        MODEL_BATCH_BILLBOARD,
+        /**
+         * Admitted doodad batches that keep some triangles but lost others to billboard bones: the
+         * place to look for a torn wedge in a drawn model. Not an outcome bucket; such a batch also
+         * lands in one of the MODEL_BATCH outcomes.
+         */
+        MODEL_BATCH_TRIMMED,
+        /** Doodad triangles left out because a vertex is weighted to a billboard bone. */
+        MODEL_TRIANGLE_BILLBOARD,
         MODEL_BATCH_MISSING_IMAGE,
         MODEL_IMAGE_DECODED,
         MODEL_IMAGE_UNAVAILABLE,
@@ -790,6 +860,10 @@ public final class WorldExteriorObjects {
     }
 
     private record Candidate(int firstIndex, int indexCount, int material, long image, int blend) {}
+
+    /** copyModel's marker for a model whose every admitted triangle billboards. */
+    private static final PendingMesh ALL_BILLBOARD =
+            new PendingMesh(0, 0, 0, new float[0], new int[0], List.of());
 
     private record PendingMesh(
             int ordinal,
@@ -1901,9 +1975,7 @@ public final class WorldExteriorObjects {
             } catch (RuntimeException failure) {
                 return readerFailed(failure);
             }
-            if (model.skinFileDataIds().isEmpty()
-                    || model.skinFileDataIds().getFirst() <= 0
-                    || model.bones().stream().anyMatch(b -> (b.flags() & BILLBOARD) != 0)) {
+            if (model.skinFileDataIds().isEmpty() || model.skinFileDataIds().getFirst() <= 0) {
                 count(Count.MODEL_UNSUPPORTED);
                 return RootState.FAILED;
             }
@@ -1929,6 +2001,11 @@ public final class WorldExteriorObjects {
                 pending = copyModel(id, skinId, model, skin, local);
             } catch (RuntimeException failure) {
                 return readerFailed(failure);
+            }
+            if (pending == ALL_BILLBOARD) {
+                mergeLocal(local);
+                count(Count.MODEL_ALL_BILLBOARD);
+                return RootState.FAILED;
             }
             if (pending == null) {
                 count(Count.MODEL_UNSUPPORTED);
@@ -1991,8 +2068,10 @@ public final class WorldExteriorObjects {
 
         /**
          * One static mesh over the SKIN's vertex lookup, with one range per admitted batch; null
-         * when an admitted section references a zero or non-finite normal, or the mesh exceeds the
-         * 16-bit index domain.
+         * when an admitted section references a zero or non-finite normal, the mesh exceeds the
+         * 16-bit index domain; {@link #ALL_BILLBOARD} when billboard bones leave no admitted
+         * triangle. Triangles with a vertex weighted to a billboard bone are left out; a batch left
+         * with none is counted as MODEL_BATCH_BILLBOARD, one left with some as MODEL_BATCH_TRIMMED.
          */
         private PendingMesh copyModel(
                 long id, long skinId, M2Types.Model model, M2Types.Skin skin, int[] local) {
@@ -2053,29 +2132,69 @@ public final class WorldExteriorObjects {
                 return new PendingMesh(0, skinId, 0, new float[0], new int[0], List.of());
             }
             var source = model.vertices();
+            var billboard = billboardBones(model.bones());
+            boolean[] facing = null;
+            if (!billboard.isEmpty()) {
+                facing = new boolean[lookup.size()];
+                for (int v = 0; v < lookup.size(); v++) {
+                    int global = lookup.get(v);
+                    facing[v] =
+                            global >= 0
+                                    && global < source.size()
+                                    && billboardWeighted(source.get(global), billboard);
+                }
+            }
             float[] vertices = new float[lookup.size() * VERTEX_FLOATS];
             boolean[] referenced = new boolean[lookup.size()];
             int[] indices = new int[candidateIndices];
             var rebased = new ArrayList<Candidate>(candidates.size());
-            int used = 0;
+            int used = 0, billboarded = 0, trimmed = 0, dropped = 0;
             for (var candidate : candidates) {
                 token.check();
-                for (int i = 0; i < candidate.indexCount(); i++) {
-                    int local16 = triangles.get(candidate.firstIndex() + i);
-                    if (local16 < 0 || local16 >= lookup.size()) {
-                        return null;
+                int kept = 0;
+                for (int i = 0; i < candidate.indexCount(); i += 3) {
+                    boolean faces = false;
+                    for (int k = 0; k < 3; k++) {
+                        int local16 = triangles.get(candidate.firstIndex() + i + k);
+                        if (local16 < 0 || local16 >= lookup.size()) {
+                            return null;
+                        }
+                        faces |= facing != null && facing[local16];
                     }
-                    indices[used + i] = local16;
-                    referenced[local16] = true;
+                    if (faces) {
+                        dropped++;
+                        continue;
+                    }
+                    for (int k = 0; k < 3; k++) {
+                        int local16 = triangles.get(candidate.firstIndex() + i + k);
+                        indices[used + kept++] = local16;
+                        referenced[local16] = true;
+                    }
+                }
+                if (kept == 0) {
+                    billboarded++;
+                    continue;
+                }
+                if (kept < candidate.indexCount()) {
+                    trimmed++;
                 }
                 rebased.add(
                         new Candidate(
                                 used,
-                                candidate.indexCount(),
+                                kept,
                                 candidate.material(),
                                 candidate.image(),
                                 candidate.blend()));
-                used += candidate.indexCount();
+                used += kept;
+            }
+            local[Count.MODEL_BATCH_BILLBOARD.ordinal()] += billboarded;
+            local[Count.MODEL_BATCH_TRIMMED.ordinal()] += trimmed;
+            local[Count.MODEL_TRIANGLE_BILLBOARD.ordinal()] += dropped;
+            if (rebased.isEmpty()) {
+                return ALL_BILLBOARD; // every admitted triangle billboards
+            }
+            if (used < indices.length) {
+                indices = Arrays.copyOf(indices, used);
             }
             for (int v = 0; v < lookup.size(); v++) {
                 if ((v & 1023) == 0) {
