@@ -383,6 +383,14 @@ tasks.register('worldExplorerInputTest', JavaExec) {
 }
 check.dependsOn worldExplorerInputTest
 
+// Minimap rim streaming ring: fraction, hold after full and fade; no display.
+tasks.register('worldMinimapRingTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldMinimapRingTest'
+}
+check.dependsOn worldMinimapRingTest
+
 // Developer overlay pages as text: labelled split, once-only detail, wrapping; no display.
 tasks.register('worldDevReportTest', JavaExec) {
     dependsOn testClasses
