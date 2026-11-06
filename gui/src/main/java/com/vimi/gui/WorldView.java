@@ -107,8 +107,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // Layout toggles fire once per physical press: held keys repeat KEY_PRESSED.
     private boolean fullscreenKeyHeld, panelsKeyHeld;
     private final Button fullscreenButton = new Button("Full screen (F11)");
-    private final Button panelsButton = new Button("Hide HUD (Alt+Z)");
-    private final Label panelsHint = new Label("Alt+Z shows the HUD · F11 full screen");
+    private final Button panelsButton = new Button(hideHudButton("H"));
+    private final Label panelsHint = new Label(panelsHint("H", false));
+    // The keys bound to HIDE_HUD ("H" by default), for the hint and the button; null when unbound.
+    private String hideHudKey = "H";
     private SplitPane split;
     private javafx.scene.Node sidebarPane;
     private double sidebarDivider = .23;
@@ -212,6 +214,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final ProgressIndicator textureActivity = activity("world-texture-activity", 18);
     private final Label textureStatus = new Label("Terrain textures not loaded");
     private final Button retryTextures = new Button("Retry textures");
+    // F3 developer overlay over the viewport; it reads the status labels above and fires Retry.
+    private final WorldDevOverlay devOverlay;
     private final WorldTextureLoading textureLoading;
     private WorldTextureSnapshot textureSnapshot;
     private TerrainScene textureRequestedScene;
@@ -575,6 +579,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
             input.controls(controls);
             keyHelp.setText(controls.help());
             hud.mapKey(mapKey(controls));
+            hideHudKey = boundKeys(controls, WorldControls.Action.HIDE_HUD);
+            panelsButton.setText(hideHudButton(hideHudKey));
+            panelsHint.setText(panelsHint(hideHudKey, fullscreen.active()));
+            devOverlay.key(controls.byAction().get(WorldControls.Action.DEV_OVERLAY).stream()
+                    .map(javafx.scene.input.KeyCode::getName)
+                    .collect(java.util.stream.Collectors.joining("/")));
             invertLook.setSelected(controls.invertY());
             flightSpeed.setValue(controls.speed());
             lookSensitivity.setValue(controls.sensitivity());
@@ -755,6 +765,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         + "them are, because group membership is not evaluated. Not client "
                         + "lighting or animation."));
         retryGpu.setDisable(true);
+        // The long GPU and texture texts (the tile counts among them) show once, on the developer
+        // overlay (F3). The labels stay in the More drawer's rows, hidden and taking no room, so
+        // their ids keep resolving; the overlay binds to their text. Retry stays in More.
+        for (var longText : java.util.List.of(gpuStatus, textureStatus)) {
+            longText.setVisible(false);
+            longText.setManaged(false);
+        }
         gpuEnabled.setOnAction(e -> {
             if (instances.engaged()) return;
             if (streamingMode) {
@@ -795,6 +812,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 requestFrame();
             }
         });
+        devOverlay = new WorldDevOverlay(new WorldDevOverlay.Sources(textureStatus.textProperty(),
+                gpuStatus.textProperty(), status.textProperty(), position.textProperty(),
+                lookStatus.textProperty(), motionStatus.textProperty(), input::heldKeys,
+                keyHelp.textProperty(), audio.statusText()), retryGpu, retryTextures,
+                viewport::requestFocus);
         this.handles = handles;
         this.revisions = revisions;
         setPadding(new javafx.geometry.Insets(16));
@@ -852,6 +874,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         viewport.getChildren().addAll(selectionLayer(), firstFrameActivity, hud, minimap, panelsHint);
         StackPane.setAlignment(minimap, Pos.TOP_RIGHT);
         StackPane.setMargin(minimap, new Insets(12));
+        // The developer overlay sits in the HUD's own slot under the left column; it stays when
+        // the HUD is hidden.
+        hud.devOverlay(devOverlay);
         VBox.setVgrow(maps, Priority.ALWAYS);
         heading.getStyleClass().add("h2");
         hud.mapNameLabel().textProperty().bind(heading.textProperty());
@@ -1054,11 +1079,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
         viewport.setOnKeyPressed(
                 e -> {
                     input.keyPressed(e.getCode());
+                    devOverlay.refresh();
                     e.consume();
                 });
         viewport.setOnKeyReleased(
                 e -> {
                     input.keyReleased(e.getCode());
+                    devOverlay.refresh();
                     e.consume();
                 });
         viewport.focusedProperty()
@@ -1257,6 +1284,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void clearKeys() {
         input.clear();
+        devOverlay.refresh();
     }
 
     private TerrainGround currentGround() {
@@ -2002,19 +2030,31 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     /**
      * Command keys ({@link WorldControls.Action#command}), once per press. Every command action
-     * gets a branch here; one without a route is reported instead of being dropped silently.
+     * gets a branch here; one without a route is reported instead of being dropped silently, and
+     * returns false (a UI test walks every command action and requires true).
      */
-    private void command(WorldControls.Action action) {
+    boolean command(WorldControls.Action action) {
         switch (action) {
             case MAP_PANEL -> toggleMapPanel();
-            default -> WorldDiagnostics.warn("World command key", new IllegalStateException(
-                    "No route for command action " + action));
+            case HIDE_HUD -> panels(!panelsHidden);
+            case DEV_OVERLAY -> devOverlay.cycle();
+            default -> {
+                WorldDiagnostics.warn("World command key", new IllegalStateException(
+                        "No route for command action " + action));
+                return false;
+            }
         }
+        return true;
     }
 
     /** The keys bound to the map panel, for the Map button; null when unbound. */
     private static String mapKey(WorldControls controls) {
-        var keys = controls.byAction().get(WorldControls.Action.MAP_PANEL);
+        return boundKeys(controls, WorldControls.Action.MAP_PANEL);
+    }
+
+    /** The keys bound to {@code action}, joined with "/"; null when unbound. */
+    private static String boundKeys(WorldControls controls, WorldControls.Action action) {
+        var keys = controls.byAction().get(action);
         return keys.isEmpty() ? null
                 : keys.stream().map(KeyCode::getName).collect(java.util.stream.Collectors.joining("/"));
     }
@@ -2097,11 +2137,26 @@ final class WorldView extends BorderPane implements AutoCloseable {
             bottom.setManaged(!panelsHidden);
         }
         panelsHint.setVisible(panelsHidden);
-        panelsHint.setText(fullscreen.active() ? PANELS_HINT_FULLSCREEN : PANELS_HINT);
+        panelsHint.setText(panelsHint(hideHudKey, fullscreen.active()));
     }
 
-    static final String PANELS_HINT = "Alt+Z shows the HUD · F11 full screen",
-            PANELS_HINT_FULLSCREEN = "Alt+Z shows the HUD · F11 or Esc leaves full screen";
+    /**
+     * The hint shown while the HUD is hidden: the hide HUD key (null when unbound) and Alt+Z, which
+     * always works, then how to enter or leave full screen.
+     */
+    static String panelsHint(String hideKey, boolean fullscreen) {
+        return hideHudKeys(hideKey) + " shows the HUD · "
+                + (fullscreen ? "F11 or Esc leaves full screen" : "F11 full screen");
+    }
+
+    /** The More drawer's hide HUD button text, naming the same keys. */
+    static String hideHudButton(String hideKey) {
+        return "Hide HUD (" + hideHudKeys(hideKey) + ")";
+    }
+
+    private static String hideHudKeys(String hideKey) {
+        return hideKey == null || hideKey.isBlank() ? "Alt+Z" : hideKey + " or Alt+Z";
+    }
 
     private void loadTile(WorldFormats.Tile tile, boolean initial) {
         loadingTile = true;
@@ -3344,6 +3399,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (roles != null || closed) throw new IllegalStateException("Role overlay already attached");
         roles = java.util.Objects.requireNonNull(overlay);
         minimap.attachRoles(overlay);
+    }
+
+    /** The developer overlay, for tests. */
+    WorldDevOverlay devOverlay() {
+        return devOverlay;
     }
 
     /** The minimap, for tests. */
