@@ -1479,6 +1479,33 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         bgfx_set_uniform(wmoNormal, frame.normal, 1);
         int stride = WorldStreamObjectsFile.RANGE_INTS;
         int m = objects.placementModels[p];
+        // The sorted pass draws a placement's blended ranges before its additive ones (#449):
+        // additive light is order-independent, but a blended range drawn after it would cover it.
+        for (int step = blendedPass ? STEP_BLENDED : STEP_UNSORTED;
+                step <= (blendedPass ? STEP_ADDITIVE : STEP_UNSORTED);
+                step++) {
+            drawPlacementStep(frame, objects, m, step, blendedPass, stride);
+        }
+    }
+
+    /** Draw steps of one placement: opaque and cutout; then, sorted, blended and additive. */
+    static final int STEP_UNSORTED = 0, STEP_BLENDED = 1, STEP_ADDITIVE = 2;
+
+    /** The draw step of a range class. */
+    static int step(int rangeClass) {
+        int kind = WorldStreamObjectsFile.kind(rangeClass);
+        return kind == WorldStreamObjectsFile.ADDITIVE
+                ? STEP_ADDITIVE
+                : kind == WorldStreamObjectsFile.BLENDED ? STEP_BLENDED : STEP_UNSORTED;
+    }
+
+    private void drawPlacementStep(
+            ObjectFrame frame,
+            SlotObjects objects,
+            int m,
+            int step,
+            boolean blendedPass,
+            int stride) {
         for (int mesh = objects.models[m * 2];
                 mesh < objects.models[m * 2] + objects.models[m * 2 + 1];
                 mesh++) {
@@ -1487,7 +1514,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     r < objects.meshes[at + 4] + objects.meshes[at + 5];
                     r++) {
                 int kind = objects.ranges[r * stride + 3];
-                if (WorldStreamObjectsFile.sorted(kind) != blendedPass) {
+                if (step(kind) != step) {
                     continue;
                 }
                 if (kind != frameMaterial) {
