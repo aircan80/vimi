@@ -357,6 +357,14 @@ tasks.register('worldPickTest', JavaExec) {
 }
 check.dependsOn worldPickTest
 
+// Stream camera revisions and presented-frame overlay projection; no display.
+tasks.register('worldCameraRingTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldCameraRingTest'
+}
+check.dependsOn worldCameraRingTest
+
 // Exact picking of drawn exterior objects, their source records and the highlight; authored meshes.
 tasks.register('worldObjectPicksTest', JavaExec) {
     dependsOn testClasses

@@ -116,6 +116,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private TerrainRenderer.Camera resumeCamera;
     private long streamingControl, streamingPolicy = 1;
     private int streamingWidth, streamingHeight;
+    // Cameras of recent stream requests, and the camera of the streamed frame on screen; overlays
+    // and picking use it so they stay on the drawn terrain while the live camera runs ahead.
+    private final WorldCameraRing streamedCameras = new WorldCameraRing();
+    private TerrainRenderer.Camera presentedCamera;
     private CompletableFuture<Void> streamingRetirement = CompletableFuture.completedFuture(null);
     private final CheckBox gpuEnabled = new CheckBox("GPU terrain");
     // Object texture budget tier (#267); a change re-prepares the streamed tiles' objects.
@@ -2449,6 +2453,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         streamingControl = 0;
         streamingPolicy = 1;
         streamingWidth = streamingHeight = 0;
+        streamedCameras.clear();
+        presentedCamera = null;
         var request = new WorldStreamSourceController.Request(selection, handle, inventory.map(),
                 inventory, origin, areaEntry == null || areaEntry.entryChunk() == null
                         ? null : areaEntry.entryChunk().entryReference(), catalog.areaIndex());
@@ -2541,6 +2547,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (!streamingImages.present(frame.width(), frame.height(), frame.pixels(),
                     () -> !stale(selection) && viewportActive() && controller == streaming,
                     () -> controller.presented(frame))) return;
+            presentedCamera = streamedCameras.camera(frame.cameraRevision()).orElse(null);
             if (stallWatchdog.presented(frame.cameraRevision(), frame.sequence(), System.nanoTime())) {
                 streamStatus(controller.snapshot());
             }
@@ -2572,6 +2579,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         streamingHeight = height;
         streaming.camera(new com.vibeminer.rendering.bgfx.WorldStreamTransport.Camera(
                 ++streamingControl, streamingPolicy, width, height, TerrainCamera.from(camera)));
+        streamedCameras.record(streamingControl, camera);
         stallWatchdog.requested(streamingControl);
         minimap.update(handle, inventory, origin, originX, originY,
                 camera.x(), camera.y(), camera.yaw());
@@ -2824,7 +2832,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private WorldSpawnOverlay.View presentedView() {
         if (closed || !active || !explorer || camera == null || inventory == null
                 || !(image.getImage() instanceof javafx.scene.image.Image frame)) return null;
-        return new WorldSpawnOverlay.View(camera, inventory.map().id(), frame.getWidth(), frame.getHeight());
+        return new WorldSpawnOverlay.View(frameCamera(), inventory.map().id(), frame.getWidth(), frame.getHeight());
+    }
+
+    /**
+     * The camera the frame on screen was drawn with: for a streamed frame the camera sent with
+     * its revision; otherwise (CPU and single-frame GPU paths, or an unknown revision) the live
+     * camera.
+     */
+    private TerrainRenderer.Camera frameCamera() {
+        return streamingMode && presentedCamera != null ? presentedCamera : camera;
     }
 
     /** Pick tiles of the objects the hot child draws now; none outside streaming. */
@@ -2873,7 +2890,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
         var local = viewport.sceneToLocal(sceneX, sceneY);
         var ray = local == null ? java.util.Optional.<WorldPick.Ray>empty()
-                : WorldPick.ray(camera, frame.getWidth(), frame.getHeight(), viewport.getWidth(),
+                : WorldPick.ray(frameCamera(), frame.getWidth(), frame.getHeight(), viewport.getWidth(),
                         viewport.getHeight(), local.getX(), local.getY());
         if (ray.isEmpty()) {
             objectSelection.select(null);
@@ -2881,7 +2898,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             return;
         }
         var objects = residentObjects();
-        var eye = com.vibeminer.rendering.world.TerrainCamera.from(camera);
+        var eye = com.vibeminer.rendering.world.TerrainCamera.from(frameCamera());
         var names = fileNames;
         var surface = currentGround();
         long mapId = map.id(), chosen = selection;
@@ -2980,11 +2997,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 inspection.setText(WorldPick.describeSpawn(pending.spawn(), pending.npc(), inspectedMap, model, false));
             });
         }));
-        overlay.bind(() -> {
-            if (closed || !active || !explorer || camera == null || inventory == null
-                    || !(image.getImage() instanceof javafx.scene.image.Image frame)) return null;
-            return new WorldSpawnOverlay.View(camera, inventory.map().id(), frame.getWidth(), frame.getHeight());
-        });
+        overlay.bind(this::presentedView);
     }
 
     // ---- Instances: recorded entrances and in-place zone-in (#259) ----------------------------
