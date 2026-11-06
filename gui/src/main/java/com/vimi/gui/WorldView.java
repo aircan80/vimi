@@ -2455,6 +2455,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var creatureSource = WorldStreamGpuOwner.CREATURES ? creatures : null;
         long creatureMap = inventory.map().id();
         var detail = objectTextures.getValue();
+        com.vibeminer.concepts.world.WorldTerrainStreaming.splatMasks(detail);
         WorldStreamSourceBridge.ExteriorPreparer preparer = creatureSource == null
                 ? (source, scope, tile, cancellation) -> WorldStreamSourceBridge.prepareExterior(
                         source, scope, tile, cancellation, null, detail)

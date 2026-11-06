@@ -160,12 +160,17 @@ final class WorldStreamDiffuseArrayTest {
 
     @Test
     void sharedLayersUploadEvenWhenTheSlotInputsCannot() {
-        int slot = WorldStreamAtlasMips.STEPS.size() + 1;
-        assertEquals(slot + 3, BgfxWorldStreamRenderer.splatStepCount(true, 3));
+        assertEquals(22 + 1 + 3, BgfxWorldStreamRenderer.splatStepCount(22, true, 3));
         // Without the slot's mask and table textures, its three new layers still go up: the
         // parent records them resident once the tile is staged (review of #435).
-        assertEquals(3, BgfxWorldStreamRenderer.splatStepCount(false, 3));
-        assertEquals(0, BgfxWorldStreamRenderer.splatStepCount(false, 0));
+        assertEquals(3, BgfxWorldStreamRenderer.splatStepCount(22, false, 3));
+        assertEquals(0, BgfxWorldStreamRenderer.splatStepCount(0, false, 0));
+        // Several splat steps share one call, and none can carry it past the step bound.
+        assertTrue(
+                BgfxWorldStreamRenderer.MAX_SPLAT_STEP_BYTES <= BgfxWorldStreamRenderer.STEP_BOUND);
+        assertEquals(
+                WorldStreamDiffuseArray.FALLBACK_LAYER_BYTES,
+                BgfxWorldStreamRenderer.MAX_SPLAT_STEP_BYTES);
     }
 
     @Test

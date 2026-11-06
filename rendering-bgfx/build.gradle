@@ -316,6 +316,8 @@ tasks.register('nativeGpuWorldStreamSplatUploadProof', JavaExec) {
     // -PsplatProofBackend=vulkan|d3d11|metal; -PsplatProofRgba8=true forces the RGBA8 layer array.
     systemProperty 'vimi.proof.backend', providers.gradleProperty('splatProofBackend').getOrElse('vulkan')
     systemProperty 'vimi.world.splat.rgba8', providers.gradleProperty('splatProofRgba8').getOrElse('false')
+    // -PsplatProofMask=high carries a HIGH (1024) mask map; STANDARD (512) otherwise.
+    systemProperty 'vimi.proof.splatMask', providers.gradleProperty('splatProofMask').getOrElse('standard')
     args layout.buildDirectory.dir('native-world-stream-splat').get().asFile.absolutePath
 }
 

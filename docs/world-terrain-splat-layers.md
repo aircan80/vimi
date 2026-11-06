@@ -15,14 +15,32 @@ Every layer diffuse is one `TerrainLayerBlocks` chain: 256 x 256 BC1 with every 
 
 The parent caches prepared layers by file id and content key: up to 256 entries, about 10.7 MiB.
 
-## Packet trailer, version 2
+## Packet trailer, version 3
 
-The splat trailer (`VIMIWSP1`, version 2) carries:
+The splat trailer (`VIMIWSP1`, version 3) carries:
+- a head with the version, the count of new layers and the mask side;
 - the 16 x 16 chunk table of GPU layer indices;
-- the 512 x 512 RGBA8 mask map;
+- the RGBA8 mask map: R, G, B are layers 1 to 3, A is the MCCV brightness;
 - up to 16 new layers, each an int layer index followed by one 43,704-byte chain.
 
-The parent's `WorldStreamDiffuseArray` decides which diffuse holds which layer. A tile that is not staged forgets the layers it never uploaded.
+**Mask side by texture quality tier (#174 step 2b-2):**
+
+| tier | mask map | per chunk | mask chain per slot (measured) |
+|---|---|---|---|
+| STANDARD | 512 x 512 | every other alpha-map texel (32) | 1,398,100 bytes (1.33 MiB) |
+| HIGH | 1024 x 1024 | the native 64 x 64 alpha map | 5,592,404 bytes (5.33 MiB) |
+
+- The tier is the World view's texture quality setting (the object textures' tier). It applies to tiles composed after it changes. Each trailer states its own side, and the child recreates a slot's mask texture when the side changes.
+- The mask keeps its full mip chain: bgfx cannot create a partial chain, and levels below 2 are only about 1.5% of it.
+- Splat steps upload in slices of at most 64 KiB. One step call may issue several of them while staying within the 256 KiB step bound.
+
+## Layer lifetime
+
+- **Ownership:** the parent's `WorldStreamDiffuseArray` decides which diffuse holds which layer.
+- **Who holds a layer:** a slot holds its layers from bind until its resident retires. Credit only goes to slots outside the active table, so a slot is never rebound while its old generation is drawn.
+- **Release on commit:** each acknowledged commit releases every bound slot that the new table no longer draws and that is not the tile still in flight. Released layers stay cached and evictable.
+- **Slots without splat:** a slot staged without splat layers releases its previous binding.
+- **Failed tiles:** a tile that is not staged forgets the layers it never uploaded.
 
 ## Child array
 

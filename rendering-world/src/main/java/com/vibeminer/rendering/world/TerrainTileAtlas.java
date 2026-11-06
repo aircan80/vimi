@@ -95,5 +95,5 @@ public final class TerrainTileAtlas {
                     + 64L
                     + TerrainTileSplat.MAX_DIFFUSES * 8L
                     + TerrainTileSplat.LAYER_BYTES
-                    + TerrainTileSplat.ALPHA_BYTES;
+                    + TerrainTileSplat.MAX_ALPHA_BYTES;
 }

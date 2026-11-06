@@ -19,12 +19,18 @@ final class WorldStreamTileSplatTest {
     }
 
     static WorldStreamTileFile.Splat splat(int... layers) {
+        return splatWithMask(com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK, layers);
+    }
+
+    /** A trailer with a mask of {@code maskSide} (512 or 1024) and these new layers. */
+    static WorldStreamTileFile.Splat splatWithMask(int maskSide, int... layers) {
         byte[] table = new byte[WorldStreamTileFile.SPLAT_TABLE_BYTES];
         java.util.Arrays.fill(table, (byte) WorldStreamTileFile.SPLAT_NONE);
         for (int i = 0; i < layers.length; i++) {
             table[i] = (byte) layers[i];
         }
-        byte[] alpha = new byte[WorldStreamTileFile.SPLAT_ALPHA_BYTES];
+        byte[] alpha =
+                new byte[com.vibeminer.rendering.world.TerrainTileSplat.alphaBytes(maskSide)];
         alpha[0] = 7;
         alpha[alpha.length - 1] = 9;
         byte[][] pixels = new byte[layers.length][WorldStreamTileFile.SPLAT_LAYER_BYTES];
@@ -64,6 +70,45 @@ final class WorldStreamTileSplatTest {
             assertEquals(2, read.pixels()[1][0]);
             assertEquals(3, payload.water().indices().length / 6);
         }
+    }
+
+    @Test
+    void aHighMaskTrailerRoundTripsWithItsSideAndWaterAfterIt() throws Exception {
+        var tile = WorldStreamTileFileTest.full(false);
+        var header = WorldStreamTileFileTest.header(tile, true);
+        var terrain =
+                WorldStreamTileFile.write(
+                        directory, header, tile, WorldStreamTileFileTest.atlas(), () -> false);
+        int high = com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK;
+        var splat = splatWithMask(high, 5);
+        assertEquals(high, splat.maskSide());
+        var withSplat =
+                WorldStreamTileFile.appendSplat(path(), terrain, header, splat, () -> false);
+        assertEquals(64 + 1024 + (4 << 20) + 4 + 43_704, splat.bytes());
+        var full =
+                WorldStreamTileFile.appendWater(
+                        path(),
+                        withSplat,
+                        header,
+                        WorldStreamTileWaterTest.water(2, 0),
+                        () -> false);
+        try (var payload = WorldStreamTileFile.read(path(), full, () -> false)) {
+            var read = payload.splat();
+            assertEquals(high, read.maskSide());
+            assertEquals(4 << 20, read.alpha().length);
+            assertEquals(9, read.alpha()[read.alpha().length - 1]);
+            assertArrayEquals(new int[] {5}, read.layers());
+            assertEquals(2, payload.water().indices().length / 6);
+        }
+        // Any other mask size is refused.
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new WorldStreamTileFile.Splat(
+                                new byte[WorldStreamTileFile.SPLAT_TABLE_BYTES],
+                                new byte[768 * 768 * 4],
+                                new int[0],
+                                new byte[0][]));
     }
 
     @Test
@@ -110,8 +155,8 @@ final class WorldStreamTileSplatTest {
                 IllegalArgumentException.class,
                 () -> splat(WorldStreamTileFile.SPLAT_NONE),
                 "The none marker is not an array layer");
-        // Sixteen new layers of one 256 x 256 BC1 chain each (43,704 bytes).
+        // The largest trailer: a HIGH (1024) mask and sixteen new 43,704-byte BC1 layers.
         assertEquals(
-                64 + 1024 + (1 << 20) + 16 * (4 + 43_704), WorldStreamTileFile.MAX_SPLAT_BYTES);
+                64 + 1024 + (4 << 20) + 16 * (4 + 43_704), WorldStreamTileFile.MAX_SPLAT_BYTES);
     }
 }

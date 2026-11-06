@@ -231,6 +231,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.splatted(slot);
     }
 
+    /** Proof observation: RGBA8 bytes of every slot's splat mask chain on the GPU. */
+    long splatMaskBytes() {
+        requireOpen();
+        return renderer.splatMaskBytes();
+    }
+
     boolean splatBlocks() {
         requireOpen();
         return renderer.splatBlocks();

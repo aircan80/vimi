@@ -146,6 +146,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
         // Whether this upload's slot inputs (mask chain, table) go up; shared layers always do.
         private boolean splatSlot;
+
+        // The mask chain's upload plan (RGBA8 slices of at most STEP_BYTES), or empty.
+        private List<List<WorldStreamObjectMips.Slice>> maskPlan = List.of();
         private boolean canceled, finished, successful;
         private volatile String failure;
         // Inline objects named by the tile header; the build owns their packed input.
@@ -214,6 +217,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         short buffer = INVALID, texture = INVALID;
         // Splatting inputs (issue #174 step 2), created on first use: mask chain and layer table.
         short splatAlpha = INVALID, splatTable = INVALID;
+
+        // Side of splatAlpha (512 or 1024, by the tile's tier); 0 while it does not exist.
+        int splatMaskSide;
         boolean splatted;
         WorldStreamState.Lease lease;
         int triangles, water, x, y;
@@ -599,7 +605,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             if (upload.atlasStep == WorldStreamAtlasMips.STEPS.size()
                     && upload.splatStep < upload.splatSteps
                     && (bytes == 0 || System.nanoTime() - started < 2_000_000)) {
-                bytes += stepSplat(upload);
+                // Several splat steps per call (a HIGH mask is about 86 slices), never past the
+                // step bound: each issues at most MAX_SPLAT_STEP_BYTES.
+                do {
+                    bytes += stepSplat(upload);
+                } while (upload.splatStep < upload.splatSteps
+                        && bytes + MAX_SPLAT_STEP_BYTES <= STEP_BOUND
+                        && System.nanoTime() - started < 2_000_000);
             } else if (upload.atlasStep < WorldStreamAtlasMips.STEPS.size()
                     && (bytes == 0 || System.nanoTime() - started < 2_000_000)) {
                 for (var slice : WorldStreamAtlasMips.STEPS.get(upload.atlasStep)) {
@@ -723,9 +735,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
         var slot = slots[upload.lease.slot()];
         upload.splatSlot = true;
+        if (slot.splatAlpha != INVALID && slot.splatMaskSide != source.splatMaskSide) {
+            // The tier changed since this slot's last splat tile: a mask of the new side.
+            destroySplatTextures(slot);
+        }
         if (slot.splatAlpha == INVALID) {
             try {
-                createSplatTextures(slot);
+                createSplatTextures(slot, source.splatMaskSide);
             } catch (IOException unavailable) {
                 // Optional: this slot keeps its atlas, and no half-created pair survives. Its new
                 // shared layers still go up: the parent records them resident either way.
@@ -733,26 +749,70 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     bgfx_destroy_texture(slot.splatAlpha);
                 }
                 slot.splatAlpha = slot.splatTable = INVALID;
+                slot.splatMaskSide = 0;
                 upload.splatSlot = false;
             }
         }
-        return splatStepCount(upload.splatSlot, source.splatLayers.length);
+        upload.maskPlan =
+                upload.splatSlot
+                        ? WorldStreamObjectMips.plan(
+                                ObjectTextureFormats.RGBA8,
+                                source.splatMaskSide,
+                                source.splatMaskSide,
+                                WorldStreamAtlasMips.STEP_BYTES)
+                        : List.of();
+        return splatStepCount(upload.maskPlan.size(), upload.splatSlot, source.splatLayers.length);
+    }
+
+    private void destroySplatTextures(Slot slot) {
+        for (short texture : new short[] {slot.splatAlpha, slot.splatTable}) {
+            if (texture != INVALID) {
+                bgfx_destroy_texture(texture);
+            }
+        }
+        slot.splatAlpha = slot.splatTable = INVALID;
+        slot.splatMaskSide = 0;
+    }
+
+    /**
+     * RGBA8 bytes of every slot's splat mask chain now on the GPU; proof and budget observation.
+     */
+    long splatMaskBytes() {
+        long bytes = 0;
+        for (var slot : slots) {
+            if (slot.splatAlpha != INVALID) {
+                bytes +=
+                        com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(
+                                        slot.splatMaskSide, slot.splatMaskSide)
+                                * 4L;
+            }
+        }
+        return bytes;
     }
 
     /**
      * Steps of one packet's splat upload: the slot's mask chain and table when its textures exist,
      * then every new shared layer, which is uploaded even when the slot's textures are not.
      */
-    static int splatStepCount(boolean slotInputs, int layers) {
-        return (slotInputs ? WorldStreamAtlasMips.STEPS.size() + 1 : 0) + layers;
+    static int splatStepCount(int maskSteps, boolean slotInputs, int layers) {
+        return (slotInputs ? maskSteps + 1 : 0) + layers;
     }
 
-    private void createSplatTextures(Slot slot) throws IOException {
+    /** Most bytes one splat step issues: a mask slice, a BC1 layer, or an RGBA8 fallback layer. */
+    static final int MAX_SPLAT_STEP_BYTES =
+            Math.max(
+                    WorldStreamAtlasMips.STEP_BYTES,
+                    Math.max(
+                            WorldStreamDiffuseArray.LAYER_BYTES,
+                            WorldStreamDiffuseArray.FALLBACK_LAYER_BYTES));
+
+    private void createSplatTextures(Slot slot, int maskSide) throws IOException {
+        slot.splatMaskSide = maskSide;
         slot.splatAlpha =
                 valid(
                         bgfx_create_texture_2d(
-                                WorldStreamAtlasMips.SIDE,
-                                WorldStreamAtlasMips.SIDE,
+                                maskSide,
+                                maskSide,
                                 true,
                                 1,
                                 BGFX_TEXTURE_FORMAT_RGBA8,
@@ -777,22 +837,21 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         var source = upload.source;
         var slot = slots[upload.lease.slot()];
         int step = upload.splatStep++;
-        int alphaSteps = upload.splatSlot ? WorldStreamAtlasMips.STEPS.size() : 0;
+        int alphaSteps = upload.splatSlot ? upload.maskPlan.size() : 0;
         int slotSteps = upload.splatSlot ? alphaSteps + 1 : 0;
         if (step < alphaSteps) {
             int bytes = 0;
-            for (var slice : WorldStreamAtlasMips.STEPS.get(step)) {
-                int side = WorldStreamAtlasMips.side(slice.level());
+            for (var slice : upload.maskPlan.get(step)) {
                 bgfx_update_texture_2d(
                         slot.splatAlpha,
                         0,
                         slice.level(),
                         0,
                         slice.row(),
-                        side,
+                        Math.max(1, source.splatMaskSide >> slice.level()),
                         slice.rows(),
                         copyHeap(source.splatAlpha.slice(slice.offset(), slice.bytes())),
-                        side * 4);
+                        slice.pitch());
                 bytes += slice.bytes();
             }
             return bytes;

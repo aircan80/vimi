@@ -42,26 +42,52 @@ final class WorldStreamTileFile {
             "VIMIWSP1".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
 
     /**
-     * Optional splatting trailer (issue #174 step 2), version 2, before any water trailer: a
-     * 64-byte head, the 16 x 16 chunk table of four GPU layer indices ({@link #SPLAT_NONE} keeps
-     * the atlas), the 512 x 512 RGBA8 mask map, and up to {@link #MAX_SPLAT_LAYERS} new layer
-     * diffuses (an int layer index and one {@link com.vibeminer.rendering.world.TerrainLayerBlocks}
-     * 256 x 256 BC1 chain) for the parent-owned shared array.
+     * Optional splatting trailer (issue #174 step 2), version 3, before any water trailer: a
+     * 64-byte head (version, new layer count, mask side), the 16 x 16 chunk table of four GPU layer
+     * indices ({@link #SPLAT_NONE} keeps the atlas), the RGBA8 mask map at its tier's side (512 or
+     * 1024, {@link com.vibeminer.rendering.world.TerrainTileSplat}), and up to {@link
+     * #MAX_SPLAT_LAYERS} new layer diffuses (an int layer index and one {@link
+     * com.vibeminer.rendering.world.TerrainLayerBlocks} 256 x 256 BC1 chain) for the parent-owned
+     * shared array.
      */
     static final int SPLAT_HEAD_BYTES = 64, SPLAT_TABLE_BYTES = 1024, SPLAT_ALPHA_BYTES = 1 << 20;
+
+    /** Mask map sides a trailer may carry: STANDARD and HIGH. */
+    static final int[] SPLAT_MASK_SIDES = {
+        com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK,
+        com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK
+    };
 
     static final int SPLAT_LAYER_BYTES =
             com.vibeminer.rendering.world.TerrainLayerBlocks.CHAIN_BYTES;
 
-    static final int MAX_SPLAT_LAYERS = 16, SPLAT_NONE = 255, SPLAT_VERSION = 2;
+    static final int MAX_SPLAT_LAYERS = 16, SPLAT_NONE = 255, SPLAT_VERSION = 3;
 
-    static final int MAX_SPLAT_BYTES = splatBytes(MAX_SPLAT_LAYERS);
+    static final int MAX_SPLAT_BYTES =
+            splatBytes(com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK, MAX_SPLAT_LAYERS);
 
+    /** A STANDARD (512) trailer of {@code layers} new layers. */
     static int splatBytes(int layers) {
+        return splatBytes(com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK, layers);
+    }
+
+    static int splatBytes(int maskSide, int layers) {
         return SPLAT_HEAD_BYTES
                 + SPLAT_TABLE_BYTES
-                + SPLAT_ALPHA_BYTES
+                + com.vibeminer.rendering.world.TerrainTileSplat.alphaBytes(maskSide)
                 + layers * (4 + SPLAT_LAYER_BYTES);
+    }
+
+    /** Whether {@code trailer} bytes are exactly one splat trailer of some mask side and count. */
+    static boolean isSplatLength(long trailer) {
+        for (int side : SPLAT_MASK_SIDES) {
+            for (int layers = 0; layers <= MAX_SPLAT_LAYERS; layers++) {
+                if (trailer == splatBytes(side, layers)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -76,7 +102,10 @@ final class WorldStreamTileFile {
             Objects.requireNonNull(pixels);
             require(
                     table.length == SPLAT_TABLE_BYTES
-                            && alpha.length == SPLAT_ALPHA_BYTES
+                            && (alpha.length == SPLAT_ALPHA_BYTES
+                                    || alpha.length
+                                            == com.vibeminer.rendering.world.TerrainTileSplat
+                                                    .MAX_ALPHA_BYTES)
                             && layers.length == pixels.length
                             && layers.length <= MAX_SPLAT_LAYERS,
                     "Splat shape");
@@ -92,8 +121,15 @@ final class WorldStreamTileFile {
             }
         }
 
+        /** The mask map's side, from its length: 512 or 1024. */
+        int maskSide() {
+            return alpha.length == SPLAT_ALPHA_BYTES
+                    ? com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK
+                    : com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK;
+        }
+
         int bytes() {
-            return splatBytes(layers.length);
+            return splatBytes(maskSide(), layers.length);
         }
     }
 
@@ -675,17 +711,18 @@ final class WorldStreamTileFile {
         System.arraycopy(SPLAT_MAGIC, 0, head, 0, 8);
         input.readFully(head, 8, SPLAT_HEAD_BYTES - 8);
         var in = ByteBuffer.wrap(head).order(ByteOrder.LITTLE_ENDIAN);
-        int count = in.getInt(12);
+        int count = in.getInt(12), side = in.getInt(16);
         require(
                 in.getInt(8) == SPLAT_VERSION
                         && count >= 0
                         && count <= MAX_SPLAT_LAYERS
-                        && splatBytes(count) <= limit,
+                        && (side == SPLAT_MASK_SIDES[0] || side == SPLAT_MASK_SIDES[1])
+                        && splatBytes(side, count) <= limit,
                 "Splat trailer head");
-        zero(head, 16, SPLAT_HEAD_BYTES);
+        zero(head, 20, SPLAT_HEAD_BYTES);
         byte[] table = new byte[SPLAT_TABLE_BYTES];
         input.readFully(table);
-        byte[] alpha = new byte[SPLAT_ALPHA_BYTES];
+        byte[] alpha = new byte[com.vibeminer.rendering.world.TerrainTileSplat.alphaBytes(side)];
         for (int at = 0; at < alpha.length; at += SCRATCH) {
             check(canceled);
             input.readFully(alpha, at, Math.min(SCRATCH, alpha.length - at));
@@ -709,9 +746,10 @@ final class WorldStreamTileFile {
         if (trailer == 0) {
             return true;
         }
-        long[] splats = new long[textured ? MAX_SPLAT_LAYERS + 2 : 1];
+        long[] splats = new long[textured ? 2 * (MAX_SPLAT_LAYERS + 1) + 1 : 1];
         for (int i = 1; i < splats.length; i++) {
-            splats[i] = splatBytes(i - 1);
+            int side = SPLAT_MASK_SIDES[(i - 1) / (MAX_SPLAT_LAYERS + 1)];
+            splats[i] = splatBytes(side, (i - 1) % (MAX_SPLAT_LAYERS + 1));
         }
         for (long splat : splats) {
             long water = trailer - splat;
@@ -724,7 +762,10 @@ final class WorldStreamTileFile {
 
     static byte[] encodeSplat(Splat splat) {
         var out = ByteBuffer.allocate(splat.bytes()).order(ByteOrder.LITTLE_ENDIAN);
-        out.put(SPLAT_MAGIC).putInt(SPLAT_VERSION).putInt(splat.layers().length);
+        out.put(SPLAT_MAGIC)
+                .putInt(SPLAT_VERSION)
+                .putInt(splat.layers().length)
+                .putInt(splat.maskSide());
         out.position(SPLAT_HEAD_BYTES);
         out.put(splat.table()).put(splat.alpha());
         for (int i = 0; i < splat.layers().length; i++) {
@@ -857,10 +898,7 @@ final class WorldStreamTileFile {
         basename(path, expected.transaction());
         // Water is the last trailer: directly after the payload, or after its splat trailer.
         long splatTrailer = (long) expected.length() - header.totalBytes();
-        boolean afterSplat = false;
-        for (int layers = 0; layers <= MAX_SPLAT_LAYERS; layers++) {
-            afterSplat |= splatTrailer == splatBytes(layers);
-        }
+        boolean afterSplat = isSplatLength(splatTrailer);
         require(
                 (splatTrailer == 0 || afterSplat && header.outcome() == Outcome.TEXTURED)
                         && header.transaction() == expected.transaction()
