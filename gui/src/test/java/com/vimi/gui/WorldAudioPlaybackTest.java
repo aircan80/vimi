@@ -1024,8 +1024,15 @@ public final class WorldAudioPlaybackTest {
     private static void crossfadeHoldsUntilTheNextTrackHasAudio() throws Exception {
         var lines = new Timeline();
         var decodes = new AtomicInteger();
+        var changed = new AtomicLong(Long.MAX_VALUE);
         var playback = new WorldAudioPlayback(lines::open, (bytes, canceled) -> {
-            if (decodes.incrementAndGet() == 2) nap(300); // a slow decoder start
+            // A slow decoder start, measured in the old line's writes rather than wall time so
+            // a slow or coarse clock (CI runners) cannot shorten the hold.
+            if (decodes.incrementAndGet() == 2) {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (lines.line(0).stream().filter(w -> w.nanos() > changed.get()).count() < 6
+                        && System.nanoTime() < deadline) nap(2);
+            }
             return new FakePcm(Long.MAX_VALUE);
         }, status -> {});
         var music = playback.music;
@@ -1034,6 +1041,7 @@ public final class WorldAudioPlaybackTest {
         music.enabled(true);
         awaitFull(lines, 0);
         long change = System.nanoTime();
+        changed.set(change);
         music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), FILES);
         await(() -> lines.closed(0), "old line did not close");
         awaitFull(lines, 1);
@@ -1043,16 +1051,23 @@ public final class WorldAudioPlaybackTest {
         var next = lines.line(1);
         long started = next.getFirst().nanos();
         var held = old.stream().filter(w -> w.nanos() > change && w.nanos() < started).toList();
-        if (held.size() < 5 || held.stream().anyMatch(w -> w.peak() < 16000))
+        if (held.size() < 5)
+            throw new AssertionError("Old track must keep playing while the next loads: "
+                    + held.size() + " writes");
+        if (held.stream().anyMatch(w -> w.peak() < 16000))
             throw new AssertionError("Old track must hold full volume while the next loads: "
-                    + held.size());
+                    + held.stream().map(Timed::peak).toList());
         var fading = old.stream().filter(w -> w.nanos() >= started).toList();
         if (fading.isEmpty()) throw new AssertionError("Fades must overlap, not run in turn");
         for (int i = 1; i < fading.size(); i++)
             if (fading.get(i).peak() > fading.get(i - 1).peak())
                 throw new AssertionError("Old track must only ramp down");
         if (lastHeard(fading) > 500) throw new AssertionError("Old track did not fade out");
-        long fadeFrames = heardFrames(fading);
+        // The fade starts in the old line's first block that ends below full volume; that block
+        // can be written just before the new track's first write is timed, so count from it.
+        int fadeStart = 0;
+        while (fadeStart < old.size() && old.get(fadeStart).end() >= 16000) fadeStart++;
+        long fadeFrames = heardFrames(old.subList(fadeStart, old.size()));
         if (fadeFrames < 8000 * WorldAudioPlayback.FADE_SECONDS * 0.9)
             throw new AssertionError("Old fade too short: " + fadeFrames);
         var rising = next.stream().takeWhile(w -> w.peak() < 16000).toList();
