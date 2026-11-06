@@ -20,7 +20,10 @@ public final class WorldStreamTransportProof {
                 WorldStreamTransport.prepare(
                         output,
                         new WorldStreamTransport.Spec(
-                                "ab".repeat(32), 1, WorldStreamTransport.Backend.VULKAN));
+                                "ab".repeat(32),
+                                1,
+                                WorldStreamTransportProof.proofBackend(
+                                        System.getProperty("vimi.worldProof.backend", "vulkan"))));
         var session =
                 prepared.launch(
                         controls -> {
@@ -145,7 +148,9 @@ public final class WorldStreamTransportProof {
             if (!process.get().isAlive()) {
                 throw new AssertionError("Native child ended during cameras");
             }
+            long closeStart = System.nanoTime();
             var receipt = session.closeAsync().get(7, TimeUnit.SECONDS);
+            long closeMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - closeStart);
             session.completion().get(2, TimeUnit.SECONDS);
             if (receipt.childPid().orElseThrow() != process.get().pid()
                     || receipt.exitCode().orElseThrow() != 0
@@ -163,7 +168,9 @@ public final class WorldStreamTransportProof {
                             + receipt.childPid().orElseThrow()
                             + " submittedCameras=100 elapsedMs="
                             + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
-                            + " stagedTiles=2 refusedProducers=1 canceledTiles=1 commits=2 acceptedFrames=3");
+                            + " stagedTiles=2 refusedProducers=1 canceledTiles=1 commits=2 acceptedFrames=3"
+                            + " closeMillis="
+                            + closeMillis);
         } finally {
             session.closeAsync();
             session.terminatedAndDrained().get(7, TimeUnit.SECONDS);
@@ -258,6 +265,19 @@ public final class WorldStreamTransportProof {
             Thread.sleep(2);
         }
         throw new AssertionError("No accepted content/camera frame");
+    }
+
+    /**
+     * The proof backend from {@code -PworldProofBackend} (shared with the other World proofs):
+     * vulkan, d3d11 or metal; anything else is refused rather than silently defaulted.
+     */
+    static WorldStreamTransport.Backend proofBackend(String name) {
+        return switch (name == null ? "" : name.strip().toLowerCase(java.util.Locale.ROOT)) {
+            case "vulkan" -> WorldStreamTransport.Backend.VULKAN;
+            case "d3d11" -> WorldStreamTransport.Backend.D3D11;
+            case "metal" -> WorldStreamTransport.Backend.METAL;
+            default -> throw new IllegalArgumentException("Unknown World proof backend: " + name);
+        };
     }
 
     private WorldStreamTransportProof() {}

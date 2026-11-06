@@ -75,6 +75,10 @@ public final class WorldGpuUiTest {
             Platform.exit();
         }
         require(children().isEmpty(), "Owned renderer exited after FX close");
+        String expected = expectedBackend();
+        require(
+                expected == null || expected.equals(BACKEND.get()),
+                "Platform default backend: expected " + expected + ", got " + BACKEND.get());
         System.out.println(
                 "World actual GPU FX: "
                         + BACKEND.get()
@@ -427,6 +431,22 @@ public final class WorldGpuUiTest {
             }
         }
         return true;
+    }
+
+    /**
+     * bgfx's name for this platform's default backend (GpuViewerMain), or null when the {@code
+     * vimi.gpu.backend} / {@code VIMI_GPU_BACKEND} override chooses another.
+     */
+    private static String expectedBackend() {
+        String override = System.getProperty("vimi.gpu.backend");
+        if (override == null) {
+            override = System.getenv("VIMI_GPU_BACKEND");
+        }
+        if (override != null && !override.isBlank() && !override.strip().equalsIgnoreCase("default")) {
+            return null;
+        }
+        String os = System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT);
+        return os.contains("win") ? "Direct3D 11" : os.contains("mac") ? "Metal" : "Vulkan";
     }
 
     private static boolean ready(WorldView view) {

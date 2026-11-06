@@ -40,6 +40,7 @@ public final class WorldNavigationUiTest {
         {1,1}, {-1,1}, {-1,-1}, {1,-1}, {0,0}
     };
     private static final CompletableFuture<Void> DONE = new CompletableFuture<>();
+    private static final java.util.concurrent.atomic.AtomicBoolean RACE_CHECKED = new java.util.concurrent.atomic.AtomicBoolean();
 
     private WorldNavigationUiTest() {}
 
@@ -210,16 +211,77 @@ public final class WorldNavigationUiTest {
                 require(!view.lookup("#world-minimap").isVisible(),"Retired source cannot reveal minimap after resize");
                 require(((javafx.scene.control.Label)view.lookup("#world-current-area")).getText().equals("Terrain area unavailable"),"Retired source cannot retain current-area name");
                 require(fixture.minimapCalls.get()==before,"Retired source cannot request artwork after resize");
-                DONE.complete(null);
+                await(fixture,RACE_CHECKED::get,() -> DONE.complete(null));
             });
+    }
+
+    /** Showing stored controls sets every control without saving a half-applied value. */
+    private static void storedControlsLoadWithoutBeingOverwritten(WorldView view) {
+        var saved=new ArrayList<String>();
+        view.controls(new WorldControls.Store() {
+            public java.util.concurrent.CompletableFuture<String> load() { return java.util.concurrent.CompletableFuture.completedFuture(null); }
+            public void save(String value) { saved.add(value); }
+        });
+        var stored=WorldControls.DEFAULTS.withSensitivity(.013).withInvertY(true);
+        view.showControls(stored);
+        var invert=(javafx.scene.control.CheckBox)view.lookup("#world-invert-look");
+        var slider=(javafx.scene.control.Slider)view.lookup("#world-look-sensitivity");
+        require(saved.isEmpty(),"Loading controls never saves: "+saved);
+        require(invert.isSelected() && Math.abs(slider.getValue()-.013)<1e-12 && input(view).controls().equals(stored),
+                "Stored invert-Y and sensitivity both apply");
+        require(slider.getBlockIncrement()==.001,"Slider steps suit its range");
+        invert.fire();
+        require(saved.size()==1 && WorldControls.decode(saved.getFirst()).equals(stored.withInvertY(false)),
+                "A user change saves the whole value: "+saved);
+        view.showControls(WorldControls.DEFAULTS);
+        view.controls(WorldControls.memory());
+        controlsLoadRace(view, invert);
+    }
+
+    /** A slow load never overwrites an edit made meanwhile; a load that wins applies. */
+    private static void controlsLoadRace(WorldView view, javafx.scene.control.CheckBox invert) {
+        var stored=WorldControls.DEFAULTS.withInvertY(true).withSensitivity(.015);
+        var slow=new java.util.concurrent.CompletableFuture<String>();
+        var savedSlow=new ArrayList<String>();
+        view.controls(new WorldControls.Store() {
+            public java.util.concurrent.CompletableFuture<String> load() { return slow; }
+            public void save(String value) { savedSlow.add(value); }
+        });
+        require(!invert.isSelected(),"Defaults shown while the load is pending");
+        invert.fire();
+        require(savedSlow.size()==1,"The edit saves at once");
+        require(input(view).controls().invertY(),"The edit applies");
+        // The load completes after the edit; its result is applied on a later FX turn.
+        slow.complete(stored.encode());
+        var fast=new java.util.concurrent.CompletableFuture<String>();
+        Platform.runLater(() -> {
+            try {
+                // Later test steps may have changed controls since; the slow load must not have
+                // applied its distinctive sensitivity.
+                require(input(view).controls().sensitivity()!=stored.sensitivity(),
+                        "A load finishing after an edit is ignored: "+input(view).controls());
+                view.controls(new WorldControls.Store() {
+                    public java.util.concurrent.CompletableFuture<String> load() { return fast; }
+                    public void save(String value) { throw new AssertionError("A load never saves"); }
+                });
+                fast.complete(stored.encode());
+                Platform.runLater(() -> {
+                    try {
+                        require(input(view).controls().equals(stored),"A load before any edit applies");
+                        view.showControls(WorldControls.DEFAULTS);
+                        view.controls(WorldControls.memory());
+                        RACE_CHECKED.set(true);
+                    } catch (Throwable error) { DONE.completeExceptionally(error); }
+                });
+            } catch (Throwable error) { DONE.completeExceptionally(error); }
+        });
     }
 
     private static void controls(WorldView view) {
         var viewport=view.lookup("#world-viewport");
         var timer=(AnimationTimer)get(view,"timer");
         // Prevent unrelated rendering/discovery while exercising the actual timer's movement branch.
-        set(view,"lastRender",Long.MAX_VALUE);
-        set(view,"lastNearby",Long.MAX_VALUE);
+        input(view).holdCadence();
         var smooth=(javafx.scene.control.CheckBox)view.lookup("#world-smooth-motion");
         require(smooth.isSelected(),"Smoothed motion is the default");
         // The exact oracles below pin the established unsmoothed free-flight displacement.
@@ -227,7 +289,7 @@ public final class WorldNavigationUiTest {
         require(!smooth.isSelected(),"Smoothing can be disabled");
         for(var keys:List.of(List.of(KeyCode.SPACE),List.of(KeyCode.E),List.of(KeyCode.SPACE,KeyCode.E),List.of(KeyCode.Q),List.of(KeyCode.X),List.of(KeyCode.Q,KeyCode.X),List.of(KeyCode.SPACE,KeyCode.Q),List.of(KeyCode.SPACE,KeyCode.X),List.of(KeyCode.E,KeyCode.X),List.of(KeyCode.SPACE,KeyCode.E,KeyCode.Q,KeyCode.X))) {
             set(view,"camera",new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,0,0));
-            set(view,"lastTick",0L);
+            input(view).idle();
             for(var key:keys) key(viewport,key,true);
             timer.handle(1_000_000_000L);
             timer.handle(1_100_000_000L);
@@ -242,14 +304,14 @@ public final class WorldNavigationUiTest {
         for (var code : List.of(KeyCode.LEFT, KeyCode.RIGHT, KeyCode.A, KeyCode.D, KeyCode.W)) {
             var start = new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,0,0);
             set(view,"camera",start);
-            set(view,"lastTick",0L);
+            input(view).idle();
             key(viewport,code,true);
             timer.handle(2_000_000_000L);
             timer.handle(2_100_000_000L);
             key(viewport,code,false);
             var moved=(TerrainRenderer.Camera)get(view,"camera");
             if (code == KeyCode.LEFT || code == KeyCode.RIGHT) {
-                double wanted = code == KeyCode.LEFT ? .1 : -.1;
+                double wanted = (code == KeyCode.LEFT ? .1 : -.1) * com.vibeminer.rendering.world.ExplorerMotion.TURN_RATE;
                 require(Math.abs(moved.yaw()-wanted)<1e-12,"Actual turn key geographic yaw: "+code);
                 var nativeCamera=com.vibeminer.rendering.world.TerrainCamera.from(moved);
                 var east=nativeCamera.eye(start.x()+10,start.y()-4,start.z());
@@ -265,28 +327,41 @@ public final class WorldNavigationUiTest {
         for (double delta : new double[] {-25,25}) {
             var start=new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,0,0);
             set(view,"camera",start);
-            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_PRESSED,50,50);
-            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_DRAGGED,50+delta,50);
-            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_RELEASED,50+delta,50);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_PRESSED,50,50,javafx.scene.input.MouseButton.PRIMARY);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_DRAGGED,50+delta,50,javafx.scene.input.MouseButton.PRIMARY);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_RELEASED,50+delta,50,javafx.scene.input.MouseButton.PRIMARY);
+            require(viewport.getCursor()==null,"Left-drag look keeps the cursor visible");
+            timer.handle(2_200_000_000L);
+            var left=(TerrainRenderer.Camera)get(view,"camera");
+            require(Math.abs(left.yaw()+delta*WorldControls.DEFAULT_SENSITIVITY)<1e-12,"Left drag looks without capture");
+            set(view,"camera",start);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_PRESSED,50,50,javafx.scene.input.MouseButton.SECONDARY);
+            require(viewport.getCursor()==javafx.scene.Cursor.NONE,"Right-button look hides the cursor");
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_DRAGGED,50+delta,50,javafx.scene.input.MouseButton.SECONDARY);
+            require(start.equals(get(view,"camera")),"Look waits for the next pulse");
+            timer.handle(2_300_000_000L);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_RELEASED,50+delta,50,javafx.scene.input.MouseButton.SECONDARY);
+            require(viewport.getCursor()==null,"Releasing the right button shows the cursor");
             var moved=(TerrainRenderer.Camera)get(view,"camera");
-            require(Math.abs(moved.yaw()+delta*.006)<1e-12,"Mouse drag turns toward actual screen side");
+            require(Math.abs(moved.yaw()+delta*WorldControls.DEFAULT_SENSITIVITY)<1e-12,"Right-button look turns toward actual screen side");
         }
+        storedControlsLoadWithoutBeingOverwritten(view);
         var before = new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,.7,-.8);
         set(view,"camera",before);
-        double originalSpeed = (double)get(view,"speed");
+        double originalSpeed = input(view).speed();
         scroll(viewport,40,false);
         var zoomed = (TerrainRenderer.Camera)get(view,"camera");
         double dx=zoomed.x()-before.x(),dy=zoomed.y()-before.y(),dz=zoomed.z()-before.z();
         require(dx>0 && dy>0 && dz<0,"Wheel moves forward along pitched view, including native altitude");
         require(Math.abs(Math.atan2(dy,dx)-before.yaw())<1e-8,"Wheel preserves view yaw");
         require(Math.abs(dz/Math.hypot(dx,dy)-Math.tan(before.pitch()))<1e-8,"Wheel follows pitch rather than a flat strafe");
-        require((double)get(view,"speed")==originalSpeed,"Normal wheel preserves flight speed");
+        require(input(view).speed()==originalSpeed,"Normal wheel preserves flight speed");
         scroll(viewport,-40,false);
         var restored=(TerrainRenderer.Camera)get(view,"camera");
         require(Math.abs(restored.x()-before.x())<1e-8&&Math.abs(restored.y()-before.y())<1e-8&&Math.abs(restored.z()-before.z())<1e-8,"Reverse wheel restores view position");
         scroll(viewport,40,true);
         require(restored.equals(get(view,"camera")),"Shift+wheel does not zoom");
-        require((double)get(view,"speed")>originalSpeed,"Shift+wheel adjusts flight speed");
+        require(input(view).speed()>originalSpeed,"Shift+wheel adjusts flight speed");
         scroll(viewport,Double.NaN,false);
         require(restored.equals(get(view,"camera")),"Nonfinite wheel input is ignored");
         set(view,"camera",new TerrainRenderer.Camera(1_000_000,1_000_000,1_000_000,.7,.8));
@@ -295,7 +370,7 @@ public final class WorldNavigationUiTest {
         require(bounded.x()<=1_000_000&&bounded.y()<=1_000_000&&bounded.z()<=1_000_000,"Wheel remains within camera coordinate bounds");
         walk(view,timer,viewport);
         set(view,"camera",before);
-        set(view,"speed",originalSpeed);
+        input(view).speed(originalSpeed);
     }
 
     /** Walk mode over an authored qualified ADT18 surface and over the unqualified fixture mesh. */
@@ -310,7 +385,7 @@ public final class WorldNavigationUiTest {
         // The navigation fixture's single-triangle tiles are not the admitted ADT18 layout.
         var held=new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,0,0);
         set(view,"camera",held);
-        set(view,"lastTick",0L);
+        input(view).idle();
         key(viewport,KeyCode.SPACE,true);
         key(viewport,KeyCode.W,true);
         timer.handle(3_000_000_000L);
@@ -325,7 +400,7 @@ public final class WorldNavigationUiTest {
                 com.vibeminer.rendering.world.TerrainGround.Tile.of(new com.vibeminer.rendering.world.TerrainScene.Tile(X,Y,
                         WorldFormats.adt(authoredRoot(10000,20000),() -> false)))));
         set(view,"ground",surface);
-        set(view,"lastTick",0L);
+        input(view).idle();
         timer.handle(4_000_000_000L);
         timer.handle(4_100_000_000L);
         var grounded=(TerrainRenderer.Camera)get(view,"camera");
@@ -363,10 +438,12 @@ public final class WorldNavigationUiTest {
         return bytes.array();
     }
 
-    private static void mouse(Node node,javafx.event.EventType<javafx.scene.input.MouseEvent> type,double x,double y) {
-        Event.fireEvent(node,new javafx.scene.input.MouseEvent(type,x,y,x,y,javafx.scene.input.MouseButton.PRIMARY,1,
-                false,false,false,false,type!=javafx.scene.input.MouseEvent.MOUSE_RELEASED,
-                false,false,false,false,true,new PickResult(node,x,y)));
+    private static void mouse(Node node,javafx.event.EventType<javafx.scene.input.MouseEvent> type,double x,double y,
+            javafx.scene.input.MouseButton button) {
+        boolean down=type!=javafx.scene.input.MouseEvent.MOUSE_RELEASED;
+        Event.fireEvent(node,new javafx.scene.input.MouseEvent(type,x,y,x,y,button,1,
+                false,false,false,false,down&&button==javafx.scene.input.MouseButton.PRIMARY,
+                false,down&&button==javafx.scene.input.MouseButton.SECONDARY,false,false,true,new PickResult(node,x,y)));
     }
 
     private static void scroll(Node target,double delta,boolean shift) {
@@ -406,5 +483,6 @@ public final class WorldNavigationUiTest {
         try{var m=WorldView.class.getDeclaredMethod(name);m.setAccessible(true);m.invoke(view);}
         catch(ReflectiveOperationException error){throw new AssertionError(error);}
     }
+    private static WorldExplorerInput input(WorldView view) {return (WorldExplorerInput)get(view,"input");}
     private static void require(boolean condition,String message) {if(!condition)throw new AssertionError(message);}
 }

@@ -16,6 +16,11 @@ public final class ReadOnlyStore implements ObjectReader, HistoryReader {
         this.inner = inner;
     }
 
+    // Same-package tests inspect the wrapped store.
+    ObjectStore inner() {
+        return inner;
+    }
+
     public OpenReport openReport() {
         return inner.openReport();
     }
