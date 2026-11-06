@@ -512,6 +512,7 @@ public final class WorldNavigationUiTest {
             } catch (ReflectiveOperationException error) { throw new AssertionError(error); }
         }
         gameMenu(view,viewport);
+        cardIsTheFirstEscapeLayer(view,viewport);
         fullscreenEscapeIsTheLastLayer(view,viewport);
         // M toggles the map panel; the map list moves into it and back out.
         var panel=view.lookup("#world-map-panel");
@@ -789,6 +790,32 @@ public final class WorldNavigationUiTest {
         key(viewport,KeyCode.W,true);
         require(input(view).keysHeld(),"WASD works straight after icon clicks");
         key(viewport,KeyCode.W,false);
+    }
+
+    /**
+     * The inspect card is the first Escape layer: Escape closes it before the map panel, and never
+     * opens the menu over it (the viewport's own Escape branch is gone; the scene filter owns it).
+     */
+    private static void cardIsTheFirstEscapeLayer(WorldView view, Node viewport) {
+        var menu=(WorldGameMenu)get(view,"menu");
+        var hud=(WorldHud)get(view,"hud");
+        var card=view.inspectCard();
+        var camera=(TerrainRenderer.Camera)get(view,"camera");
+        card.show(WorldInspection.note("Authored card"),camera.x(),camera.y(),camera.z());
+        require(card.isOpen() && !menu.shown(),"A card is open, the menu closed");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!card.isOpen() && !menu.shown(),"Escape closes the card and does not open the menu over it");
+        card.show(WorldInspection.note("Authored card"),camera.x(),camera.y(),camera.z());
+        invoke(view,"toggleMapPanel");
+        require(card.isOpen() && hud.panelShown(),"Card and map panel open");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!card.isOpen() && hud.panelShown(),"The card closes before the map panel");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!hud.panelShown() && !menu.shown(),"Then the map panel");
+        require(!input(view).keysHeld(),"Escape never becomes a held key");
     }
 
     /**

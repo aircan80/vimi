@@ -1219,11 +1219,6 @@ final class WorldView extends BorderPane implements AutoCloseable {
         image.setPreserveRatio(true);
         viewport.setOnKeyPressed(
                 e -> {
-                    // Escape closes the inspect card first (the first layer of the HUD's order).
-                    if (e.getCode() == KeyCode.ESCAPE && inspectCard.close()) {
-                        e.consume();
-                        return;
-                    }
                     // Nothing flies behind the open menu.
                     if (!menu.shown()) input.keyPressed(e.getCode());
                     devOverlay.refresh();
@@ -2205,13 +2200,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     /**
-     * Escape, closing the top-most thing first: the menu (from a page too, the whole menu), then
-     * the map panel; the inspect card joins ahead of them when it lands. With nothing open, a window
-     * opens the menu, and full screen leaves full screen: that is the last layer, so Escape never
-     * drops out of full screen while something is still open. The full-screen stage's own Escape
-     * exit is off ({@link WorldFullscreen}), so this is the only Escape handling there.
+     * Escape, closing the top-most thing first: the inspect card (even while the HUD hides it),
+     * then the menu (from a page too, the whole menu), then the map panel. With nothing open, a
+     * window opens the menu, and full screen leaves full screen: that is the last layer, so Escape
+     * never drops out of full screen while something is still open. This is the only Escape
+     * handling: it runs as the scene filter (the full-screen stage's own Escape exit is off, see
+     * {@link WorldFullscreen}), so the viewport never sees an Escape.
      */
     boolean escape() {
+        // A pinned or open card goes first, so Escape never opens the menu over it.
+        if (inspectCard.close()) return true;
         if (fullscreen.active() && (!explorer || instances.engaged())) {
             leaveFullscreenByEscape();
             return true;
