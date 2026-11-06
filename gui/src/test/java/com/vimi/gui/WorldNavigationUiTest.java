@@ -42,6 +42,7 @@ public final class WorldNavigationUiTest {
         {1,1}, {-1,1}, {-1,-1}, {1,-1}, {0,0}
     };
     private static final CompletableFuture<Void> DONE = new CompletableFuture<>();
+    private static final java.util.concurrent.atomic.AtomicBoolean RACE_CHECKED = new java.util.concurrent.atomic.AtomicBoolean();
 
     private WorldNavigationUiTest() {}
 
@@ -212,6 +213,7 @@ public final class WorldNavigationUiTest {
                 require(!view.lookup("#world-minimap").isVisible(),"Retired source cannot reveal minimap after resize");
                 require(((javafx.scene.control.Label)view.lookup("#world-current-area")).getText().equals("Terrain area unavailable"),"Retired source cannot retain current-area name");
                 require(fixture.minimapCalls.get()==before,"Retired source cannot request artwork after resize");
+                require(RACE_CHECKED.get(),"The asynchronous controls load race was checked");
                 DONE.complete(null);
             });
     }
@@ -242,6 +244,48 @@ public final class WorldNavigationUiTest {
                 "A user change saves the whole value: "+saved);
         view.showControls(WorldControls.DEFAULTS);
         view.controls(WorldControls.memory());
+        controlsLoadRace(view, invert);
+    }
+
+    /** A slow load never overwrites an edit made meanwhile; a load that wins applies. */
+    private static void controlsLoadRace(WorldView view, javafx.scene.control.CheckBox invert) {
+        var stored=WorldControls.DEFAULTS.withInvertY(true).withSensitivity(.015);
+        var slow=new java.util.concurrent.CompletableFuture<String>();
+        var savedSlow=new ArrayList<String>();
+        view.controls(new WorldControls.Store() {
+            public java.util.concurrent.CompletableFuture<String> load() { return slow; }
+            public void save(String value) { savedSlow.add(value); }
+        });
+        require(!invert.isSelected(),"Defaults shown while the load is pending");
+        invert.fire();
+        require(savedSlow.size()==1,"The edit saves at once");
+        require(input(view).controls().invertY(),"The edit applies");
+        // The load completes on another thread after the edit.
+        new Thread(() -> slow.complete(stored.encode())).start();
+        try { slow.get(5,TimeUnit.SECONDS); } catch (Exception error) { throw new AssertionError(error); }
+        var fast=new java.util.concurrent.CompletableFuture<String>();
+        Platform.runLater(() -> {
+            try {
+                // Later test steps may have changed controls since; the slow load must not have
+                // applied its distinctive sensitivity.
+                require(input(view).controls().sensitivity()!=stored.sensitivity(),
+                        "A load finishing after an edit is ignored: "+input(view).controls());
+                view.controls(new WorldControls.Store() {
+                    public java.util.concurrent.CompletableFuture<String> load() { return fast; }
+                    public void save(String value) { throw new AssertionError("A load never saves"); }
+                });
+                new Thread(() -> fast.complete(stored.encode())).start();
+                fast.get(5,TimeUnit.SECONDS);
+                Platform.runLater(() -> {
+                    try {
+                        require(input(view).controls().equals(stored),"A load before any edit applies");
+                        view.showControls(WorldControls.DEFAULTS);
+                        view.controls(WorldControls.memory());
+                        RACE_CHECKED.set(true);
+                    } catch (Throwable error) { DONE.completeExceptionally(error); }
+                });
+            } catch (Throwable error) { DONE.completeExceptionally(error); }
+        });
     }
 
     private static void controls(WorldView view) {
