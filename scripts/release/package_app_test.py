@@ -115,5 +115,19 @@ class LinuxPackageMetadataTest(unittest.TestCase):
         self.assertEqual(('libc6', 'libasound2t64 | libasound2'), package_app.parse_depends('libc6,  libasound2t64|libasound2 '))
 
 
+class JvmOptionsTest(unittest.TestCase):
+    def test_packaged_app_uses_the_shared_low_pause_options(self):
+        options = package_app.jvm_options()
+        self.assertIn('-XX:+UseZGC', options)
+        self.assertIn('-Djavafx.animation.pulse=120', options)
+        self.assertTrue(all(option.startswith('-') for option in options))
+
+    def test_comments_and_blank_lines_are_ignored(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'options.txt'
+            path.write_text('# note\n\n  -Xa  \n#-Xb\n-Xc\n', encoding='utf-8')
+            self.assertEqual(['-Xa', '-Xc'], package_app.jvm_options(path))
+
+
 if __name__ == '__main__':
     unittest.main()

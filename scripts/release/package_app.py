@@ -18,6 +18,15 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 TAG = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(alpha|beta|rc)\.([1-9]\d*)\Z")
 UPGRADE_UUID = "0ec41097-39e4-44d1-a12c-c93c20f9ca74"
+JVM_OPTIONS_FILE = ROOT / "gui/jvm-options.txt"
+
+
+def jvm_options(path=JVM_OPTIONS_FILE):
+    """App JVM options shared with `gradlew :gui:run`: one per line, '#' comments."""
+    lines = (line.strip() for line in Path(path).read_text(encoding="utf-8").splitlines())
+    return [line for line in lines if line and not line.startswith("#")]
+
+
 MODULES = "java.base,java.desktop,java.logging,java.net.http,java.xml,java.sql,java.management,java.naming,jdk.unsupported,jdk.crypto.ec,jdk.zipfs,jdk.localedata"
 
 
@@ -282,6 +291,8 @@ def main():
                "--java-options", f"-Dvibeminer.sqlite.library=$APPDIR/native/{native_name(system)}",
                # JavaFX natives ship in the image; class-only JARs make JavaFX load them from here.
                "--java-options", "-Djava.library.path=$APPDIR/native/javafx"]
+    for option in jvm_options():
+        command += ["--java-options", option]
     if system == "macos":
         command += ["--mac-package-identifier", "com.vibeminer.desktop", "--mac-package-name", "VibeMiner"]
     run(command, timeout=600)

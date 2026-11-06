@@ -44,6 +44,31 @@ public final class GpuPreviewServiceTest {
         }
     }
 
+    /** Starts only `java -version`: a mistyped option fails here, not in the user's helper. */
+    private static void helperAndAppJvmOptionsAreAcceptedByThisRuntime() throws Exception {
+        var helper = GpuPreviewService.HELPER_JVM_OPTIONS;
+        require(helper.contains("-XX:+UseZGC") && helper.stream().anyMatch(o -> o.startsWith("-Xmx")),
+                "Helper gets the low-pause collector and its own bounded heap");
+        var options = new java.util.ArrayList<>(helper);
+        Path shared = Path.of("jvm-options.txt");
+        // JavaExec runs in the gui project directory, beside the shared option file.
+        require(Files.isRegularFile(shared), "Shared app JVM options beside the gui project");
+        for (String line : Files.readAllLines(shared)) {
+            line = line.strip();
+            if (!line.isEmpty() && !line.startsWith("#")) options.add(line);
+        }
+        require(options.contains("-XX:+UseZGC") && options.contains("-Djavafx.animation.pulse=120"),
+                "Shared app options read");
+        var command = new java.util.ArrayList<String>();
+        command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
+        command.addAll(options);
+        command.add("-version");
+        var process = new ProcessBuilder(command).redirectErrorStream(true).start();
+        String output = new String(process.getInputStream().readAllBytes());
+        require(process.waitFor(30, TimeUnit.SECONDS) && process.exitValue() == 0,
+                "JVM rejected " + options + ": " + output);
+    }
+
     public static void main(String[] args) throws Exception {
         Path root = Files.createTempDirectory("vimi-gpu-service-test-");
         try {
@@ -58,6 +83,7 @@ public final class GpuPreviewServiceTest {
             } catch (IllegalArgumentException expected) {
             }
             worldBackendOverrideIsExplicitAndBounded();
+            helperAndAppJvmOptionsAreAcceptedByThisRuntime();
             latestFrameHandoffNeverRepublishesOlderWork();
             inlineFramesAndCoalescedControls(root);
             terrainAndModelsShareOwnerAndKeepControlsTyped(root);
