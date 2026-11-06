@@ -228,10 +228,15 @@ public final class WorldTravelUiTest {
         require(card.isOpen(), "A pinned card stays while flying");
         card.hudHidden(true);
         require(card.isOpen() && !card.isVisible(), "Hiding the HUD hides the card, which stays open");
-        javafx.event.Event.fireEvent(viewport, new javafx.scene.input.KeyEvent(
-                javafx.scene.input.KeyEvent.KEY_PRESSED, "", "", javafx.scene.input.KeyCode.ESCAPE,
-                false, false, false, false));
-        require(!card.isOpen() && !input.keysHeld(), "Escape closes the card first, even hidden, and holds no key");
+        // Escape only closes a showing card: a hidden one stays open and Escape moves on (here it
+        // opens the menu); Escape again closes the menu.
+        var menu = (WorldGameMenu) get(view, "menu");
+        press.accept(javafx.scene.input.KeyCode.ESCAPE);
+        require(card.isOpen() && !card.isVisible() && menu.shown() && !input.keysHeld(),
+                "Escape skips a hidden card (it stays open), opens the next layer and holds no key");
+        press.accept(javafx.scene.input.KeyCode.ESCAPE);
+        require(!menu.shown() && card.isOpen(), "Escape closes the menu; the hidden card is still open");
+        card.close();
         press.accept(javafx.scene.input.KeyCode.I);
         require(card.isOpen() && !card.isVisible(), "I works while the HUD is hidden");
         card.hudHidden(false);

@@ -2223,16 +2223,17 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     /**
-     * Escape, closing the top-most thing first: the inspect card (even while the HUD hides it),
-     * then the menu (from a page too, the whole menu), then the map panel. With nothing open, a
+     * Escape, closing the top-most thing first: the inspect card while it shows (a card the hidden
+     * HUD hides stays open, and Escape moves on), then the menu (from a page too, the whole menu),
+     * then the map panel. With nothing open, a
      * window opens the menu, and full screen leaves full screen: that is the last layer, so Escape
      * never drops out of full screen while something is still open. This is the only Escape
      * handling: it runs as the scene filter (the full-screen stage's own Escape exit is off, see
      * {@link WorldFullscreen}), so the viewport never sees an Escape.
      */
     boolean escape() {
-        // A pinned or open card goes first, so Escape never opens the menu over it.
-        if (inspectCard.close()) return true;
+        // A showing card goes first, so Escape never opens the menu over it.
+        if (inspectCard.isVisible() && inspectCard.close()) return true;
         if (fullscreen.active() && (!explorer || instances.engaged())) {
             leaveFullscreenByEscape();
             return true;

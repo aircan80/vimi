@@ -819,6 +819,23 @@ public final class WorldNavigationUiTest {
         press(viewport,KeyCode.ESCAPE,false);
         release(viewport,KeyCode.ESCAPE);
         require(!hud.panelShown() && !menu.shown(),"Then the map panel");
+        // A card the hidden HUD hides stays open: Escape moves on to the next layer (the menu).
+        card.show(WorldInspection.note("Authored card"),camera.x(),camera.y(),camera.z());
+        key(viewport,KeyCode.H,true);
+        key(viewport,KeyCode.H,false);
+        require(card.isOpen() && !card.isVisible() && hud.hidden(),"H hides the card with the HUD");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(card.isOpen() && menu.shown(),"Escape skips the hidden card and opens the menu");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!menu.shown() && card.isOpen(),"Escape closes the menu; the card is still open");
+        key(viewport,KeyCode.H,true);
+        key(viewport,KeyCode.H,false);
+        require(card.isVisible(),"H shows the card again");
+        press(viewport,KeyCode.ESCAPE,false);
+        release(viewport,KeyCode.ESCAPE);
+        require(!card.isOpen() && !menu.shown(),"Now it shows, Escape closes it");
         require(!input(view).keysHeld(),"Escape never becomes a held key");
     }
 
