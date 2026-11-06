@@ -218,8 +218,7 @@ public final class WorldNavigationUiTest {
         var viewport=view.lookup("#world-viewport");
         var timer=(AnimationTimer)get(view,"timer");
         // Prevent unrelated rendering/discovery while exercising the actual timer's movement branch.
-        set(view,"lastRender",Long.MAX_VALUE);
-        set(view,"lastNearby",Long.MAX_VALUE);
+        input(view).holdCadence();
         var smooth=(javafx.scene.control.CheckBox)view.lookup("#world-smooth-motion");
         require(smooth.isSelected(),"Smoothed motion is the default");
         // The exact oracles below pin the established unsmoothed free-flight displacement.
@@ -227,7 +226,7 @@ public final class WorldNavigationUiTest {
         require(!smooth.isSelected(),"Smoothing can be disabled");
         for(var keys:List.of(List.of(KeyCode.SPACE),List.of(KeyCode.E),List.of(KeyCode.SPACE,KeyCode.E),List.of(KeyCode.Q),List.of(KeyCode.X),List.of(KeyCode.Q,KeyCode.X),List.of(KeyCode.SPACE,KeyCode.Q),List.of(KeyCode.SPACE,KeyCode.X),List.of(KeyCode.E,KeyCode.X),List.of(KeyCode.SPACE,KeyCode.E,KeyCode.Q,KeyCode.X))) {
             set(view,"camera",new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,0,0));
-            set(view,"lastTick",0L);
+            input(view).idle();
             for(var key:keys) key(viewport,key,true);
             timer.handle(1_000_000_000L);
             timer.handle(1_100_000_000L);
@@ -242,7 +241,7 @@ public final class WorldNavigationUiTest {
         for (var code : List.of(KeyCode.LEFT, KeyCode.RIGHT, KeyCode.A, KeyCode.D, KeyCode.W)) {
             var start = new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,0,0);
             set(view,"camera",start);
-            set(view,"lastTick",0L);
+            input(view).idle();
             key(viewport,code,true);
             timer.handle(2_000_000_000L);
             timer.handle(2_100_000_000L);
@@ -273,20 +272,20 @@ public final class WorldNavigationUiTest {
         }
         var before = new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,.7,-.8);
         set(view,"camera",before);
-        double originalSpeed = (double)get(view,"speed");
+        double originalSpeed = input(view).speed();
         scroll(viewport,40,false);
         var zoomed = (TerrainRenderer.Camera)get(view,"camera");
         double dx=zoomed.x()-before.x(),dy=zoomed.y()-before.y(),dz=zoomed.z()-before.z();
         require(dx>0 && dy>0 && dz<0,"Wheel moves forward along pitched view, including native altitude");
         require(Math.abs(Math.atan2(dy,dx)-before.yaw())<1e-8,"Wheel preserves view yaw");
         require(Math.abs(dz/Math.hypot(dx,dy)-Math.tan(before.pitch()))<1e-8,"Wheel follows pitch rather than a flat strafe");
-        require((double)get(view,"speed")==originalSpeed,"Normal wheel preserves flight speed");
+        require(input(view).speed()==originalSpeed,"Normal wheel preserves flight speed");
         scroll(viewport,-40,false);
         var restored=(TerrainRenderer.Camera)get(view,"camera");
         require(Math.abs(restored.x()-before.x())<1e-8&&Math.abs(restored.y()-before.y())<1e-8&&Math.abs(restored.z()-before.z())<1e-8,"Reverse wheel restores view position");
         scroll(viewport,40,true);
         require(restored.equals(get(view,"camera")),"Shift+wheel does not zoom");
-        require((double)get(view,"speed")>originalSpeed,"Shift+wheel adjusts flight speed");
+        require(input(view).speed()>originalSpeed,"Shift+wheel adjusts flight speed");
         scroll(viewport,Double.NaN,false);
         require(restored.equals(get(view,"camera")),"Nonfinite wheel input is ignored");
         set(view,"camera",new TerrainRenderer.Camera(1_000_000,1_000_000,1_000_000,.7,.8));
@@ -295,7 +294,7 @@ public final class WorldNavigationUiTest {
         require(bounded.x()<=1_000_000&&bounded.y()<=1_000_000&&bounded.z()<=1_000_000,"Wheel remains within camera coordinate bounds");
         walk(view,timer,viewport);
         set(view,"camera",before);
-        set(view,"speed",originalSpeed);
+        input(view).speed(originalSpeed);
     }
 
     /** Walk mode over an authored qualified ADT18 surface and over the unqualified fixture mesh. */
@@ -310,7 +309,7 @@ public final class WorldNavigationUiTest {
         // The navigation fixture's single-triangle tiles are not the admitted ADT18 layout.
         var held=new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,0,0);
         set(view,"camera",held);
-        set(view,"lastTick",0L);
+        input(view).idle();
         key(viewport,KeyCode.SPACE,true);
         key(viewport,KeyCode.W,true);
         timer.handle(3_000_000_000L);
@@ -325,7 +324,7 @@ public final class WorldNavigationUiTest {
                 com.vibeminer.rendering.world.TerrainGround.Tile.of(new com.vibeminer.rendering.world.TerrainScene.Tile(X,Y,
                         WorldFormats.adt(authoredRoot(10000,20000),() -> false)))));
         set(view,"ground",surface);
-        set(view,"lastTick",0L);
+        input(view).idle();
         timer.handle(4_000_000_000L);
         timer.handle(4_100_000_000L);
         var grounded=(TerrainRenderer.Camera)get(view,"camera");
@@ -406,5 +405,6 @@ public final class WorldNavigationUiTest {
         try{var m=WorldView.class.getDeclaredMethod(name);m.setAccessible(true);m.invoke(view);}
         catch(ReflectiveOperationException error){throw new AssertionError(error);}
     }
+    private static WorldExplorerInput input(WorldView view) {return (WorldExplorerInput)get(view,"input");}
     private static void require(boolean condition,String message) {if(!condition)throw new AssertionError(message);}
 }
