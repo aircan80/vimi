@@ -634,7 +634,7 @@ final class WorldTileCreatures implements AutoCloseable {
                         int pixel = argb.get(sy * width + sx);
                         int alpha = pixel >>> 24, red = pixel >>> 16 & 255, green = pixel >>> 8 & 255,
                                 blue = pixel & 255;
-                        if (alpha >= 128) sourcePassing++;
+                        if (alpha >= com.vibeminer.rendering.world.ObjectTextureMips.CUTOUT_ALPHA) sourcePassing++;
                         r += red;
                         g += green;
                         b += blue;

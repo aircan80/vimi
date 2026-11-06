@@ -178,6 +178,8 @@ class ObjectTextureMipsTest {
         ObjectTextureMips.matchCoverage(rgba, 0, 4, 0.5);
         assertEquals(0.5, ObjectTextureMips.coverage(rgba, 0, 4));
         assertTrue((rgba[3] & 255) < 128 && (rgba[11] & 255) >= 128, "order is kept");
+        ObjectTextureMips.matchCoverage(rgba, 0, 4, 1);
+        assertEquals(1, ObjectTextureMips.coverage(rgba, 0, 4), "every texel passes");
         ObjectTextureMips.matchCoverage(rgba, 0, 4, 0);
         assertEquals(0, ObjectTextureMips.coverage(rgba, 0, 4));
         assertThrows(
