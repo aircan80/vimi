@@ -260,6 +260,20 @@ final class WorldStreamObjectsFileTest {
                     "BC1 image sampled with alpha",
                     assertThrows(IllegalArgumentException.class, alpha::build).getMessage());
         }
+        // An unlit opaque range ignores alpha too, so it may sample BC1: the flag does not change
+        // the kind.
+        var unlit = WorldStreamTileWriter.Exterior.builder();
+        unlit.image(256, 64, ObjectTextureFormats.BC1, ByteBuffer.wrap(blocks1));
+        unlit.model();
+        unlit.mesh(
+                FloatBuffer.wrap(new float[24]),
+                IntBuffer.wrap(new int[] {0, 1, 2}),
+                new int[] {0, 3, 0},
+                new int[] {WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT});
+        unlit.placement(0, 0, 0, 0, 1, 1, 0);
+        assertEquals(
+                WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT,
+                unlit.build().data().ranges[3]);
         // The file carries version 5: the reader accepts no other. A version 3 file (two-int
         // RGBA8-only image table) or a stale version 4 file (#420, before the additive and unlit
         // classes of #367) fails its header check instead of being misread.
@@ -797,19 +811,22 @@ final class WorldStreamObjectsFileTest {
         assertEquals(5, WorldStreamObjectsFile.VERSION);
         assertEquals(h, read.placements[8], 0);
         // An unknown class, a scaled matrix or a reflection is refused.
-        var badClass = WorldStreamTileWriter.Exterior.builder();
-        badClass.image(1, 1, ByteBuffer.allocate(4));
-        badClass.model();
-        badClass.mesh(
-                FloatBuffer.wrap(new float[24]),
-                IntBuffer.wrap(new int[] {0, 1, 2}),
-                new int[] {0, 3, 0},
-                // Modulate (4) and unknown flags stay refused.
-                new int[] {4});
-        badClass.placement(0, 0, 0, 0, 1, 1, 0);
-        assertEquals(
-                "Draw range",
-                assertThrows(IllegalArgumentException.class, badClass::build).getMessage());
+        // Modulate (4) and unknown flag bits stay refused: 0x200 alone and beside a known kind.
+        for (int unknown : new int[] {4, 0x200, WorldStreamObjectsFile.OPAQUE | 0x200}) {
+            var badClass = WorldStreamTileWriter.Exterior.builder();
+            badClass.image(1, 1, ByteBuffer.allocate(4));
+            badClass.model();
+            badClass.mesh(
+                    FloatBuffer.wrap(new float[24]),
+                    IntBuffer.wrap(new int[] {0, 1, 2}),
+                    new int[] {0, 3, 0},
+                    new int[] {unknown});
+            badClass.placement(0, 0, 0, 0, 1, 1, 0);
+            assertEquals(
+                    "Draw range",
+                    assertThrows(IllegalArgumentException.class, badClass::build).getMessage(),
+                    "Class " + Integer.toHexString(unknown));
+        }
         for (double[] rotation :
                 new double[][] {
                     {2, 0, 0, 0, 2, 0, 0, 0, 2}, {-1, 0, 0, 0, 1, 0, 0, 0, 1}, new double[9]
