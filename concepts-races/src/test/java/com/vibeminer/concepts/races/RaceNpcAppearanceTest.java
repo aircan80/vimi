@@ -353,8 +353,14 @@ final class RaceNpcAppearanceTest {
     }
 
     private static RaceAppearanceTypes.Result renderNpc(com.vibeminer.files.MemoryFiles memory) {
+        return renderNpc(
+                memory.forBuild(BUILD, "enUS", Cancellation.NONE).join().files(), ORC_MALE);
+    }
+
+    /** Renders the four-texel NPC bake plan (layer file 100) over {@code variant}'s model. */
+    private static RaceAppearanceTypes.Result renderNpc(
+            com.vibeminer.files.BuildFiles files, RaceMediaTypes.Variant variant) {
         var build = BUILD;
-        var files = memory.forBuild(build, "enUS", Cancellation.NONE).join().files();
         var tables =
                 new MemoryTables()
                         .add(build, "enUS", List.of())
@@ -372,7 +378,7 @@ final class RaceNpcAppearanceTest {
             var base =
                     new RaceMediaTypes.Preview(
                             RaceTypes.State.PARTIAL,
-                            ORC_MALE,
+                            variant,
                             mesh,
                             java.util.Set.of(0),
                             List.of(),
@@ -540,13 +546,19 @@ final class RaceNpcAppearanceTest {
 
     private static RaceNpcs.Appearance npcAppearance(
             java.util.function.UnaryOperator<com.vibeminer.formats.tables.BuildTables> wrap) {
+        return npcAppearance(wrap, placeholder());
+    }
+
+    private static RaceNpcs.Appearance npcAppearance(
+            java.util.function.UnaryOperator<com.vibeminer.formats.tables.BuildTables> wrap,
+            com.vibeminer.files.MemoryFiles memory) {
         var raw =
                 new MemoryTables()
                         .add(BUILD, "enUS", npcFixture())
                         .forBuild(BUILD, "enUS", Cancellation.NONE)
                         .join()
                         .tables();
-        var files = placeholder().forBuild(BUILD, "enUS", Cancellation.NONE).join().files();
+        var files = memory.forBuild(BUILD, "enUS", Cancellation.NONE).join().files();
         var service =
                 new RacesService(
                         wrap.apply(raw), files, new com.vibeminer.generated.MemoryGeneratedStore());
@@ -589,5 +601,173 @@ final class RaceNpcAppearanceTest {
                                         TableTypes.RowOutcome.UNKNOWN,
                                         null));
         assertTrue(unknown.retry(), String.valueOf(unknown));
+    }
+
+    // --- The model file: retry what cannot be read yet, never draw it partly ---
+
+    /** A 4 x 4 single-level BC1 BLP2 of one colour: a bake that decodes. */
+    private static byte[] bake() {
+        var b = java.nio.ByteBuffer.allocate(148 + 8).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.put(new byte[] {'B', 'L', 'P', '2'}).putInt(1);
+        b.put((byte) 2).put((byte) 0).put((byte) 0).put((byte) 1);
+        b.putInt(4).putInt(4);
+        b.putInt(20, 148).putInt(84, 8);
+        b.position(148);
+        b.putShort((short) 0x7e0).putShort((short) 0).putInt(0);
+        return b.array();
+    }
+
+    private static com.vibeminer.files.FileTypes.BuildFile file(long id, int size, char key) {
+        return new com.vibeminer.files.FileTypes.BuildFile(
+                id,
+                null,
+                com.vibeminer.files.FileTypes.FilePathSource.NONE,
+                (long) size,
+                String.valueOf(key).repeat(32),
+                com.vibeminer.files.FileTypes.FileFormat.UNKNOWN,
+                com.vibeminer.files.FileTypes.FileFormatSource.NONE,
+                com.vibeminer.files.FileTypes.FileStorage.STORED,
+                false);
+    }
+
+    private static com.vibeminer.files.FileTypes.FileRead failure(
+            com.vibeminer.files.FileTypes.FileReadState state) {
+        return com.vibeminer.files.FileTypes.FileRead.failed(
+                state, 0, "FILES_" + state, "not readable now", null);
+    }
+
+    @Test
+    void anNpcModelThatCannotBeReadYetIsAskedForAgainNotRefused() {
+        byte[] bake = bake();
+        long model = ORC_MALE.modelFileDataId();
+        var memory =
+                new com.vibeminer.files.MemoryFiles()
+                        .add(BUILD, "enUS", file(100, bake.length, 'b'), bake, List.of())
+                        .add(BUILD, "enUS", file(model, 512, 'm'), new byte[512], List.of());
+        memory.failure(
+                BUILD,
+                "enUS",
+                model,
+                failure(com.vibeminer.files.FileTypes.FileReadState.NEEDS_NETWORK));
+        var unreadable = assertThrows(RacesService.Unreadable.class, () -> renderNpc(memory));
+        assertTrue(
+                unreadable.getMessage().contains("NPC model cannot be read yet"),
+                unreadable.getMessage());
+        // A model this build does not list is a stated refusal.
+        var missing =
+                new com.vibeminer.files.MemoryFiles()
+                        .add(BUILD, "enUS", file(100, bake.length, 'b'), bake, List.of());
+        var refused = renderNpc(missing);
+        assertEquals(null, refused.appearance());
+        assertEquals(RaceTypes.State.UNAVAILABLE, refused.state());
+        // Through the service: the race model listed but needing the network, during preparation.
+        var service =
+                placeholder().add(BUILD, "enUS", file(1234, 512, 'm'), new byte[512], List.of());
+        service.failure(
+                BUILD,
+                "enUS",
+                1234,
+                failure(com.vibeminer.files.FileTypes.FileReadState.NEEDS_NETWORK));
+        var asked = npcAppearance(tables -> tables, service);
+        assertTrue(asked.retry(), String.valueOf(asked));
+    }
+
+    private static byte[] golden(String name) throws Exception {
+        try (var in = RaceNpcAppearanceTest.class.getResourceAsStream("/golden/" + name)) {
+            return in.readAllBytes();
+        }
+    }
+
+    /** Authored files whose {@code failAt}-th stream open (counted from 1) answers PARTIAL. */
+    private static final class PartialOpen extends com.vibeminer.formats.AssetFilesFixture {
+        final int failAt;
+
+        PartialOpen(int failAt) throws Exception {
+            super(BUILD, "enUS");
+            this.failAt = failAt;
+            add(1234, "1".repeat(32), golden("authored-274.m2"));
+            add(900, "2".repeat(32), golden("authored-274.skin"));
+            add(100, "3".repeat(32), bake());
+        }
+
+        @Override
+        public java.util.concurrent.CompletableFuture<com.vibeminer.files.FileTypes.FileOpen>
+                openRead(
+                        com.vibeminer.files.FileTypes.FileRef file,
+                        com.vibeminer.access.Cancellation token) {
+            if (opens.get() + 1 == failAt) {
+                opens.incrementAndGet();
+                return java.util.concurrent.CompletableFuture.completedFuture(
+                        new com.vibeminer.files.FileTypes.FileOpen(
+                                com.vibeminer.files.FileTypes.FileReadState.PARTIAL,
+                                null,
+                                "FILES_PARTIAL",
+                                "part of the file is not stored yet",
+                                null));
+            }
+            return super.openRead(file, token);
+        }
+    }
+
+    @Test
+    void anNpcModelReadOnlyInPartIsAskedForAgainNeverDrawnPartly() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        // The model's static facts are read by the render's last stream open: count them first.
+        var whole = new PartialOpen(0);
+        renderNpc(whole, variant);
+        int last = whole.opens.get();
+        assertTrue(last > 0, "the render opens the model");
+        var partial = new PartialOpen(last);
+        var unreadable =
+                assertThrows(RacesService.Unreadable.class, () -> renderNpc(partial, variant));
+        assertTrue(
+                unreadable.getMessage().contains("NPC model cannot be read whole yet (PARTIAL)"),
+                unreadable.getMessage());
+    }
+
+    @Test
+    void anUnexpectedFailureIsAskedForAgainNeverAFourthState() {
+        // Render-side: the future's failure is resolved, not left failed.
+        var wrapped =
+                RacesService.npcRetry(
+                        new java.util.concurrent.CompletionException(
+                                new IllegalStateException("join failed")));
+        assertTrue(wrapped.retry() && wrapped.refusal().contains("IllegalStateException"));
+        assertTrue(RacesService.npcRetry(new RacesService.Unreadable("later")).retry());
+        assertThrows(
+                java.util.concurrent.CancellationException.class,
+                () ->
+                        RacesService.npcRetry(
+                                new java.util.concurrent.CompletionException(
+                                        new java.util.concurrent.CancellationException())));
+        // Through the service: an unexpected failure while preparing.
+        var thrown =
+                npcAppearance(
+                        tables ->
+                                (com.vibeminer.formats.tables.BuildTables)
+                                        java.lang.reflect.Proxy.newProxyInstance(
+                                                RaceNpcAppearanceTest.class.getClassLoader(),
+                                                new Class<?>[] {
+                                                    com.vibeminer.formats.tables.BuildTables.class
+                                                },
+                                                (proxy, method, args) -> {
+                                                    if (method.getName().equals("get")
+                                                            && TableTypes.Ref.forName(
+                                                                            "ItemDisplayInfo")
+                                                                    .equals(args[0])) {
+                                                        throw new IllegalStateException(
+                                                                "unexpected");
+                                                    }
+                                                    try {
+                                                        return method.invoke(tables, args);
+                                                    } catch (
+                                                            java.lang.reflect
+                                                                            .InvocationTargetException
+                                                                    e) {
+                                                        throw e.getCause();
+                                                    }
+                                                }));
+        assertTrue(thrown.retry(), String.valueOf(thrown));
+        assertTrue(thrown.refusal().contains("IllegalStateException"), thrown.refusal());
     }
 }

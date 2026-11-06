@@ -270,6 +270,10 @@ final class RaceAppearance {
                         "Requested known eligible choices and recorded defaults are shown; unknown unlock requirements are omitted.");
             }
             if (base.mesh() == null || base.variant() == null) {
+                if (npc != null && media.modelUnreadable()) {
+                    // The race model or its skin cannot be read now: asked again, not refused.
+                    throw new RacesService.Unreadable(base.message());
+                }
                 return prepareFailure(issues, base.message());
             }
             var plan = plans.build(raceId, classId, base.variant(), token, issues, selection, npc);
@@ -478,6 +482,8 @@ final class RaceAppearance {
                 }
             }
             if (textures.isEmpty()) {
+                // For an NPC every layer decoded above, so this cannot happen there; for a player
+                // preview it is the stated outcome of layers that are all unavailable.
                 return failed(issues, "No reviewed diffuse texture layers are currently readable.");
             }
             var models = new BuildModels(files);
@@ -485,11 +491,19 @@ final class RaceAppearance {
                     models.readModel(FileTypes.FileRef.id(base.variant().modelFileDataId()), token)
                             .join();
             if (model.state() != BuildModelTypes.ReadState.READ || model.model() == null) {
+                if (plan.npc() && retryable(model.state())) {
+                    throw new RacesService.Unreadable(
+                            "The NPC model cannot be read yet (" + model.state() + ").");
+                }
                 return failed(issues, "The model could not be read for texture coordinates.");
             }
             var drawn = drawSurface(models, model, token);
             var skin = drawn.skin();
             if (drawn.surface() == null) {
+                if (plan.npc() && skin != null && retryable(skin.state())) {
+                    throw new RacesService.Unreadable(
+                            "The NPC model surface cannot be read yet (" + skin.state() + ").");
+                }
                 return failed(
                         issues, "The model draw declarations are unavailable: " + skin.message());
             }
@@ -500,16 +514,30 @@ final class RaceAppearance {
             var open =
                     files.openRead(FileTypes.FileRef.id(base.variant().modelFileDataId()), token)
                             .join();
+            boolean holes = false;
             if (open.stream() != null) {
                 try (var stream = open.stream()) {
-                    if (open.state() == FileTypes.FileReadState.COMPLETE
-                            && stream.holes().isEmpty()) {
+                    holes = !stream.holes().isEmpty();
+                    if (open.state() == FileTypes.FileReadState.COMPLETE && !holes) {
                         facts =
                                 M2Appearance.readModel(
                                                 AssetSources.file(stream), model.model(), token)
                                         .join();
                     }
                 }
+            }
+            if (facts == null) {
+                // Without the model's static weight facts, weighted batches would be skipped
+                // silently: an NPC is asked for again (or refused), never drawn partly, and a
+                // player preview is shown but not saved or remembered.
+                if (plan.npc()) {
+                    if (holes || retryable(open.state())) {
+                        throw new RacesService.Unreadable(
+                                "The NPC model cannot be read whole yet (" + open.state() + ").");
+                    }
+                    return failed(issues, "The NPC model is " + open.state() + ".");
+                }
+                complete = false;
             }
             var bindings = new ArrayList<MeshAppearance.Surface>();
             var seen = new java.util.HashSet<Integer>();
@@ -557,6 +585,8 @@ final class RaceAppearance {
                 bindings.add(RaceAppearanceProfiles.surface(batch, material, texture, mapped));
             }
             if (bindings.isEmpty()) {
+                // A lasting fact of this model and plan (no draw fits the reviewed static
+                // profile): a stated refusal for players and NPCs alike, not a read failure.
                 return failed(
                         issues,
                         "No reviewed static one-stage diffuse draw bindings are available.");
@@ -584,6 +614,26 @@ final class RaceAppearance {
             }
             return failed(issues, unavailable.getMessage());
         }
+    }
+
+    /**
+     * A model, skin or file read that cannot complete now but may later: a download is needed, the
+     * store is unavailable or failed, or only part of the file is present yet. A file this build
+     * does not list, a corrupt or unsupported one, or a protected one is not retried.
+     */
+    static boolean retryable(BuildModelTypes.ReadState state) {
+        return switch (state) {
+            case NEEDS_NETWORK, UNAVAILABLE, STORE_FAILED, PARTIAL -> true;
+            default -> false;
+        };
+    }
+
+    static boolean retryable(FileTypes.FileReadState state) {
+        return state != null
+                && switch (state) {
+                    case NEEDS_NETWORK, UNAVAILABLE, STORE_FAILED, PARTIAL -> true;
+                    default -> false;
+                };
     }
 
     /**

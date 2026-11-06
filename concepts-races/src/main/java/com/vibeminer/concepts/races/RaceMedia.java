@@ -75,6 +75,16 @@ final class RaceMedia {
         return unreadParts;
     }
 
+    /**
+     * Whether the last derived preview failed only because its model or skin could not be read now
+     * ({@link RaceAppearance#retryable(BuildModelTypes.ReadState)}), so asking again may succeed.
+     */
+    private boolean modelUnreadable;
+
+    boolean modelUnreadable() {
+        return modelUnreadable;
+    }
+
     /** Whether a row lookup of the current variant assessment had an UNKNOWN outcome. */
     private boolean unknownRows;
 
@@ -233,6 +243,7 @@ final class RaceMedia {
             Cancellation token,
             RaceCustomization.Selection selection) {
         unreadParts = false;
+        modelUnreadable = false;
         if (selection != null) {
             selection.requireContext(this, raceId, classId, chrModelId);
         }
@@ -275,6 +286,7 @@ final class RaceMedia {
             var read =
                     models.readModel(FileTypes.FileRef.id(variant.modelFileDataId()), token).join();
             if (read.state() != BuildModelTypes.ReadState.READ || read.model() == null) {
+                modelUnreadable = RaceAppearance.retryable(read.state());
                 return new KnownPreview(
                         failed(
                                 variant,
@@ -286,6 +298,7 @@ final class RaceMedia {
             }
             var skin = models.readRestSkin(read, 0, token).join();
             if (skin.state() != BuildModelTypes.ReadState.READ || skin.skin() == null) {
+                modelUnreadable = RaceAppearance.retryable(skin.state());
                 return new KnownPreview(
                         failed(
                                 variant,
