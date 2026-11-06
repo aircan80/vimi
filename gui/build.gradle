@@ -383,6 +383,14 @@ tasks.register('worldExplorerInputTest', JavaExec) {
 }
 check.dependsOn worldExplorerInputTest
 
+// Inspect card contents per pick kind; no display.
+tasks.register('worldInspectionTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldInspectionTest'
+}
+check.dependsOn worldInspectionTest
+
 // Viewport screenshot names and PNG files in a temporary folder; no display.
 tasks.register('worldScreenshotsTest', JavaExec) {
     dependsOn testClasses
