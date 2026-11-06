@@ -107,6 +107,11 @@ public final class WorldFormats {
             return vertices.clone();
         }
 
+        /** Whether {@code other} carries the same per-vertex attribute bytes; copies nothing. */
+        public boolean sameAttributes(Terrain other) {
+            return java.util.Arrays.equals(attributes, other.attributes);
+        }
+
         /** Per-vertex normals and colours ({@link #ATTRIBUTE_BYTES} each), or empty. */
         public byte[] attributes() {
             return attributes.clone();

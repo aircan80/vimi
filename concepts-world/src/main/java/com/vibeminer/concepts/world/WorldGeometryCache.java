@@ -285,8 +285,7 @@ final class WorldGeometryCache {
                     // Reuse needs equal normals and colours too: the fingerprint is positions
                     // and indices only (#373).
                     if (fingerprint.equals(TerrainGeometryFingerprint.sha256(previous.nativeTile))
-                            && java.util.Arrays.equals(
-                                    terrain.attributes(), previous.loaded.terrain().attributes())) {
+                            && terrain.sameAttributes(previous.loaded.terrain())) {
                         terrain = previous.loaded.terrain();
                         nativeTile = previous.nativeTile;
                     }

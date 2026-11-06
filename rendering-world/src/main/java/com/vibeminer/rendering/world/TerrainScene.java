@@ -146,9 +146,14 @@ public final class TerrainScene {
             return java.nio.ByteBuffer.wrap(attributes).asReadOnlyBuffer();
         }
 
-        /** Position and index bytes; the optional attributes are not counted here. */
-        public long payloadBytes() {
+        /** Position and index bytes: the geometry a cold terrain scene file stores. */
+        public long geometryBytes() {
             return (long) vertices.length * Float.BYTES + (long) indices.length * Integer.BYTES;
+        }
+
+        /** Retained bytes: geometry plus the optional per-vertex attributes (#373). */
+        public long payloadBytes() {
+            return geometryBytes() + attributes.length;
         }
     }
 
@@ -174,7 +179,7 @@ public final class TerrainScene {
                 throw new IllegalArgumentException("Duplicate terrain tile");
             }
             seen[key] = true;
-            bytes += tile.payloadBytes();
+            bytes += tile.geometryBytes();
             triangles += tile.triangleCount();
             for (int at = 0; at < tile.vertices.length; at += 3) {
                 minX = Math.min(minX, tile.vertices[at]);
@@ -198,6 +203,7 @@ public final class TerrainScene {
         return origin;
     }
 
+    /** Geometry bytes of every tile (positions and indices), as a cold scene file stores. */
     public long payloadBytes() {
         return payloadBytes;
     }

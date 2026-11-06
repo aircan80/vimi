@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -135,6 +136,43 @@ final class WorldStreamTileFileTest {
                 LEASE,
                 bytes.length,
                 HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)));
+    }
+
+    /**
+     * Issue #373: the header binds the vertex attributes' SHA-256, so a changed normal or colour
+     * byte is refused even when the file digest is re-signed over it.
+     */
+    @Test
+    void vertexAttributesAreBoundByTheirHeaderDigest() throws Exception {
+        byte[] attributes = {
+            0, 0, 127, 0, 10, 20, 30, (byte) 255, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 127, 0, 0, 0, 0, 0
+        };
+        var tile =
+                TerrainScene.Tile.copyOf(
+                        7,
+                        19,
+                        new float[] {1, 2, 3, 4, 5, 6, 7, 8, 9},
+                        new int[] {0, 1, 2},
+                        1,
+                        attributes);
+        var expected =
+                WorldStreamTileFile.write(directory, header(tile, false), tile, null, () -> false);
+        byte[] bytes = Files.readAllBytes(path());
+        assertEquals(
+                WorldStreamTileFile.attributeSha256(attributes),
+                HexFormat.of().formatHex(bytes, 260, 292));
+        try (var read = WorldStreamTileFile.read(path(), expected, () -> false)) {
+            var carried = read.tile().attributes();
+            byte[] copy = new byte[carried.remaining()];
+            carried.get(copy);
+            assertArrayEquals(attributes, copy);
+        }
+        int at = 4096 + 3 * 12 + 3 * 4;
+        bytes[at + 8] = 5; // vertex 1's normal x: still a valid attribute, but not the bound one
+        Files.write(path(), bytes);
+        assertThrows(
+                java.io.IOException.class,
+                () -> WorldStreamTileFile.read(path(), signed(bytes), () -> false));
     }
 
     @Test

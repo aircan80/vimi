@@ -247,7 +247,7 @@ class TerrainAtlasComposerTest {
     }
 
     @Test
-    void splatCarriesLayerIdsMasksAndBrightnessForTheSameChunks() {
+    void splatCarriesLayerIdsAndMasksForTheSameChunks() {
         try (var textures = textures(new int[] {128, 64}, false)) {
             var mips = Map.of(1L, mip(1, 255, 0, 0), 2L, mip(2, 0, 255, 0), 3L, mip(3, 0, 0, 255));
             var plain =
@@ -273,7 +273,7 @@ class TerrainAtlasComposerTest {
                 assertEquals(128, alpha.get(texel * 4) & 255, "layer 1 mask");
                 assertEquals(64, alpha.get(texel * 4 + 1) & 255, "layer 2 mask");
                 assertEquals(0, alpha.get(texel * 4 + 2) & 255, "no layer 3");
-                assertEquals(128, alpha.get(texel * 4 + 3) & 255, "no MCCV: brightness 1.0");
+                assertEquals(0, alpha.get(texel * 4 + 3) & 255, "A is reserved (#373): zero");
             }
             assertThrows(ReadOnlyBufferException.class, () -> splat.alpha().put(0, (byte) 1));
             // The atlas is unchanged by requesting the splat.
