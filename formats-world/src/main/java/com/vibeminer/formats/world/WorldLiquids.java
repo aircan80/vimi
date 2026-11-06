@@ -14,7 +14,7 @@ import java.util.function.BooleanSupplier;
  * Raw ADT18 MH2O declarations. Layout decoding does not qualify LiquidType/Material or source IO.
  */
 public final class WorldLiquids {
-    public static final String REVISION = "adt18-mh2o-raw-height-depth0-v1";
+    public static final String REVISION = "adt18-mh2o-raw-height-depth0-declared-v2";
     public static final int MAX_PAYLOAD_BYTES = 2 << 20;
     private static final int HEADERS = 256 * 12;
 
@@ -213,11 +213,12 @@ public final class WorldLiquids {
                                 attributes[h]));
             }
         }
-        // Direct layout0 lengths are known; unresolved formats do not acquire guessed tails.
+        // Direct layout 0 and 2 lengths are known; unresolved formats do not acquire guessed tails.
         for (var layer : layers) {
             check(canceled);
-            if (layer.secondary() == 0 && layer.vertexOffset() != 0) {
-                add(variable, range(layer.vertexOffset(), vertexCount(layer) * 5L, size));
+            long bytes = directBytes(layer);
+            if (bytes > 0 && layer.vertexOffset() != 0) {
+                add(variable, range(layer.vertexOffset(), bytes, size));
             }
         }
         check(canceled);
@@ -244,45 +245,10 @@ public final class WorldLiquids {
         if (layer.vertexOffset() == 0) {
             throw new UnsupportedOperationException("MH2O vertex data absent");
         }
-        var intervals = new ArrayList<Interval>(owner.fixed);
-        for (var other : owner.layers) {
-            check(canceled);
-            if (other.bitmapOffset() != 0) {
-                add(
-                        intervals,
-                        range(
-                                other.bitmapOffset(),
-                                (other.width() * other.height() + 7) / 8,
-                                owner.payload.length));
-            }
-        }
-        for (var other : owner.layers) {
-            if (other.vertexOffset() != 0
-                    && (other.secondary() == 0 || other.ordinal() == ordinal)) {
-                add(
-                        intervals,
-                        range(other.vertexOffset(), vertexCount(other) * 5L, owner.payload.length));
-            }
-        }
-        // Unknown lengths remain unknown, but their start may not alias a known interval.
-        for (var other : owner.layers) {
-            if (other.vertexOffset() != 0 && other.secondary() != 0 && other.ordinal() != ordinal) {
-                outside(intervals, range(other.vertexOffset(), 1, owner.payload.length));
-            }
-        }
+        checkStreams(owner, ordinal, vertexCount(layer) * 5L, canceled);
         var input = ByteBuffer.wrap(owner.payload).order(ByteOrder.LITTLE_ENDIAN);
-        int cells = layer.width() * layer.height(),
-                vertices = vertexCount(layer),
-                p = (int) layer.vertexOffset();
-        long mask = cells == 64 ? -1L : (1L << cells) - 1;
-        if (layer.bitmapOffset() != 0) {
-            mask = 0;
-            for (int bit = 0; bit < cells; bit++) {
-                if ((u8(input, (int) layer.bitmapOffset() + bit / 8) & (1 << (bit % 8))) != 0) {
-                    mask |= 1L << bit;
-                }
-            }
-        }
+        int vertices = vertexCount(layer), p = (int) layer.vertexOffset();
+        long mask = presentCells(input, layer);
         var heights = new float[vertices];
         var depths = new byte[vertices];
         for (int v = 0; v < vertices; v++) {
@@ -291,6 +257,7 @@ public final class WorldLiquids {
             finite(heights[v]);
             depths[v] = input.get(p + vertices * 4 + v);
         }
+        int cells = layer.width() * layer.height();
         for (int c = 0; c < cells; c++) {
             if ((mask & (1L << c)) == 0) {
                 continue;
@@ -306,6 +273,107 @@ public final class WorldLiquids {
             }
         }
         return new DecodedLayer(layer, mask, heights, depths);
+    }
+
+    /**
+     * Low-level layout reader for a layer without vertex heights: one with no vertex data, or one
+     * whose caller-qualified format is depth-only (LVF 2: one depth byte per vertex). Every vertex
+     * takes the instance's declared height, which must be a single value (min equals max); a
+     * declared range gives no per-vertex height and is unsupported. Depths are zero without vertex
+     * data.
+     */
+    public static DecodedLayer decodeDeclaredHeight(
+            RawLiquids owner, int ordinal, boolean depthStream, BooleanSupplier canceled) {
+        Objects.requireNonNull(owner);
+        Objects.requireNonNull(canceled);
+        check(canceled);
+        if (ordinal < 0 || ordinal >= owner.layers.size()) {
+            throw invalid("MH2O layer ordinal");
+        }
+        var layer = owner.layers.get(ordinal);
+        if (Float.compare(layer.minHeight(), layer.maxHeight()) != 0
+                && !(layer.minHeight() == 0 && layer.maxHeight() == 0)) {
+            throw new UnsupportedOperationException("MH2O declared height range without heights");
+        }
+        if (!depthStream && layer.vertexOffset() != 0) {
+            throw new UnsupportedOperationException("MH2O vertex data of an unqualified format");
+        }
+        int vertices = vertexCount(layer);
+        boolean stream = depthStream && layer.vertexOffset() != 0;
+        checkStreams(owner, ordinal, stream ? vertices : 0, canceled);
+        var input = ByteBuffer.wrap(owner.payload).order(ByteOrder.LITTLE_ENDIAN);
+        long mask = presentCells(input, layer);
+        var heights = new float[vertices];
+        var depths = new byte[vertices];
+        Arrays.fill(heights, layer.minHeight());
+        if (stream) {
+            for (int v = 0; v < vertices; v++) {
+                check(canceled);
+                depths[v] = input.get((int) layer.vertexOffset() + v);
+            }
+        }
+        return new DecodedLayer(layer, mask, heights, depths);
+    }
+
+    /** Bytes of a direct-format vertex stream whose length is known, or 0 when unknown. */
+    private static long directBytes(RawLayer layer) {
+        return switch (layer.secondary()) {
+            case 0 -> vertexCount(layer) * 5L;
+            case 2 -> vertexCount(layer);
+            default -> 0;
+        };
+    }
+
+    /**
+     * Checks the selected layer's stream ({@code ownBytes} long, 0 for none) against every fixed
+     * table, bitmap and known-length stream; unknown lengths may not start inside them.
+     */
+    private static void checkStreams(
+            RawLiquids owner, int ordinal, long ownBytes, BooleanSupplier canceled) {
+        var intervals = new ArrayList<Interval>(owner.fixed);
+        for (var other : owner.layers) {
+            check(canceled);
+            if (other.bitmapOffset() != 0) {
+                add(
+                        intervals,
+                        range(
+                                other.bitmapOffset(),
+                                (other.width() * other.height() + 7) / 8,
+                                owner.payload.length));
+            }
+        }
+        for (var other : owner.layers) {
+            if (other.vertexOffset() == 0) {
+                continue;
+            }
+            long bytes = other.ordinal() == ordinal ? ownBytes : directBytes(other);
+            if (bytes > 0) {
+                add(intervals, range(other.vertexOffset(), bytes, owner.payload.length));
+            }
+        }
+        // Unknown lengths remain unknown, but their start may not alias a known interval.
+        for (var other : owner.layers) {
+            if (other.vertexOffset() != 0
+                    && other.ordinal() != ordinal
+                    && directBytes(other) == 0) {
+                outside(intervals, range(other.vertexOffset(), 1, owner.payload.length));
+            }
+        }
+    }
+
+    /** The layer's present cells: its bitmap, or every cell of its rectangle without one. */
+    private static long presentCells(ByteBuffer input, RawLayer layer) {
+        int cells = layer.width() * layer.height();
+        long mask = cells == 64 ? -1L : (1L << cells) - 1;
+        if (layer.bitmapOffset() != 0) {
+            mask = 0;
+            for (int bit = 0; bit < cells; bit++) {
+                if ((u8(input, (int) layer.bitmapOffset() + bit / 8) & (1 << (bit % 8))) != 0) {
+                    mask |= 1L << bit;
+                }
+            }
+        }
+        return mask;
     }
 
     private static int vertexCount(RawLayer l) {

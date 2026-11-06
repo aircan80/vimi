@@ -109,6 +109,7 @@ final class WorldTerrainLiquids {
         private WorldTerrainTextureSource.FileBinding rootBinding;
         private List<WorldLiquidTables.Observed> observations = List.of();
         private List<TableFact> tableFacts = List.of();
+        private List<String> issues = List.of();
 
         private Owner(WorldStreamScopes.LiquidCredit credit) {
             this.credit = credit;
@@ -129,6 +130,11 @@ final class WorldTerrainLiquids {
                 throw new Pressure();
             }
             pins++;
+        }
+
+        /** Source facts that disagree with a convention this owner followed; never fatal. */
+        synchronized List<String> issues() {
+            return issues;
         }
 
         synchronized Summary summary() {
@@ -673,6 +679,7 @@ final class WorldTerrainLiquids {
         }
         var selected = new java.util.HashSet<Long>();
         for (var layer : raw.layers()) {
+            // LiquidType 2 is depth-only by rule and needs no table row.
             if (layer.secondary() >= 42 && layer.liquidType() != 2) {
                 selected.add((long) layer.liquidType());
             }
@@ -687,21 +694,31 @@ final class WorldTerrainLiquids {
                 }
                 materials = tables.observe(WorldLiquidTables.Profile.MATERIAL, ids, token);
             }
+            // Each layer's vertex format follows the established extractor convention: a secondary
+            // value below 42 is the format itself; LiquidType 2 with a LiquidObject is depth-only
+            // (format 2) without a table lookup; any other type takes its qualified
+            // LiquidType -> LiquidMaterial LVF. Formats 0 (height and depth) and 2 (depth only)
+            // are water; the rest (magma, slime) stay unsupported.
+            var formats = new int[raw.layers().size()];
             var supported = new boolean[raw.layers().size()];
             boolean unknown = false;
             for (var l : raw.layers()) {
                 token.check();
-                supported[l.ordinal()] =
-                        l.liquidType() != 2
-                                && (l.secondary() == 0
-                                        || l.secondary() >= 42
-                                                && materials != null
-                                                && materials.value(types.value(l.liquidType()))
-                                                        == 0);
+                int format =
+                        l.secondary() < 42
+                                ? l.secondary()
+                                : l.liquidType() == 2
+                                        ? 2
+                                        : materials != null
+                                                ? materials.value(types.value(l.liquidType()))
+                                                : -1;
+                formats[l.ordinal()] = format;
+                supported[l.ordinal()] = format == 0 || format == 2;
                 if (!supported[l.ordinal()] && l.vertexOffset() != 0) {
                     unknown = true;
                 }
             }
+            output.issues = oceanConvention(raw, token);
             if (unknown) {
                 set(
                         output,
@@ -714,8 +731,8 @@ final class WorldTerrainLiquids {
             } else {
                 // All nonzero streams have known LVF0 footprint. Cross-layer aliases cannot hide
                 // behind the low-level decoder's unresolved-format boundary.
-                validateKnownStreams(raw, supported);
-                decode(output, root, supported, token);
+                validateKnownStreams(raw, supported, formats);
+                decode(output, root, supported, formats, token);
             }
         } catch (WorldLiquidTables.Unavailable optional) {
             if (optional.reason == WorldLiquidTables.Reason.SOURCE_CHANGED) {
@@ -767,6 +784,43 @@ final class WorldTerrainLiquids {
                         .toList();
     }
 
+    /**
+     * LiquidType 2 is drawn depth-only by convention. When this source's own LiquidType row 2
+     * resolves another format, that disagreement is recorded as an issue, not obeyed or hidden. A
+     * missing or unreadable row is no disagreement.
+     */
+    private List<String> oceanConvention(WorldLiquids.RawLiquids raw, Cancellation token) {
+        boolean ocean = false;
+        for (var layer : raw.layers()) {
+            ocean |= layer.secondary() >= 42 && layer.liquidType() == 2;
+        }
+        if (!ocean) {
+            return List.of();
+        }
+        try {
+            var type = tables.observe(WorldLiquidTables.Profile.TYPE, java.util.Set.of(2L), token);
+            if (!type.ids().contains(2L)) {
+                return List.of();
+            }
+            long material = type.value(2);
+            var materials =
+                    tables.observe(
+                            WorldLiquidTables.Profile.MATERIAL, java.util.Set.of(material), token);
+            int format = materials.value(material);
+            return format == 2
+                    ? List.of()
+                    : List.of(
+                            "LiquidType 2 resolves LiquidMaterial "
+                                    + material
+                                    + " with vertex format "
+                                    + format
+                                    + "; drawn depth-only by the established extractor"
+                                    + " convention.");
+        } catch (WorldLiquidTables.Unavailable | IllegalStateException unreadable) {
+            return List.of();
+        }
+    }
+
     private static final class Malformed extends RuntimeException {
         private static final long serialVersionUID = 1L;
 
@@ -775,19 +829,27 @@ final class WorldTerrainLiquids {
         }
     }
 
-    private static void validateKnownStreams(WorldLiquids.RawLiquids raw, boolean[] supported) {
+    /** Bytes per vertex of a supported format: height and depth (5) or depth only (1). */
+    private static long stride(int format) {
+        return format == 0 ? 5 : 1;
+    }
+
+    private static void validateKnownStreams(
+            WorldLiquids.RawLiquids raw, boolean[] supported, int[] formats) {
         for (int i = 0; i < raw.layers().size(); i++) {
             var a = raw.layers().get(i);
             if (!supported[i] || a.vertexOffset() == 0) {
                 continue;
             }
-            long end = a.vertexOffset() + (a.width() + 1L) * (a.height() + 1L) * 5;
+            long end = a.vertexOffset() + (a.width() + 1L) * (a.height() + 1L) * stride(formats[i]);
             for (int j = 0; j < i; j++) {
                 var b = raw.layers().get(j);
                 if (!supported[j] || b.vertexOffset() == 0) {
                     continue;
                 }
-                long otherEnd = b.vertexOffset() + (b.width() + 1L) * (b.height() + 1L) * 5;
+                long otherEnd =
+                        b.vertexOffset()
+                                + (b.width() + 1L) * (b.height() + 1L) * stride(formats[j]);
                 if (a.vertexOffset() < otherEnd && b.vertexOffset() < end) {
                     throw new Malformed();
                 }
@@ -795,21 +857,41 @@ final class WorldTerrainLiquids {
         }
     }
 
-    private static void decode(Owner output, Root root, boolean[] supported, Cancellation token) {
+    private static void decode(
+            Owner output, Root root, boolean[] supported, int[] formats, Cancellation token) {
         var result = new ArrayList<Layer>();
-        int unresolved = 0, cells = 0, samples = 0;
+        int unresolved = 0, cells = 0, samples = 0, declaredLevels = 0;
         Reason reason = Reason.NONE;
         for (var layer : root.raw().layers()) {
             token.check();
-            if (!supported[layer.ordinal()] || layer.vertexOffset() == 0) {
+            if (!supported[layer.ordinal()]) {
                 unresolved++;
-                reason =
-                        supported[layer.ordinal()]
-                                ? Reason.VERTEX_ABSENT
-                                : Reason.UNSUPPORTED_LAYOUT;
+                reason = Reason.UNSUPPORTED_LAYOUT;
                 continue;
             }
-            var d = WorldLiquids.decodeHeightDepth0(root.raw(), layer.ordinal(), token::isCanceled);
+            WorldLiquids.DecodedLayer d;
+            if (formats[layer.ordinal()] == 0 && layer.vertexOffset() != 0) {
+                d = WorldLiquids.decodeHeightDepth0(root.raw(), layer.ordinal(), token::isCanceled);
+            } else {
+                // No vertex heights (no vertex data, or depth only): the declared height, which
+                // must be a single value.
+                try {
+                    d =
+                            WorldLiquids.decodeDeclaredHeight(
+                                    root.raw(),
+                                    layer.ordinal(),
+                                    formats[layer.ordinal()] == 2,
+                                    token::isCanceled);
+                } catch (UnsupportedOperationException range) {
+                    unresolved++;
+                    reason = Reason.VERTEX_ABSENT;
+                    continue;
+                }
+                // The extractor convention would place this layer at 0; the source wins.
+                if (layer.minHeight() != 0) {
+                    declaredLevels++;
+                }
+            }
             long mask = d.presentCells();
             if (mask == 0) {
                 continue;
@@ -871,6 +953,15 @@ final class WorldTerrainLiquids {
                         ? (unresolved == 0 ? State.EMPTY : State.UNRESOLVED)
                         : (unresolved == 0 ? State.READY : State.PARTIAL);
         set(output, root, state, reason, unresolved, result, cells);
+        if (declaredLevels > 0) {
+            var issues = new ArrayList<>(output.issues);
+            issues.add(
+                    declaredLevels
+                            + " layer(s) without vertex heights are drawn at their declared"
+                            + " level; the established extractor convention would place them"
+                            + " at 0.");
+            output.issues = List.copyOf(issues);
+        }
     }
 
     private static void set(

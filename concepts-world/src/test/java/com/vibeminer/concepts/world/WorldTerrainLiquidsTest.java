@@ -576,7 +576,16 @@ class WorldTerrainLiquidsTest {
                 assertEquals(2, overlap.summary().admitted());
                 assertEquals(2, overlap.summary().cells());
             }
+            // No vertex data with one declared height (min = max = 5): flat water at 5.
             p = liquids(1, 0, 1, false);
+            ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN).putInt(3072 + 20, 0);
+            f.payload(p);
+            try (var flat = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.READY, flat.summary().state());
+                assertEquals(1, flat.summary().cells());
+            }
+            // No vertex data with a declared range (5..6) gives no height: stated, not guessed.
+            p = liquids(1, 0, 1, true);
             ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN).putInt(3072 + 20, 0);
             f.payload(p);
             try (var missing = f.inspect()) {
@@ -1361,6 +1370,61 @@ class WorldTerrainLiquidsTest {
                     f.water.prepareAndWrite(
                             f.tile, Cancellation.NONE, (b, t) -> (AutoCloseable) () -> {})) {
                 assertEquals(WorldWaterPreview.State.READY, recovered.facts().state());
+            }
+        }
+    }
+
+    @Test
+    void depthOnlyLayersDrawAtTheirDeclaredHeight() throws Exception {
+        try (var f = new Fixture()) {
+            // LiquidType 2 with a LiquidObject is depth-only by the established extractor
+            // convention, whatever its table says; this source has no row 2, so no issue.
+            byte[] ocean = liquids(1, 42, 1, false);
+            ByteBuffer.wrap(ocean).order(ByteOrder.LITTLE_ENDIAN).putShort(3072, (short) 2);
+            f.payload(ocean);
+            try (var water = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.READY, water.summary().state());
+                assertEquals(1, water.summary().admitted());
+                assertEquals(1, water.summary().cells());
+                // No row 2 in this source; the only issue is the declared level 5 (not 0).
+                assertEquals(1, water.issues().size(), "" + water.issues());
+                assertTrue(water.issues().getFirst().contains("declared level"));
+            }
+            // Declared height 0 agrees with the convention; another declared level wins over
+            // it and the departure is recorded.
+            for (float level : new float[] {0f, 5f}) {
+                var b = ByteBuffer.wrap(ocean).order(ByteOrder.LITTLE_ENDIAN);
+                b.putFloat(3072 + 4, level).putFloat(3072 + 8, level);
+                f.payload(ocean);
+                try (var water = f.inspect()) {
+                    assertEquals(WorldTerrainLiquids.State.READY, water.summary().state());
+                    assertEquals(level == 0 ? 0 : 1, water.issues().size(), "" + water.issues());
+                    if (level != 0) {
+                        assertTrue(water.issues().getFirst().contains("declared level"));
+                    }
+                }
+            }
+            // A LiquidType row 2 that resolves height and depth (LVF 0) disagrees with the
+            // convention: still drawn depth-only, and the disagreement is recorded.
+            f.nativeRows.close();
+            f.nativeRows = new AuthoredNativeLiquids(f.files, 130, true, true);
+            f.payload(ocean);
+            try (var water = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.READY, water.summary().state());
+                assertTrue(
+                        water.issues().stream().anyMatch(i -> i.contains("vertex format 0")),
+                        water.issues().toString());
+            }
+            // A direct depth-only format (secondary 2) reads the same way.
+            f.payload(liquids(1, 2, 1, false));
+            try (var direct = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.READY, direct.summary().state());
+                assertEquals(1, direct.summary().cells());
+            }
+            // Other direct formats (1: height and texture coordinates) stay unsupported.
+            f.payload(liquids(1, 1, 1, false));
+            try (var magma = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.UNRESOLVED, magma.summary().state());
             }
         }
     }

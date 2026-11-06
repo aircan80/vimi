@@ -254,4 +254,63 @@ class WorldLiquidsTest {
                 CancellationException.class,
                 () -> WorldLiquids.decodeHeightDepth0(raw, 0, () -> calls.incrementAndGet() > 3));
     }
+
+    @Test
+    void layersWithoutVertexHeightsTakeTheirDeclaredHeight() {
+        // No vertex data at all: every vertex is the single declared height, depths are zero.
+        byte[] none = payload(42, 8, 8, -1);
+        var b = ByteBuffer.wrap(none).order(ByteOrder.LITTLE_ENDIAN);
+        b.putFloat(TABLE + 4, 7.5f).putFloat(TABLE + 8, 7.5f).putInt(TABLE + 20, 0);
+        var flat = WorldLiquids.readMh2o(root(none), () -> false);
+        var decoded = WorldLiquids.decodeDeclaredHeight(flat, 0, false, () -> false);
+        assertEquals(-1L, decoded.presentCells());
+        assertEquals(81, decoded.heights().remaining());
+        for (int v = 0; v < 81; v++) {
+            assertEquals(7.5f, decoded.heights().get(v));
+            assertEquals(0, decoded.depths().get(v));
+        }
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> WorldLiquids.decodeHeightDepth0(flat, 0, () -> false));
+        // Signed zeros are one declared height.
+        b.putFloat(TABLE + 4, -0f).putFloat(TABLE + 8, 0f);
+        var zero = WorldLiquids.readMh2o(root(none), () -> false);
+        assertEquals(
+                0f,
+                WorldLiquids.decodeDeclaredHeight(zero, 0, false, () -> false).heights().get(0),
+                0f);
+        // A declared range gives no per-vertex height.
+        b.putFloat(TABLE + 4, 2f).putFloat(TABLE + 8, 3f);
+        var range = WorldLiquids.readMh2o(root(none), () -> false);
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> WorldLiquids.decodeDeclaredHeight(range, 0, false, () -> false));
+    }
+
+    @Test
+    void depthOnlyStreamsCarryDepthsAtTheDeclaredHeight() {
+        // Direct format 2: one depth byte per vertex, no heights.
+        byte[] depth = payload(2, 2, 2, 0b1111);
+        var b = ByteBuffer.wrap(depth).order(ByteOrder.LITTLE_ENDIAN);
+        b.putFloat(TABLE + 4, 5f).putFloat(TABLE + 8, 5f);
+        for (int v = 0; v < 9; v++) {
+            b.put(TABLE + 48 + v, (byte) (10 + v));
+        }
+        var raw = WorldLiquids.readMh2o(root(depth), () -> false);
+        var decoded = WorldLiquids.decodeDeclaredHeight(raw, 0, true, () -> false);
+        assertEquals(0b1111, decoded.presentCells());
+        for (int v = 0; v < 9; v++) {
+            assertEquals(5f, decoded.heights().get(v));
+            assertEquals(10 + v, decoded.depths().get(v));
+        }
+        // A stream of a format the caller did not qualify is not read as depths.
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> WorldLiquids.decodeDeclaredHeight(raw, 0, false, () -> false));
+        // A direct depth stream's length is known, so it may not overlap the bitmap.
+        b.putInt(TABLE + 20, TABLE + 40);
+        assertThrows(
+                WorldLiquids.FormatException.class,
+                () -> WorldLiquids.readMh2o(root(depth), () -> false));
+    }
 }

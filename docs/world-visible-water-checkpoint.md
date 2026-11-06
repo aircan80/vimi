@@ -186,3 +186,33 @@ old 128-layer / 8192-cell owner caps.
 | Largest tile (cells before, quads after; bound 8192) | 8,192, capped | 4,711 |
 
 The three Elwynn tiles still without water carry Slow Magma (LiquidType 7, LVF 1).
+
+## Layers without vertex heights (#171)
+
+Layers that carry no per-vertex height are now decoded generally:
+
+- **No vertex data** (`vertexOffset` 0): every vertex takes the instance's declared height, when
+  the declared minimum and maximum are one value (signed zeros are equal). Depths are 0. A declared
+  range gives no per-vertex height and stays a stated refusal (`VERTEX_ABSENT`).
+- **Depth-only streams (LVF 2):** the stream holds one depth byte per vertex. Heights come from the
+  declared height the same way. A direct format-2 stream's length is now known, so it is reserved
+  in the overlap checks like format 0.
+- **LiquidType 2** with a LiquidObject is depth-only. This matches the established extractor
+  convention: a secondary value below 42 is the vertex format itself, LiquidType 2 is depth-only
+  without a table lookup, and any other type takes its LiquidType → LiquidMaterial LVF. When this
+  source's own LiquidType row 2 resolves another format, the owner records the disagreement in
+  `issues()` instead of obeying or hiding it.
+- **Water formats:** formats 0 and 2 are water. Formats 1 and 3 (magma, slime) stay unsupported.
+- **Height rule:** the extractor convention places depth-only and no-vertex layers at height 0.
+  The declared-height rule agrees with it whenever the declared height is 0. Another declared
+  level follows the source's own declaration, and the owner records an issue saying how many
+  layers departed from the convention.
+
+None of these occur in `wowf` 1.60.1: the earlier survey of all 591 Eastern Kingdoms tiles with
+MH2O found no layer without vertex data and no LiquidType 2. Ocean there is LiquidType 1250
+through LiquidObject 42 with LVF 0 heights, which the sloped/whole-tile work above already draws.
+They are covered by authored tests only.
+
+The frame probe was rerun with the merged branch: an Elwynn river tile around a 1.69-yard slope
+rendered three of four headings with water on every resident tile. The fourth heading produced
+no frame within its window, which is a probe settle issue to retry on the measurement open.
