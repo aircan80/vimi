@@ -215,6 +215,11 @@ public final class MeshAppearance {
         public int[] argb() {
             return pixels.clone();
         }
+
+        /** The pixels as a read-only view, without the copy {@link #argb()} makes. */
+        public java.nio.IntBuffer argbView() {
+            return java.nio.IntBuffer.wrap(pixels).asReadOnlyBuffer();
+        }
     }
 
     private final PreviewMesh mesh;
