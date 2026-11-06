@@ -601,7 +601,13 @@ final class SpellText {
             if (token.divisor().signum() == 0) {
                 return null;
             }
-            value = value.divide(token.divisor(), 6, RoundingMode.HALF_EVEN);
+            try {
+                // Exact: a quotient that does not terminate is never rounded into a value that
+                // looks exact (as ${...} expressions already do).
+                value = value.divide(token.divisor());
+            } catch (ArithmeticException repeating) {
+                return null;
+            }
         }
         value = value.stripTrailingZeros();
         boolean scaledToken = token.divisor() != null || token.multiplier() != null;

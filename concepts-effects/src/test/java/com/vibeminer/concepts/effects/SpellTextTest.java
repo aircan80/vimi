@@ -393,4 +393,33 @@ final class SpellTextTest {
                     "?", SpellText.project(100, hostile, values, List.of()).display(), hostile);
         }
     }
+
+    @Test
+    void scaleTokensDivideExactlyOrShowUnknown() {
+        var amounts = Map.of(0, amount("1500"), 1, amount("1000"), 2, amount("2000002"));
+        assertEquals(
+                "Lasts 1.5 sec.",
+                SpellText.project(100, "Lasts $/1000;s1 sec.", amounts, List.of()).display());
+        // 1500/3 terminates; it is exact, so it is shown.
+        assertEquals(
+                "Gain 500.", SpellText.project(100, "Gain $/3;s1.", amounts, List.of()).display());
+        assertEquals(
+                "Gain 0.75.",
+                SpellText.project(100, "Gain $/2000;s1.", amounts, List.of()).display());
+        // Repeating quotients used to round to six places and could pass as exact.
+        // 2000002/2000001 = 1.0000005 rounded to six places showed "1".
+        for (String raw :
+                List.of(
+                        "Gain $/2000001;s3.",
+                        "Gain $/2000001;s1.",
+                        "Gain $/3;s2.",
+                        "Gain $/7;s1.")) {
+            var result = SpellText.project(100, raw, amounts, List.of());
+            assertEquals("Gain ?.", result.display(), raw);
+            assertEquals(
+                    "Non-integral or out-of-range effect amount is unsupported",
+                    result.substitutions().getFirst().issue(),
+                    raw);
+        }
+    }
 }
