@@ -14,6 +14,7 @@ import com.vibeminer.formats.world.WmoFormats;
 import com.vibeminer.formats.world.WmoGroupSpans;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldPlacements;
+import com.vibeminer.rendering.world.ObjectTextureFormats;
 import com.vibeminer.rendering.world.ObjectTextureMips;
 import com.vibeminer.rendering.world.TerrainScene;
 import java.nio.ByteBuffer;
@@ -395,7 +396,13 @@ public final class WorldExteriorObjects {
          */
         IMAGE_MIPS_FILE,
         IMAGE_MIPS_PARTIAL,
-        IMAGE_MIPS_GENERATED
+        IMAGE_MIPS_GENERATED,
+        /**
+         * Images carried as the file's own BC1, BC2 or BC3 blocks (issue #374): opaque DXT, or
+         * blended BC2/BC3, whose file records every level from the drawn one down to 1 x 1. They
+         * also count in IMAGE_MIPS_FILE.
+         */
+        IMAGE_BLOCKS
     }
 
     /** What a placement draws: an outdoor WMO, an MDDF doodad or a WMO doodad-set entry. */
@@ -592,6 +599,9 @@ public final class WorldExteriorObjects {
         private final byte[] rgba;
         private final ObjectTextureMips.Source mips;
 
+        /** Storage format of {@link #data} ({@link ObjectTextureFormats}). */
+        private final int format;
+
         private Image(long id, int width, int height, int mipLevel, byte[] rgba) {
             this(id, width, height, mipLevel, rgba, null);
         }
@@ -603,12 +613,38 @@ public final class WorldExteriorObjects {
                 int mipLevel,
                 byte[] rgba,
                 ObjectTextureMips.Source mips) {
+            this(id, width, height, mipLevel, rgba, mips, ObjectTextureFormats.RGBA8);
+        }
+
+        private Image(
+                long id,
+                int width,
+                int height,
+                int mipLevel,
+                byte[] data,
+                ObjectTextureMips.Source mips,
+                int format) {
             this.id = id;
             this.width = width;
             this.height = height;
             this.mipLevel = mipLevel;
-            this.rgba = rgba;
+            this.rgba = data;
             this.mips = mips;
+            this.format = format;
+        }
+
+        /**
+         * How the chain is stored and uploaded (issue #374): {@link ObjectTextureFormats#RGBA8}, or
+         * the file's own {@link ObjectTextureFormats#BC1}, {@link ObjectTextureFormats#BC2} or
+         * {@link ObjectTextureFormats#BC3} blocks.
+         */
+        public int format() {
+            return format;
+        }
+
+        /** The whole chain in {@link #format()}, top level first, as the GPU takes it. */
+        public ByteBuffer data() {
+            return ByteBuffer.wrap(rgba).asReadOnlyBuffer();
         }
 
         /**
@@ -636,11 +672,17 @@ public final class WorldExteriorObjects {
         }
 
         /**
-         * The whole mip chain, top level first ({@link ObjectTextureMips#chainPixels} texels), for
-         * every image a tile set returns.
+         * The whole mip chain as RGBA8, top level first ({@link ObjectTextureMips#chainPixels}
+         * texels), for every image a tile set returns; a compressed chain is decoded for this view.
          */
         public ByteBuffer rgba() {
-            return ByteBuffer.wrap(rgba).asReadOnlyBuffer();
+            if (format == ObjectTextureFormats.RGBA8) {
+                return ByteBuffer.wrap(rgba).asReadOnlyBuffer();
+            }
+            return ByteBuffer.wrap(
+                            ObjectTextureFormats.decodeChain(
+                                    format, width, height, ByteBuffer.wrap(rgba), 0))
+                    .asReadOnlyBuffer();
         }
     }
 
@@ -2304,10 +2346,20 @@ public final class WorldExteriorObjects {
                 long height,
                 int recorded,
                 int registered,
-                byte[] registeredRgba) {
+                byte[] registeredRgba,
+                int blockFormat) {
             Demand withoutRegisteredRgba() {
                 return new Demand(
-                        slot, pool, id, materialClass, width, height, recorded, registered, null);
+                        slot,
+                        pool,
+                        id,
+                        materialClass,
+                        width,
+                        height,
+                        recorded,
+                        registered,
+                        null,
+                        blockFormat);
             }
         }
 
@@ -2338,14 +2390,15 @@ public final class WorldExteriorObjects {
                 long width = Integer.toUnsignedLong(header.getInt(12));
                 long height = Integer.toUnsignedLong(header.getInt(16));
                 int recorded;
+                List<Blp2Types.Mip> declared = List.of();
                 try {
-                    recorded =
-                            WorldImageBudget.recordedLevels(
-                                    Blp2Decoder.readMipsSynchronous(
-                                            AssetSource.bytes(raw),
-                                            IMAGE_LIMITS,
-                                            token,
-                                            Blp2Types.MipProfile.STRICT));
+                    declared =
+                            Blp2Decoder.readMipsSynchronous(
+                                    AssetSource.bytes(raw),
+                                    IMAGE_LIMITS,
+                                    token,
+                                    Blp2Types.MipProfile.STRICT);
+                    recorded = WorldImageBudget.recordedLevels(declared);
                 } catch (BlpFormatException undeclared) {
                     recorded = 0;
                 }
@@ -2385,10 +2438,93 @@ public final class WorldExteriorObjects {
                                 height,
                                 recorded,
                                 level,
-                                image.rgba));
+                                image.rgba,
+                                blockFormat(raw, width, height, declared, materialClass)));
                 local[(building ? Count.IMAGE_DECODED : Count.MODEL_IMAGE_DECODED).ordinal()]++;
                 return slot;
             }
+        }
+
+        /**
+         * The BC format this image can be uploaded in as the file's own blocks (issue #374), or -1.
+         * The file must be DXT and record every level down to 1 x 1 in exact storage. Opaque
+         * surfaces take BC1, BC2 or BC3 (alpha is not drawn); blended ones BC2 or BC3, because BC1
+         * alpha is not sampled on every backend; cutout surfaces keep RGBA8, whose mips preserve
+         * alpha-test coverage (#265).
+         */
+        static int blockFormat(
+                byte[] raw, long width, long height, List<Blp2Types.Mip> declared, int material) {
+            if (material == CUTOUT || raw.length < Blp2Decoder.HEADER_BYTES || raw[8] != 2) {
+                return -1;
+            }
+            int format =
+                    switch (raw[10] & 255) {
+                        case 0 -> ObjectTextureFormats.BC1;
+                        case 1 -> ObjectTextureFormats.BC2;
+                        case 7 -> ObjectTextureFormats.BC3;
+                        default -> -1;
+                    };
+            if (format < 0 || material == BLENDED && format == ObjectTextureFormats.BC1) {
+                return -1;
+            }
+            int levels = ObjectTextureMips.levels((int) width, (int) height);
+            if (declared.size() < levels) {
+                return -1;
+            }
+            for (int k = 0; k < levels; k++) {
+                var mip = declared.get(k);
+                if (mip.level() != k
+                        || mip.storage() != Blp2Types.MipStorage.EXACT
+                        || mip.byteLength()
+                                != ObjectTextureFormats.levelBytes(
+                                        format, (int) width, (int) height, k)) {
+                    return -1;
+                }
+            }
+            return format;
+        }
+
+        /**
+         * The file's own blocks from {@code level} down to 1 x 1 as one packed chain, or null when
+         * the source is not readable again or no longer matches (the RGBA8 path is used instead).
+         */
+        private byte[] blockChain(Demand demand, int level, int width, int height) {
+            if (width < 4 || height < 4) {
+                return null; // a compressed top level is at least one block (#420)
+            }
+            byte[] raw = source(demand);
+            if (raw == null) {
+                return null;
+            }
+            List<Blp2Types.Mip> declared;
+            try {
+                declared =
+                        Blp2Decoder.readMipsSynchronous(
+                                AssetSource.bytes(raw),
+                                IMAGE_LIMITS,
+                                token,
+                                Blp2Types.MipProfile.STRICT);
+            } catch (BlpFormatException changed) {
+                return null;
+            }
+            int format = demand.blockFormat();
+            byte[] chain = new byte[ObjectTextureFormats.chainBytes(format, width, height)];
+            int at = 0;
+            for (int k = 0; k < ObjectTextureMips.levels(width, height); k++) {
+                int bytes = ObjectTextureFormats.levelBytes(format, width, height, k);
+                if (level + k >= declared.size()) {
+                    return null;
+                }
+                var mip = declared.get(level + k);
+                if (mip.byteLength() != bytes
+                        || mip.offset() < 0
+                        || mip.offset() + bytes > raw.length) {
+                    return null;
+                }
+                System.arraycopy(raw, (int) mip.offset(), chain, at, bytes);
+                at += bytes;
+            }
+            return chain;
         }
 
         private static WorldStreamScopes.DerivedKind imageKind(Pool pool) {
@@ -2510,6 +2646,24 @@ public final class WorldExteriorObjects {
                 token.check();
                 var top = images.get(demand.slot());
                 int level = top.mipLevel();
+                if (demand.blockFormat() >= 0) {
+                    byte[] blocks = blockChain(demand, level, top.width(), top.height());
+                    if (blocks != null) {
+                        counts[Count.IMAGE_BLOCKS.ordinal()]++;
+                        counts[Count.IMAGE_MIPS_FILE.ordinal()]++;
+                        images.set(
+                                demand.slot(),
+                                new Image(
+                                        top.id,
+                                        top.width(),
+                                        top.height(),
+                                        level,
+                                        blocks,
+                                        ObjectTextureMips.Source.FILE,
+                                        demand.blockFormat()));
+                        continue;
+                    }
+                }
                 // The file's own mips below the final level, when it records any: the registered
                 // level from its first decode, the others decoded once each from the source,
                 // which is fetched only when such a level is asked for.

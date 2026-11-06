@@ -1,5 +1,6 @@
 package com.vibeminer.concepts.world;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -217,6 +218,89 @@ class WorldExteriorObjectsTest {
 
     private static byte[] group(int flags) {
         return group(flags, 3, 1, List.of(new Batch(0, 3, 0, 0)));
+    }
+
+    /** BC3 (DXT5) BLP2 with {@code levels} recorded levels, colour {@code color}, alpha 128. */
+    private static byte[] blp3(int width, int height, int levels, int color) {
+        var data = new ByteArrayOutputStream();
+        var header = buffer(148);
+        header.put(new byte[] {'B', 'L', 'P', '2'}).putInt(1);
+        header.put((byte) 2).put((byte) 8).put((byte) 7).put((byte) 1);
+        header.putInt(width).putInt(height);
+        int offset = 148;
+        for (int level = 0; level < levels; level++) {
+            int w = Math.max(1, width >> level), h = Math.max(1, height >> level);
+            int blocks = ((w + 3) / 4) * ((h + 3) / 4);
+            header.putInt(20 + level * 4, offset).putInt(84 + level * 4, blocks * 16);
+            var b = buffer(blocks * 16);
+            for (int i = 0; i < blocks; i++) {
+                b.put((byte) 128).put((byte) 128).put(new byte[6]);
+                b.putShort((short) color).putShort((short) 0).putInt(0);
+            }
+            data.writeBytes(b.array());
+            offset += blocks * 16;
+        }
+        return join(header.array(), data.toByteArray());
+    }
+
+    /** One building image of {@code materialClass} from {@code file}, through a full run. */
+    private static WorldExteriorObjects.Image single(int materialClass, byte[] file) {
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(1, new long[] {GROUP}, List.of(new Material(materialClass, IMAGE, 0))));
+            f.files.sources.put(GROUP, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+            f.files.sources.put(IMAGE, file);
+            try (var set = f.run()) {
+                return set.images().getFirst();
+            }
+        }
+    }
+
+    @Test
+    void opaqueDxtWithItsWholeChainIsCarriedAsTheFilesOwnBlocks() {
+        byte[] file = blp(256, 256, 9, 0x07e0);
+        var image = single(0, file);
+        assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.BC1, image.format());
+        var data = image.data();
+        assertEquals(
+                com.vibeminer.rendering.world.ObjectTextureFormats.chainBytes(
+                        com.vibeminer.rendering.world.ObjectTextureFormats.BC1, 256, 256),
+                data.remaining());
+        // Byte for byte the file's level blocks, in level order.
+        byte[] expected = java.util.Arrays.copyOfRange(file, 148, file.length);
+        byte[] actual = new byte[data.remaining()];
+        data.get(actual);
+        assertArrayEquals(expected, actual);
+        // The RGBA8 view decodes it: green.
+        assertEquals(255, image.rgba().get(1) & 255);
+    }
+
+    @Test
+    void blendedTakesBc3BlocksButNotBc1AndCutoutStaysRgba() {
+        var bc3 = single(2, blp3(64, 64, 7, 0x001f));
+        assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.BC3, bc3.format());
+        assertEquals(128, bc3.rgba().get(3) & 255, "BC3 alpha carried");
+        // BC1 alpha is not sampled on every backend: a blended BC1 surface stays RGBA8.
+        assertEquals(
+                com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8,
+                single(2, blp(64, 64, 7, 0x001f)).format());
+        // Cutout chains rescale alpha coverage per level (#265): always RGBA8.
+        assertEquals(
+                com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8,
+                single(1, blp3(64, 64, 7, 0x001f)).format());
+    }
+
+    @Test
+    void filesWithoutAWholeChainOrUnderOneBlockStayRgba() {
+        // Three recorded levels of seven: the chain would need generated levels.
+        assertEquals(
+                com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8,
+                single(0, blp(64, 64, 3, 0x07e0)).format());
+        // A 2 x 2 image is under one block; D3D11 refuses such compressed textures.
+        assertEquals(
+                com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8,
+                single(0, blp(2, 2, 2, 0x07e0)).format());
     }
 
     /** BC1 BLP2 with the given declared mip chain (base width/height halved per level). */
@@ -1290,7 +1374,13 @@ class WorldExteriorObjectsTest {
                     var image = set.images().getFirst();
                     assertEquals(256, image.width(), "allotted level, class " + materialClass);
                     assertEquals(2, image.mipLevel());
-                    assertEquals(9, set.levelDecodes, "class " + materialClass);
+                    // An opaque BC1 file recording its whole chain is carried as its own blocks
+                    // (#374): only the registration and the allotted level are decoded.
+                    assertEquals(
+                            materialClass == 0 ? 2 : 9, set.levelDecodes, "class " + materialClass);
+                    assertEquals(
+                            materialClass == 0 ? 1 : 0,
+                            set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS));
                     assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_MIPS_FILE));
                     assertEquals(1, f.files.opens.get(IMAGE).get(), "the kept bytes serve");
                     // Level 1 of the chain (the reused 128^2) is the file's green.
