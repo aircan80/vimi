@@ -766,10 +766,13 @@ final class WorldStreamTileFile {
         return out.array();
     }
 
-    private static Water readWater(
+    /** The water trailer that is all of {@code bytes}; package-private for its tests. */
+    static Water readWater(
             ByteBuffer bytes, Header header, TerrainScene.Tile tile, BooleanSupplier canceled)
             throws IOException {
         long length = bytes.remaining();
+        // Defence in depth: the header's trailer gate already rules out a shorter remainder.
+        require(length >= WATER_HEADER_BYTES, "Water trailer identity");
         byte[] head = new byte[WATER_HEADER_BYTES];
         bytes.get(0, head);
         var in = ByteBuffer.wrap(head).order(ByteOrder.LITTLE_ENDIAN);
