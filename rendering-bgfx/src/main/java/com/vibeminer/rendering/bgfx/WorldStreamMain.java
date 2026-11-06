@@ -30,7 +30,14 @@ final class WorldStreamMain {
         return false;
     }
 
-    record Options(Path directory, Path frames, String sha256, long parent, int backend) {}
+    /** {@code presentParent}: #381 spike, the GUI window to present into (0: readback). */
+    record Options(
+            Path directory,
+            Path frames,
+            String sha256,
+            long parent,
+            int backend,
+            long presentParent) {}
 
     static Options options(String[] args) {
         Map<String, String> values = new HashMap<>();
@@ -41,7 +48,8 @@ final class WorldStreamMain {
                                     "--session-sha256",
                                     "--frames",
                                     "--parent-pid",
-                                    "--backend")
+                                    "--backend",
+                                    "--present-parent")
                             .contains(args[i])
                     || values.put(args[i], args[i + 1]) != null) {
                 throw new IllegalArgumentException("Invalid World v2 arguments");
@@ -71,8 +79,17 @@ final class WorldStreamMain {
             throw new IllegalArgumentException("Invalid World v2 session paths or identity");
         }
         long parent = Long.parseLong(parentText);
+        String present = values.get("--present-parent");
+        if (present != null && !present.matches("[1-9][0-9]{0,18}")) {
+            throw new IllegalArgumentException("Invalid World v2 present parent");
+        }
         return new Options(
-                directory, frames, sha, parent, GpuViewerMain.backend(values.get("--backend")));
+                directory,
+                frames,
+                sha,
+                parent,
+                GpuViewerMain.backend(values.get("--backend")),
+                present == null ? 0 : Long.parseLong(present));
     }
 
     static int execute(String[] args) {
@@ -112,6 +129,12 @@ final class WorldStreamMain {
             }
             try (var frames =
                     WorldFrameFileV2.open(options.frames(), session.nonce(), session.scope())) {
+                // #381 spike: a present parent selects native presentation into a child window.
+                var window =
+                        options.presentParent() == 0
+                                ? null
+                                : new WorldWindowPresentation(
+                                        WorldChildWindow.create(options.presentParent()));
                 boolean success =
                         WorldStreamSession.run(
                                 session,
@@ -121,7 +144,8 @@ final class WorldStreamMain {
                                 frames,
                                 options.backend(),
                                 options.parent(),
-                                () -> Runtime.getRuntime().halt(2));
+                                () -> Runtime.getRuntime().halt(2),
+                                window);
                 return success ? 0 : 1;
             }
         } catch (Exception | LinkageError failure) {
