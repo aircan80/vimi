@@ -66,8 +66,12 @@ record WorldFog(
     /**
      * This fog with the WDL horizon drawn (#372, option (a)): fog reaches its maximum at {@code
      * horizonEnd} instead of the streamed-terrain cut, and the cut moves out to it as well, so
-     * terrain, objects and the horizon all fade into the sky together. The streamed tiles stay
-     * culled on the CPU at their own distance.
+     * terrain, objects and the horizon all fade into the sky together and nothing is sliced. The
+     * frame's CPU culling of streamed chunks and objects uses this cut too, so they are drawn out
+     * to {@code horizonEnd}; past the streamed neighbourhood there is nothing of theirs to draw.
+     *
+     * <p>Callers must not rely on {@code end() == cut()} afterwards: #177's recorded fog may later
+     * keep a shorter end with the cut at the horizon.
      */
     WorldFog withHorizon(float horizonEnd) {
         if (!(horizonEnd >= end)) {

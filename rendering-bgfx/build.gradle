@@ -318,6 +318,18 @@ tasks.register('nativeGpuWorldStreamOwnerProof', JavaExec) {
     args layout.buildDirectory.dir('native-world-stream-owner').get().asFile.absolutePath
 }
 
+// The WDL horizon (#372) end to end: the real World child answers HORIZON and draws it.
+tasks.register('nativeGpuWorldStreamHorizonSessionProof', JavaExec) {
+    group = 'verification'
+    description = 'Sends an authored WDL to the real World child and checks HORIZON_DONE, stats and frames.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamHorizonSessionProof'
+    timeout = java.time.Duration.ofMinutes(3)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-horizon-session').get().asFile.absolutePath
+}
+
 // The WDL horizon (#372): built off the render thread, drawn and fogged into the sky.
 tasks.register('nativeGpuWorldStreamHorizonProof', JavaExec) {
     group = 'verification'

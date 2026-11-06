@@ -44,6 +44,11 @@ final class WorldStreamHorizonProof {
 
     /** Tiles 24..40 on both axes: hills rising away from the camera tile (32, 32). */
     static WorldLowRes.LowRes hills() {
+        return WorldLowRes.read(hillsBytes(), () -> false);
+    }
+
+    /** The same hills as WDL bytes, for a proof that sends them to the real child. */
+    static byte[] hillsBytes() {
         var out = new ByteArrayOutputStream();
         out.writeBytes(
                 chunk(
@@ -81,7 +86,7 @@ final class WorldStreamHorizonProof {
         for (int i = 0; i < 4096; i++) {
             b.putInt(maof + 8 + i * 4, offsets[i]);
         }
-        return WorldLowRes.read(bytes, () -> false);
+        return bytes;
     }
 
     @SuppressWarnings("try")

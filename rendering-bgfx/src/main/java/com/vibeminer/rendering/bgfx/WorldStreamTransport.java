@@ -606,9 +606,14 @@ public final class WorldStreamTransport {
         private final WorldStreamStdout stdout;
         private final CompletableFuture<String> stdoutDiagnostic = new CompletableFuture<>();
 
-        // Reliable parent commands in flight: a tile offer, cancel and commit, late objects and
-        // the one horizon.
-        private static final int RELIABLE_COMMANDS = 5;
+        // Reliable parent commands in flight, as a sum of named parts so a change to one (e.g.
+        // more tiles in flight, #371) adds to it without re-deriving the total.
+        private static final int RELIABLE_TILE = 2; // the tile's OFFER and its CANCEL
+        private static final int RELIABLE_COMMIT = 1;
+        private static final int RELIABLE_OBJECTS = 1; // late OBJECTS
+        private static final int RELIABLE_HORIZON = 1; // the session's one HORIZON (#372)
+        private static final int RELIABLE_COMMANDS =
+                RELIABLE_TILE + RELIABLE_COMMIT + RELIABLE_OBJECTS + RELIABLE_HORIZON;
 
         private ObjectsOperation objectsOperation;
         // The session's one horizon WDL (#372) and whether any commit has completed yet.

@@ -985,6 +985,17 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             horizonUploads++;
             horizonStaging = null;
             horizonSwapped = true;
+            if (horizonUploads == 1) {
+                // One diagnostic per session: the first horizon reached the GPU.
+                System.err.printf(
+                        "World horizon uploaded: %d tiles, %d triangles, %d GPU bytes,"
+                                + " rebuild %.1f ms%n",
+                        horizonTiles,
+                        horizonIndexCount / 3,
+                        WorldStreamHorizon.GPU_BUDGET_BYTES,
+                        horizonBuildNanos / 1e6);
+                System.err.flush();
+            }
         }
     }
 
