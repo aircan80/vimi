@@ -3,6 +3,8 @@ package com.vibeminer.rendering.world;
 import com.vibeminer.formats.world.TerrainGrid;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -29,14 +31,14 @@ public final class TerrainGeometryFingerprint {
             }
             indices += (64 - Long.bitCount(chunk.holes())) * 12;
         }
-        var digest = new Sink(header(tileX, tileY, 256, 256 * 145, indices));
+        Sink digest = header(tileX, tileY, 256, 256 * 145, indices);
         for (var chunk : grid.chunks()) {
             for (int row = 0; row < 17; row++) {
                 for (int col = 0; col < (row % 2 == 0 ? 9 : 8); col++) {
                     var p = chunk.position(row, col);
-                    digest.put(Float.floatToRawIntBits(p.x()));
-                    digest.put(Float.floatToRawIntBits(p.y()));
-                    digest.put(Float.floatToRawIntBits(p.z()));
+                    put(digest, Float.floatToRawIntBits(p.x()));
+                    put(digest, Float.floatToRawIntBits(p.y()));
+                    put(digest, Float.floatToRawIntBits(p.z()));
                 }
             }
         }
@@ -46,18 +48,18 @@ public final class TerrainGeometryFingerprint {
                 for (int col = 0; col < 8; col++) {
                     if (!chunk.hole(row, col)) {
                         int a = base + row * 17 + col, b = a + 1, d = a + 17, e = d + 1, m = a + 9;
-                        digest.put(a);
-                        digest.put(m);
-                        digest.put(b);
-                        digest.put(b);
-                        digest.put(m);
-                        digest.put(e);
-                        digest.put(e);
-                        digest.put(m);
-                        digest.put(d);
-                        digest.put(d);
-                        digest.put(m);
-                        digest.put(a);
+                        put(digest, a);
+                        put(digest, m);
+                        put(digest, b);
+                        put(digest, b);
+                        put(digest, m);
+                        put(digest, e);
+                        put(digest, e);
+                        put(digest, m);
+                        put(digest, d);
+                        put(digest, d);
+                        put(digest, m);
+                        put(digest, a);
                     }
                 }
             }
@@ -72,77 +74,86 @@ public final class TerrainGeometryFingerprint {
         if (cached != null) {
             return cached;
         }
-        var digest =
-                new Sink(
-                        header(
-                                tile.x(),
-                                tile.y(),
-                                tile.chunks(),
-                                tile.vertexCount(),
-                                tile.indexCount()));
-        var vertices = tile.vertices();
-        while (vertices.hasRemaining()) {
-            digest.put(Float.floatToRawIntBits(vertices.get()));
-        }
-        var indices = tile.indices();
-        while (indices.hasRemaining()) {
-            digest.put(indices.get());
-        }
+        Sink digest =
+                header(tile.x(), tile.y(), tile.chunks(), tile.vertexCount(), tile.indexCount());
+        digest.floats(tile.vertices());
+        digest.ints(tile.indices());
         String result = digest.hex();
         tile.cacheFingerprint(result);
         return result;
     }
 
-    /** Little-endian ints into the digest in 16 KiB blocks; same bytes as one int at a time. */
-    private static final class Sink {
-        private final MessageDigest digest;
-        private final ByteBuffer block =
-                ByteBuffer.allocate(16 << 10).order(ByteOrder.LITTLE_ENDIAN);
-
-        Sink(MessageDigest digest) {
-            this.digest = digest;
-        }
-
-        void put(int value) {
-            if (!block.hasRemaining()) {
-                flush();
-            }
-            block.putInt(value);
-        }
-
-        private void flush() {
-            digest.update(block.array(), 0, block.position());
-            block.clear();
-        }
-
-        String hex() {
-            flush();
-            return HexFormat.of().formatHex(digest.digest());
-        }
-    }
-
-    private static MessageDigest header(int x, int y, int chunks, int vertices, int indices) {
+    private static Sink header(int x, int y, int chunks, int vertices, int indices) {
         if (x < 0 || x >= 64 || y < 0 || y >= 64) {
             throw new IllegalArgumentException("Invalid geometry tile coordinates");
         }
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             digest.update(DOMAIN);
-            put(digest, x);
-            put(digest, y);
-            put(digest, chunks);
-            put(digest, vertices);
-            put(digest, indices);
-            return digest;
+            var sink = new Sink(digest);
+            put(sink, x);
+            put(sink, y);
+            put(sink, chunks);
+            put(sink, vertices);
+            put(sink, indices);
+            return sink;
         } catch (NoSuchAlgorithmException impossible) {
             throw new AssertionError("Required SHA-256 unavailable", impossible);
         }
     }
 
-    private static void put(MessageDigest digest, int value) {
-        digest.update((byte) value);
-        digest.update((byte) (value >>> 8));
-        digest.update((byte) (value >>> 16));
-        digest.update((byte) (value >>> 24));
+    private static void put(Sink sink, int value) {
+        if (!sink.buffer.hasRemaining()) {
+            sink.drain();
+        }
+        sink.buffer.putInt(value);
+    }
+
+    /**
+     * Little-endian words batched into one digest update per 8 KiB. The digested byte stream is
+     * unchanged; only the per-byte update calls are gone.
+     */
+    private static final class Sink {
+        private final MessageDigest digest;
+        private final ByteBuffer buffer =
+                ByteBuffer.allocate(8 << 10).order(ByteOrder.LITTLE_ENDIAN);
+
+        private Sink(MessageDigest digest) {
+            this.digest = digest;
+        }
+
+        private void drain() {
+            digest.update(buffer.array(), 0, buffer.position());
+            buffer.clear();
+        }
+
+        private void floats(FloatBuffer values) {
+            while (values.hasRemaining()) {
+                if (!buffer.hasRemaining()) {
+                    drain();
+                }
+                int count = Math.min(values.remaining(), buffer.remaining() / 4);
+                buffer.asFloatBuffer().put(values.slice(values.position(), count));
+                values.position(values.position() + count);
+                buffer.position(buffer.position() + count * 4);
+            }
+        }
+
+        private void ints(IntBuffer values) {
+            while (values.hasRemaining()) {
+                if (!buffer.hasRemaining()) {
+                    drain();
+                }
+                int count = Math.min(values.remaining(), buffer.remaining() / 4);
+                buffer.asIntBuffer().put(values.slice(values.position(), count));
+                values.position(values.position() + count);
+                buffer.position(buffer.position() + count * 4);
+            }
+        }
+
+        private String hex() {
+            drain();
+            return HexFormat.of().formatHex(digest.digest());
+        }
     }
 }
