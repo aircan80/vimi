@@ -125,19 +125,24 @@ final class WorldStreamObjectsCullProof {
                     Math.abs(red - 200) <= 1 && Math.abs((middle >>> 8 & 255) - 40) <= 1,
                     "Visible placement drawn " + Integer.toHexString(middle));
             // The sky, drawn after the opaque surfaces with GEQUAL at the cleared depth, fills the
-            // uncovered top row (terrain ends 20 yd ahead) with its horizon gradient colour; the
-            // view pitches down, so the top row is below the horizon: exactly the fog colour.
+            // uncovered top-left pixel (terrain ends 20 yd ahead) with the horizon gradient colour
+            // of its view ray, as WorldFog computes it.
             int sky = a.get(0);
             var expected =
-                    WorldFog.STREAM.sky(
-                            WorldStreamObjectsMaterialProof.VIEW.pitch(), WIDTH, HEIGHT, 0);
+                    WorldFog.STREAM.skyPixel(
+                            WorldStreamObjectsMaterialProof.VIEW.pitch(),
+                            TerrainCamera.focalPixels(WIDTH),
+                            WIDTH,
+                            HEIGHT,
+                            0,
+                            0);
             int rgb =
                     (int) Math.floor(expected[0]) << 16
                             | (int) Math.floor(expected[1]) << 8
                             | (int) Math.floor(expected[2]);
             int bgr = (rgb & 255) << 16 | rgb & 0xff00 | rgb >>> 16;
             require(
-                    rgb == 0x99b8c4 && ((sky & 0xffffff) == rgb || (sky & 0xffffff) == bgr),
+                    (sky & 0xffffff) == rgb || (sky & 0xffffff) == bgr,
                     "Sky top row " + Integer.toHexString(sky) + " != " + Integer.toHexString(rgb));
             // MSAA resolve: moving the camera 0.01 yd west puts the opaque quad's left edge (eye
             // right -0.9 at depth 5) at x = 400 + focal * -0.89 / 5 = 328.8 for the 90 degree
@@ -320,7 +325,7 @@ final class WorldStreamObjectsCullProof {
             int samples = owner.stats().msaaSamples();
             int yellow = 0, partial = 0;
             for (int y = 200; y < 300; y++) {
-                // Left of the quad (it spans x 208..592) is the background of this row.
+                // Left of the quad (it spans x 280..520) is the background of this row.
                 int background = pixels.get(y * WIDTH + 150) >>> 8 & 255;
                 for (int x = 300; x < 500; x++) {
                     int pixel = pixels.get(y * WIDTH + x);
@@ -336,36 +341,65 @@ final class WorldStreamObjectsCullProof {
             require(
                     samples > 1 ? partial >= 50 : partial == 0,
                     "Cutout edge pixels " + partial + " at " + samples + " samples");
-            // Fog near the cut: the far quad's opaque part (pixel 300, 40) is almost exactly the
-            // fog colour, as WorldFog computes it (the fog before #357 stopped at 0.85).
+            // Fog near the cut, above the horizon. The far quad (rows 50..210, x 280..520) is at
+            // 2190 yd; its opaque part at pixel (300, 100) fades almost fully toward the sky at
+            // its own elevation, as WorldFog computes it, so it matches the sky beside it (pixel
+            // 540, 100) and the sky there is a mid-gradient colour (0 < t < 1).
+            double focal = TerrainCamera.focalPixels(WIDTH);
+            int fx = 300, fy = 100, sx = 540;
+            double rightEye = (fx + 0.5 - WIDTH * 0.5) / focal;
+            double upEye = (HEIGHT * 0.5 - (fy + 0.5)) / focal;
             float fog = WorldFog.STREAM.factor(FAR_FOG_DEPTH);
-            int far = pixels.get(40 * WIDTH + 300);
+            float[] fogSky =
+                    WorldFog.STREAM.sky(
+                            WorldFog.elevation(
+                                    FAR_FOG_DEPTH,
+                                    -rightEye * FAR_FOG_DEPTH,
+                                    upEye * FAR_FOG_DEPTH));
+            int far = pixels.get(fy * WIDTH + fx);
+            int besideSky = pixels.get(fy * WIDTH + sx);
             int[] quadColour = {250, 250, 20};
             int[] expected = new int[3];
             for (int c = 0; c < 3; c++) {
-                expected[c] =
-                        (int) Math.floor(quadColour[c] * (1 - fog) + WorldFog.FOG_COLOUR[c] * fog);
+                expected[c] = (int) Math.floor(quadColour[c] * (1 - fog) + fogSky[c] * fog);
             }
-            int r = far >>> 16 & 255, g = far >>> 8 & 255, b = far & 255;
-            if (Math.abs(r - expected[0]) > 1) {
-                int swap = r;
-                r = b;
-                b = swap;
+            float[] skyExpected =
+                    WorldFog.STREAM.skyPixel(COVERAGE_VIEW.pitch(), focal, WIDTH, HEIGHT, sx, fy);
+            double t =
+                    (skyExpected[0] - WorldFog.FOG_COLOUR[0])
+                            / (WorldFog.SKY_TOP[0] - WorldFog.FOG_COLOUR[0]);
+            int[] got = rgb(far, expected[0]), sky = rgb(besideSky, (int) skyExpected[0]);
+            boolean fogged = true, skyMatches = true, seamless = true;
+            for (int c = 0; c < 3; c++) {
+                fogged &= Math.abs(got[c] - expected[c]) <= 1;
+                skyMatches &= Math.abs(sky[c] - (int) Math.floor(skyExpected[c])) <= 1;
+                seamless &= Math.abs(got[c] - sky[c]) <= 3;
             }
             require(
-                    fog > 0.99
-                            && Math.abs(r - expected[0]) <= 1
-                            && Math.abs(g - expected[1]) <= 1
-                            && Math.abs(b - expected[2]) <= 1,
+                    fog > 0.99 && t > 0.2 && t < 0.8 && fogged && skyMatches && seamless,
                     "Fog at "
                             + FAR_FOG_DEPTH
                             + " yd: "
                             + Integer.toHexString(far)
-                            + " != "
-                            + java.util.Arrays.toString(expected));
+                            + " expected "
+                            + java.util.Arrays.toString(expected)
+                            + ", sky beside "
+                            + Integer.toHexString(besideSky)
+                            + " expected "
+                            + java.util.Arrays.toString(skyExpected)
+                            + " t="
+                            + t);
             farFogPixel = far;
             return partial;
         }
+    }
+
+    /** A pixel's red, green, blue, in whichever channel order puts red nearest {@code red}. */
+    private static int[] rgb(int pixel, int red) {
+        int hi = pixel >>> 16 & 255, g = pixel >>> 8 & 255, lo = pixel & 255;
+        return Math.abs(hi - red) <= Math.abs(lo - red)
+                ? new int[] {hi, g, lo}
+                : new int[] {lo, g, hi};
     }
 
     /** The shift of the red channel, from a pixel known to be the opaque quad's red. */

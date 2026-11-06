@@ -459,8 +459,15 @@ public final class WorldStreamSessionProof {
                         child,
                         new WorldStreamControl.Camera(
                                 NONCE, 14, 2, 800, 500, new TerrainCamera(-100, -10, 50, 0, 1)));
-                // The analytical horizon gradient (WorldFog) at the frame's centre row.
-                var analytical = WorldFog.STREAM.sky(1, 800, 500, 250);
+                // The analytical horizon gradient (WorldFog) at the frame's centre pixel.
+                var analytical =
+                        WorldFog.STREAM.skyPixel(
+                                1,
+                                com.vibeminer.rendering.world.TerrainCamera.focalPixels(800),
+                                800,
+                                500,
+                                400,
+                                250);
                 int sky = frame(reader, 3, 14, 2, 800, 500, (int) Math.floor(analytical[0]));
                 require(
                         (sky >>> 8 & 255) == (int) Math.floor(analytical[1])

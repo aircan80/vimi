@@ -382,10 +382,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private short eye = INVALID, projection = INVALID, rebase = INVALID, atlasUniform = INVALID;
     private short sampler = INVALID, sky = INVALID;
     // Fog shared by terrain, objects and the sky's horizon (WorldFog).
-    private short worldFog = INVALID, worldFogRange = INVALID;
+    private short worldFog = INVALID, worldFogRange = INVALID, worldSkyTop = INVALID;
     private short skyTop = INVALID, skyHorizon = INVALID, skyView = INVALID;
-    private short wmoFog = INVALID, wmoFogRange = INVALID;
-    private final WorldFog fog = WorldFog.STREAM;
+    private short wmoFog = INVALID, wmoFogRange = INVALID, wmoSkyTop = INVALID;
+    // Read once per frame; #177 sets it from the light tables (fog(WorldFog)).
+    private WorldFog fog = WorldFog.STREAM;
     // Samples of the target this renderer draws into; above 1, cutouts use alpha to coverage.
     private int targetSamples = 1;
     // Optional exterior objects pass (existing world-wmo shaders); INVALID program disables it.
@@ -452,6 +453,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             sampler = valid(bgfx_create_uniform("s_worldAtlas", BGFX_UNIFORM_TYPE_SAMPLER, 1));
             sky = valid(bgfx_create_uniform("u_terrainMode", BGFX_UNIFORM_TYPE_VEC4, 1));
             worldFog = valid(bgfx_create_uniform("u_worldFog", BGFX_UNIFORM_TYPE_VEC4, 1));
+            worldSkyTop = valid(bgfx_create_uniform("u_worldSkyTop", BGFX_UNIFORM_TYPE_VEC4, 1));
             worldFogRange =
                     valid(bgfx_create_uniform("u_worldFogRange", BGFX_UNIFORM_TYPE_VEC4, 1));
             skyTop = valid(bgfx_create_uniform("u_skyTop", BGFX_UNIFORM_TYPE_VEC4, 1));
@@ -494,6 +496,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             wmoSampler = valid(bgfx_create_uniform("s_wmoDiffuse", BGFX_UNIFORM_TYPE_SAMPLER, 1));
             wmoMaterial = valid(bgfx_create_uniform("u_wmoMaterial", BGFX_UNIFORM_TYPE_VEC4, 1));
             wmoFog = valid(bgfx_create_uniform("u_wmoFog", BGFX_UNIFORM_TYPE_VEC4, 1));
+            wmoSkyTop = valid(bgfx_create_uniform("u_wmoSkyTop", BGFX_UNIFORM_TYPE_VEC4, 1));
             wmoFogRange = valid(bgfx_create_uniform("u_wmoFogRange", BGFX_UNIFORM_TYPE_VEC4, 1));
         } catch (IOException | RuntimeException failed) {
             destroyObjectPass();
@@ -515,6 +518,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     wmoSampler,
                     wmoMaterial,
                     wmoFog,
+                    wmoSkyTop,
                     wmoFogRange
                 }) {
             if (uniform != INVALID) {
@@ -522,7 +526,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
         }
         wmoProgram = wmoEye = wmoProjection = wmoModel = wmoNormal = wmoSampler = INVALID;
-        wmoMaterial = wmoFog = wmoFogRange = INVALID;
+        wmoMaterial = wmoFog = wmoFogRange = wmoSkyTop = INVALID;
     }
 
     Upload begin(WorldStreamPackedTile packed) {
@@ -837,6 +841,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         return WorldStreamStatus.LateOutcome.ATTACHED;
     }
 
+    /** The fog and sky of the next frames; #177 feeds it from the light tables. */
+    void fog(WorldFog value) {
+        requireOwner();
+        fog = java.util.Objects.requireNonNull(value);
+    }
+
     /** The sample count of the target the owner created; above 1 enables alpha to coverage. */
     void targetSamples(int samples) {
         requireOwner();
@@ -1092,10 +1102,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             if (wmoProgram != INVALID) {
                 frameUniform(wmoEye, matrix);
                 frameUniform(wmoProjection, project);
-                bgfx_set_uniform(wmoFog, stack.floats(fog.colourUniform()), 1);
+                bgfx_set_uniform(wmoFog, stack.floats(fog.fogUniform()), 1);
+                bgfx_set_uniform(wmoSkyTop, stack.floats(fog.topUniform()), 1);
                 bgfx_set_uniform(wmoFogRange, stack.floats(fog.rangeUniform()), 1);
             }
-            bgfx_set_uniform(worldFog, stack.floats(fog.colourUniform()), 1);
+            bgfx_set_uniform(worldFog, stack.floats(fog.fogUniform()), 1);
+            bgfx_set_uniform(worldSkyTop, stack.floats(fog.topUniform()), 1);
             bgfx_set_uniform(worldFogRange, stack.floats(fog.rangeUniform()), 1);
             for (var lease : active) {
                 var slot = slots[lease.slot()];
@@ -1137,10 +1149,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             // come before water, which writes depth (the sky would then be rejected under it),
             // and before blended objects, which blend over whatever is behind them.
             bgfx_set_uniform(
-                    sky, stack.floats(0, height, bgfx_get_caps().originBottomLeft() ? 1 : 0, 1), 1);
+                    sky,
+                    stack.floats(width, height, bgfx_get_caps().originBottomLeft() ? 1 : 0, 1),
+                    1);
             // The horizon gradient: the sky meets the terrain and object fog in one colour.
             bgfx_set_uniform(skyTop, stack.floats(fog.topUniform()), 1);
-            bgfx_set_uniform(skyHorizon, stack.floats(fog.colourUniform()), 1);
+            bgfx_set_uniform(skyHorizon, stack.floats(fog.horizonUniform()), 1);
             bgfx_set_uniform(skyView, stack.floats(fog.viewUniform(camera.pitch(), width)), 1);
             bgfx_set_vertex_buffer(0, template, 0, 3);
             bgfx_set_state(SKY_STATE, 0);
@@ -1557,6 +1571,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     sky,
                     worldFog,
                     worldFogRange,
+                    worldSkyTop,
                     skyTop,
                     skyHorizon,
                     skyView
