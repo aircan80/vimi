@@ -448,8 +448,10 @@ public final class WorldNavigationUiTest {
         require(pill.getTooltip().getText().equals(((javafx.scene.control.Label)get(view,"position")).getText())
                         && !pill.getTooltip().getText().isBlank(),
                 "The pill's tooltip is the full position line: "+pill.getTooltip().getText());
+        // The copy goes through the view's hook, so the test never needs the system clipboard
+        // (unavailable on a locked desktop); the system clipboard itself is an owner check.
         var copied=new java.util.concurrent.atomic.AtomicReference<String>();
-        var clipboard=javafx.scene.input.Clipboard.getSystemClipboard();
+        view.coordinatesCopy(copied::set);
         mouse(pill,javafx.scene.input.MouseEvent.MOUSE_PRESSED,4,4,javafx.scene.input.MouseButton.PRIMARY);
         require(!input(view).looking(),"A press on the pill is not mouse look");
         mouse(pill,javafx.scene.input.MouseEvent.MOUSE_RELEASED,4,4,javafx.scene.input.MouseButton.PRIMARY);
@@ -457,12 +459,12 @@ public final class WorldNavigationUiTest {
                 javafx.scene.input.MouseButton.PRIMARY,1,false,false,false,false,false,false,false,false,false,true,
                 new PickResult(pill,4,4)));
         var camera=(TerrainRenderer.Camera)get(view,"camera");
-        copied.set(clipboard.getString());
         require(String.format(java.util.Locale.ROOT,"%.1f %.1f %.1f",camera.x(),camera.y(),camera.z()).equals(copied.get()),
                 "A click copies x y z: "+copied.get());
         require(com.vibeminer.concepts.world.WorldBookmarks.parseCoordinates(copied.get()).isPresent(),
                 "The travel panel reads the copied coordinates back");
         require(view.getScene().getFocusOwner()==viewport,"Focus stays on the viewport after copying");
+        view.coordinatesCopy(WorldCoordinatesPill::systemClipboard);
         require(!more.isSelected() && !rows.isVisible() && !rows.isManaged() && !more.isFocusTraversable(),"More starts collapsed");
         for (var id : new String[] {"#world-smooth-motion","#world-motion-status","#world-save-bookmark",
                 "#world-hide-panels","#world-fullscreen","#world-look-sensitivity","#world-invert-look",
