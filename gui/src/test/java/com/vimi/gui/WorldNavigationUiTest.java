@@ -486,6 +486,10 @@ public final class WorldNavigationUiTest {
             for (var id : ids) require(view.lookup(id)!=null && isWithin(view.lookup(id),box),"On the "+page+" page: "+id);
         });
         require(isWithin((Node)get(view,"keyHelp"),view.lookup("#world-menu-page-controls")),"The key help is the Controls page footer");
+        var inspectHint=(javafx.scene.control.Label)view.lookup("#world-inspect-hint");
+        require(inspectHint!=null && isWithin(inspectHint,view.lookup("#world-menu-page-controls"))
+                        && inspectHint.getText().equals(WorldView.INSPECT_HINT),
+                "The click-to-inspect hint is in the Controls page footer too");
         require(isWithin((Node)get(view,"travel"),view.lookup("#world-menu-page-bookmarks")),"The bookmark list is on the Bookmarks page");
         require(isWithin(view.lookup("#world-back"),view.lookup("#world-menu-main")),"Back to the map list is a menu entry");
         // The long GPU and texture texts show once, on the developer overlay; the Display page keeps

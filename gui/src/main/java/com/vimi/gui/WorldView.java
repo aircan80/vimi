@@ -76,7 +76,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             status = new Label("Choose a map"),
             position = new Label();
     private final Label currentArea = new Label("Terrain area unavailable");
-    private static final String INSPECT_HINT =
+    static final String INSPECT_HINT =
             "Click terrain, a drawn building, doodad or creature model, or a shown NPC spawn marker to inspect it";
     private final Label inspection = new Label(INSPECT_HINT);
     // Latest click wins: one CPU pick at a time over immutable height snapshots, never on FX.
@@ -2128,7 +2128,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 WorldGameMenu.section("Movement", speedRow, smoothMotion, walkMode, motionStatus),
                 WorldGameMenu.section("Look", sensitivityRow, invertLook, lookStatus),
                 WorldGameMenu.section("Keys", layoutRow, keyBindings),
-                keyHelp);
+                keyHelp, inspectHint());
         menu.page(WorldGameMenu.Page.AUDIO).getChildren().setAll(
                 WorldGameMenu.section("Music, ambience and day / night", audio.node()));
         var display = menu.page(WorldGameMenu.Page.DISPLAY);
@@ -2150,6 +2150,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
         menu.page(WorldGameMenu.Page.INSTANCES).getChildren().setAll(instanceStatus,
                 new HBox(8, entrances, enterInstance), leaveInstance);
         menu.lastEntry(back);
+    }
+
+    /** The click-to-inspect hint, under the key help in the Controls page footer. */
+    private Label inspectHint() {
+        var hint = new Label(INSPECT_HINT);
+        hint.setId("world-inspect-hint");
+        hint.setWrapText(true);
+        hint.setStyle("-fx-opacity: .75;");
+        return hint;
     }
 
     private boolean isWithinMenu(javafx.scene.Node node) {
