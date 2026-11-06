@@ -305,8 +305,8 @@ final class RaceAppearance {
             StringBuilder identity =
                     new StringBuilder(
                                     npc == null
-                                            ? "race-static-appearance-v1\n"
-                                            : "npc-baked-appearance-v1\n")
+                                            ? "race-static-appearance-v2\n"
+                                            : "npc-baked-appearance-v2\n")
                             .append(MeshAppearanceCodec.REVISION)
                             .append('\n')
                             .append(M2RestDrawSkinReader.REVISION)

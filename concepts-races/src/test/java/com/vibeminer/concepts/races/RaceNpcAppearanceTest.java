@@ -770,4 +770,73 @@ final class RaceNpcAppearanceTest {
         assertTrue(thrown.retry(), String.valueOf(thrown));
         assertTrue(thrown.refusal().contains("IllegalStateException"), thrown.refusal());
     }
+
+    /** Authored files whose {@code swapAt}-th stream open (from 1) serves the SKIN instead. */
+    private static final class SwappedOpen extends com.vibeminer.formats.AssetFilesFixture {
+        final int swapAt;
+
+        SwappedOpen(int swapAt) throws Exception {
+            super(BUILD, "enUS");
+            this.swapAt = swapAt;
+            add(1234, "1".repeat(32), golden("authored-274.m2"));
+            add(900, "2".repeat(32), golden("authored-274.skin"));
+            add(100, "3".repeat(32), bake());
+        }
+
+        @Override
+        public java.util.concurrent.CompletableFuture<com.vibeminer.files.FileTypes.FileOpen>
+                openRead(
+                        com.vibeminer.files.FileTypes.FileRef file,
+                        com.vibeminer.access.Cancellation token) {
+            return super.openRead(
+                    opens.get() + 1 == swapAt
+                            ? com.vibeminer.files.FileTypes.FileRef.id(900)
+                            : file,
+                    token);
+        }
+    }
+
+    @Test
+    void anInvalidNpcModelIsRefusedNotAskedForAgainOnEveryTile() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        var whole = new PartialOpen(0);
+        renderNpc(whole, variant);
+        // The render's facts read sees another file's bytes: M2Appearance answers MODEL_INVALID.
+        var invalid =
+                assertThrows(
+                        java.util.concurrent.CompletionException.class,
+                        () -> renderNpc(new SwappedOpen(whole.opens.get()), variant));
+        assertTrue(
+                invalid.getCause() instanceof com.vibeminer.formats.models.ModelFormatException f
+                        && f.code().equals("MODEL_INVALID"),
+                String.valueOf(invalid.getCause()));
+        var answer = RacesService.npcRetry(invalid);
+        assertTrue(answer.refusal() != null && !answer.retry(), String.valueOf(answer));
+        assertTrue(answer.refusal().contains("MODEL_INVALID"), answer.refusal());
+        // Lasting reasons are refusals; a file that changed while read is asked again; Errors
+        // and cancellation propagate.
+        for (String code :
+                List.of("MODEL_LIMIT", "MODEL_UNSUPPORTED", "MODEL_MATERIAL_UNSUPPORTED")) {
+            assertTrue(
+                    !RacesService.npcRetry(
+                                    new com.vibeminer.formats.models.ModelFormatException(
+                                            code, "x"))
+                            .retry());
+        }
+        assertTrue(
+                RacesService.npcRetry(
+                                new com.vibeminer.formats.models.ModelFormatException(
+                                        "MODEL_SOURCE_CHANGED", "x"))
+                        .retry());
+        assertTrue(
+                !RacesService.npcRetry(
+                                new RacesService.Projection(RaceTypes.State.UNSUPPORTED, "lasting"))
+                        .retry());
+        assertThrows(
+                OutOfMemoryError.class,
+                () ->
+                        RacesService.npcRetry(
+                                new java.util.concurrent.CompletionException(
+                                        new OutOfMemoryError("test"))));
+    }
 }

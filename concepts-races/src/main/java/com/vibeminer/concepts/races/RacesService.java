@@ -215,10 +215,12 @@ public final class RacesService implements BuildRaces {
     }
 
     /**
-     * Resolves a failed NPC appearance to one of its three answers: data that cannot be read now
-     * ({@link Unreadable}) and any other unexpected failure of preparing or rendering it are asked
-     * for again (retry, with the reason); only cancellation propagates. A lasting refusal is never
-     * made from an exception.
+     * Resolves a failed NPC appearance to one of its three answers. Data that cannot be read now
+     * ({@link Unreadable}), a model file that changed while it was read and any other unexpected
+     * runtime failure are asked for again (retry, with the reason). A lasting fact of the model
+     * file (a {@link com.vibeminer.formats.models.ModelFormatException} that is invalid, over the
+     * reviewed limits or unsupported) or of the tables ({@link Projection}) is a stated refusal, so
+     * the NPC is not asked for again on every tile. Cancellation and {@link Error}s propagate.
      */
     static RaceNpcs.Appearance npcRetry(Throwable failure) {
         var cause = failure;
@@ -230,8 +232,19 @@ public final class RacesService implements BuildRaces {
         if (cause instanceof java.util.concurrent.CancellationException canceled) {
             throw canceled;
         }
+        if (cause instanceof Error error) {
+            throw error;
+        }
         if (cause instanceof Unreadable unreadable) {
             return RaceNpcs.Appearance.unreadable(unreadable.getMessage());
+        }
+        if (cause instanceof Projection lasting) {
+            return RaceNpcs.Appearance.refused(lasting.getMessage());
+        }
+        if (cause instanceof com.vibeminer.formats.models.ModelFormatException model
+                && !"MODEL_SOURCE_CHANGED".equals(model.code())) {
+            return RaceNpcs.Appearance.refused(
+                    "the NPC model is " + model.code() + ": " + model.getMessage());
         }
         return RaceNpcs.Appearance.unreadable(
                 "the NPC appearance could not be built now ("
