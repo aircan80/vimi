@@ -148,9 +148,15 @@ public final class WorldStreamObjectsMaterialProof {
     /** Three quads at eye depth 5, eye-right [-3,-1], [-0.9,0.9] and [1,3], eye-up [-2,2]. */
     static WorldStreamTileWriter.Exterior quads() {
         var builder = WorldStreamTileWriter.Exterior.builder();
-        builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(200, 40, 40, 255)));
-        builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(10, 250, 10, 0)));
-        builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(0, 0, 255, 128)));
+        // The opaque chain has the largest image side, so it is filled in two bounded upload
+        // steps; the blended one is non-square, nine levels of 256 x 64 down to 1 x 1.
+        builder.image(
+                256,
+                256,
+                WorldStreamObjectsFileTest.chain(256, 256, solid(256, 256, 200, 40, 40, 255)));
+        builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(2, 2, 10, 250, 10, 0)));
+        builder.image(
+                256, 64, WorldStreamObjectsFileTest.chain(256, 64, solid(256, 64, 0, 0, 255, 128)));
         builder.model();
         double[][] spans = {{-3, -1}, {-.9, .9}, {1, 3}};
         var vertices = FloatBuffer.allocate(12 * 8);
@@ -214,9 +220,9 @@ public final class WorldStreamObjectsMaterialProof {
                 tile, VIEW, cy * forward + sy * right, sy * forward - cy * right, dz, 2200);
     }
 
-    private static ByteBuffer solid(int r, int g, int b, int a) {
-        var pixels = ByteBuffer.allocate(16);
-        for (int i = 0; i < 4; i++) {
+    private static ByteBuffer solid(int width, int height, int r, int g, int b, int a) {
+        var pixels = ByteBuffer.allocate(width * height * 4);
+        for (int i = 0; i < width * height; i++) {
             pixels.put((byte) r).put((byte) g).put((byte) b).put((byte) a);
         }
         return pixels.flip();

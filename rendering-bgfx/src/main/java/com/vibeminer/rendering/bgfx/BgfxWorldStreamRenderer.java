@@ -111,8 +111,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             long maximumStepNanos,
             long objectBytes) {}
 
-    /** Bounded object upload slice; same bound as the terrain step. */
-    static final int OBJECT_CHUNK = 262144;
+    /**
+     * Most bytes one step call may issue: two geometry chunks plus one atlas step for terrain, or
+     * one object step. Exceeding it is a planning bug, so both step paths treat it as fatal.
+     */
+    static final int STEP_BOUND = 262144;
+
+    /** Bounded object upload slice: a whole step, since object steps never share one. */
+    static final int OBJECT_CHUNK = STEP_BOUND;
 
     static final class Upload {
         private final long tag;
@@ -195,14 +201,20 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     }
 
     /**
-     * Bounded building of one tile's objects: resource creation, then vertex, index and image
-     * slices of at most OBJECT_CHUNK bytes, each a bgfx_copy. Owns its packed input until the last
-     * slice is issued; any failure destroys only this build.
+     * Bounded building of one tile's objects: resource creation, then vertex and index slices and
+     * image mip-chain steps (WorldStreamObjectMips) of at most OBJECT_CHUNK bytes, each a
+     * bgfx_copy. Owns its packed input until the last slice is issued; any failure destroys only
+     * this build, including a texture whose chain is only partly filled.
      */
     private static final class ObjectsBuild {
         private WorldStreamPackedObjects source;
         private SlotObjects building;
         private int vertexAt, indexAt, image;
+
+        /** The current image's upload plan, or null before its texture is created. */
+        private List<List<WorldStreamObjectMips.Slice>> imagePlan;
+
+        private int imageStep;
         private boolean failed;
 
         ObjectsBuild(WorldStreamPackedObjects source) {
@@ -568,7 +580,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
         maximumStepNanos = Math.max(maximumStepNanos, System.nanoTime() - started);
         peakStepBytes = Math.max(peakStepBytes, bytes);
-        if (bytes > 262144) {
+        if (bytes > STEP_BOUND) {
             throw new IllegalStateException("Upload slice escaped bound");
         }
         pollUploads();
@@ -582,8 +594,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     }
 
     /**
-     * One bounded object slice: resource creation, then vertex, index and image copies of at most
-     * OBJECT_CHUNK bytes. Any failure drops only this build's objects.
+     * One bounded object slice: resource creation, then vertex and index copies and image mip-chain
+     * steps of at most OBJECT_CHUNK bytes. Any failure drops only this build's objects.
      */
     private int stepObjects(ObjectsBuild build) {
         var source = build.source;
@@ -633,25 +645,46 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             if (build.image < source.imageCount()) {
                 int image = build.image;
                 int width = source.images[image * 2], height = source.images[image * 2 + 1];
-                // The image's packed chain, top level down to 1 x 1, is one mipmapped texture.
-                int count =
-                        com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(width, height)
-                                * 4;
-                built.textures[image] =
-                        valid(
-                                bgfx_create_texture_2d(
-                                        width,
-                                        height,
-                                        true,
-                                        1,
-                                        BGFX_TEXTURE_FORMAT_RGBA8,
-                                        BGFX_TEXTURE_NONE,
-                                        bgfx_copy(
-                                                source.pixels.slice(
-                                                        source.imageOffset(image), count)),
-                                        0));
+                if (build.imagePlan == null) {
+                    // One mipmapped texture per image, created empty and owned by the build at
+                    // once, so a partly filled chain is destroyed with it. A 256 x 256 chain
+                    // exceeds one step, so levels are filled in planned row bands.
+                    build.imagePlan = WorldStreamObjectMips.plan(width, height, OBJECT_CHUNK);
+                    build.imageStep = 0;
+                    built.textures[image] =
+                            valid(
+                                    bgfx_create_texture_2d(
+                                            width,
+                                            height,
+                                            true,
+                                            1,
+                                            BGFX_TEXTURE_FORMAT_RGBA8,
+                                            BGFX_TEXTURE_NONE,
+                                            null,
+                                            0));
+                }
+                int chain = source.imageOffset(image), count = 0;
+                for (var slice : build.imagePlan.get(build.imageStep)) {
+                    int levelWidth =
+                            com.vibeminer.rendering.world.ObjectTextureMips.levelWidth(
+                                    width, slice.level());
+                    bgfx_update_texture_2d(
+                            built.textures[image],
+                            0,
+                            slice.level(),
+                            0,
+                            slice.row(),
+                            levelWidth,
+                            slice.rows(),
+                            bgfx_copy(source.pixels.slice(chain + slice.offset(), slice.bytes())),
+                            levelWidth * 4);
+                    count += slice.bytes();
+                }
                 built.bytes += count;
-                build.image++;
+                if (++build.imageStep == build.imagePlan.size()) {
+                    build.imagePlan = null;
+                    build.image++;
+                }
                 return count;
             }
             // Every slice is a bgfx-owned copy; the packed native input can retire now.
