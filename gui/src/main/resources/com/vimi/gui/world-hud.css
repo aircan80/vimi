@@ -60,3 +60,55 @@
     -fx-text-alignment: right;
     -fx-alignment: center-right;
 }
+
+.world-hud-icons {
+    -fx-background-color: rgba(14, 24, 31, 0.6);
+    -fx-background-radius: 8;
+    -fx-padding: 3 5;
+}
+
+.world-hud-icon {
+    -fx-background-color: transparent;
+    -fx-background-radius: 5;
+    -fx-padding: 2 4;
+    -fx-min-width: 24;
+    -fx-min-height: 24;
+    -fx-text-fill: #e8eeee;
+    -fx-font-weight: bold;
+}
+
+.world-hud-icon:hover {
+    -fx-background-color: rgba(255, 255, 255, 0.16);
+}
+
+.world-hud-icon .world-hud-glyph {
+    -fx-fill: #e8eeee;
+}
+
+.world-hud-icon .world-hud-slash {
+    -fx-stroke: #eb5757;
+    -fx-stroke-width: 2.2;
+}
+
+.world-hud-icon:amber,
+.world-hud-icon:amber .world-hud-glyph {
+    -fx-text-fill: #f2b84b;
+    -fx-fill: #f2b84b;
+}
+
+.world-hud-icon:red {
+    -fx-text-fill: #eb5757;
+}
+
+.world-hud-icon:dim {
+    -fx-opacity: 0.5;
+}
+
+.world-hud-icon:bright {
+    -fx-text-fill: #ffffff;
+    -fx-effect: dropshadow(gaussian, rgba(255, 230, 150, 0.9), 6, 0.4, 0, 0);
+}
+
+.world-hud-text-icon {
+    -fx-font-family: monospace;
+}

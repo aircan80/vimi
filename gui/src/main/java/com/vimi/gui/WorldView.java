@@ -135,6 +135,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // swap of the centre never hides them; in full screen they move onto the viewport.
     private final StackPane toastLayer = new StackPane();
     private boolean helpToastShown, streamFailedToast, stallToast;
+    // Typed render and texture health for the status chips (never parsed from the status text).
+    private WorldStatusIcons.Render renderHealth = WorldStatusIcons.Render.GPU;
+    private WorldStatusIcons.Texture textureHealth = WorldStatusIcons.Texture.READY;
     // Where viewport screenshots go: the data directory's screenshots folder; null without one.
     private java.nio.file.Path screenshots;
     // Opens a folder in the desktop's file manager; tests replace it.
@@ -228,6 +231,42 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
     });
     private final WorldTravelPanel travel = new WorldTravelPanel(this::goToBookmark, this::goToCoordinates);
+    // HUD step 2: status icons bottom-left; the existing controls stay their models.
+    private ExplorerMotion.Ground motionGround = ExplorerMotion.Ground.FREE;
+    private final WorldStatusIcons icons = new WorldStatusIcons(new WorldStatusIcons.Actions() {
+        @Override public void toggleWalk() { walkMode.fire(); }
+        @Override public void nextSpeed() {
+            var all = WorldControls.Speed.values();
+            var now = flightSpeed.getValue();
+            flightSpeed.setValue(all[now == null ? 0 : (now.ordinal() + 1) % all.length]);
+        }
+        @Override public void toggleSmooth() { smoothMotion.fire(); }
+        @Override public void toggleMusic() { audio.music().fire(); }
+        @Override public void toggleAmbience() { audio.ambience().fire(); }
+        @Override public void volume(boolean music, int steps) {
+            var slider = audio.volume(music ? com.vibeminer.concepts.world.WorldAreaAudio.Kind.MUSIC : com.vibeminer.concepts.world.WorldAreaAudio.Kind.AMBIENCE);
+            slider.setValue(Math.clamp(slider.getValue() + steps * 5.0, slider.getMin(), slider.getMax()));
+        }
+        @Override public void nextTime() {
+            var all = WorldAudioDirector.Slot.values();
+            var now = audio.variant().getValue();
+            audio.variant().setValue(all[now == null ? 0 : (now.ordinal() + 1) % all.length]);
+        }
+        // Each detail opens where it lives: render and texture on the developer overlay's Render
+        // and Stream pages, tracking in the minimap's tracking popup. The mouse detail stays in
+        // the rows under "More" until the Controls page exists (step 5).
+        @Override public void details(String icon) {
+            switch (icon) {
+                case "render" -> devOverlay.show(WorldDevReport.Page.RENDER);
+                case "texture" -> devOverlay.show(WorldDevReport.Page.STREAM);
+                case "tracking" -> {
+                    if (minimap.isVisible()) minimap.tracking().toggle(minimap);
+                    else moreControls.setSelected(true);
+                }
+                default -> moreControls.setSelected(true);
+            }
+        }
+    }, viewport::requestFocus);
     private final Button saveBookmark = new Button("Bookmark this view");
     private String buildLabel = "";
     // A validated target waiting for its tile's first verified seed; never applied elsewhere.
@@ -675,6 +714,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         gpu = gpuService == null ? null : new TerrainGpuPreview(gpuService, Platform::runLater,
                 update -> {
                     show(gpuActivity, update.busy());
+                    // The legacy preview: ready is fine; settled but not ready is a failure.
+                    if (!update.busy()) renderHealth = update.ready() ? WorldStatusIcons.Render.GPU
+                            : WorldStatusIcons.Render.FAILED;
                     gpuStatus.setText(update.message());
                     retryGpu.setDisable(update.busy() || update.ready());
                     acceptedGpuStatus(update);
@@ -824,6 +866,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (gpu != null && !gpuEnabled.isSelected()) {
                 gpu.hide();
                 show(gpuActivity, false);
+                renderHealth = WorldStatusIcons.Render.SOFTWARE;
                 gpuStatus.setText("Software terrain");
             } else if (gpu != null) {
                 gpu.retry();
@@ -913,14 +956,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
         // its clicks hand focus back through the HUD's one refocus.
         minimap.refocus(hud::refocus);
         minimap.followHud(hud.hiddenProperty());
-        // Interim placement until the HUD layout's slots land: bottom-left of the viewport.
-        viewport.getChildren().add(inspectCard);
-        StackPane.setAlignment(inspectCard, Pos.BOTTOM_LEFT);
-        StackPane.setMargin(inspectCard, new Insets(12, 12, 48, 12));
-        inspectCard.refocus(() -> {
-            if (explorer) viewport.requestFocus();
-        });
+        // Above the status icon row in the HUD's bottom-left stack; the map panel ends above it.
+        hud.inspectCard(inspectCard);
+        inspectCard.refocus(hud::refocus);
         inspectCard.visibleProperty().addListener((o, was, now) -> anchorToasts());
+        // The toasts keep clear of the status icon row while it shows.
+        icons.node().heightProperty().addListener((o, was, now) -> anchorToasts());
+        hud.hiddenProperty().addListener((o, was, now) -> anchorToasts());
         // The card follows the HUD's hidden state by listening (it shows and hides itself): hiding
         // the HUD hides it and keeps it open, showing the HUD shows it again.
         hud.hiddenProperty().addListener((o, was, now) -> inspectCard.hudHidden(now));
@@ -966,6 +1008,20 @@ final class WorldView extends BorderPane implements AutoCloseable {
         hud.topCenter(zoneText.line());
         hud.banner(zoneText.banner());
         hud.bottomRight(coordinates.node());
+        hud.bottomLeft(icons.node());
+        icons.trailing(moreControls);
+        // Change listeners, not invalidation ones: refreshIcons does not read every source each time.
+        javafx.beans.value.ChangeListener<Object> iconState = (o, before, after) -> refreshIcons();
+        for (javafx.beans.value.ObservableValue<?> source : java.util.List.<javafx.beans.value.ObservableValue<?>>of(
+                walkMode.selectedProperty(),
+                smoothMotion.selectedProperty(), motionStatus.textProperty(), flightSpeed.valueProperty(),
+                audio.music().selectedProperty(), audio.ambience().selectedProperty(), audio.status().textProperty(),
+                audio.silent(com.vibeminer.concepts.world.WorldAreaAudio.Kind.MUSIC), audio.silent(com.vibeminer.concepts.world.WorldAreaAudio.Kind.AMBIENCE),
+                audio.variant().valueProperty(), gpuActivity.visibleProperty(), gpuEnabled.selectedProperty(),
+                gpuStatus.textProperty(), textureActivity.visibleProperty(), textureStatus.textProperty(),
+                lookStatus.textProperty()))
+            source.addListener(iconState);
+        refreshIcons();
         // The full text lines stay the models; the HUD shows the short form and keeps them as tooltips.
         zoneText.tooltip().textProperty().bind(currentArea.textProperty());
         coordinates.tooltip().textProperty().bind(position.textProperty());
@@ -1405,6 +1461,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     + (int) ExplorerMotion.EYE_HEIGHT + " yd above rendered terrain · no collision";
             case UNAVAILABLE -> "Walking · no rendered terrain here; altitude held";
         });
+        motionGround = next;
+        refreshIcons();
     }
 
     void ensureLoaded() {
@@ -2061,10 +2119,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         leaveInstance.setManaged(adtInstance);
         refreshEntrances();
         explorerChrome(true);
-        // HUD step 1: one slim bar under the view; every other control row folds behind "More".
-        var bar = new HBox(10, walkMode, new Label("Speed"), flightSpeed, moreControls);
-        bar.setId("world-hud-bar");
-        bar.setAlignment(Pos.CENTER_LEFT);
+        // HUD step 2: the status icons replace the slim bar (walk, speed, audio, day/night);
+        // the rows that have no icon yet fold behind the row's "More" toggle.
         var inspectHint = new Label(INSPECT_HINT);
         inspectHint.setWrapText(true);
         moreRows.getChildren().setAll(
@@ -2073,12 +2129,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 new HBox(8, new Label("Look sensitivity"), lookSensitivity, invertLook, keyBindings,
                         lookStatus),
                 inspectHint,
-                audio.node(),
                 new HBox(8, gpuEnabled, objectTextures, gpuActivity, retryGpu, gpuStatus),
                 new HBox(8, textureActivity, textureStatus, retryTextures),
                 new HBox(8, new Label("Instances"), entrances, enterInstance, leaveInstance,
                         instanceStatus));
-        content.setBottom(new VBox(6, bar, inspection, moreRows));
+        content.setBottom(new VBox(6, inspection, moreRows));
         applyPanels();
     }
 
@@ -2532,11 +2587,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
         geometryPreparationWaiting = loadedRevision != publishedLoadedRevision;
         texturePendingFrame = gpuScene != null;
         show(textureActivity, texturePendingFrame);
+        if (!texturePendingFrame) textureHealth = WorldStatusIcons.Texture.FALLBACK;
         textureStatus.setText(texturePendingFrame ? "Presenting prepared terrain…"
                 : "Terrain texture loading unavailable");
         retryTextures.setDisable(true);
         if (gpuScene == null && gpu != null) {
             retireGpu();
+            renderHealth = WorldStatusIcons.Render.SOFTWARE;
             gpuStatus.setText("Software terrain · no loaded nearby tiles");
         }
         if (prepared.camera() != null) {
@@ -2648,6 +2705,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (textureSnapshot != null) textureSnapshot.close();
         textureSnapshot = null;
         show(textureActivity, false);
+        textureHealth = WorldStatusIcons.Texture.READY;
         textureStatus.setText("Terrain textures not loaded");
         retryTextures.setDisable(true);
     }
@@ -2778,6 +2836,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (prepared == null && currentMaterialsReady) {
             // A retry failure does not discard an already qualified current appearance.
             show(textureActivity, texturePendingFrame);
+            if (result.issue() != null) textureHealth = WorldStatusIcons.Texture.FAILED;
             textureStatus.setText(result.issue());
             retryTextures.setDisable(texturePendingFrame);
             if (result.issue() != null) toasts.show(result.issue(), "Retry", retryTextures::fire);
@@ -2819,6 +2878,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         texturePendingFrame = false;
         show(textureActivity, false);
         retryTextures.setDisable(gpuScene == null);
+        textureHealth = textures == null ? (currentMaterialIssue == null ? WorldStatusIcons.Texture.READY
+                        : WorldStatusIcons.Texture.FALLBACK)
+                : textures.coveredRects() == 0 ? WorldStatusIcons.Texture.FALLBACK : WorldStatusIcons.Texture.READY;
         textureStatus.setText(textures == null
                 ? (currentMaterialIssue == null ? "Height shading" : currentMaterialIssue)
                 : textures.coveredRects() == 0
@@ -2831,6 +2893,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         texturePendingFrame = false;
         show(textureActivity, false);
         retryTextures.setDisable(gpuScene == null);
+        textureHealth = textureSnapshot == null && currentMaterialIssue != null
+                ? WorldStatusIcons.Texture.FALLBACK : WorldStatusIcons.Texture.READY;
         textureStatus.setText(textureSnapshot == null
                 ? (currentMaterialIssue == null ? "Height shading" : currentMaterialIssue)
                 : "Basic terrain textures · " + textureSnapshot.coveredChunks() + "/"
@@ -2849,6 +2913,47 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 inventory.map().id(),camera.x(),camera.y(),loaded.values(),catalog.areaIndex());
         showArea(area);
         audio.area(handle, inventory.map().id(), area);
+    }
+
+    /** Recomputes every status icon from the controls and labels it summarises. */
+    private void refreshIcons() {
+        icons.mode(!walkMode.isSelected() ? WorldStatusIcons.Mode.FLY
+                : motionGround == ExplorerMotion.Ground.UNAVAILABLE ? WorldStatusIcons.Mode.WALK_NO_TERRAIN
+                : WorldStatusIcons.Mode.WALK, motionStatus.getText());
+        icons.smooth(smoothMotion.isSelected());
+        icons.music(sound(audio.music(), com.vibeminer.concepts.world.WorldAreaAudio.Kind.MUSIC), "Music · " + audio.status().getText());
+        icons.ambience(sound(audio.ambience(), com.vibeminer.concepts.world.WorldAreaAudio.Kind.AMBIENCE),
+                "Ambience · " + audio.status().getText());
+        var slot = audio.variant().getValue();
+        icons.time(slot == WorldAudioDirector.Slot.DAY ? WorldStatusIcons.Time.DAY
+                : slot == WorldAudioDirector.Slot.NIGHT ? WorldStatusIcons.Time.NIGHT : WorldStatusIcons.Time.CLOCK,
+                (slot == null ? WorldAudioDirector.Slot.CLOCK : slot) + "; click for the next day/night slot");
+        icons.render(WorldStatusIcons.render(gpuActivity.isVisible(), gpuEnabled.isSelected(), renderHealth),
+                gpuStatus.getText());
+        icons.texture(WorldStatusIcons.texture(textureActivity.isVisible(), textureHealth),
+                textureStatus.getText());
+        boolean capture = lookStatus.getText() != null && !lookStatus.getText().isBlank();
+        icons.mouse(capture, capture ? lookStatus.getText() : "Mouse look: hold a mouse button and move the mouse");
+        var layers = new java.util.ArrayList<javafx.scene.paint.Color>();
+        if (spawns != null && spawns.toggle().isSelected()) layers.add(WorldSpawnOverlay.rankColor(0));
+        if (roles != null)
+            for (var layer : com.vibeminer.concepts.locations.MapRoles.Layer.values())
+                if (roles.toggle(layer).isSelected()) layers.add(MapRoleOverlay.color(layer));
+        icons.tracking(layers);
+        speedIcon();
+    }
+
+    private WorldStatusIcons.Sound sound(CheckBox channel, com.vibeminer.concepts.world.WorldAreaAudio.Kind kind) {
+        if (!channel.isSelected()) return WorldStatusIcons.Sound.MUTED;
+        return audio.silent(kind).get() ? WorldStatusIcons.Sound.SILENT : WorldStatusIcons.Sound.ON;
+    }
+
+    /** The live speed chip; called per frame with the position line. */
+    private void speedIcon() {
+        var preset = flightSpeed.getValue();
+        var modifier = input.controls().sprintModifier();
+        icons.speed(input.effectiveSpeed(), input.sprinting(), (preset == null ? "" : preset + " preset")
+                + "; click for the next preset" + (modifier == null ? "" : "; " + modifier.getName() + "+wheel steps it"));
     }
 
     /** The recorded area under the camera (null: unknown), on the area line and the HUD zone text. */
@@ -2897,6 +3002,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         input.effectiveSpeed(),
                         loaded.size()));
         coordinates.show(camera.x(), camera.y(), camera.z(), tileX(), tileY());
+        speedIcon();
         if (gpu != null && gpuEnabled.isSelected() && gpuScene != null) {
             if (!viewportActive()) {
                 retireGpu();
@@ -2912,6 +3018,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 WorldDiagnostics.warn("GPU terrain request failed; using software rendering", invalid);
                 gpu.hide();
                 show(gpuActivity, false);
+                renderHealth = WorldStatusIcons.Render.SOFTWARE;
                 gpuStatus.setText("GPU terrain unavailable; using software rendering.");
             }
         }
@@ -3020,6 +3127,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         WorldDiagnostics.warn("World resources could not be confirmed retired", failure);
         show(gpuActivity, false);
         show(firstFrameActivity, false);
+        renderHealth = WorldStatusIcons.Render.FAILED;
         gpuStatus.setText("World resources could not be confirmed retired ("
                 + WorldDiagnostics.brief(failure) + "); reload the workspace.");
         toasts.show(gpuStatus.getText());
@@ -3058,6 +3166,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         show(gpuActivity, busy);
         show(textureActivity, busy);
         show(firstFrameActivity, busy && image.getImage() == null);
+        // Streamed textures ride with the stream: only a failed stream is a texture failure. Set
+        // before streamStatus() refreshes the icons, so the texture chip never waits for the
+        // detail text to change.
+        textureHealth = snapshot.phase() == WorldStreamSourceController.Phase.FAILED
+                ? WorldStatusIcons.Texture.FAILED : WorldStatusIcons.Texture.READY;
         streamStatus(snapshot);
         textureStatus.setText(snapshot.detail());
         retryTextures.setDisable(true);
@@ -3073,6 +3186,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 input.effectiveSpeed(),
                 snapshot.prepared(), snapshot.desired()));
         if (camera != null) coordinates.show(camera.x(), camera.y(), camera.z(), tileX(), tileY());
+        speedIcon();
         var pending = controller.takePresentation();
         if (pending.isEmpty()) return;
         var frame = pending.get();
@@ -3093,6 +3207,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             show(firstFrameActivity, false);
             show(textureActivity, false);
             show(gpuActivity, false);
+            renderHealth = WorldStatusIcons.Render.FAILED;
             gpuStatus.setText("GPU World frame upload failed; retry the viewer.");
             retryGpu.setDisable(false);
             toasts.show(gpuStatus.getText(), "Retry", retryGpu::fire);
@@ -3186,6 +3301,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             default -> true;
         };
         boolean hint = stallWatchdog.alerted() && stallPhase(snapshot.phase());
+        renderHealth = WorldStatusIcons.streamHealth(snapshot.phase(), hint, snapshot.prepared(), snapshot.desired());
         gpuStatus.setText(hint ? STALL_HINT : snapshot.detail());
         retryGpu.setDisable(busy && !hint);
         // One toast per failure or stall episode, not per snapshot.
@@ -3194,6 +3310,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (hint && !stallToast) toasts.show(STALL_HINT, "Retry", retryGpu::fire);
         streamFailedToast = failed;
         stallToast = hint;
+        // The health can change while the text stays the same (for example the tile counts).
+        refreshIcons();
     }
 
     private void streamNeighborhood() {
@@ -3262,6 +3380,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (!textureSourceBusy) {
                 texturePendingFrame = false;
                 show(textureActivity, false);
+                textureHealth = WorldStatusIcons.Texture.FAILED;
                 textureStatus.setText("Terrain texture frame unavailable · previous preview retained");
                 retryTextures.setDisable(gpuScene == null);
             }
@@ -3572,6 +3691,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (roles != null || closed) throw new IllegalStateException("Role overlay already attached");
         roles = java.util.Objects.requireNonNull(overlay);
         minimap.attachRoles(overlay);
+        for (var layer : com.vibeminer.concepts.locations.MapRoles.Layer.values())
+            overlay.toggle(layer).selectedProperty().addListener((o, before, on) -> refreshIcons());
+        refreshIcons();
         minimap.tracking().roles(overlay.controls());
     }
 
@@ -3673,7 +3795,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 : Math.max(0, content.getHeight() - center.getBoundsInParent().getMaxY());
         // While the inspect card is open the toasts keep clear of its bottom-left column.
         double left = inspectCard.isVisible() ? WorldInspectCard.WIDTH + 24 : 12;
-        StackPane.setMargin(toasts, new Insets(12, 12, below + 24, left));
+        // And they sit above the status icon row, which spans the bottom-left of the view, so a
+        // wide toast in a narrow window never covers the icons (the row's 10 px margin, a gap).
+        var row = icons.node();
+        double iconRow = row.isVisible() && !hud.hidden() ? row.getHeight() + 10 + 8 : 0;
+        StackPane.setMargin(toasts, new Insets(12, 12, below + Math.max(24, iconRow), left));
     }
 
     /** Toasts live on the content layer, or on the viewport while it is full screen. */
@@ -3727,6 +3853,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
             });
         }));
         overlay.bind(this::presentedView);
+        overlay.toggle().selectedProperty().addListener((o, before, on) -> refreshIcons());
+        refreshIcons();
     }
 
     // ---- Instances: recorded entrances and in-place zone-in (#259) ----------------------------

@@ -66,6 +66,7 @@ public final class WorldToastsUiTest {
             fx(() -> ((Button) view.lookup("#world-open")).fire());
             await(() -> get("camera") != null && !(boolean) get("scenePreparing"));
             fx(WorldToastsUiTest::viewShowsHelpAndCaptureToasts);
+            fx(WorldToastsUiTest::toastsClearTheStatusIcons);
             screenshotSavesTheFrameOnly();
             fx(WorldToastsUiTest::toastsFollowFullScreenAndSurviveTheInteriorSwap);
             System.out.println("World toasts PASS: 4 s life and fade, stack of 3 oldest-first, repeat"
@@ -171,6 +172,25 @@ public final class WorldToastsUiTest {
         } finally {
             window.close();
         }
+    }
+
+    /** In a 1000 px window a wide toast still sits above the status icon row, never over it. */
+    private static void toastsClearTheStatusIcons() {
+        var toasts = view.toasts();
+        toasts.clear();
+        toasts.show("A long notice that spans most of the view's width, as a failure or help text can,"
+                + " so it reaches over the bottom-left status icons in a narrow window");
+        view.applyCss();
+        view.layout();
+        var row = view.lookup("#world-status-icons");
+        var toastBox = toasts.localToScene(toasts.getLayoutBounds());
+        var rowBox = row.localToScene(row.getLayoutBounds());
+        require(view.getScene().getWidth() <= 1000 && row.isVisible()
+                        && toastBox.getMinX() < rowBox.getMaxX() && toastBox.getMaxY() <= rowBox.getMinY(),
+                "The toast spans over the icon row's columns but sits above it: toast " + toastBox
+                        + " icons " + rowBox);
+        require(!toastBox.intersects(rowBox), "A toast never covers the status icons");
+        toasts.clear();
     }
 
     private static void viewShowsHelpAndCaptureToasts() {

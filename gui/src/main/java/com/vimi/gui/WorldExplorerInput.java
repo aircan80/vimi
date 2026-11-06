@@ -184,6 +184,11 @@ final class WorldExplorerInput {
         return motion.speed(speed(), held(WorldControls.Action.SPRINT));
     }
 
+    /** True while the sprint key is held (the HUD speed chip brightens). */
+    boolean sprinting() {
+        return held(WorldControls.Action.SPRINT);
+    }
+
     /** The held keys' names, sorted, comma-separated; for the developer overlay. */
     String heldKeys() {
         return keys.stream().map(KeyCode::getName).sorted().collect(java.util.stream.Collectors.joining(", "));

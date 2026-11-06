@@ -124,7 +124,7 @@ public final class WorldDevOverlayUiTest {
         press(KeyCode.F3);
         require(overlay().page() == WorldDevReport.Page.AUDIO
                         && overlay().text().equals("audio     "
-                                + ((Label) view.lookup("#world-audio-status")).getText()),
+                                + ((WorldAudioControls) get("audio")).statusText().get()),
                 "Audio page shows the audio status:\n" + overlay().text());
         press(KeyCode.ESCAPE);
         require(overlay().page() == WorldDevReport.Page.AUDIO && node.isVisible(),
@@ -140,8 +140,9 @@ public final class WorldDevOverlayUiTest {
         press(KeyCode.F3);
         require(overlay().page() == WorldDevReport.Page.INPUT && overlay().text().contains("held      W"),
                 "The Input page lists held keys:\n" + overlay().text());
-        // The map list is out of the scene while exploring (HUD step 1); the slim bar takes focus.
-        view.lookup("#world-walk-mode").requestFocus();
+        // The map list is out of the scene while exploring (HUD step 1), and the walk toggle is an
+        // icon now (step 2); the icon row's More toggle takes focus.
+        view.lookup("#world-hud-more").requestFocus();
         require(!viewport.isFocused() && overlay().text().contains("held      none"),
                 "Focus loss clears the held keys on the Input page:\n" + overlay().text());
         viewport.requestFocus();

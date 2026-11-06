@@ -127,8 +127,8 @@ public final class WorldMinimapInputUiTest {
     }
 
     private static void clickButton(ButtonBase button) {
-        // Focus elsewhere first; the map list is out of the scene while exploring (HUD step 1).
-        view.lookup("#world-walk-mode").requestFocus();
+        // Focus elsewhere first: the icon row's More toggle (HUD steps 1 and 2).
+        view.lookup("#world-hud-more").requestFocus();
         mouse(button, MouseEvent.MOUSE_PRESSED, 10, 10);
         mouse(button, MouseEvent.MOUSE_RELEASED, 10, 10);
     }
@@ -232,6 +232,14 @@ public final class WorldMinimapInputUiTest {
             require(minimap.isVisible(), "H shows it again");
             viewport.requestFocus();
             input().clear();
+            // The tracking chip in the status icon row opens the same popup (HUD step 2).
+            ((ButtonBase) view.lookup("#world-icon-tracking")).fire();
+        });
+        await(() -> view.minimap().tracking().showing());
+        fx(() -> {
+            ((ButtonBase) view.lookup("#world-icon-tracking")).fire();
+            require(!view.minimap().tracking().showing(), "The tracking chip closes it again");
+            view.lookup("#world-viewport").requestFocus();
         });
     }
 
