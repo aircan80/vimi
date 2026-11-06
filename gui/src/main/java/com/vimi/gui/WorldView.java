@@ -960,6 +960,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         hud.inspectCard(inspectCard);
         inspectCard.refocus(hud::refocus);
         inspectCard.visibleProperty().addListener((o, was, now) -> anchorToasts());
+        // The toasts keep clear of the status icon row while it shows.
+        icons.node().heightProperty().addListener((o, was, now) -> anchorToasts());
+        hud.hiddenProperty().addListener((o, was, now) -> anchorToasts());
         // The card follows the HUD's hidden state by listening (it shows and hides itself): hiding
         // the HUD hides it and keeps it open, showing the HUD shows it again.
         hud.hiddenProperty().addListener((o, was, now) -> inspectCard.hudHidden(now));
@@ -3792,7 +3795,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 : Math.max(0, content.getHeight() - center.getBoundsInParent().getMaxY());
         // While the inspect card is open the toasts keep clear of its bottom-left column.
         double left = inspectCard.isVisible() ? WorldInspectCard.WIDTH + 24 : 12;
-        StackPane.setMargin(toasts, new Insets(12, 12, below + 24, left));
+        // And they sit above the status icon row, which spans the bottom-left of the view, so a
+        // wide toast in a narrow window never covers the icons (the row's 10 px margin, a gap).
+        var row = icons.node();
+        double iconRow = row.isVisible() && !hud.hidden() ? row.getHeight() + 10 + 8 : 0;
+        StackPane.setMargin(toasts, new Insets(12, 12, below + Math.max(24, iconRow), left));
     }
 
     /** Toasts live on the content layer, or on the viewport while it is full screen. */
