@@ -3,6 +3,7 @@ package com.vibeminer.rendering.bgfx;
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.Platform;
 import org.lwjgl.system.windows.MSG;
@@ -12,26 +13,33 @@ import org.lwjgl.system.windows.WNDCLASSEX;
 import org.lwjgl.system.windows.WindowProc;
 
 /**
- * #381 spike (Windows only, opt-in): the World helper's child window inside the application window,
+ * #381 (Windows only, opt-in): the World helper's child window inside the application window,
  * created on its own thread that only pumps messages. Cross-process parenting attaches the two
  * processes' input queues, so the render loop never owns a window and cannot stall the GUI. The
- * child is disabled (never takes focus or input) and starts the size of the parent's client area;
- * the GUI then places it over the viewport. The render loop reads the client size each frame.
+ * child is disabled (never takes focus or input) and starts the size of the parent; the GUI then
+ * places it over the viewport. The render loop reads the size each frame: a minimised, hidden or
+ * destroyed window reports no area, and the loop then neither draws nor resizes.
  */
-final class WorldChildWindow implements AutoCloseable {
+final class WorldChildWindow implements WorldWindowPresentation.Surface {
     /** The class name the GUI looks the child up by (WorldNativePresenter.CHILD_CLASS). */
     static final String CLASS_NAME = "VimiWorldPresent";
 
     /** Private message: destroy the window on its own thread and end the message loop. */
     private static final int CLOSE = User32.WM_USER + 1;
 
-    private final long hwnd;
+    private final long hwnd, parent;
     private final Thread thread;
-    private WindowProc proc;
+    private final WindowProc proc;
+    private final AtomicBoolean destroyed;
+    private boolean closed;
 
-    private WorldChildWindow(long hwnd, Thread thread) {
+    private WorldChildWindow(
+            long hwnd, long parent, Thread thread, WindowProc proc, AtomicBoolean destroyed) {
         this.hwnd = hwnd;
+        this.parent = parent;
         this.thread = thread;
+        this.proc = proc;
+        this.destroyed = destroyed;
     }
 
     static WorldChildWindow create(long parent) throws IOException {
@@ -39,8 +47,21 @@ final class WorldChildWindow implements AutoCloseable {
             throw new IOException("Native World presentation needs a Windows parent window");
         }
         var created = new CompletableFuture<Long>();
-        var holder = new WindowProc[1];
-        var closing = new boolean[1];
+        var destroyed = new AtomicBoolean();
+        // The window procedure lives as long as the window; it is freed after the thread ends.
+        var proc =
+                WindowProc.create(
+                        (window, message, w, l) -> {
+                            if (message == CLOSE) {
+                                User32.DestroyWindow(null, window);
+                                return 0;
+                            }
+                            if (message == User32.WM_NCDESTROY) {
+                                // Ours, or the parent's destruction taking its children along.
+                                destroyed.set(true);
+                            }
+                            return User32.DefWindowProc(window, message, w, l);
+                        });
         var thread =
                 Thread.ofPlatform()
                         .daemon()
@@ -48,22 +69,11 @@ final class WorldChildWindow implements AutoCloseable {
                         .start(
                                 () -> {
                                     try (var stack = MemoryStack.stackPush()) {
-                                        holder[0] =
-                                                WindowProc.create(
-                                                        (window, message, w, l) -> {
-                                                            if (message == CLOSE) {
-                                                                User32.DestroyWindow(null, window);
-                                                                closing[0] = true;
-                                                                return 0;
-                                                            }
-                                                            return User32.DefWindowProc(
-                                                                    window, message, w, l);
-                                                        });
                                         var cls =
                                                 WNDCLASSEX
                                                         .calloc(stack)
                                                         .cbSize(WNDCLASSEX.SIZEOF)
-                                                        .lpfnWndProc(holder[0])
+                                                        .lpfnWndProc(proc)
                                                         .lpszClassName(stack.UTF16(CLASS_NAME));
                                         User32.RegisterClassEx(null, cls);
                                         var area = RECT.calloc(stack);
@@ -94,7 +104,7 @@ final class WorldChildWindow implements AutoCloseable {
                                         }
                                         created.complete(window);
                                         var msg = MSG.calloc(stack);
-                                        while (!closing[0]
+                                        while (!destroyed.get()
                                                 && User32.GetMessage(null, msg, 0, 0, 0)) {
                                             User32.TranslateMessage(msg);
                                             User32.DispatchMessage(msg);
@@ -104,41 +114,67 @@ final class WorldChildWindow implements AutoCloseable {
                                     }
                                 });
         try {
-            var child = new WorldChildWindow(created.get(10, TimeUnit.SECONDS), thread);
-            child.proc = holder[0];
-            return child;
+            return new WorldChildWindow(
+                    created.get(10, TimeUnit.SECONDS), parent, thread, proc, destroyed);
         } catch (Exception failure) {
+            // No window to own the procedure: end the thread if it is still creating, then free.
+            thread.interrupt();
+            try {
+                thread.join(1000);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            if (!thread.isAlive()) {
+                proc.free();
+            }
             throw new IOException("Child window creation failed", failure);
         }
     }
 
-    long hwnd() {
+    @Override
+    public long hwnd() {
         return hwnd;
     }
 
-    /** The client size in physical pixels, {width, height}, at least 1 x 1. */
-    int[] clientSize() {
+    /**
+     * The window's size in physical pixels, {width, height}; {0, 0} when it has no area: minimised
+     * (with its parent), hidden, or destroyed. The child has no frame, so its window rectangle is
+     * its client area.
+     */
+    @Override
+    public int[] clientSize() {
+        if (destroyed.get()
+                || User32.IsIconic(parent)
+                || User32.IsIconic(hwnd)
+                || !User32.IsWindowVisible(hwnd)) {
+            return new int[] {0, 0};
+        }
         try (var stack = MemoryStack.stackPush()) {
             var area = RECT.calloc(stack);
-            // The child has no frame, so its window rectangle is its client area.
             if (!User32.GetWindowRect(null, hwnd, area)) {
-                return new int[] {1, 1};
+                return new int[] {0, 0};
             }
             return new int[] {
-                Math.max(1, area.right() - area.left()), Math.max(1, area.bottom() - area.top())
+                Math.max(0, area.right() - area.left()), Math.max(0, area.bottom() - area.top())
             };
         }
     }
 
     @Override
     public void close() {
-        User32.PostMessage(null, hwnd, CLOSE, 0, 0);
+        if (closed) {
+            return;
+        }
+        closed = true;
+        if (!destroyed.get()) {
+            User32.PostMessage(null, hwnd, CLOSE, 0, 0);
+        }
         try {
             thread.join(1000);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
         }
-        if (proc != null && !thread.isAlive()) {
+        if (!thread.isAlive()) {
             proc.free();
         }
     }

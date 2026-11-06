@@ -129,24 +129,27 @@ final class WorldStreamMain {
             }
             try (var frames =
                     WorldFrameFileV2.open(options.frames(), session.nonce(), session.scope())) {
-                // #381 spike: a present parent selects native presentation into a child window.
-                var window =
+                // #381: a present parent selects native presentation into a child window. The
+                // owner closes it; this closes it too if anything fails first (close is
+                // idempotent).
+                try (var window =
                         options.presentParent() == 0
                                 ? null
                                 : new WorldWindowPresentation(
-                                        WorldChildWindow.create(options.presentParent()));
-                boolean success =
-                        WorldStreamSession.run(
-                                session,
-                                options.directory(),
-                                System.in,
-                                new FileOutputStream(FileDescriptor.out),
-                                frames,
-                                options.backend(),
-                                options.parent(),
-                                () -> Runtime.getRuntime().halt(2),
-                                window);
-                return success ? 0 : 1;
+                                        WorldChildWindow.create(options.presentParent()))) {
+                    boolean success =
+                            WorldStreamSession.run(
+                                    session,
+                                    options.directory(),
+                                    System.in,
+                                    new FileOutputStream(FileDescriptor.out),
+                                    frames,
+                                    options.backend(),
+                                    options.parent(),
+                                    () -> Runtime.getRuntime().halt(2),
+                                    window);
+                    return success ? 0 : 1;
+                }
             }
         } catch (Exception | LinkageError failure) {
             String message =

@@ -4,7 +4,6 @@ import static org.lwjgl.bgfx.BGFX.BGFX_CLEAR_COLOR;
 import static org.lwjgl.bgfx.BGFX.BGFX_CLEAR_DEPTH;
 import static org.lwjgl.bgfx.BGFX.BGFX_RESET_VSYNC;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_COUNT;
-import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_D24S8;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_D32F;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_RT;
 import static org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid;
@@ -81,77 +80,108 @@ final class WorldWindowPresentation implements AutoCloseable {
         return interval >= 0 && interval < UNPACED_NANOS ? IDLE_FRAME_NANOS - interval : 0;
     }
 
+    /** Idle after a present: a whole frame while the window has no area, else as unpaced. */
+    static long idleNanos(long interval, boolean hasArea) {
+        return hasArea ? unpacedPark(interval) : IDLE_FRAME_NANOS;
+    }
+
+    /** What a reported window size means for the swap chain. */
+    enum SizeChange {
+        /** Same size: draw. */
+        NONE,
+        /** New size: reset the backbuffer, then draw. */
+        RESIZE,
+        /** No area (minimised, hidden, destroyed): neither draw nor reset. */
+        EMPTY
+    }
+
+    static SizeChange sizeChange(int width, int height, int[] reported) {
+        if (reported[0] < 1 || reported[1] < 1) {
+            return SizeChange.EMPTY;
+        }
+        return reported[0] == width && reported[1] == height ? SizeChange.NONE : SizeChange.RESIZE;
+    }
+
+    /** The window the helper presents into; {@link WorldChildWindow}, or a fake in tests. */
+    interface Surface extends AutoCloseable {
+        long hwnd();
+
+        /** {width, height} in physical pixels; {0, 0} when the window has no area. */
+        int[] clientSize();
+
+        @Override
+        void close();
+    }
+
     private long park;
+    private boolean hasArea = true, closed;
     private static final short BACKBUFFER = (short) 0xffff;
 
-    private final WorldChildWindow window;
+    private final Surface window;
     private final Path probe;
     private final List<Long> intervals = new ArrayList<>();
     private final AtomicReference<int[]> shot = new AtomicReference<>();
     private BGFXCallbackInterface callbacks;
     private int width, height, draws;
-    // Reversed-Z wants float depth; D24S8 is the fallback when the device lacks a D32F target.
-    private int depthFormat = BGFX_TEXTURE_FORMAT_D32F;
     private long lastPresent;
     private boolean shotRequested;
     private int[] shotResult;
 
-    WorldWindowPresentation(WorldChildWindow window) {
+    WorldWindowPresentation(Surface window) {
         this.window = Objects.requireNonNull(window);
         String path = System.getProperty(PROBE_PROPERTY);
         probe = path == null || path.isBlank() ? null : Path.of(path);
     }
 
-    /** bgfx on the child window: its size, vsync, one frame of latency, float depth. */
+    /**
+     * bgfx on the child window: its size, vsync, one frame of latency, D32F depth (the terrain
+     * renderer requires a D32F target, so the backbuffer matches it; no fallback).
+     */
     void configure(BGFXInit init) {
         int[] size = window.clientSize();
-        width = size[0];
-        height = size[1];
+        width = Math.max(1, size[0]);
+        height = Math.max(1, size[1]);
         init.platformData().nwh(window.hwnd());
         init.resolution()
                 .width(width)
                 .height(height)
                 .reset(BGFX_RESET_VSYNC)
                 .maxFrameLatency((byte) 1)
-                .formatDepthStencil(depthFormat);
+                .formatDepthStencil(BGFX_TEXTURE_FORMAT_D32F);
         if (probe != null) {
-            callbacks = probeCallbacks(shot);
+            if (callbacks == null) {
+                callbacks = probeCallbacks(shot);
+            }
             init.callback(callbacks);
         }
     }
 
-    /** After {@code bgfx_init}: whether the device can use the requested depth as a target. */
-    boolean depthSupported() {
-        return bgfx_is_texture_valid(0, false, 1, depthFormat, BGFX_TEXTURE_RT);
+    /** After {@code bgfx_init}: whether the device has the D32F depth target this path needs. */
+    static boolean depthSupported() {
+        return bgfx_is_texture_valid(0, false, 1, BGFX_TEXTURE_FORMAT_D32F, BGFX_TEXTURE_RT);
     }
 
-    /** Switches to the fallback depth format; false when already on it (nothing left to try). */
-    boolean fallBackDepth() {
-        int next = fallback(depthFormat);
-        if (next == depthFormat) {
-            return false;
-        }
-        depthFormat = next;
-        return true;
-    }
-
-    int depthFormat() {
-        return depthFormat;
-    }
-
-    /** D32F falls back to D24S8; D24S8 has no further fallback. */
-    static int fallback(int depth) {
-        return depth == BGFX_TEXTURE_FORMAT_D32F ? BGFX_TEXTURE_FORMAT_D24S8 : depth;
-    }
-
-    /** Follows the child's size (the GUI places it); returns {width, height} for this frame. */
+    /**
+     * Follows the child's size (the GUI places it). Returns {width, height} to draw at, or null
+     * while the window has no area: then nothing is drawn and the swap chain is not resized.
+     */
     int[] frameSize() {
         int[] size = window.clientSize();
-        if (size[0] != width || size[1] != height) {
-            width = size[0];
-            height = size[1];
-            bgfx_reset(width, height, BGFX_RESET_VSYNC, BGFX_TEXTURE_FORMAT_COUNT);
+        switch (sizeChange(width, height, size)) {
+            case EMPTY -> {
+                hasArea = false;
+                return null;
+            }
+            case RESIZE -> {
+                width = size[0];
+                height = size[1];
+                // TODO(#389): OR the World reset flags (anisotropic filtering, MSAA) in here
+                // once they are on main, so a resize keeps them.
+                bgfx_reset(width, height, BGFX_RESET_VSYNC, BGFX_TEXTURE_FORMAT_COUNT);
+            }
+            case NONE -> {}
         }
+        hasArea = true;
         return new int[] {width, height};
     }
 
@@ -175,7 +205,7 @@ final class WorldWindowPresentation implements AutoCloseable {
 
     /** Called after each {@code bgfx_frame} (which waited for the display). */
     void presented(long now) {
-        park = lastPresent == 0 ? 0 : unpacedPark(now - lastPresent);
+        park = idleNanos(lastPresent == 0 ? Long.MAX_VALUE : now - lastPresent, hasArea);
         if (probe != null && lastPresent != 0 && draws > 0) {
             intervals.add(now - lastPresent);
         }
@@ -193,6 +223,10 @@ final class WorldWindowPresentation implements AutoCloseable {
 
     @Override
     public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
         try {
             if (probe != null) {
                 writeProbe();
@@ -273,7 +307,7 @@ final class WorldWindowPresentation implements AutoCloseable {
                         pct(sorted, 1),
                         sorted.stream().filter(interval -> interval < 5_000_000).count(),
                         draws,
-                        depthFormat == BGFX_TEXTURE_FORMAT_D32F ? "D32F" : "D24S8"));
+                        "D32F"));
     }
 
     private static double pct(List<Long> sorted, double q) {

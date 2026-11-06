@@ -127,17 +127,11 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 }
                 BGFXPlatform.bgfx_render_frame(0);
                 boolean started = bgfx_init(init);
-                if (window != null) {
-                    // #381 spike: float depth when the device has it, else D24S8.
-                    if (started && !window.depthSupported()) {
-                        bgfx_shutdown();
-                        started = false;
-                    }
-                    if (!started && window.fallBackDepth()) {
-                        window.configure(init);
-                        BGFXPlatform.bgfx_render_frame(0);
-                        started = bgfx_init(init);
-                    }
+                if (started && window != null && !WorldWindowPresentation.depthSupported()) {
+                    // #381: the terrain renderer needs a D32F target; say so plainly.
+                    bgfx_shutdown();
+                    throw new IOException(
+                            "Native World presentation needs a D32F depth target on this GPU");
                 }
                 if (!started) {
                     throw new IOException("Headless World backend unavailable");
@@ -332,6 +326,9 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             return false;
         }
         int[] size = window.frameSize();
+        if (size == null) {
+            return false; // No area (minimised, hidden): nothing to draw into.
+        }
         renderer.drawWindow(command.camera(), cameraRevision, policy, size[0], size[1]);
         window.drew();
         renderedThisFrame = true;

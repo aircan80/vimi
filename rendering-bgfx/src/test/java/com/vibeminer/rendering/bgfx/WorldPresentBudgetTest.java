@@ -63,15 +63,85 @@ class WorldPresentBudgetTest {
         assertThrows(IllegalArgumentException.class, () -> budget.stepped(-1));
     }
 
+    /** A window size source the test controls; never touches a real window. */
+    static final class FakeSurface implements WorldWindowPresentation.Surface {
+        int[] size = {800, 600};
+        int closes;
+
+        @Override
+        public long hwnd() {
+            return 42;
+        }
+
+        @Override
+        public int[] clientSize() {
+            return size.clone();
+        }
+
+        @Override
+        public void close() {
+            closes++;
+        }
+    }
+
     @Test
-    void windowDepthPrefersFloatThenFallsBackOnce() {
+    void sizeChangesClassifyEmptyAsNoDrawAndNoReset() {
         assertEquals(
-                org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_D24S8,
-                WorldWindowPresentation.fallback(org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_D32F));
+                WorldWindowPresentation.SizeChange.NONE,
+                WorldWindowPresentation.sizeChange(800, 600, new int[] {800, 600}));
         assertEquals(
-                org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_D24S8,
-                WorldWindowPresentation.fallback(org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_D24S8),
-                "D24S8 is the last resort");
+                WorldWindowPresentation.SizeChange.RESIZE,
+                WorldWindowPresentation.sizeChange(800, 600, new int[] {801, 600}));
+        assertEquals(
+                WorldWindowPresentation.SizeChange.EMPTY,
+                WorldWindowPresentation.sizeChange(800, 600, new int[] {0, 0}));
+        assertEquals(
+                WorldWindowPresentation.SizeChange.EMPTY,
+                WorldWindowPresentation.sizeChange(800, 600, new int[] {800, 0}));
+    }
+
+    @Test
+    void aMinimisedWindowNeitherDrawsNorSpins() {
+        var surface = new FakeSurface();
+        var presentation = new WorldWindowPresentation(surface);
+        try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            presentation.configure(org.lwjgl.bgfx.BGFXInit.calloc(stack));
+        }
+        org.junit.jupiter.api.Assertions.assertArrayEquals(
+                new int[] {800, 600}, presentation.frameSize(), "Unchanged size: draw, no reset");
+        long t = 1_000_000_000L;
+        presentation.presented(t);
+        presentation.presented(t + 16_600_000);
+        assertEquals(0, presentation.park(), "Vsync-paced presents never park");
+        surface.size = new int[] {0, 0};
+        assertEquals(null, presentation.frameSize(), "Minimised: nothing to draw, no reset");
+        presentation.presented(t + 16_700_000);
+        assertEquals(
+                WorldWindowPresentation.IDLE_FRAME_NANOS,
+                presentation.park(),
+                "No area: idle a whole frame per loop");
+        surface.size = new int[] {800, 600};
+        presentation.frameSize();
+        presentation.presented(t + 16_800_000);
+        assertEquals(
+                WorldWindowPresentation.IDLE_FRAME_NANOS - 100_000,
+                presentation.park(),
+                "Occluded (present at once): idle to one frame");
+        presentation.close();
+        presentation.close();
+        assertEquals(1, surface.closes, "Close is idempotent");
+    }
+
+    @Test
+    void idleIsAWholeFrameWithoutAreaElseOnlyWhenUnpaced() {
+        assertEquals(
+                WorldWindowPresentation.IDLE_FRAME_NANOS,
+                WorldWindowPresentation.idleNanos(16_000_000, false));
+        assertEquals(0, WorldWindowPresentation.idleNanos(16_000_000, true));
+        assertEquals(
+                WorldWindowPresentation.IDLE_FRAME_NANOS - 1_000_000,
+                WorldWindowPresentation.idleNanos(1_000_000, true));
+        assertEquals(0, WorldWindowPresentation.idleNanos(Long.MAX_VALUE, true), "First present");
     }
 
     @Test
