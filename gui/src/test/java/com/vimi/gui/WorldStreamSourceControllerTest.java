@@ -53,6 +53,9 @@ public final class WorldStreamSourceControllerTest {
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
         sameResidentCameraFrameDoesNotRetryMaterialPool();
         transportFrameSignalQueuesPresentationWithoutAnyPulse();
+        steadyCameraFramesReuseAFewPixelArrays();
+        everyControllerDropPathReleasesItsFrame(false);
+        everyControllerDropPathReleasesItsFrame(true);
         queuedGpuOwnerLateCloseIsPartOfControllerDrain();
         closeDuringActualInitialWdtQualificationIsCleanAndWaitsSourceDrain();
         terrainNeverWaitsForBlockedObjectPreparation();
@@ -578,9 +581,13 @@ public final class WorldStreamSourceControllerTest {
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
             fixture.controller.neighborhood(fixture.tiles);
             fixture.until(entered::isDone);
+            var drops=new ConcurrentLinkedQueue<java.util.Map.Entry<String,WorldStreamTransport.Frame>>();
+            fixture.controller.dropSeam=(path,frame)->drops.add(java.util.Map.entry(path,frame));
             Files.write(fixture.directory.resolve("authored-sky"),new byte[0]);
             fixture.camera(2);
             fixture.until(()->fixture.controller.snapshot().detail().equals("Loading terrain in viewing direction"));
+            check(drops.stream().anyMatch(d->d.getKey().equals("sky") && released(d.getValue())),
+                    "A suppressed all-sky frame releases its pixels");
             check(fixture.controller.takePresentation().isEmpty(),"Known all-sky pending frame cannot overwrite prior useful pixels");
             var initial=fixture.controller.snapshot().seed().camera();
             fixture.controller.camera(new WorldStreamTransport.Camera(3,1,80,50,
@@ -1192,6 +1199,108 @@ public final class WorldStreamSourceControllerTest {
             try {
                 check(frame.cameraRevision()==1000,"The signaled frame is the new camera's");
             } finally { fixture.controller.discard(frame); }
+        } finally { fixture.close(); }
+    }
+
+    private static boolean released(WorldStreamTransport.Frame frame) {
+        try { frame.pixels(); return false; }
+        catch (IllegalStateException expected) { return true; }
+    }
+
+    private static void awaitDrop(Fixture fixture,
+            ConcurrentLinkedQueue<java.util.Map.Entry<String,WorldStreamTransport.Frame>> drops,
+            String path) throws Exception {
+        long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(10);
+        while(drops.stream().noneMatch(d->d.getKey().equals(path)) && System.nanoTime()<until)
+            Thread.sleep(2);
+        var found=drops.stream().filter(d->d.getKey().equals(path)).findFirst();
+        check(found.isPresent(),"Drop path "+path+" reached; seen "+drops.stream().map(java.util.Map.Entry::getKey).toList());
+        check(released(found.get().getValue()),"Drop path "+path+" released its pixels");
+    }
+
+    private static void awaitQueued(Fixture fixture) throws Exception {
+        var queued=WorldStreamSourceController.class.getDeclaredField("queued");queued.setAccessible(true);
+        long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(10);
+        while(queued.get(fixture.controller)==null && System.nanoTime()<until) Thread.sleep(1);
+        check(queued.get(fixture.controller)!=null,"A frame is queued and not taken");
+    }
+
+    /** Each path that drops a frame unpresented releases it: discard, content, retire or close. */
+    private static void everyControllerDropPathReleasesItsFrame(boolean retire) throws Exception {
+        var fixture=new Fixture(new AuthoredTerrainSource.Files(),1);
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            var drops=new ConcurrentLinkedQueue<java.util.Map.Entry<String,WorldStreamTransport.Frame>>();
+            fixture.controller.dropSeam=(path,frame)->drops.add(java.util.Map.entry(path,frame));
+            fixture.camera(2);
+            var shown=fixture.nextFrame();
+            fixture.controller.discard(shown);
+            awaitDrop(fixture,drops,"discard");
+            var seed=fixture.controller.snapshot().seed().camera();
+            if(!retire) {
+                // Content mismatch: the worker's receipt no longer matches the offered frame.
+                var worker=WorldStreamSourceController.class.getDeclaredField("worker");worker.setAccessible(true);
+                var actor=(java.util.concurrent.ExecutorService)worker.get(fixture.controller);
+                var receipt=WorldStreamSourceController.class.getDeclaredField("currentReceipt");receipt.setAccessible(true);
+                var constructor=WorldStreamTransport.CommitReceipt.class.getDeclaredConstructor(long.class,long.class,List.class);
+                constructor.setAccessible(true);
+                var fake=constructor.newInstance(Long.MAX_VALUE,1L,List.of());
+                var real=new Object[1];
+                actor.submit(() -> { try { real[0]=receipt.get(fixture.controller); receipt.set(fixture.controller,fake); }
+                        catch(IllegalAccessException e) { throw new AssertionError(e); } }).get(3,TimeUnit.SECONDS);
+                fixture.gpu.session.camera(new WorldStreamTransport.Camera(1000,1,80,50,
+                        new TerrainCamera(seed.x()+7,seed.y(),seed.z(),seed.yaw(),seed.pitch())));
+                try { awaitDrop(fixture,drops,"content"); }
+                finally {
+                    actor.submit(() -> { try { receipt.set(fixture.controller,real[0]); }
+                            catch(IllegalAccessException e) { throw new AssertionError(e); } }).get(3,TimeUnit.SECONDS);
+                }
+                // Close with a queued, untaken frame.
+                fixture.camera(1001);
+                awaitQueued(fixture);
+                fixture.controller.closeAsync();
+                awaitDrop(fixture,drops,"close");
+            } else {
+                // Retirement after a session failure, with a queued, untaken frame.
+                fixture.camera(2001);
+                awaitQueued(fixture);
+                var owner=WorldStreamTransport.Session.class.getDeclaredField("owner");owner.setAccessible(true);
+                var handle=owner.get(fixture.gpu.session);
+                var close=handle.getClass().getDeclaredMethod("closeAsync");close.setAccessible(true);
+                close.invoke(handle);
+                awaitDrop(fixture,drops,"retire");
+                // The authored session failure is the expected end of this controller.
+                var drained=fixture.controller.closeAsync();
+                long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(8);
+                while(!drained.isDone() && System.nanoTime()<until) { fixture.controller.pulse(); Thread.sleep(2); }
+                check(drained.isCompletedExceptionally(),"Failed session drains exceptionally");
+                fixture.controller=null;
+            }
+        } finally { fixture.close(); }
+    }
+
+    private static void steadyCameraFramesReuseAFewPixelArrays() throws Exception {
+        var fixture=new Fixture(new AuthoredTerrainSource.Files(),1);
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            var sequence=WorldStreamSourceController.class.getDeclaredField("acceptedSequence");sequence.setAccessible(true);
+            for(long revision=2;revision<=40;revision++) {
+                long before=sequence.getLong(fixture.controller);
+                fixture.camera(revision);
+                fixture.untilPresented(() -> {try{return sequence.getLong(fixture.controller)>before;}
+                        catch(IllegalAccessException e){throw new AssertionError(e);}});
+            }
+            long allocations=com.vibeminer.rendering.bgfx.AuthoredFramePool.allocations(fixture.gpu.session);
+            // At most three frames are live at once: the read, the transport's latest and the
+            // presentation. Every presented, discarded or superseded frame returns its array.
+            check(allocations>=1 && allocations<=3,
+                    "40 presented camera frames reuse pooled pixel arrays; allocations="+allocations);
         } finally { fixture.close(); }
     }
 
