@@ -36,8 +36,9 @@ import java.util.function.Supplier;
  *
  * <p>Only a spawn with a recorded height whose NPC has a {@link CreatureModelPolicy} QUALIFIED
  * display is drawn. The display's static preview must need no character appearance, and each
- * geoset group draws one variant decided from recorded facts ({@link #visibleGeosets}: the
- * display's own geoset rows, otherwise the group's x00 section); only its opaque and alpha-keyed
+ * geoset group draws one variant decided from recorded facts ({@link #visibleGeosets}: when the
+ * model records geoset data, the display's own geoset rows choose and unchosen groups 1 to 8 are
+ * hidden; otherwise every group draws its x00 section); only its opaque and alpha-keyed
  * (cutout) diffuse surfaces are drawn, with
  * textures reduced to at most {@value #IMAGE_SIDE} pixels a side. Facing is not recorded by the source, so every
  * model faces native north. Each spawn belongs to exactly one tile (the filename-index rule), and
@@ -574,8 +575,8 @@ final class WorldTileCreatures implements AutoCloseable {
     /**
      * The tile-independent BASIC conversion of one display's static preview. Refuses character
      * appearance, models without an opaque or alpha-keyed diffuse surface, and every geoset choice
-     * it cannot make from recorded facts ({@link #visibleGeosets}). Each geoset group draws the
-     * display's own choice where it records one, otherwise its x00 section; never a guessed variant.
+     * it cannot make from recorded facts ({@link #visibleGeosets}), including a model whose every
+     * section the display's rows hide. Never a guessed variant.
      */
     static Converted convert(DisplayModelTypes.Preview preview, Cancellation token) {
         if (preview == null || preview.appearance() == null || preview.reference() == null)
@@ -588,6 +589,9 @@ final class WorldTileCreatures implements AutoCloseable {
         var mesh = appearance.mesh();
         var visible = visibleGeosets(reference, mesh);
         if (visible.refusal() != null) return Converted.refused(Count.VISIBILITY_UNRESOLVED, visible.refusal());
+        // Nothing left to draw is a visibility outcome, not a material one.
+        if (mesh.parts().stream().noneMatch(part -> visible.ids().contains(part.id())))
+            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "every geoset is hidden by the display's rows");
         var surfaces = new HashMap<Integer, MeshAppearance.Surface>();
         for (var surface : appearance.surfaces()) surfaces.put(surface.sectionIndex(), surface);
         var cards = new HashSet<Integer>();
@@ -680,41 +684,55 @@ final class WorldTileCreatures implements AutoCloseable {
     record Geosets(Set<Integer> ids, String refusal) {}
 
     /**
-     * Which geoset sections draw (#361). Each group of sections (geoset ID / 100) shows one variant:
-     * the display's own choice when it records one (CreatureDisplayInfoGeosetData, as group =
-     * GeosetIndex + 1 and section = group * 100 + value), otherwise the group's x00 section. A
-     * choice is never guessed: an unreadable CreatureGeosetDataID, unknown or conflicting display
-     * rows, a chosen variant the model does not have, and a group without its x00 default all
-     * refuse. A non-zero CreatureGeosetDataID without rows for this display refuses too. The ID is
-     * recorded per model (CreatureModelData) while the rows are per display, so it does not prove
-     * that this display has rows: a sibling display of the same model may rely on the defaults.
-     * Which rule the client applies there (and whether it defaults creature groups to x00 or x01)
-     * is not settled; until it is, that case is refused rather than guessed.
+     * Which geoset sections draw (#361, #455). Sections are grouped by geoset ID / 100.
+     *
+     * <ul>
+     *   <li>When the model's CreatureGeosetDataID is above 0, the display's own rows
+     *       (CreatureDisplayInfoGeosetData: group = GeosetIndex + 1, section = group * 100 + value)
+     *       choose: each listed group draws its chosen section, and a group from 1 to 8 without a
+     *       row is hidden. Group 0 draws its x00 section (ID 0), and groups 9 and above without a
+     *       row keep the default below.
+     *   <li>When it is 0, display rows are ignored and every group draws its x00 section.
+     * </ul>
+     *
+     * The gating follows wow.export ({@code DBCreatures.js}: rows are used only when the model's ID
+     * is above 0, and then every geoset from 1 to 899 not listed is hidden). That is a viewer's
+     * behaviour, not confirmed client behaviour; the x00 default for an ID of 0 waits for real-data
+     * counts (#455). Nothing is guessed: an unreadable ID, unknown or conflicting rows when they
+     * apply, a chosen section the model does not have, and a default group without its x00 section
+     * all refuse.
      */
     static Geosets visibleGeosets(DisplayModelTypes.Reference reference, com.vibeminer.rendering.models.PreviewMesh mesh) {
         if (reference.creatureGeosetDataId() == null)
             return new Geosets(Set.of(), "creature geoset data could not be read");
+        // A negative ID is treated like 0: only a positive one says the display rows apply.
+        boolean rows = reference.creatureGeosetDataId() > 0;
         var chosen = reference.displayGeosets();
-        if (chosen == null) return new Geosets(Set.of(), "display geoset selections are unknown");
-        if (reference.creatureGeosetDataId() != 0 && chosen.isEmpty())
-            return new Geosets(Set.of(), "the model records geoset data but this display has no geoset rows");
+        if (rows && chosen == null) return new Geosets(Set.of(), "display geoset selections are unknown");
         var present = new java.util.TreeMap<Integer, java.util.TreeSet<Integer>>();
         for (var part : mesh.parts()) present.computeIfAbsent(part.id() / 100, g -> new java.util.TreeSet<>()).add(part.id());
         var ids = new HashSet<Integer>();
-        for (var choice : chosen.entrySet()) {
-            int group = choice.getKey(), value = choice.getValue();
-            if (value == DisplayModelTypes.Reference.CONFLICTING_GEOSET)
-                return new Geosets(Set.of(), "the display's geoset rows conflict for group " + group);
-            if (!present.containsKey(group)) continue; // the model has no such group: nothing to show
-            if (!present.get(group).contains(group * 100 + value))
-                return new Geosets(Set.of(), "geoset " + (group * 100 + value) + " chosen by the display is not in the model");
+        if (rows) {
+            for (var choice : chosen.entrySet()) {
+                int group = choice.getKey(), value = choice.getValue();
+                // Rows key groups GeosetIndex + 1, so never group 0; refuse to read one as such.
+                if (group < 1) continue;
+                if (value == DisplayModelTypes.Reference.CONFLICTING_GEOSET)
+                    return new Geosets(Set.of(), "the display's geoset rows conflict for group " + group);
+                if (!present.containsKey(group)) continue; // the model has no such group: nothing to show
+                if (!present.get(group).contains(group * 100 + value))
+                    return new Geosets(Set.of(), "geoset " + (group * 100 + value) + " chosen by the display is not in the model");
+                ids.add(group * 100 + value);
+            }
         }
         for (var group : present.entrySet()) {
-            Integer value = chosen.get(group.getKey());
-            int id = group.getKey() * 100 + (value == null ? 0 : value);
-            if (!group.getValue().contains(id))
-                return new Geosets(Set.of(), "geoset group " + group.getKey() + " has no default x00 section");
-            ids.add(id);
+            int g = group.getKey();
+            // With rows, a group a row chose draws only that section (added above), and groups
+            // 1 to 8 without a row are hidden.
+            if (rows && g >= 1 && (chosen.containsKey(g) || g <= 8)) continue;
+            if (!group.getValue().contains(g * 100))
+                return new Geosets(Set.of(), "geoset group " + g + " has no default x00 section");
+            ids.add(g * 100);
         }
         return new Geosets(Set.copyOf(ids), null);
     }

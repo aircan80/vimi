@@ -42,7 +42,7 @@ public final class WorldTileCreaturesTest {
         creaturesStandInTheirIdlePoseOrSayWhyNot();
         unreadableStandSequencesAreAskedAgainButUnsupportedOnesAreKept();
         cutoutReductionKeepsThinStrands();
-        displayGeosetRowsChooseEachGroupsVariant();
+        displayGeosetRowsApplyOnlyWhenTheModelRecordsGeosetData();
         appendDrawsOnlyQualifiedSpawnsOfTheTile();
         buildingsKeepTheirBudgetFirst();
         cachesPerRevisionAndRetriesFailures();
@@ -77,10 +77,8 @@ public final class WorldTileCreaturesTest {
                 == WorldTileCreatures.Count.CHARACTER_APPEARANCE, "Extended display info is refused");
         require(WorldTileCreatures.convert(preview(7, null, 0L, appearance(true)), Cancellation.NONE).refusal()
                 == WorldTileCreatures.Count.CHARACTER_APPEARANCE, "Unknown extended display info is refused");
-        require(WorldTileCreatures.convert(preview(7, 0L, 3L, appearance(true)), Cancellation.NONE).refusal()
-                == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED, "Geoset data is refused");
-        require(WorldTileCreatures.convert(preview(7, 0L, 3L, geosets()), Cancellation.NONE).refusal()
-                == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED, "Recorded geoset data is still refused");
+        require(WorldTileCreatures.convert(preview(7, 0L, 3L, null, geosets()), Cancellation.NONE).refusal()
+                == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED, "Recorded geoset data with unknown rows is refused");
         require(WorldTileCreatures.convert(preview(7, 0L, 0L, additiveOnly()), Cancellation.NONE).refusal()
                 == WorldTileCreatures.Count.NO_OPAQUE_SURFACE, "No opaque or alpha-keyed surface is refused");
         var hidden = WorldTileCreatures.convert(preview(7, 0L, 0L, hiddenGeosets()), Cancellation.NONE);
@@ -155,37 +153,82 @@ public final class WorldTileCreaturesTest {
         var unreadable = WorldTileCreatures.convert(preview(7, 0L, null, geosets()), Cancellation.NONE);
         require(unreadable.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
                 && unreadable.detail().contains("could not be read"), "An unreadable CreatureGeosetDataID is refused");
-        var unknown = WorldTileCreatures.convert(preview(7, 0L, 0L, null, geosets()), Cancellation.NONE);
+        var unknown = WorldTileCreatures.convert(preview(7, 0L, 5L, null, geosets()), Cancellation.NONE);
         require(unknown.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
-                && unknown.detail().contains("unknown"), "Unknown display geoset rows are refused");
+                && unknown.detail().contains("unknown"), "Unknown display geoset rows are refused when they apply");
     }
 
-    private static void displayGeosetRowsChooseEachGroupsVariant() {
-        // Parts 0, 100 and 101 (group 1 has x00 and x01); the display chooses value 1 for group 1
-        // (GeosetIndex 0): parts 0 and 101 draw, 100 is hidden.
-        var chosen = WorldTileCreatures.convert(preview(7, 0L, 0L, Map.of(1, 1), geosets()), Cancellation.NONE);
+    private static void displayGeosetRowsApplyOnlyWhenTheModelRecordsGeosetData() {
+        // geosets(): parts 0, 100 and 101 (group 1 has x00 and x01).
+        // ID > 0: the display's row chooses value 1 for group 1 (GeosetIndex 0): 0 and 101 draw.
+        var chosen = WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(1, 1), geosets()), Cancellation.NONE);
         require(chosen.model() != null && java.util.Arrays.equals(chosen.model().ranges(), new int[] {0, 3, 0, 3, 3, 0})
                 && chosen.model().omittedSurfaces() == 0, "The display's chosen variant replaces x00: " + chosen.detail());
-        var hidden = WorldTileCreatures.visibleGeosets(
-                preview(7, 0L, 0L, Map.of(1, 1), geosets()).reference(), geosets().mesh());
-        require(hidden.ids().equals(java.util.Set.of(0, 101)), "Visible sections: " + hidden.ids());
-        // A non-zero CreatureGeosetDataID only says the display has rows; with rows it is evaluated.
-        require(WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(1, 0), geosets()), Cancellation.NONE).model() != null,
-                "Recorded geoset data with display rows draws");
-        require(WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(), geosets()), Cancellation.NONE).detail()
-                .contains("has no geoset rows"), "Recorded geoset data without display rows is refused");
-        // A variant the model lacks, or conflicting rows, is refused rather than guessed.
-        require(WorldTileCreatures.convert(preview(7, 0L, 0L, Map.of(1, 7), geosets()), Cancellation.NONE).detail()
-                .contains("geoset 107 chosen by the display is not in the model"), "A missing chosen variant is refused");
-        require(WorldTileCreatures.convert(preview(7, 0L, 0L,
-                        Map.of(1, DisplayModelTypes.Reference.CONFLICTING_GEOSET), geosets()), Cancellation.NONE)
-                .detail().contains("conflict"), "Conflicting rows are refused");
-        // A row for a group the model does not have changes nothing.
-        require(WorldTileCreatures.visibleGeosets(preview(7, 0L, 0L, Map.of(4, 2), geosets()).reference(),
-                geosets().mesh()).ids().equals(java.util.Set.of(0, 100)), "Rows for absent groups are ignored");
-        // A group with only x01 is drawn when the display chooses it.
-        require(WorldTileCreatures.convert(preview(7, 0L, 0L, Map.of(1, 1), hiddenGeosets()), Cancellation.NONE)
-                .model() != null, "A chosen x01-only group draws");
+        require(visible(5L, Map.of(1, 1), geosets()).equals(java.util.Set.of(0, 101)), "Chosen: 0 and 101");
+        // ID > 0 without a row for group 1: the group is hidden, not drawn as x00; group 0 stays.
+        require(visible(5L, Map.of(), geosets()).equals(java.util.Set.of(0)), "A group 1-8 without a row is hidden");
+        require(WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(), geosets()), Cancellation.NONE).model() != null,
+                "A display without rows still draws group 0");
+        // ID > 0: a row for group 9 replaces its default; group 9 without a row keeps x00.
+        var high = mesh(0, 900, 901);
+        require(visible(5L, Map.of(9, 1), high).equals(java.util.Set.of(0, 901)), "A row for group 9 chooses 901");
+        require(visible(5L, Map.of(), high).equals(java.util.Set.of(0, 900)), "Group 9 without a row keeps x00");
+        // ID > 0: unknown rows, a missing chosen section or conflicting rows are refused.
+        require(refusal(5L, null, geosets()).contains("unknown"), "Unknown rows are refused");
+        require(refusal(5L, Map.of(1, 7), geosets()).contains("geoset 107 chosen by the display is not in the model"),
+                "A missing chosen section is refused");
+        require(refusal(5L, Map.of(1, DisplayModelTypes.Reference.CONFLICTING_GEOSET), geosets()).contains("conflict"),
+                "Conflicting rows are refused");
+        // ID > 0: a row for a group the model does not have changes nothing.
+        require(visible(5L, Map.of(4, 2, 1, 0), geosets()).equals(java.util.Set.of(0, 100)), "Rows for absent groups are ignored");
+        // ID == 0: display rows are ignored, every group draws x00 (unknown rows do not matter).
+        require(visible(0L, Map.of(1, 1), geosets()).equals(java.util.Set.of(0, 100)), "Rows are ignored when the ID is 0");
+        require(visible(0L, null, geosets()).equals(java.util.Set.of(0, 100)), "Unknown rows do not matter when the ID is 0");
+        require(refusal(0L, Map.of(1, 1), hiddenGeosets()).contains("no default x00"),
+                "With the ID 0 a group without x00 is still refused");
+        require(visible(0L, Map.of(1, DisplayModelTypes.Reference.CONFLICTING_GEOSET), geosets())
+                .equals(java.util.Set.of(0, 100)), "With the ID 0 even conflicting rows are ignored");
+        // ID > 0: group 8 is the last hidden group without a row (801 and 899); a row shows it.
+        var eight = mesh(0, 801, 899);
+        require(visible(5L, Map.of(), eight).equals(java.util.Set.of(0)), "Group 8 without a row is hidden");
+        require(visible(5L, Map.of(8, 99), eight).equals(java.util.Set.of(0, 899)), "A row for group 8 chooses 899");
+        // ID > 0: a group of 9 or more without a row keeps the x00 rule, so without x00 it refuses.
+        require(refusal(5L, Map.of(), mesh(0, 901)).contains("geoset group 9 has no default x00"),
+                "Group 9 without a row and without x00 is refused");
+        // ID > 0: when the rows hide every section there is nothing to draw: a visibility refusal.
+        var allHidden = WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(), hiddenGeosets()), Cancellation.NONE);
+        require(allHidden.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
+                && allHidden.detail().equals("every geoset is hidden by the display's rows"),
+                "All sections hidden is a visibility refusal, not a material one: " + allHidden.detail());
+    }
+
+    private static java.util.Set<Integer> visible(Long geosets, Map<Integer, Integer> rows, MeshAppearance appearance) {
+        var result = WorldTileCreatures.visibleGeosets(preview(7, 0L, geosets, rows, appearance).reference(),
+                appearance.mesh());
+        require(result.refusal() == null, "Unexpected refusal: " + result.refusal());
+        return result.ids();
+    }
+
+    private static String refusal(Long geosets, Map<Integer, Integer> rows, MeshAppearance appearance) {
+        var result = WorldTileCreatures.visibleGeosets(preview(7, 0L, geosets, rows, appearance).reference(),
+                appearance.mesh());
+        require(result.refusal() != null, "Expected a refusal, drew " + result.ids());
+        return result.refusal();
+    }
+
+    /** One opaque one-triangle part per geoset ID. */
+    private static MeshAppearance mesh(int... ids) {
+        var parts = new ArrayList<PreviewMesh.Part>();
+        var surfaces = new ArrayList<MeshAppearance.Surface>();
+        int[] indices = new int[ids.length * 3];
+        for (int i = 0; i < ids.length; i++) {
+            parts.add(new PreviewMesh.Part(ids[i], i * 3, 3));
+            surfaces.add(new MeshAppearance.Surface(i, 0, true, true, false));
+            indices[i * 3 + 1] = 1;
+            indices[i * 3 + 2] = 2;
+        }
+        return new MeshAppearance(new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, indices, parts),
+                new float[6], surfaces, List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})));
     }
 
     private static void cutoutReductionKeepsThinStrands() {
