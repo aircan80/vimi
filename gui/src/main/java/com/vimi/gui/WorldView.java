@@ -958,9 +958,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         minimap.followHud(hud.hiddenProperty());
         // Above the status icon row in the HUD's bottom-left stack; the map panel ends above it.
         hud.inspectCard(inspectCard);
-        inspectCard.refocus(() -> {
-            if (explorer) viewport.requestFocus();
-        });
+        inspectCard.refocus(hud::refocus);
         inspectCard.visibleProperty().addListener((o, was, now) -> anchorToasts());
         // The card follows the HUD's hidden state by listening (it shows and hides itself): hiding
         // the HUD hides it and keeps it open, showing the HUD shows it again.
