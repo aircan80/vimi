@@ -138,12 +138,10 @@ class WorldHorizonTest {
         guarded.protectedId = WDL;
         var protectedHorizon = new WorldHorizon(byPath(guarded, new AtomicInteger()));
         try {
-            assertEquals(
-                    WorldHorizon.State.UNAVAILABLE,
-                    protectedHorizon
-                            .load(MAP, Cancellation.NONE)
-                            .get(10, TimeUnit.SECONDS)
-                            .state());
+            var encrypted = protectedHorizon.load(MAP, Cancellation.NONE).get(10, TimeUnit.SECONDS);
+            assertEquals(WorldHorizon.State.UNAVAILABLE, encrypted.state());
+            assertTrue(encrypted.reason().startsWith("WDL is encrypted"), encrypted.reason());
+            assertEquals(WDL, encrypted.fileId());
         } finally {
             protectedHorizon.closeAsync().get(10, TimeUnit.SECONDS);
         }
@@ -158,7 +156,9 @@ class WorldHorizonTest {
     void pathsAreLowerCasedAndClosedSourcesRefuse() throws Exception {
         assertEquals("world/maps/azeroth/azeroth.wdl", WorldHorizon.path("Azeroth"));
         assertEquals("world/maps/expansion01/expansion01.wdl", WorldHorizon.path("Expansion01"));
-        assertNull(WorldHorizon.path("x\\y"));
+        // The recorded directory is used as is, like ADT paths; only blank ones are refused.
+        assertEquals("world/maps/a b'c/a b'c.wdl", WorldHorizon.path("A B'c"));
+        assertNull(WorldHorizon.path(" "));
         var horizon = new WorldHorizon(null);
         assertEquals(
                 WorldHorizon.State.ABSENT,
@@ -167,5 +167,56 @@ class WorldHorizonTest {
         assertThrows(
                 java.util.concurrent.ExecutionException.class,
                 () -> horizon.load(MAP, Cancellation.NONE).get(10, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void aFullQueueAnswersUnavailableAndCanceledQueuedRequestsFreeTheirSlots() throws Exception {
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var started = new java.util.concurrent.CountDownLatch(1);
+        var files = new WorldTerrainTextureSourceTest.Files();
+        files.sources.put(WDL, wdl());
+        var resolving = byPath(files, new AtomicInteger());
+        // The first lookup blocks the single worker until released.
+        var blocking =
+                (BuildFiles)
+                        Proxy.newProxyInstance(
+                                BuildFiles.class.getClassLoader(),
+                                new Class<?>[] {BuildFiles.class},
+                                (proxy, method, args) -> {
+                                    if (method.getName().equals("statContent")
+                                            && started.getCount() == 1) {
+                                        started.countDown();
+                                        release.await(10, TimeUnit.SECONDS);
+                                    }
+                                    try {
+                                        return method.invoke(resolving, args);
+                                    } catch (InvocationTargetException failure) {
+                                        throw failure.getCause();
+                                    }
+                                });
+        var horizon = new WorldHorizon(blocking);
+        try {
+            var running = horizon.load(MAP, Cancellation.NONE);
+            assertTrue(started.await(10, TimeUnit.SECONDS));
+            var waitingToken = new Cancellation();
+            var waiting = horizon.load(MAP, waitingToken);
+            var second = horizon.load(MAP, Cancellation.NONE);
+            var full = horizon.load(MAP, Cancellation.NONE).get(10, TimeUnit.SECONDS);
+            assertEquals(WorldHorizon.State.UNAVAILABLE, full.state());
+            assertEquals("Horizon request queue is full", full.reason());
+            // Canceling a queued request frees its slot at once.
+            waitingToken.cancel();
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> waiting.get(10, TimeUnit.SECONDS));
+            var accepted = horizon.load(MAP, Cancellation.NONE);
+            release.countDown();
+            for (var future : java.util.List.of(running, second, accepted)) {
+                assertEquals(WorldHorizon.State.READY, future.get(10, TimeUnit.SECONDS).state());
+            }
+        } finally {
+            release.countDown();
+            horizon.closeAsync().get(10, TimeUnit.SECONDS);
+        }
     }
 }

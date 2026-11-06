@@ -67,12 +67,12 @@ public final class WorldHorizon {
         this.files = files;
     }
 
-    /** The recorded WDL path for a map directory, or null when the directory is unusable. */
+    /**
+     * The recorded WDL path for a map directory, or null when there is none. Like the ADT paths in
+     * {@link WorldFileBytes}, the recorded directory is used as is, only case-folded.
+     */
     static String path(String directory) {
-        if (directory == null
-                || directory.isBlank()
-                || directory.length() > 64
-                || !directory.matches("[A-Za-z0-9_' -]+")) {
+        if (directory == null || directory.isBlank()) {
             return null;
         }
         String name = directory.toLowerCase(Locale.ROOT);
@@ -87,46 +87,70 @@ public final class WorldHorizon {
                     new IllegalStateException("World workspace closed"));
         }
         var result = new CompletableFuture<Result>();
+        var registration = new Cancellation.Registration[1];
+        Runnable task =
+                () -> {
+                    if (registration[0] != null) {
+                        registration[0].close();
+                    }
+                    run(map, token, result);
+                };
         try {
-            worker.execute(() -> run(map, token, result));
+            worker.execute(task);
         } catch (java.util.concurrent.RejectedExecutionException full) {
-            result.completeExceptionally(
-                    new IllegalStateException("Horizon request queue is full", full));
+            result.complete(Result.unavailable(map.id(), 0, "Horizon request queue is full"));
+            return result.copy();
         }
+        // A request canceled while still queued gives its slot back at once.
+        registration[0] =
+                token.onCancel(
+                        () -> {
+                            if (worker.remove(task)) {
+                                result.completeExceptionally(
+                                        new java.util.concurrent.CancellationException());
+                            }
+                        });
         return result.copy();
     }
 
     @SuppressWarnings("try")
     private void run(WorldService.MapInfo map, Cancellation caller, CompletableFuture<Result> out) {
         var token = new Cancellation();
+        long[] fileId = {0};
         try (var owner = lifetime.onCancel(token::cancel);
                 var request = caller.onCancel(token::cancel)) {
             token.check();
-            out.complete(read(map, token));
+            out.complete(read(map, token, fileId));
         } catch (java.util.concurrent.CancellationException canceled) {
             out.completeExceptionally(canceled);
         } catch (RuntimeException failure) {
             if (token.isCanceled()) {
                 out.completeExceptionally(new java.util.concurrent.CancellationException());
             } else {
-                out.complete(Result.unavailable(map.id(), 0, "Horizon source failed to read"));
+                out.complete(
+                        Result.unavailable(map.id(), fileId[0], "Horizon source failed to read"));
             }
         }
     }
 
-    private Result read(WorldService.MapInfo map, Cancellation token) {
+    private Result read(WorldService.MapInfo map, Cancellation token, long[] known) {
         String path = path(map.directory());
         if (files == null || path == null) {
             return Result.absent(map.id(), "Map has no usable directory for a WDL");
         }
         var ref = FileTypes.FileRef.forPath(path);
-        var stat = files.stat(ref, token).join();
+        // Index facts only: no listfile names, no format sniff (#405).
+        var stat = files.statContent(ref, token).join();
         token.check();
         var file = stat.file();
         if (stat.state() != FileTypes.FileLookupState.FOUND || file == null) {
             return Result.absent(map.id(), "Map has no stored WDL");
         }
         long id = file.fileDataId();
+        known[0] = id;
+        if (file.encrypted()) {
+            return Result.unavailable(map.id(), id, "WDL is encrypted");
+        }
         String contentKey = file.contentKey();
         if (contentKey == null || !contentKey.matches("[0-9a-fA-F]{32}")) {
             return Result.unavailable(map.id(), id, "WDL has no verified content key");
@@ -145,10 +169,17 @@ public final class WorldHorizon {
         var opened = files.openRead(FileTypes.FileRef.id(id), token).join();
         byte[] bytes;
         try (var stream = opened.stream()) {
-            if (stream == null
-                    || opened.state() != FileTypes.FileReadState.COMPLETE
-                    || !stream.holes().isEmpty()) {
-                return Result.unavailable(map.id(), id, "WDL is incomplete or protected");
+            if (opened.state() == FileTypes.FileReadState.WRONG_KEY
+                    || opened.state() == FileTypes.FileReadState.PROTECTED) {
+                return Result.unavailable(
+                        map.id(), id, "WDL is encrypted (" + opened.state() + ")");
+            }
+            if (stream != null && !stream.holes().isEmpty()) {
+                return Result.unavailable(map.id(), id, "WDL is encrypted (protected sections)");
+            }
+            if (stream == null || opened.state() != FileTypes.FileReadState.COMPLETE) {
+                return Result.unavailable(
+                        map.id(), id, "WDL is not complete (" + opened.state() + ")");
             }
             if (stream.length() < 12 || stream.length() > WorldLowRes.MAX_SOURCE_BYTES) {
                 return Result.unavailable(map.id(), id, "WDL exceeds its size bound");
@@ -168,7 +199,7 @@ public final class WorldHorizon {
         } catch (IllegalArgumentException malformed) {
             return Result.unavailable(map.id(), id, "WDL is malformed: " + malformed.getMessage());
         }
-        var current = files.stat(FileTypes.FileRef.id(id), token).join();
+        var current = files.statContent(FileTypes.FileRef.id(id), token).join();
         token.check();
         if (current.file() == null || !contentKey.equalsIgnoreCase(current.file().contentKey())) {
             return Result.unavailable(map.id(), id, "WDL changed during read");
