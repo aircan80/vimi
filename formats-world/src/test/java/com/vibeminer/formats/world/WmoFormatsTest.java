@@ -635,4 +635,123 @@ class WmoFormatsTest {
         assertFalse(big.doodads().retained());
         assertEquals(1, big.materials().size());
     }
+
+    private static byte[] portalVertices() {
+        // One quad in the x = 0 plane.
+        return floats(0, -1, 0, 0, 1, 0, 0, 1, 2, 0, -1, 2);
+    }
+
+    private static byte[] portal(int first, int count, float nx, float distance) {
+        var b = buffer(20).putShort((short) first).putShort((short) count);
+        return b.put(floats(nx, 0, 0, distance)).array();
+    }
+
+    private static byte[] portalRef(int portal, int group, int side) {
+        return buffer(8)
+                .putShort((short) portal)
+                .putShort((short) group)
+                .putShort((short) side)
+                .putShort((short) 0)
+                .array();
+    }
+
+    @Test
+    void portalDeclarationsAreRawAndPartialOrOutOfRangeOnesAreNotRetained() {
+        var absent = WmoFormats.root(root(), () -> false).portals();
+        assertFalse(absent.declared());
+        assertFalse(absent.retained());
+        var bytes =
+                join(
+                        root(),
+                        chunk("MOPV", portalVertices()),
+                        chunk("MOPT", portal(0, 4, 1, 0)),
+                        chunk("MOPR", join(portalRef(0, 0, 1), portalRef(0, 0, -1))));
+        var portals = WmoFormats.root(bytes, () -> false).portals();
+        assertTrue(portals.declared() && portals.retained());
+        assertEquals(4, portals.vertexCount());
+        assertEquals(new WorldPlacements.Vec3(0, 1, 2), portals.vertex(2));
+        assertEquals(
+                java.util.List.of(
+                        new WmoFormats.Portal(0, 4, new WorldPlacements.Vec3(1, 0, 0), 0)),
+                portals.portals());
+        // The side word is signed and raw.
+        assertEquals(
+                java.util.List.of(
+                        new WmoFormats.PortalRef(0, 0, 1), new WmoFormats.PortalRef(0, 0, -1)),
+                portals.refs());
+        var ref = chunk("MOPR", portalRef(0, 0, 1));
+        var vertices = chunk("MOPV", portalVertices());
+        var quad = chunk("MOPT", portal(0, 4, 1, 0));
+        for (var broken :
+                new byte[][] {
+                    // A missing declaration, a partial record or a duplicate.
+                    join(root(), vertices, quad),
+                    join(root(), quad, ref),
+                    join(root(), chunk("MOPV", new byte[13]), quad, ref),
+                    join(root(), vertices, chunk("MOPT", new byte[19]), ref),
+                    join(root(), vertices, quad, chunk("MOPR", new byte[9])),
+                    join(root(), vertices, quad, ref, ref),
+                    // A degenerate portal or a vertex range outside MOPV.
+                    join(root(), vertices, chunk("MOPT", portal(0, 2, 1, 0)), ref),
+                    join(root(), vertices, chunk("MOPT", portal(1, 4, 1, 0)), ref),
+                    // Non-finite vertices or planes.
+                    join(
+                            root(),
+                            chunk("MOPV", floats(0, 0, 0, 0, 1, 0, Float.NaN, 0, 0)),
+                            chunk("MOPT", portal(0, 3, 1, 0)),
+                            ref),
+                    join(root(), vertices, chunk("MOPT", portal(0, 4, Float.NaN, 0)), ref),
+                    join(
+                            root(),
+                            vertices,
+                            chunk("MOPT", portal(0, 4, 1, Float.POSITIVE_INFINITY)),
+                            ref),
+                    // A reference to a portal outside MOPT or a group outside MOHD's one group.
+                    join(root(), vertices, quad, chunk("MOPR", portalRef(1, 0, 1))),
+                    join(root(), vertices, quad, chunk("MOPR", portalRef(0, 1, 1)))
+                }) {
+            var parsed = WmoFormats.root(broken, () -> false);
+            assertEquals(1, parsed.materials().size());
+            assertTrue(parsed.portals().declared());
+            assertFalse(parsed.portals().retained());
+            assertTrue(parsed.portals().portals().isEmpty());
+        }
+        // Zero-length declarations are retained and empty.
+        var empty =
+                WmoFormats.root(
+                                join(
+                                        root(),
+                                        chunk("MOPV", new byte[0]),
+                                        chunk("MOPT", new byte[0]),
+                                        chunk("MOPR", new byte[0])),
+                                () -> false)
+                        .portals();
+        assertTrue(empty.declared() && empty.retained());
+        assertEquals(0, empty.vertexCount());
+        assertTrue(empty.portals().isEmpty() && empty.refs().isEmpty());
+        // One past each ceiling: declared but not retained.
+        var overVertices = new byte[12 * (WmoFormats.MAX_PORTAL_VERTICES + 1)];
+        var overPortals = new byte[20 * (WmoFormats.MAX_PORTALS + 1)];
+        for (int i = 0; i <= WmoFormats.MAX_PORTALS; i++) {
+            System.arraycopy(portal(0, 4, 1, 0), 0, overPortals, i * 20, 20);
+        }
+        var overRefs = new byte[8 * (WmoFormats.MAX_PORTAL_REFS + 1)];
+        for (var over :
+                new byte[][] {
+                    join(root(), chunk("MOPV", overVertices), quad, ref),
+                    join(root(), vertices, chunk("MOPT", overPortals), ref),
+                    join(root(), vertices, quad, chunk("MOPR", overRefs))
+                }) {
+            var parsed = WmoFormats.root(over, () -> false);
+            assertTrue(parsed.portals().declared());
+            assertFalse(parsed.portals().retained());
+        }
+        // Over the fact budget: declared but not retained, and the root still parses.
+        var tight = new WmoFormats.Limits(1 << 20, 1 << 20, 8, 24, 8, 16384, 16384, 64, 1, 4096);
+        var many = new byte[12 * 256];
+        var big = WmoFormats.root(join(root(), chunk("MOPV", many), quad, ref), tight, () -> false);
+        assertTrue(big.portals().declared());
+        assertFalse(big.portals().retained());
+        assertEquals(1, big.materials().size());
+    }
 }

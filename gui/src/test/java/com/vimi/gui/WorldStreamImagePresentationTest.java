@@ -58,6 +58,19 @@ public final class WorldStreamImagePresentationTest {
             presentation.present(Integer.MAX_VALUE, 1, pixels(0), () -> true, () -> true);
             throw new AssertionError("Oversized bitmap must be rejected before allocation");
         } catch (IllegalArgumentException expected) { }
+        // The shared cap, not 800x500: a native 2560x1600 frame is accepted, one more is not.
+        int max = com.vibeminer.rendering.world.WorldFrameLimits.MAX_WIDTH
+                * com.vibeminer.rendering.world.WorldFrameLimits.MAX_HEIGHT;
+        var full = new int[max];
+        java.util.Arrays.fill(full, 0xff00ff00);
+        check(presentation.present(2560, 1600, IntBuffer.wrap(full).asReadOnlyBuffer(),
+                () -> true, () -> true), "Native-resolution frame up to the shared cap");
+        check(image.getImage().getWidth() == 2560 && image.getImage().getHeight() == 1600,
+                "Presented at native size");
+        try {
+            presentation.present(2561, 1, IntBuffer.wrap(new int[2561]), () -> true, () -> true);
+            throw new AssertionError("Width past the shared cap must be rejected");
+        } catch (IllegalArgumentException expected) { }
         presentation.clear();
         System.out.println("World staged image publication: rejection, expiry and bounded bitmap reuse passed");
     }
