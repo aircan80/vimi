@@ -163,7 +163,9 @@ public final class RacesService implements BuildRaces {
                                 var prepared = appearance.prepareNpc(spec, request);
                                 return new Planned(
                                         prepared,
-                                        spec.omittedItems() + omissions.unread(),
+                                        spec.omittedItems()
+                                                + omissions.missing()
+                                                + omissions.undrawn(),
                                         omissions.attachments(),
                                         null);
                             } catch (Unreadable unreadable) {
@@ -195,20 +197,36 @@ public final class RacesService implements BuildRaces {
                                                     request ->
                                                             appearance.render(prepared, request));
                             return finished.thenApply(
-                                    result ->
-                                            result.appearance() == null
-                                                    ? RaceNpcs.Appearance.refused(
-                                                            result.message() == null
-                                                                    ? "the NPC appearance could not"
-                                                                            + " be built"
-                                                                    : result.message())
-                                                    : new RaceNpcs.Appearance(
-                                                            result,
-                                                            planned.omittedItems(),
-                                                            planned.attachments(),
-                                                            null,
-                                                            false));
+                                            result ->
+                                                    result.appearance() == null
+                                                            ? RaceNpcs.Appearance.refused(
+                                                                    result.message() == null
+                                                                            ? "the NPC appearance could not"
+                                                                                    + " be built"
+                                                                            : result.message())
+                                                            : new RaceNpcs.Appearance(
+                                                                    result,
+                                                                    planned.omittedItems(),
+                                                                    planned.attachments(),
+                                                                    null,
+                                                                    false))
+                                    .exceptionally(RacesService::npcRetry);
                         });
+    }
+
+    /** A texture or row the render could not read now: asked for again, never refused. */
+    private static RaceNpcs.Appearance npcRetry(Throwable failure) {
+        var cause =
+                failure instanceof java.util.concurrent.CompletionException
+                                && failure.getCause() != null
+                        ? failure.getCause()
+                        : failure;
+        if (cause instanceof Unreadable unreadable) {
+            return RaceNpcs.Appearance.unreadable(unreadable.getMessage());
+        }
+        throw failure instanceof java.util.concurrent.CompletionException completion
+                ? completion
+                : new java.util.concurrent.CompletionException(cause);
     }
 
     @Override

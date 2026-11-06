@@ -385,7 +385,7 @@ final class RaceAppearancePlanTest {
         return seed;
     }
 
-    private static List<MemoryTables.FakeTable> nightElfFixture(
+    static List<MemoryTables.FakeTable> nightElfFixture(
             int model, int layout, int sex, String fallback, boolean base) {
         var seed = new ArrayList<>(dwarfFixture(model, layout, sex, fallback));
         replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(4, "3")));
