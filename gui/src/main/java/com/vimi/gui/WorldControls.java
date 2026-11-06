@@ -44,8 +44,11 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
 
         final String label;
         /**
-         * A HUD command: it fires once per physical press through {@link
-         * WorldExplorerInput.Host#command} and never drives motion.
+         * A command key: it fires once per fresh press through {@link
+         * WorldExplorerInput.Host#command} and never drives motion. Modifiers are not checked,
+         * so Ctrl or Alt with the key fires it too, as with the walk key. A {@code clear()} while
+         * the key is still held (focus loss, full screen) forgets the press, so its next key
+         * repeat counts as a new press, also as with the walk key.
          */
         final boolean command;
 
@@ -125,7 +128,7 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
             keys.put(KeyCode.DOWN, Action.LOOK_DOWN);
             keys.put(KeyCode.SHIFT, Action.SPRINT);
             keys.put(KeyCode.F, Action.WALK);
-            // HUD commands use keys that sit in the same place on both layouts.
+            // M is a letter on both layouts, so the key labelled M opens the map on either.
             keys.put(KeyCode.M, Action.MAP_PANEL);
             return keys;
         }
