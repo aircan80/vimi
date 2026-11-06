@@ -360,6 +360,14 @@ tasks.register('worldPickTest', JavaExec) {
 }
 check.dependsOn worldPickTest
 
+// Stream camera revisions and presented-frame overlay projection; no display.
+tasks.register('worldCameraRingTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldCameraRingTest'
+}
+check.dependsOn worldCameraRingTest
+
 // Explorer key/mouse/wheel mapping and pulse cadence against a recording host; no display.
 tasks.register('worldExplorerInputTest', JavaExec) {
     dependsOn testClasses
@@ -825,3 +833,12 @@ tasks.register('globalInteriorFloorsTest', JavaExec) {
     mainClass = 'com.vimi.gui.GlobalInteriorFloorsTest'
 }
 check.dependsOn globalInteriorFloorsTest
+
+// Optional: measures a World ambience kit change through the real decoder on device-paced lines.
+tasks.register('worldAudioZoneChangeProbe', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldAudioZoneChangeProbe'
+    systemProperty 'vimi.audioFixture',
+            rootProject.file('formats-audio/src/test/resources/audio/authored-tone.ogg').path
+}
