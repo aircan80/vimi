@@ -19,7 +19,27 @@ public final class WorldExplorerInputTest {
         keysMapToClampedAxes();
         walkToggleIgnoresKeyRepeat();
         clearDropsHeldKeys();
-        mouseDragLooksTowardTheDragSide();
+        lookButtons();
+        capturedLookIsRelativeAwayFromTheEdge();
+        nearTheEdgeItWarpsAndTheEchoIsNotCounted();
+        roundingOffsetEchoesNeverDriftOrLoop();
+        floatEchoOfADoubleTargetIsRecognised();
+        motionBeforeTheEchoStillCounts();
+        slowOnePixelMotionAlwaysTurns();
+        aMissingEchoTimesOutAndRepeatedMissesStopWarping();
+        aRefusedWarpStopsWarping();
+        aLateEchoResetsTheMissCount();
+        anEchoCoalescedWithMotionLosesAtMostThatMotion();
+        fastPreEchoMotionIsMisreadAtMostOncePerWarp();
+        aViewPastTheScreenEdgeStillWarpsOnScreen();
+        theWindowMovingMidLookWarpsToTheNewCentre();
+        leftDragLooksWithoutCapture();
+        lookIsCoalescedToOneCameraUpdatePerPulse();
+        sensitivityAndInvertYApply();
+        clearEndsTheLookAndDropsPendingMovement();
+        owedLookIsDroppedWhileNoPulseApplies();
+        wheelReadyCoversStreamingMode();
+        controlsEncodeDecodeLeniently();
         onlyAStillPrimaryClickInspects();
         shiftWheelAdjustsBoundedSpeed();
         wheelDollysAlongTheViewAndIgnoresBadInput();
@@ -30,8 +50,11 @@ public final class WorldExplorerInputTest {
         smoothReleaseCoastsThenFramesTheRestingStep();
         walkWheelMovesAlongTheHeadingOnly();
         System.out.println(
-                "World explorer input: key axes, walk toggle, look drag, inspect click, wheel,"
-                        + " speed, pulse cadence and idle passed");
+                "World explorer input: key axes, walk toggle, right-button captured look"
+                        + " (edge warps, event echoes, rounding, slow motion, timeouts, window"
+                        + " move), left-drag look,"
+                        + " per-pulse look coalescing, sensitivity/invert-Y, controls codec,"
+                        + " inspect click, wheel, speed, pulse cadence and idle passed");
     }
 
     /** Records hook calls; the camera is the only mutable view state the input touches. */
@@ -40,6 +63,7 @@ public final class WorldExplorerInputTest {
         boolean wheelReady = true, fast = true;
         final List<String> calls = new ArrayList<>();
         int toggles;
+        final List<Boolean> cursor = new ArrayList<>();
 
         @Override public TerrainRenderer.Camera camera() { return camera; }
         @Override public void camera(TerrainRenderer.Camera next) { camera = next; }
@@ -51,6 +75,11 @@ public final class WorldExplorerInputTest {
         @Override public void requestFrame() { calls.add("frame"); }
         @Override public void abandonUnusableCandidate() { calls.add("abandon"); }
         @Override public void loadNext() { calls.add("nearby"); }
+        @Override public void cursorHidden(boolean hidden) { cursor.add(hidden); }
+        final List<String> fallbacks = new ArrayList<>();
+        @Override public void captureFallback(String reason) { fallbacks.add(reason); }
+        int unavailable;
+        @Override public void captureUnavailable() { unavailable++; }
 
         long count(String call) {
             return calls.stream().filter(call::equals).count();
@@ -112,22 +141,417 @@ public final class WorldExplorerInputTest {
                 "Clear drops every held key");
     }
 
-    private static void mouseDragLooksTowardTheDragSide() {
+    /** An 800 x 600 view at the screen origin: centre (400, 300), warp margins 200 / 150. */
+    static final WorldExplorerInput.ViewBox VIEW = new WorldExplorerInput.ViewBox(0, 0, 800, 600);
+
+    /** Records cursor warps; {@code works} false refuses them. Echo events are sent by tests. */
+    static final class Pointer implements WorldExplorerInput.Pointer {
+        final List<double[]> warps = new ArrayList<>();
+        boolean works = true;
+
+        @Override public boolean warp(double screenX, double screenY) {
+            warps.add(new double[] {screenX, screenY});
+            return works;
+        }
+
+        double[] last() {
+            return warps.getLast();
+        }
+    }
+
+    private static final double S = WorldControls.DEFAULT_SENSITIVITY;
+
+    private static WorldExplorerInput looking(Host host, Pointer pointer, double x, double y) {
+        var input = exact(host);
+        input.pointer(pointer);
+        input.lookPressed(MouseButton.SECONDARY, x, y);
+        return input;
+    }
+
+    private static void lookButtons() {
+        require(WorldExplorerInput.looks(MouseButton.SECONDARY) && WorldExplorerInput.looks(MouseButton.PRIMARY),
+                "Right and left buttons look");
+        require(!WorldExplorerInput.looks(MouseButton.MIDDLE), "Middle button never looks");
+        require(WorldExplorerInput.captures(MouseButton.SECONDARY) && !WorldExplorerInput.captures(MouseButton.PRIMARY),
+                "Only the right button captures the cursor");
         var host = new Host();
         var input = exact(host);
-        input.mousePressed(50, 50);
-        input.mouseDragged(75, 40);
-        require(Math.abs(host.camera.yaw() + 25 * WorldExplorerInput.LOOK_PER_PIXEL) < 1e-12,
-                "Dragging right turns right (negative yaw): " + host.camera.yaw());
-        require(Math.abs(host.camera.pitch() - 10 * WorldExplorerInput.LOOK_PER_PIXEL) < 1e-12,
-                "Dragging up pitches up: " + host.camera.pitch());
-        require(host.count("frame") == 1, "Each drag requests one frame");
-        input.mouseDragged(75, 40);
-        require(Math.abs(host.camera.yaw() + 25 * WorldExplorerInput.LOOK_PER_PIXEL) < 1e-12,
-                "Drag deltas are relative to the previous event");
+        input.lookMoved(500, 500, VIEW);
+        input.pulse(1_000_000_000L);
+        require(host.camera.equals(START) && host.calls.isEmpty(), "Moves without a held look button never look");
+        input.lookPressed(MouseButton.MIDDLE, 1, 1);
+        require(!input.looking(), "Middle press starts nothing");
+    }
+
+    private static void capturedLookIsRelativeAwayFromTheEdge() {
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = looking(host, pointer, 400, 300);
+        require(input.looking() && host.cursor.equals(List.of(true)), "Right look hides the cursor");
+        input.lookMoved(425, 290, VIEW);
+        input.lookMoved(425, 290, VIEW);
+        input.pulse(1_000_000_000L);
+        require(near(host.camera.yaw(), -25 * S) && near(host.camera.pitch(), 10 * S),
+                "Right turns right and up looks up: " + host.camera);
+        require(pointer.warps.isEmpty(), "No warp away from the edge");
+        input.lookReleased(MouseButton.PRIMARY);
+        require(input.looking(), "Releasing another button keeps the look");
+        input.lookReleased(MouseButton.SECONDARY);
+        require(!input.looking() && host.cursor.equals(List.of(true, false)) && pointer.warps.size() == 1
+                        && pointer.last()[0] == 400 && pointer.last()[1] == 300,
+                "Release shows the cursor where the look began, even without a warp");
+        input.lookReleased();
+        require(host.cursor.size() == 2, "A second release does nothing");
+    }
+
+    private static void nearTheEdgeItWarpsAndTheEchoIsNotCounted() {
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = looking(host, pointer, 130, 300);
+        input.lookMoved(400, 300, VIEW);
+        require(pointer.warps.isEmpty(), "Centre: no warp");
+        input.lookMoved(650, 300, VIEW);
+        require(pointer.warps.size() == 1 && pointer.last()[0] == 400 && pointer.last()[1] == 300,
+                "Within a quarter of the edge the cursor goes back to the centre");
+        input.lookMoved(400, 300, VIEW);
+        input.lookMoved(405, 300, VIEW);
+        input.pulse(1_000_000_000L);
+        require(near(host.camera.yaw(), -(270 + 250 + 5) * S), "The echo is not motion: " + host.camera.yaw() / -S);
+        require(pointer.warps.size() == 1, "One warp, no loop");
+        input.lookReleased();
+        require(pointer.last()[0] == 130 && pointer.last()[1] == 300, "Release returns the cursor where it began");
+        require(host.fallbacks.isEmpty(), "No fallback");
+    }
+
+    /**
+     * 125 % / 175 % output scales: the robot truncates the target to an integer and the cursor
+     * lands on a physical pixel, so the echo arrives at the centre plus a fraction. Counting from
+     * the echo's own position keeps every real move exact.
+     */
+    private static void roundingOffsetEchoesNeverDriftOrLoop() {
+        for (double offset : new double[] {.4, -.6, .8}) {
+            var host = new Host();
+            var pointer = new Pointer();
+            var input = looking(host, pointer, 400, 300);
+            double x = 400 + offset, counted = 0;
+            input.lookMoved(x, 300, VIEW);
+            counted += offset;
+            double y = 300;
+            for (int cycle = 0; cycle < 50; cycle++) {
+                input.lookMoved(x + 250, y, VIEW);
+                counted += 250;
+                input.lookMoved(400 + offset, 300 + offset, VIEW);
+                x = 400 + offset;
+                y = 300 + offset;
+                input.lookMoved(x + 3, 300 + offset, VIEW);
+                counted += 3;
+                x += 3;
+            }
+            input.pulse(1_000_000_000L);
+            require(Math.abs(host.camera.yaw() / -S - counted) < 1e-6 && near(host.camera.pitch(), 0),
+                    "Offset " + offset + ": no drift: " + host.camera.yaw() / -S + " vs " + counted);
+            require(pointer.warps.size() == 50, "One warp per edge crossing: " + pointer.warps.size());
+        }
+    }
+
+    private static void floatEchoOfADoubleTargetIsRecognised() {
+        var host = new Host();
+        var pointer = new Pointer();
+        var view = new WorldExplorerInput.ViewBox(400.8 - 400, 300.8 - 300, 800, 600);
+        var input = looking(host, pointer, view.centerX(), view.centerY());
+        input.lookMoved(view.centerX() + 300, view.centerY(), view);
+        require(pointer.warps.size() == 1, "Warped");
+        input.lookMoved((float) view.centerX(), (float) view.centerY(), view);
+        input.lookMoved((float) view.centerX() + 2, (float) view.centerY(), view);
+        input.pulse(1_000_000_000L);
+        require(near(host.camera.yaw(), -302 * S) && near(host.camera.pitch(), 0),
+                "A float-rounded echo is still the echo: " + host.camera.yaw() / -S);
+        require(pointer.warps.size() == 1, "No loop");
+    }
+
+    /** Events queued before the warp landed are real motion near the old position. */
+    private static void motionBeforeTheEchoStillCounts() {
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = looking(host, pointer, 400, 300);
+        input.lookMoved(700, 300, VIEW);
+        input.lookMoved(702, 301, VIEW);
+        input.lookMoved(704, 302, VIEW);
+        input.lookMoved(400, 300, VIEW);
+        input.lookMoved(401, 300, VIEW);
+        input.pulse(1_000_000_000L);
+        require(near(host.camera.yaw(), -(300 + 4 + 1) * S) && near(host.camera.pitch(), -2 * S),
+                "Pre-echo motion counts, the echo does not: " + host.camera);
+        require(pointer.warps.size() == 1, "One warp");
+    }
+
+    private static void slowOnePixelMotionAlwaysTurns() {
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = looking(host, pointer, 400, 300);
+        double x = 400;
+        int counted = 0;
+        for (int i = 0; i < 1000; i++) {
+            x += 1;
+            input.lookMoved(x, 300, VIEW);
+            counted++;
+            if (pointer.warps.size() > 0 && x > 500) {
+                input.lookMoved(400, 300, VIEW);
+                x = 400;
+                pointer.warps.clear();
+            }
+        }
+        input.pulse(1_000_000_000L);
+        require(Math.abs(host.camera.yaw() / -S - counted) < 1e-6, "Every 1 px move turns: " + host.camera.yaw() / -S);
+    }
+
+    private static void aMissingEchoTimesOutAndRepeatedMissesStopWarping() {
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = looking(host, pointer, 400, 300);
+        double x = 650;
+        input.lookMoved(x, 300, VIEW);
+        for (int i = 0; i < WorldExplorerInput.ECHO_EVENTS; i++) input.lookMoved(x += 1, 300, VIEW);
+        require(host.fallbacks.size() == 1, "A missing echo is reported: " + host.fallbacks);
+        input.lookMoved(400, 300, VIEW);
+        input.pulse(1_000_000_000L);
+        require(near(host.camera.yaw(), -(250 + WorldExplorerInput.ECHO_EVENTS) * S),
+                "Waiting moves count; a late echo afterwards does not: " + host.camera.yaw() / -S);
+        input.lookMoved(700, 300, VIEW);
+        input.lookMoved(400, 300, VIEW);
+        require(host.fallbacks.size() == 1, "An echo that does arrive is a success");
+        // Misses in a row turn warping off.
+        var other = new Host();
+        var quiet = new Pointer();
+        var second = looking(other, quiet, 400, 300);
+        for (int miss = 1; miss <= WorldExplorerInput.CAPTURE_FAILURES; miss++) {
+            double at = 700;
+            second.lookMoved(at, 300, VIEW);
+            for (int i = 0; i < WorldExplorerInput.ECHO_EVENTS; i++) second.lookMoved(at += 1, 300, VIEW);
+            second.lookMoved(at - WorldExplorerInput.ECHO_EVENTS - 200, 300, VIEW);
+        }
+        require(other.fallbacks.size() == WorldExplorerInput.CAPTURE_FAILURES
+                && other.fallbacks.getLast().contains("in a row") && other.unavailable == 1,
+                "Capture stops warping and the view is told once: " + other.fallbacks);
+        int warps = quiet.warps.size();
+        require(warps == WorldExplorerInput.CAPTURE_FAILURES, "One warp per miss: " + warps);
+        second.lookMoved(790, 300, VIEW);
+        require(quiet.warps.size() == warps, "No more warps");
+        second.lookReleased();
+        require(quiet.warps.size() == warps, "Nothing restored once warping is off");
+    }
+
+    private static void aLateEchoResetsTheMissCount() {
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = looking(host, pointer, 400, 300);
+        for (int round = 0; round < 5; round++) {
+            double at = 700;
+            input.lookMoved(at, 300, VIEW);
+            for (int i = 0; i < WorldExplorerInput.ECHO_EVENTS; i++) input.lookMoved(at += 1, 300, VIEW);
+            input.lookMoved(400, 300, VIEW);
+        }
+        require(host.unavailable == 0 && host.fallbacks.stream().noneMatch(f -> f.contains("in a row")),
+                "Late echoes are successes: five slow warps never turn capture off: " + host.fallbacks);
+    }
+
+    /**
+     * The platform may merge the echo with the next real motion (target + m). It is still the
+     * echo, and at most that event's own motion m is lost, once per warp.
+     */
+    private static void anEchoCoalescedWithMotionLosesAtMostThatMotion() {
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = looking(host, pointer, 400, 300);
+        input.lookMoved(650, 300, VIEW);
+        input.lookMoved(403, 302, VIEW);
+        input.lookMoved(410, 302, VIEW);
+        input.pulse(1_000_000_000L);
+        double counted = host.camera.yaw() / -S;
+        require(Math.abs(counted - (250 + 7)) < 1e-9, "Echo + 3 px taken as the echo; later motion counts: " + counted);
+        require(250 + 3 + 7 - counted <= 3 + 1e-9, "At most the coalesced 3 px are lost");
+        require(pointer.warps.size() == 1, "No re-warp");
+    }
+
+    /**
+     * Before the echo, a single real event that jumps more than halfway towards the warp target
+     * is indistinguishable from the echo: it becomes the origin and its own motion is lost. That
+     * is bounded by one event per warp; the next events count again.
+     */
+    private static void fastPreEchoMotionIsMisreadAtMostOncePerWarp() {
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = looking(host, pointer, 400, 300);
+        input.lookMoved(650, 300, VIEW);
+        input.lookMoved(520, 300, VIEW);
+        input.lookMoved(500, 300, VIEW);
+        input.lookMoved(480, 300, VIEW);
+        input.pulse(1_000_000_000L);
+        double counted = host.camera.yaw() / -S;
+        require(Math.abs(counted - (250 - 40)) < 1e-9, "Only the one jump (-130) is lost: " + counted);
+    }
+
+    /** A window hanging past the screen's right edge: the warp band and centre stay on screen. */
+    private static void aViewPastTheScreenEdgeStillWarpsOnScreen() {
+        var view = new WorldExplorerInput.ViewBox(1500, 0, 800, 600);
+        var clipped = view.clippedTo(0, 0, 1920, 1080);
+        require(clipped.minX() == 1500 && clipped.width() == 420 && clipped.height() == 600,
+                "Clipped to the visible part: " + clipped);
+        require(view.clippedTo(3000, 0, 4000, 1000) == view, "A box off that screen is kept");
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = looking(host, pointer, 1700, 300);
+        // The cursor stops at the screen edge (1919): the unclipped band (> 2100) is unreachable.
+        input.lookMoved(1919, 300, view);
+        require(pointer.warps.isEmpty(), "Unclipped: no warp, turning would stop at the edge");
+        input.lookMoved(1919, 300, clipped);
+        input.lookMoved(1918, 300, clipped);
+        require(pointer.warps.size() == 1 && pointer.last()[0] == 1710 && pointer.last()[0] < 1920,
+                "Clipped: the cursor goes back to the on-screen centre: " + pointer.last()[0]);
+    }
+
+    private static void aRefusedWarpStopsWarping() {
+        var host = new Host();
+        var pointer = new Pointer();
+        pointer.works = false;
+        var input = looking(host, pointer, 400, 300);
+        input.lookMoved(700, 300, VIEW);
+        input.lookMoved(720, 300, VIEW);
+        input.lookMoved(740, 300, VIEW);
+        input.pulse(1_000_000_000L);
+        require(near(host.camera.yaw(), -340 * S), "Relative after a refusal");
+        require(pointer.warps.size() == 1 && host.fallbacks.size() == 1 && host.unavailable == 1,
+                "Refused once, reported once, shown in the view");
+    }
+
+    private static void theWindowMovingMidLookWarpsToTheNewCentre() {
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = looking(host, pointer, 400, 300);
+        var moved = new WorldExplorerInput.ViewBox(100, 50, 800, 600);
+        input.lookMoved(410, 300, moved);
+        input.lookMoved(820, 300, moved);
+        require(pointer.last()[0] == 500 && pointer.last()[1] == 350, "Warped to the moved view's centre");
+        input.lookMoved(500, 350, moved);
+        input.pulse(1_000_000_000L);
+        require(near(host.camera.yaw(), -420 * S), "Counted from real positions: " + host.camera.yaw() / -S);
+    }
+
+    private static void leftDragLooksWithoutCapture() {
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = exact(host);
+        input.pointer(pointer);
+        input.lookPressed(MouseButton.PRIMARY, 50, 50);
+        require(input.looking() && host.cursor.isEmpty(), "Left look never hides the cursor");
+        input.lookPressed(MouseButton.SECONDARY, 50, 50);
+        input.lookMoved(75, 40, VIEW);
+        input.lookMoved(5, 40, VIEW);
+        input.pulse(1_000_000_000L);
+        require(near(host.camera.yaw(), 45 * S) && near(host.camera.pitch(), 10 * S),
+                "Left drag looks with relative movement: " + host.camera);
+        require(pointer.warps.isEmpty(), "Left look never warps, even at the edge");
+        input.lookReleased(MouseButton.SECONDARY);
+        require(input.looking(), "Only the button that started the look ends it");
+        input.lookReleased(MouseButton.PRIMARY);
+        require(!input.looking() && pointer.warps.isEmpty() && host.cursor.isEmpty(), "Release restores nothing");
+    }
+
+    private static void lookIsCoalescedToOneCameraUpdatePerPulse() {
+        var host = new Host();
+        var input = exact(host);
+        input.pointer(new Pointer());
+        input.lookPressed(MouseButton.SECONDARY, 400, 300);
+        for (int i = 1; i <= 50; i++) input.lookMoved(400 + i, 300, VIEW);
+        require(host.camera.equals(START) && host.calls.isEmpty(),
+                "Mouse events alone never touch the camera or request frames");
+        input.pulse(1_000_000_000L);
+        require(near(host.camera.yaw(), -50 * WorldControls.DEFAULT_SENSITIVITY),
+                "All 50 moves land in one pulse");
+        require(host.calls.equals(List.of("frame")), "One frame per pulse: " + host.calls);
+        host.calls.clear();
+        input.pulse(1_016_000_000L);
+        require(host.calls.isEmpty(), "Nothing owed: no frame");
+        // Look while flying: the look is shown at once, not held back by the movement cadence.
+        input.holdCadence();
+        input.keyPressed(KeyCode.W);
+        input.pulse(1_032_000_000L);
+        host.calls.clear();
+        input.lookMoved(390, 300, VIEW);
+        input.pulse(1_048_000_000L);
+        require(host.count("frame") == 1, "A look frames even inside the cadence: " + host.calls);
+    }
+
+    private static void sensitivityAndInvertYApply() {
+        var host = new Host();
+        var input = exact(host);
+        input.pointer(new Pointer());
+        input.controls(WorldControls.DEFAULTS.withSensitivity(.01).withInvertY(true));
+        input.lookPressed(MouseButton.SECONDARY, 400, 300);
+        input.lookMoved(410, 280, VIEW);
+        input.pulse(1_000_000_000L);
+        require(near(host.camera.yaw(), -.1) && near(host.camera.pitch(), -.2),
+                "Sensitivity scales and invert-Y flips pitch only: " + host.camera);
+    }
+
+    private static void clearEndsTheLookAndDropsPendingMovement() {
+        var host = new Host();
+        var input = exact(host);
+        input.pointer(new Pointer());
+        input.lookPressed(MouseButton.SECONDARY, 400, 300);
+        input.lookMoved(450, 300, VIEW);
+        input.clear();
+        require(!input.looking() && host.cursor.equals(List.of(true, false)),
+                "Focus loss ends the look and shows the cursor");
+        input.pulse(1_000_000_000L);
+        require(host.camera.equals(START), "Pending look is dropped with the keys");
+    }
+
+    /** Movement owed while pulses skip (no camera yet, timer stopped) never lands as a jump. */
+    private static void owedLookIsDroppedWhileNoPulseApplies() {
+        var host = new Host();
+        var input = exact(host);
+        input.lookPressed(MouseButton.PRIMARY, 0, 0);
         host.camera = null;
-        input.mouseDragged(0, 0);
-        require(host.camera == null && host.count("frame") == 2, "No camera: drag is ignored");
+        input.lookMoved(300, 0, VIEW);
+        input.pulse(1_000_000_000L);
+        host.camera = START;
+        input.pulse(1_016_000_000L);
+        require(host.camera.equals(START), "Owed while there was no camera: dropped");
+        input.lookMoved(600, 0, VIEW);
+        input.idle();
+        input.pulse(1_032_000_000L);
+        require(host.camera.equals(START), "Owed across a timer stop (idle): dropped");
+        input.lookMoved(601, 0, VIEW);
+        input.pulse(1_048_000_000L);
+        require(near(host.camera.yaw(), -WorldControls.DEFAULT_SENSITIVITY), "Later moves still look");
+    }
+
+    private static void wheelReadyCoversStreamingMode() {
+        require(WorldExplorerInput.wheelReady(true, false, false), "Legacy scene");
+        require(WorldExplorerInput.wheelReady(false, true, true), "GPU streaming with a controller");
+        require(!WorldExplorerInput.wheelReady(false, true, false), "Streaming without a controller");
+        require(!WorldExplorerInput.wheelReady(false, false, true), "No scene outside streaming");
+    }
+
+    private static void controlsEncodeDecodeLeniently() {
+        var custom = new WorldControls(.011, true);
+        require(WorldControls.decode(custom.encode()).equals(custom), "Round trip: " + custom.encode());
+        require(WorldControls.decode(null).equals(WorldControls.DEFAULTS), "Nothing stored: defaults");
+        require(WorldControls.decode("v9;sensitivity=0.01").equals(WorldControls.DEFAULTS),
+                "Another version: defaults");
+        require(WorldControls.decode("v1;sensitivity=abc;invertY=true;future=1;junk")
+                        .equals(new WorldControls(WorldControls.DEFAULT_SENSITIVITY, true)),
+                "A malformed value keeps its default; unknown keys are ignored");
+        require(new WorldControls(5, false).sensitivity() == WorldControls.MAX_SENSITIVITY
+                        && new WorldControls(-1, false).sensitivity() == WorldControls.MIN_SENSITIVITY
+                        && new WorldControls(Double.NaN, false).sensitivity()
+                                == WorldControls.DEFAULT_SENSITIVITY,
+                "Sensitivity is clamped and never non-finite");
+        var store = WorldControls.memory();
+        require(store.load().join() == null, "An empty store loads nothing");
+        store.save(custom.encode());
+        require(WorldControls.decode(store.load().join()).equals(custom), "The memory store keeps the value");
     }
 
     private static void onlyAStillPrimaryClickInspects() {
@@ -195,7 +619,8 @@ public final class WorldExplorerInputTest {
         input.pulse(1_100_000_000L);
         require(Math.abs(host.camera.x() - START.x() - 8) < 1e-9, "W flies 80 yd/s north");
         require(Math.abs(host.camera.z() - START.z() - 8) < 1e-9, "Space climbs at flight speed");
-        require(Math.abs(host.camera.yaw() - .1) < 1e-12, "Left turns 1 rad/s");
+        require(Math.abs(host.camera.yaw() - ExplorerMotion.TURN_RATE * .1) < 1e-12,
+                "Left turns at the keyboard turn rate");
         input.keyReleased(KeyCode.W);
         input.keyReleased(KeyCode.SPACE);
         input.keyReleased(KeyCode.LEFT);
@@ -319,6 +744,10 @@ public final class WorldExplorerInputTest {
         input.scroll(4, false);
         require(Math.abs(Math.hypot(host.camera.x() - START.x(), host.camera.y() - START.y())
                 - .1 * notch) < 1e-9, "A tenth of a notch moves a tenth");
+    }
+
+    private static boolean near(double a, double b) {
+        return Math.abs(a - b) < 1e-12;
     }
 
     private static void require(boolean condition, String message) {
