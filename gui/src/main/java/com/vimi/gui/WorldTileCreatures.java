@@ -69,6 +69,8 @@ final class WorldTileCreatures implements AutoCloseable {
         VISIBILITY_UNRESOLVED("surface visibility unresolved"),
         NO_OPAQUE_SURFACE("no opaque or alpha-keyed textured surface"),
         MODEL_UNAVAILABLE("model unavailable"),
+        /** The preview component was busy or closed; not cached and costs no preview budget. */
+        PREVIEWS_BUSY("model reader busy or closed"),
         CAPPED("over the tile budget"),
         FAILED("lookup failed");
 
@@ -319,11 +321,17 @@ final class WorldTileCreatures implements AutoCloseable {
         if (spawns.spawns() == 0) return Summary.failed("no prepared spawn source");
         double size = WorldFormats.TILE_SIZE;
         double centerX = (31.5 - tile.x()) * size, centerY = (31.5 - tile.y()) * size;
-        var nearby = spawns.near(mapId, centerX, centerY, size * Math.sqrt(.5) + 1, WorldSpawns.MAX_NEARBY);
+        // Only this tile's own points take the query's limit: a dense neighbour tile inside the
+        // circle around the tile can no longer starve them.
+        var nearby = spawns.near(mapId, centerX, centerY, size * Math.sqrt(.5) + 1, WorldSpawns.MAX_NEARBY,
+                spawn -> WorldBookmarks.tileIndex(spawn.x()) == tile.x()
+                        && WorldBookmarks.tileIndex(spawn.y()) == tile.y());
         var counts = new int[Count.values().length];
         var added = new HashMap<Long, Integer>();
         var placed = new java.util.ArrayList<WorldObjectPicks.Creature>();
         int placements = 0, previewsTried = 0;
+        // Displays whose preview was busy on this tile: not asked again for every later spawn.
+        var busyDisplays = new HashSet<Long>();
         for (var spawn : nearby.placed()) {
             token.check();
             if (WorldBookmarks.tileIndex(spawn.x()) != tile.x() || WorldBookmarks.tileIndex(spawn.y()) != tile.y()) continue;
@@ -358,6 +366,10 @@ final class WorldTileCreatures implements AutoCloseable {
                 synchronized (this) {
                     converted = models.get(display);
                 }
+                if (converted == null && busyDisplays.contains(display)) {
+                    counts[Count.PREVIEWS_BUSY.ordinal()]++;
+                    continue;
+                }
                 if (converted == null) {
                     if (previewsTried == TILE_PREVIEWS) {
                         counts[Count.CAPPED.ordinal()]++;
@@ -365,6 +377,11 @@ final class WorldTileCreatures implements AutoCloseable {
                     }
                     previewsTried++;
                     converted = load(display, token);
+                    // A busy or closed reader learned nothing: refund the preview it cost.
+                    if (converted.refusal() == Count.PREVIEWS_BUSY) {
+                        previewsTried--;
+                        busyDisplays.add(display);
+                    }
                 }
                 if (converted.refusal() != null) {
                     counts[converted.refusal().ordinal()]++;
@@ -429,6 +446,8 @@ final class WorldTileCreatures implements AutoCloseable {
         } catch (Exception failed) {
             // Only this tile's cancellation propagates; a closed or retired component is a failure.
             token.check();
+            if (busy(failed))
+                return Converted.refused(Count.PREVIEWS_BUSY, failed.getClass().getSimpleName());
             WorldDiagnostics.degraded("creature models", "World creature model read failed", failed);
             // Not cached: a failed read may succeed on the next tile.
             return Converted.refused(Count.FAILED, failed.getClass().getSimpleName());
@@ -437,6 +456,14 @@ final class WorldTileCreatures implements AutoCloseable {
             if (!closed) models.put(display, converted);
         }
         return converted;
+    }
+
+    /** Whether a preview failure is the component's busy or closed refusal, however wrapped. */
+    static boolean busy(Throwable failure) {
+        for (int depth = 0; failure != null && depth < 8; depth++, failure = failure.getCause()) {
+            if (failure instanceof DisplayModelTypes.ServiceUnavailable) return true;
+        }
+        return false;
     }
 
     private static int add(WorldStreamTileWriter.Exterior.Builder builder, Model model) {

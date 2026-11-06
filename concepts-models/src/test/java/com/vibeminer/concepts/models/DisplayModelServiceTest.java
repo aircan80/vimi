@@ -23,6 +23,106 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class DisplayModelServiceTest {
+    private static <T> T unusable(
+            Class<T> type, java.util.function.Function<String, Object> answer) {
+        return type.cast(
+                java.lang.reflect.Proxy.newProxyInstance(
+                        type.getClassLoader(),
+                        new Class<?>[] {type},
+                        (proxy, method, args) -> {
+                            Object value = answer.apply(method.getName());
+                            if (value == null) {
+                                throw new AssertionError("Unexpected " + method.getName());
+                            }
+                            return value;
+                        }));
+    }
+
+    private static DisplayModelService failingSchema(Object answer) {
+        var tables =
+                unusable(
+                        com.vibeminer.formats.tables.BuildTables.class,
+                        name ->
+                                switch (name) {
+                                    case "schema" ->
+                                            answer instanceof Throwable failure
+                                                    ? java.util.concurrent.CompletableFuture
+                                                            .failedFuture(failure)
+                                                    : java.util.concurrent.CompletableFuture
+                                                            .completedFuture(answer);
+                                    case "closeAsync" ->
+                                            java.util.concurrent.CompletableFuture.completedFuture(
+                                                    null);
+                                    default -> null;
+                                });
+        var files = unusable(com.vibeminer.files.BuildFiles.class, name -> null);
+        return new DisplayModelService(tables, files, null);
+    }
+
+    private static RuntimeException busy() throws Exception {
+        var constructor =
+                com.vibeminer.formats.tables.TableWorkScheduler.BusyException.class
+                        .getDeclaredConstructor(
+                                com.vibeminer.formats.tables.TableTypes.Priority.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(
+                com.vibeminer.formats.tables.TableTypes.Priority.INTERACTIVE);
+    }
+
+    @Test
+    void tableFailuresAreRefusalsOnlyWhenPermanentAndBusyOrClosedIsTransient() throws Exception {
+        // A table that is not available is a stated refusal: an unavailable preview with a reason.
+        var refused =
+                failingSchema(
+                        new com.vibeminer.formats.tables.TableTypes.SchemaResult(null, null, null));
+        var preview = refused.preview(5, Cancellation.NONE).get();
+        assertEquals(DisplayModelTypes.State.UNAVAILABLE, preview.state());
+        assertTrue(preview.message().contains("is unavailable"), preview.message());
+        // A full table queue is transient: the component's busy refusal, never a cached result.
+        var queued = failingSchema(busy());
+        var busy = assertThrowsCause(() -> queued.preview(5, Cancellation.NONE).get());
+        assertTrue(
+                busy instanceof DisplayModelTypes.ServiceUnavailable unavailable
+                        && !unavailable.closed(),
+                String.valueOf(busy));
+        // A closed table handle is the closed refusal.
+        var handle = failingSchema(new IllegalStateException("Table handle closed"));
+        var closed = assertThrowsCause(() -> handle.preview(5, Cancellation.NONE).get());
+        assertTrue(
+                closed instanceof DisplayModelTypes.ServiceUnavailable unavailable
+                        && unavailable.closed(),
+                String.valueOf(closed));
+        // Anything else is a reader failure and propagates as it is, for the caller to log.
+        var broken = failingSchema(new IllegalStateException("tables retired"));
+        var failed = assertThrowsCause(() -> broken.preview(5, Cancellation.NONE).get());
+        assertFalse(failed instanceof DisplayModelTypes.ServiceUnavailable, String.valueOf(failed));
+        var reader =
+                failed instanceof java.util.concurrent.CompletionException
+                        ? failed.getCause()
+                        : failed;
+        assertTrue(
+                reader instanceof IllegalStateException state
+                        && state.getMessage().equals("tables retired"),
+                String.valueOf(failed));
+        // A closed preview component is the closed refusal too.
+        refused.closeAsync().get();
+        var component = assertThrowsCause(() -> refused.preview(5, Cancellation.NONE).get());
+        assertTrue(
+                component instanceof DisplayModelTypes.ServiceUnavailable unavailable
+                        && unavailable.closed());
+        for (var service : List.of(queued, handle, broken)) {
+            service.closeAsync().get();
+        }
+    }
+
+    private static Throwable assertThrowsCause(
+            org.junit.jupiter.api.function.Executable executable) {
+        var thrown =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        java.util.concurrent.ExecutionException.class, executable);
+        return thrown.getCause();
+    }
+
     @Test
     void replacementTexturesUseDisplayVariationsWhileTypeZeroUsesExactTxid() {
         var variations = List.of(100L, 200L, 300L, 400L);
