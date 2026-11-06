@@ -110,6 +110,7 @@ public final class NativePresentProof {
         var shown = new ConcurrentLinkedQueue<Long>();
         var uploaded = new AtomicLong();
         var stats = new CompletableFuture<String>();
+        var shotLine = new CompletableFuture<String>();
         var ready = new CompletableFuture<String>();
         var pixels = new int[800 * 500];
         Thread.ofPlatform().daemon().start(() -> {
@@ -131,7 +132,10 @@ public final class NativePresentProof {
                             uploaded.set(r);
                         });
                     } else if (line.startsWith("STATS")) stats.complete(line);
-                    else if (line.startsWith("CHILD")) ready.complete(line);
+                    else if (line.startsWith("CHILD_SHOWS_FRAMES")) {
+                        shotLine.complete(line);
+                        System.out.println(line);
+                    } else if (line.startsWith("CHILD")) ready.complete(line);
                     else System.out.println("helper: " + line);
                 }
             } catch (Exception ignored) {
@@ -214,6 +218,7 @@ public final class NativePresentProof {
             long start = System.nanoTime();
             new AnimationTimer() {
                 long revision, counted;
+                boolean shotAsked;
 
                 @Override public void handle(long now) {
                     long up = uploaded.get();
@@ -226,6 +231,10 @@ public final class NativePresentProof {
                     sent.put(r, System.nanoTime());
                     latest.set(r);
                     toHelper.println("CAM " + r);
+                    if (nativeMode && !shotAsked && System.nanoTime() - start > TimeUnit.SECONDS.toNanos(seconds) - 500_000_000L) {
+                        shotAsked = true;
+                        toHelper.println("SHOT");
+                    }
                     if (System.nanoTime() - start > TimeUnit.SECONDS.toNanos(seconds)) {
                         stop();
                         probing.set(false);
@@ -234,8 +243,8 @@ public final class NativePresentProof {
                             overlay.close();
                             stage.close();
                             done.complete(String.format(java.util.Locale.ROOT,
-                                    "PRESENT_SPIKE mode=%s %s | camera->helper-done %s | camera->drawing-pulse %s | camera->screen %s | pulses %d (%.1f/s)",
-                                    mode, s, summary(presented), nativeMode ? "n/a (helper presents)" : summary(shown),
+                                    "PRESENT_SPIKE mode=%s %s | %s | camera->helper-done %s | camera->drawing-pulse %s | camera->screen %s | pulses %d (%.1f/s)",
+                                    mode, s, nativeMode ? shotLine.getNow("CHILD_SHOWS_FRAMES FAIL no swap-chain readback") : "child n/a", summary(presented), nativeMode ? "n/a (helper presents)" : summary(shown),
                                     captured.get() ? summary(photons) : "unavailable (screen capture returns black in this session)",
                                     revision, revision * 1e9 / (System.nanoTime() - start)));
                         }));

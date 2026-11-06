@@ -83,10 +83,15 @@ public final class NativePresentHelper {
         });
         int width = 64, height = 64;
         boolean visible = true;
+        // Reads the child window's own swap chain back (bgfx screen shot of the backbuffer), so
+        // the proof can say whether the child shows the frames without capturing the screen.
+        var shot = new java.util.concurrent.atomic.AtomicReference<int[]>();
+        var callbacks = callbacks(shot);
         try (var stack = MemoryStack.stackPush()) {
             var init = BGFXInit.calloc(stack);
             bgfx_init_ctor(init);
             init.type(BGFX_RENDERER_TYPE_DIRECT3D11).fallback(false);
+            init.callback(callbacks);
             init.platformData().nwh(hwnd);
             init.resolution().width(width).height(height).reset(BGFX_RESET_VSYNC)
                     .maxFrameLatency((byte) 1).formatDepthStencil(BGFX_TEXTURE_FORMAT_COUNT);
@@ -95,8 +100,8 @@ public final class NativePresentHelper {
         }
         out("CHILD " + hwnd + " " + bgfx_get_renderer_name(bgfx_get_caps().rendererType()));
         var intervals = new ArrayList<Long>();
-        long last = 0, revision = 0, announced = 0, frame = 0;
-        boolean running = true;
+        long last = 0, revision = 0, announced = 0, frame = 0, shotRevision = -1;
+        boolean running = true, frozen = false;
         while (running) {
             for (String line; (line = commands.poll()) != null; ) {
                 var p = line.split(" ");
@@ -116,7 +121,14 @@ public final class NativePresentHelper {
                         User32.ShowWindow(hwnd, User32.SW_HIDE);
                         visible = false;
                     }
-                    case "CAM" -> revision = Long.parseLong(p[1]);
+                    case "CAM" -> {
+                        if (!frozen) revision = Long.parseLong(p[1]);
+                    }
+                    case "SHOT" -> {
+                        frozen = true;
+                        shotRevision = revision;
+                        org.lwjgl.bgfx.BGFX.bgfx_request_screen_shot((short) 0xffff, "child");
+                    }
                     case "QUIT" -> running = false;
                     default -> { }
                 }
@@ -128,7 +140,7 @@ public final class NativePresentHelper {
             }
             frame++;
             // A colour that follows the camera revision, so the picture visibly tracks input.
-            int shade = (int) (revision * 7 % 200) + 40;
+            int shade = shade(revision);
             bgfx_set_view_rect(0, 0, 0, width, height);
             bgfx_set_view_clear(0, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH,
                     (shade << 24) | (80 << 16) | ((255 - shade) << 8) | 0xff, 0, 0);
@@ -140,6 +152,17 @@ public final class NativePresentHelper {
             if (revision > announced) {
                 announced = revision;
                 out("PRESENTED " + revision);
+            }
+            var taken = shot.getAndSet(null);
+            if (taken != null) {
+                int expected = shade(shotRevision);
+                int r = taken[2] >> 16 & 255, g = taken[2] >> 8 & 255, bl = taken[2] & 255;
+                boolean pass = taken[0] == width && taken[1] == height
+                        && Math.abs(r - expected) <= 1 && Math.abs(g - 80) <= 1 && Math.abs(bl - (255 - expected)) <= 1;
+                out(String.format(java.util.Locale.ROOT,
+                        "CHILD_SHOWS_FRAMES %s swapchain %dx%d centre rgb(%d,%d,%d) expected rgb(%d,80,%d) for revision %d",
+                        pass ? "PASS" : "FAIL", taken[0], taken[1], r, g, bl, expected, 255 - expected, shotRevision));
+                frozen = false;
             }
         }
         intervals.sort(null);
@@ -216,6 +239,42 @@ public final class NativePresentHelper {
         org.lwjgl.system.MemoryUtil.memFree(pixels);
         out("STATS readback");
         bgfx_shutdown();
+    }
+
+    static int shade(long revision) {
+        return (int) (revision * 7 % 200) + 40;
+    }
+
+    /**
+     * bgfx callbacks: fatal errors end the helper; the screen shot callback keeps the backbuffer
+     * size and its centre pixel (BGRA) as {width, height, 0xRRGGBB}.
+     */
+    private static org.lwjgl.bgfx.BGFXCallbackInterface callbacks(
+            java.util.concurrent.atomic.AtomicReference<int[]> shot) {
+        var vtbl = org.lwjgl.bgfx.BGFXCallbackVtbl.calloc()
+                .fatal((self, file, line, code, message) -> {
+                    out("FATAL " + org.lwjgl.system.MemoryUtil.memUTF8Safe(message));
+                    Runtime.getRuntime().halt(70);
+                })
+                .trace_vargs((self, file, line, format, args) -> { })
+                .profiler_begin((self, name, abgr, file, line) -> { })
+                .profiler_begin_literal((self, name, abgr, file, line) -> { })
+                .profiler_end(self -> { })
+                .cache_read_size((self, id) -> 0)
+                .cache_read((self, id, data, size) -> false)
+                .cache_write((self, id, data, size) -> { })
+                .screen_shot((self, path, width, height, pitch, format, data, size, yflip) -> {
+                    int row = height / 2, column = width / 2;
+                    long at = data + (long) row * pitch + column * 4L;
+                    int b = org.lwjgl.system.MemoryUtil.memGetByte(at) & 255;
+                    int g = org.lwjgl.system.MemoryUtil.memGetByte(at + 1) & 255;
+                    int r = org.lwjgl.system.MemoryUtil.memGetByte(at + 2) & 255;
+                    shot.set(new int[] {width, height, r << 16 | g << 8 | b});
+                })
+                .capture_begin((self, width, height, pitch, format, yflip) -> { })
+                .capture_end(self -> { })
+                .capture_frame((self, data, size) -> { });
+        return org.lwjgl.bgfx.BGFXCallbackInterface.calloc().vtbl(vtbl);
     }
 
     private static double pct(java.util.List<Long> sorted, double q) {
