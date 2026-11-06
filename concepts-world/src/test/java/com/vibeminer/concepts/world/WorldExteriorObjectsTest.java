@@ -297,12 +297,20 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    /** Mip-chain sources describe decoded images, not outcomes; they have their own test. */
+    private static final java.util.Set<WorldExteriorObjects.Count> MIP_SOURCES =
+            java.util.EnumSet.of(
+                    WorldExteriorObjects.Count.IMAGE_MIPS_FILE,
+                    WorldExteriorObjects.Count.IMAGE_MIPS_PARTIAL,
+                    WorldExteriorObjects.Count.IMAGE_MIPS_GENERATED);
+
+    /** Non-zero outcome buckets. */
     private static Map<WorldExteriorObjects.Count, Integer> counts(
             WorldExteriorObjects.TileObjects set) {
         var result =
                 new EnumMap<WorldExteriorObjects.Count, Integer>(WorldExteriorObjects.Count.class);
         for (var c : WorldExteriorObjects.Count.values()) {
-            if (set.count(c) != 0) {
+            if (set.count(c) != 0 && !MIP_SOURCES.contains(c)) {
                 result.put(c, set.count(c));
             }
         }
@@ -732,6 +740,52 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void imagesCarryTheirFullChainUsingTheFilesOwnMipsWhenTheyArePresent() {
+        // 4x4 has levels 4x4, 2x2, 1x1. Each fixture level is one flat colour.
+        for (int declared = 1; declared <= 3; declared++) {
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+                f.files.sources.put(IMAGE, blp(4, 4, declared, 0xf800));
+                try (var set = f.run()) {
+                    var image = set.images().getFirst();
+                    assertEquals(4, image.width());
+                    assertEquals(
+                            com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(4, 4) * 4,
+                            image.rgba().remaining());
+                    var expected =
+                            switch (declared) {
+                                case 3 ->
+                                        com.vibeminer.rendering.world.ObjectTextureMips.Source.FILE;
+                                case 2 ->
+                                        com.vibeminer.rendering.world.ObjectTextureMips.Source
+                                                .PARTIAL;
+                                default ->
+                                        com.vibeminer.rendering.world.ObjectTextureMips.Source
+                                                .GENERATED;
+                            };
+                    assertEquals(expected, image.mips());
+                    assertEquals(
+                            declared == 3 ? 1 : 0,
+                            set.count(WorldExteriorObjects.Count.IMAGE_MIPS_FILE));
+                    assertEquals(
+                            declared == 2 ? 1 : 0,
+                            set.count(WorldExteriorObjects.Count.IMAGE_MIPS_PARTIAL));
+                    assertEquals(
+                            declared == 1 ? 1 : 0,
+                            set.count(WorldExteriorObjects.Count.IMAGE_MIPS_GENERATED));
+                    // Opaque: every level of the chain is red with alpha 255.
+                    var rgba = image.rgba();
+                    for (int at = 0; at < rgba.remaining(); at += 4) {
+                        assertEquals(255, rgba.get(at) & 255);
+                        assertEquals(255, rgba.get(at + 3) & 255);
+                    }
+                    // Budgets still count the drawn top level only.
+                    assertEquals(16, set.pixels());
+                }
+            }
+        }
+    }
+
+    @Test
     void placementCapKeepsFirstSixtyFourInSourceOrder() {
         var records = new ArrayList<Modf>();
         for (int i = 0; i < 70; i++) {
@@ -985,7 +1039,8 @@ class WorldExteriorObjectsTest {
 
     @Test
     void tilePixelBudgetLowersLevelsInsteadOfDroppingImages() {
-        // 15 x 256^2 + 256x128 fill the 1 Mi pixel budget exactly; the last two images still
+        // 15 x 256^2 + 256x128 chains (1,354,406 texels) leave 43,695 of the 1,398,101-texel
+        // chain budget, so the last two images still
         // draw at 128^2 instead of being dropped. 4016 records level 1, so its own mip is read
         // again from the file; 4017 records only level 0, so it is reduced by a 2x2 box.
         var materials = new ArrayList<Material>();
@@ -1015,8 +1070,12 @@ class WorldExteriorObjectsTest {
                 assertEquals(4016L, recorded.id());
                 assertEquals(1, recorded.mipLevel());
                 assertEquals(128, recorded.width());
-                // Registered at 128 (its recorded level 1): no second read was needed.
+                // Registered at 128 (its recorded level 1); its chain takes the recorded level 2
+                // below it from the bytes kept since registration, so one read in all (#265).
                 assertEquals(1, f.files.opens.get(4016L).get());
+                assertEquals(
+                        com.vibeminer.rendering.world.ObjectTextureMips.Source.PARTIAL,
+                        recorded.mips());
                 var reduced = set.images().get(17);
                 assertEquals(4017L, reduced.id());
                 assertEquals(1, reduced.mipLevel());
@@ -1152,7 +1211,20 @@ class WorldExteriorObjectsTest {
             f.files.sources.put(
                     GROUP, group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 1))));
             f.files.sources.put(IMAGE2, blp(256, 256, 3, 0x001f));
+            // Normally the bytes kept since registration serve the relevel (#265): no second
+            // read, and the allotted level is drawn.
             try (var set = f.run()) {
+                var cutout =
+                        set.images().stream()
+                                .filter(i -> i.id() == IMAGE2)
+                                .findFirst()
+                                .orElseThrow();
+                assertEquals(256, cutout.width(), "allotted level from the kept bytes");
+                assertEquals(1, f.files.opens.get(IMAGE2).get(), "no second read");
+            }
+            // With nothing retained, the second read happens and its refusal keeps the level.
+            f.files.opens.clear();
+            try (var set = retaining(f, 0)) {
                 assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
                 var cutout =
                         set.images().stream()
@@ -1161,6 +1233,70 @@ class WorldExteriorObjectsTest {
                                 .orElseThrow();
                 assertEquals(128, cutout.width(), "registered level kept");
                 assertEquals(2, f.files.opens.get(IMAGE2).get(), "the second read was attempted");
+                assertEquals(0, set.retainedSourceBytes);
+            }
+        }
+    }
+
+    private static WorldExteriorObjects.TileObjects retaining(Fixture f, long limit) {
+        return WorldExteriorObjects.prepare(
+                f.engine,
+                f.scope,
+                TILE,
+                Cancellation.NONE,
+                WorldExteriorObjects.ModelReader.STANDARD,
+                WorldExteriorObjects.ImageDetail.STANDARD,
+                limit);
+    }
+
+    @Test
+    void retainedImageSourcesStayWithinTheirBoundAndCountEachFileOnce() {
+        // One 256^2 file with three recorded levels, drawn opaque and cutout: two images (one per
+        // material class) from one source file.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            1,
+                            new long[] {GROUP},
+                            List.of(new Material(0, IMAGE2, 0), new Material(1, IMAGE2, 0))));
+            f.files.sources.put(
+                    GROUP, group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 1))));
+            byte[] file = blp(256, 256, 3, 0x001f);
+            f.files.sources.put(IMAGE2, file);
+            try (var set = retaining(f, WorldExteriorObjects.RETAINED_SOURCE_BYTES)) {
+                assertEquals(2, set.images().size(), "one image per material class");
+                assertEquals(file.length, set.retainedSourceBytes, "the file is kept once");
+            }
+            // A bound below one file keeps nothing, yet the tile draws the same images.
+            try (var set = retaining(f, file.length - 1)) {
+                assertEquals(0, set.retainedSourceBytes);
+                assertEquals(2, set.images().size());
+                assertTrue(set.images().stream().allMatch(i -> i.width() == 256));
+            }
+        }
+        // Many files: the kept bytes never pass the bound, and the drawn result is unchanged.
+        var materials = new ArrayList<Material>();
+        var batches = new ArrayList<Batch>();
+        for (int i = 0; i < 18; i++) {
+            materials.add(new Material(0, 4000 + i, 0));
+            batches.add(new Batch(i * 3, 3, 0, i));
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(1, new long[] {GROUP}, materials));
+            f.files.sources.put(GROUP, group(EXT, 3, 18, batches));
+            for (int i = 0; i < 18; i++) {
+                f.files.sources.put(4000L + i, blp(256, 256, 3, i));
+            }
+            long one = f.files.sources.get(4000L).length, bound = one * 5 + one / 2;
+            java.util.List<Integer> unbounded;
+            try (var set = f.run()) {
+                unbounded = set.images().stream().map(i -> i.width()).toList();
+            }
+            try (var set = retaining(f, bound)) {
+                assertTrue(set.retainedSourceBytes <= bound, "kept " + set.retainedSourceBytes);
+                assertEquals(one * 5, set.retainedSourceBytes, "whole files only, up to the bound");
+                assertEquals(unbounded, set.images().stream().map(i -> i.width()).toList());
             }
         }
     }
