@@ -168,6 +168,8 @@ final class WorldStreamSourceController {
         boolean buildingsFailed;
         WorldTileCreatures.Summary creatures = WorldTileCreatures.Summary.NONE;
         WorldObjectPicks.Tile picks;
+        // Objects release revision when this offer was issued.
+        long releaseRevision;
 
         Exterior(Entry entry) {
             this.entry = entry;
@@ -181,12 +183,20 @@ final class WorldStreamSourceController {
     // Worker-owned: at most one late exterior delivery, and the residents already tried.
     private ExecutorService exteriorWorker;
     private Exterior exterior;
+    // Worker-owned: residents refused for the objects GPU budget, with the session's objects
+    // release revision at the refusal. They are offered again only once a drawn objects set was
+    // released (its resident replaced), never just because the camera turned or moved.
+    private final IdentityHashMap<Entry, Long> exteriorBudget = new IdentityHashMap<>();
     private final java.util.Set<Entry> exteriorTried =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Events events;
     private final Consumer<Runnable> fxPost;
     private final LongSupplier clock;
     private static final long RETRY_NANOS = 500_000_000L;
+    // Most residents one commit names: the 5 x 5 neighborhood in production.
+    private final int residents;
+    // Source entries: every resident, the staged tile, one pending tile and one retiring.
+    private final int maxEntries;
     private final ExecutorService worker =
             Executors.newSingleThreadExecutor(
                     Thread.ofPlatform().daemon().name("world-source-controller").factory());
@@ -277,6 +287,23 @@ final class WorldStreamSourceController {
             Consumer<Runnable> fxPost,
             LongSupplier clock,
             WorldStreamSourceBridge.ExteriorPreparer exteriorPreparer) {
+        this(request, starter, events, fxPost, clock, exteriorPreparer,
+                WorldStreamGpuOwner.VIEW_DISTANCE.residents());
+    }
+
+    /** Tests may also bound the neighborhood below the protocol's resident limit. */
+    WorldStreamSourceController(
+            Request request,
+            GpuStarter starter,
+            Events events,
+            Consumer<Runnable> fxPost,
+            LongSupplier clock,
+            WorldStreamSourceBridge.ExteriorPreparer exteriorPreparer,
+            int residents) {
+        if (residents < 1 || residents > WorldStreamTransport.MAX_RESIDENTS)
+            throw new IllegalArgumentException("Resident bound");
+        this.residents = residents;
+        maxEntries = residents + 3;
         this.exteriorPreparer = Objects.requireNonNull(exteriorPreparer);
         this.clock = Objects.requireNonNull(clock);
         this.request = Objects.requireNonNull(request);
@@ -309,7 +336,8 @@ final class WorldStreamSourceController {
 
     void neighborhood(List<WorldFormats.Tile> ordered) {
         Objects.requireNonNull(ordered);
-        if (ordered.size() > 9) throw new IllegalArgumentException("Neighborhood bounds");
+        if (ordered.size() > residents)
+            throw new IllegalArgumentException("Neighborhood bounds");
         var copy = List.copyOf(ordered);
         for (int i = 0; i < copy.size(); i++) {
             for (int j = 0; j < i; j++) {
@@ -341,6 +369,12 @@ final class WorldStreamSourceController {
                                     started));
         }
         return issued;
+    }
+
+    /** The resident bound, never above what the open session's view distance admits. */
+    private int residentLimit() {
+        var open = session;
+        return open == null ? residents : Math.min(residents, open.viewDistance().residents());
     }
 
     void pulse() {
@@ -792,7 +826,7 @@ final class WorldStreamSourceController {
             var latest = camera;
             if (latest == null) return;
             var target = new ArrayList<>(current);
-            if (target.size() == 9) {
+            if (target.size() >= residentLimit()) {
                 int outgoing = target.size() - 1;
                 for (int i = target.size() - 1; i >= 0; i--) {
                     if (!containsResident(wanted, target.get(i).resident())) {
@@ -832,7 +866,7 @@ final class WorldStreamSourceController {
         }
         boolean needsSource=wanted.stream().anyMatch(tile->!unavailable.containsKey(key(tile))
                 && current.stream().noneMatch(entry->same(tile,entry.resident())));
-        if (entries.size() >= 12 && needsSource) {
+        if (entries.size() >= maxEntries && needsSource) {
             // Any missing center needs a source credit, even if never previously presented.
             boolean missingCenter=!wanted.isEmpty() && current.stream().noneMatch(
                     entry->same(wanted.getFirst(),entry.resident()));
@@ -937,6 +971,7 @@ final class WorldStreamSourceController {
             for (var entry : current) {
                 if (!same(tile, entry.resident())
                         || exteriorTried.contains(entry)
+                        || budgetDeferred(entry)
                         || entry.resident().exteriorObjects()
                                 != WorldStreamTransport.ExteriorObjects.NONE) continue;
                 var work = new Exterior(entry);
@@ -962,6 +997,15 @@ final class WorldStreamSourceController {
                 return;
             }
         }
+    }
+
+    /** A budget-refused resident waits until objects budget was released after its refusal. */
+    private boolean budgetDeferred(Entry entry) {
+        Long refused = exteriorBudget.get(entry);
+        if (refused == null) return false;
+        if (refused == session.objectsReleaseRevision()) return true;
+        exteriorBudget.remove(entry);
+        return false;
     }
 
     /** Advances the one late exterior delivery; its failures never reach terrain. */
@@ -1001,6 +1045,7 @@ final class WorldStreamSourceController {
             work.creatures = copy.creatures();
             work.picks = copy.picks();
             long attaching = WorldStageTimings.start();
+            work.releaseRevision = session.objectsReleaseRevision();
             work.attached = session.attachObjects(work.entry.resident(), copy.exterior());
             work.attached.whenComplete((ignored, failure) -> {
                 WorldStageTimings.stop("parent.objects.attachRoundTrip", attaching);
@@ -1012,6 +1057,16 @@ final class WorldStreamSourceController {
         exterior = null;
         // Retired (and its source closed) while the attach was in flight: nothing to record.
         if (!live(work.entry)) {
+            changed();
+            return;
+        }
+        var outcome = work.attached;
+        if (!outcome.isCompletedExceptionally()
+                && outcome.join() == WorldStreamTransport.ObjectsOutcome.BUDGET) {
+            // Not a fault: the shared GPU budget was full. Offer it again once a drawn set has
+            // been released since this offer was issued (not since the refusal arrived, so a
+            // release landing in between still counts), still nearest first.
+            exteriorBudget.put(work.entry, work.releaseRevision);
             changed();
             return;
         }
@@ -1031,7 +1086,7 @@ final class WorldStreamSourceController {
                             "World exterior objects delivery failed; tile kept as terrain only", null);
                     work.entry.source().exteriorFailedLate();
                 }
-                case DROPPED -> {}
+                case DROPPED, BUDGET -> {}
             }
         } catch (RuntimeException failed) {
             // A stopping session cancels delivery; anything else fails only these objects.
@@ -1197,7 +1252,7 @@ final class WorldStreamSourceController {
                             candidate.height(),()->closing)) {
                 skySuppressed=true;
                 synchronized(lock) {
-                    if(!closing && borrowed==null && queued==null && entries.size()>=12
+                    if(!closing && borrowed==null && queued==null && entries.size()>=maxEntries
                             && !presented.isEmpty() && candidate.content()==currentReceipt) {
                         // Detached old GUI pixels remain a historical raster, not a live Source borrow.
                         // No new receipt/sequence is acknowledged and no new pixels are displayed.
@@ -1364,6 +1419,7 @@ final class WorldStreamSourceController {
             sourceRetirementRevision++;
             entries.remove(entry.resident());
             exteriorTried.remove(entry);
+            exteriorBudget.remove(entry);
         }
     }
 
@@ -1475,6 +1531,7 @@ final class WorldStreamSourceController {
         }
         entries.clear();
         exteriorTried.clear();
+        exteriorBudget.clear();
         exterior = null;
         if (exteriorWorker != null) exteriorWorker.shutdown();
         source = null;
