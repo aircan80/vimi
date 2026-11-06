@@ -43,6 +43,21 @@ final class WorldNativePresenter {
         }
     }
 
+    /** What {@link #show} did: the child is shown, does not exist yet, or was refused. */
+    enum Result { SHOWN, NO_CHILD, REFUSED }
+
+    /**
+     * The presented frame's size for picking and overlays, {width, height}, or null when no frame
+     * is shown. Natively the child fills the viewport, so the frame has the viewport's size; on
+     * readback it is the image's ({@code imageWidth} 0 when there is none).
+     */
+    static double[] frameSize(boolean nativeShown, double viewportWidth, double viewportHeight,
+            double imageWidth, double imageHeight) {
+        if (nativeShown) return viewportWidth >= 1 && viewportHeight >= 1
+                ? new double[] {viewportWidth, viewportHeight} : null;
+        return imageWidth > 0 && imageHeight > 0 ? new double[] {imageWidth, imageHeight} : null;
+    }
+
     /** The few user32 calls the GUI makes; replaced in tests. */
     interface Windows {
         long findChild(long parent, String className);
@@ -78,7 +93,7 @@ final class WorldNativePresenter {
     private final Windows windows;
     private long parent, child;
     private Placement placed;
-    private boolean shown;
+    private boolean shown, hidden;
 
     WorldNativePresenter(Windows windows) {
         this.windows = Objects.requireNonNull(windows);
@@ -90,7 +105,7 @@ final class WorldNativePresenter {
             parent = handle;
             child = 0;
             placed = null;
-            shown = false;
+            shown = hidden = false;
         }
     }
 
@@ -101,30 +116,36 @@ final class WorldNativePresenter {
     }
 
     /**
-     * Places and shows the child over the viewport. Only changes are sent. False when there is
-     * no child (yet) or the platform refused, in which case the caller keeps the readback view.
+     * Places the child over the viewport, then shows it, so it never appears anywhere else. Only
+     * changes are sent. After a refusal the child is looked up again on the next call.
      */
-    boolean show(Placement placement) {
+    Result show(Placement placement) {
         long window = child();
-        if (window == 0) return false;
+        if (window == 0) return Result.NO_CHILD;
         if (!placement.equals(placed)) {
             if (!windows.place(window, placement)) {
                 child = 0;
-                return false;
+                return Result.REFUSED;
             }
             placed = placement;
         }
         if (!shown) {
-            if (!windows.show(window, true)) return false;
+            if (!windows.show(window, true)) return Result.REFUSED;
             shown = true;
+            hidden = false;
         }
-        return true;
+        return Result.SHOWN;
     }
 
-    /** Hides the child (tab hidden, minimised, instance, fallback). */
+    /**
+     * Hides the child (tab hidden, minimised, instance, fallback), also before it was ever shown
+     * here: the call is sent until the child is known hidden.
+     */
     void hide() {
-        if (child != 0 && shown) windows.show(child, false);
         shown = false;
+        if (hidden) return;
+        long window = child();
+        if (window != 0 && windows.show(window, false)) hidden = true;
     }
 
     boolean shown() {
@@ -178,19 +199,24 @@ final class WorldNativePresenter {
                 }
             };
         } catch (RuntimeException | LinkageError unavailable) {
-            return new Windows() {
-                @Override public long findChild(long parent, String className) {
-                    return 0;
-                }
-
-                @Override public boolean place(long child, Placement placement) {
-                    return false;
-                }
-
-                @Override public boolean show(long child, boolean visible) {
-                    return false;
-                }
-            };
+            return unavailable();
         }
+    }
+
+    /** Every call fails: off Windows, and while native presentation is not asked for. */
+    static Windows unavailable() {
+        return new Windows() {
+            @Override public long findChild(long parent, String className) {
+                return 0;
+            }
+
+            @Override public boolean place(long child, Placement placement) {
+                return false;
+            }
+
+            @Override public boolean show(long child, boolean visible) {
+                return false;
+            }
+        };
     }
 }

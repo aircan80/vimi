@@ -34,7 +34,7 @@ public final class WorldNativeSurfaceUiTest {
             Platform.exit();
         }
         System.out.println("World native surface: overlay reparent, physical placement, hide with the view"
-                + " and detach passed");
+                + ", focus, refusal fallback and detach passed");
     }
 
     private static void run() {
@@ -45,7 +45,6 @@ public final class WorldNativeSurfaceUiTest {
         stage.setScene(new Scene(content, 900, 600));
         stage.show();
         var windows = new WorldNativePresenterTest.Fake();
-        windows.child = 7;
         var surface = new WorldNativeSurface(viewport, image, content::setCenter,
                 new WorldNativePresenter(windows));
         require(!surface.attached(), "Starts detached");
@@ -57,7 +56,11 @@ public final class WorldNativeSurfaceUiTest {
         require(!image.isVisible(), "The readback image is hidden while the child shows frames");
         require(viewport.getStyle().equals(WorldNativeSurface.HIT_TEST_BACKGROUND),
                 "The viewport still takes every mouse event");
-        require(surface.pulse(true), "The child is placed");
+        require(surface.pulse(true, 0) == WorldNativeSurface.Pulse.PENDING,
+                "No child yet (the helper is starting): waits, nothing is shown");
+        require(windows.calls.stream().noneMatch(c -> c.startsWith("show")), "Nothing shown: " + windows.calls);
+        windows.child = 7;
+        require(surface.pulse(true, 0) == WorldNativeSurface.Pulse.PLACED, "The child is placed");
         var scene = surface.placeholder().localToScene(surface.placeholder().getLayoutBounds());
         double scale = stage.getOutputScaleX();
         String expected = "place 7 " + (int) Math.floor(scene.getMinX() * scale) + ","
@@ -68,9 +71,27 @@ public final class WorldNativeSurfaceUiTest {
         require(surface.overlay().isShowing() && surface.overlay().getX() == screen.getMinX()
                 && surface.overlay().getWidth() == screen.getWidth(), "The overlay covers the placeholder");
         windows.calls.clear();
-        require(!surface.pulse(false), "Hidden view");
+        surface.focus();
+        require(surface.overlay().getScene().getFocusOwner() == viewport,
+                "Focusing the view focuses the viewport on the overlay stage");
+        require(surface.pulse(false, 0) == WorldNativeSurface.Pulse.HIDDEN, "Hidden view");
         require(windows.calls.contains("hide 7") && !surface.overlay().isShowing(),
                 "The child and the overlay hide with the view: " + windows.calls);
+        // A platform that keeps refusing the placement: pending, then failed after the limit.
+        windows.refuseShow = true;
+        long second = 1_000_000_000L;
+        require(surface.pulse(true, 10 * second) == WorldNativeSurface.Pulse.PENDING, "A first refusal waits");
+        require(surface.pulse(true, 10 * second + WorldNativeSurface.REFUSAL_NANOS / 2)
+                == WorldNativeSurface.Pulse.PENDING, "A short refusal waits");
+        require(surface.pulse(true, 10 * second + WorldNativeSurface.REFUSAL_NANOS)
+                == WorldNativeSurface.Pulse.FAILED, "A persistent refusal fails over to readback");
+        windows.refuseShow = false;
+        require(surface.pulse(true, 20 * second) == WorldNativeSurface.Pulse.PLACED, "Placed again");
+        require(surface.pulse(false, 25 * second) == WorldNativeSurface.Pulse.HIDDEN, "Hidden again");
+        windows.refuseShow = true;
+        require(surface.pulse(true, 30 * second) == WorldNativeSurface.Pulse.PENDING,
+                "A success restarts the refusal clock");
+        windows.refuseShow = false;
         surface.detach();
         require(!surface.attached() && content.getCenter() == viewport && image.isVisible()
                 && viewport.getScene() == stage.getScene(), "Detach returns the viewport and the image");

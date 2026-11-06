@@ -23,6 +23,20 @@ import javafx.stage.Window;
 final class WorldNativeSurface {
     /** Nearly transparent, so the overlay stage still receives every mouse event over the view. */
     static final String HIT_TEST_BACKGROUND = "-fx-background-color: rgba(0,0,0,0.004);";
+    /** How long the platform may keep refusing to place the child before the view gives up. */
+    static final long REFUSAL_NANOS = 1_000_000_000L;
+
+    /** What one pulse found. */
+    enum Pulse {
+        /** Not attached, or the view is not shown: the child and the overlay are hidden. */
+        HIDDEN,
+        /** The child is over the placeholder and shown. */
+        PLACED,
+        /** No child yet (the helper is starting), or a refusal shorter than the limit. */
+        PENDING,
+        /** The platform refused the placement for {@link #REFUSAL_NANOS}: use readback. */
+        FAILED
+    }
 
     private final Region viewport;
     private final Node frameImage;
@@ -31,6 +45,7 @@ final class WorldNativeSurface {
     private final Region placeholder = new Region();
     private Stage overlay;
     private String viewportStyle;
+    private long refusedSince = -1;
 
     /**
      * {@code restore} puts the viewport back where the placeholder is; {@code frameImage} is the
@@ -85,11 +100,12 @@ final class WorldNativeSurface {
     }
 
     /**
-     * Once per pulse: keeps the child and the overlay over the placeholder, or hides both while
-     * the view is not shown. False when the child could not be placed (not there yet, refused).
+     * Once per pulse at {@code now} (nanoseconds): keeps the child and the overlay over the
+     * placeholder, or hides both while the view is not shown. The child is created hidden and is
+     * shown here only once placed.
      */
-    boolean pulse(boolean visible) {
-        if (overlay == null) return false;
+    Pulse pulse(boolean visible, long now) {
+        if (overlay == null) return Pulse.HIDDEN;
         Bounds screen = placeholder.localToScreen(placeholder.getLayoutBounds());
         Bounds scene = placeholder.localToScene(placeholder.getLayoutBounds());
         var window = placeholder.getScene() == null ? null : placeholder.getScene().getWindow();
@@ -97,17 +113,32 @@ final class WorldNativeSurface {
                 || scene.getWidth() < 1 || scene.getHeight() < 1) {
             presenter.hide();
             if (overlay.isShowing()) overlay.hide();
-            return false;
+            refusedSince = -1;
+            return Pulse.HIDDEN;
         }
         var placement = WorldNativePresenter.Placement.of(scene.getMinX(), scene.getMinY(),
                 scene.getWidth(), scene.getHeight(), window.getOutputScaleX(), window.getOutputScaleY());
-        boolean placed = presenter.show(placement);
+        var shown = presenter.show(placement);
         if (overlay.getX() != screen.getMinX()) overlay.setX(screen.getMinX());
         if (overlay.getY() != screen.getMinY()) overlay.setY(screen.getMinY());
         if (overlay.getWidth() != screen.getWidth()) overlay.setWidth(screen.getWidth());
         if (overlay.getHeight() != screen.getHeight()) overlay.setHeight(screen.getHeight());
         if (!overlay.isShowing()) overlay.show();
-        return placed;
+        if (shown != WorldNativePresenter.Result.REFUSED) {
+            refusedSince = -1;
+            return shown == WorldNativePresenter.Result.SHOWN ? Pulse.PLACED : Pulse.PENDING;
+        }
+        if (refusedSince < 0) refusedSince = now;
+        return now - refusedSince >= REFUSAL_NANOS ? Pulse.FAILED : Pulse.PENDING;
+    }
+
+    /**
+     * Gives the viewport the keyboard. While attached it lives on the overlay stage, which must be
+     * the active window for its focus owner to receive keys, so that stage is activated too.
+     */
+    void focus() {
+        viewport.requestFocus();
+        if (overlay != null && overlay.isShowing()) overlay.requestFocus();
     }
 
     /** Returns the viewport to the layout, shows the readback image again; idempotent. */
@@ -115,6 +146,7 @@ final class WorldNativeSurface {
         var stage = overlay;
         if (stage == null) return;
         overlay = null;
+        refusedSince = -1;
         presenter.hide();
         if (stage.getScene().getRoot() instanceof StackPane root) root.getChildren().remove(viewport);
         viewport.setStyle(viewportStyle);

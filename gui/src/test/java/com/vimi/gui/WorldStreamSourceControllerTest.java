@@ -50,6 +50,7 @@ public final class WorldStreamSourceControllerTest {
         missingNearestIsFiniteUnavailableWithoutFillingOutputUnion();
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         nativePresentationAcceptsCurrentContentAndRelievesTwelveOwners();
+        nativePresentationWithAStillCameraAcceptsEachCommit();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
         sameResidentCameraFrameDoesNotRetryMaterialPool();
@@ -1135,6 +1136,36 @@ public final class WorldStreamSourceControllerTest {
     }
 
     /**
+     * #381: a held camera never sends a new revision, and the helper announces the same camera
+     * with each new content. Every commit is still accepted, so the stream returns to READY (which
+     * owes no frame) instead of staying PRESENTING until the stall watchdog falls back.
+     */
+    private static void nativePresentationWithAStillCameraAcceptsEachCommit() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 13);
+        var presentedCameras = new java.util.concurrent.CopyOnWriteArrayList<Long>();
+        try {
+            fixture.start();
+            fixture.controller.onPresented(presentedCameras::add);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 9));
+            fixture.untilNativePresented(1, () -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY && fixture.controller.snapshot().prepared() == 9);
+            long first = fixture.controller.currentContentRevision();
+            fixture.controller.neighborhood(fixture.tiles.subList(4, 13));
+            fixture.untilNativePresented(1, () -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.currentContentRevision() > first
+                    && fixture.controller.snapshot().prepared() == 9);
+            fixture.until(() -> !presentedCameras.isEmpty());
+            check(presentedCameras.stream().allMatch(camera -> camera == 1),
+                    "Only the held camera was presented: " + presentedCameras);
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
      * #381, window mode: no mapping frames are taken; PRESENTED for the current content is the
      * acceptance. READY is reached, and with thirteen owners capacity waits only until the window
      * presents the current content, as with accepted readback pixels.
@@ -1541,6 +1572,16 @@ public final class WorldStreamSourceControllerTest {
                                                 controller.discard(frame);
                                             }
                                         });
+                        return condition.getAsBoolean();
+                    });
+        }
+
+        /** Presents every committed content natively for the one, held {@code camera}. */
+        void untilNativePresented(long camera, BooleanSupplier condition) throws Exception {
+            until(
+                    () -> {
+                        long content = controller.currentContentRevision();
+                        if (content >= 0) controller.presentedNatively(camera, content);
                         return condition.getAsBoolean();
                     });
         }

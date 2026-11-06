@@ -11,9 +11,12 @@ public final class WorldNativePresenterTest {
         gating();
         placement();
         bookkeeping();
+        hideWorksBeforeTheFirstShow();
+        frameSize();
         realUser32IsHarmlessWithoutAChild();
         System.out.println("World native presenter: opt-in gating, physical placement, change-only"
-                + " placement, discovery retry, refusal fallback and user32 binding passed");
+                + " placement, discovery retry, refusal fallback, hide before the first show, frame size and"
+                + " user32 binding passed");
     }
 
     private static void gating() {
@@ -40,7 +43,7 @@ public final class WorldNativePresenterTest {
 
     static final class Fake implements WorldNativePresenter.Windows {
         long child;
-        boolean refusePlace;
+        boolean refusePlace, refuseShow;
         final List<String> calls = new ArrayList<>();
 
         @Override public long findChild(long parent, String className) {
@@ -55,7 +58,7 @@ public final class WorldNativePresenterTest {
 
         @Override public boolean show(long window, boolean visible) {
             calls.add((visible ? "show " : "hide ") + window);
-            return true;
+            return !(visible && refuseShow);
         }
     }
 
@@ -63,16 +66,18 @@ public final class WorldNativePresenterTest {
         var windows = new Fake();
         var presenter = new WorldNativePresenter(windows);
         var at = new WorldNativePresenter.Placement(10, 20, 300, 200);
-        require(!presenter.show(at) && windows.calls.isEmpty(), "No parent: nothing happens");
+        var shown = WorldNativePresenter.Result.SHOWN;
+        require(presenter.show(at) == WorldNativePresenter.Result.NO_CHILD && windows.calls.isEmpty(),
+                "No parent: nothing happens");
         presenter.parent(77);
-        require(!presenter.show(at), "No child yet: readback stays");
+        require(presenter.show(at) == WorldNativePresenter.Result.NO_CHILD, "No child yet: readback stays");
         windows.child = 99;
-        require(presenter.show(at) && presenter.shown(), "The child appears: placed and shown");
+        require(presenter.show(at) == shown && presenter.shown(), "The child appears: placed and shown");
         require(windows.calls.subList(1, windows.calls.size()).equals(List.of(
                 "find 77 " + WorldNativePresenter.CHILD_CLASS, "place 99 10,20 300x200", "show 99")),
                 "Find, place, show: " + windows.calls);
         windows.calls.clear();
-        require(presenter.show(at) && windows.calls.isEmpty(), "An unchanged placement sends nothing");
+        require(presenter.show(at) == shown && windows.calls.isEmpty(), "An unchanged placement sends nothing");
         presenter.show(new WorldNativePresenter.Placement(10, 20, 301, 200));
         require(windows.calls.equals(List.of("place 99 10,20 301x200")), "Only changes are sent: " + windows.calls);
         windows.calls.clear();
@@ -81,7 +86,8 @@ public final class WorldNativePresenterTest {
         require(windows.calls.equals(List.of("hide 99")) && !presenter.shown(), "Hide once");
         windows.calls.clear();
         windows.refusePlace = true;
-        require(!presenter.show(new WorldNativePresenter.Placement(0, 0, 5, 5)), "A refused placement falls back");
+        require(presenter.show(new WorldNativePresenter.Placement(0, 0, 5, 5)) == WorldNativePresenter.Result.REFUSED,
+                "A refused placement is reported");
         windows.refusePlace = false;
         windows.calls.clear();
         presenter.show(new WorldNativePresenter.Placement(0, 0, 5, 5));
@@ -90,10 +96,46 @@ public final class WorldNativePresenterTest {
         require(!presenter.shown(), "A new parent forgets the old child");
     }
 
+    /** The child starts hidden, but a hide before any show still reaches it, once. */
+    private static void hideWorksBeforeTheFirstShow() {
+        var windows = new Fake();
+        var presenter = new WorldNativePresenter(windows);
+        presenter.parent(77);
+        presenter.hide();
+        require(windows.calls.equals(List.of("find 77 " + WorldNativePresenter.CHILD_CLASS)),
+                "No child yet: nothing to hide: " + windows.calls);
+        windows.child = 99;
+        windows.calls.clear();
+        presenter.hide();
+        presenter.hide();
+        require(windows.calls.equals(List.of("find 77 " + WorldNativePresenter.CHILD_CLASS, "hide 99")),
+                "Hidden before the first show, once: " + windows.calls);
+        windows.calls.clear();
+        presenter.show(new WorldNativePresenter.Placement(1, 2, 3, 4));
+        require(windows.calls.equals(List.of("place 99 1,2 3x4", "show 99")), "Placed before shown: " + windows.calls);
+        windows.calls.clear();
+        presenter.hide();
+        require(windows.calls.equals(List.of("hide 99")), "Hidden again after a show: " + windows.calls);
+    }
+
+    private static void frameSize() {
+        require(java.util.Arrays.equals(WorldNativePresenter.frameSize(false, 900, 600, 800, 533),
+                new double[] {800, 533}), "Readback: the image's size");
+        require(WorldNativePresenter.frameSize(false, 900, 600, 0, 0) == null, "Readback without an image: none");
+        require(java.util.Arrays.equals(WorldNativePresenter.frameSize(true, 900, 600, 0, 0),
+                new double[] {900, 600}), "Native: the viewport the child fills, no image needed");
+        require(java.util.Arrays.equals(WorldNativePresenter.frameSize(true, 900, 600, 640, 400),
+                new double[] {900, 600}), "Native: a stale readback image is ignored");
+        require(WorldNativePresenter.frameSize(true, 0, 600, 0, 0) == null, "Native without area: none");
+    }
+
     private static void realUser32IsHarmlessWithoutAChild() {
         var windows = WorldNativePresenter.user32();
         require(windows.findChild(0, "NoSuchClassForVimiTests") == 0, "No such child: 0");
         require(!windows.place(0, new WorldNativePresenter.Placement(0, 0, 1, 1)), "No window: refused");
+        var off = WorldNativePresenter.unavailable();
+        require(off.findChild(1, "x") == 0 && !off.place(1, new WorldNativePresenter.Placement(0, 0, 1, 1))
+                && !off.show(1, true), "Unavailable: every call fails");
     }
 
     private static void require(boolean condition, String message) {
