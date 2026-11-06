@@ -14,6 +14,7 @@ import com.vibeminer.formats.world.WmoFormats;
 import com.vibeminer.formats.world.WmoGroupSpans;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldPlacements;
+import com.vibeminer.rendering.world.ExteriorObjectLimits;
 import com.vibeminer.rendering.world.ObjectTextureMips;
 import com.vibeminer.rendering.world.TerrainScene;
 import java.nio.ByteBuffer;
@@ -44,37 +45,41 @@ import java.util.concurrent.CompletionException;
  */
 public final class WorldExteriorObjects {
     public static final String RECIPE = "BASIC_EXTERIOR_V1";
-    static final int MAX_PLACEMENTS = 64, MAX_ROOTS = 24, MAX_GROUPS = 256, MAX_IMAGES = 64;
-    static final int MAX_VERTICES = 98_304, MAX_INDICES = 294_912;
-    static final int MAX_RANGES = 1024, MAX_MESHES = 256, MAX_PIXELS = 1 << 20;
+    // Pool bounds come from ExteriorObjectLimits, which the objects file sums into its tables.
+    static final int MAX_PLACEMENTS = ExteriorObjectLimits.BUILDING_PLACEMENTS;
+    static final int MAX_ROOTS = ExteriorObjectLimits.BUILDING_ROOTS, MAX_GROUPS = 256;
+    static final int MAX_IMAGES = ExteriorObjectLimits.BUILDING_IMAGES;
+    static final int MAX_VERTICES = ExteriorObjectLimits.BUILDING_VERTICES;
+    static final int MAX_INDICES = ExteriorObjectLimits.BUILDING_INDICES;
+    static final int MAX_RANGES = ExteriorObjectLimits.BUILDING_RANGES;
+    static final int MAX_MESHES = ExteriorObjectLimits.BUILDING_MESHES, MAX_PIXELS = 1 << 20;
 
     /**
-     * BASIC doodad caps, separate from the building caps so buildings are never displaced.
-     *
-     * <p>Placements (#308): on Elwynn Forest's 3 x 3 tiles around Goldshire the 512-placement cap
-     * was the only one that bound (every one of 8,253 capped doodads and set doodads), with about
-     * 1,350 candidate doodads per tile against 36 distinct models. 4,096 placements cover the
-     * densest measured tiles; a placement is 104 bytes in the objects file and draws its model's
-     * ranges, which {@link #MAX_DRAWS} bounds.
-     *
-     * <p>Models: Zephras Isle read 48 models per tile and capped 791 set doodads at 48, so 96
-     * models are read. Model images: with billboard-bearing models admitted (#390) Elwynn tiles
-     * already reached 96, so 192 are read; the doodad pixel budget is unchanged, so more images
-     * share it at lower levels instead of being dropped.
+     * BASIC doodad caps, separate from the building caps so buildings are never displaced. The
+     * measured reasons for each bound are on {@link ExteriorObjectLimits} (#308): placements were
+     * the only cap that bound on Elwynn; a placement is 112 bytes in the objects file and draws its
+     * model's ranges, which {@link #MAX_DRAWS} bounds.
      */
-    static final int MAX_DOODADS = 4096, MAX_MODELS = 96, MAX_MODEL_IMAGES = 192;
+    static final int MAX_DOODADS = ExteriorObjectLimits.DOODAD_PLACEMENTS;
 
-    static final int MAX_DOODAD_VERTICES = 65_536, MAX_DOODAD_INDICES = 196_608;
-    static final int MAX_DOODAD_RANGES = 512, MAX_DOODAD_PIXELS = 1 << 19;
+    static final int MAX_MODELS = ExteriorObjectLimits.DOODAD_MODELS;
+    static final int MAX_MODEL_IMAGES = ExteriorObjectLimits.DOODAD_IMAGES;
+    static final int MAX_DOODAD_VERTICES = ExteriorObjectLimits.DOODAD_VERTICES;
+    static final int MAX_DOODAD_INDICES = ExteriorObjectLimits.DOODAD_INDICES;
+    static final int MAX_DOODAD_RANGES = ExteriorObjectLimits.DOODAD_RANGES;
+    static final int MAX_DOODAD_PIXELS = 1 << 19;
 
     /**
      * Cutout and blended building surfaces have their own budget on top of the opaque building
      * caps, so admitting them never caps, displaces or fails a surface the opaque profile draws.
      */
-    static final int MAX_MATERIAL_IMAGES = 32, MAX_MATERIAL_PIXELS = 1 << 18;
+    static final int MAX_MATERIAL_IMAGES = ExteriorObjectLimits.MATERIAL_IMAGES;
 
-    static final int MAX_MATERIAL_VERTICES = 32_768, MAX_MATERIAL_INDICES = 98_304;
-    static final int MAX_MATERIAL_RANGES = 256;
+    static final int MAX_MATERIAL_PIXELS = 1 << 18;
+
+    static final int MAX_MATERIAL_VERTICES = ExteriorObjectLimits.MATERIAL_VERTICES;
+    static final int MAX_MATERIAL_INDICES = ExteriorObjectLimits.MATERIAL_INDICES;
+    static final int MAX_MATERIAL_RANGES = ExteriorObjectLimits.MATERIAL_RANGES;
 
     /**
      * Per-tile object texture budgets (#267). STANDARD keeps the original pixel budgets; HIGH
@@ -123,12 +128,8 @@ public final class WorldExteriorObjects {
      */
     static final long RETAINED_SOURCE_BYTES = 32L << 20;
 
-    /**
-     * Per-tile draw budget: the sum over all placements of their model's ranges. Elwynn doodad
-     * models average about two ranges, so 4,096 placements need about 8,192 draws (#308); the
-     * renderer culls placements outside the view (#369), so a frame submits far fewer.
-     */
-    static final int MAX_DRAWS = 8192;
+    /** Per-tile draw budget: the sum over all placements of their model's ranges (#308). */
+    static final int MAX_DRAWS = ExteriorObjectLimits.DRAWS;
 
     /** Largest admitted placement scale (building scale times doodad scale). */
     static final double MAX_SCALE = 64;

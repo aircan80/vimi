@@ -201,7 +201,7 @@ final class WorldStreamObjectsFileTest {
         assertEquals(24 * chain, read.pixelCount());
         // The pixel cap is the HIGH tier's chain budgets: 2,796,203 + 699,051 + 1,398,101.
         assertEquals(4_893_355, WorldStreamObjectsFile.MAX_PIXELS);
-        // Every table at its cap needs about 27 MB, under the 28 MiB ceiling with headroom.
+        // Every table at its cap fits the ceiling, which is derived from them (#308): 27 MiB.
         long caps =
                 WorldStreamObjectsFile.length(
                         WorldStreamObjectsFile.MAX_MODELS,
