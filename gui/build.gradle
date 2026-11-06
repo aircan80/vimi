@@ -55,6 +55,9 @@ dependencies {
     implementation project(':concepts-professions')
     implementation project(':rendering-models')
     implementation project(':rendering-bgfx')
+    // #381 spike: the native-present helper calls LWJGL directly.
+    testCompileOnly 'org.lwjgl:lwjgl:3.4.3'
+    testCompileOnly 'org.lwjgl:lwjgl-bgfx:3.4.3'
     implementation project(':rendering-world')
     implementation project(':concepts-world')
     implementation project(':concepts-dungeons')
@@ -800,3 +803,12 @@ tasks.register('globalInteriorFloorsTest', JavaExec) {
     mainClass = 'com.vimi.gui.GlobalInteriorFloorsTest'
 }
 check.dependsOn globalInteriorFloorsTest
+
+// #381 spike: native child-window presentation on Windows (shows windows; not part of check).
+tasks.register('nativePresentProof', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.NativePresentProof'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args((findProperty('presentMode') ?: 'native').toString(), (findProperty('presentSeconds') ?: '6').toString())
+}
