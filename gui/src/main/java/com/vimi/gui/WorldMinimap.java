@@ -65,13 +65,21 @@ final class WorldMinimap extends VBox implements AutoCloseable {
 
     /**
      * What a redraw from {@link #update} would show: the player position to a quarter of a canvas
-     * pixel, the heading to a quarter degree, and the tiles. Equal keys draw the same picture.
+     * pixel, the heading to a quarter degree, the tiles and the origin they are placed from, and
+     * the role overlay's source key (markers can become available while the player stands still).
+     * Equal keys draw the same picture.
      */
-    record DrawKey(long x, long y, long heading, List<WorldFormats.Tile> tiles) {
-        static DrawKey of(double x, double y, double yaw, List<WorldFormats.Tile> tiles) {
-            double pixels = 4 * 2 * RADIUS / WorldFormats.TILE_SIZE;
-            return new DrawKey(Math.round(x * pixels), Math.round(y * pixels),
-                    Math.round(Math.toDegrees(Math.IEEEremainder(yaw, 2 * Math.PI)) * 4), tiles);
+    record DrawKey(long x, long y, long heading, List<WorldFormats.Tile> tiles, WorldFormats.Tile origin,
+            double originX, double originY, Object roles) {
+        /** Canvas pixels per yard of the player's position. */
+        static final double PIXELS_PER_YARD = 2 * RADIUS / WorldFormats.TILE_SIZE;
+
+        static DrawKey of(double x, double y, double yaw, List<WorldFormats.Tile> tiles,
+                WorldFormats.Tile origin, double originX, double originY, Object roles) {
+            double quarter = 4 * PIXELS_PER_YARD;
+            return new DrawKey(Math.round(x * quarter), Math.round(y * quarter),
+                    Math.round(Math.toDegrees(Math.IEEEremainder(yaw, 2 * Math.PI)) * 4), tiles,
+                    origin, originX, originY, roles);
         }
     }
 
@@ -264,7 +272,8 @@ final class WorldMinimap extends VBox implements AutoCloseable {
                         List.copyOf(nearby));
         setVisible(true);
         setManaged(true);
-        var key = DrawKey.of(x, y, yaw, view.tiles());
+        var key = DrawKey.of(x, y, yaw, view.tiles(), origin, originX, originY,
+                roles == null ? null : roles.paintKey());
         if (!key.equals(drawn)) {
             drawn = key;
             redraw();

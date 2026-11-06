@@ -912,7 +912,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 else switchStreamingRendering();
                             }
                             if (streaming != null) streaming.pulse();
-                            if (streamingResize.pulse()) requestFrame();
+                            streamingSizePulse();
                             pollStall(now);
                         }
                         if (camera == null) return;
@@ -2449,9 +2449,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
         streamingPaused = false;
         streamingControl = 0;
-        streamingPolicy = 1;
-        streamingWidth = streamingHeight = 0;
-        streamingResize.reset();
+        resetStreamingSize();
         var request = new WorldStreamSourceController.Request(selection, handle, inventory.map(),
                 inventory, origin, areaEntry == null || areaEntry.entryChunk() == null
                         ? null : areaEntry.entryChunk().entryReference(), catalog.areaIndex());
@@ -2562,20 +2560,41 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
     }
 
-    private void streamCamera() {
-        if (streaming == null || camera == null || !active || !explorer || closed) return;
-        if (stale(selection) || !viewportActive()) return;
+    /**
+     * The size and size policy of the next stream camera request. A new viewport size is held for
+     * one quiet pulse ({@link WorldResizeDebounce}) so a window drag bumps the policy once.
+     */
+    void streamingSize() {
         double targetWidth = Math.max(1, viewport.getWidth());
         double targetHeight = Math.max(1, viewport.getHeight());
         double scale = Math.min(1, Math.min(800 / targetWidth, 500 / targetHeight));
-        // A new size is held for one quiet pulse so a window drag bumps the policy once.
         streamingResize.offer(Math.max(1, (int) (targetWidth * scale)), Math.max(1, (int) (targetHeight * scale)));
         int width = streamingResize.width(), height = streamingResize.height();
         if (streamingWidth != 0 && (width != streamingWidth || height != streamingHeight)) streamingPolicy++;
         streamingWidth = width;
         streamingHeight = height;
+    }
+
+    /** A new stream starts from policy 1 and takes its first size at once. */
+    void resetStreamingSize() {
+        streamingPolicy = 1;
+        streamingWidth = streamingHeight = 0;
+        streamingResize.reset();
+    }
+
+    /** Once per streaming pulse: a settled size is sent with a fresh camera request. */
+    boolean streamingSizePulse() {
+        if (!streamingResize.pulse()) return false;
+        requestFrame();
+        return true;
+    }
+
+    private void streamCamera() {
+        if (streaming == null || camera == null || !active || !explorer || closed) return;
+        if (stale(selection) || !viewportActive()) return;
+        streamingSize();
         streaming.camera(new com.vibeminer.rendering.bgfx.WorldStreamTransport.Camera(
-                ++streamingControl, streamingPolicy, width, height, TerrainCamera.from(camera)));
+                ++streamingControl, streamingPolicy, streamingWidth, streamingHeight, TerrainCamera.from(camera)));
         stallWatchdog.requested(streamingControl);
         minimap.update(handle, inventory, origin, originX, originY,
                 camera.x(), camera.y(), camera.yaw());
