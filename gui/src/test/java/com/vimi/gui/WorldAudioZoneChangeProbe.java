@@ -16,13 +16,25 @@ import javax.sound.sampled.SourceDataLine;
 /**
  * Measures an ambience kit change through the real decoder: the authored tone plays as kit A,
  * then the desired kit becomes B. Each file is the real decoder's output repeated to 10 s. Lines are paced like a device with a 250 ms buffer, so each
- * write has a place on the device timeline. Prints the longest audible gap after the change and
+ * write has a place on the device timeline, and closing a line discards what it still queues. Prints the longest audible gap after the change and
  * the time until kit B plays at full volume; asserts nothing.
  */
 public final class WorldAudioZoneChangeProbe {
     private WorldAudioZoneChangeProbe() {}
 
-    private record Write(int line, long start, long nanos, int peak) {}
+    /**
+     * One write on the device timeline. {@code closedAt[0]} is when its line closed: frames
+     * still queued then were never played, as a real line discards its buffer on close.
+     */
+    private record Write(int line, long start, long nanos, int peak, long[] closedAt) {
+        long end() {
+            return Math.min(start + nanos, closedAt[0]);
+        }
+
+        boolean played() {
+            return start < closedAt[0];
+        }
+    }
 
     private static final List<Write> WRITES = new ArrayList<>();
     private static int lines;
@@ -37,7 +49,7 @@ public final class WorldAudioZoneChangeProbe {
         }
         double frameNanos = 1e9 / format.getSampleRate();
         int frame = format.getChannels() * 2;
-        long[] queuedUntil = {0};
+        long[] queuedUntil = {0}, closedAt = {Long.MAX_VALUE};
         return (SourceDataLine) Proxy.newProxyInstance(
                 WorldAudioZoneChangeProbe.class.getClassLoader(),
                 new Class<?>[] {SourceDataLine.class}, (proxy, method, args) -> {
@@ -58,13 +70,17 @@ public final class WorldAudioZoneChangeProbe {
                                 peak = Math.max(peak, Math.abs((short) (bytes[i] << 8
                                         | bytes[i + 1] & 0xff)));
                             synchronized (WRITES) {
-                                WRITES.add(new Write(line, start, nanos, peak));
+                                WRITES.add(new Write(line, start, nanos, peak, closedAt));
                             }
                             return length;
                         }
                         case "drain" -> {
                             long wait = queuedUntil[0] - System.nanoTime();
                             if (wait > 0) Thread.sleep(wait / 1_000_000);
+                            return null;
+                        }
+                        case "close" -> {
+                            closedAt[0] = Math.min(closedAt[0], System.nanoTime());
                             return null;
                         }
                         case "isOpen", "isActive", "isRunning" -> {
@@ -157,7 +173,7 @@ public final class WorldAudioZoneChangeProbe {
             playback.closeAsync().get(10, TimeUnit.SECONDS);
             List<Write> after;
             synchronized (WRITES) {
-                after = WRITES.stream().filter(w -> w.start() + w.nanos() > change)
+                after = WRITES.stream().filter(w -> w.played() && w.end() > change)
                         .sorted(java.util.Comparator.comparingLong(Write::start)).toList();
             }
             // The new kit's line is the last one opened.
@@ -167,7 +183,7 @@ public final class WorldAudioZoneChangeProbe {
             for (var w : after) {
                 if (w.peak() < full / 20) continue;
                 gap = Math.max(gap, w.start() - audibleUntil);
-                audibleUntil = Math.max(audibleUntil, w.start() + w.nanos());
+                audibleUntil = Math.max(audibleUntil, w.end());
                 if (newFull < 0 && w.line() == newLine && w.peak() >= full * 95 / 100)
                     newFull = w.start();
             }

@@ -411,18 +411,10 @@ final class WorldAudioPlayback implements AutoCloseable {
             if (!adopt(pcm)) return null;
             Output out = null;
             try {
-                out = Output.open(lines, pcm, device);
-                if (out == null && previous != null) {
-                    // A device that cannot play two lines at once: the old track yields its line.
-                    previous.yieldLine();
-                    out = Output.open(lines, pcm, device);
-                }
+                out = openOutput(pcm, device);
                 if (out == null) return current(expected) ? OUTPUT_UNAVAILABLE : null;
                 reportPlaying(playing, fileId);
-                double gain = 0;
-                // The recorded kit and entry volumes are linear amplitude; gain is squared when
-                // applied.
-                double kit = Math.sqrt(playing.volume(fileId));
+                var gain = new Envelope(0, level(playing, fileId));
                 // True while a switched line ramps up from silence at the quick step.
                 boolean ramping = false;
                 // Ambience loops replay a bounded in-memory copy on the same line, without a gap.
@@ -435,8 +427,9 @@ final class WorldAudioPlayback implements AutoCloseable {
                     if (!current(expected)) {
                         // Replaced, muted or gone: the track keeps sounding as a tail, which the
                         // next track releases once it has audio (or the run loop, if none comes).
-                        if (gain > 0) {
-                            handOff(new Tail(pcm, out, gain, kit, cached, loop));
+                        if (gain.position > 0) {
+                            handOff(new Tail(pcm, out, gain, playing.volume(fileId), cached,
+                                    loop));
                             pcm = null;
                             out = null;
                         }
@@ -467,9 +460,10 @@ final class WorldAudioPlayback implements AutoCloseable {
                             if (loop != null && loop.size() > 0) cached = loop.toByteArray();
                             loop = null;
                             long nextId = cached != null ? fileId : pick(playing);
-                            Pcm next = cached != null
-                                    ? new MemoryPcm(pcm.sampleRate(), pcm.channels(), cached)
-                                    : open(expected, from, nextId, token, problem);
+                            // One in-memory copy serves every loop pass.
+                            Pcm next = cached == null ? open(expected, from, nextId, token, problem)
+                                    : pcm instanceof MemoryPcm memory ? memory
+                                    : new MemoryPcm(pcm.sampleRate(), pcm.channels(), cached);
                             if (next == null) return current(expected) ? problem[0] : null;
                             if (next.sampleRate() != pcm.sampleRate()
                                     || next.channels() != pcm.channels()) {
@@ -481,20 +475,19 @@ final class WorldAudioPlayback implements AutoCloseable {
                                     return current(expected) ? OUTPUT_STOPPED : null;
                                 }
                                 out.close();
-                                out = Output.open(lines, next, device);
+                                out = openOutput(next, device);
                                 if (out == null) {
                                     next.close();
                                     return current(expected) ? OUTPUT_UNAVAILABLE : null;
                                 }
                                 // A new line starting at full gain would click.
-                                gain = 0;
+                                gain.position = 0;
                                 ramping = true;
                             }
-                            pcm.close();
+                            if (next != pcm) pcm.close();
                             pcm = next;
                             if (!adopt(pcm)) return null;
                             fileId = nextId;
-                            kit = Math.sqrt(playing.volume(fileId));
                             // A reopened file reported "Loading"; report it playing again.
                             if (cached == null) reportPlaying(playing, fileId);
                             continue;
@@ -513,11 +506,12 @@ final class WorldAudioPlayback implements AutoCloseable {
                         if (loop.size() <= MAX_LOOP_BYTES - count) loop.write(block, 0, count);
                         else loop = null;
                     }
-                    double target = volume * kit;
                     int bytes = out.downmix ? AudioOutput.downmix(block, count) : count;
-                    gain = apply(block, bytes, out.channels, gain, target,
-                            ramping ? out.quickStep : out.step);
-                    if (gain >= target) ramping = false;
+                    apply(block, bytes, out.channels, gain, 1, level(playing, fileId),
+                            ramping ? out.quickStep : out.step, out.step);
+                    if (gain.position >= 1) ramping = false;
+                    // This track has audio: the replaced one starts its fade-out with this block.
+                    if (previous != null) previous.release();
                     for (int offset = 0; offset < bytes; ) {
                         int written;
                         try {
@@ -529,8 +523,6 @@ final class WorldAudioPlayback implements AutoCloseable {
                         if (written <= 0) return current(expected) ? OUTPUT_STOPPED : null;
                         offset += written;
                     }
-                    // This track has audio: the replaced one starts its fade-out now.
-                    if (previous != null) previous.release();
                 }
             } finally {
                 if (pcm != null) pcm.close();
@@ -541,29 +533,60 @@ final class WorldAudioPlayback implements AutoCloseable {
             }
         }
 
+        /** Linear amplitude the slider and the recorded volumes ask for. */
+        private double level(WorldAreaAudio.Track playing, long fileId) {
+            return level(playing.volume(fileId));
+        }
+
+        private double level(double recorded) {
+            double slider = volume;
+            return slider * slider * recorded;
+        }
+
+        /**
+         * Opens a line for {@code pcm}. A device that refuses a line only because its lines are
+         * in use (it cannot play two at once) gets every sounding tail's line back first; a
+         * refused format leaves the tails alone.
+         */
+        private Output openOutput(Pcm pcm, int device) {
+            boolean[] busy = new boolean[1];
+            var out = Output.open(lines, pcm, device, busy);
+            if (out != null || !busy[0]) return out;
+            java.util.List<Tail> sounding;
+            synchronized (this) {
+                sounding = java.util.List.copyOf(tails);
+            }
+            if (sounding.isEmpty()) return null;
+            for (var tail : sounding) tail.yieldLine();
+            return Output.open(lines, pcm, device, busy);
+        }
+
         /**
          * A replaced track still sounding on its own line and thread. It plays at full level while
          * held, for at most {@link #HOLD_MAX_MILLIS}, then fades out over {@link #FADE_SECONDS}
-         * and closes its decoder and line. A single-file ambience keeps looping while it fades.
+         * and closes its decoder and line once the line has played what it holds. A single-file
+         * ambience keeps looping while it fades.
          */
         private final class Tail {
             private final Pcm pcm;
             private final Output out;
-            private final double kit;
+            /** The recorded linear volume of the playing file. */
+            private final double recorded;
+            private final Envelope gain;
             private final long holdUntil = System.nanoTime()
                     + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(HOLD_MAX_MILLIS);
             private final Thread thread;
-            private double gain;
             private byte[] cached;
+            private MemoryPcm memory;
             private java.io.ByteArrayOutputStream loop;
             private volatile boolean released, stopped, yielding;
 
-            Tail(Pcm pcm, Output out, double gain, double kit, byte[] cached,
+            Tail(Pcm pcm, Output out, Envelope gain, double recorded, byte[] cached,
                     java.io.ByteArrayOutputStream loop) {
                 this.pcm = pcm;
                 this.out = out;
                 this.gain = gain;
-                this.kit = kit;
+                this.recorded = recorded;
                 this.cached = cached;
                 this.loop = loop;
                 thread = Thread.ofPlatform().daemon().name("world-audio-" + label() + "-tail")
@@ -589,12 +612,19 @@ final class WorldAudioPlayback implements AutoCloseable {
                 pcm.close();
             }
 
-            /** Fades out within {@link #YIELD_FADE_SECONDS} and waits for the line to close. */
+            /**
+             * Fades out within {@link #YIELD_FADE_SECONDS}, plays what the line holds and waits
+             * for the line to close. A tail stuck in a stalled read is stopped instead.
+             */
             void yieldLine() {
                 yielding = true;
                 released = true;
                 try {
                     thread.join(2_000);
+                    if (thread.isAlive()) {
+                        stop();
+                        thread.join(500);
+                    }
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                 }
@@ -603,11 +633,16 @@ final class WorldAudioPlayback implements AutoCloseable {
             private void run() {
                 Pcm reading = pcm;
                 double quick = 1 / (YIELD_FADE_SECONDS * pcm.sampleRate());
+                // A natural end or a finished fade plays out the line's buffer before closing;
+                // a failure or a stop does not.
+                boolean drain = false;
                 try {
                     while (!stopped) {
                         boolean hold = !released && System.nanoTime() < holdUntil;
-                        double target = hold ? volume * kit : 0;
-                        if (!hold && gain <= 0) return;
+                        if (!hold && gain.position <= 0) {
+                            drain = true;
+                            return;
+                        }
                         byte[] block = out.block;
                         int count;
                         try {
@@ -621,8 +656,14 @@ final class WorldAudioPlayback implements AutoCloseable {
                             }
                             loop = null;
                             // A file of a multi-file kit ends the tail with it.
-                            if (cached == null) return;
-                            reading = new MemoryPcm(pcm.sampleRate(), pcm.channels(), cached);
+                            if (cached == null) {
+                                drain = true;
+                                return;
+                            }
+                            if (memory == null) {
+                                memory = new MemoryPcm(pcm.sampleRate(), pcm.channels(), cached);
+                            }
+                            reading = memory;
                             continue;
                         }
                         if (loop != null) {
@@ -630,8 +671,8 @@ final class WorldAudioPlayback implements AutoCloseable {
                             else loop = null;
                         }
                         int bytes = out.downmix ? AudioOutput.downmix(block, count) : count;
-                        gain = apply(block, bytes, out.channels, gain, target,
-                                yielding ? quick : out.step);
+                        apply(block, bytes, out.channels, gain, hold ? 1 : 0, level(recorded),
+                                yielding ? quick : out.step, out.step);
                         for (int offset = 0; offset < bytes; ) {
                             int written;
                             try {
@@ -645,6 +686,13 @@ final class WorldAudioPlayback implements AutoCloseable {
                     }
                 } finally {
                     pcm.close();
+                    if (drain && !stopped) {
+                        try {
+                            out.line.drain();
+                        } catch (RuntimeException removed) {
+                            /* The line is closed below either way. */
+                        }
+                    }
                     out.close();
                     synchronized (Channel.this) {
                         tails.remove(this);
@@ -709,9 +757,12 @@ final class WorldAudioPlayback implements AutoCloseable {
 
         /**
          * A stereo stream on a mono-only device plays through a mono line, downmixed. Null when
-         * the device refuses the format; a partly opened line is closed.
+         * the device refuses the line; a partly opened line is closed. {@code busy} is set when
+         * the refusal is a {@link javax.sound.sampled.LineUnavailableException}, which the
+         * platform raises for lines in use, not for unsupported formats.
          */
-        static Output open(Lines lines, Pcm pcm, int device) {
+        static Output open(Lines lines, Pcm pcm, int device, boolean[] busy) {
+            busy[0] = false;
             int channels = AudioOutput.lineChannels(pcm.channels(), device);
             var format = new AudioFormat(pcm.sampleRate(), 16, channels, true, true);
             int lineFrame = channels * 2;
@@ -722,6 +773,7 @@ final class WorldAudioPlayback implements AutoCloseable {
                 line.start();
                 return new Output(line, pcm, channels);
             } catch (Exception unavailable) {
+                busy[0] = unavailable instanceof javax.sound.sampled.LineUnavailableException;
                 if (line != null) close(line);
                 return null;
             }
@@ -771,25 +823,39 @@ final class WorldAudioPlayback implements AutoCloseable {
         @Override public void close() {}
     }
 
+    /** One voice's fade position (0 silent to 1 full) and its current linear level. */
+    static final class Envelope {
+        double position, level;
+
+        Envelope(double position, double level) {
+            this.position = position;
+            this.level = level;
+        }
+    }
+
     /**
-     * Scales big-endian frames in place, ramping linearly by {@code step} per frame toward the
-     * target. Returns the gain after the last frame.
+     * Scales big-endian frames in place. The fade position moves by {@code step} per frame toward
+     * {@code toward}, so a whole fade lasts the same time at any volume. The level moves toward
+     * {@code level} by {@code levelStep} per frame, so volume changes never click. The amplitude is
+     * {@code sin(position * pi / 2) * level}: an equal-power curve, so two voices crossing at the
+     * same rate keep their summed power instead of dipping at mid-fade.
      */
-    static double apply(byte[] block, int count, int channels, double gain, double target,
-            double step) {
+    static void apply(byte[] block, int count, int channels, Envelope gain, double toward,
+            double level, double step, double levelStep) {
         int frame = channels * 2;
         for (int i = 0; i + frame <= count; i += frame) {
-            if (gain < target) gain = Math.min(target, gain + step);
-            else if (gain > target) gain = Math.max(target, gain - step);
-            double perceptual = gain * gain;
+            if (gain.position < toward) gain.position = Math.min(toward, gain.position + step);
+            else if (gain.position > toward) gain.position = Math.max(toward, gain.position - step);
+            if (gain.level < level) gain.level = Math.min(level, gain.level + levelStep);
+            else if (gain.level > level) gain.level = Math.max(level, gain.level - levelStep);
+            double amplitude = Math.sin(gain.position * Math.PI / 2) * gain.level;
             for (int c = 0; c < frame; c += 2) {
                 int sample = (short) (block[i + c] << 8 | block[i + c + 1] & 0xff);
-                int scaled = (int) Math.round(sample * perceptual);
+                int scaled = (int) Math.round(sample * amplitude);
                 scaled = Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, scaled));
                 block[i + c] = (byte) (scaled >> 8);
                 block[i + c + 1] = (byte) scaled;
             }
         }
-        return gain;
     }
 }

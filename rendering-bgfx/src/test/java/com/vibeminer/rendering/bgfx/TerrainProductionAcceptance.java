@@ -42,6 +42,8 @@ import org.lwjgl.system.MemoryUtil;
 public final class TerrainProductionAcceptance {
     private static final int WIDTH = 256, HEIGHT = 256;
     private static final TerrainCamera ZERO = new TerrainCamera(0, 0, 0, 0, 0);
+    // Focal length in pixels of the shared field of view; oracles below are authored in it.
+    private static final double F = TerrainCamera.focalPixels(WIDTH);
     private static int frames;
 
     private record Vertex(double x, double y, double z) {}
@@ -110,8 +112,9 @@ public final class TerrainProductionAcceptance {
         // This pins actual shader/readback orientation, independently of eye()/screenX().
         var plusY = triangle(v(10, 3, -1), v(10, 5, -1), v(10, 4, 2));
         int[] image = gpu.render(List.of(plusY), ZERO);
-        pixel(image, 46, 128, 0xff2c4729);
-        exact(image, 210, 128, 0xff83abc3);
+        // Its center is .4 focal lengths left of the frame center; mirrored is empty sky.
+        pixel(image, at(-.4), 128, 0xff2c4729);
+        exact(image, at(.4), 128, 0xff83abc3);
         // Independently authored forward-and-right panels for north/west/south/east.
         var rightPanels =
                 List.of(
@@ -122,8 +125,8 @@ public final class TerrainProductionAcceptance {
         double[] headings = {0, Math.PI / 2, Math.PI, -Math.PI / 2};
         for (int i = 0; i < headings.length; i++) {
             int[] cardinal = gpu.render(List.of(rightPanels.get(i)), ZERO.look(headings[i], 0));
-            pixel(cardinal, 210, 128, i % 2 == 0 ? 0xff2c4729 : 0xff304d2d);
-            exact(cardinal, 46, 128, 0xff83abc3);
+            pixel(cardinal, at(.4), 128, i % 2 == 0 ? 0xff2c4729 : 0xff304d2d);
+            exact(cardinal, at(-.4), 128, 0xff83abc3);
         }
         var bitmap = new BufferedImage(WIDTH, HEIGHT, BufferedImage.TYPE_INT_ARGB);
         bitmap.setRGB(0, 0, WIDTH, HEIGHT, image, 0, WIDTH);
@@ -135,6 +138,21 @@ public final class TerrainProductionAcceptance {
         ImageIO.write(
                 bitmap, "png", output.resolve("terrain-positive-yaw-centers-left.png").toFile());
     }
+
+    /** Pixel {@code offset} focal lengths from the frame center along either axis. */
+    private static int at(double offset) {
+        return (int) Math.round(WIDTH * .5 + offset * F);
+    }
+
+    /** Independent sky oracle: the authored gradient row color, top 91,141,177 + 80,60,37 t. */
+    private static final java.util.function.IntUnaryOperator SKY_ROW =
+            row -> {
+                double t = row / (double) HEIGHT;
+                return 0xff000000
+                        | (int) Math.floor(91 + 80 * t) << 16
+                        | (int) Math.floor(141 + 60 * t) << 8
+                        | (int) Math.floor(177 + 37 * t);
+            };
 
     private static void pixel(int[] image, int x, int y, int expected) {
         int actual = image[y * WIDTH + x];
@@ -166,12 +184,15 @@ public final class TerrainProductionAcceptance {
     }
 
     private static void panelPixels(int[] image, int color) {
-        // At focal204.8, source corners project to (87.04,148.48),(168.96,148.48),(128,87.04).
-        for (int[] point : new int[][] {{128, 128}, {100, 140}, {155, 140}, {128, 100}}) {
+        // Source corners project to center + (-.2F, .1F), (.2F, .1F) and (0, -.2F).
+        for (int[] point :
+                new int[][] {
+                    {128, 128}, {at(-.12), at(.07)}, {at(.12), at(.07)}, {128, at(-.15)}
+                }) {
             pixel(image, point[0], point[1], color);
         }
-        exact(image, 80, 128, 0xff83abc3);
-        exact(image, 128, 80, 0xff749fbc);
+        exact(image, at(-.3), 128, 0xff83abc3);
+        exact(image, 128, at(-.3), SKY_ROW.applyAsInt(at(-.3)));
     }
 
     private static void projection(Harness gpu, Path output) throws Exception {
