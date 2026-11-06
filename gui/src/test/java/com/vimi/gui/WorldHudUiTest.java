@@ -92,6 +92,22 @@ public final class WorldHudUiTest {
         require(zone.line().isVisible() && zone.leave().getText().equals("Leave"), "The leave chip keeps the line shown");
         zone.leave().fire();
         require(left.equals(List.of("leave", "focus")), "Leave runs the view's leave, then refocuses the world");
+        // Rapid changes: mid-hold, a new area keeps the banner up with the new name (no blink).
+        zone.reset();
+        zone.area(List.of("Elwynn Forest", "Goldshire"));
+        animation.pause();
+        animation.jumpTo(Duration.millis(1000));
+        zone.area(List.of("Elwynn Forest", "Northshire Valley"));
+        require(banner.getText().equals("Northshire Valley") && near(banner.getOpacity(), 1)
+                        && animation.getCurrentTime().equals(WorldZoneText.FADE_IN),
+                "Mid-hold the banner takes the new name at full opacity and holds again: " + banner.getOpacity());
+        animation.stop();
+        // Long names are capped like the area label.
+        zone.area(List.of("Z".repeat(300)));
+        require(text(zone, "#world-zone-name").length() == WorldZoneText.MAX_NAME + 1
+                        && text(zone, "#world-zone-name").endsWith("…"),
+                "Names are capped at " + WorldZoneText.MAX_NAME);
+        animation.stop();
         zone.area(List.of("Elwynn Forest"));
         zone.reset();
         require(!banner.isVisible() && animation.getStatus() == Animation.Status.STOPPED, "Reset stops the banner");

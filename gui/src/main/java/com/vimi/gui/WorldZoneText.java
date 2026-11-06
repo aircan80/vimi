@@ -17,8 +17,8 @@ import javafx.util.Duration;
 
 /**
  * Zone text for the World HUD. The top-centre line shows the recorded area and its sub-area and
- * updates at once. When the most specific area changes, a large banner fades in over the upper
- * third of the view, holds, and fades out, as game clients do on entering a zone. A "Leave" chip
+ * updates at once. When the most specific area changes, a large banner fades in a quarter of the
+ * way down the view, holds, and fades out, as game clients do on entering a zone. A "Leave" chip
  * sits next to the zone while an instance can be left. FX thread only.
  */
 final class WorldZoneText {
@@ -83,7 +83,7 @@ final class WorldZoneText {
         return line;
     }
 
-    /** The large zone-change banner; the HUD centres it in the upper third. */
+    /** The large zone-change banner; the HUD centres it a quarter of the way down the view. */
     Label banner() {
         return banner;
     }
@@ -106,7 +106,7 @@ final class WorldZoneText {
      */
     void area(List<String> chain) {
         var names = chain == null ? List.<String>of()
-                : chain.stream().filter(n -> n != null && !n.isBlank()).toList();
+                : chain.stream().filter(n -> n != null && !n.isBlank()).map(WorldZoneText::cap).toList();
         if (names.isEmpty()) return;
         zone.setText(names.getFirst());
         subzone.setText(names.size() < 2 ? "" : names.getLast());
@@ -116,8 +116,21 @@ final class WorldZoneText {
         shown = specific;
         banner.setText(specific);
         banner.setVisible(true);
+        // Already shown (holding or fading out): keep it up with the new name and hold again,
+        // rather than blinking back to 0; still fading in: just let it continue.
+        if (bannerAnimation.getStatus() != Animation.Status.STOPPED) {
+            if (bannerAnimation.getCurrentTime().greaterThanOrEqualTo(FADE_IN)) bannerAnimation.jumpTo(FADE_IN);
+            return;
+        }
         bannerAnimation.playFromStart();
     }
+
+    /** Names are capped as {@code WorldCurrentArea.Result.label()} caps them. */
+    static String cap(String name) {
+        return name.length() > MAX_NAME ? name.substring(0, MAX_NAME) + "…" : name;
+    }
+
+    static final int MAX_NAME = 256;
 
     /** The zone line's tooltip; the view binds it to its full "Terrain area: ..." text. */
     Tooltip tooltip() {
