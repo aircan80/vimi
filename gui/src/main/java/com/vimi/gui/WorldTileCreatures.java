@@ -86,22 +86,29 @@ final class WorldTileCreatures implements AutoCloseable {
 
     /** One tile's creature outcome; immutable. */
     static final class Summary {
-        static final Summary NONE = new Summary(new int[Count.values().length], 0, null, List.of());
+        static final Summary NONE = new Summary(new int[Count.values().length], 0, 0, null, List.of());
 
         private final int[] counts;
-        private final int models;
+        private final int models, restPosed;
         private final String note;
         private final List<WorldObjectPicks.Creature> placed;
 
-        private Summary(int[] counts, int models, String note, List<WorldObjectPicks.Creature> placed) {
+        private Summary(int[] counts, int models, int restPosed, String note,
+                List<WorldObjectPicks.Creature> placed) {
             this.counts = counts.clone();
             this.models = models;
+            this.restPosed = restPosed;
             this.note = note;
             this.placed = List.copyOf(placed);
         }
 
         static Summary failed(String note) {
-            return new Summary(new int[Count.values().length], 0, Objects.requireNonNull(note), List.of());
+            return new Summary(new int[Count.values().length], 0, 0, Objects.requireNonNull(note), List.of());
+        }
+
+        /** Drawn placements whose model is in its rest (bind) pose because no Stand pose was baked. */
+        int restPosed() {
+            return restPosed;
         }
 
         int count(Count count) {
@@ -142,7 +149,8 @@ final class WorldTileCreatures implements AutoCloseable {
         Summary plus(Summary other) {
             var sum = counts.clone();
             for (int i = 0; i < sum.length; i++) sum[i] += other.counts[i];
-            return new Summary(sum, models + other.models, note != null ? note : other.note, List.of());
+            return new Summary(sum, models + other.models, restPosed + other.restPosed,
+                    note != null ? note : other.note, List.of());
         }
     }
 
@@ -161,6 +169,15 @@ final class WorldTileCreatures implements AutoCloseable {
     @FunctionalInterface
     interface Previews {
         DisplayModelTypes.Preview preview(long displayId, Cancellation token) throws Exception;
+
+        /**
+         * The display's Stand sequence over the same rest surface as {@link #preview}. A source
+         * without idle sequences answers UNSUPPORTED, a lasting answer cached with the model.
+         */
+        default DisplayModelTypes.Idle idle(long displayId, Cancellation token) throws Exception {
+            return new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.UNSUPPORTED, null, null,
+                    "Idle animation is not provided by this source.");
+        }
     }
 
     /**
@@ -175,7 +192,17 @@ final class WorldTileCreatures implements AutoCloseable {
      * one material class per range ({@link #OPAQUE} or {@link #CUTOUT}).
      */
     record Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
-            int omittedSurfaces) {
+            int omittedSurfaces, String restPose) {
+        Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
+                int omittedSurfaces) {
+            this(vertices, indices, ranges, blends, images, omittedSurfaces, null);
+        }
+
+        /** The same model with why it stays in its rest pose (null: baked in the Stand pose). */
+        Model withRestPose(String reason) {
+            return new Model(vertices, indices, ranges, blends, images, omittedSurfaces, reason);
+        }
+
         Model {
             images = List.copyOf(images);
             if (blends.length * 3 != ranges.length) throw new IllegalArgumentException("Range classes");
@@ -195,8 +222,16 @@ final class WorldTileCreatures implements AutoCloseable {
         }
     }
 
-    /** A display's conversion: a model, or the bucket that refuses it. */
-    record Converted(Model model, Count refusal, String detail) {
+    /**
+     * A display's conversion: a model, or the bucket that refuses it. {@code transientPose} marks a
+     * model drawn in its rest pose only because its Stand sequence could not be read yet; it is
+     * drawn on this tile but not cached, so a later tile asks again.
+     */
+    record Converted(Model model, Count refusal, String detail, boolean transientPose) {
+        Converted(Model model, Count refusal, String detail) {
+            this(model, refusal, detail, false);
+        }
+
         Converted {
             if ((model == null) == (refusal == null)) throw new IllegalArgumentException("Inconsistent conversion");
         }
@@ -275,7 +310,22 @@ final class WorldTileCreatures implements AutoCloseable {
 
         @Override
         public DisplayModelTypes.Preview preview(long displayId, Cancellation token) {
-            BuildDisplayModels models;
+            var models = component();
+            if (models == null) {
+                return new DisplayModelTypes.Preview(DisplayModelTypes.State.UNAVAILABLE, null, null,
+                        java.util.Set.of(), List.of(), false, "Model files are not open");
+            }
+            return models.preview(displayId, token).join();
+        }
+
+        @Override
+        public DisplayModelTypes.Idle idle(long displayId, Cancellation token) {
+            var models = component();
+            return models == null ? DisplayModelTypes.Idle.unavailable("Model files are not open")
+                    : models.idle(displayId, token).join();
+        }
+
+        private BuildDisplayModels component() {
             synchronized (this) {
                 if (closed) throw new CancellationException("Creature models closed");
                 var now = revision.get();
@@ -284,13 +334,8 @@ final class WorldTileCreatures implements AutoCloseable {
                     current = factory.get();
                     currentRevision = now;
                 }
-                models = current;
+                return current;
             }
-            if (models == null) {
-                return new DisplayModelTypes.Preview(DisplayModelTypes.State.UNAVAILABLE, null, null,
-                        java.util.Set.of(), List.of(), false, "Model files are not open");
-            }
-            return models.preview(displayId, token).join();
         }
 
         @Override
@@ -335,6 +380,9 @@ final class WorldTileCreatures implements AutoCloseable {
         int placements = 0, previewsTried = 0;
         // Displays whose preview was busy on this tile: not asked again for every later spawn.
         var busyDisplays = new HashSet<Long>();
+        // Builder model indices drawn in their rest pose; their placements are disclosed.
+        var restModels = new HashSet<Integer>();
+        int restPosed = 0;
         for (var spawn : nearby.placed()) {
             token.check();
             if (WorldBookmarks.tileIndex(spawn.x()) != tile.x() || WorldBookmarks.tileIndex(spawn.y()) != tile.y()) continue;
@@ -400,6 +448,7 @@ final class WorldTileCreatures implements AutoCloseable {
                 }
                 model = add(builder, m);
                 added.put(display, model);
+                if (m.restPose() != null) restModels.add(model);
             }
             if (builder.drawCost(model) > builder.drawRoom()) {
                 counts[Count.CAPPED.ordinal()]++;
@@ -412,9 +461,10 @@ final class WorldTileCreatures implements AutoCloseable {
                     transform[3], new WorldObjectPicks.Key(model, transform[0], transform[1], transform[2],
                             transform[3])));
             placements++;
+            if (restModels.contains(model)) restPosed++;
             counts[Count.DRAWN.ordinal()]++;
         }
-        return new Summary(counts, added.size(), nearby.omitted() == 0 ? null
+        return new Summary(counts, added.size(), restPosed, nearby.omitted() == 0 ? null
                 : nearby.omitted() + " nearby points beyond the query limit were not considered", placed);
     }
 
@@ -445,7 +495,7 @@ final class WorldTileCreatures implements AutoCloseable {
     private Converted load(long display, Cancellation token) {
         Converted converted;
         try {
-            converted = convert(previews.preview(display, token), token);
+            converted = stand(display, previews.preview(display, token), token);
         } catch (Exception failed) {
             // Only this tile's cancellation propagates; a closed or retired component is a failure.
             token.check();
@@ -455,10 +505,49 @@ final class WorldTileCreatures implements AutoCloseable {
             // Not cached: a failed read may succeed on the next tile.
             return Converted.refused(Count.FAILED, failed.getClass().getSimpleName());
         }
+        if (converted.transientPose()) return converted; // asked again on a later tile
         synchronized (this) {
             if (!closed) models.put(display, converted);
         }
         return converted;
+    }
+
+    /**
+     * Converts the preview in its Stand pose (issue #377): the display's idle sequence evaluated at
+     * its first frame, baked once on the CPU. When there is no qualified Stand sequence for the
+     * same rest surface, the rest pose is converted and the reason recorded on the model. An
+     * UNSUPPORTED sequence or one for another rest surface is a lasting answer and is cached with
+     * the model. An UNAVAILABLE sequence ("could not be read; retry can reassess it") or an idle
+     * read failure draws the rest pose on this tile only: it is not cached. A busy or closed reader
+     * and a cancellation propagate.
+     */
+    Converted stand(long display, DisplayModelTypes.Preview preview, Cancellation token) throws Exception {
+        if (preview == null || preview.appearance() == null) return convert(preview, token);
+        String restPose;
+        boolean retry = false;
+        var appearance = preview.appearance();
+        try {
+            var idle = previews.idle(display, token);
+            token.check();
+            if (idle == null || idle.state() != DisplayModelTypes.IdleState.AVAILABLE) {
+                restPose = idle == null ? "no idle result" : idle.message();
+                retry = idle == null || idle.state() == DisplayModelTypes.IdleState.UNAVAILABLE;
+            } else if (!idle.animation().matches(appearance)) {
+                restPose = "the Stand sequence belongs to another rest surface";
+            } else {
+                appearance = idle.animation().pose(appearance, 0);
+                restPose = null;
+            }
+        } catch (Exception failed) {
+            token.check();
+            if (busy(failed) || failed instanceof CancellationException) throw failed;
+            restPose = "Stand pose failed: " + failed.getClass().getSimpleName();
+            retry = true;
+        }
+        var converted = convert(new DisplayModelTypes.Preview(preview.state(), preview.reference(), appearance,
+                preview.visibleParts(), preview.issues(), preview.restored(), preview.message()), token);
+        return converted.model() == null || restPose == null ? converted
+                : new Converted(converted.model().withRestPose(restPose), null, null, retry);
     }
 
     /** Whether a preview failure is the component's busy or closed refusal, however wrapped. */
