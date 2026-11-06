@@ -21,6 +21,7 @@ import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -187,6 +188,49 @@ public final class WorldExteriorObjects {
     /** M2 bone flags that billboard (spherical or cylindrical); no view policy here. */
     private static final long BILLBOARD = 0x78;
 
+    /**
+     * Bones that billboard or inherit a billboard: a bone whose own flags carry {@link #BILLBOARD}
+     * and every descendant of one, since a child's transform composes its parent's camera-facing
+     * rotation. Empty when the model has no billboard bone; a parent cycle stops the walk.
+     */
+    static BitSet billboardBones(List<M2Types.Bone> bones) {
+        var result = new BitSet(bones.size());
+        boolean any = false;
+        for (var bone : bones) {
+            any |= (bone.flags() & BILLBOARD) != 0;
+        }
+        if (!any) {
+            return result;
+        }
+        for (int index = 0; index < bones.size(); index++) {
+            int steps = 0;
+            for (int at = index;
+                    at >= 0 && at < bones.size() && steps++ <= bones.size();
+                    at = bones.get(at).parent()) {
+                if ((bones.get(at).flags() & BILLBOARD) != 0) {
+                    result.set(index);
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Whether a vertex has a non-zero weight on a bone in {@code billboard}. Bone indices outside
+     * the model's bones are not billboards (they were never checked before this rule either).
+     */
+    static boolean billboardWeighted(M2Types.Vertex vertex, BitSet billboard) {
+        for (int k = 0; k < 4; k++) {
+            int weight = (int) (vertex.boneWeights() >>> (k * 8) & 255);
+            int bone = (int) (vertex.boneIndices() >>> (k * 8) & 255);
+            if (weight != 0 && billboard.get(bone)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static final M2Types.Limits MODEL_LIMITS =
             new M2Types.Limits(
                     2L << 20, 32L << 20, 65_536, 65_536, 196_608, 256, 256, 512, 32, 32, 128, 4096,
@@ -292,13 +336,22 @@ public final class WorldExteriorObjects {
         MODEL_DRAWN,
         /** Malformed, or outside the reader ceilings. */
         MODEL_FAILED,
-        /** Parsed, but no SKIN, billboard bones, an unsupported version or zero normals. */
+        /**
+         * Parsed, but no SKIN, an unsupported version, zero normals, or every admitted triangle
+         * weighted to a billboard bone.
+         */
         MODEL_UNSUPPORTED,
         MODEL_UNAVAILABLE,
         MODEL_CAPPED,
         MODEL_EMPTY,
         MODEL_BATCH_DRAWN,
         MODEL_BATCH_UNSUPPORTED,
+        /**
+         * An otherwise admitted doodad batch omitted because every one of its triangles has a
+         * vertex weighted to a billboard bone (or a descendant of one). Billboards turn to face the
+         * camera, which the static BASIC profile does not evaluate; the rest of the model draws.
+         */
+        MODEL_BATCH_BILLBOARD,
         MODEL_BATCH_MISSING_IMAGE,
         MODEL_IMAGE_DECODED,
         MODEL_IMAGE_UNAVAILABLE,
@@ -1901,9 +1954,7 @@ public final class WorldExteriorObjects {
             } catch (RuntimeException failure) {
                 return readerFailed(failure);
             }
-            if (model.skinFileDataIds().isEmpty()
-                    || model.skinFileDataIds().getFirst() <= 0
-                    || model.bones().stream().anyMatch(b -> (b.flags() & BILLBOARD) != 0)) {
+            if (model.skinFileDataIds().isEmpty() || model.skinFileDataIds().getFirst() <= 0) {
                 count(Count.MODEL_UNSUPPORTED);
                 return RootState.FAILED;
             }
@@ -1991,8 +2042,10 @@ public final class WorldExteriorObjects {
 
         /**
          * One static mesh over the SKIN's vertex lookup, with one range per admitted batch; null
-         * when an admitted section references a zero or non-finite normal, or the mesh exceeds the
-         * 16-bit index domain.
+         * when an admitted section references a zero or non-finite normal, the mesh exceeds the
+         * 16-bit index domain, or billboard bones leave no admitted triangle. Triangles with a
+         * vertex weighted to a billboard bone are left out; a batch left with none is counted as
+         * MODEL_BATCH_BILLBOARD.
          */
         private PendingMesh copyModel(
                 long id, long skinId, M2Types.Model model, M2Types.Skin skin, int[] local) {
@@ -2053,30 +2106,64 @@ public final class WorldExteriorObjects {
                 return new PendingMesh(0, skinId, 0, new float[0], new int[0], List.of());
             }
             var source = model.vertices();
+            var billboard = billboardBones(model.bones());
+            boolean[] facing = null;
+            if (!billboard.isEmpty()) {
+                facing = new boolean[lookup.size()];
+                for (int v = 0; v < lookup.size(); v++) {
+                    int global = lookup.get(v);
+                    facing[v] =
+                            global >= 0
+                                    && global < source.size()
+                                    && billboardWeighted(source.get(global), billboard);
+                }
+            }
             float[] vertices = new float[lookup.size() * VERTEX_FLOATS];
             boolean[] referenced = new boolean[lookup.size()];
             int[] indices = new int[candidateIndices];
             var rebased = new ArrayList<Candidate>(candidates.size());
-            int used = 0;
+            int used = 0, billboarded = 0;
             for (var candidate : candidates) {
                 token.check();
-                for (int i = 0; i < candidate.indexCount(); i++) {
-                    int local16 = triangles.get(candidate.firstIndex() + i);
-                    if (local16 < 0 || local16 >= lookup.size()) {
-                        return null;
+                int kept = 0;
+                for (int i = 0; i < candidate.indexCount(); i += 3) {
+                    boolean faces = false;
+                    for (int k = 0; k < 3; k++) {
+                        int local16 = triangles.get(candidate.firstIndex() + i + k);
+                        if (local16 < 0 || local16 >= lookup.size()) {
+                            return null;
+                        }
+                        faces |= facing != null && facing[local16];
                     }
-                    indices[used + i] = local16;
-                    referenced[local16] = true;
+                    if (faces) {
+                        continue;
+                    }
+                    for (int k = 0; k < 3; k++) {
+                        int local16 = triangles.get(candidate.firstIndex() + i + k);
+                        indices[used + kept++] = local16;
+                        referenced[local16] = true;
+                    }
+                }
+                if (kept == 0) {
+                    billboarded++;
+                    continue;
                 }
                 rebased.add(
                         new Candidate(
                                 used,
-                                candidate.indexCount(),
+                                kept,
                                 candidate.material(),
                                 candidate.image(),
                                 candidate.blend()));
-                used += candidate.indexCount();
+                used += kept;
             }
+            if (rebased.isEmpty()) {
+                return null; // every admitted triangle billboards
+            }
+            if (used < indices.length) {
+                indices = Arrays.copyOf(indices, used);
+            }
+            local[Count.MODEL_BATCH_BILLBOARD.ordinal()] += billboarded;
             for (int v = 0; v < lookup.size(); v++) {
                 if ((v & 1023) == 0) {
                     token.check();
