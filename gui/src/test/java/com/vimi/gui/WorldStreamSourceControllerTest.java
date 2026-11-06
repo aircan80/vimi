@@ -51,11 +51,13 @@ public final class WorldStreamSourceControllerTest {
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
-        bumpBetweenIssueAndRefusalStillWakesRetry(false, false);
-        bumpBetweenIssueAndRefusalStillWakesRetry(false, true);
-        bumpBetweenIssueAndRefusalStillWakesRetry(true, false);
-        bumpBetweenIssueAndRefusalStillWakesRetry(false, false, true);
-        bumpBetweenIssueAndRefusalStillWakesRetry(false, true, true);
+        bumpBetweenIssueAndRefusalStillWakesRetry("geometry", false);
+        bumpBetweenIssueAndRefusalStillWakesRetry("output", false);
+        bumpBetweenIssueAndRefusalStillWakesRetry("output", true);
+        bumpBetweenIssueAndRefusalStillWakesRetry("pool", false);
+        bumpBetweenIssueAndRefusalStillWakesRetry("geometry", false, true);
+        bumpBetweenIssueAndRefusalStillWakesRetry("output", true, true);
+        busyGeometryLaneIsNotPolledAndItsReleaseWakesTheTile();
         sameResidentCameraFrameDoesNotRetryMaterialPool();
         transportFrameSignalQueuesPresentationWithoutAnyPulse();
         steadyCameraFramesReuseAFewPixelArrays();
@@ -71,7 +73,134 @@ public final class WorldStreamSourceControllerTest {
         budgetRefusedObjectsRetryAfterAReleaseOnly();
         lateObjectFailuresStayIsolatedFromTerrain();
         lateObjectsCompletingAfterRetirementAreIgnored();
+        borrowedTilesAreNeverDroppedToMakeRoom();
+        tilesKeepStreamingWhileAFrameIsBorrowed();
+        aBorrowedFrameKeepsTheSourcesOfTheTableItShows();
         fiveByFiveNeighborhoodHoldsTwentyFiveResidentsWithinTheSourceUnion();
+    }
+
+    /**
+     * #366: a frame the FX side still borrows never holds up streaming. Commits complete and the
+     * next tiles are reserved and committed while it is borrowed; the borrowed frame, drawn from
+     * an older table, is still accepted against that table (its sources were kept), and a later
+     * frame of the newest table brings the view to READY.
+     */
+    private static void tilesKeepStreamingWhileAFrameIsBorrowed() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 4);
+        fixture.residents = 4;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+            int before = fixture.commitLines().size();
+            fixture.camera(2); // a new camera, so the child draws a new frame to borrow
+            var borrowed = fixture.nextFrame();
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 4));
+            // Never present here: the frame stays borrowed throughout.
+            fixture.until(() -> fixture.commitLines().size() >= before + 3);
+            check(fixture.controller.mayPresent(borrowed) && fixture.controller.presented(borrowed),
+                    "The borrowed frame is still accepted against the table it shows, its sources kept");
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 4);
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * #366: a borrowed frame's own table keeps its sources. Tile 2 is committed, a frame showing
+     * it is borrowed, and a further commit replaces tile 2 before that frame is accepted: tile 2
+     * is then in neither the current nor the last accepted table, yet the borrowed frame must
+     * still pass its handshake, so its source may not be retired underneath it.
+     */
+    private static void aBorrowedFrameKeepsTheSourcesOfTheTableItShows() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 4);
+        fixture.residents = 2;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            var t = fixture.tiles;
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(1)));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2);
+            int accepted = fixture.commitLines().size();
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(2)));
+            fixture.until(() -> fixture.commitLines().size() > accepted);
+            fixture.camera(2);
+            var borrowed = fixture.nextFrame(); // drawn from the table {0, 2}
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(3)));
+            fixture.until(() -> fixture.commitLines().size() > accepted + 1);
+            for (int i = 0; i < 20; i++) {
+                fixture.pump(); // let any retirement run while the frame is still borrowed
+                Thread.sleep(2);
+            }
+            check(fixture.controller.mayPresent(borrowed) && fixture.controller.presented(borrowed),
+                    "The borrowed frame's tile 2 source was kept until its handshake");
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2);
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * #366 review: tiles a borrowed frame shows are never the make-room release. At the 5x5
+     * source bound (25 residents, 28 sources) with three never-presented tiles that a borrowed
+     * frame shows, a demand whose nearest tile is missing must not drop any of them while the
+     * frame is borrowed: retirement keeps them, so each drop would free nothing and repeat.
+     */
+    private static void borrowedTilesAreNeverDroppedToMakeRoom() throws Exception {
+        int residents = WorldStreamTransport.MAX_RESIDENTS;
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), residents + 4);
+        fixture.residents = residents;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            var t = fixture.tiles;
+            fixture.controller.neighborhood(t.subList(0, residents));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == residents);
+            // Three new tiles commit while no newer pixels are accepted: 25 presented + 3 new.
+            fixture.controller.neighborhood(t.subList(3, residents + 3));
+            fixture.until(() -> fixture.pool.stats().leaseClaims() == residents + 3
+                    && fixture.controller.snapshot().prepared() == residents);
+            fixture.camera(2);
+            var borrowed = fixture.nextFrame(); // shows the table with the three new tiles
+            int commits = fixture.commitLines().size();
+            // A new nearest tile is missing: make-room may only drop a tile nobody shows.
+            var demand = new ArrayList<WorldFormats.Tile>();
+            demand.add(t.get(residents + 3));
+            demand.addAll(t.subList(4, residents + 3));
+            fixture.controller.neighborhood(demand);
+            for (int i = 0; i < 100; i++) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            check(fixture.commitLines().size() == commits,
+                    "No resident is dropped while the frame showing it is borrowed: "
+                            + (fixture.commitLines().size() - commits) + " shrink commits");
+            fixture.controller.discard(borrowed);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == residents);
+        } catch (Throwable failure) {
+            // Keep the assertion visible: a close that times out after it is only suppressed.
+            try {
+                fixture.close();
+            } catch (Exception closing) {
+                failure.addSuppressed(closing);
+            }
+            throw failure;
+        }
+        fixture.close();
     }
 
     /** Production bound (#173): 25 residents, and moving on replaces only the leaving tiles. */
@@ -443,7 +572,10 @@ public final class WorldStreamSourceControllerTest {
 
             fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY
                     && fixture.controller.snapshot().prepared()==9);
-            check(fixture.pool.stats().leaseClaims()==9,"Actual cleanup capacity eventually restores the requested neighborhood");
+            // leaseClaims counts atlas leases held now (not a running total). READY can be
+            // published before the worker's next step retires the previous presentation's
+            // pins, so the count settles to the nine residents a step later (#498).
+            awaitLeaseClaims(fixture,9,"Actual cleanup capacity eventually restores the requested neighborhood");
         } finally {
             Files.deleteIfExists(hold);
             firstRelease.countDown();
@@ -565,10 +697,13 @@ public final class WorldStreamSourceControllerTest {
      * #305: a presentation or demand bump that lands after a tile reservation was issued but
      * before its refusal is processed still wakes the retry. The clock never advances and the
      * refusal's own unused credit is held, so only the bump inside the window can wake it.
+     * Sites: "geometry" (GEOMETRY_CREDIT, wakes on demand or its own release, #304), "pool"
+     * (MATERIAL_POOL, wakes on demand or source retirement) and "output" (OUTPUT_CREDIT, the
+     * generic path that also wakes on presentation).
      */
     private static void bumpBetweenIssueAndRefusalStillWakesRetry(
-            boolean materialPool, boolean presentation) throws Exception {
-        bumpBetweenIssueAndRefusalStillWakesRetry(materialPool, presentation, false);
+            String site, boolean presentation) throws Exception {
+        bumpBetweenIssueAndRefusalStillWakesRetry(site, presentation, false);
     }
 
     /**
@@ -576,15 +711,19 @@ public final class WorldStreamSourceControllerTest {
      * but before it issued the reservation, so the tile was still chosen from the old ones.
      */
     private static void bumpBetweenIssueAndRefusalStillWakesRetry(
-            boolean materialPool, boolean presentation, boolean beforeIssue) throws Exception {
+            String site, boolean presentation, boolean beforeIssue) throws Exception {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
-        AutoCloseable held = materialPool
-                ? AuthoredTerrainPoolPressure.hold(fixture.pool)
-                : com.vibeminer.concepts.world.AuthoredGeometryPressure.hold(fixture.world);
+        var held = new java.util.concurrent.atomic.AtomicReference<AutoCloseable>(
+                switch (site) {
+                    case "pool" -> AuthoredTerrainPoolPressure.hold(fixture.pool);
+                    case "geometry" ->
+                            com.vibeminer.concepts.world.AuthoredGeometryPressure.hold(fixture.world);
+                    default -> null; // "output": held once the controller owns its source
+                });
+        boolean materialPool = site.equals("pool");
         Path holdCredit = fixture.directory.resolve("authored-hold-unused-credit");
         var refused = new java.util.concurrent.atomic.AtomicReference<Object>();
-        String label = (materialPool ? "material pool" : "geometry lane")
-                + (presentation ? ", presentation bump" : ", demand bump")
+        String label = site + (presentation ? ", presentation bump" : ", demand bump")
                 + (beforeIssue ? " before issue" : "");
         try {
             Files.writeString(holdCredit, "hold");
@@ -627,6 +766,17 @@ public final class WorldStreamSourceControllerTest {
                 while (fixture.controller == null && System.nanoTime() < deadline)
                     java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
                 fixture.controller.tileRefusalSeam = seam;
+                if (site.equals("output")) {
+                    try {
+                        var source = WorldStreamSourceController.class.getDeclaredField("source");
+                        source.setAccessible(true);
+                        held.set(com.vibeminer.concepts.world.AuthoredOutputPressure.hold(
+                                (com.vibeminer.concepts.world.WorldTerrainStreaming)
+                                        source.get(fixture.controller)));
+                    } catch (ReflectiveOperationException failure) {
+                        throw new AssertionError(failure);
+                    }
+                }
                 if (beforeIssue) fixture.controller.tileIssueSeam = bump;
                 return fixture.gpu.start(scope);
             });
@@ -641,7 +791,60 @@ public final class WorldStreamSourceControllerTest {
                     .equals("Waiting for GPU upload capacity"));
         } finally {
             Files.deleteIfExists(holdCredit);
-            held.close();
+            var hold = held.get();
+            if (hold != null) hold.close();
+            fixture.close();
+        }
+    }
+
+    /**
+     * #304: while another holder keeps the geometry lane busy, the refused tile waits on the
+     * source's geometry release instead of re-polling on every unused-credit CREDIT, and the
+     * release itself wakes it promptly. The controller clock is frozen, so the 500 ms timeout
+     * can never be what retries.
+     */
+    private static void busyGeometryLaneIsNotPolledAndItsReleaseWakesTheTile() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 1);
+        var geometry = com.vibeminer.concepts.world.AuthoredGeometryPressure.hold(fixture.world);
+        var refusals = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            fixture.start(scope -> {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (fixture.controller == null && System.nanoTime() < deadline)
+                    java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                fixture.controller.tileRefusalSeam = refusals::incrementAndGet;
+                return fixture.gpu.start(scope);
+            });
+            fixture.until(() -> refusals.get() >= 1);
+            // Let the refusal's own unused credit land and keep pulsing like the FX timer does.
+            long window = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500);
+            int first = refusals.get();
+            while (System.nanoTime() < window) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            int attempts = refusals.get() - first;
+            System.out.println("Busy geometry lane: " + attempts + " refused attempts in 500 ms");
+            check(attempts <= 1, "A busy geometry lane is waited on, not polled: " + attempts);
+            long released = System.nanoTime();
+            geometry.close();
+            // No pulse here: only the source's release listener may wake the waiting step.
+            long quiet = released + TimeUnit.SECONDS.toNanos(2);
+            while (fixture.controller.snapshot().detail()
+                            .equals("Waiting for streaming resource capacity")
+                    && System.nanoTime() < quiet) Thread.sleep(1);
+            check(!fixture.controller.snapshot().detail()
+                            .equals("Waiting for streaming resource capacity"),
+                    "The geometry release itself woke the controller, without any pulse");
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            long latency = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - released);
+            System.out.println("Geometry release to seeded tile: " + latency + " ms");
+            check(latency < 2_000, "The lane release woke the tile promptly: " + latency + " ms");
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+        } finally {
+            geometry.close();
             fixture.close();
         }
     }
@@ -726,7 +929,7 @@ public final class WorldStreamSourceControllerTest {
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
             check(sequence.getLong(fixture.controller)>previousSequence && receipt.get(fixture.controller)!=previousReceipt,
                     "Only actual full-ready sky upload advances presentation ACK");
-            check(fixture.pool.stats().leaseClaims()==9,"Old historical image holds no obsolete Source owners");
+            awaitLeaseClaims(fixture,9,"Old historical image holds no obsolete Source owners");
         } finally { fixture.close(); }
     }
 
@@ -745,7 +948,7 @@ public final class WorldStreamSourceControllerTest {
             check(fixture.pool.stats().leaseClaims()<=12,"Sky-blocked relief keeps source owner limit");
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
             check(fixture.controller.snapshot().prepared()==9,"Useful lookahead pixels unblock victim reacquisition");
-            check(fixture.pool.stats().leaseClaims()==9,"Final useful frame retires old presentation pins");
+            awaitLeaseClaims(fixture,9,"Final useful frame retires old presentation pins");
         } finally { fixture.close(); }
     }
 
@@ -798,7 +1001,7 @@ public final class WorldStreamSourceControllerTest {
             Files.write(fixture.directory.resolve("authored-sky"),new byte[0]);
             release.complete(null);
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
-            check(fixture.pool.stats().leaseClaims()==2,"All-wanted-ready sky does not suppress valid final receipt");
+            awaitLeaseClaims(fixture,2,"All-wanted-ready sky does not suppress valid final receipt");
         } finally { release.complete(null); fixture.close(); }
     }
 
@@ -1237,7 +1440,7 @@ public final class WorldStreamSourceControllerTest {
             for(int i=0;i<30;i++) { fixture.pump(); Thread.sleep(2); }
             check(fixture.files.opens(1020)==0 && fixture.files.opens(1022)==0 &&fixture.files.opens(1024)==0,
                     "Known missing center does not fill twelve-owner union with unpresentable neighbors");
-            check(fixture.pool.stats().leaseClaims()==9,"Last readable table stays owned with finite unavailable state");
+            awaitLeaseClaims(fixture,9,"Last readable table stays owned with finite unavailable state");
             fixture.controller.neighborhood(fixture.tiles.subList(0,9));
             fixture.camera(3);
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
@@ -1475,6 +1678,19 @@ public final class WorldStreamSourceControllerTest {
                 fixture.controller=null;
             }
         } finally { fixture.close(); }
+    }
+
+    /**
+     * Waits for the pool's live lease count (claims held now, not a running total) to settle.
+     * Pins are retired on the worker step after an accepted presentation, which can follow the
+     * READY publication, so a single read right after READY can still see old pins (#498).
+     */
+    private static void awaitLeaseClaims(Fixture fixture, int expected, String message) throws Exception {
+        try {
+            fixture.until(() -> fixture.pool.stats().leaseClaims()==expected);
+        } catch(AssertionError timeout) {
+            throw new AssertionError(message+": leaseClaims="+fixture.pool.stats().leaseClaims(), timeout);
+        }
     }
 
     private static Object receiptOf(WorldStreamSourceController.Presentation presentation) throws Exception {

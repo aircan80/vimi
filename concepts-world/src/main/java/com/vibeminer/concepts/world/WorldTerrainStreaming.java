@@ -594,6 +594,30 @@ public final class WorldTerrainStreaming {
         }
     }
 
+    /**
+     * Revision of the shared terrain geometry lane's releases. A tile refused at {@code
+     * GEOMETRY_CREDIT} can only succeed after it moves, so wait on it instead of retrying (#304).
+     */
+    public long geometryReleaseRevision() {
+        try {
+            return source().geometryReleaseRevision();
+        } catch (RuntimeException failure) {
+            throw WorldSourceRefusals.boundary(failure);
+        }
+    }
+
+    /**
+     * Runs {@code listener} after each geometry lane or output release, on the releasing thread and
+     * outside any source lock. The listener must only signal; close the result to remove it.
+     */
+    public AutoCloseable onGeometryRelease(Runnable listener) {
+        try {
+            return source().onGeometryRelease(Objects.requireNonNull(listener));
+        } catch (RuntimeException failure) {
+            throw WorldSourceRefusals.boundary(failure);
+        }
+    }
+
     public void activate(Scope scope) {
         try {
             source().activate(Objects.requireNonNull(scope).token);
