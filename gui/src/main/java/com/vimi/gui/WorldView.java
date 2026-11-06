@@ -107,6 +107,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private double sidebarDivider = .23;
     private boolean panelsHidden;
     private final WorldMinimap minimap = new WorldMinimap();
+    // The last pick as a card over the viewport (HUD step 6); the inspection label keeps its text.
+    private final WorldInspectCard inspectCard = new WorldInspectCard();
     private WorldSpawnOverlay spawns;
     private WorldRoleOverlay roles;
     // Highlight of the picked object; FX overlay only, cleared by terrain, sky and marker clicks.
@@ -843,6 +845,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         viewport.getChildren().addAll(selectionLayer(), firstFrameActivity, minimap, panelsHint);
         StackPane.setAlignment(minimap, Pos.TOP_RIGHT);
         StackPane.setMargin(minimap, new Insets(12));
+        // Interim placement until the HUD layout's slots land: bottom-left of the viewport.
+        viewport.getChildren().add(inspectCard);
+        StackPane.setAlignment(inspectCard, Pos.BOTTOM_LEFT);
+        StackPane.setMargin(inspectCard, new Insets(12, 12, 48, 12));
+        inspectCard.refocus(viewport::requestFocus);
         VBox.setVgrow(maps, Priority.ALWAYS);
         heading.getStyleClass().add("h2");
         currentArea.setId("world-current-area");
@@ -1022,6 +1029,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         image.setPreserveRatio(true);
         viewport.setOnKeyPressed(
                 e -> {
+                    // Escape closes the inspect card first (the first layer of the HUD's order).
+                    if (e.getCode() == KeyCode.ESCAPE && inspectCard.close()) {
+                        e.consume();
+                        return;
+                    }
                     input.keyPressed(e.getCode());
                     e.consume();
                 });
@@ -2564,6 +2576,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         updateCurrentArea();
         minimap.update(handle, inventory, origin, originX, originY,
                 camera.x(), camera.y(), camera.yaw());
+        inspectCard.follow(camera.x(), camera.y());
         double targetWidth = Math.max(1, viewport.getWidth()),
                 targetHeight = Math.max(1, viewport.getHeight());
         double scale = Math.min(1, Math.min(800 / targetWidth, 500 / targetHeight));
@@ -2827,6 +2840,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         stallWatchdog.requested(streamingControl);
         minimap.update(handle, inventory, origin, originX, originY,
                 camera.x(), camera.y(), camera.yaw());
+        inspectCard.follow(camera.x(), camera.y());
     }
 
     /**
@@ -3068,6 +3082,30 @@ final class WorldView extends BorderPane implements AutoCloseable {
         pickGeneration++;
         objectSelection.select(null);
         inspection.setText(INSPECT_HINT);
+        inspectCard.close();
+    }
+
+    /** Shows a pick on the inspect card; the inspection label keeps the full text. */
+    private void inspected(WorldInspection.Content content) {
+        inspection.setText(content.detail());
+        inspectCard.show(content, camera == null ? Double.NaN : camera.x(),
+                camera == null ? Double.NaN : camera.y());
+    }
+
+    /** A declared spawn's card, with its role layers and faction when the roles layer lists it. */
+    private WorldInspection.Content spawnContent(com.vibeminer.concepts.locations.WorldSpawns.Spawn spawn,
+            com.vibeminer.concepts.locations.WorldSpawns.Npc npc, String mapName,
+            WorldSpawnModels.Resolved model, boolean resolving) {
+        com.vibeminer.concepts.locations.MapRoles.Npc role = roles == null ? null : roles.npc(spawn.npcId());
+        java.util.List<String> layers = role == null ? null : role.layers().stream()
+                .sorted().map(MapRoleOverlay::label).toList();
+        String faction = role == null ? null : switch (role.friendly()) {
+            case ALLIANCE -> "Alliance";
+            case HORDE -> "Horde";
+            case BOTH -> "Alliance and Horde";
+            case UNKNOWN -> null;
+        };
+        return WorldInspection.spawn(spawn, npc, mapName, model, resolving, layers, faction, -1);
     }
 
     /** The selection highlight, bound to the presented view and the resident pick tiles. */
@@ -3075,6 +3113,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         objectSelection.bind(this::presentedView, this::residentObjects, () -> {
             pickGeneration++;
             inspection.setText("Selection cleared · the selected object's tile is no longer resident");
+            inspectCard.release();
         });
         return objectSelection;
     }
@@ -3115,7 +3154,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (closed || !active || !explorer || camera == null || inventory == null
                 || !(image.getImage() instanceof javafx.scene.image.Image frame)) {
             objectSelection.select(null);
-            inspection.setText("Nothing to inspect until a terrain frame is shown");
+            inspected(WorldInspection.note("Nothing to inspect until a terrain frame is shown"));
             return;
         }
         var map = inventory.map();
@@ -3128,7 +3167,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 objectSelection.select(null);
                 var models = spawns.models();
                 boolean resolving = models.isPresent() && spawn.model() == null;
-                inspection.setText(WorldPick.describeSpawn(spawn.spawn(), spawn.npc(), map.name(), spawn.model(), resolving));
+                inspected(spawnContent(spawn.spawn(), spawn.npc(), map.name(), spawn.model(), resolving));
                 if (resolving) {
                     inspectedSpawn = spawn;
                     inspectedMap = map.name();
@@ -3144,7 +3183,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         viewport.getHeight(), local.getX(), local.getY());
         if (ray.isEmpty()) {
             objectSelection.select(null);
-            inspection.setText("Nothing picked · the pointer is outside the rendered frame");
+            inspected(WorldInspection.note("Nothing picked · the pointer is outside the rendered frame"));
             return;
         }
         var objects = residentObjects();
@@ -3159,7 +3198,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         inspection.setText("Inspecting…");
         try {
             picks.execute(() -> {
-                String text;
+                WorldInspection.Content text;
                 WorldObjectPicks.Selected object = null;
                 try {
                     var hit = WorldPick.terrain(ray.get(), surface);
@@ -3168,9 +3207,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     object = WorldObjectPicks.pick(objects, eye, ray.get(),
                             hit.map(WorldPick.Hit::distance).orElse(Double.POSITIVE_INFINITY)).orElse(null);
                     if (object != null) {
-                        text = WorldObjectPicks.describe(object, mapId, mapName, names);
+                        text = WorldInspection.object(object, mapId, mapName, names);
                     } else if (hit.isEmpty()) {
-                        text = WorldPick.describeMiss(surface.tiles() > 0);
+                        text = WorldInspection.note(WorldPick.describeMiss(surface.tiles() > 0));
                     } else {
                         var at = hit.get();
                         var area = controller != null ? controller.areaAt(at.x(), at.y())
@@ -3181,22 +3220,23 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 0, java.util.List.of())
                                         : com.vibeminer.concepts.world.WorldCurrentArea.locate(
                                                 mapId, at.x(), at.y(), tiles, areaIndex);
-                        text = WorldPick.describeTerrain(at, mapId, mapName, area, objects.size());
+                        text = WorldInspection.terrain(at, mapId, mapName, area, objects.size());
                     }
                 } catch (Throwable failure) {
                     object = null;
-                    text = "Inspection failed: " + (failure.getMessage() == null
-                            ? failure.getClass().getSimpleName() : failure.getMessage());
+                    text = WorldInspection.note("Inspection failed: " + (failure.getMessage() == null
+                            ? failure.getClass().getSimpleName() : failure.getMessage()));
                 }
-                String result = text;
+                var result = text;
                 var selected = object;
                 Platform.runLater(() -> {
                     if (closed || request != pickGeneration || chosen != selection) return;
                     // A tile retired since the click no longer draws its object: never highlight it.
                     boolean resident = selected != null
                             && residentObjects().stream().anyMatch(tile -> tile == selected.tile());
-                    inspection.setText(selected != null && !resident
-                            ? result + " · its tile is no longer resident" : result);
+                    inspected(selected != null && !resident ? new WorldInspection.Content(result.kind(),
+                            result.title(), "its tile is no longer resident", result.lines(), result.file(),
+                            result.detail() + " · its tile is no longer resident", result.npcId()) : result);
                     objectSelection.select(resident ? selected : null);
                 });
             });
@@ -3224,6 +3264,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         minimap.attachRoles(overlay);
     }
 
+    /** The inspect card, for tests. */
+    WorldInspectCard inspectCard() {
+        return inspectCard;
+    }
+
     /** The minimap, for tests. */
     WorldMinimap minimap() {
         return minimap;
@@ -3244,7 +3289,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
             }
             models.cached(npcId).ifPresent(model -> {
                 inspectedSpawn = null;
-                inspection.setText(WorldPick.describeSpawn(pending.spawn(), pending.npc(), inspectedMap, model, false));
+                var resolved = spawnContent(pending.spawn(), pending.npc(), inspectedMap, model, false);
+                inspection.setText(resolved.detail());
+                inspectCard.update(resolved);
             });
         }));
         overlay.bind(this::presentedView);
