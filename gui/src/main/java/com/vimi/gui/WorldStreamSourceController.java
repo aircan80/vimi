@@ -248,9 +248,12 @@ final class WorldStreamSourceController {
     private volatile String unavailableDetail;
     private CompletableFuture<Void> physicalClosing;
     private boolean initialized;
-    private boolean skySuppressed;
+    // The newest frame drew only sky while wanted terrain is still loading (whether or not that
+    // frame is shown): capacity relief then still needs a useful frame.
+    private boolean skyPending;
     private static final String LOADING_IN_VIEW = "Loading terrain in viewing direction";
     private static final String SHOWING_PREVIOUS = "Loading terrain; showing previous view";
+    private static final String LOADING_NEARBY = "Loading nearby terrain";
     private boolean historicalRaster;
     private WorldFormats.Tile creditTarget;
     private boolean retryCommit;
@@ -434,12 +437,19 @@ final class WorldStreamSourceController {
                 }
             }
         }
-        // The visible view is now the live sky, no longer a retained previous view.
-        if (accepted && value.skyOnly) {
+        // Keep the label true to what is now on screen until the worker's next publication:
+        // live sky is no longer a retained previous view, and terrain is no longer "loading in
+        // the viewing direction".
+        if (accepted) {
             boolean relabeled = false;
             synchronized (lock) {
-                if (snapshot.detail().equals(SHOWING_PREVIOUS)) {
-                    snapshot = new Snapshot(snapshot.phase(), LOADING_IN_VIEW, snapshot.prepared(),
+                String detail = snapshot.detail();
+                String next = value.skyOnly
+                        ? detail.equals(SHOWING_PREVIOUS) ? LOADING_IN_VIEW : null
+                        : detail.equals(LOADING_IN_VIEW) || detail.equals(SHOWING_PREVIOUS)
+                                ? LOADING_NEARBY : null;
+                if (next != null) {
+                    snapshot = new Snapshot(snapshot.phase(), next, snapshot.prepared(),
                             snapshot.desired(), snapshot.seed(), snapshot.area());
                     relabeled = true;
                 }
@@ -785,7 +795,7 @@ final class WorldStreamSourceController {
             synchronized (lock) {
                 current = committing;
                 currentReceipt = receipt;
-                skySuppressed=false;
+                skyPending=false;
                 committing = List.of();
                 // A queued frame of the old receipt can no longer be presented; release it so
                 // this commit's own first frame is taken at once.
@@ -845,7 +855,7 @@ final class WorldStreamSourceController {
             // Any missing center needs a source credit, even if never previously presented.
             boolean missingCenter=!wanted.isEmpty() && current.stream().noneMatch(
                     entry->same(wanted.getFirst(),entry.resident()));
-            boolean needsUsefulFrame=missingCenter || skySuppressed;
+            boolean needsUsefulFrame=missingCenter || skyPending;
             var subset=new ArrayList<>(current.stream().filter(
                     entry->containsResident(wanted,entry.resident())).toList());
             boolean releases=current.stream().anyMatch(entry->!subset.contains(entry) && !presented.contains(entry));
@@ -1186,7 +1196,7 @@ final class WorldStreamSourceController {
                             candidate.height(),()->closing)) {
                 // Terrain in the viewing direction is still loading: present the live sky frame
                 // rather than freezing on the previous one, and keep asking for useful terrain.
-                skySuppressed=true;
+                skyPending=true;
                 synchronized(lock) {
                     if(!closing && borrowed==null && queued==null && entries.size()>=12
                             && !presented.isEmpty() && candidate.content()==currentReceipt) {
@@ -1200,7 +1210,7 @@ final class WorldStreamSourceController {
                 queue(candidate,true);
                 return;
             }
-            skySuppressed=false;
+            skyPending=false;
             queue(candidate,false);
         }
     }
