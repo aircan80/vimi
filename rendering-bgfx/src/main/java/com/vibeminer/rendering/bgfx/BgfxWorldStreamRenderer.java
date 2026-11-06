@@ -388,6 +388,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private final boolean[] objectFormats = new boolean[ObjectTextureFormats.BC3 + 1];
 
     private long compressedImages, decodedImages;
+
+    /** Whether the first completed object set's texture paths have been reported. */
+    private boolean objectPathsReported;
+
     private List<WorldStreamState.Lease> active = List.of();
     private WorldStreamState.Lease staged;
     private LateUpload late;
@@ -405,7 +409,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
                             0, false, 1, BGFX_TEXTURE_FORMAT_D32F, BGFX_TEXTURE_RT));
             if (!org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
-                    0, true, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
+                    0, false, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
                 throw new IOException("World terrain needs mipmapped RGBA8 textures");
             }
             String profile = BgfxModelRenderer.shaderProfile(caps.rendererType());
@@ -415,7 +419,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 objectFormats[f] =
                         !forced
                                 && org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
-                                        0, true, 1, bgfxFormat(f), BGFX_TEXTURE_NONE);
+                                        0, false, 1, bgfxFormat(f), BGFX_TEXTURE_NONE);
             }
             System.err.println(objectFormatsReport(objectFormats, forced));
             System.err.flush();
@@ -473,7 +477,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         String step = "RGBA8 textures";
         try {
             if (!org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
-                    0, true, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
+                    0, false, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
                 throw new IOException("Exterior objects need mipmapped RGBA8 textures");
             }
             step = "program";
@@ -741,6 +745,17 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
             // Every slice is a bgfx-owned copy; the packed native input can retire now.
             build.closeSource();
+            if (!objectPathsReported) {
+                // Once per session: how the first complete set's textures reached the GPU.
+                objectPathsReported = true;
+                System.err.println(
+                        "World object textures uploaded: "
+                                + compressedImages
+                                + " compressed, "
+                                + decodedImages
+                                + " decoded to RGBA8");
+                System.err.flush();
+            }
             return 0;
         } catch (IOException | RuntimeException failed) {
             build.fail();

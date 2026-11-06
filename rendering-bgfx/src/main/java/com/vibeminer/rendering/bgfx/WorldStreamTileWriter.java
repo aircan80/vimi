@@ -235,6 +235,10 @@ public final class WorldStreamTileWriter {
             private final java.util.ArrayList<short[]> indexBlocks = new java.util.ArrayList<>();
             private final java.util.ArrayList<byte[]> pixelBlocks = new java.util.ArrayList<>();
             private int vertices, indices, imageBytes, draws;
+
+            /** RGBA8 bytes of every image so far once decoded (the fallback's GPU size). */
+            private long decodedBytes;
+
             private boolean built;
 
             private Builder() {}
@@ -262,6 +266,7 @@ public final class WorldStreamTileWriter {
                         && models.size() < WorldStreamObjectsFile.MAX_MODELS
                         && imageCount <= WorldStreamObjectsFile.MAX_IMAGES - images.size()
                         && pixelCount * 4 <= WorldStreamObjectsFile.MAX_IMAGE_BYTES - imageBytes
+                        && pixelCount * 4 <= WorldStreamObjectsFile.MAX_DECODED_BYTES - decodedBytes
                         && meshCount <= WorldStreamObjectsFile.MAX_MESHES - meshes.size()
                         && vertexCount <= WorldStreamObjectsFile.MAX_VERTICES - vertices
                         && indexCount <= WorldStreamObjectsFile.MAX_INDICES - indices
@@ -330,8 +335,13 @@ public final class WorldStreamTileWriter {
                 int count =
                         com.vibeminer.rendering.world.ObjectTextureFormats.chainBytes(
                                 format, width, height);
+                long decoded =
+                        4L
+                                * com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(
+                                        width, height);
                 if (images.size() == WorldStreamObjectsFile.MAX_IMAGES
                         || count > WorldStreamObjectsFile.MAX_IMAGE_BYTES - imageBytes
+                        || decoded > WorldStreamObjectsFile.MAX_DECODED_BYTES - decodedBytes
                         || chain.remaining() != count) {
                     throw new IllegalArgumentException("Exterior image exceeds file profile");
                 }
@@ -340,6 +350,7 @@ public final class WorldStreamTileWriter {
                 images.add(new int[] {width, height, format});
                 pixelBlocks.add(copy);
                 imageBytes += count;
+                decodedBytes += decoded;
                 return images.size() - 1;
             }
 

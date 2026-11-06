@@ -1,6 +1,7 @@
 package com.vibeminer.rendering.bgfx;
 
 import com.vibeminer.rendering.world.ObjectTextureFormats;
+import com.vibeminer.rendering.world.ObjectTextureMips;
 import com.vibeminer.rendering.world.TerrainCamera;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
@@ -16,16 +17,17 @@ import java.util.concurrent.atomic.AtomicReference;
  * Opt-in actual native proof of the hot child's exterior material classes: one authored terrain
  * tile, then late objects with three camera-facing quads side by side, a cutout quad whose texels
  * are all transparent (discarded: terrain stays), an opaque quad (exact texel colour at full light)
- * and an alpha-blended quad (source-alpha over the terrain pixel). The tile is filled to the
- * placement cap behind the camera, so each frame draws the maximum per-tile placements in both
- * passes. Authored data only.
+ * and an alpha-blended quad (source-alpha over the terrain pixel). Above and below them, layout
+ * ladders (issue #374) draw every mip level of three textures at one texel per pixel and check
+ * every block. The tile is filled to the placement cap behind the camera, so each frame draws the
+ * maximum per-tile placements in both passes. Authored data only.
  */
 public final class WorldStreamObjectsMaterialProof {
     private static final int WIDTH = 800, HEIGHT = 500;
     private static final TerrainCamera VIEW = new TerrainCamera(-20, -2, 20, 0, -.5);
 
     /**
-     * Image formats (issue #374): {@code rgba8} (default), {@code bc} (BC1 opaque and cutout, BC3
+     * Image formats (issue #374): {@code rgba8} (default), {@code bc} (BC1 opaque, BC3 cutout and
      * blended, uploaded as blocks where the backend samples them) or {@code bc-fallback} (the same
      * blocks with the child forced onto its RGBA8 decode path).
      */
@@ -118,6 +120,7 @@ public final class WorldStreamObjectsMaterialProof {
             if ((after.pixels().get(row * WIDTH + 656) >>> 24) != 255) {
                 throw new AssertionError("Blending must keep the opaque output alpha");
             }
+            int ladderSamples = checkLadders(after, r);
             // CPU picking of the same uploaded tables agrees with these pixels: the transparent
             // cutout and the gap between quads (inside the model's bounds) pick nothing, and the
             // gap pixel is the terrain pixel; the opaque and blended quads pick their ranges.
@@ -151,7 +154,15 @@ public final class WorldStreamObjectsMaterialProof {
                         case "bc-fallback" -> "BC1 decoded to RGBA8, BC2 decoded to RGBA8";
                         default -> "World object textures:";
                     };
-            if (!session.stderrSnapshot().contains(path)) {
+            // Six textures (three material, three ladders); how many took each path.
+            String counts =
+                    switch (IMAGES) {
+                        case "bc" -> "uploaded: 6 compressed, 0 decoded to RGBA8";
+                        case "bc-fallback" -> "uploaded: 0 compressed, 6 decoded to RGBA8";
+                        default -> "uploaded: 0 compressed, 0 decoded to RGBA8";
+                    };
+            if (!session.stderrSnapshot().contains(path)
+                    || !session.stderrSnapshot().contains(counts)) {
                 throw new AssertionError(
                         "Object texture path not reported: " + session.stderrSnapshot());
             }
@@ -165,6 +176,8 @@ public final class WorldStreamObjectsMaterialProof {
                             + backend
                             + " images="
                             + IMAGES
+                            + " ladderSamples="
+                            + ladderSamples
                             + " placements="
                             + WorldStreamObjectsFile.MAX_PLACEMENTS
                             + " cutout="
@@ -181,7 +194,10 @@ public final class WorldStreamObjectsMaterialProof {
         }
     }
 
-    /** Three quads at eye depth 5, eye-right [-3,-1], [-0.9,0.9] and [1,3], eye-up [-2,2]. */
+    /**
+     * Three material quads at eye depth 5, eye-right [-3,-1], [-0.9,0.9] and [1,3], eye-up
+     * [-0.5,0.5], and the {@link #LADDERS} above and below them.
+     */
     static WorldStreamTileWriter.Exterior quads() {
         var builder = WorldStreamTileWriter.Exterior.builder();
         // The opaque chain has the largest image side (two bounded RGBA8 upload steps, one as
@@ -219,6 +235,18 @@ public final class WorldStreamObjectsMaterialProof {
                     ObjectTextureFormats.BC3,
                     blocks(ObjectTextureFormats.BC3, 256, 64, bc3(128, blue)));
         }
+        for (var ladder : LADDERS) {
+            var chain = ladderChain(ladder);
+            if (IMAGES.equals("rgba8")) {
+                chain =
+                        ByteBuffer.wrap(
+                                ObjectTextureFormats.decodeChain(
+                                        ladder.format, ladder.width, ladder.height, chain, 0));
+                builder.image(ladder.width, ladder.height, chain);
+            } else {
+                builder.image(ladder.width, ladder.height, ladder.format, chain);
+            }
+        }
         builder.model();
         double[][] spans = {{-3, -1}, {-.9, .9}, {1, 3}};
         var vertices = FloatBuffer.allocate(12 * 8);
@@ -227,7 +255,7 @@ public final class WorldStreamObjectsMaterialProof {
         for (int q = 0; q < 3; q++) {
             for (int corner = 0; corner < 4; corner++) {
                 double right = spans[q][corner == 1 || corner == 2 ? 1 : 0];
-                double up = corner < 2 ? -2 : 2, depth = 5;
+                double up = corner < 2 ? -.5 : .5, depth = 5;
                 // Inverse of TerrainCamera.eye at yaw 0: right = -dy, (up, depth) rotate (dz, dx).
                 double dx = -sp * up + cp * depth, dy = -right, dz = cp * up + sp * depth;
                 // The normal is the fixed light direction, so the light intensity is exactly 1.
@@ -250,8 +278,11 @@ public final class WorldStreamObjectsMaterialProof {
                     WorldStreamObjectsFile.OPAQUE,
                     WorldStreamObjectsFile.BLENDED
                 });
+        ladderModel(builder);
         builder.placement(
                 0, VIEW.x(), VIEW.y(), VIEW.z(), 1, new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1});
+        builder.placement(
+                1, VIEW.x(), VIEW.y(), VIEW.z(), 1, new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1});
         // Fill the tile to the placement cap behind the camera (looking along +x), so every frame
         // draws all of them in the opaque/cutout pass and again in the sorted blended pass.
         while (builder.placementRoom() > 0) {
@@ -280,6 +311,153 @@ public final class WorldStreamObjectsMaterialProof {
         double forward = cp - sp * up, dz = sp + cp * up;
         return com.vibeminer.rendering.world.WorldObjectPicking.pick(
                 tile, VIEW, cy * forward + sy * right, sy * forward - cy * right, dz, 2200);
+    }
+
+    /**
+     * A layout ladder (issue #374): one texture drawn once per mip level k, each draw a 64-pixel
+     * square (64 x 16 for the 4:1 texture) whose UVs repeat 2^k times, so level k is drawn at one
+     * texel per pixel and trilinear sampling reads level k alone. Every block of every level has
+     * its own colour, so a wrong pitch, row, level offset or a missing level shows.
+     */
+    record Ladder(int format, int width, int height, double up, int top, int image) {}
+
+    static final List<Ladder> LADDERS =
+            List.of(
+                    new Ladder(ObjectTextureFormats.BC1, 64, 64, 1.0, 58, 3),
+                    new Ladder(ObjectTextureFormats.BC3, 64, 64, -1.5, 378, 4),
+                    new Ladder(ObjectTextureFormats.BC1, 64, 16, .75, 138, 5));
+
+    /** Screen column of ladder quad k's left edge: eye-right -2 + 0.5625 k (72 pixels). */
+    private static int ladderLeft(int level) {
+        return 144 + 72 * level;
+    }
+
+    /** The 565 colour of block (bx, by) of ladder t's level k; nearby blocks differ widely. */
+    private static int ladderColour(int t, int level, int bx, int by) {
+        int r = (bx * 5 + level * 3 + t * 7) & 31;
+        int g = (by * 9 + level * 13 + 1) & 63;
+        int b = (bx + by * 3 + level * 7 + t * 11) & 31;
+        return r << 11 | g << 5 | b;
+    }
+
+    private static ByteBuffer ladderChain(Ladder ladder) {
+        int t = LADDERS.indexOf(ladder);
+        var chain =
+                ByteBuffer.allocate(
+                        ObjectTextureFormats.chainBytes(
+                                ladder.format, ladder.width, ladder.height));
+        for (int level = 0;
+                level < ObjectTextureMips.levels(ladder.width, ladder.height);
+                level++) {
+            int w = ObjectTextureMips.levelWidth(ladder.width, level);
+            int h = ObjectTextureMips.levelWidth(ladder.height, level);
+            for (int by = 0; by < (h + 3) / 4; by++) {
+                for (int bx = 0; bx < (w + 3) / 4; bx++) {
+                    int colour = ladderColour(t, level, bx, by);
+                    chain.put(
+                            ladder.format == ObjectTextureFormats.BC1
+                                    ? bc1(colour, 0, 0)
+                                    : bc3(255, colour));
+                }
+            }
+        }
+        return chain.flip();
+    }
+
+    /** Model 1: one quad per ladder level, each an opaque range over its ladder image. */
+    private static void ladderModel(WorldStreamTileWriter.Exterior.Builder builder) {
+        builder.model();
+        int quads = 0;
+        for (var ladder : LADDERS) {
+            quads += ObjectTextureMips.levels(ladder.width, ladder.height);
+        }
+        var vertices = FloatBuffer.allocate(quads * 4 * 8);
+        var indices = IntBuffer.allocate(quads * 6);
+        var ranges = new int[quads * 3];
+        var classes = new int[quads];
+        double cp = Math.cos(VIEW.pitch()), sp = Math.sin(VIEW.pitch());
+        int q = 0;
+        for (var ladder : LADDERS) {
+            double tall = .5 * ladder.height / ladder.width;
+            for (int level = 0;
+                    level < ObjectTextureMips.levels(ladder.width, ladder.height);
+                    level++) {
+                double left = -2 + .5625 * level, repeat = 1 << level;
+                for (int corner = 0; corner < 4; corner++) {
+                    double right = left + (corner == 1 || corner == 2 ? .5 : 0);
+                    double up = ladder.up + (corner < 2 ? 0 : tall), depth = 5;
+                    double dx = -sp * up + cp * depth, dy = -right, dz = cp * up + sp * depth;
+                    vertices.put((float) dx).put((float) dy).put((float) dz);
+                    vertices.put(-0.408248290463863f).put(-0.408248290463863f);
+                    vertices.put(0.816496580927726f);
+                    // u grows to the right, v downwards from the quad's top edge.
+                    vertices.put((float) (corner == 1 || corner == 2 ? repeat : 0));
+                    vertices.put((float) (corner < 2 ? repeat : 0));
+                }
+                int base = q * 4;
+                indices.put(base).put(base + 1).put(base + 2).put(base).put(base + 2).put(base + 3);
+                ranges[q * 3] = q * 6;
+                ranges[q * 3 + 1] = 6;
+                ranges[q * 3 + 2] = ladder.image;
+                classes[q] = WorldStreamObjectsFile.OPAQUE;
+                q++;
+            }
+        }
+        builder.mesh(vertices.flip(), indices.flip(), ranges, classes);
+    }
+
+    /** Checks the centre of every block of every ladder level; returns the samples taken. */
+    private static int checkLadders(WorldStreamTransport.Frame frame, int redShift) {
+        int samples = 0;
+        for (int t = 0; t < LADDERS.size(); t++) {
+            var ladder = LADDERS.get(t);
+            int quadHeight = 64 * ladder.height / ladder.width;
+            for (int level = 0;
+                    level < ObjectTextureMips.levels(ladder.width, ladder.height);
+                    level++) {
+                int w = ObjectTextureMips.levelWidth(ladder.width, level);
+                int h = ObjectTextureMips.levelWidth(ladder.height, level);
+                for (int by = 0; by < (h + 3) / 4; by++) {
+                    for (int bx = 0; bx < (w + 3) / 4; bx++) {
+                        int px = 4 * bx + Math.min(2, w - 1), py = 4 * by + Math.min(2, h - 1);
+                        if (py >= quadHeight) {
+                            continue;
+                        }
+                        int x = ladderLeft(level) + px, y = ladder.top + py;
+                        int colour = ladderColour(t, level, bx, by);
+                        int pixel = pixel(frame, x, y);
+                        String where =
+                                "ladder "
+                                        + t
+                                        + " level "
+                                        + level
+                                        + " block "
+                                        + bx
+                                        + ","
+                                        + by
+                                        + " at "
+                                        + x
+                                        + ","
+                                        + y
+                                        + " = "
+                                        + Integer.toHexString(pixel);
+                        near(channel(pixel, redShift), expand(colour >>> 11, 5), 2, where + " red");
+                        near(channel(pixel, 8), expand(colour >>> 5 & 63, 6), 2, where + " green");
+                        near(
+                                channel(pixel, 16 - redShift),
+                                expand(colour & 31, 5),
+                                2,
+                                where + " blue");
+                        samples++;
+                    }
+                }
+            }
+        }
+        return samples;
+    }
+
+    private static int expand(int value, int bits) {
+        return bits == 5 ? value << 3 | value >>> 2 : value << 2 | value >>> 4;
     }
 
     private static byte[] bc1(int c0, int c1, int selectors) {

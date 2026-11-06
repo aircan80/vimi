@@ -65,6 +65,12 @@ final class WorldStreamObjectsFile {
     /** Image data bytes per tile: MAX_PIXELS as RGBA8; compressed chains take less of it. */
     static final int MAX_IMAGE_BYTES = MAX_PIXELS * 4;
 
+    /**
+     * RGBA8 bytes all images may take once decoded: a backend without BC sampling decodes every
+     * compressed chain (up to 8x its size), so its GPU memory never exceeds the RGBA8 profile.
+     */
+    static final int MAX_DECODED_BYTES = MAX_IMAGE_BYTES;
+
     /** Smallest side of a compressed image's top level: one 4 x 4 block. */
     static final int MIN_COMPRESSED_SIDE = 4;
 
@@ -292,7 +298,7 @@ final class WorldStreamObjectsFile {
                 }
             }
             require(draws <= MAX_DRAWS, "Object draw budget");
-            long byteSum = 0;
+            long byteSum = 0, decodedSum = 0;
             for (int i = 0; i < imageCount; i++) {
                 int width = images[i * IMAGE_INTS], height = images[i * IMAGE_INTS + 1];
                 int format = images[i * IMAGE_INTS + 2];
@@ -304,8 +310,10 @@ final class WorldStreamObjectsFile {
                                 || width >= MIN_COMPRESSED_SIDE && height >= MIN_COMPRESSED_SIDE,
                         "Compressed image size");
                 byteSum += ObjectTextureFormats.chainBytes(format, width, height);
+                decodedSum += 4L * ObjectTextureMips.chainPixels(width, height);
             }
             require(byteSum == imageBytes, "Image data");
+            require(decodedSum <= MAX_DECODED_BYTES, "Decoded image budget");
             // BC1 alpha is not sampled on every backend (bgfx Vulkan uses the RGB block format),
             // so only opaque ranges, which ignore alpha, may sample a BC1 image.
             for (int r = 0; r < rangeCount; r++) {

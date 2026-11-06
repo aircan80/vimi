@@ -270,6 +270,27 @@ final class WorldStreamObjectsFileTest {
     }
 
     @Test
+    void compressedImagesAreChargedTheirDecodedSizeToo() {
+        // 56 BC1 256^2 chains take 2.4 MB stored but 19.6 MB decoded, the RGBA8 profile a
+        // backend without BC sampling must stay within; a 57th is refused although its 43,704
+        // stored bytes would fit.
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        int stored = ObjectTextureFormats.chainBytes(ObjectTextureFormats.BC1, 256, 256);
+        long decoded = 4L * ObjectTextureMips.chainPixels(256, 256);
+        assertEquals(56, WorldStreamObjectsFile.MAX_DECODED_BYTES / decoded);
+        for (int i = 0; i < 56; i++) {
+            builder.image(256, 256, ObjectTextureFormats.BC1, ByteBuffer.allocate(stored));
+        }
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        builder.image(
+                                256, 256, ObjectTextureFormats.BC1, ByteBuffer.allocate(stored)));
+        assertFalse(builder.fits(1, ObjectTextureMips.chainPixels(256, 256), 1, 3, 3, 1));
+        assertTrue(56L * stored < WorldStreamObjectsFile.MAX_IMAGE_BYTES);
+    }
+
+    @Test
     void maximumProfileFitsUnderTheObjectsFileCeiling() throws Exception {
         var builder = WorldStreamTileWriter.Exterior.builder();
         int chain = ObjectTextureMips.chainPixels(256, 256);
