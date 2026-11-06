@@ -572,7 +572,10 @@ public final class WorldStreamSourceControllerTest {
 
             fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY
                     && fixture.controller.snapshot().prepared()==9);
-            check(fixture.pool.stats().leaseClaims()==9,"Actual cleanup capacity eventually restores the requested neighborhood");
+            // leaseClaims counts atlas leases held now (not a running total). READY can be
+            // published before the worker's next step retires the previous presentation's
+            // pins, so the count settles to the nine residents a step later (#498).
+            awaitLeaseClaims(fixture,9,"Actual cleanup capacity eventually restores the requested neighborhood");
         } finally {
             Files.deleteIfExists(hold);
             firstRelease.countDown();
@@ -926,7 +929,7 @@ public final class WorldStreamSourceControllerTest {
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
             check(sequence.getLong(fixture.controller)>previousSequence && receipt.get(fixture.controller)!=previousReceipt,
                     "Only actual full-ready sky upload advances presentation ACK");
-            check(fixture.pool.stats().leaseClaims()==9,"Old historical image holds no obsolete Source owners");
+            awaitLeaseClaims(fixture,9,"Old historical image holds no obsolete Source owners");
         } finally { fixture.close(); }
     }
 
@@ -945,7 +948,7 @@ public final class WorldStreamSourceControllerTest {
             check(fixture.pool.stats().leaseClaims()<=12,"Sky-blocked relief keeps source owner limit");
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
             check(fixture.controller.snapshot().prepared()==9,"Useful lookahead pixels unblock victim reacquisition");
-            check(fixture.pool.stats().leaseClaims()==9,"Final useful frame retires old presentation pins");
+            awaitLeaseClaims(fixture,9,"Final useful frame retires old presentation pins");
         } finally { fixture.close(); }
     }
 
@@ -998,7 +1001,7 @@ public final class WorldStreamSourceControllerTest {
             Files.write(fixture.directory.resolve("authored-sky"),new byte[0]);
             release.complete(null);
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
-            check(fixture.pool.stats().leaseClaims()==2,"All-wanted-ready sky does not suppress valid final receipt");
+            awaitLeaseClaims(fixture,2,"All-wanted-ready sky does not suppress valid final receipt");
         } finally { release.complete(null); fixture.close(); }
     }
 
@@ -1437,7 +1440,7 @@ public final class WorldStreamSourceControllerTest {
             for(int i=0;i<30;i++) { fixture.pump(); Thread.sleep(2); }
             check(fixture.files.opens(1020)==0 && fixture.files.opens(1022)==0 &&fixture.files.opens(1024)==0,
                     "Known missing center does not fill twelve-owner union with unpresentable neighbors");
-            check(fixture.pool.stats().leaseClaims()==9,"Last readable table stays owned with finite unavailable state");
+            awaitLeaseClaims(fixture,9,"Last readable table stays owned with finite unavailable state");
             fixture.controller.neighborhood(fixture.tiles.subList(0,9));
             fixture.camera(3);
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
@@ -1675,6 +1678,19 @@ public final class WorldStreamSourceControllerTest {
                 fixture.controller=null;
             }
         } finally { fixture.close(); }
+    }
+
+    /**
+     * Waits for the pool's live lease count (claims held now, not a running total) to settle.
+     * Pins are retired on the worker step after an accepted presentation, which can follow the
+     * READY publication, so a single read right after READY can still see old pins (#498).
+     */
+    private static void awaitLeaseClaims(Fixture fixture, int expected, String message) throws Exception {
+        try {
+            fixture.until(() -> fixture.pool.stats().leaseClaims()==expected);
+        } catch(AssertionError timeout) {
+            throw new AssertionError(message+": leaseClaims="+fixture.pool.stats().leaseClaims(), timeout);
+        }
     }
 
     private static Object receiptOf(WorldStreamSourceController.Presentation presentation) throws Exception {
