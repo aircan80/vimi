@@ -28,6 +28,7 @@ public final class WorldStreamSourceControllerTest {
     private WorldStreamSourceControllerTest() {}
 
     public static void main(String[] args) throws Exception {
+        if(Integer.getInteger("diag498",0)>0) { int n=Integer.getInteger("diag498"); for(int i=1;i<=n;i++){ fiveByFiveNeighborhoodHoldsTwentyFiveResidentsWithinTheSourceUnion(); System.out.println("DIAG498 run "+i+" ok"); } return; }
         retryCommitKeepsExactTargetUntilPriorFileActuallyRetires();
         retirementBetweenRefusalAndRetryStillWakesTheCommit();
         failedFxWakeStillCancelsHeldInitialSourceQualification();
@@ -225,12 +226,23 @@ public final class WorldStreamSourceControllerTest {
             // replaced tiles retire only after accepted pixels stop showing them, and at the
             // residents + 3 source bound the controller rightly waits for those pixels.
             fixture.untilPresented(() -> {
-                peak[0] = Math.max(peak[0], fixture.pool.stats().leaseClaims());
+                int now = fixture.pool.stats().leaseClaims();
+                if (now > residents + 3 && now > peak[0]) {
+                    try {
+                        System.out.println("DIAG498 claims="+now+" entries="+((java.util.Map<?,?>)field(fixture.controller,"entries")).size()
+                            +" pending="+(field(fixture.controller,"pending")!=null)+" staged="+(field(fixture.controller,"staged")!=null)
+                            +" current="+((List<?>)field(fixture.controller,"current")).size()+" presented="+((List<?>)field(fixture.controller,"presented")).size()
+                            +" committing="+((List<?>)field(fixture.controller,"committing")).size()+" borrowed="+((List<?>)field(fixture.controller,"borrowedTable")).size()
+                            +" commits="+fixture.commitLines().size()+" phase="+fixture.controller.snapshot().phase());
+                    } catch (Exception e) { System.out.println("DIAG498 "+e); }
+                }
+                peak[0] = Math.max(peak[0], now);
                 return fixture.commitLines().size() >= residents + 5
                         && fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
                         && fixture.controller.snapshot().prepared() == residents
                         && fixture.pool.stats().leaseClaims() == residents;
             });
+            System.out.println("DIAG498 peak="+peak[0]);
             check(peak[0] <= residents + 3, "Source owners never exceed residents plus staged, pending and retiring");
             check(fixture.pool.stats().leaseClaims() <= com.vibeminer.concepts.world.TerrainAtlasPool.MAX_ENTRIES,
                     "The shared atlas pool keeps headroom for other borrowers");
