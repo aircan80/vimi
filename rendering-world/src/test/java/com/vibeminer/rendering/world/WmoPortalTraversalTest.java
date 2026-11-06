@@ -63,10 +63,12 @@ class WmoPortalTraversalTest {
         return WmoPortalTraversal.of(groups, portals, refs);
     }
 
-    /** A 90-degree frustum looking along +x ({@code sign} 1) or -x ({@code sign} -1). */
+    /**
+     * The four side planes of a 90-degree frustum looking along +x ({@code sign} 1) or -x ({@code
+     * sign} -1), without a near plane, as the traversal takes it.
+     */
     private static List<Plane> looking(int sign, double x, double y, double z) {
         return List.of(
-                new Plane(sign, 0, 0, -sign * x),
                 new Plane(sign, -1, 0, -sign * x + y),
                 new Plane(sign, 1, 0, -sign * x - y),
                 new Plane(sign, 0, -1, -sign * x + z),
@@ -85,7 +87,7 @@ class WmoPortalTraversalTest {
     void aRoomSeesTheNextRoomOnlyThroughADoorInView() {
         var t = building(false);
         var result = t.visible(5, 0, 1, looking(1, 5, 0, 1));
-        assertEquals(A, result.cameraGroup());
+        assertTrue(result.inside());
         assertTrue(result.visible(A) && result.visible(B));
         // Looking away from the A|B door: A, and the yard through the door behind the camera.
         assertEquals(List.of(A, E), visible(t, -1, 5, 0, 1));
@@ -125,7 +127,7 @@ class WmoPortalTraversalTest {
     void fromOutsideTheWalkStartsAtEveryExteriorGroup() {
         var t = building(false);
         var result = t.visible(-5, 0, 1, looking(1, -5, 0, 1));
-        assertEquals(-1, result.cameraGroup());
+        assertFalse(result.inside());
         // Through the yard door into A, and on through the aligned A|B door into B.
         assertTrue(result.visible(E) && result.visible(A) && result.visible(B));
         assertFalse(result.visible(C));
@@ -148,16 +150,96 @@ class WmoPortalTraversalTest {
     }
 
     @Test
-    void theCameraGroupIsTheSmallestInteriorBoxHoldingIt() {
+    void everyInteriorBoxHoldingTheCameraStartsTheWalk() {
+        // An L-shaped room L whose box also covers a small closet K the camera is not in: the
+        // client's BSP would say L, the smallest box says K. Both start, so neither the room the
+        // camera is in nor what it sees through its door goes hollow.
+        var portals = List.of(door(10, -1, 1));
         var groups =
                 List.of(
-                        new Group(WmoPortalTraversal.INTERIOR, 0, 0, 0, 100, 100, 100, 0, 0),
-                        new Group(WmoPortalTraversal.INTERIOR, 0, 0, 0, 10, 10, 10, 0, 0),
-                        new Group(WmoPortalTraversal.EXTERIOR, 0, 0, 0, 5, 5, 5, 0, 0));
-        var t = WmoPortalTraversal.of(groups, List.of(), List.of());
-        assertEquals(1, t.cameraGroup(1, 1, 1));
-        assertEquals(0, t.cameraGroup(50, 50, 50));
-        assertEquals(-1, t.cameraGroup(500, 1, 1));
+                        new Group(WmoPortalTraversal.INTERIOR, 0, -5, 0, 10, 5, 5, 0, 1),
+                        new Group(WmoPortalTraversal.INTERIOR, 4, -1, 0, 6, 1, 2, 1, 0),
+                        room(10, WmoPortalTraversal.INTERIOR, 1, 0),
+                        new Group(WmoPortalTraversal.EXTERIOR, 0, 0, 0, 5, 5, 5, 1, 0));
+        var t = WmoPortalTraversal.of(groups, portals, List.of(new Ref(0, 2, -1)));
+        var result = t.visible(5, 0, 1, looking(1, 5, 0, 1));
+        assertTrue(result.inside());
+        // L, K and the room behind L's door; the exterior group is not a start when inside.
+        assertEquals(List.of(0, 1, 2), visible(t, 1, 5, 0, 1));
+    }
+
+    @Test
+    void aDoorCloserThanTheNearPlaneStillLeadsOn() {
+        // 0.3 from the A|B door, inside a 0.5 near distance. The traversal takes the frustum
+        // without its near plane, so B stays visible; with the near plane the door would be culled.
+        var t = building(false);
+        var sides = looking(1, 9.7, 0, 1);
+        assertTrue(t.visible(9.7, 0, 1, sides).visible(B));
+        var withNear = new ArrayList<>(sides);
+        withNear.add(new Plane(1, 0, 0, -(9.7 + TerrainCamera.NEAR)));
+        assertFalse(t.visible(9.7, 0, 1, withNear).visible(B));
+    }
+
+    @Test
+    void aGroupPastItsEntryCapIsWalkedWithTheCallersFrustum() {
+        // A room S opens on a hall H through MAX_ENTRIES_PER_GROUP narrow arches at the far left
+        // and then one wide arch in the middle; H's door to T is seen only through the wide one.
+        int narrow = WmoPortalTraversal.MAX_ENTRIES_PER_GROUP;
+        var portals = new ArrayList<Portal>();
+        var refs = new ArrayList<Ref>();
+        for (int i = 0; i < narrow; i++) {
+            portals.add(door(10, -4.9 + 0.1 * i, -4.85 + 0.1 * i));
+            refs.add(new Ref(i, 1, -1));
+        }
+        portals.add(door(10, -1, 1));
+        refs.add(new Ref(narrow, 1, -1));
+        portals.add(door(20, -1, 1));
+        refs.add(new Ref(narrow + 1, 2, -1));
+        var groups =
+                List.of(
+                        room(0, WmoPortalTraversal.INTERIOR, 0, narrow + 1),
+                        room(10, WmoPortalTraversal.INTERIOR, narrow + 1, 1),
+                        room(20, WmoPortalTraversal.INTERIOR, narrow + 2, 0));
+        var t = WmoPortalTraversal.of(groups, portals, refs);
+        assertEquals(List.of(0, 1, 2), visible(t, 1, 5, 0, 1));
+    }
+
+    @Test
+    void aNonConvexPortalKeepsItsWholeOpening() {
+        // An L-shaped door at x = 10 (y -3..3 along the floor, rising to z 4 on the left only).
+        // Its reflex edges would cut away the lower right; the B|C door seen only through that
+        // part (low, at y 0..2) must stay visible.
+        var l =
+                new Portal(
+                        new double[] {
+                            10, -3, 0, 10, 3, 0, 10, 3, 1, 10, -1, 1, 10, -1, 4, 10, -3, 4
+                        },
+                        1,
+                        0,
+                        0,
+                        -10);
+        var low = new Portal(new double[] {20, 0, 0, 20, 2, 0, 20, 2, 1, 20, 0, 1}, 1, 0, 0, -20);
+        var groups =
+                List.of(
+                        room(0, WmoPortalTraversal.INTERIOR, 0, 1),
+                        room(10, WmoPortalTraversal.INTERIOR, 1, 1),
+                        room(20, WmoPortalTraversal.INTERIOR, 2, 0));
+        var t =
+                WmoPortalTraversal.of(
+                        groups, List.of(l, low), List.of(new Ref(0, 1, -1), new Ref(1, 2, -1)));
+        assertEquals(List.of(0, 1, 2), visible(t, 1, 5, 0, 0.5));
+    }
+
+    @Test
+    void aReusedTraversalGivesTheSameAnswers() {
+        var t = building(false);
+        var into = new java.util.BitSet();
+        assertTrue(t.visible(5, 0, 1, looking(1, 5, 0, 1), into));
+        assertEquals(java.util.BitSet.valueOf(new long[] {0b11}), into);
+        assertFalse(t.visible(-5, 0, 1, looking(-1, -5, 0, 1), into));
+        assertEquals(java.util.BitSet.valueOf(new long[] {0b1000}), into);
+        assertTrue(t.visible(5, 0, 1, looking(1, 5, 0, 1), into));
+        assertEquals(java.util.BitSet.valueOf(new long[] {0b11}), into);
     }
 
     @Test

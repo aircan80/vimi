@@ -1,8 +1,8 @@
 package com.vibeminer.rendering.world;
 
 import com.vibeminer.formats.world.WmoFormats;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.BitSet;
 import java.util.List;
 
@@ -10,31 +10,42 @@ import java.util.List;
  * Which groups of one WMO are visible from a camera, by walking its portals (#383). Everything is
  * in WMO-local axes; the caller transforms the camera and its frustum into them.
  *
- * <p>The walk starts from the group the camera is in, or, when it is in no interior group, from
- * every exterior group. From each group it follows that group's MOPR references: a portal is
- * passable when the camera is on the referencing group's side of it and the portal polygon is not
- * outside the current frustum; the group behind it is visible and is walked with the frustum
- * narrowed to the portal's edges. Groups reached by no portal are not visible.
+ * <p>The walk starts from every interior group whose bounding box holds the camera, or, when there
+ * is none, from every exterior group; the start groups are visible. From each group it follows that
+ * group's MOPR references: a portal is passable when the camera is on the referencing group's side
+ * of it and the portal polygon is not outside the current frustum; the group behind it is visible
+ * and is walked with the frustum narrowed to the portal's edges. Groups reached by no portal are
+ * not visible.
  *
- * <p>Pinned conventions and approximations (no per-WMO cases):
+ * <p>Every approximation errs toward drawing more, never toward hiding a room the camera is in or
+ * looks into. Pinned conventions and approximations (no per-WMO cases):
  *
  * <ul>
  *   <li>Side sign: the camera is on the referencing group's side when {@code side < 0 ? dot <= 0 :
  *       dot >= 0}, with {@code dot = normal . camera + distance} on the recorded MOPT plane
  *       (WebWowViewerCpp {@code wmoObject.cpp} at 56402e5, {@code isInsidePortalThis}; wowdev.wiki
  *       WMO leaves the sign undefined). To be checked with the #423 probe on real WMOs.
+ *   <li>The caller's frustum must not include its near plane: a portal the camera is about to pass
+ *       through lies closer than the near plane and would be culled with the room behind it. Side
+ *       and far planes are fine.
  *   <li>Near a portal plane ({@code |dot| <= }{@link #PLANE_EPSILON}) the edge planes degenerate,
  *       so the portal is passed with the current frustum unchanged, whichever side the camera is on
  *       (as WebWowViewerCpp's near-portal case).
- *   <li>Camera group: the smallest-volume interior group (MOGP flag 0x2000) whose bounding box
- *       holds the camera. The client resolves this with the group BSP (MOBN/MOBR), which is not
- *       read; overlapping boxes can therefore pick a neighbor, and the walk then starts one room
- *       off. This errs toward drawing more, never toward a hollow room the camera is in.
+ *   <li>Start groups: every interior group (MOGP flag 0x2000) whose box holds the camera. The
+ *       client resolves the one group with the group BSP (MOBN/MOBR), which is not read; with
+ *       overlapping or L-shaped boxes this starts from more groups than the client, never fewer.
  *   <li>A portal is culled only when all its vertices are outside one frustum plane, a conservative
- *       polygon test. Narrowed frusta keep the caller's planes plus at most {@link
- *       #MAX_PORTAL_PLANES} portal edge planes, dropping the oldest first, which only widens them.
- *   <li>Each group is walked at most {@link #MAX_ENTRIES_PER_GROUP} times, so cycles terminate.
+ *       polygon test. Portals are treated as convex: an edge plane that would cut off any vertex of
+ *       its own portal (a reflex edge of a non-convex polygon) is dropped, which keeps the planes
+ *       that bound the polygon's hull. Narrowed frusta keep at most {@link #MAX_PORTAL_PLANES}
+ *       portal edge planes, dropping the oldest first, which only widens them.
+ *   <li>Each group is walked at most {@link #MAX_ENTRIES_PER_GROUP} times with a narrowed frustum,
+ *       so cycles terminate. A group reached again after that is walked once more with the caller's
+ *       frustum alone, which holds every narrowed one.
  * </ul>
+ *
+ * <p>An instance keeps its scratch between calls so a per-frame walk allocates only the narrowed
+ * plane lists; it is not thread-safe.
  */
 public final class WmoPortalTraversal {
     /** MOGP flags: exterior (0x8) and interior (0x2000). */
@@ -81,10 +92,6 @@ public final class WmoPortalTraversal {
         boolean contains(double x, double y, double z) {
             return x >= minX && x <= maxX && y >= minY && y <= maxY && z >= minZ && z <= maxZ;
         }
-
-        double volume() {
-            return (maxX - minX) * (maxY - minY) * (maxZ - minZ);
-        }
     }
 
     /** One portal polygon ({@code x, y, z} per vertex) and its recorded plane. */
@@ -96,6 +103,11 @@ public final class WmoPortalTraversal {
             }
         }
 
+        @Override
+        public double[] vertices() {
+            return vertices.clone();
+        }
+
         double dot(double x, double y, double z) {
             return nx * x + ny * y + nz * z + distance;
         }
@@ -104,8 +116,8 @@ public final class WmoPortalTraversal {
     /** One MOPR reference: from the referencing group through {@code portal} to {@code group}. */
     public record Ref(int portal, int group, int side) {}
 
-    /** The camera's group ({@code -1} when it is in no interior group) and the visible groups. */
-    public record Result(int cameraGroup, BitSet visible) {
+    /** Whether the camera is in an interior group, and the visible groups. */
+    public record Result(boolean inside, BitSet visible) {
         public Result {
             visible = (BitSet) visible.clone();
         }
@@ -121,13 +133,45 @@ public final class WmoPortalTraversal {
     }
 
     private final List<Group> groups;
-    private final List<Portal> portals;
     private final List<Ref> refs;
+    private final double[][] portalVertices;
+    private final double[][] portalPlanes;
+    private final double[][] centroids;
+    // Scratch reused by every walk.
+    private final int[] entries;
+    private final boolean[] widened;
+    private final int[] queueGroups;
+    private final List<List<Plane>> queuePlanes;
 
     private WmoPortalTraversal(List<Group> groups, List<Portal> portals, List<Ref> refs) {
         this.groups = groups;
-        this.portals = portals;
         this.refs = refs;
+        portalVertices = new double[portals.size()][];
+        portalPlanes = new double[portals.size()][];
+        centroids = new double[portals.size()][];
+        for (int p = 0; p < portals.size(); p++) {
+            var portal = portals.get(p);
+            var v = portal.vertices();
+            portalVertices[p] = v;
+            portalPlanes[p] =
+                    new double[] {portal.nx(), portal.ny(), portal.nz(), portal.distance()};
+            int n = v.length / 3;
+            var c = new double[3];
+            for (int i = 0; i < n; i++) {
+                c[0] += v[i * 3] / n;
+                c[1] += v[i * 3 + 1] / n;
+                c[2] += v[i * 3 + 2] / n;
+            }
+            centroids[p] = c;
+        }
+        entries = new int[groups.size()];
+        widened = new boolean[groups.size()];
+        // Each group enters at most MAX_ENTRIES_PER_GROUP + 1 times.
+        queueGroups = new int[groups.size() * (MAX_ENTRIES_PER_GROUP + 1)];
+        queuePlanes = new ArrayList<>(queueGroups.length);
+        for (int i = 0; i < queueGroups.length; i++) {
+            queuePlanes.add(List.of());
+        }
     }
 
     /**
@@ -159,7 +203,8 @@ public final class WmoPortalTraversal {
 
     /**
      * The traversal of one root's retained portals and its groups' headers, in group order. Refused
-     * when the portals were not retained, or as {@link #of}.
+     * when the portals were not retained, or as {@link #of}: this is where each MOGP portal range
+     * is checked against MOPR.
      */
     public static WmoPortalTraversal of(
             WmoFormats.Portals recorded, List<WmoFormats.GroupHeader> headers) {
@@ -208,76 +253,80 @@ public final class WmoPortalTraversal {
         return groups.size();
     }
 
-    /** The visible groups from a camera at {@code x, y, z} with {@code frustum} (WMO-local). */
+    /** As {@link #visible(double, double, double, List, BitSet)}, into a new result. */
     public Result visible(double x, double y, double z, List<Plane> frustum) {
-        var base = List.copyOf(frustum);
         var visible = new BitSet(groups.size());
-        var entries = new int[groups.size()];
-        var work = new ArrayDeque<Entry>();
-        int camera = cameraGroup(x, y, z);
-        if (camera >= 0) {
-            enter(camera, List.of(), visible, entries, work);
-        } else {
+        boolean inside = visible(x, y, z, frustum, visible);
+        return new Result(inside, visible);
+    }
+
+    /**
+     * Sets {@code visible} to the groups visible from a camera at {@code x, y, z} with {@code
+     * frustum} (WMO-local, without its near plane) and returns whether the camera is in an interior
+     * group.
+     */
+    public boolean visible(double x, double y, double z, List<Plane> frustum, BitSet visible) {
+        visible.clear();
+        Arrays.fill(entries, 0);
+        Arrays.fill(widened, false);
+        int head = 0, tail = 0;
+        boolean inside = false;
+        for (int g = 0; g < groups.size(); g++) {
+            var group = groups.get(g);
+            if (group.interior() && group.contains(x, y, z)) {
+                inside = true;
+                tail = enter(g, List.of(), visible, tail);
+            }
+        }
+        if (!inside) {
             for (int g = 0; g < groups.size(); g++) {
                 if (groups.get(g).exterior()) {
-                    enter(g, List.of(), visible, entries, work);
+                    tail = enter(g, List.of(), visible, tail);
                 }
             }
         }
-        while (!work.isEmpty()) {
-            var entry = work.poll();
-            var from = groups.get(entry.group);
+        while (head < tail) {
+            int at = head++;
+            var from = groups.get(queueGroups[at]);
+            var planes = queuePlanes.get(at);
+            queuePlanes.set(at, List.of());
             for (int r = from.firstRef(); r < from.firstRef() + from.refCount(); r++) {
                 var ref = refs.get(r);
-                var portal = portals.get(ref.portal());
-                double dot = portal.dot(x, y, z);
+                int p = ref.portal();
+                var plane = portalPlanes[p];
+                double dot = plane[0] * x + plane[1] * y + plane[2] * z + plane[3];
                 boolean near = Math.abs(dot) <= PLANE_EPSILON;
                 boolean facing = ref.side() < 0 ? dot <= 0 : dot >= 0;
                 if (!facing && !near) {
                     continue;
                 }
-                if (outside(portal, base) || outside(portal, entry.portalPlanes)) {
+                if (outside(portalVertices[p], frustum) || outside(portalVertices[p], planes)) {
                     continue;
                 }
-                var narrowed =
-                        near ? entry.portalPlanes : narrow(entry.portalPlanes, portal, x, y, z);
-                enter(ref.group(), narrowed, visible, entries, work);
+                var narrowed = near ? planes : narrow(planes, p, x, y, z);
+                tail = enter(ref.group(), narrowed, visible, tail);
             }
         }
-        return new Result(camera, visible);
+        return inside;
     }
 
-    private record Entry(int group, List<Plane> portalPlanes) {}
-
-    private void enter(
-            int group,
-            List<Plane> portalPlanes,
-            BitSet visible,
-            int[] entries,
-            ArrayDeque<Entry> work) {
+    private int enter(int group, List<Plane> planes, BitSet visible, int tail) {
         visible.set(group);
         if (entries[group] < MAX_ENTRIES_PER_GROUP) {
             entries[group]++;
-            work.add(new Entry(group, portalPlanes));
+        } else if (!widened[group]) {
+            // The caller's frustum alone holds every narrowed one this group could still get.
+            widened[group] = true;
+            planes = List.of();
+        } else {
+            return tail;
         }
+        queueGroups[tail] = group;
+        queuePlanes.set(tail, planes);
+        return tail + 1;
     }
 
-    /** The smallest interior group whose box holds the point, or -1. */
-    int cameraGroup(double x, double y, double z) {
-        int best = -1;
-        double volume = Double.POSITIVE_INFINITY;
-        for (int g = 0; g < groups.size(); g++) {
-            var group = groups.get(g);
-            if (group.interior() && group.contains(x, y, z) && group.volume() < volume) {
-                best = g;
-                volume = group.volume();
-            }
-        }
-        return best;
-    }
-
-    private static boolean outside(Portal portal, List<Plane> planes) {
-        var v = portal.vertices();
+    private static boolean outside(double[] v, List<Plane> planes) {
         for (var plane : planes) {
             boolean all = true;
             for (int i = 0; i < v.length && all; i += 3) {
@@ -290,18 +339,16 @@ public final class WmoPortalTraversal {
         return false;
     }
 
-    /** The portal planes plus one plane through the camera and each portal edge. */
-    private static List<Plane> narrow(
-            List<Plane> planes, Portal portal, double x, double y, double z) {
-        var v = portal.vertices();
+    /**
+     * The portal planes plus one plane through the camera and each portal edge that keeps every
+     * vertex of the portal inside.
+     */
+    private List<Plane> narrow(List<Plane> planes, int portal, double x, double y, double z) {
+        var v = portalVertices[portal];
+        var centroid = centroids[portal];
         int n = v.length / 3;
-        double cx = 0, cy = 0, cz = 0;
-        for (int i = 0; i < n; i++) {
-            cx += v[i * 3] / n;
-            cy += v[i * 3 + 1] / n;
-            cz += v[i * 3 + 2] / n;
-        }
-        var edges = new ArrayList<Plane>(n);
+        var result = new ArrayList<Plane>(planes.size() + n);
+        result.addAll(planes);
         for (int i = 0; i < n; i++) {
             int j = (i + 1) % n;
             double ax = v[i * 3] - x, ay = v[i * 3 + 1] - y, az = v[i * 3 + 2] - z;
@@ -315,18 +362,25 @@ public final class WmoPortalTraversal {
             b /= length;
             c /= length;
             double d = -(a * x + b * y + c * z);
-            double centre = a * cx + b * cy + c * cz + d;
+            double centre = a * centroid[0] + b * centroid[1] + c * centroid[2] + d;
             if (Math.abs(centre) <= 1e-9) {
                 continue;
             }
-            edges.add(centre > 0 ? new Plane(a, b, c, d) : new Plane(-a, -b, -c, -d));
+            var edge = centre > 0 ? new Plane(a, b, c, d) : new Plane(-a, -b, -c, -d);
+            if (holdsEvery(edge, v)) {
+                result.add(edge);
+            }
         }
-        var result = new ArrayList<Plane>(planes.size() + edges.size());
-        result.addAll(planes);
-        result.addAll(edges);
         int excess = result.size() - MAX_PORTAL_PLANES;
-        return excess > 0
-                ? List.copyOf(result.subList(excess, result.size()))
-                : List.copyOf(result);
+        return excess > 0 ? List.copyOf(result.subList(excess, result.size())) : result;
+    }
+
+    private static boolean holdsEvery(Plane plane, double[] v) {
+        for (int i = 0; i < v.length; i += 3) {
+            if (plane.value(v[i], v[i + 1], v[i + 2]) < -1e-6) {
+                return false;
+            }
+        }
+        return true;
     }
 }
