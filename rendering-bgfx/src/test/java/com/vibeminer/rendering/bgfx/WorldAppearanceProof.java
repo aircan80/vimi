@@ -142,9 +142,10 @@ public final class WorldAppearanceProof {
                 if (!(drain.getCause() instanceof java.io.IOException)) {
                     throw drain;
                 }
-                // Every frame was already taken. A helper that exits with EOF before CLOSED is the
-                // known drain flake (#431), owned by the session proofs; it is reported, and the
-                // appearance comparison still decides this proof.
+                // TODO(#431): remove this tolerance as soon as #437 (the drain fix) merges. Every
+                // frame was already taken; a helper that exits with EOF before CLOSED is the known
+                // drain flake https://github.com/aircan80/vimi/issues/431, owned by the session
+                // proofs. Until then it is reported, and the appearance comparison decides.
                 System.out.println(
                         "WORLD_APPEARANCE_DRAIN_WARNING " + drain.getCause().getMessage());
             }
