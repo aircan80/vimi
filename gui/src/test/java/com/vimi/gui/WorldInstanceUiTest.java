@@ -146,9 +146,34 @@ public final class WorldInstanceUiTest {
                     "A global interior without a GPU is refused, not entered");
             var saved = (TerrainRenderer.Camera) get(view, "camera");
             combo.setValue(combo.getItems().get(0));
+            // Enter with the map panel open and the HUD hidden: the switch closes and restores both.
+            invoke(view, "toggleMapPanel");
+            var hud = (WorldHud) get(view, "hud");
+            require(hud.panelShown(), "Map panel open before entering");
+            var viewportNode = view.lookup("#world-viewport");
+            javafx.event.Event.fireEvent(viewportNode, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_PRESSED,
+                    "", "", javafx.scene.input.KeyCode.Z, false, false, true, false));
+            javafx.event.Event.fireEvent(viewportNode, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_RELEASED,
+                    "", "", javafx.scene.input.KeyCode.Z, false, false, false, false));
+            require(hud.hidden() && !hud.panelShown(), "HUD hidden (which closes the panel) before entering");
+            invoke(view, "toggleMapPanel");
+            require(!hud.hidden() && hud.panelShown(), "M brings the HUD back with the panel");
+            javafx.event.Event.fireEvent(viewportNode, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_PRESSED,
+                    "", "", javafx.scene.input.KeyCode.Z, false, false, true, false));
+            javafx.event.Event.fireEvent(viewportNode, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_RELEASED,
+                    "", "", javafx.scene.input.KeyCode.Z, false, false, false, false));
+            invoke(view, "toggleMapPanel");
+            require(hud.panelShown(), "Panel open again");
+            javafx.event.Event.fireEvent(viewportNode, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_PRESSED,
+                    "", "", javafx.scene.input.KeyCode.Z, false, false, true, false));
+            javafx.event.Event.fireEvent(viewportNode, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_RELEASED,
+                    "", "", javafx.scene.input.KeyCode.Z, false, false, false, false));
+            require(hud.hidden(), "HUD hidden as the entry starts");
             enter.fire();
             await(() -> inventoryMap(view) == DUNGEON.id() && (boolean) get(view, "explorer")
                     && get(view, "camera") != null && !(boolean) get(view, "scenePreparing"), () -> {
+                require(!hud.panelShown() && !hud.hidden() && !(boolean) get(view, "panelsHidden"),
+                        "Inside the instance the map panel is closed and the HUD shown");
                 require(leave.isVisible(), "Leave is offered inside the instance");
                 var chip = view.lookup("#world-zone-leave");
                 require(chip != null && chip.isVisible(), "The zone text offers Leave next to the zone");

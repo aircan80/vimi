@@ -105,6 +105,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final WorldFullscreen fullscreen = new WorldFullscreen(viewport, node -> {
         // During an instance switch the switch owns the layout: never put the world back over it.
         if (this.explorer && !this.instances.engaged()) content.setCenter(node);
+        applyPanels(); // the hint names the keys for the window again
     }, this::layoutKeys, fullscreenStatus);
     // Layout toggles fire once per physical press: held keys repeat KEY_PRESSED.
     private boolean fullscreenKeyHeld, panelsKeyHeld;
@@ -1030,6 +1031,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         sceneProperty().addListener((o, was, now) -> {
             if (was != null) was.removeEventFilter(javafx.scene.input.KeyEvent.ANY, layoutKeysFilter);
             if (now != null) now.addEventFilter(javafx.scene.input.KeyEvent.ANY, layoutKeysFilter);
+            // A view taken out of its window must not leave the viewport on the full-screen stage.
+            if (now == null) fullscreen.exit();
         });
         fullscreenStatus.setId("world-fullscreen-status");
         fullscreenStatus.setMouseTransparent(true);
@@ -1038,11 +1041,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
         fullscreenStatus.setWrapText(true);
         fullscreenStatus.setStyle("-fx-background-color: rgba(16,24,28,.6); -fx-text-fill: #e8eeee;"
                 + " -fx-padding: 4 8; -fx-background-radius: 4;");
-        // The status line rides along in the viewport's HUD; full screen adds the inspect result.
-        // WorldFullscreen owns this line's visibility, so "hide HUD" fades it instead.
-        fullscreenStatus.textProperty().bind(inspection.textProperty());
-        fullscreenStatus.opacityProperty().bind(javafx.beans.binding.Bindings.when(hud.hiddenProperty())
-                .then(0.0).otherwise(1.0));
+        // The status line rides along in the viewport's HUD; full screen adds the inspect result,
+        // never the click hint (as in the window). WorldFullscreen owns this line's visibility, so
+        // "hide HUD" and an empty line fade it instead.
+        fullscreenStatus.textProperty().bind(javafx.beans.binding.Bindings
+                .when(inspection.textProperty().isEqualTo(INSPECT_HINT)).then("").otherwise(inspection.textProperty()));
+        fullscreenStatus.opacityProperty().bind(javafx.beans.binding.Bindings
+                .when(hud.hiddenProperty().or(fullscreenStatus.textProperty().isEmpty())).then(0.0).otherwise(1.0));
         fullscreenButton.setId("world-fullscreen");
         fullscreenButton.setFocusTraversable(false);
         fullscreenButton.setOnAction(e -> toggleFullscreen());
@@ -1110,7 +1115,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         viewport.focusedProperty()
                 .addListener(
                         (o, a, b) -> {
-                            if (!b) clearKeys();
+                            if (!b) viewportFocusLost();
                         });
         viewport.setOnMousePressed(
                 e -> {
@@ -2047,9 +2052,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
         tileInventory.setScaleY(1);
     }
 
-    /** HUD command keys ({@link WorldControls.Action#command}), once per press. */
+    /**
+     * Command keys ({@link WorldControls.Action#command}), once per press. Every command action
+     * gets a branch here; one without a route is reported instead of being dropped silently.
+     */
     private void command(WorldControls.Action action) {
-        if (action == WorldControls.Action.MAP_PANEL) toggleMapPanel();
+        switch (action) {
+            case MAP_PANEL -> toggleMapPanel();
+            default -> WorldDiagnostics.warn("World command key", new IllegalStateException(
+                    "No route for command action " + action));
+        }
     }
 
     /** The keys bound to the map panel, for the Map button; null when unbound. */
@@ -2060,7 +2072,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     /**
-     * F11 / Alt+Enter (full screen) and Alt+Z (panels), as a key filter on the application scene
+     * F11 / Alt+Enter (full screen) and Alt+Z (hide HUD), as a key filter on the application scene
      * and the full-screen scene, so they work whatever has focus while the explorer shows. Each
      * fires once per press; the keys never reach flight input.
      */
@@ -2092,9 +2104,26 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (!explorer && !fullscreen.active()) return;
         // An instance switch (drain or interior) owns the layout; only leaving is allowed.
         if (instances.engaged() && !fullscreen.active()) return;
+        layoutToggledAt = System.nanoTime();
         fullscreen.toggle(getScene() == null ? null : getScene().getWindow(),
                 "World explorer" + (inventory == null ? "" : " · " + inventory.map()));
         clearKeys();
+        applyPanels();
+    }
+
+    // When F11 or Alt+Enter last moved the viewport between stages; see viewportFocusLost().
+    private long layoutToggledAt = Long.MIN_VALUE / 2;
+    static final long LAYOUT_FOCUS_SETTLE_NANOS = 1_000_000_000L;
+
+    /**
+     * The viewport lost focus: drop held flight keys and, unless the loss is our own move to or
+     * from the full-screen stage, the F11 and Alt+Z latches, whose release may now go elsewhere.
+     * Keeping them across our own move stops a held F11's key repeat from toggling straight back.
+     */
+    private void viewportFocusLost() {
+        clearKeys();
+        if (System.nanoTime() - layoutToggledAt > LAYOUT_FOCUS_SETTLE_NANOS)
+            fullscreenKeyHeld = panelsKeyHeld = false;
     }
 
     /**
@@ -2106,6 +2135,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (hidden && (!explorer || instances.engaged())) return;
         if (hidden == panelsHidden) return;
         panelsHidden = hidden;
+        // A hidden HUD closes the map panel, so the next M opens it again.
+        if (hidden) closeMapPanel();
         applyPanels();
         if (explorer) viewport.requestFocus();
     }
@@ -2118,7 +2149,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
             bottom.setManaged(!panelsHidden);
         }
         panelsHint.setVisible(panelsHidden);
+        panelsHint.setText(fullscreen.active() ? PANELS_HINT_FULLSCREEN : PANELS_HINT);
     }
+
+    static final String PANELS_HINT = "Alt+Z shows the HUD · F11 full screen",
+            PANELS_HINT_FULLSCREEN = "Alt+Z shows the HUD · F11 or Esc leaves full screen";
 
     private void loadTile(WorldFormats.Tile tile, boolean initial) {
         loadingTile = true;
