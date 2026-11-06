@@ -31,7 +31,10 @@ final class WorldStreamEnvelopeTest {
         assertEquals(500, values.getInt(92));
         assertEquals(10, values.getInt(96));
         assertEquals(9, values.getInt(100));
-        assertEquals(2_907_264, values.getInt(104));
+        assertEquals(WorldStreamEnvelope.MAX_PACKET_BYTES, values.getInt(104));
+        assertEquals(
+                2_907_264 + WorldStreamTileFile.MAX_SPLAT_BYTES,
+                WorldStreamEnvelope.MAX_PACKET_BYTES);
         assertEquals(
                 session,
                 WorldStreamEnvelope.decodeSession(bytes, WorldStreamEnvelope.sha256(bytes)));
