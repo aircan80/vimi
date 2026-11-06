@@ -1,6 +1,7 @@
 package com.vibeminer.builds;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.builds.BuildTypes.BuildOpenState;
@@ -98,6 +99,116 @@ final class ReadOnlyResolutionTest {
             assertEquals(0, writer.stats().join().objects(), "a projection was stored");
         } finally {
             writer.closeAsync().join();
+        }
+    }
+
+    /** Counts every object-source call, so a refusal can prove it read no metadata. */
+    private static com.vibeminer.access.ObjectSource counting(
+            com.vibeminer.access.ObjectSource inner,
+            java.util.concurrent.atomic.AtomicInteger calls) {
+        return (com.vibeminer.access.ObjectSource)
+                java.lang.reflect.Proxy.newProxyInstance(
+                        com.vibeminer.access.ObjectSource.class.getClassLoader(),
+                        new Class<?>[] {com.vibeminer.access.ObjectSource.class},
+                        (proxy, method, args) -> {
+                            if (method.getName().startsWith("get")) {
+                                calls.incrementAndGet();
+                            }
+                            try {
+                                return method.invoke(inner, args);
+                            } catch (java.lang.reflect.InvocationTargetException e) {
+                                throw e.getCause();
+                            }
+                        });
+    }
+
+    @Test
+    void unpreparedBuildIsRefusedBeforeAnyMetadataRead() {
+        var source = new SyntheticBuild();
+        var library = ObjectStore.openLibrary(directory.toAbsolutePath()).join();
+        LibraryCatalog.open(library.databasePath()).join().close();
+        library.closeAsync().join();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var reader = readOnly();
+        try (var cache = new BuildResolutionCache()) {
+            var opener =
+                    new BuildOpener(
+                            counting(source, calls),
+                            new BuildOpener.Options(),
+                            cache,
+                            BuildResolutionCache.Storage.readOnly(reader));
+            try {
+                var result = opener.open(source.ref).join();
+                assertEquals(BuildResolutionCache.NEEDS_PREPARATION, result.code());
+                assertEquals(0, calls.get(), "configs, ENCODING or ROOT were read");
+            } finally {
+                opener.closeAsync().join();
+            }
+        } finally {
+            reader.closeAsync().join();
+        }
+    }
+
+    @Test
+    void storedButUnreadableProjectionIsNotReportedAsNeedingPreparation() {
+        var source = new SyntheticBuild();
+        var options = new BuildOpener.Options();
+        var library = ObjectStore.openLibrary(directory.toAbsolutePath()).join();
+        try (var catalog = LibraryCatalog.open(library.databasePath()).join()) {
+            var owner =
+                    library.forOwner(
+                            "test-build",
+                            LibraryCatalog.Scope.BUILD,
+                            "build-indexes",
+                            LibraryCatalog.Role.DERIVED);
+            // A damaged projection manifest (3 bytes) stored under the build's key.
+            var key =
+                    new com.vibeminer.store.ObjectKey(
+                            com.vibeminer.store.ObjectKey.GENERATED,
+                            java.util.Arrays.copyOf(
+                                    BuildResolutionCache.identity(source.ref, options), 16));
+            owner.put(
+                            java.util.List.of(
+                                    new StoreTypes.PutObject(
+                                            key, 3, new byte[3], StoreTypes.Origin.UNKNOWN)))
+                    .join();
+            var reader = readOnly();
+            try {
+                var damaged = open(source, BuildResolutionCache.Storage.readOnly(reader));
+                assertEquals(BuildOpenState.UNAVAILABLE, damaged.state());
+                assertEquals(BuildResolutionCache.PROJECTION_UNREADABLE, damaged.code());
+                assertTrue(damaged.message().contains("unreadable"), damaged.message());
+            } finally {
+                reader.closeAsync().join();
+            }
+            // A closed store cannot even say whether a projection is stored.
+            var closed = readOnly();
+            closed.closeAsync().join();
+            var unreadable = open(source, BuildResolutionCache.Storage.readOnly(closed));
+            assertEquals(BuildResolutionCache.PROJECTION_UNREADABLE, unreadable.code());
+            assertTrue(unreadable.message().contains("OBJECT_STORE_CLOSED"), unreadable.message());
+        } finally {
+            library.closeAsync().join();
+        }
+    }
+
+    @Test
+    void readOnlyStorageWithoutACacheIsRejected() {
+        var source = new SyntheticBuild();
+        var library = ObjectStore.openLibrary(directory.toAbsolutePath()).join();
+        library.closeAsync().join();
+        var reader = readOnly();
+        try {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            new BuildOpener(
+                                    source,
+                                    new BuildOpener.Options(),
+                                    null,
+                                    BuildResolutionCache.Storage.readOnly(reader)));
+        } finally {
+            reader.closeAsync().join();
         }
     }
 }

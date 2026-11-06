@@ -141,7 +141,8 @@ final class ReadOnlyGeneratedStoreTest {
             } finally {
                 reader.closeAsync().join();
             }
-            assertEquals(before.keySet(), snapshot(folder).keySet());
+            // No new file, and every file keeps its size and modification time.
+            assertEquals(before, snapshot(folder));
         }
     }
 

@@ -35,7 +35,9 @@ public final class BuildResolutionCache implements AutoCloseable {
          * read, nothing is ever saved or repaired, and a build without a stored projection is
          * refused as needing preparation instead of being resolved from its archive indexes. Pass
          * it to a {@link BuildOpener} together with a {@link BuildResolutionCache}: the cache does
-         * the restore.
+         * the restore. The read-only route must also open the build through a local-only source:
+         * the opener checks for the stored projection before it reads any metadata, but a networked
+         * source could still fetch configs, ENCODING or ROOT for a prepared build.
          */
         public static Storage readOnly(ObjectReader reader) {
             return new Storage(reader, READ_ONLY);
@@ -47,8 +49,48 @@ public final class BuildResolutionCache implements AutoCloseable {
         }
     }
 
-    /** Code of an open refused because a read-only open has no stored resolution projection. */
+    /**
+     * Code of a read-only open refused because no resolution projection is stored: the build was
+     * not prepared, or its projection was never stored (over 512 MiB, or its save failed).
+     */
     public static final String NEEDS_PREPARATION = "BUILD_NEEDS_PREPARATION";
+
+    /**
+     * Code of a read-only open refused because the stored projection exists but cannot be read now
+     * (store closed or busy, unreadable index, lost or corrupt chunk). Preparing again would not
+     * help; the cause is attached.
+     */
+    public static final String PROJECTION_UNREADABLE = "BUILD_PROJECTION_UNREADABLE";
+
+    /** A stored projection a read-only open could not read; see {@link #PROJECTION_UNREADABLE}. */
+    static final class UnreadableProjection extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        UnreadableProjection(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
+    /**
+     * Whether a projection is stored for {@code build}, without reading it: a read-only open checks
+     * this before any metadata read. Store failures surface as {@link UnreadableProjection}.
+     */
+    @SuppressWarnings("try")
+    static boolean stored(
+            BuildTypes.BuildRef build,
+            BuildOpener.Options options,
+            Storage storage,
+            Cancellation token) {
+        var cancel = new com.vibeminer.store.Cancellation();
+        try (var registration = token.onCancel(cancel::cancel)) {
+            return storage.reader().has(key(identity(build, options)), cancel).join();
+        } catch (java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        } catch (RuntimeException failure) {
+            token.check();
+            throw new UnreadableProjection("Stored file-resolution projection unreadable", failure);
+        }
+    }
 
     private static final ObjectWriter READ_ONLY =
             new ObjectWriter() {
@@ -153,6 +195,10 @@ public final class BuildResolutionCache implements AutoCloseable {
                 return null;
             }
             if (read.state() != StoreTypes.ReadState.PRESENT) {
+                if (storage.isReadOnly()) {
+                    throw new UnreadableProjection(
+                            "Stored file-resolution projection is " + read.state(), null);
+                }
                 return null;
             }
             return ArchiveLocations.readProjection(
@@ -160,10 +206,15 @@ public final class BuildResolutionCache implements AutoCloseable {
                     archives,
                     identity,
                     token::check);
-        } catch (java.util.concurrent.CancellationException canceled) {
-            throw canceled;
+        } catch (java.util.concurrent.CancellationException | UnreadableProjection passThrough) {
+            throw passThrough;
         } catch (RuntimeException | java.io.IOException invalid) {
             token.check();
+            if (storage.isReadOnly()) {
+                // A read-only open never falls back to the archive indexes; report why.
+                throw new UnreadableProjection(
+                        "Stored file-resolution projection unreadable", invalid);
+            }
             System.getLogger(BuildResolutionCache.class.getName())
                     .log(
                             System.Logger.Level.WARNING,
