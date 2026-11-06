@@ -223,7 +223,10 @@ public final class WorldMinimapInputUiTest {
             throw new AssertionError(error);
         }
         require(callback != null, "The view listens to minimap marker clicks");
+        long generation = (long) get("pickGeneration");
         callback.accept(new WorldMinimap.Clicked(null, link, "Authored Depths entrance"));
+        require((long) get("pickGeneration") > generation,
+                "A marker click supersedes any world pick still in flight");
         var card = view.inspectCard();
         require(card.isOpen() && card.content().kind() == WorldInspection.Kind.ENTRANCE
                         && card.content().title().equals("Authored Depths"),

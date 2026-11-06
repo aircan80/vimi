@@ -901,7 +901,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
             return action != null && action.command;
         });
         // A clicked minimap marker opens the same inspect card as a pick in the world.
-        minimap.onMarkerClicked(clicked -> inspected(WorldInspection.marker(clicked)));
+        minimap.onMarkerClicked(clicked -> {
+            // A marker card wins over any world pick still in flight, and clears its highlight.
+            pickGeneration++;
+            objectSelection.select(null);
+            inspected(WorldInspection.marker(clicked));
+        });
         StackPane.setAlignment(devOverlay, Pos.TOP_LEFT);
         // Below the top-left panels hint (and the Map button that takes its place).
         StackPane.setMargin(devOverlay, new Insets(40, 12, 12, 12));

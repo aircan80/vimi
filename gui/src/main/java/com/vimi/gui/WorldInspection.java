@@ -62,7 +62,8 @@ final class WorldInspection {
                     + String.format(Locale.ROOT, " · x %.0f · y %.0f", at.x(), at.y()));
             return new Content(Kind.ENTRANCE, link.name(),
                     (link.kind() == com.vibeminer.concepts.world.WorldInstanceLinks.Kind.RAID ? "raid" : "dungeon")
-                            + " entrance · recorded Map corpse position", lines, null, clicked.description(), 0);
+                            + " entrance on map " + (at == null ? "unknown" : at.mapId()), lines, null,
+                    clicked.description(), 0);
         }
         var npc = clicked.role().npc();
         var lines = new ArrayList<String>();
