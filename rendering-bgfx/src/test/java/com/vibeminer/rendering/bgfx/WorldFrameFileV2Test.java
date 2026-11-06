@@ -126,10 +126,14 @@ final class WorldFrameFileV2Test {
         }
     }
 
+    private WorldFrameFileV2 verifying(Path path) throws IOException {
+        return WorldFrameFileV2.open(path, NONCE, SCOPE, true, true);
+    }
+
     @Test
-    void corruptPixelsMetadataAndOddStampsNeverBecomeFrames() throws Exception {
+    void debugVerificationRejectsCorruptPixelsMetadataAndOddStamps() throws Exception {
         Path path = directory.resolve("corruption");
-        try (var file = WorldFrameFileV2.create(path, NONCE, SCOPE)) {
+        try (var file = verifying(path)) {
             file.write(ticket(1, 1, 1, 1, 1, 1), pixels(0xff112233));
             overwrite(path, 128, pixels(0xffaabbcc));
             assertNull(file.readLatest(0, barrier(1, 1)));
@@ -154,6 +158,214 @@ final class WorldFrameFileV2Test {
                     IllegalArgumentException.class,
                     () -> file.write(ticket(3, 3, 1, 1, 1, 1), pixels(0xff778899)));
         }
+    }
+
+    @Test
+    void nonopaquePixelsFailLoudlyInEveryMode() throws Exception {
+        Path path = directory.resolve("alpha");
+        try (var writer = verifying(path);
+                var plain = WorldFrameFileV2.open(path, NONCE, SCOPE)) {
+            // Both writers refuse: the verifying one scans every pixel, the default one samples.
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> writer.write(ticket(1, 1, 1, 1, 1, 1), pixels(0x7f112233)));
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> plain.write(ticket(1, 1, 1, 1, 1, 1), pixels(0x7f112233)));
+            var big = ByteBuffer.allocate(800 * 4).order(ByteOrder.LITTLE_ENDIAN);
+            for (int i = 0; i < 800; i++) {
+                big.putInt(i == 799 ? 0x00112233 : 0xff112233);
+            }
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> plain.write(ticket(1, 1, 1, 1, 800, 1), big.flip()),
+                    "the last pixel is always sampled");
+            // A verifying reader skips the CRC of an unchecksummed slot, so modes can mix.
+            plain.write(ticket(1, 1, 1, 1, 1, 1), pixels(0xff112233));
+            assertEquals(1, writer.readLatest(0, barrier(1, 1)).metadata().sequence());
+            // A consistent published slot with nonopaque pixels is a renderer fault: the
+            // default reader throws instead of presenting a see-through frame.
+            plain.write(ticket(2, 2, 1, 1, 1, 1), pixels(0xff112233));
+            overwrite(path, 64L + WorldFrameFileV2.SLOT_BYTES + 64, pixels(0x7f112233));
+            var failure =
+                    assertThrows(
+                            WorldFrameFileV2.NonopaqueFrameException.class,
+                            () -> plain.readLatest(1, barrier(1, 1)));
+            assertTrue(failure.getMessage().contains("frame 2"));
+            assertEquals(1, plain.pool().retained(), "the refused array returns to the pool");
+            // The verifying reader drops that unchecksummed slot the same loud way.
+            assertThrows(
+                    WorldFrameFileV2.NonopaqueFrameException.class,
+                    () -> writer.readLatest(1, barrier(1, 1)));
+            writer.write(ticket(3, 3, 1, 1, 1, 1), pixels(0xff112233));
+            overwrite(path, 64L + 2L * WorldFrameFileV2.SLOT_BYTES + 64, pixels(0x7f112233));
+            assertNull(writer.readLatest(2, barrier(1, 1)), "checksummed slot alpha changed");
+        }
+    }
+
+    @Test
+    void sampledAlphaStrideCoversAFrameEvenly() {
+        assertEquals(1, WorldFrameFileV2.alphaStride(1));
+        assertEquals(1, WorldFrameFileV2.alphaStride(64));
+        assertEquals(6250, WorldFrameFileV2.alphaStride(800 * 500));
+    }
+
+    @Test
+    void seqlockStressNeverYieldsMixedPixelsWithPooledArrays() throws Exception {
+        Path path = directory.resolve("stress");
+        int frames = 3000;
+        try (var writer = WorldFrameFileV2.create(path, NONCE, SCOPE);
+                var reader = WorldFrameFileV2.open(path, NONCE, SCOPE)) {
+            var producing =
+                    java.util.concurrent.CompletableFuture.runAsync(
+                            () -> {
+                                try {
+                                    var buffer =
+                                            ByteBuffer.allocate(32 * 32 * 4)
+                                                    .order(ByteOrder.LITTLE_ENDIAN);
+                                    for (int sequence = 1; sequence <= frames; sequence++) {
+                                        buffer.clear();
+                                        for (int i = 0; i < 1024; i++) {
+                                            buffer.putInt(0xff000000 | sequence);
+                                        }
+                                        writer.write(
+                                                ticket(sequence, sequence, sequence, 1, 32, 32),
+                                                buffer.flip());
+                                    }
+                                } catch (IOException error) {
+                                    throw new java.io.UncheckedIOException(error);
+                                }
+                            });
+            var bounds = new WorldFrameFileV2.Barrier(1, 32, 32, 1, frames, 0, frames);
+            long last = 0;
+            int accepted = 0;
+            while (last < frames) {
+                if (producing.isCompletedExceptionally()) {
+                    producing.join();
+                }
+                var frame = reader.readLatest(last, bounds);
+                if (frame == null) {
+                    Thread.onSpinWait();
+                    continue;
+                }
+                last = frame.metadata().sequence();
+                accepted++;
+                var data = frame.pixels();
+                while (data.hasRemaining()) {
+                    assertEquals(0xff000000 | (int) last, data.get(), "frame " + last);
+                }
+                frame.release();
+            }
+            producing.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(accepted > 0);
+            assertTrue(reader.pool().allocations() <= 1, "released arrays are reused");
+        }
+    }
+
+    @Test
+    void tornReadsAreRejectedByTheStampWithoutCrc() throws Exception {
+        Path path = directory.resolve("torn");
+        try (var writer = WorldFrameFileV2.open(path, NONCE, SCOPE, true, false);
+                var reader = WorldFrameFileV2.open(path, NONCE, SCOPE, false, false)) {
+            writer.write(ticket(1, 1, 1, 1, 1, 1), pixels(0xff000001));
+            // The writer republishes slot 0 (sequence 4) while the reader copies sequence 1.
+            reader.afterCopy =
+                    () -> {
+                        try {
+                            for (int sequence = 2; sequence <= 4; sequence++) {
+                                writer.write(
+                                        ticket(sequence, sequence, 1, 1, 1, 1),
+                                        pixels(0xff000000 | sequence));
+                            }
+                        } catch (IOException error) {
+                            throw new java.io.UncheckedIOException(error);
+                        }
+                    };
+            assertNull(reader.readLatest(0, barrier(1, 1)), "torn copy of a republished slot");
+            reader.afterCopy = null;
+            assertEquals(4, reader.readLatest(0, barrier(1, 1)).metadata().sequence());
+            // A slot whose stamp is odd (write in progress) is never a candidate.
+            overwrite(
+                    path,
+                    64L + WorldFrameFileV2.SLOT_BYTES,
+                    ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(5).flip());
+            assertNull(reader.readLatest(4, barrier(1, 1)));
+            // The newest slot's stamp turns odd mid-copy: that read is rejected, its array goes
+            // back to the pool, and the older unseen frame is returned instead.
+            long allocations = reader.pool().allocations();
+            var once = new java.util.concurrent.atomic.AtomicBoolean();
+            reader.afterCopy =
+                    () -> {
+                        if (once.compareAndSet(false, true)) {
+                            try {
+                                overwrite(
+                                        path,
+                                        64L,
+                                        ByteBuffer.allocate(8)
+                                                .order(ByteOrder.LITTLE_ENDIAN)
+                                                .putLong(9)
+                                                .flip());
+                            } catch (IOException error) {
+                                throw new java.io.UncheckedIOException(error);
+                            }
+                        }
+                    };
+            var fallback = reader.readLatest(2, barrier(1, 1));
+            assertEquals(3, fallback.metadata().sequence());
+            assertEquals(0xff000003, fallback.pixels().get(0));
+            assertEquals(allocations + 1, reader.pool().allocations(), "rejected array reused");
+        }
+    }
+
+    @Test
+    void releasedFrameArraysAreReusedAndLiveFramesNeverShareOne() throws Exception {
+        Path path = directory.resolve("pool");
+        try (var writer = WorldFrameFileV2.create(path, NONCE, SCOPE);
+                var reader = WorldFrameFileV2.open(path, NONCE, SCOPE)) {
+            var bounds = barrier(1, 1000);
+            // Steady state: each frame released before the next read reuses one array.
+            writer.write(ticket(1, 1, 1, 1, 1, 1), pixels(0xff000001));
+            var first = reader.readLatest(0, bounds);
+            int[] array = first.array();
+            first.release();
+            for (int sequence = 2; sequence <= 50; sequence++) {
+                writer.write(ticket(sequence, sequence, 1, 1, 1, 1), pixels(0xff000000 | sequence));
+                var frame = reader.readLatest(sequence - 1, bounds);
+                assertTrue(frame.array() == array, "steady state reuses the array");
+                assertEquals(0xff000000 | sequence, frame.pixels().get(0));
+                frame.release();
+            }
+            assertEquals(1, reader.pool().allocations(), "no per-frame allocation");
+            // Three live owners (read, transport latest, presentation) get distinct arrays.
+            var live = new java.util.ArrayList<WorldFrameFileV2.Frame>();
+            for (int sequence = 51; sequence <= 53; sequence++) {
+                writer.write(ticket(sequence, sequence, 1, 1, 1, 1), pixels(0xff000000 | sequence));
+                live.add(reader.readLatest(sequence - 1, bounds));
+            }
+            assertEquals(3, live.stream().map(WorldFrameFileV2.Frame::array).distinct().count());
+            for (int i = 0; i < 3; i++) {
+                assertEquals(
+                        0xff000033 + i, live.get(i).pixels().get(0), "unreleased stays intact");
+            }
+            // Released pixels are unreadable; release is idempotent and the pool stays bounded.
+            var released = live.getFirst();
+            released.release();
+            released.release();
+            assertThrows(IllegalStateException.class, released::pixels);
+            for (var frame : live) {
+                frame.release();
+            }
+            assertEquals(WorldFrameFileV2.SLOTS, reader.pool().retained());
+            reader.pool().recycle(new int[WorldFrameFileV2.WIDTH * WorldFrameFileV2.HEIGHT]);
+            assertEquals(WorldFrameFileV2.SLOTS, reader.pool().retained());
+            // A frame smaller than the array exposes exactly its own pixels.
+            writer.write(ticket(54, 54, 1, 2, 2, 1), pixels(0xff0000aa, 0xff0000bb));
+            var small = reader.readLatest(53, new WorldFrameFileV2.Barrier(2, 2, 1, 1, 100, 0, 1));
+            assertEquals(2, small.pixels().remaining());
+            assertEquals(0, small.pixels().position());
+            assertEquals(0xff0000bb, small.pixels().get(1));
+        }
+        // Releasing after the mapping closed is harmless.
     }
 
     @Test
@@ -274,9 +486,7 @@ final class WorldFrameFileV2Test {
             assertThrows(
                     IllegalArgumentException.class,
                     () -> file.write(ticket(2, 2, -1, 1, 1, 1), pixels(0xff112233)));
-            assertThrows(
-                    IllegalArgumentException.class,
-                    () -> file.write(ticket(2, 2, 1, 1, 1, 1), pixels(0x00112233)));
+            // Nonopaque pixels are refused only in debug verification (see the alpha test).
             assertThrows(
                     IllegalArgumentException.class,
                     () -> file.write(ticket(2, 2, 1, 1, 1, 1), pixels(0xff112233, 0xff445566)));
