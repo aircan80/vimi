@@ -29,6 +29,7 @@ public final class WorldHudUiTest {
                 coordinatesPillCopiesAndStopsInput();
                 statusIconStates();
                 audioSilenceFollowsPlaybackStatus();
+                placedWidgetsHideWithTheHud();
                 DONE.complete(null);
             } catch (Throwable error) {
                 DONE.completeExceptionally(error);
@@ -40,7 +41,8 @@ public final class WorldHudUiTest {
             Platform.exit();
         }
         System.out.println("World HUD UI: zone line, banner 400 ms in / 1.5 s hold / fade out, leave chip,"
-                + " coordinates pill copy, every status icon state, click and input isolation, audio silence passed");
+                + " coordinates pill copy, every status icon state, click and input isolation, audio silence,"
+                + " placed widgets hide with the HUD passed");
     }
 
     /** Every icon state from #507's table: the icon's look, its tooltip, its click and its input rules. */
@@ -334,6 +336,36 @@ public final class WorldHudUiTest {
         } finally {
             stage.close();
         }
+    }
+
+    /**
+     * The zone line, icon row, coordinates pill and banner hide with the HUD; the developer slot
+     * stays, and the left column stays above the placed widgets.
+     */
+    private static void placedWidgetsHideWithTheHud() {
+        var hud = new WorldHud(() -> {}, () -> {});
+        var zone = new javafx.scene.control.Label("zone");
+        var icons = new javafx.scene.control.Label("icons");
+        var pill = new javafx.scene.control.Label("pill");
+        var banner = new javafx.scene.control.Label("banner");
+        var dev = new javafx.scene.control.Label("dev");
+        hud.topCenter(zone);
+        hud.bottomLeft(icons);
+        hud.bottomRight(pill);
+        hud.banner(banner);
+        hud.devOverlay(dev);
+        var column = hud.lookup("#world-hud-left");
+        var widgets = hud.lookup("#world-hud-widgets");
+        require(hud.getChildren().indexOf(widgets) < hud.getChildren().indexOf(column),
+                "The left column stays above the placed widgets");
+        for (var node : List.of(zone, icons, pill, banner))
+            require(node.getParent() == widgets && node.isVisible() && widgets.isVisible(), "Placed and shown: " + node.getText());
+        hud.hidden(true);
+        for (var node : List.of(zone, icons, pill, banner))
+            require(!node.getParent().isVisible(), "Hidden with the HUD: " + node.getText());
+        require(dev.getParent().isVisible() && hud.isVisible(), "The developer slot stays while hidden");
+        hud.hidden(false);
+        require(widgets.isVisible(), "Shown again with the HUD");
     }
 
     private static void click(javafx.scene.Node node) {
