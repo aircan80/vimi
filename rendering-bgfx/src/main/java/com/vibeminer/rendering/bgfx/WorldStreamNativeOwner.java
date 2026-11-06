@@ -3,7 +3,6 @@ package com.vibeminer.rendering.bgfx;
 import static org.lwjgl.bgfx.BGFX.BGFX_CAPS_TEXTURE_BLIT;
 import static org.lwjgl.bgfx.BGFX.BGFX_CAPS_TEXTURE_READ_BACK;
 import static org.lwjgl.bgfx.BGFX.BGFX_FRAME_NONE;
-import static org.lwjgl.bgfx.BGFX.BGFX_RESET_NONE;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_BLIT_DST;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_BGRA8;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_D32F;
@@ -83,7 +82,52 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             long contextGpuHeap,
             long publishedSequence,
             int pendingReadbacks,
-            long gpuHeapBytes) {}
+            long gpuHeapBytes,
+            int msaaSamples) {}
+
+    /** Reset flags: no back buffer; anisotropic samplers use the device maximum (issue #357). */
+    static final int RESET_FLAGS = org.lwjgl.bgfx.BGFX.BGFX_RESET_MAXANISOTROPY;
+
+    /** Samples of the World render target when the device can multisample it. */
+    static final int MSAA_SAMPLES = 4;
+
+    /**
+     * The target's sample count: {@link #MSAA_SAMPLES} when both the colour and depth formats can
+     * be multisampled render targets, else 1 (single-sampled, as before).
+     */
+    static int targetSamples(boolean colourMultisampled, boolean depthMultisampled) {
+        return colourMultisampled && depthMultisampled ? MSAA_SAMPLES : 1;
+    }
+
+    /**
+     * Whether a format can be a multisampled render target: its bgfx format caps must carry
+     * BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA (the primary check; texture validation is not
+     * relied on to test the MSAA bits) and bgfx must accept the texture with those flags.
+     */
+    static boolean multisampled(int formatCaps, boolean textureValid) {
+        return (formatCaps & org.lwjgl.bgfx.BGFX.BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA) != 0
+                && textureValid;
+    }
+
+    /**
+     * Colour target flags. A multisampled colour target keeps its resolve texture (not write only):
+     * bgfx resolves it when view 0 ends, and the readback blit in view 1 copies the resolved
+     * pixels.
+     */
+    static long colourFlags(int samples) {
+        return samples > 1
+                ? BGFX_TEXTURE_RT | org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_RT_MSAA_X4
+                : BGFX_TEXTURE_RT;
+    }
+
+    /** Depth target flags; multisampled depth is never read back, so it is write only. */
+    static long depthFlags(int samples) {
+        return samples > 1
+                ? BGFX_TEXTURE_RT
+                        | org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_RT_MSAA_X4
+                        | org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_RT_WRITE_ONLY
+                : BGFX_TEXTURE_RT;
+    }
 
     private final Thread owner = Thread.currentThread();
     private final WorldStreamEnvelope.Session session;
@@ -96,7 +140,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     private long cameraRevision, policy, submittedCamera, submittedContent = -1, submittedPolicy;
     private long submittedObjects;
     private long publishedCamera, publishedContent, sequence, order;
-    private int width, height, currentFrame, contextBuffers, contextTextures;
+    private int width, height, currentFrame, contextBuffers, contextTextures, samples = 1;
     // The render target, readback textures and buffers, sized to the viewport (see targetSize).
     private int targetWidth, targetHeight, reallocations, failedWidth, failedHeight;
     private long contextGpuHeap;
@@ -127,11 +171,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 init.type(backend).fallback(false);
                 // Offscreen context only; one-frame command latency is explicitly qualified by
                 // proof.
-                init.resolution()
-                        .width(0)
-                        .height(0)
-                        .reset(BGFX_RESET_NONE)
-                        .maxFrameLatency((byte) 1);
+                init.resolution().width(0).height(0).reset(RESET_FLAGS).maxFrameLatency((byte) 1);
                 BGFXPlatform.bgfx_render_frame(0);
                 if (!bgfx_init(init)) {
                     throw new IOException("Headless World backend unavailable");
@@ -164,6 +204,29 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             contextTextures = Short.toUnsignedInt(bgfx_get_stats().numTextures());
             contextGpuHeap = bgfx_get_stats().gpuMemoryUsed();
             renderer = new BgfxWorldStreamRenderer(session);
+            samples =
+                    targetSamples(
+                            multisampled(
+                                    caps.formats(BGFX_TEXTURE_FORMAT_BGRA8),
+                                    bgfx_is_texture_valid(
+                                            0,
+                                            false,
+                                            1,
+                                            BGFX_TEXTURE_FORMAT_BGRA8,
+                                            colourFlags(MSAA_SAMPLES))),
+                            multisampled(
+                                    caps.formats(BGFX_TEXTURE_FORMAT_D32F),
+                                    bgfx_is_texture_valid(
+                                            0,
+                                            false,
+                                            1,
+                                            BGFX_TEXTURE_FORMAT_D32F,
+                                            depthFlags(MSAA_SAMPLES))));
+            if (samples == 1) {
+                // A device fact, not a failure: the World draws single-sampled, as before.
+                System.err.println("World render target: multisampling unavailable, 1 sample");
+                System.err.flush();
+            }
             for (int i = 0; i < readbacks.length; i++) {
                 readbacks[i] = new Readback();
                 // Direct readback: readback i writes mapping slot i (both have three).
@@ -288,7 +351,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                                 false,
                                 1,
                                 BGFX_TEXTURE_FORMAT_BGRA8,
-                                BGFX_TEXTURE_RT,
+                                colourFlags(samples),
                                 null,
                                 0));
         depth =
@@ -299,7 +362,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                                 false,
                                 1,
                                 BGFX_TEXTURE_FORMAT_D32F,
-                                BGFX_TEXTURE_RT,
+                                depthFlags(samples),
                                 null,
                                 0));
         target = valid(bgfx_create_frame_buffer_from_handles(new short[] {color, depth}, false));
@@ -360,6 +423,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             BgfxWorldStreamRenderer.LateUpload upload, boolean live) {
         requireOpen();
         return renderer.finishLate(upload, live);
+    }
+
+    /** Test seam for native proofs; see {@link BgfxWorldStreamRenderer#objectBudgetForProof}. */
+    void objectBudgetForProof(long bytes) {
+        requireOpen();
+        renderer.objectBudgetForProof(bytes);
     }
 
     void commit(long expected, long next, List<WorldStreamState.Lease> table) {
@@ -607,7 +676,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 contextGpuHeap,
                 sequence,
                 pending,
-                stats.gpuMemoryUsed());
+                stats.gpuMemoryUsed(),
+                samples);
     }
 
     private void requireOpen() {

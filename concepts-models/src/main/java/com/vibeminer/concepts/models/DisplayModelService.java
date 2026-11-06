@@ -70,7 +70,7 @@ public final class DisplayModelService implements BuildDisplayModels {
     static final int GEOSET_ROWS = 262_144;
 
     /** Displays with CreatureDisplayInfoGeosetData rows; read once on the worker, then reused. */
-    private Set<Long> geosetDisplays;
+    private Map<Long, Map<Integer, Integer>> geosetDisplays;
 
     /** Why geosetDisplays could not be read, once tried; null when read or not yet tried. */
     private String geosetDisplaysUnavailable;
@@ -620,7 +620,7 @@ public final class DisplayModelService implements BuildDisplayModels {
      *   <li>a cancelled read is never cached.
      * </ul>
      */
-    private Boolean displayGeosets(long id, Cancellation token, List<String> issues) {
+    private Map<Integer, Integer> displayGeosets(long id, Cancellation token, List<String> issues) {
         if (geosetDisplays == null && geosetDisplaysUnavailable == null) {
             try {
                 geosetDisplays = readGeosetDisplays(token, issues);
@@ -653,10 +653,11 @@ public final class DisplayModelService implements BuildDisplayModels {
                     issues, "Display geoset selections are unknown: " + geosetDisplaysUnavailable);
             return null;
         }
-        return geosetDisplays.contains(id);
+        return geosetDisplays.getOrDefault(id, Map.of());
     }
 
-    private Set<Long> readGeosetDisplays(Cancellation token, List<String> issues) {
+    private Map<Long, Map<Integer, Integer>> readGeosetDisplays(
+            Cancellation token, List<String> issues) {
         var present =
                 rawTables
                         .schema(
@@ -667,18 +668,36 @@ public final class DisplayModelService implements BuildDisplayModels {
         if (present.table() != null
                 && present.table().state()
                         == com.vibeminer.formats.tables.TableTypes.State.NOT_IN_BUILD) {
-            return Set.of();
+            return Map.of();
         }
         var data = tables.read(GEOSET_TABLE, GEOSET_ROWS, token, issues);
         if (data.entry().state() != com.vibeminer.formats.tables.TableTypes.State.READY) {
             throw new IllegalArgumentException(GEOSET_TABLE + " is partial");
         }
         data.reference("CreatureDisplayInfoID", "CreatureDisplayInfo");
-        var found = new java.util.HashSet<Long>();
+        var found = new HashMap<Long, Map<Integer, Integer>>();
         for (var row : data.rows()) {
-            found.add(data.number(row, "CreatureDisplayInfoID"));
+            long display = data.number(row, "CreatureDisplayInfoID");
+            long index = data.number(row, "GeosetIndex"), value = data.number(row, "GeosetValue");
+            if (index < 0 || index > 254 || value < 0 || value > 99) {
+                throw new IllegalArgumentException(
+                        GEOSET_TABLE + " records a geoset outside the reviewed profile");
+            }
+            // GeosetIndex + 1 is the group (wowdev: meshId = (geosetIndex + 1) * 100 + value).
+            found.computeIfAbsent(display, d -> new HashMap<>())
+                    .merge(
+                            (int) index + 1,
+                            (int) value,
+                            (a, b) ->
+                                    a.equals(b)
+                                            ? a
+                                            : DisplayModelTypes.Reference.CONFLICTING_GEOSET);
         }
-        return Set.copyOf(found);
+        var result = new HashMap<Long, Map<Integer, Integer>>();
+        for (var entry : found.entrySet()) {
+            result.put(entry.getKey(), Map.copyOf(entry.getValue()));
+        }
+        return Map.copyOf(result);
     }
 
     /**
@@ -865,7 +884,7 @@ public final class DisplayModelService implements BuildDisplayModels {
             }
             pixels += count;
             int index = textures.size();
-            textures.add(new MeshAppearance.Texture(image.width(), image.height(), argb));
+            textures.add(MeshAppearance.Texture.adopt(image.width(), image.height(), argb));
             decoded.put(fid, index);
             receipts.put(fid, stat.file().contentKey());
             return index;
@@ -914,10 +933,11 @@ public final class DisplayModelService implements BuildDisplayModels {
         }
         if (reference.creatureGeosetDataId() == null
                 || reference.creatureGeosetDataId() != 0
-                || !Boolean.FALSE.equals(reference.displayGeosets())
+                || reference.displayGeosets() == null
+                || !reference.displayGeosets().isEmpty()
                 || mesh.parts().stream().anyMatch(p -> p.id() != 0)) {
-            // The World explorer differs: it draws only the default x00 geosets when no geoset
-            // data is recorded and refuses the model otherwise (WorldTileCreatures).
+            // The World explorer differs: it draws one variant per geoset group (the display's own
+            // geoset rows, otherwise x00) and refuses what it cannot decide (WorldTileCreatures).
             TableProjection.note(
                     issues,
                     "Surface visibility is unresolved; all recorded model surfaces are shown.");
