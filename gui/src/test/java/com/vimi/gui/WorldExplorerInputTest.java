@@ -18,6 +18,7 @@ public final class WorldExplorerInputTest {
     public static void main(String[] args) {
         keysMapToClampedAxes();
         walkToggleIgnoresKeyRepeat();
+        devOverlayKeyCommandsOncePerPress();
         clearDropsHeldKeys();
         lookButtons();
         capturedLookIsRelativeAwayFromTheEdge();
@@ -87,6 +88,8 @@ public final class WorldExplorerInputTest {
         @Override public void captureFallback(String reason) { fallbacks.add(reason); }
         int unavailable;
         @Override public void captureUnavailable() { unavailable++; }
+        final List<WorldControls.Action> commands = new ArrayList<>();
+        @Override public void command(WorldControls.Action action) { commands.add(action); }
 
         long count(String call) {
             return calls.stream().filter(call::equals).count();
@@ -137,6 +140,39 @@ public final class WorldExplorerInputTest {
         input.keyReleased(KeyCode.F);
         input.keyPressed(KeyCode.F);
         require(host.toggles == 2, "A second press toggles again");
+    }
+
+    private static void devOverlayKeyCommandsOncePerPress() {
+        for (var layout : WorldControls.Layout.values()) {
+            var keys = layout.keys();
+            require(keys.get(KeyCode.F3) == WorldControls.Action.DEV_OVERLAY,
+                    layout + " binds F3 to the developer overlay: " + keys);
+            require(keys.values().stream().filter(WorldControls.Action.DEV_OVERLAY::equals).count() == 1,
+                    layout + " binds the developer overlay to one key only");
+        }
+        var host = new Host();
+        var input = exact(host);
+        input.keyPressed(KeyCode.F3);
+        input.keyPressed(KeyCode.F3);
+        require(host.commands.equals(List.of(WorldControls.Action.DEV_OVERLAY)) && host.toggles == 0,
+                "Auto-repeat F3 commands the overlay once and never walks: " + host.commands);
+        require(input.axes().equals(ExplorerMotion.Input.NONE), "F3 moves nothing");
+        input.keyReleased(KeyCode.F3);
+        input.keyPressed(KeyCode.F3);
+        require(host.commands.size() == 2, "A second press commands again");
+        input.keyReleased(KeyCode.F3);
+        input.keyPressed(KeyCode.F);
+        require(host.commands.size() == 2 && host.toggles == 1, "Walk keeps its own toggle hook");
+        input.controls(WorldControls.DEFAULTS.unbind(WorldControls.Action.DEV_OVERLAY)
+                .bind(KeyCode.F7, WorldControls.Action.DEV_OVERLAY));
+        input.keyPressed(KeyCode.F3);
+        input.keyPressed(KeyCode.F7);
+        require(host.commands.size() == 3, "The overlay follows its rebinding: " + host.commands);
+        var older = WorldControls.decode("v1;keys=W:FORWARD;actions=FORWARD,BACK,WALK");
+        require(older.keys().get(KeyCode.F3) == WorldControls.Action.DEV_OVERLAY,
+                "Stored controls from before the overlay gain its default key: " + older.keys());
+        require(WorldControls.DEFAULTS.help().contains("F3 developer overlay"),
+                "Help names the overlay key: " + WorldControls.DEFAULTS.help());
     }
 
     private static void clearDropsHeldKeys() {
