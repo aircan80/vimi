@@ -59,6 +59,13 @@ public interface BuildWorld extends AutoCloseable {
                 WorldTerrainTextureSource.BatchResult.unsupported(tiles));
     }
 
+    /** The map's low-resolution WDL horizon heights; custom providers state that they have none. */
+    default CompletableFuture<WorldHorizon.Result> horizon(
+            WorldService.MapInfo map, Cancellation token) {
+        return CompletableFuture.completedFuture(
+                WorldHorizon.Result.absent(map.id(), "Horizon is unavailable for this source"));
+    }
+
     /** Optional single-root static water preview joined to actual prepared terrain tiles. */
     default java.util.Optional<WorldWaterPreview> waterPreview() {
         return java.util.Optional.empty();

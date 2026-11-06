@@ -1054,6 +1054,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         });
         viewport.widthProperty().addListener((o, a, b) -> requestFrame());
         viewport.heightProperty().addListener((o, a, b) -> requestFrame());
+        // #370: a monitor move or display-scale change resizes the native-resolution frame.
+        WorldRenderScaleWatch.forNode(this, this::requestFrame);
         timer =
                 new AnimationTimer() {
                     @Override
@@ -2673,13 +2675,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var creatureSource = WorldStreamGpuOwner.CREATURES ? creatures : null;
         long creatureMap = inventory.map().id();
         var detail = objectTextures.getValue();
+        com.vibeminer.concepts.world.WorldTerrainStreaming.splatMasks(detail);
+        // Dungeon and raid maps (Map.InstanceType 1 or 2) draw their WMO interiors too (#280).
+        boolean interiors = instanceInteriors(inventory.map());
         WorldStreamSourceBridge.ExteriorPreparer preparer = creatureSource == null
                 ? (source, scope, tile, cancellation) -> WorldStreamSourceBridge.prepareExterior(
-                        source, scope, tile, cancellation, null, detail)
+                        source, scope, tile, cancellation, null, detail, interiors)
                 : (source, scope, tile, cancellation) -> WorldStreamSourceBridge.prepareExterior(
                         source, scope, tile, cancellation,
                         (builder, owned, token) -> creatureSource.append(builder, creatureMap, owned, token),
-                        detail);
+                        detail, interiors);
         stallWatchdog.reset();
         streaming = new WorldStreamSourceController(request, scope -> {
             var owner = new WorldStreamGpuOwner(gpuService, scope, detail);
@@ -2784,10 +2789,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
      * one quiet pulse ({@link WorldResizeDebounce}) so a window drag bumps the policy once.
      */
     void streamingSize() {
-        double targetWidth = Math.max(1, viewport.getWidth());
-        double targetHeight = Math.max(1, viewport.getHeight());
-        double scale = Math.min(1, Math.min(800 / targetWidth, 500 / targetHeight));
-        streamingResize.offer(Math.max(1, (int) (targetWidth * scale)), Math.max(1, (int) (targetHeight * scale)));
+        // Native resolution: the viewport times the window's render scale on each axis (HiDPI),
+        // within the one shared frame cap; the ImageView fits it back to layout size.
+        var window = getScene() == null ? null : getScene().getWindow();
+        var frame = com.vibeminer.rendering.world.WorldFrameLimits.frame(
+                viewport.getWidth(), viewport.getHeight(),
+                window == null ? 1 : window.getRenderScaleX(),
+                window == null ? 1 : window.getRenderScaleY(), 1);
+        streamingResize.offer(frame.width(), frame.height());
         int width = streamingResize.width(), height = streamingResize.height();
         if (streamingWidth != 0 && (width != streamingWidth || height != streamingHeight)) streamingPolicy++;
         streamingWidth = width;
@@ -3242,6 +3251,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     // ---- Instances: recorded entrances and in-place zone-in (#259) ----------------------------
+
+    /** Dungeon (InstanceType 1) and raid (2) maps draw interior WMO groups (#280). */
+    static boolean instanceInteriors(WorldService.MapInfo map) {
+        return map != null && map.type() != null && (map.type() == 1 || map.type() == 2);
+    }
 
     /** A map that records one global world model and no terrain tiles (an interior map). */
     private static boolean globalOnly(WorldService.Inventory data) {
