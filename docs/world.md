@@ -56,6 +56,60 @@ the viewport reuses its bounded loaded neighborhood. The catalog builds one
 immutable ID index on its worker, limited to 100,000 area records; frame updates
 perform bounded metadata lookup without table/file I/O or full catalog scans.
 
+## Sky and fog lights
+
+`WorldSky` works out sky colours and distance fog for a map position and time of
+day from the Light, LightParams, LightData and Map tables. The renderer doesn't
+use it yet; until it does, the explorer keeps its fixed sky and fog colours.
+
+The reader accepts only the reviewed layouts of these tables, and only fields
+whose names the definitions mark as verified:
+
+- Light: `GameCoords`, `GameFalloffStart`, `GameFalloffEnd`, `ContinentID` and
+  `LightParamsID[0]`.
+- LightData: `LightParamID`, `Time`, the six `Sky*Color` channels, `FogEnd` and
+  `FogScaler`.
+- Map: `TimeOfDayOverride`.
+
+Rows that can't be read are counted and skipped. A partial table is reported on
+every result.
+
+These rules come from the tables:
+
+- A light belongs to the map named by its `ContinentID`.
+- `GameCoords` share the native axes of terrain chunk origins: `[0]` is native X
+  and `[1]` is native Y, in the same units. A check of every positioned light
+  against its own map's terrain tiles supports this; other axis orders and
+  scales fit far fewer lights.
+- A light with zero coordinates and zero radii is the map-wide light.
+- Times count half-minutes over a 2880-step day.
+- A non-negative `Map.TimeOfDayOverride` fixes that map's time.
+- Colour cells have an empty top byte and are read as `0xRRGGBB`. Under this
+  reading, sky colours in the recorded data are mostly blue-dominant.
+
+These rules are this module's model, not recorded rules:
+
+- **Falloff:** a light's weight is 1 within its inner radius and drops linearly
+  to 0 at its outer radius, over 3D distance.
+- **Overlap:** if overlapping positioned lights add up to more than 1, they are
+  scaled to sum to 1. Otherwise the map's single map-wide light takes the
+  remaining weight.
+- **Time:** channels interpolate linearly between the two keys around the
+  requested time, wrapping at midnight.
+- **Parameter slot:** only parameter slot 0 is read. The tables don't record what
+  the other slots mean.
+
+Some cases have no answer in the tables:
+
+- A map with several map-wide lights. Which one applies may depend on zone
+  lights or player conditions, which are not read here.
+- A map with no map-wide light.
+- A parameter set without LightData rows.
+
+In these cases the result names the gap and blends only the lights that remain.
+If no light remains, the result is unavailable, so callers keep their own
+fallback.
+
 ## Click to inspect
 
 A still primary click in the explorer reports what lies under the pointer in the
