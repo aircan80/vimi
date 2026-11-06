@@ -659,7 +659,16 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         }
         try (var bootstrap = openTables(tablesService(token, TableRole.PREPARATION), token)) {
             var found = BuildTactKeys.load(bootstrap, TableTypes.Priority.BACKGROUND, token).join();
-            applyBuildKeys(found, issues, token);
+            // Keys the client cache delivered after its rows join under the same conflict rule;
+            // a failure to read them only means fewer keys, never a key-loading error.
+            java.util.Map<Long, byte[]> delivered;
+            try {
+                delivered = bootstrap.deliveredKeys(TableTypes.Priority.BACKGROUND, token).join();
+            } catch (java.util.concurrent.CompletionException | IllegalStateException e) {
+                token.check();
+                delivered = java.util.Map.of();
+            }
+            applyBuildKeys(BuildTactKeys.withDelivered(found, delivered), issues, token);
         }
         return List.copyOf(issues);
     }

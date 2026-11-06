@@ -160,6 +160,55 @@ public final class BuildTactKeys {
                 command -> Thread.ofVirtual().start(command));
     }
 
+    /**
+     * Adds keys a client hotfix cache delivered in optional-data blocks, under the same rule as
+     * keys joined from the TactKey tables: a name already present with different bytes is a
+     * conflict and is dropped, and all-zero keys are skipped. Only a fully read key set is
+     * extended. Never logs key bytes.
+     */
+    public static KeySet withDelivered(KeySet found, java.util.Map<Long, byte[]> delivered) {
+        if (delivered.isEmpty()
+                || found.keyTable().outcome() != Outcome.READ
+                || found.lookupTable().outcome() != Outcome.READ) {
+            return found;
+        }
+        var keys = new HashMap<Long, byte[]>(found.keys);
+        var conflicts = new HashSet<String>(found.conflicts());
+        int skipped = found.skippedZero();
+        for (var entry : delivered.entrySet()) {
+            byte[] key = entry.getValue();
+            if (key == null || key.length != 16) {
+                continue;
+            }
+            boolean zero = true;
+            for (byte b : key) {
+                zero &= b == 0;
+            }
+            if (zero) {
+                skipped++;
+                continue;
+            }
+            String name = nameOf(entry.getKey());
+            if (conflicts.contains(name)) {
+                continue;
+            }
+            byte[] existing = keys.putIfAbsent(entry.getKey(), key);
+            if (existing != null && !Arrays.equals(existing, key)) {
+                keys.remove(entry.getKey());
+                conflicts.add(name);
+            }
+        }
+        return new KeySet(
+                keys,
+                found.keyTable(),
+                found.lookupTable(),
+                skipped,
+                found.unmatched(),
+                found.unknown(),
+                conflicts.stream().sorted().toList(),
+                found.malformed());
+    }
+
     /** Prepared local graphs only; unavailable build keys do not prevent use of community keys. */
     public static CompletableFuture<KeySet> loadPreparedLocal(
             BuildTables tables, Cancellation token) {

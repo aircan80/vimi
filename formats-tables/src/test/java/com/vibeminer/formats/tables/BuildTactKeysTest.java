@@ -3,6 +3,7 @@ package com.vibeminer.formats.tables;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.db2.Db2Types;
@@ -125,6 +126,48 @@ final class BuildTactKeysTest {
             assertEquals(0, keys.unmatched());
             assertEquals(List.of("0000000000000009"), keys.conflicts());
             assertNull(keys.find(9));
+        }
+    }
+
+    @Test
+    void deliveredKeysJoinUnderTheSameConflictRule() {
+        var memory =
+                new MemoryTables()
+                        .add(
+                                TablesContract.BUILD,
+                                "enUS",
+                                List.of(
+                                        table(
+                                                BuildTactKeys.TACT_KEY_FILE_DATA_ID,
+                                                "TactKey",
+                                                columns("Key", 16, false),
+                                                List.of(row(7, 1, 16, false))),
+                                        table(
+                                                BuildTactKeys.TACT_KEY_LOOKUP_FILE_DATA_ID,
+                                                "TactKeyLookup",
+                                                columns("TACTID", 8, false),
+                                                List.of(row(7, 9, 8, false)))));
+        try (var handle =
+                memory.forBuild(TablesContract.BUILD, "enUS", Cancellation.NONE).join().tables()) {
+            var found =
+                    BuildTactKeys.load(handle, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join();
+            byte[] same = found.find(9);
+            byte[] other = new byte[16];
+            other[0] = 2;
+            byte[] fresh = new byte[16];
+            fresh[3] = 5;
+            assertSame(found, BuildTactKeys.withDelivered(found, Map.of()));
+            var identical = BuildTactKeys.withDelivered(found, Map.of(9L, same, 10L, fresh));
+            assertEquals(List.of("0000000000000009", "000000000000000A"), identical.names());
+            assertArrayEquals(fresh, identical.find(10));
+            assertEquals(List.of(), identical.conflicts());
+            var conflicting =
+                    BuildTactKeys.withDelivered(found, Map.of(9L, other, 11L, new byte[16]));
+            assertNull(conflicting.find(9), "a different key under a known name is dropped");
+            assertEquals(List.of("0000000000000009"), conflicting.conflicts());
+            assertEquals(found.skippedZero() + 1, conflicting.skippedZero());
+            assertEquals(0, conflicting.count());
         }
     }
 }

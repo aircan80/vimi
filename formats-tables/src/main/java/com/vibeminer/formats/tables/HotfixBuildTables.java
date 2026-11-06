@@ -58,6 +58,9 @@ public final class HotfixBuildTables implements BuildTables {
         final Map<Long, Integer> additionIndex;
         final long bytes;
         final int added, replaced, deleted, protectedRows, unknownRows, ignored;
+        // Keys delivered in optional-data blocks of this table's rows, by key name; names that
+        // were delivered with different bytes are left out. Never rendered or logged.
+        Map<Long, byte[]> deliveredKeys = Map.of();
         // Non-zero when a raw-column fit scan was inconclusive: the view is rebuilt (and the scan
         // retried) by the first operation at or after this time, instead of staying cached
         // without its raw columns until eviction.
@@ -655,6 +658,8 @@ public final class HotfixBuildTables implements BuildTables {
             // Selected IDs remain masked UNKNOWN; never fall back to stale base values.
         }
         var changes = new HashMap<Long, Change>();
+        var deliveredKeys = new HashMap<Long, byte[]>();
+        var conflictingKeys = new HashSet<Long>();
         var regions = new HashMap<Long, Integer>();
         var regionConflicts = new HashSet<Long>();
         long bytes = 256 << 10;
@@ -715,6 +720,12 @@ public final class HotfixBuildTables implements BuildTables {
                         row = decoded.row();
                         kind = Kind.ADD;
                         if (decoded.optionalKeyData()) {
+                            long name = decoded.optionalKeyName();
+                            byte[] key = decoded.optionalKey();
+                            byte[] earlier = deliveredKeys.putIfAbsent(name, key);
+                            if (earlier != null && !Arrays.equals(earlier, key)) {
+                                conflictingKeys.add(name);
+                            }
                             // Shown as a hotfix row; hotfixInfo notes the stripped key block.
                             undecoded = "OPTIONAL_KEY_DATA";
                         }
@@ -823,6 +834,10 @@ public final class HotfixBuildTables implements BuildTables {
         } else {
             fitFailures.remove(id);
         }
+        for (long name : conflictingKeys) {
+            deliveredKeys.remove(name);
+        }
+        result.deliveredKeys = Map.copyOf(deliveredKeys);
         views.put(id, result);
         pinned.add(id);
         return result;
@@ -1364,6 +1379,72 @@ public final class HotfixBuildTables implements BuildTables {
             Cancellation token) {
         requireOpen();
         return base.prepareNativeEvidence(table, priority, access, progress, token);
+    }
+
+    /**
+     * Keys the cache delivered in optional-data blocks after its rows (by key name), for key
+     * loading only. Only tables with a row whose body ends in such a block are compiled; a name
+     * delivered with different bytes is left out. A table whose overlay is refused contributes
+     * nothing. Never logged or rendered.
+     */
+    @Override
+    public CompletableFuture<Map<Long, byte[]>> deliveredKeys(
+            TableTypes.Priority priority, Cancellation token) {
+        return operation(
+                token,
+                t -> {
+                    var tables = new java.util.TreeSet<Long>();
+                    for (var entry : binding.index().entries()) {
+                        t.check();
+                        if (entry.state() != HotfixCacheReader.State.VALID
+                                || entry.payloadBytes() < 28
+                                || entry.payloadBytes() > 64 << 10
+                                || tables.contains(entry.tableHash())) {
+                            continue;
+                        }
+                        byte[] payload =
+                                HotfixCacheReader.readPayloadBlocking(
+                                        binding.source(),
+                                        binding.index(),
+                                        entry.ordinal(),
+                                        64 << 10,
+                                        t);
+                        int tail =
+                                ByteBuffer.wrap(payload)
+                                        .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                        .getInt(payload.length - 28);
+                        Arrays.fill(payload, (byte) 0);
+                        if (tail == 0xDF2F53CF) {
+                            tables.add(entry.tableHash());
+                        }
+                    }
+                    var keys = new HashMap<Long, byte[]>();
+                    var conflicts = new HashSet<Long>();
+                    for (long hash : tables) {
+                        Long id = base.fileDataIdForHash(hash);
+                        if (id == null) {
+                            continue;
+                        }
+                        // Decoding decides: only a body that ends exactly in the block counts.
+                        var view = view(TableTypes.Ref.id(id), priority, t);
+                        if (view == null) {
+                            continue;
+                        }
+                        for (var delivered : view.deliveredKeys.entrySet()) {
+                            byte[] earlier =
+                                    keys.putIfAbsent(delivered.getKey(), delivered.getValue());
+                            if (earlier != null && !Arrays.equals(earlier, delivered.getValue())) {
+                                conflicts.add(delivered.getKey());
+                            }
+                        }
+                    }
+                    for (long name : conflicts) {
+                        keys.remove(name);
+                    }
+                    var copy = new HashMap<Long, byte[]>();
+                    keys.forEach((name, key) -> copy.put(name, key.clone()));
+                    return copy;
+                });
     }
 
     @Override

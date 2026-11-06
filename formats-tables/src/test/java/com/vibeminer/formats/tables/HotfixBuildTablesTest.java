@@ -1243,6 +1243,44 @@ class HotfixBuildTablesTest {
         }
     }
 
+    private static byte[] keyed(int value, long name, int keyByte) {
+        var body = ByteBuffer.allocate(4 + 28).order(ByteOrder.LITTLE_ENDIAN);
+        body.putInt(value).putInt(0xDF2F53CF).putLong(name);
+        for (int i = 0; i < 16; i++) {
+            body.put((byte) keyByte);
+        }
+        return body.array();
+    }
+
+    @Test
+    void deliveredKeysComeFromStrippedBlocksAndConflictingNamesAreLeftOut() {
+        try (var tables =
+                numbers(
+                        0x11223344L,
+                        entry(0x11223344L, 1, 20, 1, keyed(42, 0x51L, 7)),
+                        entry(0x11223344L, 2, 21, 1, keyed(43, 0x51L, 7)),
+                        entry(0x11223344L, 3, 22, 1, keyed(44, 0x52L, 1)),
+                        entry(0x11223344L, 4, 23, 1, keyed(45, 0x52L, 2)),
+                        entry(0x11223344L, 5, 24, 1, number(46)))) {
+            var delivered = tables.deliveredKeys(P, Cancellation.NONE).join();
+            assertEquals(java.util.Set.of(0x51L), delivered.keySet());
+            byte[] expected = new byte[16];
+            java.util.Arrays.fill(expected, (byte) 7);
+            org.junit.jupiter.api.Assertions.assertArrayEquals(expected, delivered.get(0x51L));
+            assertEquals(
+                    List.of("20", "42"),
+                    tables.get(TableTypes.Ref.id(100), 20, P, Cancellation.NONE)
+                            .join()
+                            .row()
+                            .row()
+                            .values(),
+                    "the key never reaches the row");
+        }
+        try (var tables = numbers(0x11223344L, entry(0x11223344L, 1, 20, 1, number(42)))) {
+            assertEquals(Map.of(), tables.deliveredKeys(P, Cancellation.NONE).join());
+        }
+    }
+
     @Test
     void replacementFilteringGetAndDenseCursorAgreeWithoutStaleBaseRows() {
         try (var tables =

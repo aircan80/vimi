@@ -182,13 +182,25 @@ public final class HotfixRowDecoder {
      * TactKey table (table hash, 8-byte key name, 16-byte key). The row is fully described without
      * it; the block is stripped and never part of the row.
      */
-    public record Decoded(Db2Types.Row row, int consumedBytes, boolean optionalKeyData) {
+    public record Decoded(
+            Db2Types.Row row,
+            int consumedBytes,
+            boolean optionalKeyData,
+            long optionalKeyName,
+            byte[] optionalKey) {
         public Decoded {
             Objects.requireNonNull(row);
+            optionalKey = optionalKey == null ? null : optionalKey.clone();
         }
 
         public Decoded(Db2Types.Row row, int consumedBytes) {
-            this(row, consumedBytes, false);
+            this(row, consumedBytes, false, 0, null);
+        }
+
+        /** The delivered 16-byte key, or null; a copy, never logged or rendered. */
+        @Override
+        public byte[] optionalKey() {
+            return optionalKey == null ? null : optionalKey.clone();
         }
 
         @Override
@@ -281,21 +293,34 @@ public final class HotfixRowDecoder {
         }
         token.check();
         boolean optionalKeyData = false;
+        long keyName = 0;
+        byte[] key = null;
         if (input.hasRemaining()) {
             int rest = input.remaining();
             if (rest == OPTIONAL_KEY_BYTES && input.getInt(input.position()) == TACT_KEY_HASH) {
                 // A recognized optional key block after a fully described row: the row reads
-                // the same without it, so it is stripped. Its bytes never reach the row.
+                // the same without it, so it is stripped. Its bytes never reach the row; the
+                // key itself is handed to key loading only.
                 optionalKeyData = true;
+                keyName = input.getLong(input.position() + 4);
+                key = new byte[16];
+                input.get(input.position() + 12, key);
             } else {
                 // Zero padding included: extra bytes mean the layout may not describe this row.
                 throw new Invalid(Reason.TRAILING_BYTES, rest);
             }
         }
-        return new Decoded(
-                new Db2Types.Row(recordId, false, null, values, List.of()),
-                input.position(),
-                optionalKeyData);
+        var decoded =
+                new Decoded(
+                        new Db2Types.Row(recordId, false, null, values, List.of()),
+                        input.position(),
+                        optionalKeyData,
+                        keyName,
+                        key);
+        if (key != null) {
+            java.util.Arrays.fill(key, (byte) 0);
+        }
+        return decoded;
     }
 
     private static void validate(Layout layout, long tableHash, Limits limits, Cancellation token) {

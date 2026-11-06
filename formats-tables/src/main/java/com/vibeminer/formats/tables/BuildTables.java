@@ -76,6 +76,16 @@ public interface BuildTables extends AutoCloseable {
                         NativePreparationTypes.State.UNSUPPORTED, access, null, null));
     }
 
+    /**
+     * Keys a client hotfix cache delivered in optional-data blocks, by key name, for key loading
+     * only. Empty without a cache overlay.
+     */
+    default CompletableFuture<java.util.Map<Long, byte[]>> deliveredKeys(
+            TableTypes.Priority priority, Cancellation token) {
+        token.check();
+        return CompletableFuture.completedFuture(java.util.Map.of());
+    }
+
     /** Last compiled effective-view metadata only; never decodes/prepares/acquires a table. */
     default CompletableFuture<java.util.Optional<HotfixViewInfo>> hotfixInfo(
             TableTypes.Ref table, Long rowId, TableTypes.Priority priority, Cancellation token) {
