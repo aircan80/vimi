@@ -87,7 +87,24 @@ final class WorldStreamObjectsCullProof {
             var allFrame = frame(owner, reader, NONCE, WorldStreamObjectsMaterialProof.VIEW);
             int drawsAll = allFrame.draws;
             var all = owner.frameCounts();
+            // Before instancing (#382): every placement its own draw, culling still off.
+            owner.objectInstancing(false);
+            var eachFrame = frame(owner, reader, NONCE, WorldStreamObjectsMaterialProof.VIEW);
+            int drawsEach = eachFrame.draws;
+            var each = owner.frameCounts();
+            owner.objectInstancing(true);
             owner.objectCulling(true);
+            // Instance data overflow (#382), decided once per placement per frame: with no
+            // instances left, the visible placement draws neither its walls nor its glass.
+            owner.instanceLimit(0);
+            frame(owner, reader, NONCE, WorldStreamObjectsMaterialProof.VIEW);
+            var starved = owner.frameCounts();
+            owner.instanceLimit(Integer.MAX_VALUE);
+            require(
+                    starved.objectSubmits() == 0
+                            && starved.instancesDropped() == 1
+                            && starved.instances() == 0,
+                    "Overflowed placement skipped in both passes " + starved);
             int placements = exterior.placements();
             require(
                     culled.placements() == placements && all.placements() == placements,
@@ -97,9 +114,23 @@ final class WorldStreamObjectsCullProof {
             require(
                     culled.culled() == placements - 1 && culled.objectSubmits() == 3,
                     "Culled counts " + culled);
+            // Instanced (#382): all placements share model 0, so its cutout and opaque ranges are
+            // two submits for every instance; blended ranges stay one per placement, sorted.
             require(
-                    all.culled() == 0 && all.objectSubmits() == 3 * placements,
-                    "Unculled counts " + all);
+                    all.culled() == 0
+                            && all.objectSubmits() == 2 + placements
+                            && all.instances() == 2 * placements
+                            && all.instancesDropped() == 0,
+                    "Unculled instanced counts " + all);
+            require(
+                    each.objectSubmits() == 3 * placements
+                            && drawsEach - drawsAll == 2 * placements - 2,
+                    "Per-placement counts " + each + " draws " + drawsEach);
+            for (int i = 0; i < WIDTH * HEIGHT; i++) {
+                require(
+                        allFrame.pixels.get(i) == eachFrame.pixels.get(i),
+                        "Instancing changed pixel " + i);
+            }
             // Terrain eye, projection and rebase plus object eye and projection: once per frame,
             // whatever the number of slots and placements drawn.
             require(
@@ -197,6 +228,8 @@ final class WorldStreamObjectsCullProof {
                             + culled.objectSubmits()
                             + "/"
                             + all.objectSubmits()
+                            + "/"
+                            + each.objectSubmits()
                             + " cameraUniforms="
                             + all.cameraUniforms()
                             + " terrainChunks="
@@ -210,7 +243,9 @@ final class WorldStreamObjectsCullProof {
                             + " bgfxDraws="
                             + drawsCulled
                             + "/"
-                            + drawsAll);
+                            + drawsAll
+                            + "/"
+                            + drawsEach);
             result = new Result(drawsCulled, drawsAll, culled);
         }
         int partial = coverage(base);

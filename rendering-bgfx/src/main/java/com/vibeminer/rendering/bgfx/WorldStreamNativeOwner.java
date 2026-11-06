@@ -66,6 +66,19 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     /** Reset flags: no back buffer; anisotropic samplers use the device maximum (issue #357). */
     static final int RESET_FLAGS = org.lwjgl.bgfx.BGFX.BGFX_RESET_MAXANISOTROPY;
 
+    /**
+     * The transient vertex budget: bgfx's default, raised if needed to hold a whole frame of object
+     * instance data ({@link BgfxWorldStreamRenderer#MAX_FRAME_INSTANCE_BYTES}) plus 1 MiB for
+     * anything else that uses transient vertices.
+     */
+    static int transientVertexBytes(int bgfxDefault) {
+        return transientVertexBytes(bgfxDefault, BgfxWorldStreamRenderer.MAX_FRAME_INSTANCE_BYTES);
+    }
+
+    static int transientVertexBytes(int bgfxDefault, int frameInstanceBytes) {
+        return Math.max(bgfxDefault, frameInstanceBytes + (1 << 20));
+    }
+
     /** Samples of the World render target when the device can multisample it. */
     static final int MSAA_SAMPLES = 4;
 
@@ -148,6 +161,11 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 // Offscreen context only; one-frame command latency is explicitly qualified by
                 // proof.
                 init.resolution().width(0).height(0).reset(RESET_FLAGS).maxFrameLatency((byte) 1);
+                // Room for a frame of object instance data at the per-tile caps (#382), on top
+                // of bgfx's default transient budget.
+                init.limits()
+                        .maxTransientVbSize(
+                                transientVertexBytes(init.limits().maxTransientVbSize()));
                 BGFXPlatform.bgfx_render_frame(0);
                 if (!bgfx_init(init)) {
                     throw new IOException("Headless World backend unavailable");
@@ -432,6 +450,18 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     BgfxWorldStreamRenderer.FrameCounts frameCounts() {
         requireOpen();
         return renderer.frameCounts();
+    }
+
+    /** Proof seam only: see {@link BgfxWorldStreamRenderer#instanceLimit}. */
+    void instanceLimit(int limit) {
+        requireOpen();
+        renderer.instanceLimit(limit);
+    }
+
+    /** Proof seam only: see {@link BgfxWorldStreamRenderer#objectInstancing}. */
+    void objectInstancing(boolean enabled) {
+        requireOpen();
+        renderer.objectInstancing(enabled);
     }
 
     /** Proof seam only: see {@link BgfxWorldStreamRenderer#objectCulling}. */
