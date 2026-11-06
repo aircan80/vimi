@@ -50,6 +50,7 @@ public final class WorldStreamSourceControllerTest {
         missingNearestIsFiniteUnavailableWithoutFillingOutputUnion();
         helperRejectedTileRetriesWithBackoffThenBecomesUnavailable();
         helperRejectionCrossingACancelIsTerminalNotAFailure();
+        helperRejectionOfATileOutOfDemandIsNotCounted();
         rejectedNearestTileDoesNotStallItsNeighbours();
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
@@ -1152,6 +1153,55 @@ public final class WorldStreamSourceControllerTest {
                     fixture.controller.helperRejections(key) == 0,
                     "A tile that left demand keeps no rejection count");
         } finally {
+            Files.deleteIfExists(hold);
+            Files.deleteIfExists(reject);
+            fixture.close();
+        }
+    }
+
+    /**
+     * Issue #365: the helper's rejection has already completed when the controller first sees
+     * that the tile left demand. Nothing is canceled, the rejection is not counted, and no
+     * UNAVAILABLE status is published for terrain nobody wants.
+     */
+    private static void helperRejectionOfATileOutOfDemandIsNotCounted() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        Path reject = fixture.directory.resolve("authored-reject-tile");
+        Path hold = fixture.directory.resolve("authored-hold-reject");
+        Path held = fixture.directory.resolve("authored-held-reject");
+        var switched = new java.util.concurrent.atomic.AtomicBoolean();
+        try {
+            Files.writeString(reject, Integer.toString(fixture.tiles.get(1).y()));
+            Files.writeString(hold, "hold");
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(
+                    () -> fixture.controller.snapshot().phase()
+                            == WorldStreamSourceController.Phase.READY);
+            fixture.controller.neighborhood(fixture.tiles);
+            fixture.until(() -> Files.exists(held));
+            // The first step after the transport delivered the rejection sees the tile gone.
+            fixture.controller.demandSeam =
+                    () -> {
+                        if (fixture.gpu.session.rejectedTiles() > 0
+                                && switched.compareAndSet(false, true)) {
+                            fixture.controller.neighborhood(List.of(fixture.tiles.get(0)));
+                        }
+                    };
+            Files.delete(hold);
+            fixture.until(() -> fixture.controller.rejectionsOutOfDemand() == 1);
+            int key = fixture.tiles.get(1).x() * 64 + fixture.tiles.get(1).y();
+            check(fixture.controller.helperRejections(key) == 0,
+                    "A rejection for a tile out of demand is not counted");
+            fixture.untilPresented(
+                    () -> fixture.controller.snapshot().phase()
+                            == WorldStreamSourceController.Phase.READY);
+            check(
+                    !fixture.controller.snapshot().detail().contains("HELPER_REJECTED"),
+                    "No unavailable status for a tile out of demand");
+        } finally {
+            fixture.controller.demandSeam = null;
             Files.deleteIfExists(hold);
             Files.deleteIfExists(reject);
             fixture.close();

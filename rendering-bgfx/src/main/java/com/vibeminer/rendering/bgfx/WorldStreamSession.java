@@ -449,9 +449,7 @@ final class WorldStreamSession {
                 "World exterior objects of tile transaction "
                         + transaction
                         + " rejected, terrain kept: "
-                        + failed.getClass().getSimpleName()
-                        + ": "
-                        + failed.getMessage()
+                        + reason(failed)
                         + " ("
                         + count
                         + (count == 1 ? " objects set" : " objects sets")
@@ -657,13 +655,7 @@ final class WorldStreamSession {
                 state.decoded(offer.lease(), false);
                 if (!decoderCanceled.get() && !closing.get()) {
                     rejections.reject(
-                            offer.transaction(),
-                            "invalid packet: "
-                                    + (result.error() == null
-                                            ? "unknown"
-                                            : result.error().getClass().getSimpleName()
-                                                    + ": "
-                                                    + result.error().getMessage()));
+                            offer.transaction(), "invalid packet: " + reason(result.error()));
                     send("REJECTED " + offer.transaction() + " INVALID_PACKET");
                 }
             } else {
@@ -750,6 +742,23 @@ final class WorldStreamSession {
                             + " "
                             + decoded.next());
         }
+    }
+
+    /**
+     * A bounded, path-free, single-line reason for a stderr diagnostic: the exception class and
+     * message with control characters blanked, absolute or relative paths replaced by {@code
+     * <path>}, cut to 220 characters (as WorldStreamMain's failure line).
+     */
+    static String reason(Throwable error) {
+        if (error == null) {
+            return "unknown";
+        }
+        String text =
+                error.getClass().getSimpleName()
+                        + (error.getMessage() == null ? "" : ": " + error.getMessage());
+        text = text.replaceAll("[\\p{Cntrl}]", " ");
+        text = text.replaceAll("(?:[A-Za-z]:)?[\\\\/][^\\s:;,'\"]*", "<path>");
+        return text.substring(0, Math.min(220, text.length()));
     }
 
     /** The outcome of admitting one decoded tile: its upload, or the reason it was refused. */

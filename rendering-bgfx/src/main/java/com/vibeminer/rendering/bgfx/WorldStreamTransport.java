@@ -1606,8 +1606,8 @@ public final class WorldStreamTransport {
             }
         }
 
-        /** Test observation: tile and camera refusals of this session. */
-        long rejectedTiles() {
+        /** Tiles the helper rejected this session (diagnostics and tests). */
+        public long rejectedTiles() {
             return rejectedTiles.get();
         }
 

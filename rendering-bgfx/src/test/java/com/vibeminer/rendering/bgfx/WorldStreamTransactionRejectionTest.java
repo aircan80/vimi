@@ -195,4 +195,20 @@ class WorldStreamTransactionRejectionTest {
             }
         }
     }
+
+    @Test
+    void stderrReasonsAreSingleLinePathFreeAndBounded() {
+        String reason =
+                WorldStreamSession.reason(
+                        new java.io.IOException(
+                                "Cannot read C:\\Users\\someone\\tile-7.wst\nnext /home/x/y.bin; "
+                                        + "z".repeat(400)));
+        assertFalse(reason.contains("someone"), reason);
+        assertFalse(reason.contains("/home"), reason);
+        assertFalse(reason.contains("\n"), reason);
+        assertTrue(reason.startsWith("IOException: Cannot read <path> next <path>;"), reason);
+        assertTrue(reason.length() <= 220, "length " + reason.length());
+        assertEquals("unknown", WorldStreamSession.reason(null));
+        assertEquals("OutOfMemoryError", WorldStreamSession.reason(new OutOfMemoryError()));
+    }
 }

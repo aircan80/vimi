@@ -256,6 +256,11 @@ final class WorldStreamSourceController {
     // Test seam: runs on the worker after a RETRY_LATER tile-preparation refusal, before it is
     // recorded.
     volatile Runnable tileRefusalSeam;
+    // Test seam: runs at the top of each streaming step, before demand is read.
+    volatile Runnable demandSeam;
+    // Helper rejections that arrived for tiles already out of demand (not counted, #365).
+    private final java.util.concurrent.atomic.AtomicInteger rejectionsOutOfDemand =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     WorldStreamSourceController(
             Request request, GpuStarter starter, Events events, Consumer<Runnable> fxPost) {
@@ -623,6 +628,8 @@ final class WorldStreamSourceController {
         pollFrame();
         updateArea();
         stepExterior();
+        var stepSeam = demandSeam;
+        if (stepSeam != null) stepSeam.run();
         var wanted = demand();
         if(creditTarget!=null && !contains(wanted,creditTarget)) creditTarget=null;
         unavailable.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
@@ -671,6 +678,7 @@ final class WorldStreamSourceController {
                             || refusal.getSuppressed().length != 0) throw failure;
                     var origin = pending.producer.sourceRefusal();
                     int failedTile = key(pending.tile);
+                    var refusedTile = pending.tile;
                     // Read while the refused reservation is still at hand (#283).
                     long refusedCapacity = pending.reservation.capacityBaseline();
                     if(creditTarget!=null && same(creditTarget,pending.tile)
@@ -678,7 +686,13 @@ final class WorldStreamSourceController {
                     pending.producer.close();
                     pending = null;
                     if (refusal.reason() == WorldStreamTransport.Refusal.PACKET_REJECTED) {
-                        helperRejected(failedTile);
+                        // A tile that already left demand is not counted: it must not publish
+                        // UNAVAILABLE (and turn the view off) for terrain nobody asked for.
+                        if (contains(wanted, refusedTile)) helperRejected(failedTile);
+                        else {
+                            rejectionsOutOfDemand.incrementAndGet();
+                            wake.set(true);
+                        }
                         return;
                     }
                     if (origin != null && !origin.reason().name().equals(refusal.reason().name()))
@@ -805,9 +819,12 @@ final class WorldStreamSourceController {
         if(!wanted.isEmpty() && unavailable.containsKey(key(wanted.getFirst()))
                 && current.stream().noneMatch(entry->same(wanted.getFirst(),entry.resident()))) {
             var site=unavailable.get(key(wanted.getFirst())).site();
-            publish(Phase.UNAVAILABLE,"Nearest terrain unavailable: "+site);
-            // A tile the helper keeps rejecting does not stall its neighbours (#365).
-            if(!site.equals(HELPER_REJECTED)) return;
+            // A tile the helper keeps rejecting does not stall its neighbours (#365); the ready
+            // status lists it among the unavailable sites instead.
+            if(!site.equals(HELPER_REJECTED)) {
+                publish(Phase.UNAVAILABLE,"Nearest terrain unavailable: "+site);
+                return;
+            }
         }
         synchronized (lock) {
             if ((blockedOnMaterialPool || blockedCapacity == session.capacityRevision())
@@ -1506,6 +1523,11 @@ final class WorldStreamSourceController {
         } catch (java.util.concurrent.CancellationException canceled) {
             return false;
         }
+    }
+
+    /** Test observation: helper rejections that arrived for tiles out of demand. */
+    int rejectionsOutOfDemand() {
+        return rejectionsOutOfDemand.get();
     }
 
     /** Test observation: helper rejections per tile key. */
