@@ -90,7 +90,7 @@ final class WorldStreamTileFile {
         }
     }
 
-    static final int WATER_HEADER_BYTES = 128, MAX_WATER_CELLS = 8192, MAX_WATER_LAYERS = 128;
+    static final int WATER_HEADER_BYTES = 128, MAX_WATER_CELLS = 8192, MAX_WATER_LAYERS = 1024;
     static final int MAX_WATER_BYTES = waterBytes(MAX_WATER_CELLS * 4, MAX_WATER_CELLS * 6);
 
     static int waterBytes(int vertices, int indices) {
@@ -98,10 +98,11 @@ final class WorldStreamTileFile {
     }
 
     /**
-     * Optional static flat water trailer. Structural only: the closed application bridge is the
-     * sole producer from an actual Source water preparation joined to this exact terrain payload.
-     * Positions use native terrain axes (x north, y west, z up); every cell is four corners
-     * NW,NE,SW,SE with the fixed NE--SW diagonal indices base,base+2,base+1 / base+1,base+2,base+3.
+     * Optional static water trailer. Structural only: the closed application bridge is the sole
+     * producer from an actual Source water preparation joined to this exact terrain payload.
+     * Positions use native terrain axes (x north, y west, z up); every quad (a source cell, or a
+     * whole flat chunk the bridge merged) is four corners NW,NE,SW,SE with the fixed NE--SW
+     * diagonal indices base,base+2,base+1 / base+1,base+2,base+3. Corner heights may differ.
      */
     record Water(float[] positions, byte[] depths, int[] indices, int layers) {
         Water {
