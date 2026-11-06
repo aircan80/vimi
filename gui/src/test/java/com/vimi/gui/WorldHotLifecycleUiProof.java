@@ -6,7 +6,6 @@ import com.vibeminer.concepts.world.WorldService;
 import com.vibeminer.formats.tables.AuthoredNativeMap;
 import com.vibeminer.files.FileReadStream;
 import java.lang.reflect.Field;
-import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -122,9 +121,7 @@ public final class WorldHotLifecycleUiProof {
         });
     }
     private static long onlyChild() { var values=children();check(values.size()==1,"Exactly one actual child: "+values);return values.iterator().next(); }
-    private static Set<Long> children() { return ProcessHandle.current().children().filter(ProcessHandle::isAlive)
-            .filter(p -> p.info().command().map(c -> Path.of(c).getFileName().toString().equals("java")).orElse(false))
-            .map(ProcessHandle::pid).collect(java.util.stream.Collectors.toSet()); }
+    private static Set<Long> children() { return RendererChildren.live(); }
     private interface Checked { boolean get() throws Exception; }
     private static void await(Checked condition, String message) throws Exception {
         long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(20);
