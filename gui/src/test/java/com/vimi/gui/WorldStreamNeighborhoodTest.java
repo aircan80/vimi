@@ -55,9 +55,74 @@ public final class WorldStreamNeighborhoodTest {
                 "Missing camera tile is not invented and far inventory is excluded");
         require(WorldStreamNeighborhood.select(recorded, 0, 0, 0).isEmpty(),
                 "No recorded neighbors is an empty demand");
+        predictedTileRanksTilesAheadFirst(recorded);
+        motionPredictsWithinTheRadiusAndRestartsAfterJumpsAndGaps();
         require(recorded.size() == 81, "Inventory is unchanged");
         System.out.println("World demand ordering: native headings, ring order, nearest tile, sparse inventory and bounds passed");
     }
+    /** #366: tiles ahead of a moving camera rank first; membership and the camera tile do not move. */
+    private static void predictedTileRanksTilesAheadFirst(List<WorldFormats.Tile> recorded) {
+        for (var distance : WorldStreamTransport.ViewDistance.values()) {
+            for (int i = 0; i < 4; i++) {
+                double yaw = i * Math.PI / 2;
+                require(WorldStreamNeighborhood.select(recorded, 32, 32, yaw, distance, 32, 32)
+                                .equals(WorldStreamNeighborhood.select(recorded, 32, 32, yaw, distance)),
+                        "A still camera keeps exactly the stationary order");
+            }
+            // Facing +y while flying fast towards +x: the predicted tile is (33, 32).
+            var still = WorldStreamNeighborhood.select(recorded, 32, 32, Math.PI / 2, distance);
+            var moving = WorldStreamNeighborhood.select(recorded, 32, 32, Math.PI / 2, distance, 33, 32);
+            require(new java.util.HashSet<>(moving).equals(new java.util.HashSet<>(still)),
+                    "Prediction reorders the same tiles, never changes membership");
+            require(moving.getFirst().x() == 32 && moving.getFirst().y() == 32,
+                    "The camera tile stays first: presentation waits on it");
+            require(moving.get(1).x() == 33 && moving.get(1).y() == 32,
+                    "The predicted tile loads right after the camera tile");
+            int firstBehind = -1, lastAhead = -1;
+            for (int at = 1; at < moving.size(); at++) {
+                if (moving.get(at).x() > 32) lastAhead = at;
+                if (moving.get(at).x() < 32 && firstBehind < 0) firstBehind = at;
+            }
+            require(firstBehind > 0 && lastAhead > 0, "Tiles exist ahead and behind");
+            int aheadInnerRing = 0;
+            for (int at = 1; at < 1 + 3; at++) if (moving.get(at).x() > 32) aheadInnerRing++;
+            require(aheadInnerRing == 3, "Tiles ahead load right after the camera tile");
+            int behindAt = -1;
+            for (int at = 0; at < moving.size(); at++)
+                if (moving.get(at).x() == 31 && moving.get(at).y() == 32) behindAt = at;
+            int stillBehindAt = still.indexOf(moving.get(behindAt));
+            require(behindAt > stillBehindAt, "The tile right behind drops in rank while moving");
+        }
+    }
+
+    private static void motionPredictsWithinTheRadiusAndRestartsAfterJumpsAndGaps() {
+        var motion = new WorldStreamNeighborhood.Motion();
+        long t = 1_000_000_000L, tick = 100_000_000L; // 10 Hz, as the explorer's nearby refresh
+        int[] ahead = motion.ahead(32.5, 32.5, t, 1);
+        require(ahead[0] == 32 && ahead[1] == 32, "A first sample predicts the camera tile");
+        double x = 32.5;
+        for (int i = 1; i <= 30; i++) {
+            x += 0.08; // 0.8 tiles a second towards +x
+            ahead = motion.ahead(x, 32.5, t + i * tick, 1);
+        }
+        // About 0.8 tiles/s x 1.2 s ahead of x = 34.9: the tile at 35.86, clamped to the radius.
+        require(ahead[0] == 35 && ahead[1] == 32,
+                "Steady motion predicts the tile about a lead ahead: " + ahead[0] + "," + ahead[1]);
+        var fast = new WorldStreamNeighborhood.Motion();
+        double fx = 10.5;
+        for (int i = 0; i <= 30; i++) {
+            ahead = fast.ahead(fx, 10.5, t + i * tick, 2);
+            fx += 0.5; // 5 tiles a second
+        }
+        require(ahead[0] == (int) Math.floor(fx - 0.5 + 2) && ahead[1] == 10,
+                "The prediction never reaches past the view radius");
+        ahead = fast.ahead(fx + 40, 10.5, t + 31 * tick, 2);
+        require(ahead[0] == (int) Math.floor(fx + 40) && ahead[1] == 10, "A jump restarts at rest");
+        fast.ahead(fx + 40.5, 10.5, t + 32 * tick, 2);
+        ahead = fast.ahead(fx + 40.9, 10.5, t + 32 * tick + 2_000_000_000L, 2);
+        require(ahead[0] == (int) Math.floor(fx + 40.9), "A long gap restarts at rest");
+    }
+
     private static void require(boolean value, String message) {
         if (!value) throw new AssertionError(message);
     }
