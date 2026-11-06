@@ -239,6 +239,10 @@ final class WorldStreamSourceController {
     private volatile List<WorldFormats.AreaMetadata> areas = List.of();
     private CompletableFuture<WorldStreamTransport.CommitReceipt> commit;
     private WorldStreamTransport.CommitReceipt currentReceipt, acceptedReceipt;
+    // The table and receipt the borrowed frame was drawn from (#366): a commit may replace
+    // current while FX holds the frame, and its handshake is judged against what it shows.
+    private List<Entry> borrowedTable = List.of();
+    private WorldStreamTransport.CommitReceipt borrowedReceipt;
     private Entry staged;
     private final LinkedHashMap<Integer, WorldStreamSourceBridge.RefusalMetadata> unavailable =
             new LinkedHashMap<>();
@@ -431,6 +435,8 @@ final class WorldStreamSourceController {
             borrowed = queued;
             queued = null;
             validated = false;
+            borrowedTable = current;
+            borrowedReceipt = currentReceipt;
             return Optional.of(borrowed);
         }
     }
@@ -452,10 +458,12 @@ final class WorldStreamSourceController {
                 if (accepted) {
                     historicalRaster=false;
                     acceptedSequence = value.sequence();
-                    acceptedReceipt = currentReceipt;
-                    presented = List.copyOf(current);
+                    acceptedReceipt = borrowedReceipt;
+                    presented = List.copyOf(borrowedTable);
                     presentationRevision++;
                 }
+                borrowedTable = List.of();
+                borrowedReceipt = null;
             }
         }
         kick();
@@ -468,6 +476,8 @@ final class WorldStreamSourceController {
             if (borrowed == value) {
                 borrowed = null;
                 validated = false;
+                borrowedTable = List.of();
+                borrowedReceipt = null;
             }
         }
         drop(value.frame, "discard");
@@ -483,11 +493,12 @@ final class WorldStreamSourceController {
                 || camera.policy() != value.policy()
                 || camera.width() != value.width()
                 || camera.height() != value.height()
-                || currentReceipt != value.frame.content()) return false;
+                || borrowedReceipt != value.frame.content()) return false;
         // A valid receipt can still draw only sky after motion beyond its resident neighborhood.
         // Keep the last readable pixels until the nearest requested recorded tile is GPU-current.
-        if(!desired.isEmpty() && current.stream().noneMatch(entry->same(desired.getFirst(),entry.resident()))) return false;
-        for (var entry : current) if (!entry.source().isOpen()) return false;
+        // Judged on the table the frame shows, which a later commit does not change.
+        if(!desired.isEmpty() && borrowedTable.stream().noneMatch(entry->same(desired.getFirst(),entry.resident()))) return false;
+        for (var entry : borrowedTable) if (!entry.source().isOpen()) return false;
         return true;
     }
 
@@ -772,9 +783,10 @@ final class WorldStreamSourceController {
         }
         if (commit != null) {
             if (!commit.isDone()) return;
-            synchronized (lock) {
-                if (borrowed != null) return;
-            }
+            // No wait for a frame the FX side still borrows (#366). The borrow keeps the table
+            // and receipt it was drawn from: its handshake is judged against those, an accepted
+            // frame records exactly the table it shows, and retirement keeps that table's
+            // sources until the borrow ends.
             WorldStreamTransport.CommitReceipt receipt;
             try { receipt=commit.join(); }
             catch(CompletionException failure) {
@@ -799,6 +811,12 @@ final class WorldStreamSourceController {
                 currentReceipt = receipt;
                 skySuppressed=false;
                 committing = List.of();
+                // A queued frame of the old receipt can never be accepted now; free its slot so
+                // the first frame of the new table is polled without waiting for FX to reject it.
+                if (queued != null && queued.frame.content() != receipt) {
+                    drop(queued.frame, "superseded");
+                    queued = null;
+                }
             }
             commit = null;
             pollFrame();
@@ -1371,6 +1389,7 @@ final class WorldStreamSourceController {
             for (var entry : entries.values()) {
                 if (!current.contains(entry)
                         && !presented.contains(entry)
+                        && !borrowedTable.contains(entry)
                         && !committing.contains(entry)
                         && entry != staged) remove.add(entry);
             }

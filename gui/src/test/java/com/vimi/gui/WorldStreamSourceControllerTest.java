@@ -63,7 +63,79 @@ public final class WorldStreamSourceControllerTest {
         budgetRefusedObjectsRetryAfterAReleaseOnly();
         lateObjectFailuresStayIsolatedFromTerrain();
         lateObjectsCompletingAfterRetirementAreIgnored();
+        tilesKeepStreamingWhileAFrameIsBorrowed();
+        aBorrowedFrameKeepsTheSourcesOfTheTableItShows();
         fiveByFiveNeighborhoodHoldsTwentyFiveResidentsWithinTheSourceUnion();
+    }
+
+    /**
+     * #366: a frame the FX side still borrows never holds up streaming. Commits complete and the
+     * next tiles are reserved and committed while it is borrowed; the borrowed frame, drawn from
+     * an older table, is still accepted against that table (its sources were kept), and a later
+     * frame of the newest table brings the view to READY.
+     */
+    private static void tilesKeepStreamingWhileAFrameIsBorrowed() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 4);
+        fixture.residents = 4;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+            int before = fixture.commitLines().size();
+            fixture.camera(2); // a new camera, so the child draws a new frame to borrow
+            var borrowed = fixture.nextFrame();
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 4));
+            // Never present here: the frame stays borrowed throughout.
+            fixture.until(() -> fixture.commitLines().size() >= before + 3);
+            check(fixture.controller.mayPresent(borrowed) && fixture.controller.presented(borrowed),
+                    "The borrowed frame is still accepted against the table it shows, its sources kept");
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 4);
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * #366: a borrowed frame's own table keeps its sources. Tile 2 is committed, a frame showing
+     * it is borrowed, and a further commit replaces tile 2 before that frame is accepted: tile 2
+     * is then in neither the current nor the last accepted table, yet the borrowed frame must
+     * still pass its handshake, so its source may not be retired underneath it.
+     */
+    private static void aBorrowedFrameKeepsTheSourcesOfTheTableItShows() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 4);
+        fixture.residents = 2;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            var t = fixture.tiles;
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(1)));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2);
+            int accepted = fixture.commitLines().size();
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(2)));
+            fixture.until(() -> fixture.commitLines().size() > accepted);
+            fixture.camera(2);
+            var borrowed = fixture.nextFrame(); // drawn from the table {0, 2}
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(3)));
+            fixture.until(() -> fixture.commitLines().size() > accepted + 1);
+            for (int i = 0; i < 20; i++) {
+                fixture.pump(); // let any retirement run while the frame is still borrowed
+                Thread.sleep(2);
+            }
+            check(fixture.controller.mayPresent(borrowed) && fixture.controller.presented(borrowed),
+                    "The borrowed frame's tile 2 source was kept until its handshake");
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2);
+        } finally {
+            fixture.close();
+        }
     }
 
     /** Production bound (#173): 25 residents, and moving on replaces only the leaving tiles. */
