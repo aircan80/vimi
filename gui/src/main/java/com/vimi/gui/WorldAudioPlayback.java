@@ -19,8 +19,10 @@ import javax.sound.sampled.SourceDataLine;
 
 /**
  * Two owned playback channels (music and ambience). Each channel has one worker thread that owns
- * its decoder process and audio line; callers only publish desired state and never wait on audio.
- * Decoded PCM is streamed to the line and never stored.
+ * the current track's decoder process and audio line; callers only publish desired state and never
+ * wait on audio. A replaced track becomes a tail voice on its own thread: it keeps playing until
+ * the next track has audio, then both cross-fade over {@link #FADE_SECONDS}. Decoded PCM is
+ * streamed to the lines and never stored.
  */
 final class WorldAudioPlayback implements AutoCloseable {
     static final double FADE_SECONDS = 1.5;
@@ -31,6 +33,13 @@ final class WorldAudioPlayback implements AutoCloseable {
     static final int BUSY_STATUS_ATTEMPTS = 3;
     /** A new line after a mixed-format switch ramps up this fast, so it starts without a click. */
     static final double SWITCH_RAMP_SECONDS = 0.005;
+    /**
+     * A replaced track keeps playing at full level until the next one has audio, for at most this
+     * long; then it fades out regardless.
+     */
+    static final long HOLD_MAX_MILLIS = 5_000;
+    /** A replaced track that must give up its line for the next one fades out this fast. */
+    static final double YIELD_FADE_SECONDS = 0.05;
     static final String OUTPUT_UNAVAILABLE = "Audio output is unavailable on this machine.",
             OUTPUT_STOPPED = "Audio output stopped accepting audio.";
     @FunctionalInterface
@@ -137,6 +146,9 @@ final class WorldAudioPlayback implements AutoCloseable {
         private Thread worker;
         private Cancellation request;
         private Pcm active;
+        /** Replaced tracks still sounding; {@code held} is the one waiting for the next track. */
+        private final java.util.List<Tail> tails = new java.util.ArrayList<>();
+        private Tail held;
         private volatile double volume = 0.5;
 
         Channel(WorldAreaAudio.Kind kind, IntSupplier output, Lines lines, Decoder decoder,
@@ -195,9 +207,16 @@ final class WorldAudioPlayback implements AutoCloseable {
                 closed = true;
                 changed();
                 if (active != null) active.close();
-                if (worker == null) stopped.complete(null);
+                held = null;
+                for (var tail : tails) tail.stop();
+                settle();
             }
             return stopped.copy();
+        }
+
+        /** Completes the close once the worker and every tail released their line and decoder. */
+        private synchronized void settle() {
+            if (closed && worker == null && tails.isEmpty()) stopped.complete(null);
         }
 
         private synchronized boolean current(long expected) {
@@ -223,6 +242,9 @@ final class WorldAudioPlayback implements AutoCloseable {
                         if (closed) return;
                         if (!enabled || track == null) {
                             worker = null;
+                            // Nothing replaces the held track: it fades out now.
+                            if (held != null) held.release();
+                            held = null;
                             report(false, enabled ? "No recorded " + label() + " here"
                                     : label() + " off");
                             return;
@@ -253,7 +275,7 @@ final class WorldAudioPlayback implements AutoCloseable {
             } finally {
                 synchronized (this) {
                     if (worker == Thread.currentThread()) worker = null;
-                    if (closed && worker == null) stopped.complete(null);
+                    settle();
                 }
             }
         }
@@ -328,13 +350,56 @@ final class WorldAudioPlayback implements AutoCloseable {
         }
 
         /**
-         * Plays one music track, or loops ambience until the desired state changes. Ambience stays
-         * on one line while the formats match; a file with another format drains the old line and
-         * continues on a new one, ramped up from silence in a few milliseconds. Returns a visible problem, or null after a
-         * natural end or a completed fade-out.
+         * Plays one track. The replaced track, if one is held, keeps playing until this one writes
+         * audio and is released then, so the two cross-fade. If this track is itself replaced
+         * before it has audio, the held track is passed on to the next one instead.
          */
         private String play(long expected, WorldAreaAudio.Track playing, Source from,
                 Cancellation token) {
+            Tail previous = takeHeld();
+            try {
+                return playTrack(expected, playing, from, token, previous);
+            } finally {
+                if (previous != null && !previous.released()) passOn(expected, previous);
+            }
+        }
+
+        private synchronized Tail takeHeld() {
+            var tail = held;
+            held = null;
+            return tail;
+        }
+
+        /** A superseded load passes the held track on; any other end releases it to fade out. */
+        private synchronized void passOn(long expected, Tail previous) {
+            if (!closed && enabled && track != null && generation != expected && held == null) {
+                held = previous;
+            } else {
+                previous.release();
+            }
+        }
+
+        /** The replaced track keeps sounding on its own thread; see {@link Tail}. */
+        private synchronized void handOff(Tail tail) {
+            if (closed) {
+                tail.stop();
+            } else {
+                if (held != null) held.release();
+                held = tail;
+            }
+            tails.add(tail);
+            tail.start();
+        }
+
+        /**
+         * Plays one music track, or loops ambience until the desired state changes. Ambience stays
+         * on one line while the formats match; a file with another format drains the old line and
+         * continues on a new one, ramped up from silence in a few milliseconds. When the desired
+         * state changes, the playing track is handed off as a tail instead of fading out here.
+         * Returns a visible problem, or null after a natural end or a hand-off.
+         */
+        private String playTrack(long expected, WorldAreaAudio.Track playing, Source from,
+                Cancellation token, Tail previous) {
             // The device's channels are known before any file read or decoder start.
             int device = outputChannels();
             if (device == 0) return current(expected) ? OUTPUT_UNAVAILABLE : null;
@@ -347,6 +412,11 @@ final class WorldAudioPlayback implements AutoCloseable {
             Output out = null;
             try {
                 out = Output.open(lines, pcm, device);
+                if (out == null && previous != null) {
+                    // A device that cannot play two lines at once: the old track yields its line.
+                    previous.yieldLine();
+                    out = Output.open(lines, pcm, device);
+                }
                 if (out == null) return current(expected) ? OUTPUT_UNAVAILABLE : null;
                 reportPlaying(playing, fileId);
                 double gain = 0;
@@ -355,7 +425,6 @@ final class WorldAudioPlayback implements AutoCloseable {
                 double kit = Math.sqrt(playing.volume(fileId));
                 // True while a switched line ramps up from silence at the quick step.
                 boolean ramping = false;
-                boolean fadingOut = false;
                 // Ambience loops replay a bounded in-memory copy on the same line, without a gap.
                 var loop = kind == WorldAreaAudio.Kind.AMBIENCE && ids.size() == 1
                         ? new java.io.ByteArrayOutputStream() : null;
@@ -363,22 +432,32 @@ final class WorldAudioPlayback implements AutoCloseable {
                 long frames = 0;
                 while (true) {
                     if (closedNow()) return null;
-                    boolean live = current(expected);
-                    if (!live && gain <= 0) return null;
+                    if (!current(expected)) {
+                        // Replaced, muted or gone: the track keeps sounding as a tail, which the
+                        // next track releases once it has audio (or the run loop, if none comes).
+                        if (gain > 0) {
+                            handOff(new Tail(pcm, out, gain, kit, cached, loop));
+                            pcm = null;
+                            out = null;
+                        }
+                        return null;
+                    }
                     byte[] block = out.block;
                     int count;
                     try {
                         count = pcm.read(block, 0, block.length, this::closedNow);
                     } catch (IOException failure) {
-                        return live ? "Recorded " + label() + " stream failed: "
+                        return current(expected) ? "Recorded " + label() + " stream failed: "
                                 + detail(failure, "decoder output was lost") : null;
                     } catch (java.util.concurrent.CancellationException canceled) {
                         return null;
                     } catch (RuntimeException failed) {
                         // Not a natural end: retrying would re-decode the same file in a loop.
-                        return live ? "Recorded " + label() + " stream failed." : null;
+                        return current(expected) ? "Recorded " + label() + " stream failed."
+                                : null;
                     }
                     if (count < 0) {
+                        boolean live = current(expected);
                         if (frames == 0) {
                             return live ? "Recorded " + label() + " file #" + fileId
                                     + " decoded no audio." : null;
@@ -434,8 +513,7 @@ final class WorldAudioPlayback implements AutoCloseable {
                         if (loop.size() <= MAX_LOOP_BYTES - count) loop.write(block, 0, count);
                         else loop = null;
                     }
-                    fadingOut |= !live;
-                    double target = fadingOut ? 0 : volume * kit;
+                    double target = volume * kit;
                     int bytes = out.downmix ? AudioOutput.downmix(block, count) : count;
                     gain = apply(block, bytes, out.channels, gain, target,
                             ramping ? out.quickStep : out.step);
@@ -451,13 +529,129 @@ final class WorldAudioPlayback implements AutoCloseable {
                         if (written <= 0) return current(expected) ? OUTPUT_STOPPED : null;
                         offset += written;
                     }
+                    // This track has audio: the replaced one starts its fade-out now.
+                    if (previous != null) previous.release();
                 }
             } finally {
-                pcm.close();
+                if (pcm != null) pcm.close();
                 synchronized (this) {
                     active = null;
                 }
                 if (out != null) out.close();
+            }
+        }
+
+        /**
+         * A replaced track still sounding on its own line and thread. It plays at full level while
+         * held, for at most {@link #HOLD_MAX_MILLIS}, then fades out over {@link #FADE_SECONDS}
+         * and closes its decoder and line. A single-file ambience keeps looping while it fades.
+         */
+        private final class Tail {
+            private final Pcm pcm;
+            private final Output out;
+            private final double kit;
+            private final long holdUntil = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(HOLD_MAX_MILLIS);
+            private final Thread thread;
+            private double gain;
+            private byte[] cached;
+            private java.io.ByteArrayOutputStream loop;
+            private volatile boolean released, stopped, yielding;
+
+            Tail(Pcm pcm, Output out, double gain, double kit, byte[] cached,
+                    java.io.ByteArrayOutputStream loop) {
+                this.pcm = pcm;
+                this.out = out;
+                this.gain = gain;
+                this.kit = kit;
+                this.cached = cached;
+                this.loop = loop;
+                thread = Thread.ofPlatform().daemon().name("world-audio-" + label() + "-tail")
+                        .unstarted(this::run);
+            }
+
+            void start() {
+                thread.start();
+            }
+
+            /** Starts the fade-out; idempotent. */
+            void release() {
+                released = true;
+            }
+
+            boolean released() {
+                return released;
+            }
+
+            /** Closes at once, from any thread. */
+            void stop() {
+                stopped = true;
+                pcm.close();
+            }
+
+            /** Fades out within {@link #YIELD_FADE_SECONDS} and waits for the line to close. */
+            void yieldLine() {
+                yielding = true;
+                released = true;
+                try {
+                    thread.join(2_000);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
+            private void run() {
+                Pcm reading = pcm;
+                double quick = 1 / (YIELD_FADE_SECONDS * pcm.sampleRate());
+                try {
+                    while (!stopped) {
+                        boolean hold = !released && System.nanoTime() < holdUntil;
+                        double target = hold ? volume * kit : 0;
+                        if (!hold && gain <= 0) return;
+                        byte[] block = out.block;
+                        int count;
+                        try {
+                            count = reading.read(block, 0, block.length, () -> stopped);
+                        } catch (IOException | RuntimeException ended) {
+                            return;
+                        }
+                        if (count < 0) {
+                            if (cached == null && loop != null && loop.size() > 0) {
+                                cached = loop.toByteArray();
+                            }
+                            loop = null;
+                            // A file of a multi-file kit ends the tail with it.
+                            if (cached == null) return;
+                            reading = new MemoryPcm(pcm.sampleRate(), pcm.channels(), cached);
+                            continue;
+                        }
+                        if (loop != null) {
+                            if (loop.size() <= MAX_LOOP_BYTES - count) loop.write(block, 0, count);
+                            else loop = null;
+                        }
+                        int bytes = out.downmix ? AudioOutput.downmix(block, count) : count;
+                        gain = apply(block, bytes, out.channels, gain, target,
+                                yielding ? quick : out.step);
+                        for (int offset = 0; offset < bytes; ) {
+                            int written;
+                            try {
+                                written = out.line.write(block, offset, bytes - offset);
+                            } catch (RuntimeException removed) {
+                                written = 0;
+                            }
+                            if (written <= 0) return;
+                            offset += written;
+                        }
+                    }
+                } finally {
+                    pcm.close();
+                    out.close();
+                    synchronized (Channel.this) {
+                        tails.remove(this);
+                        if (held == this) held = null;
+                        settle();
+                    }
+                }
             }
         }
 
