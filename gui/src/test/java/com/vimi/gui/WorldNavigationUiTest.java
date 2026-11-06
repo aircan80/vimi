@@ -696,9 +696,9 @@ public final class WorldNavigationUiTest {
             // Twice, so the map panel and the hidden state end where they started.
             require(view.command(action) && view.command(action),"WorldView.command routes "+action);
         }
-        // MAP_PANEL, HIDE_HUD, DEV_OVERLAY, INSPECT_PIN and SCREENSHOT (no data folder here, so it
-        // only toasts).
-        require(commands==5,"The command actions are walked: "+commands);
+        // MAP_PANEL, HIDE_HUD, DEV_OVERLAY, INSPECT_PIN, SCREENSHOT (no data folder here, so it
+        // only toasts), and the step 7 keys: SPAWNS, TRACKING, MINIMAP, DAY_NIGHT and five speeds.
+        require(commands==14,"The command actions are walked: "+commands);
         view.inspectCard().close();
         view.devOverlay().show(null);
     }

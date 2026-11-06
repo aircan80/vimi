@@ -57,7 +57,7 @@ final class WorldInspection {
             var link = clicked.entrance();
             var at = link.entrance();
             var lines = new ArrayList<String>();
-            lines.add("Map #" + link.mapId());
+            lines.add("leads to map #" + link.mapId());
             if (at != null) lines.add(WorldPick.tile(at.x(), at.y())
                     + String.format(Locale.ROOT, " · x %.0f · y %.0f", at.x(), at.y()));
             return new Content(Kind.ENTRANCE, link.name(),

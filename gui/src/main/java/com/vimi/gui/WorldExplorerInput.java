@@ -222,6 +222,21 @@ final class WorldExplorerInput {
         pendingX = pendingY = 0;
     }
 
+    /**
+     * Drops held movement and look input but keeps keys bound to commands held, so the
+     * auto-repeat of a command key that opened something (L, the tracking popup) is still a
+     * repeat and does not fire the command again.
+     */
+    void clearMotion() {
+        keys.removeIf(code -> {
+            var action = controls.keys().get(code);
+            return action == null || !action.command;
+        });
+        motion.reset();
+        lookReleased();
+        pendingX = pendingY = 0;
+    }
+
     /** Forgets the previous pulse time so the next pulse integrates zero seconds. */
     void idle() {
         lastTick = 0;
