@@ -83,18 +83,26 @@ final class WorldStreamTileWaterTest {
             assertEquals(16384, source.waterTriangles);
             assertEquals(WorldStreamPackedTile.MAX_GEOMETRY_BYTES, source.geometry.capacity());
             assertEquals(
-                    BgfxWorldStreamRenderer.MAX_TRIANGLES * BgfxWorldStreamRenderer.INSTANCE_BYTES,
+                    BgfxWorldStreamRenderer.MAX_VERTICES * WorldStreamPackedTile.VERTEX_BYTES
+                            + BgfxWorldStreamRenderer.MAX_INDICES * 2,
                     source.geometry.capacity());
-            var first = source.geometry.asFloatBuffer().slice(65536 * 12, 12);
-            // NW, SW, NE corners with diagnostic teal carried as the three corner w channels.
-            assertEquals(-10f, first.get(0));
-            assertEquals(-10f, first.get(1));
-            assertEquals(12.5f, first.get(2));
-            assertEquals(WorldStreamPackedTile.WATER_R, first.get(3));
-            assertEquals(-14f, first.get(4));
-            assertEquals(WorldStreamPackedTile.WATER_G, first.get(7));
-            assertEquals(-14f, first.get(9));
-            assertEquals(WorldStreamPackedTile.WATER_B, first.get(11));
+            assertEquals(37120, source.terrainVertices);
+            assertEquals(WorldStreamTileFile.MAX_WATER_CELLS * 4, source.waterVertices);
+            assertEquals(16384 * 3, source.waterIndices);
+            var data = source.geometry.duplicate().order(java.nio.ByteOrder.nativeOrder());
+            // The first water vertex follows the terrain's, in diagnostic teal.
+            int at = 37120 * WorldStreamPackedTile.VERTEX_BYTES;
+            assertEquals(-10f, data.getFloat(at));
+            assertEquals(-10f, data.getFloat(at + 4));
+            assertEquals(12.5f, data.getFloat(at + 8));
+            assertEquals((int) WorldStreamPackedTile.WATER_R, data.get(at + 12) & 255);
+            assertEquals((int) WorldStreamPackedTile.WATER_G, data.get(at + 13) & 255);
+            assertEquals((int) WorldStreamPackedTile.WATER_B, data.get(at + 14) & 255);
+            // Water indices follow the terrain's, relative to the first water vertex.
+            int indices = source.indexOffset() + 196608 * 2;
+            var mesh = source.geometry.duplicate().order(java.nio.ByteOrder.nativeOrder());
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    (mesh.getShort(indices) & 0xffff) < source.waterVertices);
         }
     }
 

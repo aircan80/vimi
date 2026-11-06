@@ -22,7 +22,7 @@ final class WorldStreamObjectsCullProof {
     private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(321, -654);
     private static final int WIDTH = 800, HEIGHT = 500;
     private static long camera, sequence;
-    private static int farFogPixel;
+    private static int farFogPixel, waterBlendPixel;
 
     private WorldStreamObjectsCullProof() {}
 
@@ -106,8 +106,21 @@ final class WorldStreamObjectsCullProof {
                     culled.cameraUniforms() == 5 && all.cameraUniforms() == 5,
                     "Camera uniforms per frame " + culled + " " + all);
             require(
-                    drawsAll - drawsCulled == all.objectSubmits() - culled.objectSubmits(),
+                    drawsAll - drawsCulled
+                            == all.objectSubmits()
+                                    + all.terrainSubmits()
+                                    - culled.objectSubmits()
+                                    - culled.terrainSubmits(),
                     "bgfx draw counts " + drawsCulled + " " + drawsAll);
+            // Terrain chunks (issue #373): the tile's 256 chunk runs, most of them behind the
+            // camera; unculled, they draw as one index range.
+            require(
+                    culled.chunks() == 256
+                            && culled.chunksCulled() > 128
+                            && culled.terrainSubmits() >= 1
+                            && all.chunksCulled() == 0
+                            && all.terrainSubmits() == 1,
+                    "Terrain chunk counts " + culled + " " + all);
             var a = culledFrame.pixels;
             var b = allFrame.pixels;
             int differing = 0;
@@ -186,6 +199,14 @@ final class WorldStreamObjectsCullProof {
                             + all.objectSubmits()
                             + " cameraUniforms="
                             + all.cameraUniforms()
+                            + " terrainChunks="
+                            + culled.chunks()
+                            + " chunksCulled="
+                            + culled.chunksCulled()
+                            + " terrainSubmits="
+                            + culled.terrainSubmits()
+                            + "/"
+                            + all.terrainSubmits()
                             + " bgfxDraws="
                             + drawsCulled
                             + "/"
@@ -197,7 +218,9 @@ final class WorldStreamObjectsCullProof {
                 "WORLD_OBJECT_COVERAGE_PASS partialEdgePixels="
                         + partial
                         + " fogAt2190="
-                        + Integer.toHexString(farFogPixel));
+                        + Integer.toHexString(farFogPixel)
+                        + " water="
+                        + Integer.toHexString(waterBlendPixel));
         return result;
     }
 
@@ -286,7 +309,10 @@ final class WorldStreamObjectsCullProof {
                                                     7,
                                                     19,
                                                     120,
-                                                    true))
+                                                    true,
+                                                    // 16 water cells 14..18 yd ahead, to
+                                                    // the right of the quads, under the eye.
+                                                    WorldStreamTileWaterTest.water(16, 8)))
                             .get(20, TimeUnit.SECONDS);
             var quad = coverageQuad();
             objects =
@@ -390,6 +416,29 @@ final class WorldStreamObjectsCullProof {
                             + " t="
                             + t);
             farFogPixel = far;
+            // Static water (issue #373: its own vertex and index range of the tile mesh) blends
+            // diagnostic teal (20, 115, 148) at 0.4 over what is behind it: at the point 16 yd
+            // ahead, 10 yd right and 7.5 yd below the eye the ray leaves the tile past its
+            // edge, so that is the sky below the horizon, the fog colour.
+            int wx = (int) (WIDTH / 2.0 + focal * 10 / 16);
+            int wy = (int) (HEIGHT / 2.0 + focal * 7.5 / 16);
+            int waterPixel = pixels.get(wy * WIDTH + wx);
+            float[] behind =
+                    WorldFog.STREAM.skyPixel(COVERAGE_VIEW.pitch(), focal, WIDTH, HEIGHT, wx, wy);
+            float[] teal = {20, 115, 148};
+            int[] blend = new int[3];
+            for (int c = 0; c < 3; c++) {
+                blend[c] = (int) Math.round(0.4 * teal[c] + 0.6 * Math.floor(behind[c]));
+            }
+            int[] waterRgb = rgb(waterPixel, blend[0]);
+            boolean water = true;
+            for (int c = 0; c < 3; c++) {
+                water &= Math.abs(waterRgb[c] - blend[c]) <= 3;
+            }
+            require(
+                    water,
+                    "Water blend at " + wx + "," + wy + ": " + Integer.toHexString(waterPixel));
+            waterBlendPixel = waterPixel;
             return partial;
         }
     }

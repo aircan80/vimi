@@ -53,12 +53,14 @@ public final class WorldStreamNativeProof {
     private static int framesDuringUploads;
 
     /**
-     * Packed input of one fixture tile: 65536 terrain triangles without water plus the atlas mip
-     * chain (4,543,828 bytes). The worst case with water is
+     * Packed input of one fixture tile: its indexed mesh (37120 vertices, 196608 u16 indices)
+     * without water plus the atlas mip chain (2,385,236 bytes). The worst case with water is
      * WorldStreamPackedTile.MAX_PAYLOAD_BYTES.
      */
     static final long TERRAIN_FIXTURE_BYTES =
-            65536L * WorldStreamPackedTile.INSTANCE_BYTES + WorldStreamAtlasMips.CHAIN_BYTES;
+            37120L * WorldStreamPackedTile.VERTEX_BYTES
+                    + 196608L * 2
+                    + WorldStreamAtlasMips.CHAIN_BYTES;
 
     private WorldStreamNativeProof() {}
 
@@ -115,6 +117,21 @@ public final class WorldStreamNativeProof {
             int red,
             boolean textured)
             throws Exception {
+        return prepare(nonce, directory, tx, lease, x, y, red, textured, null);
+    }
+
+    /** As above, with optional static water appended to the tile file. */
+    static WorldStreamPackedTile prepare(
+            WorldStreamState.Nonce nonce,
+            Path directory,
+            long tx,
+            WorldStreamState.Lease lease,
+            int x,
+            int y,
+            int red,
+            boolean textured,
+            WorldStreamTileFile.Water water)
+            throws Exception {
         require(
                 !Thread.currentThread().getName().equals("main"),
                 "Packing must be off native owner");
@@ -169,6 +186,15 @@ public final class WorldStreamNativeProof {
             atlas = atlas.asReadOnlyBuffer();
         }
         var receipt = WorldStreamTileFile.write(directory, header, tile, atlas, () -> false);
+        if (water != null) {
+            receipt =
+                    WorldStreamTileFile.appendWater(
+                            directory.resolve("tile-" + tx + ".wst"),
+                            receipt,
+                            header,
+                            water,
+                            () -> false);
+        }
         var input =
                 WorldStreamTileFile.read(
                         directory.resolve("tile-" + tx + ".wst"), receipt, () -> false);
@@ -393,6 +419,9 @@ public final class WorldStreamNativeProof {
                 owner.commit(2, 3, List.of(reusedLease));
                 color(accepted(owner, reader, 3), 60);
                 long content = 3, tx = 3;
+                // The ten slot meshes share bgfx's pooled backing buffers (issue #373); whatever
+                // their number, it never changes while tiles are replaced.
+                int backing = owner.stats().backingBuffers();
                 int incoming = 1;
                 for (int cycle = 0; cycle < 104; cycle++) {
                     var lease = new WorldStreamState.Lease(incoming, cycle + 2, cycle + 2);
@@ -415,7 +444,8 @@ public final class WorldStreamNativeProof {
                     var stats = owner.stats();
                     require(
                             stats.dynamicBuffers() == 10
-                                    && stats.backingBuffers() == stats.contextBuffers() + 11,
+                                    && stats.backingBuffers() == backing
+                                    && backing > stats.contextBuffers(),
                             "Fixed native buffer counts " + stats);
                     require(
                             stats.textures() == stats.contextTextures() + 15,
