@@ -126,6 +126,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final javafx.scene.control.Slider lookSensitivity = new javafx.scene.control.Slider(
             WorldControls.MIN_SENSITIVITY, WorldControls.MAX_SENSITIVITY, WorldControls.DEFAULT_SENSITIVITY);
     private final CheckBox invertLook = new CheckBox("Invert mouse Y");
+    private final javafx.scene.control.ChoiceBox<WorldControls.Speed> flightSpeed =
+            new javafx.scene.control.ChoiceBox<>(javafx.collections.FXCollections.observableArrayList(
+                    WorldControls.Speed.values()));
+    private final Button keyBindings = new Button("Keys…");
     // Session-only unless the application view installs the user's preferences.
     private WorldControls.Store controlsStore = WorldControls.memory();
     private final Label motionStatus = new Label("Free flight · no collision");
@@ -145,6 +149,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         @Override public void loadNext() { WorldView.this.loadNext(); }
         @Override public void cursorHidden(boolean hidden) {
             viewport.setCursor(hidden ? javafx.scene.Cursor.NONE : null);
+        }
+        @Override public void controlsChanged(WorldControls controls) {
+            showControls(controls);
+            controlsStore.save(controls.encode());
         }
     });
     private final WorldTravelPanel travel = new WorldTravelPanel(this::goToBookmark, this::goToCoordinates);
@@ -526,11 +534,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
         input.controls(controls);
         lookSensitivity.setValue(controls.sensitivity());
         invertLook.setSelected(controls.invertY());
+        flightSpeed.setValue(controls.speed());
     }
 
     private void controlsChanged() {
+        var speed = flightSpeed.getValue();
         var next = input.controls().withSensitivity(lookSensitivity.getValue())
-                .withInvertY(invertLook.isSelected());
+                .withInvertY(invertLook.isSelected())
+                .withSpeed(speed == null ? input.controls().speed() : speed);
         if (next.equals(input.controls())) return;
         input.controls(next);
         controlsStore.save(next.encode());
@@ -641,6 +652,28 @@ final class WorldView extends BorderPane implements AutoCloseable {
         invertLook.setId("world-invert-look");
         invertLook.setFocusTraversable(false);
         invertLook.setOnAction(e -> controlsChanged());
+        flightSpeed.setId("world-flight-speed");
+        flightSpeed.setFocusTraversable(false);
+        flightSpeed.setAccessibleText("Flight speed preset");
+        flightSpeed.setValue(WorldControls.DEFAULTS.speed());
+        flightSpeed.setOnAction(e -> {
+            controlsChanged();
+            if (explorer) viewport.requestFocus();
+        });
+        keyBindings.setId("world-key-bindings-open");
+        keyBindings.setFocusTraversable(false);
+        keyBindings.setOnAction(e -> {
+            clearKeys();
+            new WorldKeyBindings(input.controls())
+                    .edit(getScene() == null ? null : getScene().getWindow())
+                    .ifPresent(edited -> {
+                        if (!edited.equals(input.controls())) {
+                            showControls(edited);
+                            controlsStore.save(edited.encode());
+                        }
+                    });
+            if (explorer) viewport.requestFocus();
+        });
         motionStatus.setId("world-motion-status");
         saveBookmark.setId("world-save-bookmark");
         saveBookmark.setFocusTraversable(false);
@@ -1764,9 +1797,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 new Label(
                                         "WASD move · Space/E up · Q/X down · hold the right mouse button or"
                                                 + " arrows to look · Shift faster · wheel zooms · Shift+wheel"
-                                                + " changes speed · F walks · click inspects")),
+                                                + " changes speed · F walks · click inspects · Keys… rebinds")),
                         new HBox(10, walkMode, smoothMotion, motionStatus, saveBookmark),
-                        new HBox(8, new Label("Look sensitivity"), lookSensitivity, invertLook),
+                        new HBox(8, new Label("Speed"), flightSpeed, new Label("Look sensitivity"),
+                                lookSensitivity, invertLook, keyBindings),
                         currentArea,
                         inspection,
                         audio.node(),

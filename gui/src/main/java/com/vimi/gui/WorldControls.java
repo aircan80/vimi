@@ -1,20 +1,136 @@
 package com.vimi.gui;
 
+import java.util.Collections;
+import java.util.EnumMap;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.prefs.Preferences;
+import java.util.stream.Collectors;
+import javafx.scene.input.KeyCode;
 
 /**
- * World explorer control preferences: mouse-look sensitivity and invert-Y. They belong to the
- * user, not to a library, so they persist in the per-user {@link Preferences} tree as one
- * versioned text value. Decoding is lenient: an unknown key is ignored, and a missing or malformed
- * value falls back to its default, so a damaged entry never blocks the explorer.
+ * World explorer control preferences: mouse-look sensitivity and invert-Y, the flight speed
+ * preset, and the key bindings. They belong to the user, not to a library, so they persist in the
+ * per-user {@link Preferences} tree as one versioned text value. Decoding is lenient: an unknown
+ * key, action or key code is ignored, and a missing or malformed value falls back to its default,
+ * so a damaged entry never blocks the explorer.
+ *
+ * <p>Bindings map physical {@link KeyCode}s to actions. JavaFX reports letter keys by the
+ * character they produce in the active layout, so W/A/S/D sit elsewhere on AZERTY; the layout
+ * presets and per-action rebinding cover that.
  */
-record WorldControls(double sensitivity, boolean invertY) {
+record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCode, Action> keys) {
     /** Radians of look per pixel of mouse movement. */
     static final double MIN_SENSITIVITY = .001, MAX_SENSITIVITY = .02, DEFAULT_SENSITIVITY = .006;
 
-    static final WorldControls DEFAULTS = new WorldControls(DEFAULT_SENSITIVITY, false);
+    /** Explorer actions a key can drive. */
+    enum Action {
+        FORWARD("Forward"),
+        BACK("Back"),
+        LEFT("Strafe left"),
+        RIGHT("Strafe right"),
+        UP("Up"),
+        DOWN("Down"),
+        TURN_LEFT("Turn left"),
+        TURN_RIGHT("Turn right"),
+        LOOK_UP("Look up"),
+        LOOK_DOWN("Look down"),
+        SPRINT("Faster (hold)"),
+        WALK("Walk on terrain (toggle)");
+
+        final String label;
+
+        Action(String label) {
+            this.label = label;
+        }
+    }
+
+    /** Flight speed presets in yards per second; walking on terrain keeps its own speed. */
+    enum Speed {
+        WALK("Walk", 7),
+        MOUNT("Mount", 14),
+        FLY("Fly", 20),
+        FAST("Fast", 60),
+        TURBO("Turbo", 200);
+
+        final String label;
+        final double yardsPerSecond;
+
+        Speed(String label, double yardsPerSecond) {
+            this.label = label;
+            this.yardsPerSecond = yardsPerSecond;
+        }
+
+        /** The next preset in {@code direction} (+1 faster, -1 slower), stopping at the ends. */
+        Speed step(int direction) {
+            var all = values();
+            return all[Math.clamp(ordinal() + Integer.signum(direction), 0, all.length - 1)];
+        }
+
+        @Override
+        public String toString() {
+            return label + String.format(Locale.ROOT, " · %.0f yd/s", yardsPerSecond);
+        }
+    }
+
+    /** Key layout presets; QWERTZ keeps the QWERTY positions for every bound key. */
+    enum Layout {
+        QWERTY("QWERTY / QWERTZ"),
+        AZERTY("AZERTY");
+
+        final String label;
+
+        Layout(String label) {
+            this.label = label;
+        }
+
+        Map<KeyCode, Action> keys() {
+            var keys = new LinkedHashMap<KeyCode, Action>();
+            if (this == AZERTY) {
+                keys.put(KeyCode.Z, Action.FORWARD);
+                keys.put(KeyCode.S, Action.BACK);
+                keys.put(KeyCode.Q, Action.LEFT);
+                keys.put(KeyCode.D, Action.RIGHT);
+                keys.put(KeyCode.E, Action.UP);
+                keys.put(KeyCode.SPACE, Action.UP);
+                keys.put(KeyCode.A, Action.DOWN);
+                keys.put(KeyCode.X, Action.DOWN);
+            } else {
+                keys.put(KeyCode.W, Action.FORWARD);
+                keys.put(KeyCode.S, Action.BACK);
+                keys.put(KeyCode.A, Action.LEFT);
+                keys.put(KeyCode.D, Action.RIGHT);
+                keys.put(KeyCode.E, Action.UP);
+                keys.put(KeyCode.SPACE, Action.UP);
+                keys.put(KeyCode.Q, Action.DOWN);
+                keys.put(KeyCode.X, Action.DOWN);
+            }
+            keys.put(KeyCode.LEFT, Action.TURN_LEFT);
+            keys.put(KeyCode.RIGHT, Action.TURN_RIGHT);
+            keys.put(KeyCode.UP, Action.LOOK_UP);
+            keys.put(KeyCode.DOWN, Action.LOOK_DOWN);
+            keys.put(KeyCode.SHIFT, Action.SPRINT);
+            keys.put(KeyCode.F, Action.WALK);
+            return keys;
+        }
+    }
+
+    /**
+     * Keys that never bind: Escape cancels a rebind, F11 and Alt(+Enter) are fullscreen, and the
+     * system keys belong to the desktop. Shift and Control can bind.
+     */
+    static boolean bindable(KeyCode code) {
+        return code != null
+                && switch (code) {
+                    case UNDEFINED, ESCAPE, F11, ALT, ALT_GRAPH, META, WINDOWS, COMMAND -> false;
+                    default -> true;
+                };
+    }
+
+    static final WorldControls DEFAULTS =
+            new WorldControls(DEFAULT_SENSITIVITY, false, Speed.FLY, Layout.QWERTY.keys());
 
     private static final String VERSION = "v1";
 
@@ -23,19 +139,67 @@ record WorldControls(double sensitivity, boolean invertY) {
                 Double.isFinite(sensitivity)
                         ? Math.clamp(sensitivity, MIN_SENSITIVITY, MAX_SENSITIVITY)
                         : DEFAULT_SENSITIVITY;
+        speed = speed == null ? Speed.FLY : speed;
+        var copy = new LinkedHashMap<KeyCode, Action>();
+        Objects.requireNonNull(keys)
+                .forEach(
+                        (code, action) -> {
+                            if (bindable(code) && action != null) copy.put(code, action);
+                        });
+        keys = Collections.unmodifiableMap(copy);
     }
 
     WorldControls withSensitivity(double next) {
-        return new WorldControls(next, invertY);
+        return new WorldControls(next, invertY, speed, keys);
     }
 
     WorldControls withInvertY(boolean next) {
-        return new WorldControls(sensitivity, next);
+        return new WorldControls(sensitivity, next, speed, keys);
+    }
+
+    WorldControls withSpeed(Speed next) {
+        return new WorldControls(sensitivity, invertY, next, keys);
+    }
+
+    WorldControls withKeys(Map<KeyCode, Action> next) {
+        return new WorldControls(sensitivity, invertY, speed, next);
+    }
+
+    /** Adds {@code code} to {@code action}, taking it from whatever it drove before. */
+    WorldControls bind(KeyCode code, Action action) {
+        if (!bindable(code)) return this;
+        var next = new LinkedHashMap<>(keys);
+        next.remove(code);
+        next.put(code, Objects.requireNonNull(action));
+        return withKeys(next);
+    }
+
+    /** Removes every key bound to {@code action}. */
+    WorldControls unbind(Action action) {
+        var next = new LinkedHashMap<>(keys);
+        next.values().removeIf(action::equals);
+        return withKeys(next);
+    }
+
+    /** Keys per action, in binding order, for display. */
+    Map<Action, java.util.List<KeyCode>> byAction() {
+        var result = new EnumMap<Action, java.util.List<KeyCode>>(Action.class);
+        for (var action : Action.values()) result.put(action, new java.util.ArrayList<>());
+        keys.forEach((code, action) -> result.get(action).add(code));
+        return result;
     }
 
     String encode() {
         return String.format(
-                Locale.ROOT, "%s;sensitivity=%s;invertY=%b", VERSION, sensitivity, invertY);
+                Locale.ROOT,
+                "%s;sensitivity=%s;invertY=%b;speed=%s;keys=%s",
+                VERSION,
+                sensitivity,
+                invertY,
+                speed.name(),
+                keys.entrySet().stream()
+                        .map(e -> e.getKey().name() + ":" + e.getValue().name())
+                        .collect(Collectors.joining(",")));
     }
 
     /** Lenient decode: anything unreadable keeps its default. Null or another version: defaults. */
@@ -45,6 +209,8 @@ record WorldControls(double sensitivity, boolean invertY) {
         if (parts.length == 0 || !parts[0].equals(VERSION)) return DEFAULTS;
         double sensitivity = DEFAULT_SENSITIVITY;
         boolean invertY = false;
+        Speed speed = Speed.FLY;
+        Map<KeyCode, Action> keys = DEFAULTS.keys;
         for (int i = 1; i < parts.length; i++) {
             int at = parts[i].indexOf('=');
             if (at < 0) continue;
@@ -58,10 +224,32 @@ record WorldControls(double sensitivity, boolean invertY) {
                     }
                 }
                 case "invertY" -> invertY = value.equals("true");
+                case "speed" -> speed = named(Speed.class, value, Speed.FLY);
+                case "keys" -> keys = keys(value);
                 default -> {}
             }
         }
-        return new WorldControls(sensitivity, invertY);
+        return new WorldControls(sensitivity, invertY, speed, keys);
+    }
+
+    private static Map<KeyCode, Action> keys(String value) {
+        var keys = new LinkedHashMap<KeyCode, Action>();
+        for (var entry : value.split(",", -1)) {
+            int at = entry.indexOf(':');
+            if (at < 0) continue;
+            var code = named(KeyCode.class, entry.substring(0, at), null);
+            var action = named(Action.class, entry.substring(at + 1), null);
+            if (code != null && action != null) keys.put(code, action);
+        }
+        return keys;
+    }
+
+    private static <E extends Enum<E>> E named(Class<E> type, String name, E fallback) {
+        try {
+            return Enum.valueOf(type, name);
+        } catch (IllegalArgumentException unknown) {
+            return fallback;
+        }
     }
 
     /** Where the encoded value lives. Failures are swallowed: controls are a convenience. */

@@ -35,6 +35,8 @@ import javafx.util.Duration;
 public final class WorldNavigationUiTest {
     private static final int X = 7, Y = 19;
     private static final double SIZE = WorldFormats.TILE_SIZE;
+    // Default flight preset over one 0.1 s timer step.
+    private static final double STEP = WorldControls.Speed.FLY.yardsPerSecond * .1;
     private static final int[][] MOVES = {
         {1,0}, {0,0}, {-1,0}, {0,0}, {0,1}, {0,0}, {0,-1}, {0,0},
         {1,1}, {-1,1}, {-1,-1}, {1,-1}, {0,0}
@@ -230,7 +232,7 @@ public final class WorldNavigationUiTest {
             for(var key:keys) key(viewport,key,true);
             timer.handle(1_000_000_000L);
             timer.handle(1_100_000_000L);
-            double expected=500 + 8 * (((keys.contains(KeyCode.SPACE) || keys.contains(KeyCode.E)) ? 1 : 0) - ((keys.contains(KeyCode.Q) || keys.contains(KeyCode.X)) ? 1 : 0));
+            double expected=500 + STEP * (((keys.contains(KeyCode.SPACE) || keys.contains(KeyCode.E)) ? 1 : 0) - ((keys.contains(KeyCode.Q) || keys.contains(KeyCode.X)) ? 1 : 0));
             double actual=((TerrainRenderer.Camera)get(view,"camera")).z();
             require(Math.abs(actual-expected)<1e-9,"Actual key/timer ascent "+keys+": "+actual+" expected "+expected);
             for(var key:keys) key(viewport,key,false);
@@ -255,9 +257,9 @@ public final class WorldNavigationUiTest {
                 require(code == KeyCode.RIGHT ? east.right()<4 : east.right()>4,
                         "Actual key turns toward the same side in native projection: "+code);
             } else if (code == KeyCode.W) {
-                require(Math.abs(moved.x()-start.x()-8)<1e-9,"W moves north at yaw zero");
+                require(Math.abs(moved.x()-start.x()-STEP)<1e-9,"W moves north at yaw zero");
             } else {
-                double wanted = code == KeyCode.D ? -8 : 8;
+                double wanted = code == KeyCode.D ? -STEP : STEP;
                 require(Math.abs(moved.y()-start.y()-wanted)<1e-9,"Actual strafe key geographic direction: "+code);
             }
         }
@@ -295,6 +297,12 @@ public final class WorldNavigationUiTest {
         scroll(viewport,40,true);
         require(restored.equals(get(view,"camera")),"Shift+wheel does not zoom");
         require(input(view).speed()>originalSpeed,"Shift+wheel adjusts flight speed");
+        @SuppressWarnings("unchecked")
+        var speedChoice=(javafx.scene.control.ChoiceBox<WorldControls.Speed>)view.lookup("#world-flight-speed");
+        require(speedChoice.getValue()==input(view).controls().speed(),"The speed control shows the Shift+wheel preset");
+        speedChoice.setValue(WorldControls.Speed.TURBO);
+        require(input(view).speed()==200,"Choosing a preset sets the flight speed");
+        keyBindingEditor();
         scroll(viewport,Double.NaN,false);
         require(restored.equals(get(view,"camera")),"Nonfinite wheel input is ignored");
         set(view,"camera",new TerrainRenderer.Camera(1_000_000,1_000_000,1_000_000,.7,.8));
@@ -303,7 +311,26 @@ public final class WorldNavigationUiTest {
         require(bounded.x()<=1_000_000&&bounded.y()<=1_000_000&&bounded.z()<=1_000_000,"Wheel remains within camera coordinate bounds");
         walk(view,timer,viewport);
         set(view,"camera",before);
-        input(view).speed(originalSpeed);
+        input(view).controls(WorldControls.DEFAULTS);
+    }
+
+    /** The key editor's capture: a press binds, Escape cancels, reserved keys keep waiting. */
+    private static void keyBindingEditor() {
+        var editor=new WorldKeyBindings(WorldControls.DEFAULTS);
+        editor.capture(WorldControls.Action.FORWARD);
+        var press=new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.I,false,false,false,false);
+        editor.captured(press);
+        require(press.isConsumed(),"A captured key never reaches the dialog buttons");
+        require(editor.controls().keys().get(KeyCode.I)==WorldControls.Action.FORWARD,"Captured key binds");
+        var idle=new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.K,false,false,false,false);
+        editor.captured(idle);
+        require(!idle.isConsumed() && !editor.controls().keys().containsKey(KeyCode.K),"Without a capture keys pass through");
+        editor.capture(WorldControls.Action.BACK);
+        editor.captured(new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.F11,false,false,false,false));
+        require(!editor.controls().keys().containsKey(KeyCode.F11),"Reserved keys never bind");
+        editor.captured(new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.ESCAPE,false,false,false,false));
+        editor.captured(new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.J,false,false,false,false));
+        require(!editor.controls().keys().containsKey(KeyCode.J),"Escape cancels the capture");
     }
 
     /** Walk mode over an authored qualified ADT18 surface and over the unqualified fixture mesh. */

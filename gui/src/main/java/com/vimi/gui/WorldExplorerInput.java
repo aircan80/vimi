@@ -48,6 +48,9 @@ final class WorldExplorerInput {
 
         /** Hides the cursor over the view while mouse look is held; shows it again after. */
         void cursorHidden(boolean hidden);
+
+        /** The input changed its own controls (Shift+wheel speed); show and persist them. */
+        void controlsChanged(WorldControls controls);
     }
 
     /** Moves the system cursor; false when this platform cannot place it (e.g. no robot). */
@@ -59,8 +62,8 @@ final class WorldExplorerInput {
         Pointer NONE = (x, y) -> false;
     }
 
-    /** Default, minimum and maximum flight speed in yards per second. */
-    static final double DEFAULT_SPEED = 80, MIN_SPEED = 10, MAX_SPEED = 800;
+    /** Wheel dolly per notch, as seconds of travel at the current speed. */
+    static final double DOLLY_SECONDS = .25;
 
     static final long FAST_CADENCE_NANOS = 16_000_000,
             SLOW_CADENCE_NANOS = 100_000_000,
@@ -69,7 +72,6 @@ final class WorldExplorerInput {
     private final Host host;
     private final ExplorerMotion motion = new ExplorerMotion();
     private final Set<KeyCode> keys = new HashSet<>();
-    private double speed = DEFAULT_SPEED;
     private long lastTick, lastRender, lastNearby;
     private WorldControls controls = WorldControls.DEFAULTS;
     private Pointer pointer = Pointer.NONE;
@@ -104,27 +106,24 @@ final class WorldExplorerInput {
         pointer = Objects.requireNonNull(next);
     }
 
+    /** Flight speed of the current preset in yards per second. */
     double speed() {
-        return speed;
-    }
-
-    void speed(double next) {
-        speed = next;
+        return controls.speed().yardsPerSecond;
     }
 
     /** Effective speed for the status line: the current mode with the held sprint key. */
     double effectiveSpeed() {
-        return motion.speed(speed, keys.contains(KeyCode.SHIFT));
+        return motion.speed(speed(), held(WorldControls.Action.SPRINT));
     }
 
     boolean keysHeld() {
         return !keys.isEmpty();
     }
 
-    /** F toggles walking once per physical press; key repeat is ignored. */
+    /** The walk toggle fires once per physical press of its key; key repeat is ignored. */
     void keyPressed(KeyCode code) {
-        if (code == KeyCode.F && keys.add(KeyCode.F)) host.toggleWalk();
-        else keys.add(code);
+        boolean fresh = keys.add(code);
+        if (fresh && controls.keys().get(code) == WorldControls.Action.WALK) host.toggleWalk();
     }
 
     void keyReleased(KeyCode code) {
@@ -203,7 +202,11 @@ final class WorldExplorerInput {
     void scroll(double delta, boolean shift) {
         if (!Double.isFinite(delta) || delta == 0) return;
         if (shift) {
-            speed = Math.clamp(speed * (delta > 0 ? 1.2 : .8), MIN_SPEED, MAX_SPEED);
+            var next = controls.speed().step(delta > 0 ? 1 : -1);
+            if (next != controls.speed()) {
+                controls = controls.withSpeed(next);
+                host.controlsChanged(controls);
+            }
             return;
         }
         var camera = host.camera();
@@ -212,7 +215,7 @@ final class WorldExplorerInput {
                 Math.copySign(
                         Math.min(Math.abs(delta) / 40, 3)
                                 * Math.clamp(
-                                        motion.speed(speed, false) * .1,
+                                        motion.speed(speed(), false) * DOLLY_SECONDS,
                                         motion.mode() == ExplorerMotion.Mode.WALK ? .5 : 2,
                                         32),
                         delta);
@@ -229,13 +232,12 @@ final class WorldExplorerInput {
     /** Current key state as motion axes; overlapping keys on one axis never double speed. */
     ExplorerMotion.Input axes() {
         return new ExplorerMotion.Input(
-                pressed(KeyCode.W) - pressed(KeyCode.S),
-                pressed(KeyCode.D) - pressed(KeyCode.A),
-                Math.max(pressed(KeyCode.E), pressed(KeyCode.SPACE))
-                        - Math.max(pressed(KeyCode.Q), pressed(KeyCode.X)),
-                pressed(KeyCode.LEFT) - pressed(KeyCode.RIGHT),
-                pressed(KeyCode.UP) - pressed(KeyCode.DOWN),
-                keys.contains(KeyCode.SHIFT));
+                axis(WorldControls.Action.FORWARD, WorldControls.Action.BACK),
+                axis(WorldControls.Action.RIGHT, WorldControls.Action.LEFT),
+                axis(WorldControls.Action.UP, WorldControls.Action.DOWN),
+                axis(WorldControls.Action.TURN_LEFT, WorldControls.Action.TURN_RIGHT),
+                axis(WorldControls.Action.LOOK_UP, WorldControls.Action.LOOK_DOWN),
+                held(WorldControls.Action.SPRINT));
     }
 
     /**
@@ -268,7 +270,7 @@ final class WorldExplorerInput {
             if (looked) host.requestFrame();
             return;
         }
-        var stepped = motion.step(camera, input, dt, speed, host.ground());
+        var stepped = motion.step(camera, input, dt, speed(), host.ground());
         host.groundStatus(stepped.ground());
         if (!stepped.moved()) {
             if (looked) host.requestFrame();
@@ -293,7 +295,15 @@ final class WorldExplorerInput {
         lastRender = lastNearby = Long.MAX_VALUE;
     }
 
-    private int pressed(KeyCode code) {
-        return keys.contains(code) ? 1 : 0;
+    private boolean held(WorldControls.Action action) {
+        var bindings = controls.keys();
+        for (var code : keys) {
+            if (bindings.get(code) == action) return true;
+        }
+        return false;
+    }
+
+    private int axis(WorldControls.Action positive, WorldControls.Action negative) {
+        return (held(positive) ? 1 : 0) - (held(negative) ? 1 : 0);
     }
 }
