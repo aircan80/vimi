@@ -47,6 +47,33 @@ final class WorldMinimap extends VBox implements AutoCloseable {
     private double[] pointer;
     private long generation;
     private boolean closed;
+    // Tiles around the player's tile, rescanned from the whole map only when that tile, the
+    // origin or the inventory changes; and what the canvas last drew from update().
+    private Neighbourhood neighbourhood;
+    private DrawKey drawn;
+    private long redraws, scans;
+
+    /** The 3x3 tiles around one player tile; a superset of every tile the circle can touch. */
+    private record Neighbourhood(
+            WorldService.Inventory inventory,
+            WorldFormats.Tile origin,
+            double originX,
+            double originY,
+            int tileX,
+            int tileY,
+            List<WorldFormats.Tile> tiles) {}
+
+    /**
+     * What a redraw from {@link #update} would show: the player position to a quarter of a canvas
+     * pixel, the heading to a quarter degree, and the tiles. Equal keys draw the same picture.
+     */
+    record DrawKey(long x, long y, long heading, List<WorldFormats.Tile> tiles) {
+        static DrawKey of(double x, double y, double yaw, List<WorldFormats.Tile> tiles) {
+            double pixels = 4 * 2 * RADIUS / WorldFormats.TILE_SIZE;
+            return new DrawKey(Math.round(x * pixels), Math.round(y * pixels),
+                    Math.round(Math.toDegrees(Math.IEEEremainder(yaw, 2 * Math.PI)) * 4), tiles);
+        }
+    }
 
     private record View(
             BuildWorld source,
@@ -191,13 +218,28 @@ final class WorldMinimap extends VBox implements AutoCloseable {
             hide();
             return;
         }
-        if (view == null || view.source() != source || view.inventory() != inventory) {
+        boolean reset = view == null || view.source() != source || view.inventory() != inventory;
+        if (reset) {
             generation++;
             cancelActive();
             cache.clear();
+            drawn = null;
+        }
+        int tileX = playerTile(origin.x(), originX, x), tileY = playerTile(origin.y(), originY, y);
+        var around = neighbourhood;
+        if (reset || around == null || around.inventory() != inventory || around.origin() != origin
+                || around.originX() != originX || around.originY() != originY
+                || around.tileX() != tileX || around.tileY() != tileY) {
+            var tiles = new ArrayList<WorldFormats.Tile>(9);
+            for (var tile : inventory.world().tiles()) {
+                if (Math.abs(tile.x() - tileX) <= 1 && Math.abs(tile.y() - tileY) <= 1) tiles.add(tile);
+            }
+            scans++;
+            around = neighbourhood = new Neighbourhood(inventory, origin, originX, originY, tileX, tileY,
+                    List.copyOf(tiles));
         }
         var nearby = new ArrayList<WorldFormats.Tile>(9);
-        for (var tile : inventory.world().tiles()) {
+        for (var tile : around.tiles()) {
             double left = screenY(maxY(tile, origin, originY), y);
             double top = screenX(maxX(tile, origin, originX), x);
             double side = 2 * RADIUS;
@@ -222,8 +264,29 @@ final class WorldMinimap extends VBox implements AutoCloseable {
                         List.copyOf(nearby));
         setVisible(true);
         setManaged(true);
-        redraw();
-        startMissing();
+        var key = DrawKey.of(x, y, yaw, view.tiles());
+        if (!key.equals(drawn)) {
+            drawn = key;
+            redraw();
+        }
+        startMissing(false);
+    }
+
+    /**
+     * Index of the tile holding the player along one axis: tile maxima fall by one tile size per
+     * index from the origin tile's maximum.
+     */
+    static int playerTile(int originIndex, double originMax, double position) {
+        return originIndex + (int) Math.floor((originMax - position) / WorldFormats.TILE_SIZE);
+    }
+
+    /** Canvas redraws and whole-map tile scans so far; for tests. */
+    long redraws() {
+        return redraws;
+    }
+
+    long scans() {
+        return scans;
     }
 
     static double maxX(WorldFormats.Tile tile, WorldFormats.Tile origin, double originX) {
@@ -243,6 +306,11 @@ final class WorldMinimap extends VBox implements AutoCloseable {
     }
 
     private void startMissing() {
+        startMissing(true);
+    }
+
+    /** Starts loading missing artwork; with nothing missing, redraws only when asked to. */
+    private void startMissing(boolean redrawWhenComplete) {
         if (closed || active != null || view == null) return;
         var missing = new ArrayList<WorldFormats.Tile>();
         for (var tile : view.tiles()) {
@@ -253,7 +321,7 @@ final class WorldMinimap extends VBox implements AutoCloseable {
             }
         }
         if (missing.isEmpty()) {
-            redraw();
+            if (redrawWhenComplete) redraw();
             return;
         }
         var job = new Job(generation, view, missing);
@@ -324,6 +392,7 @@ final class WorldMinimap extends VBox implements AutoCloseable {
     }
 
     private void redraw() {
+        redraws++;
         var g = canvas.getGraphicsContext2D();
         g.setImageSmoothing(false);
         g.clearRect(0, 0, SIZE, SIZE);
@@ -403,6 +472,8 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         roleTip.hide();
         generation++;
         view = null;
+        neighbourhood = null;
+        drawn = null;
         cache.clear();
         cancelActive();
         activity.setVisible(false);

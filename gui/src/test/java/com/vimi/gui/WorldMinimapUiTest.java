@@ -54,6 +54,7 @@ public final class WorldMinimapUiTest {
             cameraForwardCardinalLandmarks();
             delayedLatestSourceAndHide();
             roleMarkersFollowTheMinimapAndHover();
+            redrawsAndScansFollowTheVisibleView();
             synchronousProviderCancellation();
             fx(
                     () -> {
@@ -62,7 +63,8 @@ public final class WorldMinimapUiTest {
                     });
             System.out.println(
                     "WorldMinimapUiTest PASS: axes, artwork, facing, bounded"
-                            + " latest/source/hide/close/cancel, role markers and hover");
+                            + " latest/source/hide/close/cancel, role markers, hover and"
+                            + " per-view redraw/scan gating");
         } finally {
             Platform.exit();
         }
@@ -363,6 +365,42 @@ public final class WorldMinimapUiTest {
                 javafx.scene.input.MouseEvent.MOUSE_MOVED, scene.getX(), scene.getY(),
                 screen.getX(), screen.getY(), javafx.scene.input.MouseButton.NONE, 0,
                 false, false, false, false, false, false, false, false, false, false, null));
+    }
+
+    /** Camera updates every pulse redraw only when the drawn picture changes. */
+    private static void redrawsAndScansFollowTheVisibleView() throws Exception {
+        var source = new Provider();
+        source.immediate = image(0xff335577, 0xff335577, 0xff335577, 0xff335577);
+        var tiles = new ArrayList<WorldFormats.Tile>();
+        for (int x = 18; x <= 22; x++)
+            for (int y = 28; y <= 32; y++) tiles.add(new WorldFormats.Tile(x, y, 0, 0, 200 + x * 10 + y));
+        var grid = inventory(tiles);
+        // Near the origin tile's maximum corner, so four tiles overlap and small moves keep them.
+        double startX = X - .3 * SIDE, startY = Y - .3 * SIDE;
+        fx(() -> update(source, grid, startX, startY, .3));
+        await(() -> !busy(), "gating artwork");
+        fx(
+                () -> {
+                    long redraws = map.redraws(), scans = map.scans();
+                    // 0.001 yd per update is far below a quarter canvas pixel (~0.78 yd).
+                    for (int i = 1; i <= 200; i++) update(source, grid, startX + i * .001, startY, .3);
+                    require(map.redraws() == redraws, "sub-pixel moves never redraw: " + (map.redraws() - redraws));
+                    require(map.scans() == scans, "moves inside a tile never rescan the map");
+                    update(source, grid, startX + 10, startY, .3);
+                    require(map.redraws() == redraws + 1, "a visible move redraws once: " + (map.redraws() - redraws) + " busy " + busy());
+                    update(source, grid, startX + 10, startY, .3 + Math.toRadians(1));
+                    require(map.redraws() == redraws + 2, "a one degree turn redraws");
+                    update(source, grid, startX + 10, startY, .3 + Math.toRadians(1) + 2 * Math.PI);
+                    require(map.redraws() == redraws + 2, "a full turn is the same heading");
+                    require(map.scans() == scans, "still the same tile");
+                    update(source, grid, startX - SIDE, startY, .3);
+                    require(map.scans() == scans + 1, "entering the next tile rescans once");
+                    require(WorldMinimap.playerTile(ORIGIN.x(), X, startX - SIDE) == ORIGIN.x() + 1
+                            && WorldMinimap.playerTile(ORIGIN.x(), X, X) == ORIGIN.x()
+                            && WorldMinimap.playerTile(ORIGIN.x(), X, X + 1) == ORIGIN.x() - 1,
+                            "player tile index follows the falling tile maxima");
+                });
+        await(() -> !busy(), "next tile artwork");
     }
 
     private static void update(

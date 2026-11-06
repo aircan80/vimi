@@ -116,6 +116,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private TerrainRenderer.Camera resumeCamera;
     private long streamingControl, streamingPolicy = 1;
     private int streamingWidth, streamingHeight;
+    private final WorldResizeDebounce streamingResize = new WorldResizeDebounce();
     private CompletableFuture<Void> streamingRetirement = CompletableFuture.completedFuture(null);
     private final CheckBox gpuEnabled = new CheckBox("GPU terrain");
     // Object texture budget tier (#267); a change re-prepares the streamed tiles' objects.
@@ -911,6 +912,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 else switchStreamingRendering();
                             }
                             if (streaming != null) streaming.pulse();
+                            if (streamingResize.pulse()) requestFrame();
                             pollStall(now);
                         }
                         if (camera == null) return;
@@ -2449,6 +2451,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         streamingControl = 0;
         streamingPolicy = 1;
         streamingWidth = streamingHeight = 0;
+        streamingResize.reset();
         var request = new WorldStreamSourceController.Request(selection, handle, inventory.map(),
                 inventory, origin, areaEntry == null || areaEntry.entryChunk() == null
                         ? null : areaEntry.entryChunk().entryReference(), catalog.areaIndex());
@@ -2565,8 +2568,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         double targetWidth = Math.max(1, viewport.getWidth());
         double targetHeight = Math.max(1, viewport.getHeight());
         double scale = Math.min(1, Math.min(800 / targetWidth, 500 / targetHeight));
-        int width = Math.max(1, (int) (targetWidth * scale));
-        int height = Math.max(1, (int) (targetHeight * scale));
+        // A new size is held for one quiet pulse so a window drag bumps the policy once.
+        streamingResize.offer(Math.max(1, (int) (targetWidth * scale)), Math.max(1, (int) (targetHeight * scale)));
+        int width = streamingResize.width(), height = streamingResize.height();
         if (streamingWidth != 0 && (width != streamingWidth || height != streamingHeight)) streamingPolicy++;
         streamingWidth = width;
         streamingHeight = height;
