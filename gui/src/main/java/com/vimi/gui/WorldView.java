@@ -91,6 +91,17 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final BorderPane content = new BorderPane();
     private final ImageView image = new ImageView();
     private final StackPane viewport = new StackPane(image);
+    // Viewport-only full screen (F11 / Alt+Enter) and the in-window "hide panels" toggle (Alt+Z).
+    private final WorldFullscreen fullscreen = new WorldFullscreen(viewport, node -> {
+        if (this.explorer) content.setCenter(node);
+    });
+    private final Button fullscreenButton = new Button("Full screen (F11)");
+    private final Button panelsButton = new Button("Hide panels (Alt+Z)");
+    private final Label panelsHint = new Label("Alt+Z shows the panels · F11 full screen");
+    private SplitPane split;
+    private javafx.scene.Node sidebarPane;
+    private double sidebarDivider = .23;
+    private boolean panelsHidden;
     private final WorldMinimap minimap = new WorldMinimap();
     private WorldSpawnOverlay spawns;
     private WorldRoleOverlay roles;
@@ -673,7 +684,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         localLoading.setVisible(false);
         localLoading.setManaged(false);
         firstFrameActivity.setMouseTransparent(true);
-        viewport.getChildren().addAll(selectionLayer(), firstFrameActivity, minimap);
+        viewport.getChildren().addAll(selectionLayer(), firstFrameActivity, minimap, panelsHint);
         StackPane.setAlignment(minimap, Pos.TOP_RIGHT);
         StackPane.setMargin(minimap, new Insets(12));
         VBox.setVgrow(maps, Priority.ALWAYS);
@@ -780,9 +791,23 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     cancelRequests();
                     showInventory();
                 });
-        var split = new SplitPane(sidebar, content);
-        split.setDividerPositions(.23);
+        sidebarPane = sidebar;
+        split = new SplitPane(sidebar, content);
+        split.setDividerPositions(sidebarDivider);
         setCenter(split);
+        fullscreenButton.setId("world-fullscreen");
+        fullscreenButton.setFocusTraversable(false);
+        fullscreenButton.setOnAction(e -> toggleFullscreen());
+        panelsButton.setId("world-hide-panels");
+        panelsButton.setFocusTraversable(false);
+        panelsButton.setOnAction(e -> panels(true));
+        panelsHint.setId("world-panels-hint");
+        panelsHint.setMouseTransparent(true);
+        panelsHint.setVisible(false);
+        panelsHint.setStyle("-fx-background-color: rgba(16,24,28,.6); -fx-text-fill: #e8eeee;"
+                + " -fx-padding: 4 8; -fx-background-radius: 4;");
+        StackPane.setAlignment(panelsHint, javafx.geometry.Pos.TOP_LEFT);
+        StackPane.setMargin(panelsHint, new javafx.geometry.Insets(8));
         inventoryMessage.setId("world-inventory-message");
         inventoryMessage.setWrapText(true);
         inventoryMessage.setMaxWidth(400);
@@ -826,7 +851,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         image.setPreserveRatio(true);
         viewport.setOnKeyPressed(
                 e -> {
-                    if (e.getCode() == KeyCode.F && keys.add(KeyCode.F)) {
+                    if (e.getCode() == KeyCode.F11 || e.getCode() == KeyCode.ENTER && e.isAltDown()) {
+                        toggleFullscreen();
+                    } else if (e.getCode() == KeyCode.Z && e.isAltDown()) {
+                        if (!fullscreen.active()) panels(!panelsHidden);
+                    } else if (e.getCode() == KeyCode.F && keys.add(KeyCode.F)) {
                         walkMode.setSelected(!walkMode.isSelected());
                         motionChanged();
                     } else {
@@ -1629,6 +1658,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void showInventory() {
+        fullscreen.exit();
+        panels(false);
         if (spawns != null) spawns.suspend();
         resumeCamera = null;
         minimap.hide();
@@ -1731,7 +1762,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     /** The explorer's viewport and controls; also restored when an inline instance is left. */
     private void showExplorerLayout() {
-        content.setCenter(viewport);
+        // In full screen the viewport stays on the full-screen stage until it ends.
+        if (!fullscreen.active()) content.setCenter(viewport);
         boolean adtInstance = instanceReturn != null && inventory != null
                 && inventory.map().id() == instanceMap;
         // An entry abandoned while it showed "Cancel" (selectMap, invalidate, close) resets here.
@@ -1749,7 +1781,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                         "WASD move · Space/E up · Q/X down · drag or arrows to look · Shift"
                                                 + " faster · wheel zooms · Shift+wheel changes speed"
                                                 + " · F walks")),
-                        new HBox(10, walkMode, smoothMotion, motionStatus, saveBookmark),
+                        new HBox(10, walkMode, smoothMotion, motionStatus, saveBookmark, panelsButton,
+                                fullscreenButton),
                         currentArea,
                         inspection,
                         audio.node(),
@@ -1760,6 +1793,39 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 instanceStatus)));
         if (spawns != null) ((VBox) content.getBottom()).getChildren().add(spawns.controls());
         if (roles != null) ((VBox) content.getBottom()).getChildren().add(roles.controls());
+        applyPanels();
+    }
+
+    private void toggleFullscreen() {
+        if (!explorer && !fullscreen.active()) return;
+        fullscreen.toggle(getScene() == null ? null : getScene().getWindow(),
+                "World explorer" + (inventory == null ? "" : " · " + inventory.map()));
+        clearKeys();
+    }
+
+    /** Hides or shows the map list and the explorer's control rows; only the viewport stays. */
+    private void panels(boolean hidden) {
+        if (hidden && !explorer) return;
+        if (hidden == panelsHidden) return;
+        if (hidden && split.getItems().contains(sidebarPane) && split.getDividers().size() == 1)
+            sidebarDivider = split.getDividerPositions()[0];
+        panelsHidden = hidden;
+        applyPanels();
+        if (explorer) viewport.requestFocus();
+    }
+
+    private void applyPanels() {
+        if (panelsHidden) split.getItems().remove(sidebarPane);
+        else if (!split.getItems().contains(sidebarPane)) {
+            split.getItems().addFirst(sidebarPane);
+            split.setDividerPositions(sidebarDivider);
+        }
+        for (var node : new javafx.scene.Node[] {content.getTop(), content.getBottom()}) {
+            if (node == null) continue;
+            node.setVisible(!panelsHidden);
+            node.setManaged(!panelsHidden);
+        }
+        panelsHint.setVisible(panelsHidden);
     }
 
     private void loadTile(WorldFormats.Tile tile, boolean initial) {
@@ -2637,10 +2703,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private boolean viewportActive() {
-        if (closed || !active || !explorer || getScene() == null
-                || getScene().getWindow() == null || !getScene().getWindow().isShowing()) return false;
-        if (getScene().getWindow() instanceof javafx.stage.Stage stage && stage.isIconified()) return false;
-        for (javafx.scene.Node node = this; node != null; node = node.getParent()) {
+        // The viewport's own window: the application window, or the full-screen stage.
+        var scene = viewport.getScene();
+        if (closed || !active || !explorer || scene == null
+                || scene.getWindow() == null || !scene.getWindow().isShowing()) return false;
+        if (scene.getWindow() instanceof javafx.stage.Stage stage && stage.isIconified()) return false;
+        for (javafx.scene.Node node = viewport; node != null; node = node.getParent()) {
             if (!node.isVisible()) return false;
         }
         return true;
@@ -3247,6 +3315,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
             leaveInstance.setText("Cancel");
             leaveInstance.setVisible(true);
             leaveInstance.setManaged(true);
+            fullscreen.exit();
+            panels(false);
             content.setBottom(new VBox(8, new HBox(10, leaveInstance, instanceStatus),
                     audio.node()));
             timer.stop();
@@ -3325,6 +3395,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     @Override
     public void close() {
+        fullscreen.exit();
         instances.abandon();
         cancelInstanceLookups();
         closed = true;

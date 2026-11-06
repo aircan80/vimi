@@ -199,6 +199,7 @@ public final class WorldNavigationUiTest {
 
     private static void finish(WorldView view, Fixture fixture) {
             controls(view);
+            fullscreenAndPanels(view);
             invoke(view,"requestFrame");
             await(fixture,() -> !view.lookup("#world-minimap-activity").isVisible(),() -> {
                 int before = fixture.minimapCalls.get();
@@ -212,6 +213,51 @@ public final class WorldNavigationUiTest {
                 require(fixture.minimapCalls.get()==before,"Retired source cannot request artwork after resize");
                 DONE.complete(null);
             });
+    }
+
+    /** F11 / Alt+Enter move the viewport to its own stage and back; Alt+Z hides the panels. */
+    private static void fullscreenAndPanels(WorldView view) {
+        var viewport=(javafx.scene.layout.Region)view.lookup("#world-viewport");
+        var full=(WorldFullscreen)get(view,"fullscreen");
+        full.windowed(true);
+        var home=viewport.getScene();
+        var content=(javafx.scene.layout.BorderPane)get(view,"content");
+        key(viewport,KeyCode.F11,true);
+        require(full.active() && viewport.getScene()==full.stage().getScene() && viewport.getScene()!=home,
+                "F11 moves the viewport onto the full-screen stage");
+        require(content.getCenter()!=viewport,"The explorer layout no longer holds the viewport");
+        require(viewportActive(view),"The viewport stays active on the full-screen stage");
+        require(WorldFullscreen.EXIT_HINT.equals(full.stage().getFullScreenExitHint()),"Exit hint names the keys");
+        require(!((Set<?>)get(view,"keys")).contains(KeyCode.F11),"F11 is never a held flight key");
+        key(viewport,KeyCode.F11,false);
+        key(viewport,KeyCode.F11,true);
+        require(!full.active() && viewport.getScene()==home && content.getCenter()==viewport,
+                "F11 again returns the viewport to the explorer");
+        Event.fireEvent(viewport,new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.ENTER,false,false,true,false));
+        require(full.active(),"Alt+Enter enters full screen");
+        var stage=full.stage();
+        stage.fireEvent(new javafx.stage.WindowEvent(stage,javafx.stage.WindowEvent.WINDOW_CLOSE_REQUEST));
+        require(!full.active() && !stage.isShowing() && content.getCenter()==viewport,
+                "Closing the full-screen stage returns the viewport");
+        var split=(javafx.scene.control.SplitPane)get(view,"split");
+        var hint=view.lookup("#world-panels-hint");
+        require(split.getItems().size()==2 && content.getBottom().isVisible() && !hint.isVisible(),"Panels start shown");
+        Event.fireEvent(viewport,new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.Z,false,false,true,false));
+        require(split.getItems().size()==1 && split.getItems().getFirst()==content,"Alt+Z hides the map list");
+        require(!content.getBottom().isVisible() && !content.getBottom().isManaged(),"Alt+Z hides the control rows");
+        require(hint.isVisible(),"A hint says how to bring the panels back");
+        Event.fireEvent(viewport,new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.Z,false,false,true,false));
+        require(split.getItems().size()==2 && content.getBottom().isVisible() && !hint.isVisible(),"Alt+Z shows them again");
+        ((javafx.scene.control.Button)view.lookup("#world-hide-panels")).fire();
+        require(split.getItems().size()==1,"The Hide panels button hides them");
+        Event.fireEvent(viewport,new KeyEvent(KeyEvent.KEY_PRESSED,"","",KeyCode.Z,false,false,true,false));
+        require(split.getItems().size()==2,"Alt+Z restores after the button");
+        for (var code : List.of(KeyCode.Z, KeyCode.ENTER, KeyCode.ALT)) key(viewport,code,false);
+    }
+
+    private static boolean viewportActive(WorldView view) {
+        try{var m=WorldView.class.getDeclaredMethod("viewportActive");m.setAccessible(true);return (boolean)m.invoke(view);}
+        catch(ReflectiveOperationException error){throw new AssertionError(error);}
     }
 
     private static void controls(WorldView view) {
