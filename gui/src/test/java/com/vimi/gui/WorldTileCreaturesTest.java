@@ -184,6 +184,20 @@ public final class WorldTileCreaturesTest {
         require(visible(0L, null, geosets()).equals(java.util.Set.of(0, 100)), "Unknown rows do not matter when the ID is 0");
         require(refusal(0L, Map.of(1, 1), hiddenGeosets()).contains("no default x00"),
                 "With the ID 0 a group without x00 is still refused");
+        require(visible(0L, Map.of(1, DisplayModelTypes.Reference.CONFLICTING_GEOSET), geosets())
+                .equals(java.util.Set.of(0, 100)), "With the ID 0 even conflicting rows are ignored");
+        // ID > 0: group 8 is the last hidden group without a row (801 and 899); a row shows it.
+        var eight = mesh(0, 801, 899);
+        require(visible(5L, Map.of(), eight).equals(java.util.Set.of(0)), "Group 8 without a row is hidden");
+        require(visible(5L, Map.of(8, 99), eight).equals(java.util.Set.of(0, 899)), "A row for group 8 chooses 899");
+        // ID > 0: a group of 9 or more without a row keeps the x00 rule, so without x00 it refuses.
+        require(refusal(5L, Map.of(), mesh(0, 901)).contains("geoset group 9 has no default x00"),
+                "Group 9 without a row and without x00 is refused");
+        // ID > 0: when the rows hide every section there is nothing to draw: a visibility refusal.
+        var allHidden = WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(), hiddenGeosets()), Cancellation.NONE);
+        require(allHidden.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
+                && allHidden.detail().equals("every geoset is hidden by the display's rows"),
+                "All sections hidden is a visibility refusal, not a material one: " + allHidden.detail());
     }
 
     private static java.util.Set<Integer> visible(Long geosets, Map<Integer, Integer> rows, MeshAppearance appearance) {

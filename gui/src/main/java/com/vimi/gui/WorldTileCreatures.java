@@ -36,8 +36,9 @@ import java.util.function.Supplier;
  *
  * <p>Only a spawn with a recorded height whose NPC has a {@link CreatureModelPolicy} QUALIFIED
  * display is drawn. The display's static preview must need no character appearance, and each
- * geoset group draws one variant decided from recorded facts ({@link #visibleGeosets}: the
- * display's own geoset rows, otherwise the group's x00 section); only its opaque and alpha-keyed
+ * geoset group draws one variant decided from recorded facts ({@link #visibleGeosets}: when the
+ * model records geoset data, the display's own geoset rows choose and unchosen groups 1 to 8 are
+ * hidden; otherwise every group draws its x00 section); only its opaque and alpha-keyed
  * (cutout) diffuse surfaces are drawn, with
  * textures reduced to at most {@value #IMAGE_SIDE} pixels a side. Facing is not recorded by the source, so every
  * model faces native north. Each spawn belongs to exactly one tile (the filename-index rule), and
@@ -485,8 +486,8 @@ final class WorldTileCreatures implements AutoCloseable {
     /**
      * The tile-independent BASIC conversion of one display's static preview. Refuses character
      * appearance, models without an opaque or alpha-keyed diffuse surface, and every geoset choice
-     * it cannot make from recorded facts ({@link #visibleGeosets}). Each geoset group draws the
-     * display's own choice where it records one, otherwise its x00 section; never a guessed variant.
+     * it cannot make from recorded facts ({@link #visibleGeosets}), including a model whose every
+     * section the display's rows hide. Never a guessed variant.
      */
     static Converted convert(DisplayModelTypes.Preview preview, Cancellation token) {
         if (preview == null || preview.appearance() == null || preview.reference() == null)
@@ -499,6 +500,9 @@ final class WorldTileCreatures implements AutoCloseable {
         var mesh = appearance.mesh();
         var visible = visibleGeosets(reference, mesh);
         if (visible.refusal() != null) return Converted.refused(Count.VISIBILITY_UNRESOLVED, visible.refusal());
+        // Nothing left to draw is a visibility outcome, not a material one.
+        if (mesh.parts().stream().noneMatch(part -> visible.ids().contains(part.id())))
+            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "every geoset is hidden by the display's rows");
         var surfaces = new HashMap<Integer, MeshAppearance.Surface>();
         for (var surface : appearance.surfaces()) surfaces.put(surface.sectionIndex(), surface);
         var cards = new HashSet<Integer>();
@@ -612,6 +616,7 @@ final class WorldTileCreatures implements AutoCloseable {
     static Geosets visibleGeosets(DisplayModelTypes.Reference reference, com.vibeminer.rendering.models.PreviewMesh mesh) {
         if (reference.creatureGeosetDataId() == null)
             return new Geosets(Set.of(), "creature geoset data could not be read");
+        // A negative ID is treated like 0: only a positive one says the display rows apply.
         boolean rows = reference.creatureGeosetDataId() > 0;
         var chosen = reference.displayGeosets();
         if (rows && chosen == null) return new Geosets(Set.of(), "display geoset selections are unknown");
@@ -621,6 +626,8 @@ final class WorldTileCreatures implements AutoCloseable {
         if (rows) {
             for (var choice : chosen.entrySet()) {
                 int group = choice.getKey(), value = choice.getValue();
+                // Rows key groups GeosetIndex + 1, so never group 0; refuse to read one as such.
+                if (group < 1) continue;
                 if (value == DisplayModelTypes.Reference.CONFLICTING_GEOSET)
                     return new Geosets(Set.of(), "the display's geoset rows conflict for group " + group);
                 if (!present.containsKey(group)) continue; // the model has no such group: nothing to show
@@ -633,7 +640,7 @@ final class WorldTileCreatures implements AutoCloseable {
             int g = group.getKey();
             // With rows, a group a row chose draws only that section (added above), and groups
             // 1 to 8 without a row are hidden.
-            if (rows && (chosen.containsKey(g) || g >= 1 && g <= 8)) continue;
+            if (rows && g >= 1 && (chosen.containsKey(g) || g <= 8)) continue;
             if (!group.getValue().contains(g * 100))
                 return new Geosets(Set.of(), "geoset group " + g + " has no default x00 section");
             ids.add(g * 100);
