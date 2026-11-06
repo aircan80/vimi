@@ -349,9 +349,15 @@ public final class TerrainTextureNativeProof {
     private static void assertGradient(int[] image, TerrainCamera camera, float origin) {
         // Independent ground-plane ray/plane intersection. No renderer projection/sample helper.
         int checked = 0;
-        for (int y : new int[] {96, 112, 128, 144, 160}) {
-            for (int x : new int[] {96, 112, 128, 144, 160}) {
-                double right = (x + .5 - 128) / 204.8, up = (128 - y - .5) / 204.8;
+        // A 5x5 grid of view directions, in focal lengths from the center, so the sampled rays
+        // stay on the authored ground whatever the shared field of view.
+        double focal = TerrainCamera.focalPixels(256);
+        double[] offsets = {-.16, -.08, 0, .08, .16};
+        for (double rowOffset : offsets) {
+            int y = (int) Math.round(128 + rowOffset * focal);
+            for (double columnOffset : offsets) {
+                int x = (int) Math.round(128 + columnOffset * focal);
+                double right = (x + .5 - 128) / focal, up = (128 - y - .5) / focal;
                 double vertical = Math.sin(camera.pitch()) + Math.cos(camera.pitch()) * up;
                 double d = -camera.z() / vertical;
                 double forward = Math.cos(camera.pitch()) - Math.sin(camera.pitch()) * up;
