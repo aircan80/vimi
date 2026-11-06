@@ -41,8 +41,8 @@ class TerrainRendererTextureTest {
             // Ground is z=50. Intersect each independently constructed eye ray with that plane.
             for (int y = 0; y < 120; y++) {
                 for (int x = 0; x < 160; x++) {
-                    double horizontal = (x + .5 - 80) / 128;
-                    double vertical = (60 - y - .5) / 128;
+                    double horizontal = (x + .5 - 80) / TerrainCamera.focalPixels(160);
+                    double vertical = (60 - y - .5) / TerrainCamera.focalPixels(160);
                     double cp = Math.cos(camera.pitch()), sp = Math.sin(camera.pitch());
                     double cy = Math.cos(camera.yaw()), sy = Math.sin(camera.yaw());
                     double dz = sp + vertical * cp;
@@ -94,10 +94,10 @@ class TerrainRendererTextureTest {
                         List.of(f.texture),
                         () -> false);
         assertArrayEquals(frame.pixels(), overlap.pixels());
-        double vertical = -.5 / 128;
+        double vertical = -.5 / TerrainCamera.focalPixels(160);
         double distance = -100 / (Math.sin(-.1) + vertical * Math.cos(-.1));
         double nx = -1100 + distance * (Math.cos(-.1) - vertical * Math.sin(-.1));
-        double ny = -266 - distance * (.5 / 128);
+        double ny = -266 - distance * (.5 / TerrainCamera.focalPixels(160));
         int tx = (int) Math.floor(-ny * .96), ty = (int) Math.floor(-nx * .96);
         assertTrue(ty >= 0 && ty < 256);
         double far = Math.cos(-.1) * 1100 + Math.sin(-.1) * -100;
