@@ -14,8 +14,9 @@ import java.util.concurrent.TimeUnit;
  * Actual Vulkan proof of CPU exterior object culling on the production native owner: one authored
  * terrain tile with the material proof's late objects (three camera-facing quads in placement 0,
  * the layout ladders in placement 1, then the tile filled to the placement cap behind the camera).
- * With culling on, only placements 0 and 1 are drawn; with it off, every placement is. Both frames must have identical pixels, and the bgfx
- * draw counts must drop by the culled placements' submits. Authored data only.
+ * With culling on, only placements 0 and 1 are drawn; with it off, every placement is. Both frames
+ * must have identical pixels, and the bgfx draw counts must drop by the culled placements' submits.
+ * Authored data only.
  */
 final class WorldStreamObjectsCullProof {
     private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(321, -654);
