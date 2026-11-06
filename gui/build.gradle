@@ -383,6 +383,14 @@ tasks.register('worldExplorerInputTest', JavaExec) {
 }
 check.dependsOn worldExplorerInputTest
 
+// Developer overlay pages as text: labelled split, once-only detail, wrapping; no display.
+tasks.register('worldDevReportTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldDevReportTest'
+}
+check.dependsOn worldDevReportTest
+
 // Exact picking of drawn exterior objects, their source records and the highlight; authored meshes.
 tasks.register('worldObjectPicksTest', JavaExec) {
     dependsOn testClasses
@@ -584,6 +592,13 @@ tasks.register('worldToastsUiTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldToastsUiTest'
+}
+
+// F3 developer overlay over the real viewport: pages, mouse isolation, Retry/Copy; display.
+tasks.register('worldDevOverlayUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldDevOverlayUiTest'
 }
 
 // Authored JavaFX artwork/lifecycle proof; requires a desktop display.

@@ -191,6 +191,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             lookStatus.setText("Mouse look: cursor capture unavailable; looking stays relative");
             toasts.show(lookStatus.getText());
         }
+        @Override public void command(WorldControls.Action action) { WorldView.this.command(action); }
         @Override public void captureFallback(String reason) {
             if (captureFallbackLogged) return;
             captureFallbackLogged = true;
@@ -212,6 +213,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final ProgressIndicator textureActivity = activity("world-texture-activity", 18);
     private final Label textureStatus = new Label("Terrain textures not loaded");
     private final Button retryTextures = new Button("Retry textures");
+    // F3 developer overlay over the viewport; it reads the status labels above and fires Retry.
+    private final WorldDevOverlay devOverlay;
     private final WorldTextureLoading textureLoading;
     private WorldTextureSnapshot textureSnapshot;
     private TerrainScene textureRequestedScene;
@@ -574,6 +577,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         try {
             input.controls(controls);
             keyHelp.setText(controls.help());
+            devOverlay.key(controls.byAction().get(WorldControls.Action.DEV_OVERLAY).stream()
+                    .map(javafx.scene.input.KeyCode::getName)
+                    .collect(java.util.stream.Collectors.joining("/")));
             invertLook.setSelected(controls.invertY());
             flightSpeed.setValue(controls.speed());
             lookSensitivity.setValue(controls.sensitivity());
@@ -794,6 +800,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 requestFrame();
             }
         });
+        devOverlay = new WorldDevOverlay(new WorldDevOverlay.Sources(textureStatus.textProperty(),
+                gpuStatus.textProperty(), status.textProperty(), position.textProperty(),
+                lookStatus.textProperty(), motionStatus.textProperty(), input::heldKeys,
+                keyHelp.textProperty(), audio.statusText()), retryGpu, retryTextures,
+                viewport::requestFocus);
         this.handles = handles;
         this.revisions = revisions;
         setPadding(new javafx.geometry.Insets(16));
@@ -848,7 +859,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         localLoading.setVisible(false);
         localLoading.setManaged(false);
         firstFrameActivity.setMouseTransparent(true);
-        viewport.getChildren().addAll(selectionLayer(), firstFrameActivity, minimap, panelsHint);
+        viewport.getChildren().addAll(selectionLayer(), firstFrameActivity, minimap, panelsHint,
+                devOverlay);
         StackPane.setAlignment(minimap, Pos.TOP_RIGHT);
         StackPane.setMargin(minimap, new Insets(12));
         // Interim placement until the HUD layout's slots land: bottom-centre of the viewport.
@@ -856,6 +868,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         StackPane.setAlignment(toasts, Pos.BOTTOM_CENTER);
         StackPane.setMargin(toasts, new Insets(12, 12, 48, 12));
         toasts.refocus(viewport::requestFocus);
+        StackPane.setAlignment(devOverlay, Pos.TOP_LEFT);
+        // Below the top-left panels hint (and the Map button that takes its place).
+        StackPane.setMargin(devOverlay, new Insets(40, 12, 12, 12));
         VBox.setVgrow(maps, Priority.ALWAYS);
         heading.getStyleClass().add("h2");
         currentArea.setId("world-current-area");
@@ -1036,11 +1051,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
         viewport.setOnKeyPressed(
                 e -> {
                     input.keyPressed(e.getCode());
+                    devOverlay.refresh();
                     e.consume();
                 });
         viewport.setOnKeyReleased(
                 e -> {
                     input.keyReleased(e.getCode());
+                    devOverlay.refresh();
                     e.consume();
                 });
         viewport.focusedProperty()
@@ -1240,6 +1257,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void clearKeys() {
         input.clear();
+        devOverlay.refresh();
+    }
+
+    /** HUD command keys ({@link WorldControls.Action#command}), once per press. */
+    private void command(WorldControls.Action action) {
+        switch (action) {
+            case DEV_OVERLAY -> devOverlay.cycle();
+            default -> {}
+        }
     }
 
     private TerrainGround currentGround() {
@@ -3259,6 +3285,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
     /** The toasts, for tests. */
     WorldToasts toasts() {
         return toasts;
+    }
+
+    /** The developer overlay, for tests. */
+    WorldDevOverlay devOverlay() {
+        return devOverlay;
     }
 
     /** The minimap, for tests. */
