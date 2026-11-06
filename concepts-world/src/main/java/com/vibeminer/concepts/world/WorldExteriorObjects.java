@@ -14,6 +14,7 @@ import com.vibeminer.formats.world.WmoFormats;
 import com.vibeminer.formats.world.WmoGroupSpans;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldPlacements;
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.world.ObjectTextureMips;
 import com.vibeminer.rendering.world.TerrainScene;
 import java.nio.ByteBuffer;
@@ -645,6 +646,29 @@ public final class WorldExteriorObjects {
             }
         }
 
+        /**
+         * Opt-in measurement ({@code -Dvimi.world.stageTimings}): adds every non-zero count bucket
+         * of this set to the process tallies {@code objects.count.<BUCKET>}, plus its tile, vertex,
+         * index, range and pixel totals. Does nothing while the timings are off.
+         */
+        public void tallyCounts() {
+            check();
+            if (!WorldStageTimings.enabled()) {
+                return;
+            }
+            WorldStageTimings.add("objects.count.tiles", 1);
+            for (var count : Count.values()) {
+                int n = counts[count.ordinal()];
+                if (n != 0) {
+                    WorldStageTimings.add("objects.count." + count.name(), n);
+                }
+            }
+            WorldStageTimings.add("objects.count.vertices", vertices);
+            WorldStageTimings.add("objects.count.indices", indices);
+            WorldStageTimings.add("objects.count.ranges", ranges);
+            WorldStageTimings.add("objects.count.pixels", pixels);
+        }
+
         public String recipe() {
             check();
             return RECIPE;
@@ -785,12 +809,17 @@ public final class WorldExteriorObjects {
         Objects.requireNonNull(scope);
         Objects.requireNonNull(tile);
         Objects.requireNonNull(token);
-        return engine.withRecordedTile(
-                scope,
-                tile,
-                WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
-                token,
-                admission -> new Builder(admission, modelReader, detail, retainLimit).build());
+        long started = WorldStageTimings.start();
+        try {
+            return engine.withRecordedTile(
+                    scope,
+                    tile,
+                    WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
+                    token,
+                    admission -> new Builder(admission, modelReader, detail, retainLimit).build());
+        } finally {
+            WorldStageTimings.stop("objects.tile.total", started);
+        }
     }
 
     private enum RootState {
@@ -897,16 +926,27 @@ public final class WorldExteriorObjects {
                 }
                 setRanges = metadata.setRanges();
                 setIds = metadata.setIds();
+                long phase = WorldStageTimings.start();
                 place(metadata.worldObjects());
                 fitMaterialDraws();
+                WorldStageTimings.stop("objects.phase.buildings", phase);
                 // Admission ran largest first; the set keeps obj0 source order.
                 placements.sort(java.util.Comparator.comparingInt(Placement::ordinal));
                 // Buildings first, then MDDF doodads, then the drawn buildings' doodad sets.
+                phase = WorldStageTimings.start();
                 placeDoodads(metadata.doodads());
+                WorldStageTimings.stop("objects.phase.doodads", phase);
+                phase = WorldStageTimings.start();
                 placeSetDoodads();
+                WorldStageTimings.stop("objects.phase.setDoodads", phase);
             }
+            long phase = WorldStageTimings.start();
             allocateImages();
+            WorldStageTimings.stop("objects.phase.imageBudget", phase);
+            phase = WorldStageTimings.start();
             chainImages();
+            WorldStageTimings.stop("objects.phase.mipChains", phase);
+            phase = WorldStageTimings.start();
             sources.clear();
             unreadSources.clear();
             retainedSourceBytes = 0;
@@ -924,6 +964,7 @@ public final class WorldExteriorObjects {
                             detail);
             objects.retainedSourceBytes = peakRetainedSourceBytes;
             objects.levelDecodes = levelDecodes;
+            WorldStageTimings.stop("objects.phase.assembly", phase);
             return objects;
         }
 
@@ -1520,8 +1561,10 @@ public final class WorldExteriorObjects {
                 count(Count.ROOT_UNAVAILABLE);
                 return RootState.FAILED;
             }
+            long parsing = WorldStageTimings.start();
             try (input) {
                 root = WmoFormats.root(input.bytes(), ROOT_LIMITS, token::isCanceled);
+                WorldStageTimings.stop("objects.wmo.rootParse", parsing);
             } catch (IllegalArgumentException malformed) {
                 count(Count.ROOT_FAILED);
                 return RootState.FAILED;
@@ -1907,9 +1950,11 @@ public final class WorldExteriorObjects {
                 count(Count.MODEL_UNAVAILABLE);
                 return RootState.FAILED;
             }
+            long parsing = WorldStageTimings.start();
             try (input) {
                 byte[] raw = input.bytes();
                 model = await(modelReader.read(id, raw, token));
+                WorldStageTimings.stop("objects.m2.modelParse", parsing);
             } catch (ModelFormatException malformed) {
                 count(modelOutcome(malformed));
                 return RootState.FAILED;
@@ -1919,6 +1964,11 @@ public final class WorldExteriorObjects {
             if (model.skinFileDataIds().isEmpty()
                     || model.skinFileDataIds().getFirst() <= 0
                     || model.bones().stream().anyMatch(b -> (b.flags() & BILLBOARD) != 0)) {
+                if (WorldStageTimings.enabled()
+                        && !model.skinFileDataIds().isEmpty()
+                        && model.skinFileDataIds().getFirst() > 0) {
+                    WorldStageTimings.add("objects.count.MODEL_UNSUPPORTED_BILLBOARD", 1);
+                }
                 count(Count.MODEL_UNSUPPORTED);
                 return RootState.FAILED;
             }
@@ -1929,9 +1979,11 @@ public final class WorldExteriorObjects {
                 count(Count.MODEL_UNAVAILABLE);
                 return RootState.FAILED;
             }
+            long skinning = WorldStageTimings.start();
             try (skinInput) {
                 byte[] raw = skinInput.bytes();
                 skin = await(M2SkinReader.read(AssetSource.bytes(raw), model, MODEL_LIMITS, token));
+                WorldStageTimings.stop("objects.m2.skinParse", skinning);
             } catch (ModelFormatException malformed) {
                 count(modelOutcome(malformed));
                 return RootState.FAILED;
@@ -2219,6 +2271,7 @@ public final class WorldExteriorObjects {
                 long width = Integer.toUnsignedLong(header.getInt(12));
                 long height = Integer.toUnsignedLong(header.getInt(16));
                 int recorded;
+                long mipsRead = WorldStageTimings.start();
                 try {
                     recorded =
                             WorldImageBudget.recordedLevels(
@@ -2229,6 +2282,8 @@ public final class WorldExteriorObjects {
                                             Blp2Types.MipProfile.STRICT));
                 } catch (BlpFormatException undeclared) {
                     recorded = 0;
+                } finally {
+                    WorldStageTimings.stop("objects.blp.readMips", mipsRead);
                 }
                 if (width == 0 || height == 0 || width > 8192 || height > 8192 || recorded == 0) {
                     local[undecodable.ordinal()]++;
@@ -2286,6 +2341,7 @@ public final class WorldExteriorObjects {
             }
             Blp2Types.Image image;
             levelDecodes++;
+            long decoding = WorldStageTimings.start();
             try {
                 image =
                         Blp2Decoder.decodeSynchronous(
@@ -2296,6 +2352,8 @@ public final class WorldExteriorObjects {
                                 Blp2Types.MipProfile.STRICT);
             } catch (BlpFormatException undecodableImage) {
                 return null;
+            } finally {
+                WorldStageTimings.stop("objects.blp.decodeLevel", decoding);
             }
             int w = image.width(), h = image.height();
             if (image.mipLevel() != level
@@ -2483,6 +2541,7 @@ public final class WorldExteriorObjects {
         /** The file's own mip {@code level}, or null when it does not decode at that size. */
         private byte[] fileMip(byte[] raw, int level, int width, int height) {
             levelDecodes++;
+            long decoding = WorldStageTimings.start();
             try {
                 var mip =
                         Blp2Decoder.decodeSynchronous(
@@ -2496,6 +2555,8 @@ public final class WorldExteriorObjects {
                         : null;
             } catch (BlpFormatException | IllegalArgumentException absent) {
                 return null;
+            } finally {
+                WorldStageTimings.stop("objects.blp.fileMip", decoding);
             }
         }
 
