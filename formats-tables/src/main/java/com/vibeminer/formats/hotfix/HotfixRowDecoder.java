@@ -39,10 +39,59 @@ public final class HotfixRowDecoder {
     }
 
     /** Table hash of TactKey, which opens a server's optional key data block. */
-    private static final int TACT_KEY_HASH = 0xDF2F53CF;
+    public static final int TACT_KEY_HASH = 0xDF2F53CF;
 
     /** Optional key data: table hash (4) + key name (8) + key (16). */
-    private static final int OPTIONAL_KEY_BYTES = 28;
+    public static final int OPTIONAL_KEY_BYTES = 28;
+
+    /**
+     * A TactKey delivered in an optional-data block, for key loading only. The key is copied in and
+     * out, and {@code toString} renders neither the name nor the key.
+     */
+    public record OptionalKey(long name, byte[] key) {
+        public OptionalKey {
+            if (key == null || key.length != 16) {
+                throw new IllegalArgumentException("TactKey must be 16 bytes");
+            }
+            key = key.clone();
+        }
+
+        @Override
+        public byte[] key() {
+            return key.clone();
+        }
+
+        /** Zeroes this record's key once key loading has copied it; best effort. */
+        public void clear() {
+            java.util.Arrays.fill(key, (byte) 0);
+        }
+
+        @Override
+        public String toString() {
+            return "OptionalKey[redacted]";
+        }
+    }
+
+    /**
+     * The TactKey block a hotfix body ends in, or null. Only meaningful for a body whose decode set
+     * {@link Decoded#optionalKeyData()}: the decoder decides that the block is not part of the row.
+     */
+    public static OptionalKey optionalKey(byte[] payload) {
+        if (payload.length < OPTIONAL_KEY_BYTES) {
+            return null;
+        }
+        var input = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
+        int at = payload.length - OPTIONAL_KEY_BYTES;
+        if (input.getInt(at) != TACT_KEY_HASH) {
+            return null;
+        }
+        byte[] key = java.util.Arrays.copyOfRange(payload, at + 12, at + OPTIONAL_KEY_BYTES);
+        try {
+            return new OptionalKey(input.getLong(at + 4), key);
+        } finally {
+            java.util.Arrays.fill(key, (byte) 0);
+        }
+    }
 
     public static final class Invalid extends IllegalArgumentException {
         private static final long serialVersionUID = 1L;

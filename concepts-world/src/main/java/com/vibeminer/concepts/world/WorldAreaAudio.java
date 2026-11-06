@@ -19,7 +19,8 @@ import java.util.concurrent.TimeUnit;
 /**
  * Recorded AreaTable music and ambience relationships for a resolved terrain-area chain, plus a
  * bounded original-file read. It evaluates no game time, WMO interior, underwater, intro, player
- * condition or SoundKit mixing rule; those limits are reported in every plan.
+ * condition or SoundKit variation rule; those limits are reported in every plan. SoundKit volume
+ * and SoundKitEntry frequencies and volumes are read when their fields are reviewed.
  */
 public final class WorldAreaAudio {
     public static final int MAX_ENTRIES = 64, MAX_FILE_BYTES = 16 << 20;
@@ -43,7 +44,10 @@ public final class WorldAreaAudio {
 
     /**
      * One recorded sound relationship. {@code areaId} is the chain member that supplied it, which
-     * is the parent zone when the subzone records none.
+     * is the parent zone when the subzone records none. {@code fileWeights} are the recorded
+     * SoundKitEntry frequencies, one per file (a zero weight is never picked unless every weight is
+     * zero), {@code fileVolumes} are the recorded linear SoundKitEntry volumes, one per file, and
+     * {@code volume} is the recorded linear SoundKit volume; volumes are in 0..1.
      */
     public record Track(
             Kind kind,
@@ -52,22 +56,116 @@ public final class WorldAreaAudio {
             long relationId,
             long soundKitId,
             List<Long> fileDataIds,
+            List<Integer> fileWeights,
+            List<Double> fileVolumes,
+            double volume,
             int silenceMinMillis,
             int silenceMaxMillis) {
         public Track {
             Objects.requireNonNull(kind);
             fileDataIds = List.copyOf(fileDataIds);
+            fileWeights = List.copyOf(fileWeights);
+            fileVolumes = List.copyOf(fileVolumes);
             if (areaId <= 0
                     || relationId <= 0
                     || soundKitId <= 0
                     || fileDataIds.isEmpty()
                     || fileDataIds.size() > MAX_ENTRIES
+                    || fileWeights.size() != fileDataIds.size()
+                    || fileWeights.stream().anyMatch(w -> w < 0 || w > MAX_WEIGHT)
+                    || fileVolumes.size() != fileDataIds.size()
+                    || fileVolumes.stream().anyMatch(v -> !(v >= 0 && v <= 1))
+                    || !(volume >= 0 && volume <= 1)
                     || silenceMinMillis < 0
                     || silenceMaxMillis < silenceMinMillis) {
                 throw new IllegalArgumentException("Invalid recorded audio track");
             }
         }
+
+        /** Full recorded volume for every file. */
+        public Track(
+                Kind kind,
+                long areaId,
+                String areaName,
+                long relationId,
+                long soundKitId,
+                List<Long> fileDataIds,
+                List<Integer> fileWeights,
+                double volume,
+                int silenceMinMillis,
+                int silenceMaxMillis) {
+            this(
+                    kind,
+                    areaId,
+                    areaName,
+                    relationId,
+                    soundKitId,
+                    fileDataIds,
+                    fileWeights,
+                    java.util.Collections.nCopies(fileDataIds.size(), 1.0),
+                    volume,
+                    silenceMinMillis,
+                    silenceMaxMillis);
+        }
+
+        /** Uniform weights at full recorded volume. */
+        public Track(
+                Kind kind,
+                long areaId,
+                String areaName,
+                long relationId,
+                long soundKitId,
+                List<Long> fileDataIds,
+                int silenceMinMillis,
+                int silenceMaxMillis) {
+            this(
+                    kind,
+                    areaId,
+                    areaName,
+                    relationId,
+                    soundKitId,
+                    fileDataIds,
+                    java.util.Collections.nCopies(fileDataIds.size(), 1),
+                    1,
+                    silenceMinMillis,
+                    silenceMaxMillis);
+        }
+
+        /** Linear playback volume of one of this track's files: kit volume times entry volume. */
+        public double volume(long fileDataId) {
+            int at = fileDataIds.indexOf(fileDataId);
+            if (at < 0) {
+                throw new IllegalArgumentException("Not a file of this track");
+            }
+            return volume * fileVolumes.get(at);
+        }
+
+        /**
+         * Picks one file by recorded weight; {@code roll} is uniform in {@code [0, 1)}. Uniform
+         * when every weight is zero.
+         */
+        public long pick(double roll) {
+            long total = 0;
+            for (int weight : fileWeights) {
+                total += weight;
+            }
+            if (total == 0) {
+                return fileDataIds.get(
+                        Math.min(fileDataIds.size() - 1, (int) (roll * fileDataIds.size())));
+            }
+            long at = Math.min(total - 1, (long) (roll * total));
+            for (int i = 0; i < fileWeights.size(); i++) {
+                at -= fileWeights.get(i);
+                if (at < 0) {
+                    return fileDataIds.get(i);
+                }
+            }
+            throw new IllegalStateException("unreachable");
+        }
     }
+
+    /** Bound for one recorded SoundKitEntry frequency; real values are small integers. */
+    static final int MAX_WEIGHT = 1 << 16;
 
     public record Selection(Kind kind, State state, Track track, String message) {
         public Selection {
@@ -118,7 +216,7 @@ public final class WorldAreaAudio {
 
     static final String LIMITS =
             "Recorded terrain-area audio only: game time, WMO interiors, underwater, intro"
-                    + " music, player conditions and SoundKit mixing are not evaluated.";
+                    + " music, player conditions and SoundKit variation are not evaluated.";
 
     private final BuildTables tables;
     private final BuildFiles files;
@@ -171,10 +269,31 @@ public final class WorldAreaAudio {
                         }
                     });
         } catch (java.util.concurrent.RejectedExecutionException full) {
-            result.completeExceptionally(
-                    new IllegalStateException("World audio request queue is full", full));
+            result.completeExceptionally(new QueueFull(full));
         }
         return result.copy();
+    }
+
+    /**
+     * True when {@code failure} (or a cause) only means the bounded request queue was full; the
+     * request can be retried shortly and says nothing about the recorded data.
+     */
+    public static boolean busy(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof QueueFull) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The bounded request queue was full; see {@link #busy(Throwable)}. */
+    public static final class QueueFull extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
+        public QueueFull(Throwable cause) {
+            super("World audio request queue is full", cause);
+        }
     }
 
     synchronized CompletableFuture<Void> closeAsync() {
@@ -243,13 +362,35 @@ public final class WorldAreaAudio {
             areas.reference(field, -1, Set.of(kind == Kind.MUSIC ? "ZoneMusic" : "SoundAmbience"));
             WorldService.Area source = null;
             long relation = 0;
-            // The most specific subzone that records a relationship wins over its parents.
+            String unreadable = null;
+            // The most specific subzone that records a relationship wins over its parents. An
+            // unreadable row is skipped so its parents still apply.
             for (int i = chain.size() - 1; i >= 0 && relation == 0; i--) {
-                var row = areas.get(tables, chain.get(i).id(), token);
-                relation = areas.number(row, field, -1);
-                source = chain.get(i);
+                try {
+                    var row = areas.get(tables, chain.get(i).id(), token);
+                    relation = areas.number(row, field, -1);
+                    source = chain.get(i);
+                } catch (Unavailable skipped) {
+                    if (unreadable == null) {
+                        unreadable = skipped.getMessage();
+                    }
+                    note(
+                            issues,
+                            skipped.getMessage()
+                                    + "; its "
+                                    + label
+                                    + " falls back to the parent area.");
+                }
             }
+            // A more specific member was skipped: say so where the user sees it.
+            String fallback =
+                    unreadable == null
+                            ? ""
+                            : " (a more specific area is unreadable: " + unreadable + ")";
             if (relation == 0) {
+                if (unreadable != null) {
+                    throw new Unavailable(unreadable);
+                }
                 return new Selection(
                         kind, State.NONE_RECORDED, null, "No " + label + " is recorded here.");
             }
@@ -285,16 +426,62 @@ public final class WorldAreaAudio {
                                 + label
                                 + " sound is recorded for "
                                 + source
+                                + fallback
                                 + ".");
             }
             var entries = Table.open(tables, "SoundKitEntry", token);
             entries.reference("SoundKitID", -1, Set.of("SoundKit"));
             entries.integer("FileDataID", -1);
+            // Frequency weights the random file pick; without a reviewed field, picks are uniform.
+            boolean weighted = entries.optionalInteger("Frequency", issues);
+            // Volume scales each file; without a reviewed field, every file plays at kit volume.
+            boolean loudness = entries.optionalDecimal("Volume", issues);
             var files = new ArrayList<Long>();
+            var weights = new ArrayList<Integer>();
+            var volumes = new ArrayList<Double>();
             for (var row : entries.rows(tables, "SoundKitID", kit, MAX_ENTRIES, token, issues)) {
                 long id = entries.number(row, "FileDataID", -1);
-                if (id > 0 && id <= 0xffffffffL && !files.contains(id)) {
+                if (id <= 0 || id > 0xffffffffL) {
+                    continue;
+                }
+                int weight = 1;
+                if (weighted) {
+                    long frequency = frequency(entries, row);
+                    if (frequency < 0) {
+                        weighted = false;
+                        note(
+                                issues,
+                                "SoundKit #"
+                                        + kit
+                                        + " records an unreadable Frequency; its files are picked"
+                                        + " uniformly.");
+                        java.util.Collections.fill(weights, 1);
+                    } else {
+                        weight = (int) frequency;
+                    }
+                }
+                double entryVolume = 1;
+                if (loudness) {
+                    entryVolume = entryVolume(entries, row);
+                    if (entryVolume < 0) {
+                        note(
+                                issues,
+                                "SoundKit #"
+                                        + kit
+                                        + " records an unreadable entry Volume; that file plays at"
+                                        + " kit volume.");
+                        entryVolume = 1;
+                    }
+                }
+                int at = files.indexOf(id);
+                if (at < 0) {
                     files.add(id);
+                    weights.add(weight);
+                    // A file recorded twice keeps its first recorded volume.
+                    volumes.add(entryVolume);
+                } else if (weighted) {
+                    // A file recorded twice is as likely as its entries combined.
+                    weights.set(at, Math.min(MAX_WEIGHT, weights.get(at) + weight));
                 }
             }
             if (files.isEmpty()) {
@@ -310,9 +497,12 @@ public final class WorldAreaAudio {
                             relation,
                             kit,
                             files,
+                            weights,
+                            volumes,
+                            volume(tables, kit, token, issues),
                             silenceMin,
                             silenceMax),
-                    "Recorded " + label + " from " + source + ".");
+                    "Recorded " + label + " from " + source + fallback + ".");
         } catch (Unavailable unavailable) {
             return new Selection(
                     kind,
@@ -328,6 +518,55 @@ public final class WorldAreaAudio {
                     State.UNAVAILABLE,
                     null,
                     "Recorded " + label + " unavailable: " + reason(failure));
+        }
+    }
+
+    /** A recorded weight, or -1 when the row's value is unreadable or out of bounds. */
+    private static long frequency(Table entries, Db2Types.Row row) {
+        try {
+            long value = entries.number(row, "Frequency", -1);
+            return value < 0 || value > MAX_WEIGHT ? -1 : value;
+        } catch (Unavailable unreadable) {
+            return -1;
+        }
+    }
+
+    /**
+     * A recorded entry volume clamped to 1, or -1 when the row's value is unreadable, negative or
+     * not finite.
+     */
+    private static double entryVolume(Table entries, Db2Types.Row row) {
+        try {
+            double value = entries.decimal(row, "Volume");
+            return value >= 0 && Double.isFinite(value) ? Math.min(1, value) : -1;
+        } catch (Unavailable unreadable) {
+            return -1;
+        }
+    }
+
+    /**
+     * The recorded linear SoundKit volume; full volume, with an issue, when it is not readable.
+     * Recorded values above 1 are clamped so a kit never plays louder than the slider allows.
+     */
+    private static double volume(
+            BuildTables tables, long kit, Cancellation token, List<String> issues) {
+        try {
+            var kits = Table.open(tables, "SoundKit", token);
+            kits.decimal("VolumeFloat");
+            double value = kits.decimal(kits.get(tables, kit, token), "VolumeFloat");
+            if (!(value >= 0) || !Double.isFinite(value)) {
+                throw new Unavailable("SoundKit #" + kit + " has an invalid VolumeFloat");
+            }
+            return Math.min(1, value);
+        } catch (Unavailable unreadable) {
+            note(issues, unreadable.getMessage() + "; SoundKit #" + kit + " plays at full volume.");
+            return 1;
+        }
+    }
+
+    private static void note(List<String> issues, String message) {
+        if (issues.size() < 32 && !issues.contains(message)) {
+            issues.add(message);
         }
     }
 
@@ -438,13 +677,18 @@ public final class WorldAreaAudio {
         }
 
         private TableSchema.SchemaColumn field(String field, int slot) {
+            return field(field, slot, TableSchema.ColumnKind.INT);
+        }
+
+        private TableSchema.SchemaColumn field(
+                String field, int slot, TableSchema.ColumnKind kind) {
             var matches = schema.columns().stream().filter(c -> c.name().equals(field)).toList();
             if (matches.size() != 1) {
                 throw new Unavailable(name + "." + field + " is not in the recorded schema");
             }
             var column = matches.getFirst();
             if (!column.verifiedName()
-                    || column.kind() != TableSchema.ColumnKind.INT
+                    || column.kind() != kind
                     || (slot < 0 ? column.arrayLength() != 1 : slot >= column.arrayLength())) {
                 throw new Unavailable(name + "." + field + " has an unreviewed shape");
             }
@@ -454,6 +698,49 @@ public final class WorldAreaAudio {
         void integer(String field, int slot) {
             field(field, slot);
             index(field, slot);
+        }
+
+        /** True when the scalar integer is readable; otherwise records why in {@code issues}. */
+        boolean optionalInteger(String field, List<String> issues) {
+            try {
+                integer(field, -1);
+                return true;
+            } catch (Unavailable unreadable) {
+                note(issues, unreadable.getMessage() + "; files are picked uniformly.");
+                return false;
+            }
+        }
+
+        /** True when the scalar float is readable; otherwise records why in {@code issues}. */
+        boolean optionalDecimal(String field, List<String> issues) {
+            try {
+                decimal(field);
+                return true;
+            } catch (Unavailable unreadable) {
+                note(issues, unreadable.getMessage() + "; files play at kit volume.");
+                return false;
+            }
+        }
+
+        /** Checks a verified scalar float field and its decoded column. */
+        void decimal(String field) {
+            field(field, -1, TableSchema.ColumnKind.FLOAT);
+            if (!"float".equals(columns.get(index(field, -1)).kind())) {
+                throw new Unavailable(name + "." + field + " is not a decoded float");
+            }
+        }
+
+        double decimal(Db2Types.Row row, String field) {
+            decimal(field);
+            int i = index(field, -1);
+            if (i >= row.values().size()) {
+                throw new Unavailable(name + " #" + row.id() + " is truncated");
+            }
+            try {
+                return Double.parseDouble(row.values().get(i));
+            } catch (NumberFormatException invalid) {
+                throw new Unavailable(name + " #" + row.id() + " has a non-numeric " + field);
+            }
         }
 
         void reference(String field, int slot, Set<String> targets) {

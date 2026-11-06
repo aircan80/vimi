@@ -108,6 +108,27 @@ class WorldStreamParentStateTest {
     }
 
     @Test
+    void frameHintIsAWakeUpOnlyAndNeedsAnOpenSession() {
+        var uninitialized = new WorldStreamParentState(SESSION);
+        assertThrows(
+                IllegalStateException.class,
+                () -> uninitialized.status(new WorldStreamStatus.FramePublished(NONCE, 1)));
+        var state = ready();
+        assertEquals(
+                WorldStreamParentState.Change.FRAME,
+                state.status(new WorldStreamStatus.FramePublished(NONCE, 3)));
+        // Hints carry no ordering authority: the mapping remains the only frame source.
+        assertEquals(
+                WorldStreamParentState.Change.FRAME,
+                state.status(new WorldStreamStatus.FramePublished(NONCE, 1)));
+        assertEquals(
+                WorldStreamParentState.Change.IGNORED,
+                state.status(
+                        new WorldStreamStatus.FramePublished(new WorldStreamState.Nonce(3, 4), 1)));
+        assertNotNull(state.reserve(7, 19));
+    }
+
+    @Test
     void duplicateForeignAndPrematureStatusCannotCreateAResidentOrCredit() {
         var uninitialized = new WorldStreamParentState(SESSION);
         assertEquals(

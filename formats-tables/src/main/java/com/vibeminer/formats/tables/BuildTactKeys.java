@@ -160,6 +160,63 @@ public final class BuildTactKeys {
                 command -> Thread.ofVirtual().start(command));
     }
 
+    /**
+     * Joins TactKey blocks a client hotfix cache delivered (in order) into a fully read key set
+     * under exactly the TactKey join rule: all-zero keys are skipped first, a name already in
+     * conflict stays out, and a name seen with different bytes, whether from the TactKey tables or
+     * another block, is dropped and listed in {@link KeySet#conflicts()}. A key set whose TactKey
+     * tables were not read is returned unchanged. Never logs key bytes.
+     */
+    public static KeySet withDelivered(
+            KeySet found,
+            List<com.vibeminer.formats.hotfix.HotfixRowDecoder.OptionalKey> delivered) {
+        if (delivered.isEmpty()
+                || found.keyTable().outcome() != Outcome.READ
+                || found.lookupTable().outcome() != Outcome.READ) {
+            return found;
+        }
+        var keys = new HashMap<Long, byte[]>(found.keys);
+        var conflicts = new HashSet<String>(found.conflicts());
+        int skipped = found.skippedZero();
+        // Clones taken from the blocks; zeroed once the key set has made its own copies.
+        var copies = new java.util.ArrayList<byte[]>();
+        for (var block : delivered) {
+            byte[] key = block.key();
+            copies.add(key);
+            boolean zero = true;
+            for (byte b : key) {
+                zero &= b == 0;
+            }
+            if (zero) {
+                skipped++;
+                continue;
+            }
+            String name = nameOf(block.name());
+            if (conflicts.contains(name)) {
+                continue;
+            }
+            byte[] existing = keys.putIfAbsent(block.name(), key);
+            if (existing != null && !Arrays.equals(existing, key)) {
+                keys.remove(block.name());
+                conflicts.add(name);
+            }
+        }
+        var joined =
+                new KeySet(
+                        keys,
+                        found.keyTable(),
+                        found.lookupTable(),
+                        skipped,
+                        found.unmatched(),
+                        found.unknown(),
+                        conflicts.stream().sorted().toList(),
+                        found.malformed());
+        for (byte[] copy : copies) {
+            Arrays.fill(copy, (byte) 0);
+        }
+        return joined;
+    }
+
     /** Prepared local graphs only; unavailable build keys do not prevent use of community keys. */
     public static CompletableFuture<KeySet> loadPreparedLocal(
             BuildTables tables, Cancellation token) {
