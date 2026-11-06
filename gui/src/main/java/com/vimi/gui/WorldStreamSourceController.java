@@ -123,6 +123,7 @@ final class WorldStreamSourceController {
             return frame.height();
         }
 
+        /** Valid until {@link #discard}; the pixel array is then reused by a later frame. */
         IntBuffer pixels() {
             return frame.pixels();
         }
@@ -427,6 +428,7 @@ final class WorldStreamSourceController {
         return accepted;
     }
 
+    /** Ends the FX borrow; the frame's pixels are released for reuse and must not be read again. */
     void discard(Presentation value) {
         synchronized (lock) {
             if (borrowed == value) {
@@ -434,6 +436,7 @@ final class WorldStreamSourceController {
                 validated = false;
             }
         }
+        value.frame.release();
         kick();
     }
 
@@ -458,6 +461,7 @@ final class WorldStreamSourceController {
         synchronized (lock) {
             if (closing) return drained.copy();
             closing = true;
+            if (queued != null) queued.frame.release();
             queued = null;
         }
         // This private token has only the actual engine's coalesced metadata cancellation listener.
@@ -1131,7 +1135,7 @@ final class WorldStreamSourceController {
         var frame = session.takeLatestFrame();
         if (frame.isPresent()) {
             var candidate=frame.orElseThrow();
-            if(candidate.content()!=currentReceipt) return;
+            if(candidate.content()!=currentReceipt) { candidate.release(); return; }
             var latest=camera;
             boolean pendingWanted, hasPresented;
             synchronized(lock) {
@@ -1152,13 +1156,15 @@ final class WorldStreamSourceController {
                         historicalRaster=true;
                     }
                 }
+                candidate.release();
                 publish(Phase.PREPARING,"Loading terrain in viewing direction");
                 return;
             }
             skySuppressed=false;
             synchronized (lock) {
                 if (!closing)
-                    queued = new Presentation(frame.orElseThrow(), request.viewGeneration());
+                    queued = new Presentation(candidate, request.viewGeneration());
+                else candidate.release();
             }
             changed();
         }
@@ -1402,6 +1408,7 @@ final class WorldStreamSourceController {
         }
         synchronized (lock) {
             if (borrowed != null) return;
+            if (queued != null) queued.frame.release();
             queued = null;
             current = List.of();
             objects = List.of();

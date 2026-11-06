@@ -53,6 +53,7 @@ public final class WorldStreamSourceControllerTest {
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
         sameResidentCameraFrameDoesNotRetryMaterialPool();
         transportFrameSignalQueuesPresentationWithoutAnyPulse();
+        steadyCameraFramesReuseAFewPixelArrays();
         queuedGpuOwnerLateCloseIsPartOfControllerDrain();
         closeDuringActualInitialWdtQualificationIsCleanAndWaitsSourceDrain();
         terrainNeverWaitsForBlockedObjectPreparation();
@@ -1192,6 +1193,28 @@ public final class WorldStreamSourceControllerTest {
             try {
                 check(frame.cameraRevision()==1000,"The signaled frame is the new camera's");
             } finally { fixture.controller.discard(frame); }
+        } finally { fixture.close(); }
+    }
+
+    private static void steadyCameraFramesReuseAFewPixelArrays() throws Exception {
+        var fixture=new Fixture(new AuthoredTerrainSource.Files(),1);
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            var sequence=WorldStreamSourceController.class.getDeclaredField("acceptedSequence");sequence.setAccessible(true);
+            for(long revision=2;revision<=40;revision++) {
+                long before=sequence.getLong(fixture.controller);
+                fixture.camera(revision);
+                fixture.untilPresented(() -> {try{return sequence.getLong(fixture.controller)>before;}
+                        catch(IllegalAccessException e){throw new AssertionError(e);}});
+            }
+            long allocations=com.vibeminer.rendering.bgfx.AuthoredFramePool.allocations(fixture.gpu.session);
+            // At most three frames are live at once: the read, the transport's latest and the
+            // presentation. Every presented, discarded or superseded frame returns its array.
+            check(allocations>=1 && allocations<=3,
+                    "40 presented camera frames reuse pooled pixel arrays; allocations="+allocations);
         } finally { fixture.close(); }
     }
 

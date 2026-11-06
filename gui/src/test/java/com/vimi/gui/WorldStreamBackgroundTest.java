@@ -22,9 +22,29 @@ public final class WorldStreamBackgroundTest {
         rgba[3 + 10 * width] ^= 0x00000001;
         require(WorldStreamBackground.matchesBasicSky(pixels, width, height, () -> false),
                 "One-byte quantization tolerance");
-        rgba[3 + 10 * width] = 0xff25651a;
+        int sky = rgba[3 + 8 * width];
+        rgba[3 + 8 * width] = 0xff25651a;
         require(!WorldStreamBackground.matchesBasicSky(pixels, width, height, () -> false),
-                "A single actual foreground difference is not discarded as sky");
+                "A sampled foreground difference is not discarded as sky");
+        rgba[3 + 8 * width] = sky;
+        int step = WorldStreamBackground.STEP;
+        int[] clean = rgba.clone();
+        rgba[3 + 10 * width + 1] = 0xff25651a;
+        require(WorldStreamBackground.matchesBasicSky(pixels, width, height, () -> false),
+                "A lone pixel between samples is below the subsampled resolution");
+        // Any foreground block STEP pixels across, at every placement, is seen.
+        for (int top = 0; top + step <= height; top++) {
+            for (int left = 0; left + step <= width; left++) {
+                System.arraycopy(clean, 0, rgba, 0, clean.length);
+                for (int y = top; y < top + step; y++) {
+                    java.util.Arrays.fill(rgba, 3 + y * width + left, 3 + y * width + left + step,
+                            0xff25651a);
+                }
+                require(!WorldStreamBackground.matchesBasicSky(pixels, width, height, () -> false),
+                        "Foreground block at " + left + "," + top + " is not discarded as sky");
+            }
+        }
+        System.arraycopy(clean, 0, rgba, 0, clean.length);
         try {
             WorldStreamBackground.matchesBasicSky(pixels, width, height, () -> true);
             throw new AssertionError("Stopped scan must cancel");
