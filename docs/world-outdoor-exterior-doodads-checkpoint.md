@@ -186,6 +186,27 @@ set.
   ranges, 576 placements, 160 images, 196,608 vertices, 589,824 indices and 1,835,008 pixels.
 - **Ceiling**: 16 MiB (the maximum profile is about 14.9 MB).
 
+## Objects file version 4 (compressed textures, #374)
+
+Version 3 (#265) made each image a full mip chain. Version 4 adds a format to each image-table
+entry: (width, height, format), where the format is RGBA8, BC1, BC2 or BC3
+(`ObjectTextureFormats`). The image data section holds every chain in its own format, and its
+length is counted in bytes, capped at the RGBA8 texel cap times 4.
+
+- **BC chains** are the source's own blocks, carried byte for byte: `ceil(w/4) x ceil(h/4)` blocks
+  per level, down to 1 x 1.
+- **Compressed images** must be at least 4 x 4 at the top level, because D3D11 refuses smaller
+  block-compressed textures.
+- **BC1 images** may only be drawn by opaque ranges. bgfx's Vulkan BC1 format has no alpha, so
+  cutout and blended surfaces use BC2, BC3 or RGBA8.
+- **Upload path:** the hot child checks at start which BC formats the backend samples and reports
+  it on stderr (`World object textures: BC1 compressed, …`). It uploads those formats as blocks in
+  bounded block-row steps. Any other compressed chain is decoded to RGBA8 in the child, which you
+  can force with `-Dvimi.world.objects.rgba8=true`.
+- **Picking** decodes only the top level of compressed cutout and blended images.
+- **Native proof:** `nativeGpuWorldStreamObjectsProof` takes `-PobjectsProofBackend=vulkan|d3d11`
+  and `-PobjectsProofImages=rgba8|bc|bc-fallback`.
+
 ## GPU and heap memory budget
 
 The hot child holds `SLOT_COUNT` = 10 slots (9 active and 1 staged). Each slot carries at most one
