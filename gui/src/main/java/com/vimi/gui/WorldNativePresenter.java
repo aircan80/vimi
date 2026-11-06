@@ -140,7 +140,10 @@ final class WorldNativePresenter {
             placed = placement;
         }
         if (!shown) {
-            if (!windows.show(window, true)) return Result.REFUSED;
+            if (!windows.show(window, true)) {
+                forgetChild();
+                return Result.REFUSED;
+            }
             shown = true;
             hidden = false;
         }
@@ -162,7 +165,18 @@ final class WorldNativePresenter {
             hideLookupAt = now;
         }
         long window = child();
-        if (window != 0 && windows.show(window, false)) hidden = true;
+        if (window == 0) return;
+        if (windows.show(window, false)) hidden = true;
+        else forgetChild(); // Gone (a destroyed window): look it up again.
+    }
+
+    /**
+     * Forgets the child and everything known about it, keeping the parent: each native stream
+     * has a new helper and so a new child, which must be looked up, placed and shown afresh.
+     */
+    void reset() {
+        forgetChild();
+        hideLookedUp = false;
     }
 
     /** The child is unknown again (new parent, refused): nothing about it is assumed. */
@@ -189,7 +203,7 @@ final class WorldNativePresenter {
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,
                             ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                             ValueLayout.JAVA_INT));
-            MethodHandle showWindow = linker.downcallHandle(user32.find("ShowWindow").orElseThrow(),
+            MethodHandle showWindow = linker.downcallHandle(user32.find("ShowWindowAsync").orElseThrow(),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT));
             return new Windows() {
                 @Override public long findChild(long parent, String className) {
@@ -214,9 +228,10 @@ final class WorldNativePresenter {
 
                 @Override public boolean show(long child, boolean visible) {
                     try {
-                        // SW_SHOWNA (8) or SW_HIDE (0); the return value is the previous state.
-                        int ignored = (int) showWindow.invokeExact(child, visible ? 8 : 0);
-                        return true;
+                        // SW_SHOWNA (8) or SW_HIDE (0), posted to the helper's window thread like
+                        // ASYNCWINDOWPOS, so a hung helper cannot block the FX thread. Zero when it
+                        // could not be posted (a destroyed window).
+                        return (int) showWindow.invokeExact(child, visible ? 8 : 0) != 0;
                     } catch (Throwable failed) {
                         return false;
                     }

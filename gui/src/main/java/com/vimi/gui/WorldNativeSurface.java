@@ -83,6 +83,8 @@ final class WorldNativeSurface {
         if (overlay != null) return;
         long parent = parentHandle(owner);
         presenter.parent(parent);
+        // A new stream's helper has a new child; never reuse a previous stream's handle.
+        presenter.reset();
         var root = new StackPane();
         root.setStyle("-fx-background-color: transparent;");
         var stage = new Stage(StageStyle.TRANSPARENT);
@@ -148,6 +150,7 @@ final class WorldNativeSurface {
         overlay = null;
         refusedSince = -1;
         presenter.hide();
+        presenter.reset();
         if (stage.getScene().getRoot() instanceof StackPane root) root.getChildren().remove(viewport);
         viewport.setStyle(viewportStyle);
         frameImage.setVisible(true);

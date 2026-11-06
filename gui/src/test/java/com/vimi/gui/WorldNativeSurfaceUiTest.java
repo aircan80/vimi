@@ -34,7 +34,7 @@ public final class WorldNativeSurfaceUiTest {
             Platform.exit();
         }
         System.out.println("World native surface: overlay reparent, physical placement, hide with the view"
-                + ", focus, refusal fallback and detach passed");
+                + ", focus, refusal fallback, re-attach and detach passed");
     }
 
     private static void run() {
@@ -95,6 +95,18 @@ public final class WorldNativeSurfaceUiTest {
         surface.detach();
         require(!surface.attached() && content.getCenter() == viewport && image.isVisible()
                 && viewport.getScene() == stage.getScene(), "Detach returns the viewport and the image");
+        // The next native stream in the same view (resume, Retry, a new helper): same parent and
+        // placement, but a new child, which must be placed and shown, not the old handle.
+        content.setCenter(surface.placeholder());
+        surface.attach(stage);
+        content.layout();
+        windows.child = 8;
+        windows.calls.clear();
+        require(surface.pulse(true, 50 * second) == WorldNativeSurface.Pulse.PLACED, "Re-attached");
+        require(windows.calls.stream().anyMatch(c -> c.startsWith("place 8 "))
+                && windows.calls.contains("show 8") && windows.calls.stream().noneMatch(c -> c.endsWith(" 7")),
+                "Re-attach places and shows the new child, never the old one: " + windows.calls);
+        surface.detach();
         surface.detach();
         stage.close();
     }

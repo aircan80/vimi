@@ -12,10 +12,11 @@ public final class WorldNativePresenterTest {
         placement();
         bookkeeping();
         hideWorksBeforeTheFirstShow();
+        resetAndRefusedShowForgetTheChild();
         frameSize();
         realUser32IsHarmlessWithoutAChild();
         System.out.println("World native presenter: opt-in gating, physical placement, change-only"
-                + " placement, discovery retry, refusal fallback, hide before the first show, frame size and"
+                + " placement, discovery retry, refusal fallback, hide before the first show, reset per stream, frame size and"
                 + " user32 binding passed");
     }
 
@@ -133,6 +134,35 @@ public final class WorldNativePresenterTest {
                 "After a refusal the old placement is not assumed: placed and shown again: " + windows.calls);
     }
 
+    /** A new stream's child is looked up, placed and shown afresh, never the old handle. */
+    private static void resetAndRefusedShowForgetTheChild() {
+        var windows = new Fake();
+        var presenter = new WorldNativePresenter(windows);
+        var at = new WorldNativePresenter.Placement(1, 2, 3, 4);
+        presenter.parent(77);
+        windows.child = 99;
+        require(presenter.show(at) == WorldNativePresenter.Result.SHOWN, "First stream shown");
+        presenter.hide();
+        presenter.reset();
+        windows.child = 100;
+        windows.calls.clear();
+        require(presenter.show(at) == WorldNativePresenter.Result.SHOWN, "Second stream shown");
+        require(windows.calls.equals(List.of("find 77 " + WorldNativePresenter.CHILD_CLASS,
+                "place 100 1,2 3x4", "show 100")),
+                "Same parent and placement: the new child is found, placed and shown: " + windows.calls);
+        presenter.hide();
+        windows.refuseShow = true;
+        windows.child = 101;
+        windows.calls.clear();
+        require(presenter.show(at) == WorldNativePresenter.Result.REFUSED, "A stale handle is refused");
+        windows.refuseShow = false;
+        windows.calls.clear();
+        presenter.show(at);
+        require(windows.calls.equals(List.of("find 77 " + WorldNativePresenter.CHILD_CLASS,
+                "place 101 1,2 3x4", "show 101")),
+                "A refused show forgets the handle: looked up and placed again: " + windows.calls);
+    }
+
     private static void frameSize() {
         require(java.util.Arrays.equals(WorldNativePresenter.frameSize(false, 900, 600, 800, 533),
                 new double[] {800, 533}), "Readback: the image's size");
@@ -148,6 +178,7 @@ public final class WorldNativePresenterTest {
         var windows = WorldNativePresenter.user32();
         require(windows.findChild(0, "NoSuchClassForVimiTests") == 0, "No such child: 0");
         require(!windows.place(0, new WorldNativePresenter.Placement(0, 0, 1, 1)), "No window: refused");
+        require(!windows.show(0, true) && !windows.show(0, false), "No window: ShowWindowAsync refused");
         var off = WorldNativePresenter.unavailable();
         require(off.findChild(1, "x") == 0 && !off.place(1, new WorldNativePresenter.Placement(0, 0, 1, 1))
                 && !off.show(1, true), "Unavailable: every call fails");
