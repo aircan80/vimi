@@ -269,6 +269,8 @@ class WorldStreamTransportTest {
                   if(p[2].equals("CAM")) {
                     java.nio.file.Files.writeString(java.nio.file.Path.of(a[1]),line);
                     System.out.print(prefix+"CAMERA_APPLIED "+p[4]+" "+p[5]+" "+p[6]+"\\n");
+                    // A wake-up hint with no matching mapping frame is harmless.
+                    System.out.print(prefix+"FRAME "+p[3]+"\\n");
                     System.out.flush();
                   } else if(p[2].equals("CLOSE")) {
                     System.out.print(prefix+"CLOSED\\n"); System.out.flush(); return;
