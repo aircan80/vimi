@@ -35,6 +35,19 @@ final class WorldStreamTileSplatTest {
     }
 
     @Test
+    void aWaterRemainderShorterThanItsHeaderIsRefused() {
+        var tile = WorldStreamTileFileTest.full(false);
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        WorldStreamTileFile.readWater(
+                                java.nio.ByteBuffer.allocate(64),
+                                WorldStreamTileFileTest.header(tile, true),
+                                tile,
+                                () -> false));
+    }
+
+    @Test
     void splatAndWaterTrailersRoundTripInOrder() throws Exception {
         var tile = WorldStreamTileFileTest.full(false);
         var header = WorldStreamTileFileTest.header(tile, true);
