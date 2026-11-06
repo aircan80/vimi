@@ -139,6 +139,9 @@ public final class AuthoredWorldControllerChild {
                     int slot = late.lease().slot();
                     if (Files.exists(directory.getParent().resolve("authored-fail-objects"))) {
                         outcome = "FAILED";
+                    } else if (Files.exists(directory.getParent().resolve("authored-budget-objects"))
+                            && state.members.contains(slot)) {
+                        outcome = "BUDGET";
                     } else if (!state.members.contains(slot)
                             || !late.lease().equals(state.leases.get(slot))
                             || state.transactions.getOrDefault(slot, 0L) != late.transaction()) {
@@ -241,7 +244,7 @@ public final class AuthoredWorldControllerChild {
         final java.util.Map<Integer,WorldStreamState.Lease> leases=new java.util.HashMap<>();
         final java.util.Map<Integer,Long> transactions=new java.util.HashMap<>();
         final Set<Integer> objects = new HashSet<>();
-        final long[] generations = new long[10];
+        final long[] generations = new long[WorldStreamState.SLOTS];
         long serial;
         boolean available;
         WorldStreamState.Lease lease;
