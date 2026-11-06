@@ -554,10 +554,18 @@ final class WorldStreamScopesTest {
                 assertTrue(written.isOpen());
             }
             // The scopes' source reads of the WDT (1) and root ADT (2) bind index facts only:
-            // statContent, open, statContent; never a full stat with names and a format sniff.
-            String trace = String.join(",", calls);
-            assertTrue(trace.startsWith("statContent:1,openRead:1,statContent:1,"), trace);
-            assertTrue(trace.contains(",statContent:2,openRead:2,statContent:2,"), trace);
+            // per file, the first calls are statContent, open, statContent; never a full stat
+            // with names and a format sniff. Other files and later calls are not constrained.
+            for (long id : new long[] {1, 2}) {
+                var forId =
+                        calls.stream()
+                                .filter(call -> call.endsWith(":" + id))
+                                .map(call -> call.substring(0, call.indexOf(':')))
+                                .limit(3)
+                                .toList();
+                assertEquals(
+                        List.of("statContent", "openRead", "statContent"), forId, calls.toString());
+            }
         } finally {
             world.closeAsync().get(5, TimeUnit.SECONDS);
             pool.closeAsync().get(5, TimeUnit.SECONDS);
