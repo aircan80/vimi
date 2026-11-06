@@ -32,7 +32,11 @@ public final class WorldStreamObjectsMaterialProof {
                 WorldStreamTransport.prepare(
                         output,
                         new WorldStreamTransport.Spec(
-                                "ab".repeat(32), 1, WorldStreamTransport.Backend.VULKAN, true));
+                                "ab".repeat(32),
+                                1,
+                                WorldStreamTransportProof.proofBackend(
+                                        System.getProperty("vimi.worldProof.backend", "vulkan")),
+                                true));
         var session =
                 prepared.launch(
                         controls -> {

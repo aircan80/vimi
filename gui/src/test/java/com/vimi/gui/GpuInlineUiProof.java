@@ -49,9 +49,7 @@ public final class GpuInlineUiProof {
                             if (processes.stream().anyMatch(Process::isAlive))
                                 throw new AssertionError("Renderer overlap");
                             var command = new ArrayList<String>();
-                            command.add(
-                                    Path.of(System.getProperty("java.home"), "bin", "java")
-                                            .toString());
+                            command.add(RendererChildren.launcherPath());
                             command.add("--enable-native-access=ALL-UNNAMED");
                             command.add("-cp");
                             command.add(System.getProperty("java.class.path"));

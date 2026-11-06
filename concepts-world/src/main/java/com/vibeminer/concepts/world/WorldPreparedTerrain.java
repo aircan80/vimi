@@ -15,7 +15,14 @@ import java.util.function.Consumer;
  */
 final class WorldPreparedTerrain {
     static final long MAX_RECEIPT_BYTES = 2048L + 64L * 512;
-    static final long MAX_OUTPUT_RECEIPT_BYTES = 12 * MAX_RECEIPT_BYTES;
+
+    /**
+     * Written outputs alive at once: the World stream's 25 residents (a 5 x 5 neighborhood), its
+     * staged tile, one pending tile and one retiring (issue #173).
+     */
+    static final int MAX_OUTPUTS = 28;
+
+    static final long MAX_OUTPUT_RECEIPT_BYTES = MAX_OUTPUTS * MAX_RECEIPT_BYTES;
 
     enum Outcome {
         TEXTURED,
@@ -508,7 +515,7 @@ final class WorldPreparedTerrain {
     private synchronized <R extends AutoCloseable> WrittenTile<R> reserve(
             WorldStreamScopes.Scope scope) {
         checkOpen();
-        if (outputs.size() >= 12) {
+        if (outputs.size() >= MAX_OUTPUTS) {
             throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OUTPUT_CREDIT);
         }
         var value = new WrittenTile<R>(this, Objects.requireNonNull(scope));

@@ -215,7 +215,7 @@ final class WorldStreamScopesTest {
             assertEquals(0, files.totalOpens());
             var scope = source.createScope(REQUEST, Cancellation.NONE);
             source.activate(scope);
-            for (int i = 0; i < 12; i++) {
+            for (int i = 0; i < WorldPreparedTerrain.MAX_OUTPUTS; i++) {
                 owners.add(
                         source.prepareAndWrite(
                                 scope,
@@ -265,7 +265,9 @@ final class WorldStreamScopesTest {
                 assertThrows(IllegalStateException.class, () -> views.get().facts());
                 assertThrows(IllegalStateException.class, () -> materials.get().diffuseCount());
             }
-            assertEquals(12L * 34_816, world.preparedTerrain().retainedReceiptBytes());
+            assertEquals(
+                    (long) WorldPreparedTerrain.MAX_OUTPUTS * 34_816,
+                    world.preparedTerrain().retainedReceiptBytes());
             assertEquals(
                     WorldPreparedTerrain.MAX_OUTPUT_RECEIPT_BYTES,
                     world.preparedTerrain().retainedReceiptBytes());
@@ -273,11 +275,11 @@ final class WorldStreamScopesTest {
                     34_816,
                     pool.stats().receiptMetadataBytes(),
                     "Shared pool receipt is conservatively charged again per output");
-            assertEquals(12, pool.stats().leaseClaims());
+            assertEquals(WorldPreparedTerrain.MAX_OUTPUTS, pool.stats().leaseClaims());
             for (var owner : owners) {
                 owner.close();
             }
-            assertEquals(12, retired.get());
+            assertEquals(WorldPreparedTerrain.MAX_OUTPUTS, retired.get());
             assertEquals(0, world.preparedTerrain().retainedReceiptBytes());
             for (var type :
                     List.of(
@@ -1125,7 +1127,7 @@ final class WorldStreamScopesTest {
             var source = world.preparedTerrain();
             var scope = source.createScope(REQUEST, Cancellation.NONE);
             var identities = new ArrayList<Integer>();
-            for (int i = 0; i < 12; i++) {
+            for (int i = 0; i < WorldPreparedTerrain.MAX_OUTPUTS; i++) {
                 owners.add(
                         source.prepareAndWrite(
                                 scope,
@@ -1148,7 +1150,7 @@ final class WorldStreamScopesTest {
                 assertThrows(IllegalStateException.class, () -> escaped.get().tile());
             }
             assertEquals(1, identities.stream().distinct().count());
-            assertEquals(12, pool.stats().leaseClaims());
+            assertEquals(WorldPreparedTerrain.MAX_OUTPUTS, pool.stats().leaseClaims());
             int opens = files.totalOpens();
             assertThrows(
                     IllegalStateException.class,
@@ -1160,7 +1162,7 @@ final class WorldStreamScopesTest {
                 owner.close();
                 owner.close();
             }
-            assertEquals(12, closed.get());
+            assertEquals(WorldPreparedTerrain.MAX_OUTPUTS, closed.get());
             assertEquals(0, pool.stats().leaseClaims());
         } finally {
             for (var owner : owners) {
@@ -1700,7 +1702,7 @@ final class WorldStreamScopesTest {
     }
 
     @Test
-    void twelvePinnedGeometryVersionsSurviveReplacementAndReleaseAllowsNextSourceRead() {
+    void everyPinnedGeometryVersionUpToTheLimitSurvivesReplacementAndReleaseAllowsNextSourceRead() {
         var files = new WorldTerrainTextureSourceTest.Files();
         var tables = new Tables(files);
         var source = new WorldStreamScopes(tables.handle(), files.files());
@@ -1709,7 +1711,7 @@ final class WorldStreamScopesTest {
         try {
             var scope = source.create(REQUEST, Cancellation.NONE);
             var original = files.sources.get(2L);
-            for (int i = 0; i < 12; i++) {
+            for (int i = 0; i < WorldGeometryCache.LIMIT; i++) {
                 var changed = original.clone();
                 java.nio.ByteBuffer.wrap(changed)
                         .order(java.nio.ByteOrder.LITTLE_ENDIAN)
@@ -1725,7 +1727,7 @@ final class WorldStreamScopesTest {
                                 Cancellation.NONE,
                                 cache::prepare));
             }
-            assertEquals(12, files.opens(2));
+            assertEquals(WorldGeometryCache.LIMIT, files.opens(2));
             assertNotEquals(outputs.getFirst().fingerprint(), outputs.getLast().fingerprint());
             outputs.getFirst().withTile(tile -> assertTrue(tile.vertexCount() > 0));
             files.changeAfterRead = false;
@@ -1738,7 +1740,7 @@ final class WorldStreamScopesTest {
                                     WorldStreamScopes.UseProfile.TERRAIN_BASIC,
                                     Cancellation.NONE,
                                     cache::prepare));
-            assertEquals(12, files.opens(2));
+            assertEquals(WorldGeometryCache.LIMIT, files.opens(2));
             outputs.removeFirst().close();
             var next =
                     source.withRecordedTile(
@@ -1748,7 +1750,7 @@ final class WorldStreamScopesTest {
                             Cancellation.NONE,
                             cache::prepare);
             outputs.add(next);
-            assertEquals(13, files.opens(2));
+            assertEquals(WorldGeometryCache.LIMIT + 1, files.opens(2));
         } finally {
             for (var output : outputs) {
                 output.close();
@@ -1899,7 +1901,7 @@ final class WorldStreamScopesTest {
         try {
             var scope = source.create(REQUEST, Cancellation.NONE);
             var outputs = new ArrayList<WorldGeometryCache.Prepared>();
-            for (int i = 0; i < 12; i++) {
+            for (int i = 0; i < WorldGeometryCache.LIMIT; i++) {
                 outputs.add(
                         source.withRecordedTile(
                                 scope,
