@@ -206,6 +206,17 @@ final class WorldStreamSession {
                         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
                     } // Native presentation: advance() paces itself on the display.
                 }
+                if (Boolean.getBoolean(FRAME_TIMINGS_PROPERTY)) {
+                    // Diagnostics for the readback comparison (#370): stderr, never protocol.
+                    System.err.println(
+                            "WORLD_FRAME_TIMINGS readback="
+                                    + (owner.stagingReadback() ? "staging" : "direct")
+                                    + " meanPublishMicros="
+                                    + owner.meanPublishNanos() / 1000
+                                    + " advance "
+                                    + owner.advanceSummary());
+                    System.err.flush();
+                }
                 requestClose();
                 decoderCanceled.set(true);
                 objectsCanceled.set(true);
@@ -308,6 +319,9 @@ final class WorldStreamSession {
     static long nextDrawBase(long previous, long now) {
         return now - previous < CATCH_UP_LIMIT ? previous + DRAW_INTERVAL : now;
     }
+
+    /** {@code -Dvimi.world.frameTimings=true}: print per-size frame timings to stderr at close. */
+    static final String FRAME_TIMINGS_PROPERTY = "vimi.world.frameTimings";
 
     private void readControls(InputStream input) {
         try {
@@ -432,7 +446,8 @@ final class WorldStreamSession {
 
     private Decoded decodeOffer(WorldStreamControl.Offer offer) {
         try {
-            var tile = decodeTile(session, directory, offer, decoderCanceled::get);
+            var tile =
+                    decodeTile(session, directory, offer, decoderCanceled::get, objectsRejections);
             return new Decoded(tile, tile.header(), null, null);
         } catch (Throwable error) {
             return new Decoded(null, null, null, error);
@@ -449,6 +464,16 @@ final class WorldStreamSession {
             Path directory,
             WorldStreamControl.Offer offer,
             java.util.function.BooleanSupplier canceled)
+            throws IOException {
+        return decodeTile(session, directory, offer, canceled, new ObjectsRejections());
+    }
+
+    static WorldStreamPackedTile decodeTile(
+            WorldStreamEnvelope.Session session,
+            Path directory,
+            WorldStreamControl.Offer offer,
+            java.util.function.BooleanSupplier canceled,
+            ObjectsRejections rejections)
             throws IOException {
         var expected =
                 new WorldStreamTileFile.Expected(
@@ -490,10 +515,46 @@ final class WorldStreamSession {
                     payload.close();
                     throw new java.util.concurrent.CancellationException();
                 }
+                rejections.reject(offer.transaction(), failed);
                 state = 2;
             }
         }
         return WorldStreamPackedTile.prepare(payload, objects, state, canceled);
+    }
+
+    /**
+     * Objects sets refused by validation, packing or upload in one session: the tile keeps its
+     * terrain and the reason goes to stderr, the first of the session and then every 64th. The
+     * parent logs the redacted stderr tail with its objects-failure record. Thread-safe: the tile
+     * decoder and the owner thread both report.
+     */
+    static final class ObjectsRejections {
+        private final java.util.concurrent.atomic.AtomicLong count =
+                new java.util.concurrent.atomic.AtomicLong();
+
+        /** The record of this rejection; written to stderr when its count is sampled. */
+        String reject(long transaction, Throwable failed) {
+            return objectsRejected(count.incrementAndGet(), transaction, failed);
+        }
+    }
+
+    private final ObjectsRejections objectsRejections = new ObjectsRejections();
+
+    private static String objectsRejected(long count, long transaction, Throwable failed) {
+        String record =
+                "World exterior objects of tile transaction "
+                        + transaction
+                        + " rejected, terrain kept: "
+                        + reason(failed)
+                        + " ("
+                        + count
+                        + (count == 1 ? " objects set" : " objects sets")
+                        + " this session)";
+        if (count == 1 || count % 64 == 0) {
+            System.err.println(record);
+            System.err.flush();
+        }
+        return record;
     }
 
     /**
@@ -589,6 +650,10 @@ final class WorldStreamSession {
             if (result.objects() != null) {
                 result.objects().close();
             }
+            if (!closing.get()
+                    && !(result.error() instanceof java.util.concurrent.CancellationException)) {
+                objectsRejections.reject(command.transaction(), result.error());
+            }
             boolean live = state.objectsLive(command.lease());
             retireObjects(command, false);
             if (!closing.get()) {
@@ -679,21 +744,34 @@ final class WorldStreamSession {
                 if (result.tile() != null) {
                     result.tile().close();
                 }
+                // An Error (out of memory, a broken JVM) is not a packet problem: session-fatal.
+                if (result.error() instanceof Error fatal) {
+                    throw fatal;
+                }
                 state.decoded(offer.lease(), false);
                 if (!decoderCanceled.get() && !closing.get()) {
+                    rejections.reject(
+                            offer.transaction(), "invalid packet: " + reason(result.error()));
                     send("REJECTED " + offer.transaction() + " INVALID_PACKET");
                 }
             } else {
                 try {
-                    uploadHeader = result.header();
-                    upload = owner.begin(result.tile());
-                    issued = released = 0;
-                    staged = false;
-                    var accepted =
-                            state.decoded(offer.lease(), true, uploadHeader.x(), uploadHeader.y());
-                    if (accepted != WorldStreamState.Result.OK) {
-                        throw new IllegalStateException(
-                                "Decoded state rejected its actual coordinates");
+                    var admitted =
+                            admit(
+                                    state,
+                                    offer.lease(),
+                                    result.header().x(),
+                                    result.header().y(),
+                                    owner::begin,
+                                    result.tile());
+                    if (admitted.upload() == null) {
+                        rejections.reject(offer.transaction(), admitted.reason());
+                        send("REJECTED " + offer.transaction() + " INVALID_PACKET");
+                    } else {
+                        uploadHeader = result.header();
+                        upload = admitted.upload();
+                        issued = released = 0;
+                        staged = false;
                     }
                 } finally {
                     result.tile().close();
@@ -761,6 +839,83 @@ final class WorldStreamSession {
                             + decoded.next());
         }
     }
+
+    /**
+     * A bounded, path-free, single-line reason for a stderr diagnostic: the exception class and
+     * message with control characters blanked, absolute or relative paths replaced by {@code
+     * <path>}, cut to 220 characters (as WorldStreamMain's failure line).
+     */
+    static String reason(Throwable error) {
+        if (error == null) {
+            return "unknown";
+        }
+        String text =
+                error.getClass().getSimpleName()
+                        + (error.getMessage() == null ? "" : ": " + error.getMessage());
+        text = text.replaceAll("[\\p{Cntrl}]", " ");
+        text = text.replaceAll("(?:[A-Za-z]:)?[\\\\/][^\\s:;,'\"]*", "<path>");
+        return text.substring(0, Math.min(220, text.length()));
+    }
+
+    /** The outcome of admitting one decoded tile: its upload, or the reason it was refused. */
+    record Admission<U>(U upload, String reason) {}
+
+    /**
+     * Admits one decoded, valid tile (issue #365). Its header's coordinates are checked against the
+     * slot before the renderer sees it; a mismatch is a per-transaction rejection: the state
+     * retires the incoming lease as an invalid packet and the session keeps streaming. Otherwise
+     * the renderer begins the upload, and any renderer refusal stays session-fatal.
+     */
+    static <T, U> Admission<U> admit(
+            WorldStreamState state,
+            WorldStreamState.Lease lease,
+            int tileX,
+            int tileY,
+            java.util.function.Function<T, U> begin,
+            T tile) {
+        var accepted = state.decoded(lease, true, tileX, tileY);
+        if (accepted == WorldStreamState.Result.INVALID_TABLE) {
+            if (state.decoded(lease, false) != WorldStreamState.Result.OK) {
+                throw new IllegalStateException("Invalid tile could not retire its lease");
+            }
+            return new Admission<>(null, "tile coordinates do not match its slot");
+        }
+        if (accepted != WorldStreamState.Result.OK) {
+            throw new IllegalStateException("Decoded tile outside its lease");
+        }
+        // The decoder validated the header's session and lease and the state just accepted it,
+        // so a renderer refusal here is a broken state/renderer invariant: fatal, as before.
+        return new Admission<>(begin.apply(tile), null);
+    }
+
+    /**
+     * Per-transaction rejections on stderr, rate limited: the first of the session and then every
+     * 64th. The parent logs the redacted tail with its own rejection record.
+     */
+    static final class Rejections {
+        private long count;
+
+        /** The session's rejection count when this one was written, else 0. */
+        long reject(long transaction, String reason) {
+            count++;
+            if (count != 1 && count % 64 != 0) {
+                return 0;
+            }
+            System.err.println(
+                    "World tile transaction "
+                            + transaction
+                            + " rejected: "
+                            + reason
+                            + " ("
+                            + count
+                            + (count == 1 ? " rejection" : " rejections")
+                            + " this session)");
+            System.err.flush();
+            return count;
+        }
+    }
+
+    private final Rejections rejections = new Rejections();
 
     private void reconcile() {
         if (upload == null) {

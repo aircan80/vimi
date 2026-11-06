@@ -29,6 +29,16 @@ final class WorldStreamPackedTile implements AutoCloseable {
 
         ByteBuffer geometry, atlas;
 
+        /**
+         * Optional splatting inputs (issue #174 step 2): the mask chain (atlas layout, box mips),
+         * the 16 x 16 table of four array layers, and new layers with their full chains.
+         */
+        ByteBuffer splatAlpha;
+
+        byte[] splatTable;
+        int[] splatLayers = new int[0];
+        ByteBuffer[] splatChains = new ByteBuffer[0];
+
         /** Optional exterior objects to upload after terrain, or null. */
         WorldStreamPackedObjects objects;
 
@@ -53,7 +63,12 @@ final class WorldStreamPackedTile implements AutoCloseable {
         }
 
         long payloadBytes() {
-            return (geometry == null ? 0 : geometry.capacity())
+            long splat = splatAlpha == null ? 0 : splatAlpha.capacity() + 1024L;
+            for (var chain : splatChains) {
+                splat += chain.capacity();
+            }
+            return splat
+                    + (geometry == null ? 0 : geometry.capacity())
                     + (long) (atlas == null ? 0 : atlas.capacity())
                     + (objects == null ? 0 : objects.payloadBytes());
         }
@@ -193,17 +208,40 @@ final class WorldStreamPackedTile implements AutoCloseable {
                 atlas.clear();
                 WorldStreamAtlasMips.build(atlas, canceled);
             }
+            // Optional splatting inputs ride heap buffers: the renderer copies them in bounded
+            // slices, so they never hold a release ticket.
+            var splat = atlas == null ? null : input.splat();
+            ByteBuffer splatAlpha = null;
+            ByteBuffer[] splatChains = new ByteBuffer[0];
+            if (splat != null) {
+                splatAlpha = ByteBuffer.allocate(WorldStreamAtlasMips.CHAIN_BYTES);
+                splatAlpha.put(splat.alpha()).clear();
+                WorldStreamAtlasMips.box(splatAlpha, canceled);
+                splatChains = new ByteBuffer[splat.layers().length];
+                for (int i = 0; i < splatChains.length; i++) {
+                    check(canceled);
+                    // The layer's BC1 chain as carried; the renderer decodes it only when its
+                    // backend has no BC1 array.
+                    splatChains[i] = ByteBuffer.wrap(splat.pixels()[i]).asReadOnlyBuffer();
+                }
+            }
             check(canceled);
-            var result =
-                    new WorldStreamPackedTile(
-                            new Source(
-                                    input.header(),
-                                    tile.triangleCount(),
-                                    waterTriangles,
-                                    geometry,
-                                    atlas,
-                                    objects,
-                                    objectsState));
+            var source =
+                    new Source(
+                            input.header(),
+                            tile.triangleCount(),
+                            waterTriangles,
+                            geometry,
+                            atlas,
+                            objects,
+                            objectsState);
+            if (splat != null) {
+                source.splatAlpha = splatAlpha;
+                source.splatTable = splat.table();
+                source.splatLayers = splat.layers();
+                source.splatChains = splatChains;
+            }
+            var result = new WorldStreamPackedTile(source);
             geometry = null;
             atlas = null;
             return result;
