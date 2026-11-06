@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.world.ObjectTextureMips;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -392,6 +393,17 @@ final class WorldStreamObjectsFile {
     /** CREATE_NEW publication of {@code tile-<txn>.wso} in directory; never replaces a file. */
     static Reference write(Path directory, Identity identity, Data data, BooleanSupplier canceled)
             throws IOException {
+        long started = WorldStageTimings.start();
+        try {
+            return writeTimed(directory, identity, data, canceled);
+        } finally {
+            WorldStageTimings.stop("objectsFile.write.total", started);
+        }
+    }
+
+    private static Reference writeTimed(
+            Path directory, Identity identity, Data data, BooleanSupplier canceled)
+            throws IOException {
         Objects.requireNonNull(directory);
         Objects.requireNonNull(identity);
         Objects.requireNonNull(data);
@@ -462,7 +474,10 @@ final class WorldStreamObjectsFile {
                 if (channel.size() != data.bytes()) {
                     throw new IOException("Objects file length differs");
                 }
+                WorldStageTimings.add("objectsFile.write.bytes", data.bytes());
+                long forcing = WorldStageTimings.start();
                 channel.force(false);
+                WorldStageTimings.stop("objectsFile.write.fsync", forcing);
             }
             check(canceled);
             if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
@@ -480,6 +495,17 @@ final class WorldStreamObjectsFile {
 
     /** Reads and fully validates one objects file bound to exactly this tile and reference. */
     static Data read(Path path, Identity identity, Reference reference, BooleanSupplier canceled)
+            throws IOException {
+        long started = WorldStageTimings.start();
+        try {
+            return readTimed(path, identity, reference, canceled);
+        } finally {
+            WorldStageTimings.stop("child.objectsFile.read", started);
+        }
+    }
+
+    private static Data readTimed(
+            Path path, Identity identity, Reference reference, BooleanSupplier canceled)
             throws IOException {
         Objects.requireNonNull(identity);
         Objects.requireNonNull(reference);

@@ -687,6 +687,41 @@ tasks.register('worldStreamNeighborhoodTest', JavaExec) {
 }
 check.dependsOn worldStreamNeighborhoodTest
 
+// Opt-in World measurement wiring (helper options, GC log parsing); no data, GPU or display.
+tasks.register('worldMeasurementTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldMeasurementTest'
+}
+check.dependsOn worldMeasurementTest
+
+// Phase 0 real-data World measurement (docs/world-measurement-baseline.md). Opt-in, never part
+// of check: opens the prepared local build (holds the store's writer lock; close the app),
+// starts the GPU helper and a JavaFX toolkit, and ends within ten minutes. -Pprobe.mode=refusals
+// counts terrain texture refusals over whole maps instead of streaming.
+tasks.register('worldMeasurementProbe', JavaExec) {
+    group = 'verification'
+    description = 'Measures the real World pipeline on the local build; see docs/world-measurement-baseline.md.'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldMeasurementProbe'
+    timeout = java.time.Duration.ofMinutes(10)
+    def out = layout.buildDirectory.dir('world-measurement').get().asFile
+    doFirst { out.mkdirs() }
+    jvmArgs "-Xlog:gc*:file=${new File(out, 'gc.log').absolutePath}:uptime,level,tags"
+    systemProperty 'vimi.world.stageTimings', 'true'
+    systemProperty 'vimi.world.stageTimings.file', new File(out, 'helper-timings.txt').absolutePath
+    systemProperty 'probe.out', out.absolutePath
+    systemProperty 'probe.gcLog', new File(out, 'gc.log').absolutePath
+    ['probe.mode', 'probe.build', 'probe.scenarios', 'probe.maps', 'probe.fillSeconds',
+     'probe.rotateSeconds', 'probe.flySeconds', 'probe.settleSeconds', 'probe.mapSeconds',
+     'probe.deadlineSeconds', 'vimi.world.objectTextures', 'vimi.world.creatures',
+     'vimi.gpu.backend'].each { name ->
+        def value = providers.gradleProperty(name)
+        if (value.isPresent()) systemProperty name, value.get()
+    }
+}
+
 tasks.register('legacyWorldActivityTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
