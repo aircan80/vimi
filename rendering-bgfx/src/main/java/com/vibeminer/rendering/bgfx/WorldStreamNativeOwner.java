@@ -72,7 +72,11 @@ final class WorldStreamNativeOwner implements AutoCloseable {
      * anything else that uses transient vertices.
      */
     static int transientVertexBytes(int bgfxDefault) {
-        return Math.max(bgfxDefault, BgfxWorldStreamRenderer.MAX_FRAME_INSTANCE_BYTES + (1 << 20));
+        return transientVertexBytes(bgfxDefault, BgfxWorldStreamRenderer.MAX_FRAME_INSTANCE_BYTES);
+    }
+
+    static int transientVertexBytes(int bgfxDefault, int frameInstanceBytes) {
+        return Math.max(bgfxDefault, frameInstanceBytes + (1 << 20));
     }
 
     /** Samples of the World render target when the device can multisample it. */

@@ -94,11 +94,18 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     static final int MAX_TICKETS = 64;
 
     /**
-     * Instance data of one frame at the caps (#382): every placement of nine active tiles, once in
-     * the opaque/cutout pass and once in the sorted pass.
+     * Instance data of one frame at the caps (#382): every placement of every resident slot (all
+     * may be in view, e.g. at #276's FAR distance), once in the opaque/cutout pass and once in the
+     * sorted pass.
      */
     static final int MAX_FRAME_INSTANCE_BYTES =
-            9 * WorldStreamObjectsFile.MAX_PLACEMENTS * WorldObjectInstances.STRIDE * 2;
+            frameInstanceBytes(SLOT_COUNT, WorldStreamObjectsFile.MAX_PLACEMENTS);
+
+    /** Instance bytes of one frame for {@code tiles} resident tiles of {@code placements} each. */
+    static int frameInstanceBytes(int tiles, int placements) {
+        return Math.multiplyExact(
+                Math.multiplyExact(tiles, placements), WorldObjectInstances.STRIDE * 2);
+    }
 
     /** One geometry upload slice in bytes: whole vertices and whole indices. */
     static final int GEOMETRY_CHUNK = 6144 * WorldStreamPackedTile.VERTEX_BYTES;

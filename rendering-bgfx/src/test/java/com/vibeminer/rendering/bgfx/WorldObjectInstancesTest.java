@@ -72,18 +72,23 @@ class WorldObjectInstancesTest {
     @Test
     void transientBudgetHoldsAFrameOfInstancesAtTheCaps() {
         int frame = BgfxWorldStreamRenderer.MAX_FRAME_INSTANCE_BYTES;
+        // Every resident slot can be in view: the budget follows the slot count.
         assertEquals(
-                9 * WorldStreamObjectsFile.MAX_PLACEMENTS * WorldObjectInstances.STRIDE * 2, frame);
+                BgfxWorldStreamRenderer.SLOT_COUNT
+                        * WorldStreamObjectsFile.MAX_PLACEMENTS
+                        * WorldObjectInstances.STRIDE
+                        * 2,
+                frame);
         int bgfxDefault = 6 << 20;
-        // Never below bgfx's default, and always a whole frame of instances plus 1 MiB.
         assertEquals(
                 Math.max(bgfxDefault, frame + (1 << 20)),
                 WorldStreamNativeOwner.transientVertexBytes(bgfxDefault));
-        assertEquals(frame + (1 << 20), WorldStreamNativeOwner.transientVertexBytes(0));
-        // At #440's raised caps (4,160 placements per tile) a frame needs about 3.6 MB: with the
-        // extra MiB it still fits bgfx's default budget, and the init raises it otherwise.
-        int raised = 9 * 4160 * WorldObjectInstances.STRIDE * 2;
-        org.junit.jupiter.api.Assertions.assertTrue(
-                raised + (1 << 20) <= bgfxDefault, "raised caps fit");
+        // #276's FAR distance (26 resident slots) at #440's caps (4,160 placements per tile):
+        // about 10.4 MB of instances, so the init raises the budget above bgfx's default.
+        int far = BgfxWorldStreamRenderer.frameInstanceBytes(26, 4160);
+        assertEquals(10_383_360, far);
+        int budget = WorldStreamNativeOwner.transientVertexBytes(bgfxDefault, far);
+        org.junit.jupiter.api.Assertions.assertTrue(budget >= far + (1 << 20), "FAR fits");
+        org.junit.jupiter.api.Assertions.assertTrue(budget > bgfxDefault, "raised above default");
     }
 }
