@@ -253,7 +253,7 @@ public final class WorldToastsUiTest {
                     var reader = frame.getPixelReader();
                     for (int y = 0; y < saved.getHeight(); y += Math.max(1, saved.getHeight() / 7))
                         for (int x = 0; x < saved.getWidth(); x += Math.max(1, saved.getWidth() / 7))
-                            require(saved.getRGB(x, y) == reader.getArgb(x, y),
+                            require(saved.getRGB(x, y) == (reader.getArgb(x, y) | 0xff000000),
                                     "The file holds the frame's pixels only (no HUD) at " + x + "," + y);
                 } catch (java.io.IOException error) {
                     throw new AssertionError(error);

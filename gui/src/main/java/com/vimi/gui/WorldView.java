@@ -118,6 +118,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private java.nio.file.Path screenshots;
     // Opens a folder in the desktop's file manager; tests replace it.
     private java.util.function.Consumer<java.nio.file.Path> folderOpener = WorldView::openFolder;
+    // One screenshot write at a time; each holds a full-frame copy.
+    private final java.util.concurrent.ExecutorService screenshotWriter =
+            java.util.concurrent.Executors.newSingleThreadExecutor(
+                    Thread.ofVirtual().name("world-screenshot").factory());
     /** The first-run help is long: it stays up longer than an event toast. */
     static final long HELP_TOAST_NANOS = 10_000_000_000L;
     private WorldSpawnOverlay spawns;
@@ -3332,6 +3336,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
      * folder: pixels are copied on FX, written off it, and a toast says where the file went.
      */
     void screenshot() {
+        if (closed) return;
         var folder = screenshots;
         if (!explorer || !(image.getImage() instanceof javafx.scene.image.Image frame)
                 || frame.getPixelReader() == null) {
@@ -3346,9 +3351,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var argb = new int[width * height];
         frame.getPixelReader().getPixels(0, 0, width, height,
                 javafx.scene.image.PixelFormat.getIntArgbInstance(), argb, 0, width);
+        // The frame is drawn opaque on screen; the file is too.
+        for (int i = 0; i < argb.length; i++) argb[i] |= 0xff000000;
         String name = WorldScreenshots.fileName(inventory == null ? null : inventory.map().name(),
                 java.time.ZonedDateTime.now());
-        Thread.ofVirtual().name("world-screenshot").start(() -> {
+        screenshotWriter.execute(() -> {
             java.nio.file.Path saved = null;
             Throwable failure = null;
             try {
@@ -3791,6 +3798,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         streamingImages.clear();
         minimap.close();
         toasts.clear();
+        screenshotWriter.shutdown();
         if (gpu != null) gpu.close();
         invalidate();
         textureLoading.close();

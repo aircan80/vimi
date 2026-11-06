@@ -25,6 +25,15 @@ public final class WorldScreenshotsTest {
 
         var root = Files.createTempDirectory("vimi-screenshots-test");
         try {
+            // Production wiring: the app's World store puts screenshots in the data directory.
+            var store = BuildApplication.worldStore(root, root.resolve("library").resolve("objects.sqlite3"));
+            try {
+                require(store.screenshots().equals(root.resolve("screenshots")),
+                        "Screenshots go to <data>/screenshots, not the library folder: " + store.screenshots());
+            } finally {
+                store.close();
+            }
+            require(WorldBookmarkStore.session().screenshots() == null, "A session-only store has no folder");
             var folder = WorldScreenshots.folder(root);
             int[] argb = {0xffff0000, 0xff00ff00, 0xff0000ff, 0x80ffffff, 0xff000000, 0xff123456};
             var first = WorldScreenshots.save(folder, "world-a.png", 3, 2, argb);
@@ -53,6 +62,13 @@ public final class WorldScreenshotsTest {
                 require(files.noneMatch(file -> file.getFileName().toString().endsWith(".part")),
                         "No partial files are left behind");
             }
+            var stale = Files.writeString(folder.resolve(".world-dead.png.part"), "x");
+            Files.setLastModifiedTime(stale, java.nio.file.attribute.FileTime.from(
+                    java.time.Instant.now().minus(WorldScreenshots.STALE_PART).minusSeconds(5)));
+            var fresh = Files.writeString(folder.resolve(".world-busy.png.part"), "x");
+            WorldScreenshots.save(folder, "world-b.png", 1, 1, new int[] {0xff000000});
+            require(!Files.exists(stale) && Files.exists(fresh),
+                    "A stale partial file from a dead process is removed; a fresh one is left alone");
         } finally {
             try (var walk = Files.walk(root)) {
                 walk.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete());

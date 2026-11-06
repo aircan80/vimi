@@ -35,6 +35,24 @@ final class WorldScreenshots {
         return "vimi-world-" + (slug.isEmpty() ? "map" : slug) + "-" + STAMP.format(time) + ".png";
     }
 
+    /** Partial files older than this were left by a process that died mid-write. */
+    static final java.time.Duration STALE_PART = java.time.Duration.ofMinutes(1);
+
+    private static void dropStaleParts(Path folder) {
+        var cutoff = java.time.Instant.now().minus(STALE_PART);
+        try (var parts = Files.newDirectoryStream(folder, ".world-*.png.part")) {
+            for (var part : parts) {
+                try {
+                    if (Files.getLastModifiedTime(part).toInstant().isBefore(cutoff)) Files.deleteIfExists(part);
+                } catch (IOException ignored) {
+                    // Another writer's file or a locked one: leave it.
+                }
+            }
+        } catch (IOException ignored) {
+            // Nothing to clean.
+        }
+    }
+
     /**
      * Writes {@code argb} ({@code width} x {@code height}, row-major) as {@code name} in {@code
      * folder}, creating the folder; a taken name gets "-2", "-3", ... Returns the written file.
@@ -45,6 +63,7 @@ final class WorldScreenshots {
         if (width <= 0 || height <= 0 || argb.length != width * height)
             throw new IllegalArgumentException("Screenshot pixels do not match " + width + "x" + height);
         Files.createDirectories(folder);
+        dropStaleParts(folder);
         var image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         image.setRGB(0, 0, width, height, argb, 0, width);
         String stem = name.endsWith(".png") ? name.substring(0, name.length() - 4) : name;
