@@ -223,25 +223,38 @@ public final class WorldNavigationUiTest {
         var viewport=(javafx.scene.layout.Region)view.lookup("#world-viewport");
         invoke(view,"resetStreamingSize");
         require((long)get(view,"streamingPolicy")==1 && (int)get(view,"streamingWidth")==0,"Reset starts at policy 1 without a size");
+        // The request is the viewport at the window's render scale (#425), so expected sizes follow
+        // the display's scale (100%, 125%, 150% ...) rather than layout pixels.
+        var first=requested(view,640,400);
         viewport.resize(640,400);
         invoke(view,"streamingSize");
-        require((int)get(view,"streamingWidth")==640 && (int)get(view,"streamingHeight")==400
-                && (long)get(view,"streamingPolicy")==1,"The first size applies at once without a policy bump");
+        require((int)get(view,"streamingWidth")==first.width() && (int)get(view,"streamingHeight")==first.height()
+                && (long)get(view,"streamingPolicy")==1,"The first size applies at once without a policy bump: "
+                +get(view,"streamingWidth")+"x"+get(view,"streamingHeight")+", expected "+first.width()+"x"+first.height());
         for (int step=1; step<=5; step++) {
             viewport.resize(640+step*10,400+step*4);
             invoke(view,"streamingSize");
             require(!pulse(view),"A size still changing never settles");
         }
-        require((int)get(view,"streamingWidth")==640 && (long)get(view,"streamingPolicy")==1,
+        require((int)get(view,"streamingWidth")==first.width() && (long)get(view,"streamingPolicy")==1,
                 "During the drag the old size and policy are requested");
         require(pulse(view),"After one quiet pulse the new size settles and a camera request is made");
         invoke(view,"streamingSize");
-        // 690 x 420 fits the 800 x 500 cap unscaled.
-        require((int)get(view,"streamingWidth")==690 && (int)get(view,"streamingHeight")==420
+        var settled=requested(view,690,420);
+        require((int)get(view,"streamingWidth")==settled.width() && (int)get(view,"streamingHeight")==settled.height()
                 && (long)get(view,"streamingPolicy")==2,"The settled size is sent once, with one policy bump");
         require(!pulse(view),"Nothing more owed");
         invoke(view,"resetStreamingSize");
         require((long)get(view,"streamingPolicy")==1 && (int)get(view,"streamingWidth")==0,"A new stream resets");
+    }
+
+    /** The frame a viewport of this layout size requests at the view's window render scale. */
+    private static com.vibeminer.rendering.world.WorldFrameLimits.Size requested(WorldView view, double width, double height) {
+        var window=view.getScene().getWindow();
+        var frame=com.vibeminer.rendering.world.WorldFrameLimits.frame(width,height,
+                window.getRenderScaleX(),window.getRenderScaleY(),1);
+        require(frame.width()>=width && frame.height()>=height,"The test sizes fit under the frame cap: "+frame);
+        return frame;
     }
 
     private static boolean pulse(WorldView view) {

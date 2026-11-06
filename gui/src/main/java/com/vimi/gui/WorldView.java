@@ -1009,6 +1009,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         });
         viewport.widthProperty().addListener((o, a, b) -> requestFrame());
         viewport.heightProperty().addListener((o, a, b) -> requestFrame());
+        // #370: a monitor move or display-scale change resizes the native-resolution frame.
+        WorldRenderScaleWatch.forNode(this, this::requestFrame);
         timer =
                 new AnimationTimer() {
                     @Override

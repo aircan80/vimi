@@ -103,7 +103,13 @@ public final class TerrainAtlasComposer {
         }
     }
 
-    public record Composition(TerrainTileAtlas atlas, List<Diagnostic> diagnostics) {
+    /** {@code splat} is null unless requested; it covers exactly the atlas's supported chunks. */
+    public record Composition(
+            TerrainTileAtlas atlas, List<Diagnostic> diagnostics, TerrainTileSplat splat) {
+        public Composition(TerrainTileAtlas atlas, List<Diagnostic> diagnostics) {
+            this(atlas, diagnostics, null);
+        }
+
         public Composition {
             Objects.requireNonNull(atlas);
             Objects.requireNonNull(diagnostics);
@@ -127,6 +133,20 @@ public final class TerrainAtlasComposer {
             TerrainGrid grid,
             WorldTextureFormats.TextureData textures,
             Map<Long, DiffuseMip> diffuse,
+            BooleanSupplier canceled) {
+        return compose(tile, grid, textures, diffuse, false, canceled);
+    }
+
+    /**
+     * Also returns the shader-side splatting inputs when {@code splat} is set (issue #174 step 2):
+     * the same supported chunks, their layer diffuse ids and masks, and MCCV brightness.
+     */
+    public static Composition compose(
+            WorldFormats.Tile tile,
+            TerrainGrid grid,
+            WorldTextureFormats.TextureData textures,
+            Map<Long, DiffuseMip> diffuse,
+            boolean splat,
             BooleanSupplier canceled) {
         Objects.requireNonNull(tile);
         Objects.requireNonNull(grid);
@@ -153,6 +173,13 @@ public final class TerrainAtlasComposer {
         var mappings = new ArrayList<TerrainTileAtlas.Mapping>(256);
         var diagnostics = new ArrayList<Diagnostic>();
         var masks = ByteBuffer.allocate(WorldTextureFormats.MAX_MASK_SCRATCH);
+        var splatIds = new ArrayList<Long>();
+        byte[] splatLayers = null, splatAlpha = null;
+        if (splat) {
+            splatLayers = new byte[TerrainTileSplat.LAYER_BYTES];
+            java.util.Arrays.fill(splatLayers, (byte) TerrainTileSplat.NONE);
+            splatAlpha = new byte[TerrainTileSplat.ALPHA_BYTES];
+        }
         for (int ordinal = 0; ordinal < 256; ordinal++) {
             check(canceled);
             var chunk = grid.chunks().get(ordinal);
@@ -198,10 +225,48 @@ public final class TerrainAtlasComposer {
                 continue;
             }
             renderChunk(chunk, mips, masks, colors, pixels, canceled);
+            // Splatting draws at most four layers (three masks); wider chunks keep the atlas, and
+            // so does a chunk whose new diffuses would pass the tile's MAX_DIFFUSES list.
+            long added =
+                    splat
+                            ? layers.stream()
+                                    .mapToLong(
+                                            layer ->
+                                                    textures.diffuseIds()
+                                                            .get((int) layer.textureIndex()))
+                                    .distinct()
+                                    .filter(id -> !splatIds.contains(id))
+                                    .count()
+                            : 0;
+            if (splat
+                    && layers.size() <= 4
+                    && splatIds.size() + added <= TerrainTileSplat.MAX_DIFFUSES) {
+                int base = (chunk.y() * 16 + chunk.x()) * 4;
+                for (int i = 0; i < layers.size(); i++) {
+                    long id = textures.diffuseIds().get((int) layers.get(i).textureIndex());
+                    int index = splatIds.indexOf(id);
+                    if (index < 0) {
+                        index = splatIds.size();
+                        splatIds.add(id);
+                    }
+                    splatLayers[base + i] = (byte) index;
+                }
+                splatChunk(chunk, layers.size(), masks, colors, splatAlpha, canceled);
+            }
             coverage[ordinal / 64] |= 1L << (ordinal % 64);
         }
         check(canceled);
-        return new Composition(new TerrainTileAtlas(tile, pixels, coverage, mappings), diagnostics);
+        var outputSplat =
+                splat
+                        ? new TerrainTileSplat(
+                                splatIds.stream().mapToLong(Long::longValue).toArray(),
+                                splatLayers,
+                                splatAlpha)
+                        : null;
+        return new Composition(
+                new TerrainTileAtlas(tile, pixels, coverage, mappings, outputSplat),
+                diagnostics,
+                outputSplat);
     }
 
     private static void renderChunk(
@@ -253,6 +318,36 @@ public final class TerrainAtlasComposer {
                                                     Math.round((double) weighted / total * tint)));
                 }
                 pixels[output + 3] = (byte) 255;
+            }
+        }
+    }
+
+    /** Layer 1 to 3 masks at the atlas's sampling points, and the MCCV brightness, per texel. */
+    private static void splatChunk(
+            TerrainGrid.Chunk chunk,
+            int layers,
+            ByteBuffer masks,
+            ByteBuffer colors,
+            byte[] alpha,
+            BooleanSupplier canceled) {
+        for (int py = 0; py < 32; py++) {
+            check(canceled);
+            for (int px = 0; px < 32; px++) {
+                int maskPixel = (2 * py + 1) * 64 + 2 * px + 1;
+                int output = ((chunk.y() * 32 + py) * 512 + chunk.x() * 32 + px) * 4;
+                for (int layer = 1; layer < 4; layer++) {
+                    alpha[output + layer - 1] =
+                            layer < layers ? masks.get((layer - 1) * 4096 + maskPixel) : 0;
+                }
+                double brightness = 1;
+                if (colors.hasRemaining()) {
+                    brightness =
+                            (tint(colors, px, py, 0)
+                                            + tint(colors, px, py, 1)
+                                            + tint(colors, px, py, 2))
+                                    / 3;
+                }
+                alpha[output + 3] = (byte) Math.max(0, Math.min(255, Math.round(brightness * 128)));
             }
         }
     }

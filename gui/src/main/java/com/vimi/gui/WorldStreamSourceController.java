@@ -278,6 +278,13 @@ final class WorldStreamSourceController {
             new LinkedHashMap<>();
     private boolean initialBlocked;
     private long initialRetryAt, blockedAt;
+    // Tiles the helper rejected (issue #365): rejection count and the earliest retry time.
+    private final java.util.Map<Integer, Integer> helperRejections =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<Integer, Long> helperRetryAt =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /** After this many helper rejections a tile is unavailable for as long as it stays wanted. */
+    static final int MAX_HELPER_REJECTIONS = 3;
     private boolean blockedOnMaterialPool, blockedOnGeometry;
     private long blockedGeometry;
     /** Wakes the controller when the source's geometry lane releases (#304). */
@@ -305,6 +312,11 @@ final class WorldStreamSourceController {
     // Test seam: runs on the worker after a RETRY_LATER tile-preparation refusal, before it is
     // recorded.
     volatile Runnable tileRefusalSeam;
+    // Test seam: runs at the top of each streaming step, before demand is read.
+    volatile Runnable demandSeam;
+    // Helper rejections that arrived for tiles already out of demand (not counted, #365).
+    private final java.util.concurrent.atomic.AtomicInteger rejectionsOutOfDemand =
+            new java.util.concurrent.atomic.AtomicInteger();
     // Test seam: runs on the worker after this step read its demand and got a tile reservation,
     // just before the reservation records its revisions and starts.
     volatile Runnable tileIssueSeam;
@@ -366,13 +378,15 @@ final class WorldStreamSourceController {
             if (camera != null && next.revision() <= camera.revision()) {
                 throw new IllegalArgumentException("Camera revision must advance");
             }
-            camera=next;
             // Actual final Session.camera only replaces metadata; no IO/external callback.
             // Use the same gate as initial publication so an older initial camera cannot follow.
+            // A camera the session refuses as an invalid transition is not kept (#365).
+            boolean accepted=true;
             if(session!=null) {
-                try { session.camera(next); }
+                try { accepted=session.camera(next); }
                 catch(RuntimeException failure) { problem=failure; }
             }
+            if(accepted) camera=next;
         }
         if(problem!=null) failLater(problem);
         kick();
@@ -588,8 +602,11 @@ final class WorldStreamSourceController {
                 || borrowedReceipt != value.frame.content()) return false;
         // A valid receipt can still draw only sky after motion beyond its resident neighborhood.
         // Keep the last readable pixels until the nearest requested recorded tile is GPU-current.
-        // Judged on the table the frame shows, which a later commit does not change.
-        if(!desired.isEmpty() && borrowedTable.stream().noneMatch(entry->same(desired.getFirst(),entry.resident()))) return false;
+        // Judged on the table the frame shows, which a later commit does not change. A nearest
+        // tile the helper keeps rejecting will not become current (#365): show the neighbours
+        // instead of holding the last pixels forever.
+        if(!desired.isEmpty() && borrowedTable.stream().noneMatch(entry->same(desired.getFirst(),entry.resident()))
+                && helperRejections.getOrDefault(key(desired.getFirst()),0) < MAX_HELPER_REJECTIONS) return false;
         for (var entry : borrowedTable) if (!entry.source().isOpen()) return false;
         return true;
     }
@@ -793,9 +810,13 @@ final class WorldStreamSourceController {
         pollFrame();
         updateArea();
         stepExterior();
+        var stepSeam = demandSeam;
+        if (stepSeam != null) stepSeam.run();
         var wanted = demand();
         if(creditTarget!=null && !contains(wanted,creditTarget)) creditTarget=null;
         unavailable.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
+        helperRejections.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
+        helperRetryAt.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
         if (pending != null) {
             List<WorldFormats.Tile> kept;
             synchronized (lock) {
@@ -804,9 +825,11 @@ final class WorldStreamSourceController {
             // Hysteresis (#366): a tile one ring beyond the demand keeps its preparation, unless
             // the camera tile or a wanted tile around it is still missing: the single lane then
             // goes to what the view needs now (#366 review).
+            // A preparation that already ended in a helper rejection is terminal: nothing to cancel.
             if (!contains(wanted, pending.tile)
                     && (!contains(kept, pending.tile) || nearestMissing(wanted))
-                    && pending.cancellation == null) {
+                    && pending.cancellation == null
+                    && !rejectedByHelper(pending.result)) {
                 // Parent's explicit stop MUST precede the bridge's latest=false cancellation.
                 pending.cancellation = pending.reservation.cancel();
                 pending.useful = false;
@@ -814,7 +837,15 @@ final class WorldStreamSourceController {
             }
             if (pending.cancellation != null) {
                 if (!pending.cancellation.isDone()) return;
-                pending.cancellation.join();
+                try {
+                    pending.cancellation.join();
+                } catch (CompletionException failure) {
+                    // The helper rejected the packet before the cancel reached it (#365): the
+                    // reservation already ended; the tile left demand, so nothing is retried.
+                    if (!(failure.getCause() instanceof WorldStreamTransport.CancellationRefusal refused)
+                            || refused.reason() != WorldStreamTransport.CancellationReason.PACKET_REJECTED)
+                        throw failure;
+                }
                 pending.producer.close();
                 pending = null;
             } else {
@@ -822,6 +853,9 @@ final class WorldStreamSourceController {
                 try {
                     var resident = pending.result.join();
                     var prepared = pending.producer.takePrepared();
+                    // A tile that stages again starts its rejection count afresh.
+                    helperRejections.remove(key(pending.tile));
+                    helperRetryAt.remove(key(pending.tile));
                     if(creditTarget!=null && same(creditTarget,pending.tile)) creditTarget=null;
                     staged = new Entry(resident, prepared);
                     stagedReservation = pending.reservation;
@@ -836,6 +870,7 @@ final class WorldStreamSourceController {
                             || refusal.getSuppressed().length != 0) throw failure;
                     var origin = pending.producer.sourceRefusal();
                     int failedTile = key(pending.tile);
+                    var refusedTile = pending.tile;
                     // Read while the refused reservation is still at hand (#283).
                     long refusedCapacity = pending.reservation.capacityBaseline();
                     // Revisions as of issue, read before the pending reservation is dropped (#305).
@@ -846,6 +881,16 @@ final class WorldStreamSourceController {
                             && refusal.reason()!=WorldStreamTransport.Refusal.RETRY_LATER) creditTarget=null;
                     pending.producer.close();
                     pending = null;
+                    if (refusal.reason() == WorldStreamTransport.Refusal.PACKET_REJECTED) {
+                        // A tile that already left demand is not counted: it must not publish
+                        // UNAVAILABLE (and turn the view off) for terrain nobody asked for.
+                        if (contains(wanted, refusedTile)) helperRejected(failedTile);
+                        else {
+                            rejectionsOutOfDemand.incrementAndGet();
+                            wake.set(true);
+                        }
+                        return;
+                    }
                     if (origin != null && !origin.reason().name().equals(refusal.reason().name()))
                         throw failure;
                     if (origin == null
@@ -1007,8 +1052,13 @@ final class WorldStreamSourceController {
         updateArea();
         if(!wanted.isEmpty() && unavailable.containsKey(key(wanted.getFirst()))
                 && current.stream().noneMatch(entry->same(wanted.getFirst(),entry.resident()))) {
-            publish(Phase.UNAVAILABLE,"Nearest terrain unavailable: "+unavailable.get(key(wanted.getFirst())).site());
-            return;
+            var site=unavailable.get(key(wanted.getFirst())).site();
+            // A tile the helper keeps rejecting does not stall its neighbours (#365); the ready
+            // status lists it among the unavailable sites instead.
+            if(!site.equals(HELPER_REJECTED)) {
+                publish(Phase.UNAVAILABLE,"Nearest terrain unavailable: "+site);
+                return;
+            }
         }
         long geometry = blockedGeometry;
         if (blockedOnGeometry) {
@@ -1109,6 +1159,13 @@ final class WorldStreamSourceController {
         }
         for (var tile : admissionOrder) {
             if (unavailable.containsKey(key(tile))) continue;
+            var retryAt = helperRetryAt.get(key(tile));
+            if (retryAt != null && clock.getAsLong() - retryAt < 0) {
+                // Event-driven steps (#366): the back-off arms its own deadline, so an FX tick
+                // on the controller clock retries the tile even if nothing else happens.
+                wakeAt(retryAt);
+                continue;
+            }
             boolean found = false;
             for (var entry : current)
                 if (same(tile, entry.resident())) {
@@ -1149,8 +1206,7 @@ final class WorldStreamSourceController {
                 wanted.isEmpty()
                         ? "No recorded terrain near this camera"
                         : current.isEmpty() && !unavailable.isEmpty()
-                                ? "Terrain unavailable: "
-                                        + unavailable.values().iterator().next().site()
+                                ? "Terrain unavailable: " + unavailableSites()
                                 : acceptedReceipt == currentReceipt && currentReceipt != null
                                         ? readyDetail()
                                         : "Waiting for accepted viewport pixels");
@@ -1403,7 +1459,7 @@ final class WorldStreamSourceController {
                         : "; "
                                 + unavailable.size()
                                 + " unavailable ("
-                                + unavailable.values().iterator().next().site()
+                                + unavailableSites()
                                 + ")");
     }
 
@@ -1804,6 +1860,71 @@ final class WorldStreamSourceController {
         worker.shutdown();
         if (failure == null) drained.complete(null);
         else drained.completeExceptionally(failure);
+    }
+
+    /**
+     * The helper rejected one tile's packet (issue #365). The producer is deterministic, so the
+     * same tile is likely rejected again: retry it after a doubling back-off, and after {@link
+     * #MAX_HELPER_REJECTIONS} rejections leave it unavailable while it stays wanted, with a
+     * visible status. Other tiles keep streaming meanwhile.
+     */
+    private void helperRejected(int tile) {
+        int count = helperRejections.merge(tile, 1, Integer::sum);
+        if (count >= MAX_HELPER_REJECTIONS) {
+            helperRetryAt.remove(tile);
+            unavailable.put(tile, WorldStreamSourceBridge.RefusalMetadata.helperRejected());
+            publish(Phase.UNAVAILABLE, "Terrain unavailable: " + HELPER_REJECTED);
+            wake.set(true);
+            return;
+        }
+        long delay = RETRY_NANOS << (count - 1);
+        helperRetryAt.put(tile, clock.getAsLong() + delay);
+        publish(Phase.WAITING_CAPACITY, "Retrying a terrain tile the World helper rejected");
+        wake.set(true);
+        CompletableFuture.delayedExecutor(delay, java.util.concurrent.TimeUnit.NANOSECONDS)
+                .execute(this::kick);
+    }
+
+    static final String HELPER_REJECTED = "HELPER_REJECTED";
+
+    /** The distinct sites of the unavailable tiles, in first-seen order, e.g. "SOURCE_INPUT, HELPER_REJECTED". */
+    private String unavailableSites() {
+        var sites = new java.util.LinkedHashSet<String>();
+        for (var origin : unavailable.values()) sites.add(origin.site());
+        return String.join(", ", sites);
+    }
+
+    /** Whether a tile preparation already ended in a helper packet rejection. */
+    private static boolean rejectedByHelper(CompletableFuture<?> result) {
+        if (result == null || !result.isCompletedExceptionally()) return false;
+        try {
+            result.join();
+            return false;
+        } catch (CompletionException failure) {
+            return failure.getCause() instanceof WorldStreamTransport.PreparationRefusal refusal
+                    && refusal.reason() == WorldStreamTransport.Refusal.PACKET_REJECTED;
+        } catch (java.util.concurrent.CancellationException canceled) {
+            return false;
+        }
+    }
+
+    /**
+     * Test seam, controller thread only (from {@link #demandSeam}): whether the pending
+     * preparation has already ended in a helper rejection, so this step handles it.
+     */
+    boolean pendingRejectedByHelper() {
+        var current = pending;
+        return current != null && rejectedByHelper(current.result);
+    }
+
+    /** Test observation: helper rejections that arrived for tiles out of demand. */
+    int rejectionsOutOfDemand() {
+        return rejectionsOutOfDemand.get();
+    }
+
+    /** Test observation: helper rejections per tile key. */
+    int helperRejections(int tileKey) {
+        return helperRejections.getOrDefault(tileKey, 0);
     }
 
     private static int key(WorldFormats.Tile tile) {
