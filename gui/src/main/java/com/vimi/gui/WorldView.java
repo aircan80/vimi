@@ -2561,6 +2561,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var creatureSource = WorldStreamGpuOwner.CREATURES ? creatures : null;
         long creatureMap = inventory.map().id();
         var detail = objectTextures.getValue();
+        com.vibeminer.concepts.world.WorldTerrainStreaming.splatMasks(detail);
         // Dungeon and raid maps (Map.InstanceType 1 or 2) draw their WMO interiors too (#280).
         boolean interiors = instanceInteriors(inventory.map());
         WorldStreamSourceBridge.ExteriorPreparer preparer = creatureSource == null

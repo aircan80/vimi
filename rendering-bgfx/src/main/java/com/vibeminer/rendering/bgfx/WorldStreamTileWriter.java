@@ -660,9 +660,9 @@ public final class WorldStreamTileWriter {
     /**
      * One tile's splatting inputs for the writer (issue #174 step 2): its distinct layer diffuses
      * (file id and content key), the 16 x 16 chunk table of four indices into that list (255 for
-     * none), the 512 x 512 RGBA8 mask map, and a source of a diffuse's 256 x 256 BC1 layer chain
-     * ({@link com.vibeminer.rendering.world.TerrainLayerBlocks}), consulted only for layers new to
-     * the shared array.
+     * none), the RGBA8 mask map (512 or 1024 per side, by tier), and a source of a diffuse's 256 x
+     * 256 BC1 layer chain ({@link com.vibeminer.rendering.world.TerrainLayerBlocks}), consulted
+     * only for layers new to the shared array.
      */
     public record SplatInput(
             long[] fileIds,
@@ -679,7 +679,10 @@ public final class WorldStreamTileWriter {
             if (fileIds.length != contentKeys.length
                     || fileIds.length > 64
                     || table.length != WorldStreamTileFile.SPLAT_TABLE_BYTES
-                    || alpha.remaining() != WorldStreamTileFile.SPLAT_ALPHA_BYTES) {
+                    || alpha.remaining() != WorldStreamTileFile.SPLAT_ALPHA_BYTES
+                            && alpha.remaining()
+                                    != com.vibeminer.rendering.world.TerrainTileSplat
+                                            .MAX_ALPHA_BYTES) {
                 throw new IllegalArgumentException("Splat input shape");
             }
         }
@@ -764,7 +767,7 @@ public final class WorldStreamTileWriter {
                                         ? layers[entry]
                                         : WorldStreamTileFile.SPLAT_NONE);
             }
-            byte[] alpha = new byte[WorldStreamTileFile.SPLAT_ALPHA_BYTES];
+            byte[] alpha = new byte[input.alpha().remaining()];
             input.alpha().duplicate().get(alpha);
             splat =
                     new WorldStreamTileFile.Splat(
