@@ -1029,12 +1029,50 @@ final class WorldStreamSourceBridge {
                 WorldStreamTileWriter.Reason.valueOf(facts.fallback().name()), coverage,
                 maxX, maxY, error, structural(facts.wdt()), structural(facts.root()),
                 material == null ? null : structural(material.textures()), diffuse);
+        WorldStreamTileWriter.PacketFile packet;
         try {
-            return WorldStreamTileWriter.writeUnadvertised(
+            packet = WorldStreamTileWriter.writeUnadvertised(
                     destination, data, borrow.geometry(), texture, null, stopping);
         } catch (IOException failure) {
             throw new UncheckedIOException(failure);
         }
+        var splat = borrow.splat();
+        if (splat.isPresent() && material != null && texture != null) {
+            try {
+                packet.splat(splatInput(borrow, material, splat.get(), stopping));
+            } catch (RuntimeException failure) {
+                packet.close();
+                throw failure;
+            }
+        }
+        return packet;
+    }
+
+    /** The tile's splatting inputs, decoding a layer diffuse only when the writer asks for it. */
+    static WorldStreamTileWriter.SplatInput splatInput(
+            WorldTerrainStreaming.CheckedBorrow borrow,
+            WorldTerrainStreaming.Material material,
+            com.vibeminer.rendering.world.TerrainTileSplat splat,
+            BooleanSupplier stopping) {
+        long[] ids = splat.diffuseIds();
+        String[] keys = new String[ids.length];
+        for (int i = 0; i < ids.length; i++) {
+            for (int d = 0; d < material.diffuseCount(); d++) {
+                var source = material.diffuse(d).source();
+                if (source.fileDataId() == ids[i]) keys[i] = source.contentKey();
+            }
+            if (keys[i] == null) throw new IllegalStateException("Splat diffuse outside its material");
+        }
+        byte[] table = new byte[splat.layers().remaining()];
+        splat.layers().get(table);
+        // The producer's stop reaches each layer decode: a stopped tile reads no more diffuses.
+        var token = new Cancellation();
+        return new WorldStreamTileWriter.SplatInput(ids, keys, table, splat.alpha(),
+                id -> {
+                    if (stopping.getAsBoolean()) token.cancel();
+                    return borrow.diffuseDetail(id, token)
+                            .map(detail -> new WorldStreamTileWriter.Diffuse(detail.chain()));
+                });
     }
 
     private static WorldStreamTileWriter.Source structural(WorldTerrainStreaming.SourceTuple input) {
