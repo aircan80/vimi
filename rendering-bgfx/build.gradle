@@ -506,3 +506,16 @@ tasks.register('nativeGpuWorldStreamCadenceProof', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-world-stream-cadence').get().asFile.absolutePath
 }
+
+// #381 spike: native presentation into a child window (Windows, D3D11; shows a window).
+tasks.register('nativeGpuWorldStreamWindowProof', JavaExec) {
+    group = 'verification'
+    description = 'World v2 helper presenting into a child window: swap-chain readback verdict, present intervals and tile commit time.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamWindowProof'
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-window').get().asFile.absolutePath,
+            (findProperty('presentMode') ?: 'native').toString()
+}
