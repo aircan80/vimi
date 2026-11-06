@@ -3098,4 +3098,135 @@ class WorldExteriorObjectsTest {
             }
         }
     }
+
+    /**
+     * Files whose group reads each take a while and are counted while open, so overlapping reads
+     * are visible. Serial reads never have two groups open at once.
+     */
+    private static final class SlowGroups extends WorldTerrainTextureSourceTest.Files {
+        final AtomicInteger open = new AtomicInteger(), peak = new AtomicInteger();
+        final AtomicInteger groupOpens = new AtomicInteger();
+        volatile Runnable onGroupOpen = () -> {};
+
+        @Override
+        com.vibeminer.files.FileReadStream open(long id, Cancellation cancel) {
+            var actual = super.open(id, cancel);
+            if (id < GROUP + 10 || id >= GROUP + 100) {
+                return actual;
+            }
+            groupOpens.incrementAndGet();
+            onGroupOpen.run();
+            peak.accumulateAndGet(open.incrementAndGet(), Math::max);
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            return new com.vibeminer.files.FileReadStream() {
+                boolean closed;
+
+                public long length() {
+                    return actual.length();
+                }
+
+                public long position() {
+                    return actual.position();
+                }
+
+                public void seek(long position) {
+                    actual.seek(position);
+                }
+
+                public List<com.vibeminer.files.FileTypes.FileHole> holes() {
+                    return actual.holes();
+                }
+
+                public java.util.concurrent.CompletableFuture<Integer> read(
+                        ByteBuffer destination, Cancellation token) {
+                    return actual.read(destination, token);
+                }
+
+                public void close() {
+                    if (!closed) {
+                        closed = true;
+                        open.decrementAndGet();
+                    }
+                    actual.close();
+                }
+            };
+        }
+    }
+
+    private static long[] manyGroups(SlowGroups files, int count) {
+        var ids = new long[count];
+        for (int i = 0; i < count; i++) {
+            ids[i] = GROUP + 10 + i;
+            files.sources.put(ids[i], group(EXT));
+        }
+        return ids;
+    }
+
+    @Test
+    void anUncappedRootReadsItsGroupsAheadWithinTheReadBoundAndDrawsTheSame() {
+        List<Object> serial = null;
+        for (boolean ahead : new boolean[] {false, true}) {
+            var files = new SlowGroups();
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+                f.files.sources.put(ROOT, root(manyGroups(files, 12)));
+                WorldStreamScopes.Prefetcher.enabled = ahead;
+                var summary = new ArrayList<Object>();
+                try (var set = f.run()) {
+                    summary.add(counts(set));
+                    summary.add(set.vertices());
+                    summary.add(set.placements());
+                    summary.add(set.models().getFirst().meshes().size());
+                } finally {
+                    WorldStreamScopes.Prefetcher.enabled = true;
+                }
+                assertEquals(12, files.groupOpens.get(), "each group is read exactly once");
+                assertEquals(0, files.open.get(), "every read is closed");
+                if (!ahead) {
+                    assertEquals(1, files.peak.get(), "serial reads never overlap");
+                    serial = summary;
+                } else {
+                    assertTrue(files.peak.get() >= 2, "groups were read concurrently");
+                    // At most the read-ahead bound plus the operation's own read.
+                    assertTrue(
+                            files.peak.get() <= WorldStreamScopes.Prefetcher.READS + 1,
+                            "peak " + files.peak.get());
+                    assertEquals(serial, summary, "read-ahead changes no output");
+                }
+            }
+        }
+    }
+
+    @Test
+    void cancellationDrainsAndClosesEveryReadAheadBeforeThePreparationReturns() {
+        var files = new SlowGroups();
+        var token = new Cancellation();
+        files.onGroupOpen =
+                () -> {
+                    if (files.groupOpens.get() == 2) {
+                        token.cancel();
+                    }
+                };
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+            f.files.sources.put(ROOT, root(manyGroups(files, 12)));
+            assertThrows(
+                    CancellationException.class,
+                    () -> WorldExteriorObjects.prepare(f.engine, f.scope, TILE, token));
+            int opened = files.groupOpens.get();
+            assertEquals(0, files.open.get(), "no read-ahead stream is left open");
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException interrupted) {
+                throw new AssertionError(interrupted);
+            }
+            assertEquals(opened, files.groupOpens.get(), "no read starts after the return");
+            // The engine stays healthy for the next operation.
+            try (var set = f.run()) {
+                assertEquals(12, set.models().getFirst().meshes().size());
+            }
+        }
+    }
 }

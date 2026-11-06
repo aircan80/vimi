@@ -1619,6 +1619,15 @@ public final class WorldExteriorObjects {
                 count(Count.ROOT_CAPPED);
                 return RootState.CAPPED;
             }
+            // Read ahead (#371): this uncapped root reads its groups next, in this order. Only a
+            // later geometry cap (ROOT_CAPPED) stops it, at most a window of reads early. Roots,
+            // models and images are not read ahead: caps decided by earlier parsing leave many of
+            // them unread, and a capped source must never be fetched.
+            for (int g = 0; g < lod0; g++) {
+                if (root.gfid(g) != 0) {
+                    admission.prefetch(root.gfid(g), WorldStreamScopes.DerivedKind.WMO_GROUP);
+                }
+            }
             // Tentative per-root counts merge only if the root is not capped: caps never split.
             int[] local = new int[counts.length];
             var pending = new ArrayList<PendingMesh>();

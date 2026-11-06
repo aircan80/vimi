@@ -717,6 +717,7 @@ final class WorldStreamScopes {
         private final long threadId = Thread.currentThread().threadId();
         private boolean reserved;
         private final int[] derivedReads = new int[DerivedKind.values().length];
+        private Prefetcher prefetcher;
 
         private TileAdmission(
                 WorldStreamScopes engine,
@@ -919,18 +920,43 @@ final class WorldStreamScopes {
             }
             derivedReads[ordinal]++;
             int limit = profile.derivedLimit(kind);
-            return readCandidate(id, limit, profile == UseProfile.BASIC_EXTERIOR);
+            return readCandidate(id, limit, profile == UseProfile.BASIC_EXTERIOR, kind);
+        }
+
+        /**
+         * Hints that this operation will soon consume {@code id} as {@code kind}, so its read may
+         * start now on a bounded pool (#371). A hint only moves I/O earlier: limits are rechecked,
+         * bindings and counts are recorded only at consumption, and a hint never consumed is closed
+         * unread-by-anyone when the operation ends. Callers hint only reads they will make next, in
+         * order; hints beyond the kind's remaining reads or the queue bound are ignored.
+         */
+        void prefetch(long id, DerivedKind kind) {
+            check();
+            Objects.requireNonNull(kind);
+            if (!Prefetcher.enabled || !profile.derivedWmo() || id <= 0 || id > 0xffff_ffffL) {
+                return;
+            }
+            if (prefetcher == null) {
+                prefetcher = new Prefetcher(engine, token, profile == UseProfile.BASIC_EXTERIOR);
+            }
+            prefetcher.hint(
+                    id,
+                    kind,
+                    profile.derivedLimit(kind),
+                    profile.derivedReads(kind) - derivedReads[kind.ordinal()]);
         }
 
         private Input readCandidate(long id, int limit) {
-            return readCandidate(id, limit, false);
+            return readCandidate(id, limit, false, null);
         }
 
         /**
          * With {@code classifyUnavailable}, only a missing, protected or over-limit source is
-         * refused at SOURCE_UNAVAILABLE; every other refusal keeps its original site.
+         * refused at SOURCE_UNAVAILABLE; every other refusal keeps its original site. A derived
+         * {@code kind} may take its bytes from an earlier {@link #prefetch} of the same read.
          */
-        private Input readCandidate(long id, int limit, boolean classifyUnavailable) {
+        private Input readCandidate(
+                long id, int limit, boolean classifyUnavailable, DerivedKind kind) {
             if (id <= 0 || id > 0xffff_ffffL) {
                 throw new IllegalArgumentException("Missing or invalid input ID");
             }
@@ -944,7 +970,12 @@ final class WorldStreamScopes {
             reserved = true;
             Source source = null;
             try {
-                source = engine.read(id, limit, token, classifyUnavailable);
+                var prefetched =
+                        kind == null || prefetcher == null ? null : prefetcher.take(id, kind);
+                source =
+                        prefetched != null
+                                ? Prefetcher.await(prefetched)
+                                : engine.read(id, limit, token, classifyUnavailable);
                 var binding = new Binding(id, source.key(), source.bytes().length);
                 for (var prior : bindings) {
                     if (prior.id() == id && !prior.equals(binding)) {
@@ -969,10 +1000,176 @@ final class WorldStreamScopes {
             if (input != null) {
                 input.close();
             }
+            if (prefetcher != null) {
+                // Stops and drains every unconsumed read before the operation can end.
+                prefetcher.close();
+                prefetcher = null;
+            }
             bindings.clear();
             materialObservations = List.of();
             token = null;
             engine = null;
+        }
+    }
+
+    /**
+     * One operation's read-ahead (#371): hinted derived reads run on virtual threads, at most
+     * {@link #READS} at once and at most {@link #WINDOW} started and not yet consumed, so held
+     * bytes stay within WINDOW reads of their kinds' limits. Reads use a cancellation linked to the
+     * operation's; {@link #close} cancels and joins every read and drops unconsumed bytes.
+     */
+    static final class Prefetcher {
+        static final int READS = 4, WINDOW = 8, QUEUE = 256;
+
+        /** Read-ahead on or off for new hints; off reads serially as before. Tests compare both. */
+        static volatile boolean enabled = true;
+
+        private record Key(long id, DerivedKind kind) {}
+
+        private record Hint(Key key, int limit) {}
+
+        private final WorldStreamScopes engine;
+        private final Cancellation token = new Cancellation();
+        private final Cancellation.Registration link;
+        private final boolean classifyUnavailable;
+        private final java.util.ArrayDeque<Hint> queue = new java.util.ArrayDeque<>();
+        private final java.util.LinkedHashMap<Key, CompletableFuture<Source>> started =
+                new java.util.LinkedHashMap<>();
+        private int running;
+        private boolean closed;
+
+        private Prefetcher(
+                WorldStreamScopes engine, Cancellation operation, boolean classifyUnavailable) {
+            this.engine = engine;
+            this.classifyUnavailable = classifyUnavailable;
+            this.link = operation.onCancel(token::cancel);
+        }
+
+        synchronized void hint(long id, DerivedKind kind, int limit, int remaining) {
+            var key = new Key(id, kind);
+            if (closed || started.containsKey(key) || queue.size() >= QUEUE) {
+                return;
+            }
+            int pending = 0;
+            for (var hint : queue) {
+                if (hint.key().equals(key)) {
+                    return;
+                }
+                if (hint.key().kind() == kind) {
+                    pending++;
+                }
+            }
+            for (var other : started.keySet()) {
+                if (other.kind() == kind) {
+                    pending++;
+                }
+            }
+            // Never read ahead more of a kind than the operation may still consume.
+            if (pending >= remaining) {
+                return;
+            }
+            queue.add(new Hint(key, limit));
+            pump();
+        }
+
+        /**
+         * The started read of exactly this hint, now owned by the caller, or null: a hint not yet
+         * started is withdrawn so the caller reads it itself without waiting behind the queue.
+         */
+        synchronized CompletableFuture<Source> take(long id, DerivedKind kind) {
+            var key = new Key(id, kind);
+            var future = started.remove(key);
+            if (future == null) {
+                queue.removeIf(hint -> hint.key().equals(key));
+                return null;
+            }
+            pump();
+            return future;
+        }
+
+        private void pump() {
+            // A full window of finished reads nobody took (hints the operation skipped) must not
+            // stop read-ahead: drop the oldest finished one. If it is wanted after all, the
+            // operation simply reads it itself.
+            while (!closed && started.size() >= WINDOW && running < READS && !queue.isEmpty()) {
+                var oldest =
+                        started.entrySet().stream()
+                                .filter(entry -> entry.getValue().isDone())
+                                .findFirst();
+                if (oldest.isEmpty()) {
+                    break;
+                }
+                started.remove(oldest.get().getKey());
+                discard(oldest.get().getValue());
+            }
+            while (!closed && running < READS && started.size() < WINDOW && !queue.isEmpty()) {
+                var hint = queue.poll();
+                running++;
+                var future = new CompletableFuture<Source>();
+                started.put(hint.key(), future);
+                Thread.ofVirtual()
+                        .name("world-source-prefetch")
+                        .start(
+                                () -> {
+                                    try {
+                                        future.complete(
+                                                engine.read(
+                                                        hint.key().id(),
+                                                        hint.limit(),
+                                                        token,
+                                                        classifyUnavailable));
+                                    } catch (Throwable failure) {
+                                        future.completeExceptionally(failure);
+                                    } finally {
+                                        finished();
+                                    }
+                                });
+            }
+        }
+
+        private synchronized void finished() {
+            running--;
+            pump();
+        }
+
+        /** The read's own result: its source, or exactly the exception the read threw. */
+        static Source await(CompletableFuture<Source> future) {
+            try {
+                return future.join();
+            } catch (java.util.concurrent.CompletionException wrapped) {
+                var cause = wrapped.getCause();
+                if (cause instanceof RuntimeException runtime) {
+                    throw runtime;
+                }
+                if (cause instanceof Error error) {
+                    throw error;
+                }
+                throw wrapped;
+            }
+        }
+
+        void close() {
+            List<CompletableFuture<Source>> pending;
+            synchronized (this) {
+                closed = true;
+                queue.clear();
+                pending = new ArrayList<>(started.values());
+                started.clear();
+            }
+            token.cancel();
+            for (var future : pending) {
+                discard(future);
+            }
+            link.close();
+        }
+
+        /** Drops a read nobody will consume, after it finishes; it then holds no bytes. */
+        private static void discard(CompletableFuture<Source> future) {
+            try {
+                future.join().close();
+            } catch (RuntimeException ignored) {
+                // A canceled or failed read that nobody consumed holds no bytes.
+            }
         }
     }
 
