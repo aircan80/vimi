@@ -193,20 +193,31 @@ final class ReadConnections {
     /**
      * Closes read-only connections. A failure to close one has no durability consequence, so it is
      * logged rather than thrown: it must never skip a store's clean-close mark or the closing of
-     * its writer connection and lock.
+     * its writer connection and lock. Every connection is attempted and uncounted even if one close
+     * throws an {@link Error}; the first Error is rethrown after the loop.
      */
     private void closeAll(List<Pooled> connections) {
+        Error fatal = null;
         for (Pooled pooled : connections) {
             try {
                 pooled.db.close();
             } catch (RuntimeException error) {
                 System.getLogger(ReadConnections.class.getName())
                         .log(System.Logger.Level.WARNING, "Read connection close failed", error);
+            } catch (Error error) {
+                if (fatal == null) {
+                    fatal = error;
+                } else {
+                    fatal.addSuppressed(error);
+                }
             } finally {
                 synchronized (this) {
                     closing--;
                 }
             }
+        }
+        if (fatal != null) {
+            throw fatal;
         }
     }
 }
