@@ -13,7 +13,8 @@ public final class GeneratedTypes {
             LIMIT = "GENERATED_STORE_LIMIT",
             CORRUPT = "GENERATED_CORRUPT",
             BUSY = "GENERATED_STORE_BUSY",
-            UNUSABLE = "GENERATED_STORE_UNUSABLE";
+            UNUSABLE = "GENERATED_STORE_UNUSABLE",
+            READ_ONLY = "GENERATED_STORE_READ_ONLY";
 
     private GeneratedTypes() {}
 
