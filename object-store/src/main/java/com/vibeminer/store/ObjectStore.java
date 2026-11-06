@@ -562,9 +562,10 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 // Keep the previous main index until the atomic switch. An interruption
                 // must not create a gap between deleting the old file and installing the new one.
                 for (String suffix : List.of("-wal", "-shm")) {
-                    io.delete(folder.resolve("objects.sqlite3" + suffix));
+                    Path sidecar = folder.resolve("objects.sqlite3" + suffix);
+                    whileIndexInUse(() -> io.delete(sidecar));
                 }
-                io.replace(rebuilding, indexPath);
+                whileIndexInUse(() -> io.replace(rebuilding, indexPath));
                 atMaintenance(MaintenancePoint.REBUILD_REPLACED);
                 io.syncDirectory(folder);
             } else {
@@ -722,6 +723,53 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         }
     }
 
+    /** Longest a rebuild waits for other processes to release the index files. */
+    static final long INDEX_IN_USE_WAIT_NANOS = TimeUnit.SECONDS.toNanos(10);
+
+    // Test seam: shorter waits.
+    long indexInUseWaitNanos = INDEX_IN_USE_WAIT_NANOS;
+
+    interface IndexFileAction {
+        void run() throws IOException;
+    }
+
+    /**
+     * Runs {@code action} on the index files, retrying while another process holds them open. On
+     * Windows a reader's open handle makes a delete fail with a sharing violation (a plain {@link
+     * java.nio.file.FileSystemException}) and a replace with {@link
+     * java.nio.file.AccessDeniedException}; readers see the rebuild file and stop pooling
+     * connections, so their handles go away between reads. Other failures (a missing file, an
+     * injected or plain I/O error) are not retried. Past the bound the rebuild refuses with {@code
+     * OBJECT_STORE_INDEX_IN_USE}.
+     */
+    void whileIndexInUse(IndexFileAction action) throws IOException {
+        long deadline = System.nanoTime() + indexInUseWaitNanos;
+        while (true) {
+            try {
+                action.run();
+                return;
+            } catch (java.nio.file.FileSystemException busy) {
+                if (busy.getClass() != java.nio.file.FileSystemException.class
+                        && !(busy instanceof java.nio.file.AccessDeniedException)) {
+                    throw busy;
+                }
+                if (System.nanoTime() - deadline >= 0) {
+                    throw new StoreException(
+                            "OBJECT_STORE_INDEX_IN_USE",
+                            "Index rebuild could not replace the index files: another process"
+                                    + " kept them open, or access was denied",
+                            busy);
+                }
+                try {
+                    Thread.sleep(25);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw busy;
+                }
+            }
+        }
+    }
+
     private void deleteRebuild() throws IOException {
         for (String suffix : List.of("", "-wal", "-shm")) {
             io.delete(folder.resolve("objects.sqlite3.rebuild" + suffix));
@@ -852,7 +900,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
      */
     private <T> T pooledRead(Cancellation cancellation, ReadWork<T> work) throws Exception {
         Object identity = indexIdentity();
-        ReadConnections.Pooled connection = immutable ? null : readConnections.take(identity);
+        boolean pooling = !immutable && !rebuildPending();
+        ReadConnections.Pooled connection = pooling ? readConnections.take(identity) : null;
         boolean poolable = true;
         if (connection == null) {
             long generation = readConnections.generation();
@@ -864,11 +913,35 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         boolean reusable = false;
         try {
             T result = db.withCancellation(cancellation, () -> work.run(new StoreIndex(db)));
-            reusable = poolable && !immutable && !db.inTransaction();
+            reusable = poolable && pooling && !immutable && !db.inTransaction();
             return result;
         } finally {
             readConnections.give(connection, reusable);
         }
+    }
+
+    private volatile long rebuildCheckedAt;
+    private volatile boolean rebuildSeen;
+
+    /**
+     * Whether another process is rebuilding this store's index (its rebuild file exists), checked
+     * at most every 100 ms. While it is, reads use a fresh connection each and pool none, so no
+     * handle stays open between reads to block the rebuild's delete and replace (#458); the idle
+     * pool is retired when the rebuild is first seen. A writer's own reads never overlap its
+     * rebuild, which runs before the store opens.
+     */
+    private boolean rebuildPending() {
+        long now = System.nanoTime();
+        if (now - rebuildCheckedAt < TimeUnit.MILLISECONDS.toNanos(100)) {
+            return rebuildSeen;
+        }
+        boolean seen = Files.exists(folder.resolve("objects.sqlite3.rebuild"));
+        if (seen && !rebuildSeen) {
+            readConnections.retire();
+        }
+        rebuildSeen = seen;
+        rebuildCheckedAt = now;
+        return seen;
     }
 
     // Set once the file system reports no file identity (Windows): identity checks are skipped.
