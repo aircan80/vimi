@@ -51,11 +51,13 @@ public final class WorldStreamSourceControllerTest {
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
-        bumpBetweenIssueAndRefusalStillWakesRetry(false, false);
-        bumpBetweenIssueAndRefusalStillWakesRetry(false, true);
-        bumpBetweenIssueAndRefusalStillWakesRetry(true, false);
-        bumpBetweenIssueAndRefusalStillWakesRetry(false, false, true);
-        bumpBetweenIssueAndRefusalStillWakesRetry(false, true, true);
+        bumpBetweenIssueAndRefusalStillWakesRetry("geometry", false);
+        bumpBetweenIssueAndRefusalStillWakesRetry("output", false);
+        bumpBetweenIssueAndRefusalStillWakesRetry("output", true);
+        bumpBetweenIssueAndRefusalStillWakesRetry("pool", false);
+        bumpBetweenIssueAndRefusalStillWakesRetry("geometry", false, true);
+        bumpBetweenIssueAndRefusalStillWakesRetry("output", true, true);
+        busyGeometryLaneIsNotPolledAndItsReleaseWakesTheTile();
         sameResidentCameraFrameDoesNotRetryMaterialPool();
         transportFrameSignalQueuesPresentationWithoutAnyPulse();
         steadyCameraFramesReuseAFewPixelArrays();
@@ -692,10 +694,13 @@ public final class WorldStreamSourceControllerTest {
      * #305: a presentation or demand bump that lands after a tile reservation was issued but
      * before its refusal is processed still wakes the retry. The clock never advances and the
      * refusal's own unused credit is held, so only the bump inside the window can wake it.
+     * Sites: "geometry" (GEOMETRY_CREDIT, wakes on demand or its own release, #304), "pool"
+     * (MATERIAL_POOL, wakes on demand or source retirement) and "output" (OUTPUT_CREDIT, the
+     * generic path that also wakes on presentation).
      */
     private static void bumpBetweenIssueAndRefusalStillWakesRetry(
-            boolean materialPool, boolean presentation) throws Exception {
-        bumpBetweenIssueAndRefusalStillWakesRetry(materialPool, presentation, false);
+            String site, boolean presentation) throws Exception {
+        bumpBetweenIssueAndRefusalStillWakesRetry(site, presentation, false);
     }
 
     /**
@@ -703,15 +708,19 @@ public final class WorldStreamSourceControllerTest {
      * but before it issued the reservation, so the tile was still chosen from the old ones.
      */
     private static void bumpBetweenIssueAndRefusalStillWakesRetry(
-            boolean materialPool, boolean presentation, boolean beforeIssue) throws Exception {
+            String site, boolean presentation, boolean beforeIssue) throws Exception {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
-        AutoCloseable held = materialPool
-                ? AuthoredTerrainPoolPressure.hold(fixture.pool)
-                : com.vibeminer.concepts.world.AuthoredGeometryPressure.hold(fixture.world);
+        var held = new java.util.concurrent.atomic.AtomicReference<AutoCloseable>(
+                switch (site) {
+                    case "pool" -> AuthoredTerrainPoolPressure.hold(fixture.pool);
+                    case "geometry" ->
+                            com.vibeminer.concepts.world.AuthoredGeometryPressure.hold(fixture.world);
+                    default -> null; // "output": held once the controller owns its source
+                });
+        boolean materialPool = site.equals("pool");
         Path holdCredit = fixture.directory.resolve("authored-hold-unused-credit");
         var refused = new java.util.concurrent.atomic.AtomicReference<Object>();
-        String label = (materialPool ? "material pool" : "geometry lane")
-                + (presentation ? ", presentation bump" : ", demand bump")
+        String label = site + (presentation ? ", presentation bump" : ", demand bump")
                 + (beforeIssue ? " before issue" : "");
         try {
             Files.writeString(holdCredit, "hold");
@@ -754,6 +763,17 @@ public final class WorldStreamSourceControllerTest {
                 while (fixture.controller == null && System.nanoTime() < deadline)
                     java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
                 fixture.controller.tileRefusalSeam = seam;
+                if (site.equals("output")) {
+                    try {
+                        var source = WorldStreamSourceController.class.getDeclaredField("source");
+                        source.setAccessible(true);
+                        held.set(com.vibeminer.concepts.world.AuthoredOutputPressure.hold(
+                                (com.vibeminer.concepts.world.WorldTerrainStreaming)
+                                        source.get(fixture.controller)));
+                    } catch (ReflectiveOperationException failure) {
+                        throw new AssertionError(failure);
+                    }
+                }
                 if (beforeIssue) fixture.controller.tileIssueSeam = bump;
                 return fixture.gpu.start(scope);
             });
@@ -768,7 +788,60 @@ public final class WorldStreamSourceControllerTest {
                     .equals("Waiting for GPU upload capacity"));
         } finally {
             Files.deleteIfExists(holdCredit);
-            held.close();
+            var hold = held.get();
+            if (hold != null) hold.close();
+            fixture.close();
+        }
+    }
+
+    /**
+     * #304: while another holder keeps the geometry lane busy, the refused tile waits on the
+     * source's geometry release instead of re-polling on every unused-credit CREDIT, and the
+     * release itself wakes it promptly. The controller clock is frozen, so the 500 ms timeout
+     * can never be what retries.
+     */
+    private static void busyGeometryLaneIsNotPolledAndItsReleaseWakesTheTile() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 1);
+        var geometry = com.vibeminer.concepts.world.AuthoredGeometryPressure.hold(fixture.world);
+        var refusals = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            fixture.start(scope -> {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (fixture.controller == null && System.nanoTime() < deadline)
+                    java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                fixture.controller.tileRefusalSeam = refusals::incrementAndGet;
+                return fixture.gpu.start(scope);
+            });
+            fixture.until(() -> refusals.get() >= 1);
+            // Let the refusal's own unused credit land and keep pulsing like the FX timer does.
+            long window = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500);
+            int first = refusals.get();
+            while (System.nanoTime() < window) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            int attempts = refusals.get() - first;
+            System.out.println("Busy geometry lane: " + attempts + " refused attempts in 500 ms");
+            check(attempts <= 1, "A busy geometry lane is waited on, not polled: " + attempts);
+            long released = System.nanoTime();
+            geometry.close();
+            // No pulse here: only the source's release listener may wake the waiting step.
+            long quiet = released + TimeUnit.SECONDS.toNanos(2);
+            while (fixture.controller.snapshot().detail()
+                            .equals("Waiting for streaming resource capacity")
+                    && System.nanoTime() < quiet) Thread.sleep(1);
+            check(!fixture.controller.snapshot().detail()
+                            .equals("Waiting for streaming resource capacity"),
+                    "The geometry release itself woke the controller, without any pulse");
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            long latency = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - released);
+            System.out.println("Geometry release to seeded tile: " + latency + " ms");
+            check(latency < 2_000, "The lane release woke the tile promptly: " + latency + " ms");
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+        } finally {
+            geometry.close();
             fixture.close();
         }
     }
