@@ -53,19 +53,51 @@ final class TerrainSceneTest {
     }
 
     @Test
+    void oneHorizontalFieldOfViewDrivesTheMatrixAndScreenProjection() {
+        assertEquals(90, Math.toDegrees(TerrainCamera.HORIZONTAL_FOV), 1e-12);
+        assertEquals(1, TerrainCamera.FOCAL, 1e-12);
+        assertEquals(640, TerrainCamera.focalPixels(1280), 1e-9);
+        var camera = new TerrainCamera(0, 0, 0, 0, 0);
+        // A point 45 degrees right of forward lands on the right frame edge, 45 left on the left.
+        assertEquals(800, TerrainCamera.screenX(camera.eye(10, -10, 0), 800, 500), 1e-9);
+        assertEquals(0, TerrainCamera.screenX(camera.eye(10, 10, 0), 800, 500), 1e-9);
+        for (int[] size : new int[][] {{800, 500}, {640, 640}, {1280, 720}, {333, 960}}) {
+            int width = size[0], height = size[1];
+            var matrix = TerrainCamera.reversedProjection(width, height);
+            for (var eye :
+                    new TerrainCamera.Eye[] {
+                        new TerrainCamera.Eye(-2, 1, 4), new TerrainCamera.Eye(3.5, -2.25, 9)
+                    }) {
+                // Clip w = depth; NDC = clip / w; window = (ndc * .5 + .5) * size, y down.
+                double ndcX = matrix.get(0) * eye.right() / eye.depth();
+                double ndcY = matrix.get(5) * eye.up() / eye.depth();
+                assertEquals(
+                        (ndcX * .5 + .5) * width,
+                        TerrainCamera.screenX(eye, width, height),
+                        1e-4 * width);
+                assertEquals(
+                        (.5 - ndcY * .5) * height,
+                        TerrainCamera.screenY(eye, width, height),
+                        1e-4 * height);
+            }
+        }
+    }
+
+    @Test
     void freeFlightAndReversedProjectionHaveIndependentNativeAxisAndAsymmetricFrameOracles() {
         var camera = new TerrainCamera(10, 20, 30, 0, 0);
         var eye = camera.eye(14, 22, 31);
         assertEquals(new TerrainCamera.Eye(-2, 1, 4), eye);
-        assertEquals(40, TerrainCamera.screenX(eye, 400, 200));
-        assertEquals(20, TerrainCamera.screenY(eye, 400, 200));
+        // 90 degree horizontal field of view: focal length is half the frame width.
+        assertEquals(100, TerrainCamera.screenX(eye, 400, 200), 1e-9);
+        assertEquals(50, TerrainCamera.screenY(eye, 400, 200), 1e-9);
         var quarter = new TerrainCamera(10, 20, 30, Math.PI / 2, 0).eye(10, 24, 32);
         assertEquals(0, quarter.right(), 1e-12);
         assertEquals(2, quarter.up(), 1e-12);
         assertEquals(4, quarter.depth(), 1e-12);
         var matrix = TerrainCamera.reversedProjection(400, 200);
-        assertEquals(1.6, matrix.get(0), 1e-6);
-        assertEquals(3.2, matrix.get(5), 1e-6);
+        assertEquals(1, matrix.get(0), 1e-6);
+        assertEquals(2, matrix.get(5), 1e-6);
         assertEquals(.5, matrix.get(14));
         assertEquals(-1, matrix.get(11));
         assertEquals(0, matrix.get(10));
