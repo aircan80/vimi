@@ -163,6 +163,32 @@ public final class WorldService implements BuildWorld {
         return java.util.Optional.of(waterFacade);
     }
 
+    /** Loads the light tables once, off the caller's thread; later calls share the result. */
+    public synchronized CompletableFuture<WorldSky.Index> skyIndex(Cancellation token) {
+        java.util.Objects.requireNonNull(token);
+        if (closing != null) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("World workspace closed"));
+        }
+        if (skyIndex == null) {
+            var result = new CompletableFuture<WorldSky.Index>();
+            skyIndex = result;
+            Thread.ofVirtual()
+                    .name("world-sky-index")
+                    .start(
+                            () -> {
+                                try {
+                                    result.complete(WorldSky.load(tables, token));
+                                } catch (Throwable failure) {
+                                    result.completeExceptionally(failure);
+                                }
+                            });
+        }
+        return skyIndex.copy();
+    }
+
+    private CompletableFuture<WorldSky.Index> skyIndex;
+
     /**
      * Prepares native evidence for the two small tables the water preview qualifies indirect layers
      * against (LiquidType, LiquidMaterial) using the configured source. Completes true only if both

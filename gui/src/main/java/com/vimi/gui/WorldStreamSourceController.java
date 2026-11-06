@@ -195,6 +195,8 @@ final class WorldStreamSourceController {
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
     private volatile boolean closing;
     private volatile WorldStreamTransport.Camera camera;
+    // The recorded sky (#177-2a), behind -Dvimi.world.sky=recorded; null when off.
+    private volatile WorldSkyFeed sky;
     private volatile WorldStreamTransport.Session session;
     private List<WorldFormats.Tile> desired;
     private long demandRevision, presentationRevision, acceptedSequence;
@@ -291,6 +293,8 @@ final class WorldStreamSourceController {
             if (camera != null && next.revision() <= camera.revision()) {
                 throw new IllegalArgumentException("Camera revision must advance");
             }
+            var feed=sky;
+            if(feed!=null) next=feed.attach(next);
             camera=next;
             // Actual final Session.camera only replaces metadata; no IO/external callback.
             // Use the same gate as initial publication so an older initial camera cannot follow.
@@ -566,6 +570,9 @@ final class WorldStreamSourceController {
                     return;
                 }
                 source=capability.orElseThrow();
+                if(WorldSkyFeed.enabled())
+                    sky=new WorldSkyFeed(request.world().skyIndex(qualificationCancellation),
+                            request.map().id(),WorldSkyFeed.clock(),System::nanoTime);
                 // Static diagnostic water joins each actual terrain tile; disable with
                 // -Dvimi.world.water=false.
                 if(!"false".equals(System.getProperty("vimi.world.water")))
@@ -1107,6 +1114,7 @@ final class WorldStreamSourceController {
                 + " height fallback"
                 + (reason.isEmpty() ? "" : "; " + reason)
                 + (watered == 0 ? "" : "; static diagnostic water on " + watered)
+                + (sky == null || sky.label() == null ? "" : "; " + sky.label())
                 + (buildingTiles == 0 ? "" : objectsDetail(objects, buildingTiles))
                 + (buildingFailures == 0 ? "" : "; building objects failed on " + buildingFailures)
                 + creatureDetail(creatures, creatureTiles)

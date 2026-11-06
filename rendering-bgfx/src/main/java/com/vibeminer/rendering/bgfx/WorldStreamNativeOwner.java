@@ -337,6 +337,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         if (order == WorldFrameFileV2.MAX_SEQUENCE) {
             throw new IllegalStateException("Frame order exhausted");
         }
+        // The frame's sky travels with its camera, so a coalesced camera never loses it.
+        renderer.fog(WorldFog.sky(command.sky(), Float.NaN));
         var ticket = renderer.draw(command.camera(), cameraRevision, policy, width, height);
         bgfx_blit(1, available.texture, 0, 0, 0, 0, color, 0, 0, 0, 0, width, height, 1);
         available.pixels.clear();

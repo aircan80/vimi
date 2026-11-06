@@ -1,21 +1,26 @@
 package com.vimi.gui;
 
 import com.vibeminer.concepts.world.WorldSky;
+import com.vibeminer.rendering.bgfx.WorldStreamTransport;
+import com.vibeminer.rendering.world.TerrainCamera;
 
 import java.time.LocalTime;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * The recorded sky mixed into the explorer's look: coverage and fog share blends, the scaler
- * clamp, composition with the WDL horizon, the clock and the throttle.
+ * The recorded sky mixed into the explorer's look (coverage and fog share, the scaler clamp), the
+ * clock, the throttle, and the feed that attaches it to World cameras. The renderer's composition
+ * with its fog distances and the WDL horizon is tested in rendering-bgfx (WorldFogTest).
  */
 public final class WorldSkyLookTest {
     private WorldSkyLookTest() {}
 
-    private static final WorldSkyLook.Look EXPLORER = WorldSkyLook.Look.explorer(
-            new float[] {150, 180, 200}, new float[] {90, 140, 170});
-    private static final float START = 600, END = 2200, CUT = 2400, HORIZON = 3200;
+    private static final WorldStreamTransport.Sky EXPLORER = new WorldStreamTransport.Sky(
+            new float[] {150, 180, 200}, new float[] {90, 140, 170}, 0, 0, 0);
 
     private static WorldSky.Result result(double coverage, double fogEnd, double scaler,
             double fogShare) {
@@ -34,34 +39,27 @@ public final class WorldSkyLookTest {
             check(Math.abs(actual[i] - expected[i]) < 1e-3, what + " " + Arrays.toString(actual));
     }
 
-    private static WorldSkyLook.Fog fog(WorldSkyLook.Look look) {
-        return look.fog(START, END, CUT, Float.NaN);
-    }
-
     private static void mapsRecordedChannelsAndFog() {
         // Fully covered, all fog recorded: SkyFog is the horizon, SkyTop the top.
         var full = WorldSkyLook.of(result(1, 1000, 0.25, 1), EXPLORER);
         near(full.horizon(), new double[] {0x32, 0x46, 0x64}, "horizon from SkyFog");
         near(full.top(), new double[] {0x0a, 0x14, 0x1e}, "top from SkyTop");
-        check(fog(full).equals(new WorldSkyLook.Fog(250, 1000, CUT)), "fog " + fog(full));
+        check(full.fogWeight() == 1 && full.recordedStart() == 250 && full.recordedEnd() == 1000,
+                "recorded fog " + full);
 
-        // Half covered: halfway to the explorer's look, colours and fog alike.
+        // Half covered: colours halfway to the explorer's, fog weighed by the coverage.
         var half = WorldSkyLook.of(result(0.5, 1000, 0.25, 1), EXPLORER);
         near(half.top(), new double[] {50, 80, 100}, "half top");
-        check(fog(half).equals(new WorldSkyLook.Fog(425, 1600, CUT)), "half " + fog(half));
+        check(half.fogWeight() == 0.5, "half weight " + half.fogWeight());
 
-        // No recorded fog here: recorded colours, the explorer's fog.
+        // Half the value records fog: the weight halves.
+        check(WorldSkyLook.of(result(1, 1000, 0.25, 0.5), EXPLORER).fogWeight() == 0.5,
+                "fog share");
+
+        // No recorded fog here: recorded colours, no fog weight.
         var clear = WorldSkyLook.of(result(1, 0, 0, 0), EXPLORER);
         near(clear.top(), new double[] {0x0a, 0x14, 0x1e}, "clear top");
-        check(fog(clear).equals(new WorldSkyLook.Fog(START, END, CUT)), "clear " + fog(clear));
-
-        // Half the value records fog: the distances move halfway.
-        var some = WorldSkyLook.of(result(1, 1000, 0.25, 0.5), EXPLORER);
-        check(fog(some).equals(new WorldSkyLook.Fog(425, 1600, CUT)), "fog share " + fog(some));
-
-        // A recorded end past the cut stops at the cut; the cut never moves in.
-        var far = WorldSkyLook.of(result(1, 9000, 0.25, 1), EXPLORER);
-        check(fog(far).end() == CUT && fog(far).cut() == CUT, "far " + fog(far));
+        check(clear.fogWeight() == 0, "clear has no recorded fog");
 
         // Unavailable: the explorer's look unchanged.
         var none = WorldSkyLook.of(new WorldSky.Result(WorldSky.State.UNAVAILABLE, 0, 0, false,
@@ -69,36 +67,12 @@ public final class WorldSkyLookTest {
         check(none == EXPLORER, "unavailable keeps the explorer's look");
     }
 
-    /**
-     * With the WDL horizon drawn the cut moves out to the horizon. A recorded end below it is
-     * kept, so foggy zones stay foggy; without recorded fog the fog ends at the horizon.
-     */
-    private static void composesWithTheHorizon() {
-        var foggy = WorldSkyLook.of(result(1, 800, 0.25, 1), EXPLORER)
-                .fog(START, END, CUT, HORIZON);
-        check(foggy.equals(new WorldSkyLook.Fog(200, 800, HORIZON)), "foggy zone " + foggy);
-
-        var plain = WorldSkyLook.of(result(1, 0, 0, 0), EXPLORER).fog(START, END, CUT, HORIZON);
-        check(plain.equals(new WorldSkyLook.Fog(START, HORIZON, HORIZON)), "no recorded fog "
-                + plain);
-
-        // Half recorded: halfway between the recorded end and the horizon.
-        var half = WorldSkyLook.of(result(1, 800, 0.25, 0.5), EXPLORER)
-                .fog(START, END, CUT, HORIZON);
-        check(half.end() == 2000 && half.cut() == HORIZON, "half with horizon " + half);
-
-        // A recorded end beyond the horizon stops at it.
-        var far = WorldSkyLook.of(result(1, 9000, 0.25, 1), EXPLORER)
-                .fog(START, END, CUT, HORIZON);
-        check(far.end() == HORIZON && far.cut() == HORIZON, "far with horizon " + far);
-    }
-
     private static void clampsTheFogScaler() {
-        var above = fog(WorldSkyLook.of(result(1, 1000, 3, 1), EXPLORER));
-        check(above.end() == 1000 && above.start() < 1000 && above.start() >= 989,
-                "scaler above 1 " + above);
-        var below = fog(WorldSkyLook.of(result(1, 1000, -3, 1), EXPLORER));
-        check(below.start() == 0 && below.end() == 1000, "negative scaler " + below);
+        var above = WorldSkyLook.of(result(1, 1000, 3, 1), EXPLORER);
+        check(above.recordedEnd() == 1000 && above.recordedStart() < 1000
+                && above.recordedStart() >= 989, "scaler above 1 " + above);
+        var below = WorldSkyLook.of(result(1, 1000, -3, 1), EXPLORER);
+        check(below.recordedStart() == 0, "negative scaler " + below);
     }
 
     private static void clockToHalfMinutes() {
@@ -117,13 +91,65 @@ public final class WorldSkyLookTest {
         check(throttle.due(1, 9, 0, 0, 1_040), "time passed");
     }
 
+    private static WorldStreamTransport.Camera camera(long revision, double x) {
+        return new WorldStreamTransport.Camera(revision, 1, 800, 500,
+                new TerrainCamera(x, 0, 0, 0, 0));
+    }
+
+    /** One map-wide light whose sky top changes from midnight to noon. */
+    private static WorldSky.Index index() {
+        return WorldSky.Index.of(
+                List.of(new WorldSky.Light(1, 7, 0, 0, 0, 0, 0, 100)),
+                List.of(
+                        new WorldSky.Key(1, 100, 0,
+                                new WorldSky.Sample(0x101010, 0, 0, 0, 0, 0, 0, 0)),
+                        new WorldSky.Key(2, 100, 1440,
+                                new WorldSky.Sample(0xf0f0f0, 0, 0, 0, 0, 0, 900, 0.5))),
+                Map.of(), List.of());
+    }
+
+    private static void feedsTheSkyOnCamerasOnceTheTablesAreLoaded() {
+        check(!WorldSkyFeed.enabled(), "the recorded sky is off by default");
+
+        var pending = new CompletableFuture<WorldSky.Index>();
+        var nanos = new AtomicLong();
+        var feed = new WorldSkyFeed(pending, 7, () -> LocalTime.NOON, nanos::get);
+        check(feed.attach(camera(1, 0)).sky() == null, "no sky before the tables load");
+
+        pending.complete(index());
+        var first = feed.attach(camera(2, 0));
+        check(first.sky() != null && first.sky().top()[0] == 0xf0, "noon sky " + first.sky());
+        check(first.sky().recordedEnd() == 900, "recorded fog " + first.sky());
+        check(feed.label() != null && feed.label().contains("Light 1"), "label " + feed.label());
+
+        // A small move within the throttle reuses the last sky on the new camera.
+        var near = feed.attach(camera(3, 2));
+        check(near.revision() == 3 && near.sky() == first.sky(), "reused sky");
+
+        var failed = new WorldSkyFeed(CompletableFuture.failedFuture(
+                new IllegalStateException("tables")), 7, () -> LocalTime.NOON, nanos::get);
+        check(failed.attach(camera(1, 0)).sky() == null, "failed tables keep the explorer's sky");
+    }
+
+    private static void pinsTheClockForOwnerChecks() {
+        System.setProperty(WorldSkyFeed.TIME_PROPERTY, "21:30");
+        try {
+            check(WorldSkyFeed.clock().get().equals(LocalTime.of(21, 30)), "pinned time");
+            System.setProperty(WorldSkyFeed.TIME_PROPERTY, "late");
+            check(WorldSkyFeed.clock().get() != null, "an unreadable pin uses the clock");
+        } finally {
+            System.clearProperty(WorldSkyFeed.TIME_PROPERTY);
+        }
+    }
+
     public static void main(String[] args) {
         mapsRecordedChannelsAndFog();
-        composesWithTheHorizon();
         clampsTheFogScaler();
         clockToHalfMinutes();
         throttlesLookups();
-        System.out.println("World sky look: recorded channels, coverage and fog share blends,"
-                + " horizon composition, scaler clamp, clock and throttle passed");
+        feedsTheSkyOnCamerasOnceTheTablesAreLoaded();
+        pinsTheClockForOwnerChecks();
+        System.out.println("World sky look: recorded channels, coverage and fog share, scaler"
+                + " clamp, clock, throttle, camera feed and pinned time passed");
     }
 }

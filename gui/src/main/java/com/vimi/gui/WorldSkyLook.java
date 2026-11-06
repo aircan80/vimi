@@ -1,6 +1,7 @@
 package com.vimi.gui;
 
 import com.vibeminer.concepts.world.WorldSky;
+import com.vibeminer.rendering.bgfx.WorldStreamTransport;
 
 import java.time.LocalTime;
 import java.util.Objects;
@@ -9,9 +10,8 @@ import java.util.Objects;
  * Turns a recorded {@link WorldSky.Result} into the World view's sky and distance fog (#177-2a):
  * the horizon colour the fog fades into, the sky top colour, and the recorded fog. Colours are
  * mixed with the explorer's own by how much of the position the recorded lights cover. The fog is
- * kept as recorded values plus how much of the value records fog, and {@link Look#fog} composes
- * it with the explorer's defaults and, when the WDL horizon is drawn, with the horizon distance.
- * Pure; no renderer state.
+ * kept as recorded values plus how much of the value records fog; the renderer composes it with
+ * its own fog distances and the WDL horizon. Pure; no renderer state.
  *
  * <p>Channels: the horizon is {@code SkyFog} ("fog colour / background mountains", painted at and
  * below the horizon by reference sky domes) and the top is {@code SkyTop}. The fog end is {@code
@@ -21,78 +21,8 @@ import java.util.Objects;
 final class WorldSkyLook {
     private WorldSkyLook() {}
 
-    /** Fog distances in yards, as the renderer's fog takes them. */
-    record Fog(float start, float end, float cut) {
-        Fog {
-            if (!(start >= 0) || !(end > start) || !(cut >= end)) {
-                throw new IllegalArgumentException("Invalid fog distances");
-            }
-        }
-    }
-
-    /**
-     * Sky and fog for one frame. Colours are 0..255 gamma red, green, blue. {@code fogWeight}
-     * (0..1) is how much of this position records fog; {@code recordedStart} and {@code
-     * recordedEnd} are that recorded fog, meaningful only when the weight is positive.
-     */
-    record Look(
-            float[] horizon,
-            float[] top,
-            double fogWeight,
-            float recordedStart,
-            float recordedEnd) {
-        Look {
-            if (horizon.length != 3
-                    || top.length != 3
-                    || !(fogWeight >= 0 && fogWeight <= 1)
-                    || fogWeight > 0 && !(recordedEnd > recordedStart && recordedStart >= 0)) {
-                throw new IllegalArgumentException("Invalid sky look");
-            }
-            horizon = horizon.clone();
-            top = top.clone();
-        }
-
-        /** The explorer's own colours, with no recorded fog. */
-        static Look explorer(float[] horizon, float[] top) {
-            return new Look(horizon, top, 0, 0, 0);
-        }
-
-        @Override
-        public float[] horizon() {
-            return horizon.clone();
-        }
-
-        @Override
-        public float[] top() {
-            return top.clone();
-        }
-
-        /**
-         * The fog distances: the recorded fog mixed with the defaults by {@code fogWeight}. The
-         * cut is the streamed-terrain cut, or {@code horizonEnd} when the WDL horizon is drawn
-         * ({@code NaN} when it is not). With the horizon, the default end is the horizon, so a
-         * place without recorded fog fades out at the horizon; a recorded end below it is kept,
-         * so foggy zones stay foggy, and fog stays full from there to the cut. The end never
-         * passes the cut.
-         */
-        Fog fog(float defaultStart, float defaultEnd, float streamCut, float horizonEnd) {
-            boolean horizon = !Float.isNaN(horizonEnd);
-            float cut = horizon ? horizonEnd : streamCut;
-            float baseEnd = horizon ? horizonEnd : defaultEnd;
-            double end = baseEnd + (recordedEnd - baseEnd) * fogWeight;
-            double start = defaultStart + (recordedStart - defaultStart) * fogWeight;
-            end = Math.min(end, cut);
-            if (!(end > start)) {
-                // A scaler of 1 (or a cut below the start) puts the start at the end: keep a
-                // sliver so the fog stays a ramp.
-                start = Math.max(0, end * 0.99);
-            }
-            return new Fog((float) start, (float) end, cut);
-        }
-    }
-
     /** The recorded sky mixed into {@code explorer}; the explorer's look when unavailable. */
-    static Look of(WorldSky.Result result, Look explorer) {
+    static WorldStreamTransport.Sky of(WorldSky.Result result, WorldStreamTransport.Sky explorer) {
         Objects.requireNonNull(result);
         Objects.requireNonNull(explorer);
         if (result.state() == WorldSky.State.UNAVAILABLE) {
@@ -104,14 +34,14 @@ final class WorldSkyLook {
         float[] top = mix(explorer.top(), rgb(sample.skyTop()), cover);
         double fog = cover * sample.fogShare();
         if (!(fog > 0 && sample.fogEnd() > 0)) {
-            return new Look(horizon, top, 0, 0, 0);
+            return new WorldStreamTransport.Sky(horizon, top, 0, 0, 0);
         }
         float end = (float) sample.fogEnd();
         float start = (float) (sample.fogEnd() * Math.clamp(sample.fogScaler(), 0, 1));
         if (!(end > start)) {
             start = end * 0.99f;
         }
-        return new Look(horizon, top, Math.min(1, fog), start, end);
+        return new WorldStreamTransport.Sky(horizon, top, Math.min(1, fog), start, end);
     }
 
     /** A local clock time as LightData half-minutes (0..2879). */

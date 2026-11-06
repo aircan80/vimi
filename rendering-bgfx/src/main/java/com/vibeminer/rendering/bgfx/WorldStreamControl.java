@@ -23,7 +23,8 @@ final class WorldStreamControl {
             long policy,
             int width,
             int height,
-            TerrainCamera camera)
+            TerrainCamera camera,
+            WorldStreamTransport.Sky sky)
             implements Command {
         Camera {
             Objects.requireNonNull(nonce);
@@ -33,6 +34,16 @@ final class WorldStreamControl {
             if (width < 1 || width > 800 || height < 1 || height > 500) {
                 throw new IllegalArgumentException("Invalid camera dimensions");
             }
+        }
+
+        Camera(
+                WorldStreamState.Nonce nonce,
+                long revision,
+                long policy,
+                int width,
+                int height,
+                TerrainCamera camera) {
+            this(nonce, revision, policy, width, height, camera, null);
         }
     }
 
@@ -114,6 +125,40 @@ final class WorldStreamControl {
 
     private WorldStreamControl() {}
 
+    private static String sky(WorldStreamTransport.Sky sky) {
+        if (sky == null) {
+            return "";
+        }
+        float[] h = sky.horizon(), t = sky.top();
+        return " SKY "
+                + h[0]
+                + " "
+                + h[1]
+                + " "
+                + h[2]
+                + " "
+                + t[0]
+                + " "
+                + t[1]
+                + " "
+                + t[2]
+                + " "
+                + sky.fogWeight()
+                + " "
+                + sky.recordedStart()
+                + " "
+                + sky.recordedEnd();
+    }
+
+    private static WorldStreamTransport.Sky sky(String[] parts) {
+        float[] v = new float[9];
+        for (int i = 0; i < 9; i++) {
+            v[i] = (float) decimal(parts[13 + i]);
+        }
+        return new WorldStreamTransport.Sky(
+                new float[] {v[0], v[1], v[2]}, new float[] {v[3], v[4], v[5]}, v[6], v[7], v[8]);
+    }
+
     static byte[] encode(Command command) {
         Objects.requireNonNull(command);
         var nonce = command.nonce();
@@ -142,7 +187,8 @@ final class WorldStreamControl {
                                     + " "
                                     + c.camera().yaw()
                                     + " "
-                                    + c.camera().pitch();
+                                    + c.camera().pitch()
+                                    + sky(c.sky());
                     case Offer c ->
                             "OFFER "
                                     + c.transaction()
@@ -249,7 +295,13 @@ final class WorldStreamControl {
             Command result =
                     switch (parts[2]) {
                         case "CAM" -> {
-                            arity(parts, 12);
+                            // An optional sky tail: SKY h0 h1 h2 t0 t1 t2 weight start end.
+                            if (parts.length != 12) {
+                                arity(parts, 22);
+                                if (!parts[12].equals("SKY")) {
+                                    throw new IllegalArgumentException("Invalid camera sky");
+                                }
+                            }
                             yield new Camera(
                                     nonce,
                                     number(parts[3]),
@@ -261,7 +313,8 @@ final class WorldStreamControl {
                                             decimal(parts[8]),
                                             decimal(parts[9]),
                                             decimal(parts[10]),
-                                            decimal(parts[11])));
+                                            decimal(parts[11])),
+                                    parts.length == 12 ? null : sky(parts));
                         }
                         case "OFFER" -> {
                             arity(parts, 10);
