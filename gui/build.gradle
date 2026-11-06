@@ -357,6 +357,14 @@ tasks.register('worldPickTest', JavaExec) {
 }
 check.dependsOn worldPickTest
 
+// Explorer key/mouse/wheel mapping and pulse cadence against a recording host; no display.
+tasks.register('worldExplorerInputTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldExplorerInputTest'
+}
+check.dependsOn worldExplorerInputTest
+
 // Exact picking of drawn exterior objects, their source records and the highlight; authored meshes.
 tasks.register('worldObjectPicksTest', JavaExec) {
     dependsOn testClasses
@@ -529,6 +537,14 @@ tasks.register('worldAudioPlaybackTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldAudioPlaybackTest'
 }
 tasks.named('check') { dependsOn tasks.named('worldAudioPlaybackTest') }
+
+// Audio controls selection logic: authored world, manual settle delay and clock; no display.
+tasks.register('worldAudioControlsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldAudioControlsTest'
+}
+tasks.named('check') { dependsOn tasks.named('worldAudioControlsTest') }
 
 // Inline instance switch ordering: drain, audio handover, cancel and refusal; no display or GPU.
 tasks.register('worldInstanceSwitchTest', JavaExec) {
