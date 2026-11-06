@@ -2382,7 +2382,7 @@ public final class WorldExteriorObjects {
                     recorded =
                             WorldImageBudget.recordedLevels(
                                     Blp2Decoder.readMipsSynchronous(
-                                            AssetSource.bytes(raw),
+                                            AssetSource.borrowed(raw),
                                             IMAGE_LIMITS,
                                             token,
                                             Blp2Types.MipProfile.STRICT));
@@ -2448,7 +2448,7 @@ public final class WorldExteriorObjects {
             try {
                 image =
                         Blp2Decoder.decodeSynchronous(
-                                AssetSource.bytes(raw),
+                                AssetSource.borrowed(raw),
                                 level,
                                 IMAGE_LIMITS,
                                 token,
@@ -2645,7 +2645,7 @@ public final class WorldExteriorObjects {
             try {
                 var mip =
                         Blp2Decoder.decodeSynchronous(
-                                AssetSource.bytes(raw),
+                                AssetSource.borrowed(raw),
                                 level,
                                 IMAGE_LIMITS,
                                 token,
