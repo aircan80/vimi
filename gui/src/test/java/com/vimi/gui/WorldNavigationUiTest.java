@@ -227,7 +227,10 @@ public final class WorldNavigationUiTest {
                 viewport.resize(viewport.getWidth()+17,viewport.getHeight()+11);
                 invoke(view,"requestFrame");
                 require(!view.lookup("#world-minimap").isVisible(),"Retired source cannot reveal minimap after resize");
-                require(((javafx.scene.control.Label)get(view,"currentArea")).getText().equals("Terrain area unavailable"),"Retired source cannot retain current-area name");
+                require(((javafx.scene.control.Label)get(view,"currentArea")).getText().equals("Terrain area unavailable")
+                                && ((javafx.scene.control.Label)view.lookup("#world-zone-name")).getText().isEmpty()
+                                && !view.lookup("#world-zone-text").isVisible(),
+                        "Retired source cannot retain current-area name, on the area line or the zone line");
                 require(fixture.minimapCalls.get()==before,"Retired source cannot request artwork after resize");
                 showInventoryEndsFullscreen(view);
                 await(fixture,RACE_CHECKED::get,() -> DONE.complete(null));

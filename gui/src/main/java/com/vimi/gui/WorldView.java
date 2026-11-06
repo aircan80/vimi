@@ -1467,6 +1467,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (closed || request != selection) return true;
         if (revision != revisions.getAsLong() || handle != handles.get()) {
             cancelRequests();
+            // The old world's zone name must not stay on the line (an unknown area keeps it).
+            zoneText.reset();
             maps.setDisable(true);
             open.setDisable(true);
             status.setText("World data changed. Reload maps to update; previous content retained.");
