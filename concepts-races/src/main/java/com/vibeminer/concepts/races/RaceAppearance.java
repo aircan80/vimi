@@ -200,8 +200,43 @@ final class RaceAppearance {
             long modelId,
             Cancellation token,
             java.util.Map<Long, Long> requested) {
+        return prepare(raceId, classId, modelId, token, requested, null);
+    }
+
+    /**
+     * A humanoid NPC's appearance (#385): its race model with its recorded customization choices,
+     * its slot items as clothing geometry and its pre-baked body texture ({@link
+     * RaceAppearancePlan.Npc}). What its items leave undrawn is counted by {@link #npcOmissions}.
+     */
+    Prepared prepareNpc(RaceNpcs.Spec spec, Cancellation token) {
+        return prepare(
+                spec.raceId(),
+                spec.classId(),
+                spec.variant().chrModelId(),
+                token,
+                spec.choices(),
+                new RaceAppearancePlan.Npc(spec.items(), spec.bakeFileDataId()));
+    }
+
+    /** What the NPC's items leave undrawn (item models and unread displays). */
+    RaceAppearancePlan.NpcOmissions npcOmissions(RaceNpcs.Spec spec, Cancellation token) {
+        return plans.npcOmissions(
+                new RaceAppearancePlan.Npc(spec.items(), spec.bakeFileDataId()),
+                token,
+                new ArrayList<>());
+    }
+
+    private Prepared prepare(
+            long raceId,
+            long classId,
+            long modelId,
+            Cancellation token,
+            java.util.Map<Long, Long> requested,
+            RaceAppearancePlan.Npc npc) {
         var issues = new ArrayList<String>();
-        String request = request(raceId, classId, modelId, requested);
+        String request =
+                request(raceId, classId, modelId, requested)
+                        + (npc == null ? "" : ":npc:" + npc.bakeFileDataId() + ":" + npc.items());
         try {
             if (files == null || generated == null) {
                 return prepareFailure(
@@ -216,8 +251,11 @@ final class RaceAppearance {
                 return new Prepared(null, null, null, issues, known, request, null);
             }
             var selection =
-                    new RaceCustomization(media)
-                            .select(raceId, classId, modelId, token, issues, requested);
+                    npc == null
+                            ? new RaceCustomization(media)
+                                    .select(raceId, classId, modelId, token, issues, requested)
+                            : new RaceCustomization(media)
+                                    .npc(raceId, classId, modelId, requested, token, issues);
             var base = media.preview(raceId, classId, modelId, token, selection);
             boolean unread = media.unreadParts();
             base.issues().stream()
@@ -231,7 +269,7 @@ final class RaceAppearance {
             if (base.mesh() == null || base.variant() == null) {
                 return prepareFailure(issues, base.message());
             }
-            var plan = plans.build(raceId, classId, base.variant(), token, issues, selection);
+            var plan = plans.build(raceId, classId, base.variant(), token, issues, selection, npc);
             // A plan or sample that skipped a source only because it could not be read now is
             // shown but not remembered: without recorded sources the next request prepares again.
             unread |= plans.unsettled();
@@ -254,7 +292,10 @@ final class RaceAppearance {
             var sources = new java.util.TreeMap<Long, String>();
             sources.put(base.variant().modelFileDataId(), stat.file().contentKey());
             StringBuilder identity =
-                    new StringBuilder("race-static-appearance-v1\n")
+                    new StringBuilder(
+                                    npc == null
+                                            ? "race-static-appearance-v1\n"
+                                            : "npc-baked-appearance-v1\n")
                             .append(MeshAppearanceCodec.REVISION)
                             .append('\n')
                             .append(M2RestDrawSkinReader.REVISION)

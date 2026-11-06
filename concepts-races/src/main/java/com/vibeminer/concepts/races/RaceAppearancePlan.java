@@ -95,6 +95,66 @@ final class RaceAppearancePlan {
             Cancellation token,
             List<String> issues,
             RaceCustomization.Selection sample) {
+        return build(raceId, classId, variant, token, issues, sample, null);
+    }
+
+    /**
+     * What a humanoid NPC wears instead of a starting loadout (#385): its slot items and its
+     * pre-baked body texture, which replaces every body (type 1) layer.
+     */
+    record Npc(List<RaceNpcs.Item> items, long bakeFileDataId) {
+        Npc {
+            items = List.copyOf(items);
+        }
+    }
+
+    /**
+     * {@code NPCModelItemSlotDisplayInfo.ItemSlot} to item InventoryType, by the order wowdev lists
+     * {@code CreatureDisplayInfoExtra}'s former inline NPC item columns (wowdev
+     * DB/CreatureDisplayInfoExtra, Wrath columns 9 to 19: Helm, Shoulder, Shirt, Cuirass, Belt,
+     * Legs, Boots, Wrist, Gloves, Tabard, Cape); "In Legion+ NPC armor has been moved to
+     * DB/NpcModelItemSlotDisplayInfo.db2". Not documented for the slot table itself: to be checked
+     * on real data before NPCs draw (#385). Slots past the table (held items) are attachments.
+     */
+    static final int[] NPC_SLOT_INVENTORY = {1, 3, 4, 5, 6, 7, 8, 9, 10, 19, 16};
+
+    /** An NPC's items left undrawn: item models (helms, shoulders, held items) and unread rows. */
+    record NpcOmissions(int attachments, int unread) {}
+
+    /**
+     * Counts what an NPC's items leave undrawn, independently of any remembered appearance: slots
+     * past {@link #NPC_SLOT_INVENTORY} (held items) and displays with item models are attachments,
+     * and displays that cannot be read are unread.
+     */
+    NpcOmissions npcOmissions(Npc npc, Cancellation token, List<String> issues) {
+        var display = schema("ItemDisplayInfo", token, issues, "GeosetGroupOverride");
+        display.field("ModelResourcesID", true, 2);
+        int attachments = 0, unread = 0;
+        for (var item : npc.items()) {
+            token.check();
+            if (item.slot() >= NPC_SLOT_INVENTORY.length) {
+                attachments++;
+                continue;
+            }
+            var info = get(display, item.itemDisplayInfoId(), token);
+            if (info == null) {
+                unread++;
+            } else if (display.number(info, "ModelResourcesID[0]") != 0
+                    || display.number(info, "ModelResourcesID[1]") != 0) {
+                attachments++;
+            }
+        }
+        return new NpcOmissions(attachments, unread);
+    }
+
+    Plan build(
+            long raceId,
+            long classId,
+            RaceMediaTypes.Variant variant,
+            Cancellation token,
+            List<String> issues,
+            RaceCustomization.Selection sample,
+            Npc npc) {
         unsettled = false;
         if (sample != null) {
             sample.requireContext(media, raceId, classId, variant.chrModelId());
@@ -333,12 +393,43 @@ final class RaceAppearancePlan {
                     "Known eligible full base skin is unavailable for this preview");
         }
         var items = new ArrayList<Item>();
-        try {
-            clothing(
-                    raceId, classId, variant.sex(), layout, sections, recipe, items, token, issues);
-        } catch (RacesService.Projection unavailable) {
-            unsettled |= unavailable instanceof RacesService.Unreadable;
-            note(issues, "Starting clothing is partial: " + unavailable.getMessage());
+        if (npc != null) {
+            npcClothing(npc, items, token, issues);
+            // The client's pre-baked NPC texture already composites skin, face, underwear and
+            // armour: it is the whole body canvas, and no other body layer is drawn.
+            var body =
+                    canvases.stream()
+                            .filter(canvas -> canvas.type() == 1)
+                            .findFirst()
+                            .orElseThrow(() -> models.unsupported("No body texture canvas"));
+            recipe.removeIf(layer -> layer.type() == 1);
+            recipe.add(
+                    new Layer(
+                            1,
+                            npc.bakeFileDataId(),
+                            0,
+                            0,
+                            body.width(),
+                            body.height(),
+                            1,
+                            Integer.MIN_VALUE,
+                            "NPC bake #" + npc.bakeFileDataId()));
+        } else {
+            try {
+                clothing(
+                        raceId,
+                        classId,
+                        variant.sex(),
+                        layout,
+                        sections,
+                        recipe,
+                        items,
+                        token,
+                        issues);
+            } catch (RacesService.Projection unavailable) {
+                unsettled |= unavailable instanceof RacesService.Unreadable;
+                note(issues, "Starting clothing is partial: " + unavailable.getMessage());
+            }
         }
         recipe.sort(
                 Comparator.comparingInt(Layer::order)
@@ -349,6 +440,48 @@ final class RaceAppearancePlan {
                     RaceTypes.State.UNSUPPORTED, "Texture recipe exceeds preview bounds.");
         }
         return new Plan(canvases, recipe, items, profile);
+    }
+
+    /**
+     * The NPC's slot items as clothing geometry. Item models (a display with ModelResourcesID:
+     * helms, shoulders, held items) are counted as attachments and not drawn. Robes are never
+     * inferred from the slot: a chest whose display sets the robe group (GeosetGroup[2] above 0,
+     * which RaceClothingGeometry applies to group 13, the robe/kilt) is treated as a robe
+     * (InventoryType 20); any other chest as InventoryType 5.
+     */
+    private void npcClothing(Npc npc, List<Item> items, Cancellation token, List<String> issues) {
+        var display = schema("ItemDisplayInfo", token, issues, "GeosetGroupOverride");
+        display.field("GeosetGroup", true, 6);
+        display.field("ModelResourcesID", true, 2);
+        for (var item : npc.items()) {
+            token.check();
+            if (item.slot() >= NPC_SLOT_INVENTORY.length) {
+                continue; // a held item: only its model, counted by npcOmissions
+            }
+            var info = get(display, item.itemDisplayInfoId(), token);
+            if (info == null) {
+                note(issues, "Some NPC item displays are unavailable.");
+                continue;
+            }
+            var groups = new ArrayList<Integer>();
+            for (int n = 0; n < 6; n++) {
+                int value = integer(display, info, "GeosetGroup[" + n + "]");
+                if (value < 0 || value > 98) {
+                    throw display.unsupported("Clothing geoset variant exceeds reviewed bounds");
+                }
+                groups.add(value);
+            }
+            int inventory = NPC_SLOT_INVENTORY[item.slot()];
+            if (inventory == 5 && groups.get(2) > 0) {
+                inventory = 20; // the display itself sets the robe group
+            }
+            boolean simple = display.number(info, "GeosetGroupOverride") == 0;
+            if (!simple) {
+                note(issues, "Some NPC clothing geoset overrides are not evaluated.");
+            }
+            items.add(
+                    new Item(0, inventory, item.itemDisplayInfoId(), simple ? groups : List.of()));
+        }
     }
 
     static boolean wholeBodyBase(Layer layer, List<Canvas> canvases) {

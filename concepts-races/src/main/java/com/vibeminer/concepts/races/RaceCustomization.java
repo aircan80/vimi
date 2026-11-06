@@ -220,6 +220,53 @@ final class RaceCustomization {
         return new Selection(media, raceId, classId, modelId, selected, all);
     }
 
+    /**
+     * A humanoid NPC's customization (#385): the recorded {@code requested} choices, each checked
+     * to belong to an option of this model (NPC choices are not subject to player eligibility),
+     * over the sample selection for every option the NPC does not record. A recorded choice that is
+     * not a member of one of this model's options is unknown and refuses.
+     */
+    Selection npc(
+            long raceId,
+            long classId,
+            long modelId,
+            Map<Long, Long> requested,
+            Cancellation token,
+            List<String> issues) {
+        var sample = select(raceId, classId, modelId, token, issues);
+        if (requested.isEmpty()) {
+            return sample;
+        }
+        var options = media.data("ChrCustomizationOption", 4096, token, issues);
+        var choices = media.data("ChrCustomizationChoice", 40000, token, issues);
+        RaceAppearance.requireProfile(options);
+        RaceAppearance.requireProfile(choices);
+        options.field("ChrModelID", true);
+        choices.reference("ChrCustomizationOptionID", "ChrCustomizationOption");
+        var modelOptions = new HashSet<Long>();
+        for (var option : options.rows) {
+            if (options.number(option, "ChrModelID") == modelId) {
+                modelOptions.add(option.id());
+            }
+        }
+        var optionOf = new java.util.HashMap<Long, Long>();
+        for (var choice : choices.rows) {
+            optionOf.put(choice.id(), choices.number(choice, "ChrCustomizationOptionID"));
+        }
+        var byOption = new TreeMap<>(sample.byOption());
+        var all = new HashSet<>(sample.allChoices());
+        for (var entry : requested.entrySet()) {
+            token.check();
+            if (!modelOptions.contains(entry.getKey())
+                    || !entry.getKey().equals(optionOf.get(entry.getValue()))) {
+                throw options.unsupported("the customization choices are unknown");
+            }
+            byOption.put(entry.getKey(), entry.getValue());
+            all.add(entry.getValue());
+        }
+        return new Selection(media, raceId, classId, modelId, byOption, all);
+    }
+
     RaceCustomizationTypes.Catalog catalog(
             long raceId, long classId, long modelId, Cancellation token) {
         var issues = new java.util.ArrayList<String>();
