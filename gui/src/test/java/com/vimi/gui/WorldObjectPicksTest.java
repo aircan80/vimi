@@ -152,7 +152,7 @@ public final class WorldObjectPicksTest {
         var segments = WorldSelectionOverlay.segments(corners, view, 800, 500);
         require(segments.size() == 12, "A box in front of the camera draws its 12 edges");
         // The flat wall projects to a square centered on the frame: |y|, |z| <= 2 at depth 100.
-        double half = 2 * 800 * .8 / 100;
+        double half = 2 * TerrainCamera.focalPixels(800) / 100;
         for (var s : segments) {
             for (int i = 0; i < 4; i += 2) {
                 require(near(Math.abs(s[i] - 400), half), "Edge x on the projected wall: " + s[i]);

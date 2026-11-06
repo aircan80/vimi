@@ -75,7 +75,10 @@ dependencies {
 application {
     mainClass = 'com.vimi.gui.Launcher'
     applicationName = 'vimi-gui-prototype'
-    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED']
+    // Shared with the packaged app (scripts/release/package_app.py); see the file's comments.
+    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED'] +
+            providers.fileContents(layout.projectDirectory.file('jvm-options.txt')).asText.get()
+                    .readLines()*.replaceFirst(/(^|\s)#.*$/, '')*.trim().findAll { it }
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -357,6 +360,14 @@ tasks.register('worldPickTest', JavaExec) {
 }
 check.dependsOn worldPickTest
 
+// Explorer key/mouse/wheel mapping and pulse cadence against a recording host; no display.
+tasks.register('worldExplorerInputTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldExplorerInputTest'
+}
+check.dependsOn worldExplorerInputTest
+
 // Exact picking of drawn exterior objects, their source records and the highlight; authored meshes.
 tasks.register('worldObjectPicksTest', JavaExec) {
     dependsOn testClasses
@@ -488,7 +499,7 @@ tasks.register('gpuPreviewUiTest', JavaExec) {
 // Explicit authored-data proof requiring a display and Vulkan hardware.
 tasks.register('worldGpuUiProof', JavaExec) {
     group = 'verification'
-    description = 'Authored real World inline GPU proof; requires Linux Vulkan and a JavaFX display.'
+    description = 'Authored real World inline GPU proof on the platform default backend; requires a GPU and a JavaFX display.'
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldGpuUiTest'
@@ -529,6 +540,14 @@ tasks.register('worldAudioPlaybackTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldAudioPlaybackTest'
 }
 tasks.named('check') { dependsOn tasks.named('worldAudioPlaybackTest') }
+
+// Audio controls selection logic: authored world, manual settle delay and clock; no display.
+tasks.register('worldAudioControlsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldAudioControlsTest'
+}
+tasks.named('check') { dependsOn tasks.named('worldAudioControlsTest') }
 
 // Inline instance switch ordering: drain, audio handover, cancel and refusal; no display or GPU.
 tasks.register('worldInstanceSwitchTest', JavaExec) {
@@ -703,7 +722,7 @@ tasks.register('worldCpuRetirementUiTest', JavaExec) {
 
 tasks.register('worldHotLifecycleUiProof', JavaExec) {
     group = 'verification'
-    description = 'Authored qualified HOT World source and actual inline GPU lifecycle; requires Vulkan and an FX display.'
+    description = 'Authored qualified HOT World source and actual inline GPU lifecycle on the platform default backend; requires a GPU and an FX display.'
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldHotLifecycleUiProof'

@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.TerrainCamera;
 import com.vibeminer.rendering.world.TerrainScene;
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -12,6 +13,9 @@ import java.util.concurrent.TimeUnit;
 
 /** Actual authored WORLD sidecar/mmap proof, including failure protocol and bounded cleanup. */
 public final class WorldWmoColdChildProof {
+    // Terrain sample 32 px below center at the original 204.8 px focal length, as a ray.
+    private static final int BELOW = (int) Math.round(128 + .156 * TerrainCamera.focalPixels(256));
+
     private WorldWmoColdChildProof() {}
 
     public static void main(String[] args) throws Exception {
@@ -31,7 +35,7 @@ public final class WorldWmoColdChildProof {
                             "Authored WMO red pixel through actual cold child: "
                                     + Integer.toHexString(center));
                     require(
-                            first.pixels().get(160 * 256 + 128) == 0xff2c4729,
+                            first.pixels().get(BELOW * 256 + 128) == 0xff2c4729,
                             "Same mapped frame retains surrounding terrain");
                 } else {
                     require(

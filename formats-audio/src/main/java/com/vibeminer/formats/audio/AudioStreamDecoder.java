@@ -69,10 +69,11 @@ public final class AudioStreamDecoder {
     }
 
     /**
-     * End of the MPEG data that starts at {@code start}: tags appended after the last frame (ID3v1,
-     * APEv2, and ID3v2 with or without a footer, in any order) are excluded. The decoder scans
-     * every byte for frame sync, so sync-like bytes in tag text would otherwise decode as a bogus
-     * frame: noise, a decoder exception, or running out of data near the end of the track.
+     * End of the MPEG data that starts at {@code start}: tags appended after the last frame (ID3v1
+     * with or without an enhanced TAG+ block, Lyrics3 v1 and v2, APEv2, and ID3v2 with or without a
+     * footer, in any order) are excluded. The decoder scans every byte for frame sync, so sync-like
+     * bytes in tag text would otherwise decode as a bogus frame: noise, a decoder exception, or
+     * running out of data near the end of the track.
      */
     static int mpegEnd(byte[] encoded, int start) {
         int end = encoded.length;
@@ -91,7 +92,28 @@ public final class AudioStreamDecoder {
         // chance per file). Rejecting blocks that contain frame sync would be no safer: sync-like
         // bytes in the tag text are exactly what makes the decoder fail.
         if (end - 128 >= floor && ascii(encoded, end - 128, "TAG")) {
-            return end - 128;
+            // An enhanced ID3v1 block ("TAG+", 227 bytes) sits directly before the ID3v1 block.
+            int enhanced = end - 128 - ENHANCED_ID3V1;
+            return enhanced >= floor && ascii(encoded, enhanced, "TAG+") ? enhanced : end - 128;
+        }
+        // Lyrics3 v2 ends with its six-digit size, which counts from LYRICSBEGIN up to the size.
+        if (end - 15 >= floor && ascii(encoded, end - 9, "LYRICS200")) {
+            long size = digits(encoded, end - 15, 6);
+            long start = end - 15 - size;
+            if (size >= 11 && start >= floor && ascii(encoded, (int) start, "LYRICSBEGIN")) {
+                return (int) start;
+            }
+        }
+        // Lyrics3 v1 has no size: its LYRICSBEGIN is at most 5100 lyrics bytes before LYRICSEND.
+        // The nearest one is taken, so a malformed tag never cuts more than the spec allows.
+        if (end - 20 >= floor && ascii(encoded, end - 9, "LYRICSEND")) {
+            for (int start = end - 20;
+                    start >= Math.max(floor, end - 20 - LYRICS3_V1_TEXT);
+                    start--) {
+                if (ascii(encoded, start, "LYRICSBEGIN")) {
+                    return start;
+                }
+            }
         }
         if (end - 32 >= floor && ascii(encoded, end - 32, "APETAGEX")) {
             // The size counts the items and the footer; a flagged header adds 32 bytes before them.
@@ -166,6 +188,21 @@ public final class AudioStreamDecoder {
             size = size << 7 | encoded[i];
         }
         return size;
+    }
+
+    /** Enhanced ID3v1 block length, and the Lyrics3 v1 lyrics limit, from their specs. */
+    private static final int ENHANCED_ID3V1 = 227, LYRICS3_V1_TEXT = 5100;
+
+    /** Value of {@code count} ASCII decimal digits, or -1 if any byte is not a digit. */
+    private static long digits(byte[] encoded, int offset, int count) {
+        long value = 0;
+        for (int i = offset; i < offset + count; i++) {
+            if (encoded[i] < '0' || encoded[i] > '9') {
+                return -1;
+            }
+            value = value * 10 + encoded[i] - '0';
+        }
+        return value;
     }
 
     private static long littleEndian(byte[] encoded, int offset) {

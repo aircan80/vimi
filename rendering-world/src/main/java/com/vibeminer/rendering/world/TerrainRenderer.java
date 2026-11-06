@@ -170,7 +170,7 @@ public final class TerrainRenderer {
                 sy = Math.sin(camera.yaw()),
                 cp = Math.cos(camera.pitch()),
                 sp = Math.sin(camera.pitch()),
-                focal = width * .8;
+                focal = TerrainCamera.focalPixels(width);
         long triangles = 0, work = 0;
         var clipped = new double[12];
         var original = new double[9];
