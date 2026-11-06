@@ -42,7 +42,8 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         WALK("Walk on terrain (toggle)"),
         MAP_PANEL("Map panel (toggle)", true),
         HIDE_HUD("Hide or show the HUD (toggle)", true),
-        DEV_OVERLAY("Developer overlay (next page)", true);
+        DEV_OVERLAY("Developer overlay (next page)", true),
+        SCREENSHOT("Save a viewport screenshot", true);
 
         final String label;
         /**
@@ -136,6 +137,7 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
             keys.put(KeyCode.H, Action.HIDE_HUD);
             // Function keys sit in the same place on every layout.
             keys.put(KeyCode.F3, Action.DEV_OVERLAY);
+            keys.put(KeyCode.F12, Action.SCREENSHOT);
             return keys;
         }
     }
