@@ -217,7 +217,7 @@ public final class WorldPlacementSource {
             return Result.unavailable("No recorded obj0 source");
         }
         var ref = FileTypes.FileRef.id(request.tile.obj0Id());
-        var before = files.stat(ref, request.token).join();
+        var before = files.statContent(ref, request.token).join();
         check(request);
         if (before.state() != FileTypes.FileLookupState.FOUND
                 || before.file() == null
@@ -264,7 +264,7 @@ public final class WorldPlacementSource {
                 }
                 facts = WorldPlacements.readObj0(bytes.array(), () -> canceled(request));
             }
-            var after = files.stat(ref, request.token).join();
+            var after = files.statContent(ref, request.token).join();
             check(request);
             if (after.state() != FileTypes.FileLookupState.FOUND
                     || after.file() == null

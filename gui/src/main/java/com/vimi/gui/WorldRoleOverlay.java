@@ -128,6 +128,15 @@ final class WorldRoleOverlay implements AutoCloseable {
         controls.getChildren().addAll(faction, activity, status);
     }
 
+    /**
+     * What {@link #paint} depends on besides the view: the source key and the shown layers. A
+     * minimap that skips repaints for an unchanged view still repaints when this changes.
+     */
+    Object paintKey() {
+        var layers = layers();
+        return closed || layers.isEmpty() ? layers : java.util.Arrays.asList(key.get(), layers);
+    }
+
     /** The minimap's repaint; set once by the minimap that draws this overlay. */
     void bindRedraw(Runnable value) {
         redraw = Objects.requireNonNull(value);
