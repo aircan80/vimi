@@ -43,6 +43,9 @@ public final class GpuFrameFile implements AutoCloseable {
     private final MemorySegment mapping;
     private final int maxWidth, maxHeight, slotBytes;
     private final long sessionNonce;
+    // Debug only (WorldFrameFileV2.VERIFY_PROPERTY): per-frame CRC32C on both sides. Torn reads
+    // are always rejected by the slot stamp (seqlock).
+    private volatile boolean verify = Boolean.getBoolean(WorldFrameFileV2.VERIFY_PROPERTY);
     private final ByteBuffer crcScratch =
             ByteBuffer.allocate(64 << 10).order(ByteOrder.LITTLE_ENDIAN);
     private boolean closed;
@@ -254,10 +257,13 @@ public final class GpuFrameFile implements AutoCloseable {
                 .putInt(0)
                 .putInt(0)
                 .putLong(sessionNonce);
-        var crc = new CRC32C();
-        crc.update(metadata.array());
-        crc.update(bgra.duplicate());
-        metadata.putInt(32, (int) crc.getValue());
+        if (verify) {
+            // 0 means "not checksummed": a verifying reader skips that slot's CRC.
+            var crc = new CRC32C();
+            crc.update(metadata.array());
+            crc.update(bgra.duplicate());
+            metadata.putInt(32, (int) crc.getValue());
+        }
         lastSequence = sequence;
         STAMP.setRelease(mapping, offset, stamp | 1);
         // A seqlock writer's in-progress stamp must precede every mutable pixel/header write.
@@ -370,22 +376,27 @@ public final class GpuFrameFile implements AutoCloseable {
                 .order(ByteOrder.LITTLE_ENDIAN)
                 .asIntBuffer()
                 .get(pixels);
-        metadata.putInt(32, 0);
-        var crc = new CRC32C();
-        crc.update(bytes);
-        crcScratch.clear();
-        var ints = crcScratch.asIntBuffer();
-        for (int first = 0; first < pixels.length; ) {
-            int count = Math.min(ints.capacity(), pixels.length - first);
-            ints.clear().put(pixels, first, count);
-            crcScratch.clear().limit(count * Integer.BYTES);
-            crc.update(crcScratch);
-            first += count;
-        }
         VarHandle.fullFence();
         long completed = (long) STAMP.getAcquire(mapping, offset);
-        if (completed != stamp || (int) crc.getValue() != expectedCrc) {
+        if (completed != stamp) {
             return null;
+        }
+        if (verify && expectedCrc != 0) {
+            metadata.putInt(32, 0);
+            var crc = new CRC32C();
+            crc.update(bytes);
+            crcScratch.clear();
+            var ints = crcScratch.asIntBuffer();
+            for (int first = 0; first < pixels.length; ) {
+                int count = Math.min(ints.capacity(), pixels.length - first);
+                ints.clear().put(pixels, first, count);
+                crcScratch.clear().limit(count * Integer.BYTES);
+                crc.update(crcScratch);
+                first += count;
+            }
+            if ((int) crc.getValue() != expectedCrc) {
+                return null;
+            }
         }
         return new Frame(stamp >>> 1, revision, width, height, pixels);
     }
@@ -412,6 +423,11 @@ public final class GpuFrameFile implements AutoCloseable {
     private static int slotBytes(int width, int height) {
         long bytes = SLOT_HEADER_BYTES + (long) width * height * 4;
         return Math.toIntExact((bytes + 63) & ~63L);
+    }
+
+    /** Tests only: overrides the property-selected verification mode of this instance. */
+    void verify(boolean enabled) {
+        verify = enabled;
     }
 
     public int maxWidth() {

@@ -131,6 +131,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private TerrainRenderer.Camera resumeCamera;
     private long streamingControl, streamingPolicy = 1;
     private int streamingWidth, streamingHeight;
+    // Cameras of recent stream requests, and the camera of the streamed frame on screen; overlays
+    // and picking use it so they stay on the drawn terrain while the live camera runs ahead.
+    private final WorldPresentedCamera presentedCamera = new WorldPresentedCamera(
+            reason -> WorldDiagnostics.warn("World overlay camera", new IllegalStateException(reason)));
     private CompletableFuture<Void> streamingRetirement = CompletableFuture.completedFuture(null);
     private final CheckBox gpuEnabled = new CheckBox("GPU terrain");
     // Object texture budget tier (#267); a change re-prepares the streamed tiles' objects.
@@ -142,6 +146,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final javafx.scene.control.Slider lookSensitivity = new javafx.scene.control.Slider(
             WorldControls.MIN_SENSITIVITY, WorldControls.MAX_SENSITIVITY, WorldControls.DEFAULT_SENSITIVITY);
     private final CheckBox invertLook = new CheckBox("Invert mouse Y");
+    private final javafx.scene.control.ChoiceBox<WorldControls.Speed> flightSpeed =
+            new javafx.scene.control.ChoiceBox<>(javafx.collections.FXCollections.observableArrayList(
+                    WorldControls.Speed.values()));
+    private final Button keyBindings = new Button("Keys…");
+    private final Label keyHelp = new Label(WorldControls.DEFAULTS.help());
     private final Label lookStatus = new Label();
     // Session-only until the application's library store is installed (bookmarks(...)).
     private WorldControls.Store controlsStore = WorldControls.memory();
@@ -165,6 +174,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         @Override public void loadNext() { WorldView.this.loadNext(); }
         @Override public void cursorHidden(boolean hidden) {
             viewport.setCursor(hidden ? javafx.scene.Cursor.NONE : null);
+        }
+        @Override public void controlsChanged(WorldControls controls) {
+            showControls(controls);
+            controlsStore.save(controls.encode());
         }
         @Override public void captureUnavailable() {
             lookStatus.setText("Mouse look: cursor capture unavailable; looking stays relative");
@@ -551,7 +564,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         showingControls = true;
         try {
             input.controls(controls);
+            keyHelp.setText(controls.help());
             invertLook.setSelected(controls.invertY());
+            flightSpeed.setValue(controls.speed());
             lookSensitivity.setValue(controls.sensitivity());
         } finally {
             showingControls = false;
@@ -560,8 +575,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void controlsChanged() {
         if (showingControls) return;
+        var speed = flightSpeed.getValue();
         var next = input.controls().withSensitivity(lookSensitivity.getValue())
-                .withInvertY(invertLook.isSelected());
+                .withInvertY(invertLook.isSelected())
+                .withSpeed(speed == null ? input.controls().speed() : speed);
         if (next.equals(input.controls())) return;
         controlsEdited = true;
         input.controls(next);
@@ -691,6 +708,28 @@ final class WorldView extends BorderPane implements AutoCloseable {
         invertLook.setId("world-invert-look");
         invertLook.setFocusTraversable(false);
         invertLook.setOnAction(e -> controlsChanged());
+        flightSpeed.setId("world-flight-speed");
+        flightSpeed.setFocusTraversable(false);
+        flightSpeed.setAccessibleText("Flight speed preset");
+        flightSpeed.setValue(WorldControls.DEFAULTS.speed());
+        flightSpeed.setOnAction(e -> {
+            controlsChanged();
+            if (explorer) viewport.requestFocus();
+        });
+        keyBindings.setId("world-key-bindings-open");
+        keyBindings.setFocusTraversable(false);
+        keyBindings.setOnAction(e -> {
+            clearKeys();
+            new WorldKeyBindings(input.controls())
+                    .edit(getScene() == null ? null : getScene().getWindow())
+                    .ifPresent(edited -> {
+                        if (!edited.equals(input.controls())) {
+                            showControls(edited);
+                            controlsStore.save(edited.encode());
+                        }
+                    });
+            if (explorer) viewport.requestFocus();
+        });
         motionStatus.setId("world-motion-status");
         saveBookmark.setId("world-save-bookmark");
         saveBookmark.setFocusTraversable(false);
@@ -1009,7 +1048,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         // The view box is taken per move, so a window moved or resized mid-look warps to its centre.
         viewport.setOnMouseDragged(e -> input.lookMoved(e.getScreenX(), e.getScreenY(), viewBox()));
         viewport.setOnScroll(e -> {
-            input.scroll(e.getDeltaY(), e.isShiftDown());
+            input.scroll(e.getDeltaY(), e.isShiftDown(), e.isControlDown());
             e.consume();
         });
         viewport.widthProperty().addListener((o, a, b) -> requestFrame());
@@ -1857,13 +1896,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         new HBox(
                                 10,
                                 back,
-                                new Label(
-                                        "WASD move · Space/E up · Q/X down · hold the right mouse button or"
-                                                + " arrows to look · Shift faster · wheel zooms · Shift+wheel"
-                                                + " changes speed · F walks · click inspects")),
+                                keyHelp),
                         new HBox(10, walkMode, smoothMotion, motionStatus, saveBookmark, panelsButton,
                                 fullscreenButton),
-                        new HBox(8, new Label("Look sensitivity"), lookSensitivity, invertLook, lookStatus),
+                        new HBox(8, new Label("Speed"), flightSpeed, new Label("Look sensitivity"),
+                                lookSensitivity, invertLook, keyBindings, lookStatus),
                         currentArea,
                         inspection,
                         audio.node(),
@@ -2628,6 +2665,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         streamingControl = 0;
         streamingPolicy = 1;
         streamingWidth = streamingHeight = 0;
+        presentedCamera.restart();
         var request = new WorldStreamSourceController.Request(selection, handle, inventory.map(),
                 inventory, origin, areaEntry == null || areaEntry.entryChunk() == null
                         ? null : areaEntry.entryChunk().entryReference(), catalog.areaIndex());
@@ -2643,14 +2681,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         detail);
         stallWatchdog.reset();
         streaming = new WorldStreamSourceController(request, scope -> {
-            var owner = new WorldStreamGpuOwner(gpuService, scope);
+            var owner = new WorldStreamGpuOwner(gpuService, scope, detail);
             return new WorldStreamSourceController.GpuOwner() {
                 public CompletableFuture<com.vibeminer.rendering.bgfx.WorldStreamTransport.Session> session() {
                     return owner.session();
                 }
                 public CompletableFuture<Void> closeAsync() { return owner.closeAsync(); }
             };
-        }, streamingEvents, Platform::runLater, System::nanoTime, preparer);
+        }, streamingEvents, Platform::runLater, System::nanoTime, preparer,
+                WorldStreamGpuOwner.VIEW_DISTANCE.residents());
         if (camera != null) {
             streamCamera();
             streamNeighborhood();
@@ -2720,6 +2759,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (!streamingImages.present(frame.width(), frame.height(), frame.pixels(),
                     () -> !stale(selection) && viewportActive() && controller == streaming,
                     () -> controller.presented(frame))) return;
+            presentedCamera.presented(frame.cameraRevision(), image.getImage());
             if (stallWatchdog.presented(frame.cameraRevision(), frame.sequence(), System.nanoTime())) {
                 streamStatus(controller.snapshot());
             }
@@ -2751,6 +2791,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         streamingHeight = height;
         streaming.camera(new com.vibeminer.rendering.bgfx.WorldStreamTransport.Camera(
                 ++streamingControl, streamingPolicy, width, height, TerrainCamera.from(camera)));
+        presentedCamera.sent(streamingControl, camera);
         stallWatchdog.requested(streamingControl);
         minimap.update(handle, inventory, origin, originX, originY,
                 camera.x(), camera.y(), camera.yaw());
@@ -2803,7 +2844,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (streaming == null || camera == null || inventory == null) return;
         int x = tileX(), y = tileY();
         streaming.neighborhood(WorldStreamNeighborhood.select(
-                inventory.world().tiles(), x, y, camera.yaw()));
+                inventory.world().tiles(), x, y, camera.yaw(), WorldStreamGpuOwner.VIEW_DISTANCE));
     }
 
     private void retireGpu() {
@@ -2837,6 +2878,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         bitmap.getPixelWriter().setPixels(0, 0, frame.width(), frame.height(),
                 PixelFormat.getIntArgbPreInstance(), frame.pixels(), frame.width());
         image.setImage(bitmap);
+        presentedCamera.shownOther();
         presentedScene = terrainScene;
         show(firstFrameActivity, false);
         var textures = gpu == null ? null : gpu.textureStatus();
@@ -2874,6 +2916,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         bitmap.getPixelWriter().setPixels(0, 0, frame.width(), frame.height(),
                 PixelFormat.getIntArgbInstance(), frame.pixels(), 0, frame.width());
         image.setImage(bitmap);
+        presentedCamera.shownOther();
         // Matching frame and material epochs establish that this is the current scene; no old
         // scene reference needs to survive in the queued callback to establish that identity.
         presentedScene = terrainScene;
@@ -3007,7 +3050,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private WorldSpawnOverlay.View presentedView() {
         if (closed || !active || !explorer || camera == null || inventory == null
                 || !(image.getImage() instanceof javafx.scene.image.Image frame)) return null;
-        return new WorldSpawnOverlay.View(camera, inventory.map().id(), frame.getWidth(), frame.getHeight());
+        return new WorldSpawnOverlay.View(frameCamera(), inventory.map().id(), frame.getWidth(), frame.getHeight());
+    }
+
+    /**
+     * The camera the frame on screen was drawn with: for the streamed image on screen the camera
+     * sent with its revision ({@link WorldPresentedCamera}); for any other image (CPU and
+     * single-frame GPU paths) the live camera.
+     */
+    private TerrainRenderer.Camera frameCamera() {
+        return presentedCamera.frameCamera(camera, image.getImage());
     }
 
     /** Pick tiles of the objects the hot child draws now; none outside streaming. */
@@ -3056,7 +3108,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
         var local = viewport.sceneToLocal(sceneX, sceneY);
         var ray = local == null ? java.util.Optional.<WorldPick.Ray>empty()
-                : WorldPick.ray(camera, frame.getWidth(), frame.getHeight(), viewport.getWidth(),
+                : WorldPick.ray(frameCamera(), frame.getWidth(), frame.getHeight(), viewport.getWidth(),
                         viewport.getHeight(), local.getX(), local.getY());
         if (ray.isEmpty()) {
             objectSelection.select(null);
@@ -3064,7 +3116,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             return;
         }
         var objects = residentObjects();
-        var eye = com.vibeminer.rendering.world.TerrainCamera.from(camera);
+        var eye = com.vibeminer.rendering.world.TerrainCamera.from(frameCamera());
         var names = fileNames;
         var surface = currentGround();
         long mapId = map.id(), chosen = selection;
@@ -3163,11 +3215,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 inspection.setText(WorldPick.describeSpawn(pending.spawn(), pending.npc(), inspectedMap, model, false));
             });
         }));
-        overlay.bind(() -> {
-            if (closed || !active || !explorer || camera == null || inventory == null
-                    || !(image.getImage() instanceof javafx.scene.image.Image frame)) return null;
-            return new WorldSpawnOverlay.View(camera, inventory.map().id(), frame.getWidth(), frame.getHeight());
-        });
+        overlay.bind(this::presentedView);
     }
 
     // ---- Instances: recorded entrances and in-place zone-in (#259) ----------------------------

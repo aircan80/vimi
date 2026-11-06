@@ -48,7 +48,7 @@ class WorldStreamLateObjectsCodecTest {
                         "OBJECTS 4 37 9 23 tile-4.wso 255 " + sha,
                         "OBJECTS 4 37 9 23 tile-4.wso 29360129 " + sha,
                         "OBJECTS 0 37 9 23 tile-0.wso 4096 " + sha,
-                        "OBJECTS 4 37 10 23 tile-4.wso 4096 " + sha,
+                        "OBJECTS 4 37 26 23 tile-4.wso 4096 " + sha,
                         "OBJECTS 4 0 9 23 tile-4.wso 4096 " + sha,
                         "OBJECTS 4 37 9 23 tile-4.wso 4096 " + "A".repeat(64),
                         "OBJECTS 4 37 9 23 tile-4.wso 04096 " + sha,
