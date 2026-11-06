@@ -205,6 +205,13 @@ public final class WorldHudUiTest {
                                     .equals(javafx.scene.paint.Color.CORNFLOWERBLUE)
                             && tracking.getTooltip().getText().startsWith("2 tracking layers"),
                     "Two layers, two coloured dots");
+            var firstDot = icons.trackingDots().getFirst();
+            icons.tracking(List.of(javafx.scene.paint.Color.GOLD, javafx.scene.paint.Color.CORNFLOWERBLUE));
+            require(icons.trackingDots().getFirst() == firstDot, "The same colours never rebuild the dots");
+            icons.tracking(List.of(javafx.scene.paint.Color.GOLD));
+            require(icons.trackingDots().size() == 1 && icons.trackingDots().getFirst() != firstDot,
+                    "Changed colours rebuild them");
+            icons.tracking(List.of(javafx.scene.paint.Color.GOLD, javafx.scene.paint.Color.CORNFLOWERBLUE));
             // Clicks: each runs its action, then gives focus back to the viewport.
             icons.smooth(true);
             calls.clear();

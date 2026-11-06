@@ -102,6 +102,8 @@ final class WorldStatusIcons {
     private Mode modeState = Mode.FLY;
     private Sound musicState = Sound.MUTED, ambienceState = Sound.MUTED;
     private Render renderState = Render.GPU;
+    // The tracking colours shown, so an unchanged list never rebuilds the dots.
+    private List<Color> trackingShown;
     private Texture textureState = Texture.READY;
     private Time timeState = Time.CLOCK;
     private boolean mouseUnavailable;
@@ -221,8 +223,14 @@ final class WorldStatusIcons {
         tip(mouse, tip);
     }
 
-    /** One dot per active tracking layer, in the layer's marker colour; hidden when none. */
+    /**
+     * One dot per active tracking layer, in the layer's marker colour; hidden when none. The view
+     * calls this on every status refresh (each stream snapshot), so the dots are only rebuilt when
+     * the colours change.
+     */
     void tracking(List<Color> layers) {
+        if (layers.equals(trackingShown)) return;
+        trackingShown = List.copyOf(layers);
         dots.getChildren().setAll(layers.stream().map(color -> {
             var dot = new Circle(4, color);
             dot.setStroke(Color.rgb(12, 16, 14, .9));
@@ -231,6 +239,11 @@ final class WorldStatusIcons {
         tracking.setVisible(!layers.isEmpty());
         tip(tracking, layers.size() + (layers.size() == 1 ? " tracking layer" : " tracking layers")
                 + " shown; click for the layer controls");
+    }
+
+    /** The dots shown now; for tests. */
+    List<javafx.scene.Node> trackingDots() {
+        return dots.getChildren();
     }
 
     /**
