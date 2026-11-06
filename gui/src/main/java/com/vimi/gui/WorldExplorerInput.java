@@ -58,6 +58,9 @@ final class WorldExplorerInput {
         void controlsChanged(WorldControls controls);
         /** Cursor capture fell back to relative movement; the view logs the first one. */
         void captureFallback(String reason);
+
+        /** Warping is off for good: the view says so in its controls. */
+        void captureUnavailable();
     }
 
     /** Moves the system cursor; false when this platform cannot place it (e.g. no robot). */
@@ -77,6 +80,17 @@ final class WorldExplorerInput {
 
         double centerY() {
             return minY + height / 2;
+        }
+
+        /**
+         * The part of this box on a screen's visible area ({@code min}/{@code max} corners), so a
+         * view hanging past a monitor edge still has a reachable warp band and an on-screen
+         * centre. A box entirely off that area is returned unchanged.
+         */
+        ViewBox clippedTo(double screenMinX, double screenMinY, double screenMaxX, double screenMaxY) {
+            double x0 = Math.max(minX, screenMinX), y0 = Math.max(minY, screenMinY);
+            double x1 = Math.min(minX + width, screenMaxX), y1 = Math.min(minY + height, screenMaxY);
+            return x1 > x0 && y1 > y0 ? new ViewBox(x0, y0, x1 - x0, y1 - y0) : this;
         }
 
         /** True when the point lies within {@code EDGE} of the box size from an edge (or outside). */
@@ -122,8 +136,6 @@ final class WorldExplorerInput {
     private long lastTick, lastRender, lastNearby;
     private WorldControls controls = WorldControls.DEFAULTS;
     private Pointer pointer = Pointer.NONE;
-    // Mouse look: reference point for the next delta (the warp centre, or the last position when
-    // the cursor cannot be warped), where the look began, and pixels owed to the next pulse.
     private boolean looking, captureOff, awaitingEcho, lateEcho;
     private MouseButton lookButton;
     private int captureFailures, echoWait;
@@ -236,6 +248,7 @@ final class WorldExplorerInput {
                 && Math.hypot(screenX - lookX, screenY - lookY) > LATE_ECHO) {
             // A warp given up on landed after all: a new origin, not motion.
             lateEcho = false;
+            captureFailures = 0;
             lookX = screenX;
             lookY = screenY;
             return;
@@ -257,6 +270,7 @@ final class WorldExplorerInput {
                 lateEcho = true;
                 if (++captureFailures >= CAPTURE_FAILURES) {
                     captureOff = true;
+                    host.captureUnavailable();
                     host.captureFallback("the cursor could not be re-centred " + CAPTURE_FAILURES
                             + " times in a row; mouse look stays relative");
                 } else {
@@ -283,6 +297,7 @@ final class WorldExplorerInput {
             echoWait = 0;
         } else {
             captureOff = true;
+            host.captureUnavailable();
             host.captureFallback("the cursor cannot be placed on this platform; mouse look stays relative");
         }
     }
@@ -296,7 +311,8 @@ final class WorldExplorerInput {
         if (!looking) return;
         looking = false;
         boolean captured = captures(lookButton);
-        if (captured && warpedOnce && !captureOff) pointer.warp(anchorX, anchorY);
+        // The cursor comes back where the look began, as in the client, warped or not.
+        if (captured && !captureOff) pointer.warp(anchorX, anchorY);
         awaitingEcho = lateEcho = warpedOnce = false;
         lookButton = null;
         if (captured) host.cursorHidden(false);

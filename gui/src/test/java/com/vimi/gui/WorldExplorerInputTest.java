@@ -28,6 +28,10 @@ public final class WorldExplorerInputTest {
         slowOnePixelMotionAlwaysTurns();
         aMissingEchoTimesOutAndRepeatedMissesStopWarping();
         aRefusedWarpStopsWarping();
+        aLateEchoResetsTheMissCount();
+        anEchoCoalescedWithMotionLosesAtMostThatMotion();
+        fastPreEchoMotionIsMisreadAtMostOncePerWarp();
+        aViewPastTheScreenEdgeStillWarpsOnScreen();
         theWindowMovingMidLookWarpsToTheNewCentre();
         leftDragLooksWithoutCapture();
         lookIsCoalescedToOneCameraUpdatePerPulse();
@@ -81,6 +85,8 @@ public final class WorldExplorerInputTest {
         @Override public void controlsChanged(WorldControls controls) { changed.add(controls); }
         final List<String> fallbacks = new ArrayList<>();
         @Override public void captureFallback(String reason) { fallbacks.add(reason); }
+        int unavailable;
+        @Override public void captureUnavailable() { unavailable++; }
 
         long count(String call) {
             return calls.stream().filter(call::equals).count();
@@ -198,8 +204,9 @@ public final class WorldExplorerInputTest {
         input.lookReleased(MouseButton.PRIMARY);
         require(input.looking(), "Releasing another button keeps the look");
         input.lookReleased(MouseButton.SECONDARY);
-        require(!input.looking() && host.cursor.equals(List.of(true, false)) && pointer.warps.isEmpty(),
-                "Release shows the cursor; nothing to restore when it never warped");
+        require(!input.looking() && host.cursor.equals(List.of(true, false)) && pointer.warps.size() == 1
+                        && pointer.last()[0] == 400 && pointer.last()[1] == 300,
+                "Release shows the cursor where the look began, even without a warp");
         input.lookReleased();
         require(host.cursor.size() == 2, "A second release does nothing");
     }
@@ -328,16 +335,86 @@ public final class WorldExplorerInputTest {
             double at = 700;
             second.lookMoved(at, 300, VIEW);
             for (int i = 0; i < WorldExplorerInput.ECHO_EVENTS; i++) second.lookMoved(at += 1, 300, VIEW);
-            second.lookMoved(at - WorldExplorerInput.ECHO_EVENTS - 300, 300, VIEW);
+            second.lookMoved(at - WorldExplorerInput.ECHO_EVENTS - 200, 300, VIEW);
         }
         require(other.fallbacks.size() == WorldExplorerInput.CAPTURE_FAILURES
-                && other.fallbacks.getLast().contains("in a row"), "Capture stops warping: " + other.fallbacks);
+                && other.fallbacks.getLast().contains("in a row") && other.unavailable == 1,
+                "Capture stops warping and the view is told once: " + other.fallbacks);
         int warps = quiet.warps.size();
         require(warps == WorldExplorerInput.CAPTURE_FAILURES, "One warp per miss: " + warps);
         second.lookMoved(790, 300, VIEW);
         require(quiet.warps.size() == warps, "No more warps");
         second.lookReleased();
         require(quiet.warps.size() == warps, "Nothing restored once warping is off");
+    }
+
+    private static void aLateEchoResetsTheMissCount() {
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = looking(host, pointer, 400, 300);
+        for (int round = 0; round < 5; round++) {
+            double at = 700;
+            input.lookMoved(at, 300, VIEW);
+            for (int i = 0; i < WorldExplorerInput.ECHO_EVENTS; i++) input.lookMoved(at += 1, 300, VIEW);
+            input.lookMoved(400, 300, VIEW);
+        }
+        require(host.unavailable == 0 && host.fallbacks.stream().noneMatch(f -> f.contains("in a row")),
+                "Late echoes are successes: five slow warps never turn capture off: " + host.fallbacks);
+    }
+
+    /**
+     * The platform may merge the echo with the next real motion (target + m). It is still the
+     * echo, and at most that event's own motion m is lost, once per warp.
+     */
+    private static void anEchoCoalescedWithMotionLosesAtMostThatMotion() {
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = looking(host, pointer, 400, 300);
+        input.lookMoved(650, 300, VIEW);
+        input.lookMoved(403, 302, VIEW);
+        input.lookMoved(410, 302, VIEW);
+        input.pulse(1_000_000_000L);
+        double counted = host.camera.yaw() / -S;
+        require(Math.abs(counted - (250 + 7)) < 1e-9, "Echo + 3 px taken as the echo; later motion counts: " + counted);
+        require(250 + 3 + 7 - counted <= 3 + 1e-9, "At most the coalesced 3 px are lost");
+        require(pointer.warps.size() == 1, "No re-warp");
+    }
+
+    /**
+     * Before the echo, a single real event that jumps more than halfway towards the warp target
+     * is indistinguishable from the echo: it becomes the origin and its own motion is lost. That
+     * is bounded by one event per warp; the next events count again.
+     */
+    private static void fastPreEchoMotionIsMisreadAtMostOncePerWarp() {
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = looking(host, pointer, 400, 300);
+        input.lookMoved(650, 300, VIEW);
+        input.lookMoved(520, 300, VIEW);
+        input.lookMoved(500, 300, VIEW);
+        input.lookMoved(480, 300, VIEW);
+        input.pulse(1_000_000_000L);
+        double counted = host.camera.yaw() / -S;
+        require(Math.abs(counted - (250 - 40)) < 1e-9, "Only the one jump (-130) is lost: " + counted);
+    }
+
+    /** A window hanging past the screen's right edge: the warp band and centre stay on screen. */
+    private static void aViewPastTheScreenEdgeStillWarpsOnScreen() {
+        var view = new WorldExplorerInput.ViewBox(1500, 0, 800, 600);
+        var clipped = view.clippedTo(0, 0, 1920, 1080);
+        require(clipped.minX() == 1500 && clipped.width() == 420 && clipped.height() == 600,
+                "Clipped to the visible part: " + clipped);
+        require(view.clippedTo(3000, 0, 4000, 1000) == view, "A box off that screen is kept");
+        var host = new Host();
+        var pointer = new Pointer();
+        var input = looking(host, pointer, 1700, 300);
+        // The cursor stops at the screen edge (1919): the unclipped band (> 2100) is unreachable.
+        input.lookMoved(1919, 300, view);
+        require(pointer.warps.isEmpty(), "Unclipped: no warp, turning would stop at the edge");
+        input.lookMoved(1919, 300, clipped);
+        input.lookMoved(1918, 300, clipped);
+        require(pointer.warps.size() == 1 && pointer.last()[0] == 1710 && pointer.last()[0] < 1920,
+                "Clipped: the cursor goes back to the on-screen centre: " + pointer.last()[0]);
     }
 
     private static void aRefusedWarpStopsWarping() {
@@ -350,7 +427,8 @@ public final class WorldExplorerInputTest {
         input.lookMoved(740, 300, VIEW);
         input.pulse(1_000_000_000L);
         require(near(host.camera.yaw(), -340 * S), "Relative after a refusal");
-        require(pointer.warps.size() == 1 && host.fallbacks.size() == 1, "Refused once, reported once");
+        require(pointer.warps.size() == 1 && host.fallbacks.size() == 1 && host.unavailable == 1,
+                "Refused once, reported once, shown in the view");
     }
 
     private static void theWindowMovingMidLookWarpsToTheNewCentre() {
