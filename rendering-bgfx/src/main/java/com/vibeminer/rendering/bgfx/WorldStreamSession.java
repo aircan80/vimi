@@ -374,7 +374,7 @@ final class WorldStreamSession {
 
     private Decoded decodeOffer(WorldStreamControl.Offer offer) {
         try {
-            var tile = decodeTile(session, directory, offer, decoderCanceled::get);
+            var tile = decodeTile(session, directory, offer, decoderCanceled::get, objectFormats);
             return new Decoded(tile, tile.header(), null, null);
         } catch (Throwable error) {
             return new Decoded(null, null, null, error);
@@ -391,6 +391,17 @@ final class WorldStreamSession {
             Path directory,
             WorldStreamControl.Offer offer,
             java.util.function.BooleanSupplier canceled)
+            throws IOException {
+        return decodeTile(session, directory, offer, canceled, 0xE);
+    }
+
+    /** As above, packing objects for a renderer that samples {@code objectFormats} (#374). */
+    static WorldStreamPackedTile decodeTile(
+            WorldStreamEnvelope.Session session,
+            Path directory,
+            WorldStreamControl.Offer offer,
+            java.util.function.BooleanSupplier canceled,
+            int objectFormats)
             throws IOException {
         var expected =
                 new WorldStreamTileFile.Expected(
@@ -421,7 +432,7 @@ final class WorldStreamSession {
                                 WorldStreamObjectsFile.Identity.of(header),
                                 header.objects(),
                                 canceled);
-                objects = WorldStreamPackedObjects.pack(data, canceled);
+                objects = WorldStreamPackedObjects.pack(data, canceled, objectFormats);
                 state = 1;
             } catch (java.util.concurrent.CancellationException stopped) {
                 payload.close();
@@ -481,7 +492,8 @@ final class WorldStreamSession {
                                                 command,
                                                 coordinate % 64,
                                                 coordinate / 64,
-                                                objectsCanceled::get),
+                                                objectsCanceled::get,
+                                                objectFormats),
                                         null);
                             } catch (Throwable error) {
                                 return new LateDecoded(null, error);
@@ -502,6 +514,19 @@ final class WorldStreamSession {
             int tileY,
             java.util.function.BooleanSupplier canceled)
             throws IOException {
+        return decodeLateObjects(session, directory, command, tileX, tileY, canceled, 0xE);
+    }
+
+    /** As above, packing for a renderer that samples {@code objectFormats} (#374). */
+    static WorldStreamPackedObjects decodeLateObjects(
+            WorldStreamEnvelope.Session session,
+            Path directory,
+            WorldStreamControl.LateObjects command,
+            int tileX,
+            int tileY,
+            java.util.function.BooleanSupplier canceled,
+            int objectFormats)
+            throws IOException {
         if (!session.exteriorObjects()) {
             throw new IOException("Late objects outside the session profile");
         }
@@ -517,7 +542,7 @@ final class WorldStreamSession {
                                 tileY),
                         new WorldStreamObjectsFile.Reference(command.length(), command.sha256()),
                         canceled);
-        return WorldStreamPackedObjects.pack(data, canceled);
+        return WorldStreamPackedObjects.pack(data, canceled, objectFormats);
     }
 
     private void completeObjectsDecode(WorldStreamNativeOwner owner) {

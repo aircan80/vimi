@@ -78,6 +78,12 @@ public final class WorldStreamObjectsMaterialProof {
                         });
         try {
             session.initialized().get(15, TimeUnit.SECONDS);
+            // The child reports the BC formats it samples (#374): all three on these backends,
+            // none when forced onto the RGBA8 path.
+            int expectedFormats = IMAGES.equals("bc-fallback") ? 0 : 0xE;
+            if (session.objectFormats() != expectedFormats) {
+                throw new AssertionError("Session object formats " + session.objectFormats());
+            }
             prepared.close();
             var reserved = reserve(session);
             var resident = WorldStreamTransportProof.produce(reserved).get(8, TimeUnit.SECONDS);

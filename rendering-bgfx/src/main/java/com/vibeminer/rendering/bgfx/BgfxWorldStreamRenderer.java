@@ -689,21 +689,19 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     // once, so a partly filled chain is destroyed with it. A 256 x 256 RGBA8
                     // chain exceeds one step, so levels are filled in planned row bands; BC
                     // chains are filled in block rows.
-                    int stored = source.format(image);
-                    int format = uploadFormat(stored, objectFormats);
+                    if (image == 0) {
+                        // Packing decoded every format this renderer does not sample (#374).
+                        decodedImages += source.decodedImages;
+                        compressedImages += source.compressedImages;
+                    }
+                    int format = source.format(image);
+                    if (uploadFormat(format, objectFormats) != format) {
+                        throw new IllegalStateException("Object texture format not sampled");
+                    }
                     var chain =
                             source.pixels.slice(
                                     source.imageOffset(image),
-                                    ObjectTextureFormats.chainBytes(stored, width, height));
-                    if (format != stored) {
-                        // This backend does not sample the stored blocks: decode the chain.
-                        byte[] rgba =
-                                ObjectTextureFormats.decodeChain(stored, width, height, chain, 0);
-                        chain = java.nio.ByteBuffer.allocateDirect(rgba.length).put(rgba).flip();
-                        decodedImages++;
-                    } else if (ObjectTextureFormats.compressed(format)) {
-                        compressedImages++;
-                    }
+                                    ObjectTextureFormats.chainBytes(format, width, height));
                     build.imageData = chain;
                     build.imagePlan =
                             WorldStreamObjectMips.plan(format, width, height, OBJECT_CHUNK);

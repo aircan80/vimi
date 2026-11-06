@@ -269,6 +269,86 @@ final class WorldStreamObjectsFileTest {
         assertEquals("Objects header identity", refused.getCause().getMessage());
     }
 
+    /** One BC1 256^2 image drawn by an opaque range; the rest of a minimal tile. */
+    private static WorldStreamTileWriter.Exterior.Builder bc1Tile(
+            WorldStreamTileWriter.Exterior.Builder builder, int images) {
+        int stored = ObjectTextureFormats.chainBytes(ObjectTextureFormats.BC1, 256, 256);
+        for (int i = 0; i < images; i++) {
+            builder.image(256, 256, ObjectTextureFormats.BC1, ByteBuffer.allocate(stored));
+        }
+        builder.model();
+        builder.mesh(
+                FloatBuffer.wrap(new float[24]),
+                IntBuffer.wrap(new int[] {0, 1, 2}),
+                new int[] {0, 3, 0});
+        builder.placement(0, 0, 0, 0, 1, 1, 0);
+        return builder;
+    }
+
+    @Test
+    void aSessionSamplingBc1ChargesBc1ChainsTheirStoredSize() throws Exception {
+        int bc1 = 1 << ObjectTextureFormats.BC1;
+        // 56 BC1 256^2 chains fill the decoded cap; a BC1-sampling session fits many more.
+        var sampling = bc1Tile(WorldStreamTileWriter.Exterior.builder(bc1), 100);
+        var exterior = sampling.build();
+        var reference = write(exterior);
+        var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
+        assertEquals(bc1, read.compressedFormats);
+        assertEquals(100, read.imageCount());
+        // The same chains for a session that decodes BC1 stop at 56.
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> bc1Tile(WorldStreamTileWriter.Exterior.builder(), 57));
+        // Only BC bits are a mask.
+        assertThrows(
+                IllegalArgumentException.class, () -> WorldStreamTileWriter.Exterior.builder(1));
+        // A child that does not sample BC1 refuses the file rather than decode it past the cap.
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldStreamPackedObjects.pack(read, () -> false, 0));
+        try (var packed = WorldStreamPackedObjects.pack(read, () -> false, bc1)) {
+            assertEquals(100, packed.compressedImages);
+            assertEquals(0, packed.decodedImages);
+        }
+    }
+
+    @Test
+    void packingDecodesFormatsTheRendererDoesNotSample() throws Exception {
+        // A BC3 image in a session that charged it decoded (mask 0): kept as blocks for a BC3
+        // renderer, decoded to RGBA8 on the decode worker for one without BC3.
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        var blocks =
+                ByteBuffer.allocate(ObjectTextureFormats.chainBytes(ObjectTextureFormats.BC3, 8, 8))
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        for (int at = 0; at < blocks.capacity(); at += 16) {
+            // Alpha endpoints 200 (selectors 0), colour c0 red, c1 black (selectors 0).
+            blocks.put(at, (byte) 200).put(at + 1, (byte) 200);
+            blocks.putShort(at + 8, (short) 0xF800).putShort(at + 10, (short) 0);
+        }
+        builder.image(8, 8, ObjectTextureFormats.BC3, blocks.duplicate().clear());
+        builder.model();
+        builder.mesh(
+                FloatBuffer.wrap(new float[24]),
+                IntBuffer.wrap(new int[] {0, 1, 2}),
+                new int[] {0, 3, 0});
+        builder.placement(0, 0, 0, 0, 1, 1, 0);
+        var data = builder.build();
+        var reference = write(data);
+        var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
+        try (var kept =
+                WorldStreamPackedObjects.pack(read, () -> false, 1 << ObjectTextureFormats.BC3)) {
+            assertEquals(ObjectTextureFormats.BC3, kept.format(0));
+            assertEquals(1, kept.compressedImages);
+        }
+        try (var decoded = WorldStreamPackedObjects.pack(read, () -> false, 0)) {
+            assertEquals(ObjectTextureFormats.RGBA8, decoded.format(0));
+            assertEquals(1, decoded.decodedImages);
+            assertEquals(ObjectTextureMips.chainPixels(8, 8) * 4, decoded.pixels.capacity());
+            assertEquals(255, decoded.pixels.get(0) & 255, "red");
+            assertEquals(200, decoded.pixels.get(3) & 255, "BC3 alpha");
+        }
+    }
+
     @Test
     void compressedImagesAreChargedTheirDecodedSizeToo() {
         // 56 BC1 256^2 chains take 2.4 MB stored but 19.6 MB decoded, the RGBA8 profile a
