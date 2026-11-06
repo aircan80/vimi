@@ -533,6 +533,14 @@ tasks.register('worldAudioPlaybackTest', JavaExec) {
 }
 tasks.named('check') { dependsOn tasks.named('worldAudioPlaybackTest') }
 
+// Audio controls selection logic: authored world, manual settle delay and clock; no display.
+tasks.register('worldAudioControlsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldAudioControlsTest'
+}
+tasks.named('check') { dependsOn tasks.named('worldAudioControlsTest') }
+
 // Inline instance switch ordering: drain, audio handover, cancel and refusal; no display or GPU.
 tasks.register('worldInstanceSwitchTest', JavaExec) {
     dependsOn testClasses
