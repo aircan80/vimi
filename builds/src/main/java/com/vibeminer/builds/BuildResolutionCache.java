@@ -29,7 +29,57 @@ public final class BuildResolutionCache implements AutoCloseable {
             java.util.Objects.requireNonNull(reader);
             java.util.Objects.requireNonNull(writer);
         }
+
+        /**
+         * Storage for an already-prepared build opened read-only (#346): stored projections are
+         * read, nothing is ever saved or repaired, and a build without a stored projection is
+         * refused as needing preparation instead of being resolved from its archive indexes. Pass
+         * it to a {@link BuildOpener} together with a {@link BuildResolutionCache}: the cache does
+         * the restore.
+         */
+        public static Storage readOnly(ObjectReader reader) {
+            return new Storage(reader, READ_ONLY);
+        }
+
+        /** Whether this storage refuses to save, so a missing projection refuses the open. */
+        public boolean isReadOnly() {
+            return writer == READ_ONLY;
+        }
     }
+
+    /** Code of an open refused because a read-only open has no stored resolution projection. */
+    public static final String NEEDS_PREPARATION = "BUILD_NEEDS_PREPARATION";
+
+    private static final ObjectWriter READ_ONLY =
+            new ObjectWriter() {
+                private <T> CompletableFuture<T> refused() {
+                    return CompletableFuture.failedFuture(
+                            new IllegalStateException("Resolution storage is read-only"));
+                }
+
+                @Override
+                public CompletableFuture<List<StoreTypes.PutResult>> put(
+                        List<StoreTypes.PutObject> batch,
+                        boolean commitNow,
+                        com.vibeminer.store.Cancellation cancellation) {
+                    return refused();
+                }
+
+                @Override
+                public CompletableFuture<List<StoreTypes.DeleteResult>> delete(
+                        List<ObjectKey> keys, com.vibeminer.store.Cancellation cancellation) {
+                    return refused();
+                }
+
+                @Override
+                public CompletableFuture<com.vibeminer.store.ObjectStaging> stage(
+                        ObjectKey key,
+                        long declaredLength,
+                        StoreTypes.Origin origin,
+                        com.vibeminer.store.Cancellation cancellation) {
+                    return refused();
+                }
+            };
 
     private record Key(BuildTypes.BuildRef build, BuildOpener.Options options) {}
 
@@ -128,7 +178,9 @@ public final class BuildResolutionCache implements AutoCloseable {
             List<CdnKey> archives,
             ArchiveLocations locations,
             Storage storage) {
-        if (storage == null || locations.projectionLength(archives) > (512L << 20)) {
+        if (storage == null
+                || storage.isReadOnly()
+                || locations.projectionLength(archives) > (512L << 20)) {
             return;
         }
         synchronized (this) {

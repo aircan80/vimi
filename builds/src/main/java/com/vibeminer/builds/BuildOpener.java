@@ -250,6 +250,15 @@ public final class BuildOpener implements Builds {
                     resolutionCache.restore(
                             build, options, context.config().archives(), resolutionStorage, token);
         }
+        if (locations == null && resolutionStorage != null && resolutionStorage.isReadOnly()) {
+            // A read-only open never resolves archive indexes itself: that is preparation.
+            throw new OpenFailed(
+                    BuildOpenState.UNAVAILABLE,
+                    BuildPart.ARCHIVE_INDEX,
+                    BuildResolutionCache.NEEDS_PREPARATION,
+                    "Build needs preparation: no stored file-resolution projection",
+                    null);
+        }
         if (locations == null) {
             locations = readIndexes(context.config(), context.cdn(), token);
             if (resolutionCache != null) {
