@@ -63,7 +63,11 @@ public final class WorldStreamSourceControllerTest {
         budgetRefusedObjectsRetryAfterAReleaseOnly();
         lateObjectFailuresStayIsolatedFromTerrain();
         lateObjectsCompletingAfterRetirementAreIgnored();
+        refusedInitialQualificationRetriesOnItsDeadline();
+        refusedCommitRetriesWhenItsRetirementKickWasAlreadyConsumed();
+        materialPoolRefusalRetriesOnItsDeadline();
         anIdleViewRunsNoStepOnTicksAndScansAreasOnlyWhenTheCameraMoves();
+        borrowedTilesAreNeverDroppedToMakeRoom();
         tilesKeepStreamingWhileAFrameIsBorrowed();
         aBorrowedFrameKeepsTheSourcesOfTheTableItShows();
         fiveByFiveNeighborhoodHoldsTwentyFiveResidentsWithinTheSourceUnion();
@@ -173,10 +177,205 @@ public final class WorldStreamSourceControllerTest {
                 Thread.sleep(2);
             }
             check(fixture.controller.steps.get() > steps, "A camera change runs a step");
-            check(fixture.controller.areaScans.get() == scans + 1,
-                    "One area scan for the one new camera: "
-                            + (fixture.controller.areaScans.get() - scans));
+            // Settled again: further ticks rescan nothing (the new camera may also have changed
+            // the table, so the count it caused is not pinned exactly).
+            long settledSteps = fixture.controller.steps.get();
+            long settledScans = fixture.controller.areaScans.get();
+            check(settledScans > scans && settledScans <= scans + 2,
+                    "The new camera rescans the area: " + (settledScans - scans));
+            for (int i = 0; i < 200; i++) {
+                fixture.controller.pulse();
+                Thread.sleep(1);
+            }
+            check(fixture.controller.steps.get() == settledSteps
+                            && fixture.controller.areaScans.get() == settledScans,
+                    "Ticks after the camera settles run no step and no scan");
         } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * #366 review: tiles a borrowed frame shows are never the make-room release. At the 5x5
+     * source bound (25 residents, 28 sources) with three never-presented tiles that a borrowed
+     * frame shows, a demand whose nearest tile is missing must not drop any of them while the
+     * frame is borrowed: retirement keeps them, so each drop would free nothing and repeat.
+     */
+    private static void borrowedTilesAreNeverDroppedToMakeRoom() throws Exception {
+        int residents = WorldStreamTransport.MAX_RESIDENTS;
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), residents + 4);
+        fixture.residents = residents;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            var t = fixture.tiles;
+            fixture.controller.neighborhood(t.subList(0, residents));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == residents);
+            // Three new tiles commit while no newer pixels are accepted: 25 presented + 3 new.
+            fixture.controller.neighborhood(t.subList(3, residents + 3));
+            fixture.until(() -> fixture.pool.stats().leaseClaims() == residents + 3
+                    && fixture.controller.snapshot().prepared() == residents);
+            fixture.camera(2);
+            var borrowed = fixture.nextFrame(); // shows the table with the three new tiles
+            int commits = fixture.commitLines().size();
+            // A new nearest tile is missing: make-room may only drop a tile nobody shows.
+            var demand = new ArrayList<WorldFormats.Tile>();
+            demand.add(t.get(residents + 3));
+            demand.addAll(t.subList(4, residents + 3));
+            fixture.controller.neighborhood(demand);
+            for (int i = 0; i < 100; i++) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            check(fixture.commitLines().size() == commits,
+                    "No resident is dropped while the frame showing it is borrowed: "
+                            + (fixture.commitLines().size() - commits) + " shrink commits");
+            fixture.controller.discard(borrowed);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == residents);
+        } catch (Throwable failure) {
+            // Keep the assertion visible: a close that times out after it is only suppressed.
+            try {
+                fixture.close();
+            } catch (Exception closing) {
+                failure.addSuppressed(closing);
+            }
+            throw failure;
+        }
+        fixture.close();
+    }
+
+    /** Consumes the controller's pending kick, as if a step had already taken it. */
+    private static void consumeKick(WorldStreamSourceController controller) {
+        try {
+            var wake = WorldStreamSourceController.class.getDeclaredField("wake");
+            wake.setAccessible(true);
+            ((java.util.concurrent.atomic.AtomicBoolean) wake.get(controller)).set(false);
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError(failure);
+        }
+    }
+
+    /**
+     * #366 review: an initial qualification refused RETRY_LATER (the source lane busy at open)
+     * arms its own retry. The lane's release sends no event and nothing moves the camera, so
+     * only that deadline and an FX tick can retry it.
+     */
+    private static void refusedInitialQualificationRetriesOnItsDeadline() throws Exception {
+        // No water tables: their completion is another kick that would mask a missing deadline.
+        String water = System.getProperty("vimi.world.water");
+        System.setProperty("vimi.world.water", "false");
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 1);
+        var held = com.vibeminer.concepts.world.AuthoredSourceWorkerPressure.hold(
+                fixture.world.terrainStreaming().orElseThrow());
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().detail()
+                    .startsWith("Waiting for source capacity"));
+            held.close();
+            fixture.clock.addAndGet(600_000_000L);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+        } finally {
+            held.close();
+            fixture.close();
+            if (water == null) System.clearProperty("vimi.world.water");
+            else System.setProperty("vimi.world.water", water);
+        }
+    }
+
+    /**
+     * #366 review: a refused commit whose awaited retirement arrived in a kick the same step
+     * already consumed still retries: the step re-runs its guard. Clock frozen, no camera or
+     * demand kick afterwards.
+     */
+    private static void refusedCommitRetriesWhenItsRetirementKickWasAlreadyConsumed()
+            throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(),13);
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        Path hold = fixture.directory.resolve("authored-hold-commit");
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0,9));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared()==9);
+            Files.writeString(hold,"12");
+            fixture.controller.neighborhood(fixture.tiles.subList(4,13));
+            fixture.until(() -> Files.exists(fixture.directory.resolve("authored-held-commit")));
+            enqueueHeldFile(fixture.gpu.session, entered, release);
+            check(entered.await(3,TimeUnit.SECONDS),"Parent file lane held");
+            var session = fixture.gpu.session;
+            var seamRan = new java.util.concurrent.atomic.AtomicBoolean();
+            fixture.controller.refusalSeam = () -> {
+                if (!seamRan.compareAndSet(false,true)) return;
+                long before = session.capacityRevision();
+                release.countDown();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (session.capacityRevision() == before && System.nanoTime() < deadline)
+                    java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                check(session.capacityRevision() != before, "Retirement changed capacity");
+                consumeKick(fixture.controller); // as if coalesced into this very step
+            };
+            Files.delete(hold);
+            fixture.until(() -> fixture.commitLines().stream().anyMatch(line -> line.startsWith("12 ")));
+            var returning = new ArrayList<>(fixture.tiles.subList(4,12));
+            returning.addFirst(fixture.tiles.get(1));
+            fixture.controller.neighborhood(returning);
+            fixture.until(seamRan::get);
+            int before = fixture.commitLines().size();
+            // No presenting here: each accepted frame is a kick that would mask a missing re-run.
+            fixture.until(() -> fixture.commitLines().size() > before);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared()==9);
+        } finally {
+            release.countDown();
+            fixture.close();
+        }
+    }
+
+    /**
+     * #366 review: a tile refused at MATERIAL_POOL, whose own unused credit is held so no later
+     * capacity event comes, arms its own retry: the pool's release sends no event, and only that
+     * deadline and an FX tick can retry it.
+     */
+    private static void materialPoolRefusalRetriesOnItsDeadline() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 1);
+        var held = AuthoredTerrainPoolPressure.hold(fixture.pool);
+        Path holdCredit = fixture.directory.resolve("authored-hold-unused-credit");
+        try {
+            Files.writeString(holdCredit, "hold");
+            fixture.start();
+            var pool = WorldStreamSourceController.class.getDeclaredField("blockedOnMaterialPool");
+            pool.setAccessible(true);
+            fixture.until(() -> {
+                try {
+                    return fixture.controller.snapshot().phase()
+                                    == WorldStreamSourceController.Phase.WAITING_CAPACITY
+                            && pool.getBoolean(fixture.controller);
+                } catch (IllegalAccessException failure) {
+                    throw new AssertionError(failure);
+                }
+            });
+            held.close();
+            fixture.clock.addAndGet(600_000_000L);
+            // The retry gate opened: the step asks for a new reservation, which the still-held
+            // unused credit refuses. Without its deadline it keeps waiting on the pool.
+            fixture.until(() -> fixture.controller.snapshot().detail()
+                    .equals("Waiting for GPU upload capacity"));
+            Files.delete(holdCredit);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+        } finally {
+            Files.deleteIfExists(holdCredit);
+            held.close();
             fixture.close();
         }
     }
