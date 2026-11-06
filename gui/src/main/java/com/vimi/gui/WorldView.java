@@ -265,7 +265,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 case "render" -> devOverlay.show(WorldDevReport.Page.RENDER);
                 case "texture" -> devOverlay.show(WorldDevReport.Page.STREAM);
                 case "tracking" -> {
-                    if (minimap.isVisible()) minimap.tracking().toggle(minimap);
+                    // The minimap key hid the cluster: show it again and open its popup.
+                    if (minimap.userHidden()) {
+                        minimap.toggleShown();
+                        if (minimap.shown() && !minimap.tracking().showing()) minimap.toggleTracking();
+                    } else if (minimap.shown()) minimap.toggleTracking();
                     else menu.open(WorldGameMenu.Page.DISPLAY);
                 }
                 default -> menu.open(WorldGameMenu.Page.CONTROLS);

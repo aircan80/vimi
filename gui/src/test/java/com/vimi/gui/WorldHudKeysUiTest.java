@@ -143,6 +143,20 @@ public final class WorldHudKeysUiTest {
                 press(KeyCode.L);
             });
             await(() -> !view.minimap().tracking().showing());
+            // With the minimap hidden by N, the tracking icon shows it again and opens the popup.
+            fx(() -> {
+                press(KeyCode.N);
+                require(view.minimap().userHidden() && !view.minimap().isVisible(), "N hides the minimap");
+                ((javafx.scene.control.ButtonBase) view.lookup("#world-icon-tracking")).fire();
+                require(!view.minimap().userHidden() && view.minimap().isVisible(),
+                        "The tracking icon shows the hidden minimap");
+            });
+            await(() -> view.minimap().tracking().showing());
+            fx(() -> {
+                require(!((WorldGameMenu) get("menu")).shown(), "It opens the popup, not the Display page");
+                press(KeyCode.L);
+            });
+            await(() -> !view.minimap().tracking().showing());
             System.out.println("World HUD keys PASS: V spawns toggle, T day/night cycle, 1-5 speed presets"
                     + " persisted, N minimap hide/show (ignored with the HUD hidden), L tracking popup open/close,"
                     + " HUD keys through the popup before its controls, movement kept in the popup, no"
