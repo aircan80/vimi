@@ -412,7 +412,9 @@ class WorldTerrainLiquidsTest {
             try (var owner = f.inspect()) {
                 assertEquals(WorldTerrainLiquids.State.UNRESOLVED, owner.summary().state());
                 assertEquals(
-                        WorldTerrainLiquids.Reason.UNRESOLVED_FOOTPRINT, owner.summary().reason());
+                        // Format 1 has a known length (8 bytes per vertex); this authored
+                        // 405-byte stream is too short for it, so the instance is malformed.
+                        WorldTerrainLiquids.Reason.MALFORMED, owner.summary().reason());
             }
             // Cell 0 uses grid samples 0, 1, 9 and 10; sample 1 is 6, the others 5.
             f.payload(liquids(1, 0, 1, true));
@@ -457,7 +459,9 @@ class WorldTerrainLiquidsTest {
                     assertEquals(
                             missingCopy
                                     ? WorldTerrainLiquids.Reason.ROW_NOT_OBSERVED
-                                    : WorldTerrainLiquids.Reason.UNRESOLVED_FOOTPRINT,
+                                    // LVF 1's known 8-byte vertices overrun the authored
+                                    // stream: that instance is malformed, never "empty".
+                                    : WorldTerrainLiquids.Reason.MALFORMED,
                             owner.summary().reason());
                     assertEquals(0, owner.summary().admitted());
                 }
@@ -1425,6 +1429,90 @@ class WorldTerrainLiquidsTest {
             f.payload(liquids(1, 1, 1, false));
             try (var magma = f.inspect()) {
                 assertEquals(WorldTerrainLiquids.State.UNRESOLVED, magma.summary().state());
+            }
+        }
+    }
+
+    @Test
+    void publicWaterFactsCarryTheSourceIssues() throws Exception {
+        // Direct depth-only water at declared level 5: drawn, with the departure from the
+        // convention's 0 visible on the public facts.
+        try (var f = new PublicFixture(2)) {
+            try (var result =
+                    f.water.prepareAndWrite(
+                            f.tile, Cancellation.NONE, (b, t) -> (AutoCloseable) () -> {})) {
+                assertEquals(WorldWaterPreview.State.READY, result.facts().state());
+                assertEquals(1, result.facts().issues().size(), "" + result.facts().issues());
+                assertTrue(result.facts().issues().getFirst().contains("declared level"));
+            }
+        }
+        try (var f = new PublicFixture(0)) {
+            try (var result =
+                    f.water.prepareAndWrite(
+                            f.tile, Cancellation.NONE, (b, t) -> (AutoCloseable) () -> {})) {
+                assertEquals(List.of(), result.facts().issues());
+            }
+        }
+    }
+
+    @Test
+    void oneCorruptInstanceIsRefusedAloneAndTheRestOfTheTileDraws() throws Exception {
+        try (var f = new Fixture()) {
+            // A coast-like tile: instance 0 is good water; instance 1 (a lake) uses a height
+            // above its declared maximum.
+            byte[] p = liquids(2, 0, 1, false);
+            int vertices = 3072 + 2 * 24 + 2 * 8;
+            ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN).putFloat(vertices + 405 + 4, 9f);
+            f.payload(p);
+            try (var tile = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.PARTIAL, tile.summary().state());
+                assertEquals(1, tile.summary().admitted());
+                assertEquals(1, tile.summary().unresolved());
+                assertEquals(WorldTerrainLiquids.Reason.MALFORMED, tile.summary().reason());
+                assertTrue(
+                        tile.issues().stream().anyMatch(i -> i.startsWith("1 malformed")),
+                        tile.issues().toString());
+            }
+            // Two indirect instances whose streams overlap are both refused; the third draws.
+            byte[] q = liquids(3, 42, 1, false);
+            var b = ByteBuffer.wrap(q).order(ByteOrder.LITTLE_ENDIAN);
+            b.putInt(3072 + 2 * 24 + 20, b.getInt(3072 + 24 + 20));
+            f.payload(q);
+            try (var tile = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.PARTIAL, tile.summary().state());
+                assertEquals(1, tile.summary().admitted());
+                assertEquals(2, tile.summary().unresolved());
+                assertTrue(
+                        tile.issues().stream().anyMatch(i -> i.startsWith("2 malformed")),
+                        tile.issues().toString());
+            }
+        }
+    }
+
+    @Test
+    void knownLengthMagmaNoLongerHidesTheTilesWater() throws Exception {
+        try (var f = new Fixture()) {
+            // Instance 0 is water; instance 1 is direct format 1 (height and texture coordinates,
+            // 8 bytes per vertex), given room for its whole stream.
+            byte[] p =
+                    java.util.Arrays.copyOf(
+                            liquids(2, 0, 1, false), 3072 + 2 * 24 + 2 * 8 + 405 + 81 * 8);
+            ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN).putShort(3072 + 24 + 2, (short) 1);
+            f.payload(p);
+            try (var tile = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.PARTIAL, tile.summary().state());
+                assertEquals(1, tile.summary().admitted());
+                assertEquals(
+                        WorldTerrainLiquids.Reason.UNSUPPORTED_LAYOUT, tile.summary().reason());
+            }
+            // Without that room its stream runs past the payload: that instance alone is refused.
+            byte[] q = liquids(2, 0, 1, false);
+            ByteBuffer.wrap(q).order(ByteOrder.LITTLE_ENDIAN).putShort(3072 + 24 + 2, (short) 1);
+            f.payload(q);
+            try (var tile = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.PARTIAL, tile.summary().state());
+                assertEquals(1, tile.summary().admitted());
+                assertEquals(WorldTerrainLiquids.Reason.MALFORMED, tile.summary().reason());
             }
         }
     }

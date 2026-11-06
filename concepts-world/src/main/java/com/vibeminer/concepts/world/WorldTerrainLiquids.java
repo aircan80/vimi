@@ -17,9 +17,13 @@ import java.util.concurrent.CompletableFuture;
  * all kept, as the source declares them.
  */
 final class WorldTerrainLiquids {
-    static final String REVISION = "source-mh2o-local-root-inspection-v2";
+    static final String REVISION = "source-mh2o-local-root-inspection-v3";
 
-    /** One root: 256 chunk headers with at most four instances each, and every cell once. */
+    /**
+     * One root: 256 chunk headers with at most four instances each. Cells are bounded as if every
+     * cell of the root were covered once (256 x 64); overlapping instances beyond that are left out
+     * as CAPPED.
+     */
     static final int MAX_LAYERS = 1024, MAX_CELLS = 16384, MAX_SAMPLES = MAX_LAYERS * 81;
 
     enum State {
@@ -398,6 +402,11 @@ final class WorldTerrainLiquids {
             return checked().tableFacts;
         }
 
+        /** Source facts that disagree with a convention this owner followed. */
+        List<String> issues() {
+            return checked().issues;
+        }
+
         private void expire() {
             owner = null;
         }
@@ -685,6 +694,7 @@ final class WorldTerrainLiquids {
             }
         }
         WorldLiquidTables.Observed types = null, materials = null, failedContext = null;
+        var oceanProof = new WorldLiquidTables.Observed[2];
         try {
             if (!selected.isEmpty()) {
                 types = tables.observe(WorldLiquidTables.Profile.TYPE, selected, token);
@@ -714,11 +724,13 @@ final class WorldTerrainLiquids {
                                                 : -1;
                 formats[l.ordinal()] = format;
                 supported[l.ordinal()] = format == 0 || format == 2;
-                if (!supported[l.ordinal()] && l.vertexOffset() != 0) {
+                // Formats 1 and 3 (magma, slime) are not drawn, but their stream lengths are
+                // known, so they are still checked for overlaps instead of hiding the tile.
+                if (stride(format) == 0 && l.vertexOffset() != 0) {
                     unknown = true;
                 }
             }
-            output.issues = oceanConvention(raw, token);
+            output.issues = oceanConvention(raw, token, oceanProof);
             if (unknown) {
                 set(
                         output,
@@ -729,10 +741,10 @@ final class WorldTerrainLiquids {
                         List.of(),
                         0);
             } else {
-                // All nonzero streams have known LVF0 footprint. Cross-layer aliases cannot hide
-                // behind the low-level decoder's unresolved-format boundary.
-                validateKnownStreams(raw, supported, formats);
-                decode(output, root, supported, formats, token);
+                // All nonzero streams have a known footprint. A pair of overlapping streams
+                // refuses both instances; the rest of the tile still decodes.
+                var refused = validateKnownStreams(raw, supported, formats);
+                decode(output, root, supported, formats, refused, token);
             }
         } catch (WorldLiquidTables.Unavailable optional) {
             if (optional.reason == WorldLiquidTables.Reason.SOURCE_CHANGED) {
@@ -747,7 +759,7 @@ final class WorldTerrainLiquids {
                     raw.layers().size(),
                     List.of(),
                     0);
-        } catch (WorldLiquids.FormatException | Malformed malformed) {
+        } catch (WorldLiquids.FormatException malformed) {
             set(
                     output,
                     root,
@@ -759,7 +771,10 @@ final class WorldTerrainLiquids {
         }
         var observations = new ArrayList<WorldLiquidTables.Observed>(3);
         // Even known-negative selected-row observations must stay tied to unchanged source.
-        for (var proof : new WorldLiquidTables.Observed[] {types, materials, failedContext}) {
+        for (var proof :
+                new WorldLiquidTables.Observed[] {
+                    types, materials, failedContext, oceanProof[0], oceanProof[1]
+                }) {
             if (proof == null) {
                 continue;
             }
@@ -789,7 +804,8 @@ final class WorldTerrainLiquids {
      * resolves another format, that disagreement is recorded as an issue, not obeyed or hidden. A
      * missing or unreadable row is no disagreement.
      */
-    private List<String> oceanConvention(WorldLiquids.RawLiquids raw, Cancellation token) {
+    private List<String> oceanConvention(
+            WorldLiquids.RawLiquids raw, Cancellation token, WorldLiquidTables.Observed[] proof) {
         boolean ocean = false;
         for (var layer : raw.layers()) {
             ocean |= layer.secondary() >= 42 && layer.liquidType() == 2;
@@ -799,6 +815,7 @@ final class WorldTerrainLiquids {
         }
         try {
             var type = tables.observe(WorldLiquidTables.Profile.TYPE, java.util.Set.of(2L), token);
+            proof[0] = type;
             if (!type.ids().contains(2L)) {
                 return List.of();
             }
@@ -806,6 +823,7 @@ final class WorldTerrainLiquids {
             var materials =
                     tables.observe(
                             WorldLiquidTables.Profile.MATERIAL, java.util.Set.of(material), token);
+            proof[1] = materials;
             int format = materials.value(material);
             return format == 2
                     ? List.of()
@@ -816,54 +834,80 @@ final class WorldTerrainLiquids {
                                     + format
                                     + "; drawn depth-only by the established extractor"
                                     + " convention.");
-        } catch (WorldLiquidTables.Unavailable | IllegalStateException unreadable) {
+        } catch (WorldLiquidTables.Unavailable unreadable) {
+            // A changed source must restart the inspection, never pass as "no disagreement".
+            if (unreadable.reason == WorldLiquidTables.Reason.SOURCE_CHANGED) {
+                throw new Changed();
+            }
             return List.of();
         }
     }
 
-    private static final class Malformed extends RuntimeException {
-        private static final long serialVersionUID = 1L;
-
-        private Malformed() {
-            super("Qualified liquid stream overlap", null);
-        }
-    }
-
-    /** Bytes per vertex of a supported format: height and depth (5) or depth only (1). */
+    /**
+     * Bytes per vertex of a known format: height and depth (0: 5), height and texture coordinates
+     * (1: 8), depth only (2: 1), height, texture coordinates and depth (3: 9); 0 when the format is
+     * unknown.
+     */
     private static long stride(int format) {
-        return format == 0 ? 5 : 1;
+        return switch (format) {
+            case 0 -> 5;
+            case 1 -> 8;
+            case 2 -> 1;
+            case 3 -> 9;
+            default -> 0;
+        };
     }
 
-    private static void validateKnownStreams(
+    private static boolean[] validateKnownStreams(
             WorldLiquids.RawLiquids raw, boolean[] supported, int[] formats) {
+        var refused = new boolean[raw.layers().size()];
         for (int i = 0; i < raw.layers().size(); i++) {
             var a = raw.layers().get(i);
-            if (!supported[i] || a.vertexOffset() == 0) {
+            if (stride(formats[i]) == 0 || a.vertexOffset() == 0) {
                 continue;
             }
             long end = a.vertexOffset() + (a.width() + 1L) * (a.height() + 1L) * stride(formats[i]);
+            if (end > raw.payloadBytes()) {
+                // A known-length stream that runs past the payload refuses its own instance.
+                refused[i] = true;
+                continue;
+            }
             for (int j = 0; j < i; j++) {
                 var b = raw.layers().get(j);
-                if (!supported[j] || b.vertexOffset() == 0) {
+                if (stride(formats[j]) == 0 || b.vertexOffset() == 0) {
                     continue;
                 }
                 long otherEnd =
                         b.vertexOffset()
                                 + (b.width() + 1L) * (b.height() + 1L) * stride(formats[j]);
                 if (a.vertexOffset() < otherEnd && b.vertexOffset() < end) {
-                    throw new Malformed();
+                    refused[i] = true;
+                    refused[j] = true;
                 }
             }
         }
+        return refused;
     }
 
     private static void decode(
-            Owner output, Root root, boolean[] supported, int[] formats, Cancellation token) {
+            Owner output,
+            Root root,
+            boolean[] supported,
+            int[] formats,
+            boolean[] refused,
+            Cancellation token) {
         var result = new ArrayList<Layer>();
-        int unresolved = 0, cells = 0, samples = 0, declaredLevels = 0;
+        int unresolved = 0, cells = 0, samples = 0, declaredLevels = 0, malformed = 0;
         Reason reason = Reason.NONE;
         for (var layer : root.raw().layers()) {
             token.check();
+            // A malformed instance is reported as such even when its format is unsupported.
+            if (refused[layer.ordinal()]) {
+                unresolved++;
+                malformed++;
+                reason = Reason.MALFORMED;
+                continue;
+            }
             if (!supported[layer.ordinal()]) {
                 unresolved++;
                 reason = Reason.UNSUPPORTED_LAYOUT;
@@ -871,7 +915,18 @@ final class WorldTerrainLiquids {
             }
             WorldLiquids.DecodedLayer d;
             if (formats[layer.ordinal()] == 0 && layer.vertexOffset() != 0) {
-                d = WorldLiquids.decodeHeightDepth0(root.raw(), layer.ordinal(), token::isCanceled);
+                try {
+                    d =
+                            WorldLiquids.decodeHeightDepth0(
+                                    root.raw(), layer.ordinal(), token::isCanceled);
+                } catch (WorldLiquids.FormatException bad) {
+                    // A bad instance (aliased stream, used height outside its bounds) is
+                    // refused alone.
+                    unresolved++;
+                    malformed++;
+                    reason = Reason.MALFORMED;
+                    continue;
+                }
             } else {
                 // No vertex heights (no vertex data, or depth only): the declared height, which
                 // must be a single value.
@@ -885,6 +940,11 @@ final class WorldTerrainLiquids {
                 } catch (UnsupportedOperationException range) {
                     unresolved++;
                     reason = Reason.VERTEX_ABSENT;
+                    continue;
+                } catch (WorldLiquids.FormatException bad) {
+                    unresolved++;
+                    malformed++;
+                    reason = Reason.MALFORMED;
                     continue;
                 }
                 // The extractor convention would place this layer at 0; the source wins.
@@ -953,6 +1013,13 @@ final class WorldTerrainLiquids {
                         ? (unresolved == 0 ? State.EMPTY : State.UNRESOLVED)
                         : (unresolved == 0 ? State.READY : State.PARTIAL);
         set(output, root, state, reason, unresolved, result, cells);
+        if (malformed > 0) {
+            var issues = new ArrayList<>(output.issues);
+            issues.add(
+                    malformed
+                            + " malformed liquid instance(s) refused; the rest of the tile kept.");
+            output.issues = List.copyOf(issues);
+        }
         if (declaredLevels > 0) {
             var issues = new ArrayList<>(output.issues);
             issues.add(

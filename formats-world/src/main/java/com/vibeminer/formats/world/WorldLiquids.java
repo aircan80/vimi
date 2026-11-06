@@ -213,12 +213,13 @@ public final class WorldLiquids {
                                 attributes[h]));
             }
         }
-        // Direct layout 0 and 2 lengths are known; unresolved formats do not acquire guessed tails.
+        // Direct layout0 lengths are known; unresolved formats do not acquire guessed tails.
+        // Other streams are checked per instance when decoded, so one bad instance is refused
+        // alone.
         for (var layer : layers) {
             check(canceled);
-            long bytes = directBytes(layer);
-            if (bytes > 0 && layer.vertexOffset() != 0) {
-                add(variable, range(layer.vertexOffset(), bytes, size));
+            if (layer.secondary() == 0 && layer.vertexOffset() != 0) {
+                add(variable, range(layer.vertexOffset(), vertexCount(layer) * 5L, size));
             }
         }
         check(canceled);
@@ -325,39 +326,35 @@ public final class WorldLiquids {
     }
 
     /**
-     * Checks the selected layer's stream ({@code ownBytes} long, 0 for none) against every fixed
-     * table, bitmap and known-length stream; unknown lengths may not start inside them.
+     * Checks only the selected layer's stream ({@code ownBytes} long, 0 for none): it may not
+     * overlap a fixed table, a bitmap or another known-length stream, and no other stream of
+     * unknown length may start inside it. Other layers' own conflicts are theirs, so one bad
+     * instance never refuses its neighbours.
      */
     private static void checkStreams(
             RawLiquids owner, int ordinal, long ownBytes, BooleanSupplier canceled) {
-        var intervals = new ArrayList<Interval>(owner.fixed);
+        var layer = owner.layers.get(ordinal);
+        if (ownBytes == 0 || layer.vertexOffset() == 0) {
+            return;
+        }
+        var own = range(layer.vertexOffset(), ownBytes, owner.payload.length);
+        var mine = List.of(own);
+        outside(owner.fixed, own);
         for (var other : owner.layers) {
             check(canceled);
             if (other.bitmapOffset() != 0) {
-                add(
-                        intervals,
+                outside(
+                        mine,
                         range(
                                 other.bitmapOffset(),
                                 (other.width() * other.height() + 7) / 8,
                                 owner.payload.length));
             }
-        }
-        for (var other : owner.layers) {
-            if (other.vertexOffset() == 0) {
+            if (other.ordinal() == ordinal || other.vertexOffset() == 0) {
                 continue;
             }
-            long bytes = other.ordinal() == ordinal ? ownBytes : directBytes(other);
-            if (bytes > 0) {
-                add(intervals, range(other.vertexOffset(), bytes, owner.payload.length));
-            }
-        }
-        // Unknown lengths remain unknown, but their start may not alias a known interval.
-        for (var other : owner.layers) {
-            if (other.vertexOffset() != 0
-                    && other.ordinal() != ordinal
-                    && directBytes(other) == 0) {
-                outside(intervals, range(other.vertexOffset(), 1, owner.payload.length));
-            }
+            long bytes = directBytes(other);
+            outside(mine, range(other.vertexOffset(), bytes > 0 ? bytes : 1, owner.payload.length));
         }
     }
 

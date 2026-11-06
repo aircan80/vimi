@@ -32,11 +32,13 @@ public final class WorldWaterPreview {
         private final WorldStreamScopes.AdmissionMetadata metadata;
         private final List<TableObservation> tables;
         private final int tileX, tileY;
+        private final List<String> issues;
         private final Long rootDeclaredLength;
         private final int rootSourceLimit;
 
         private Facts(WorldTerrainLiquids.Borrow borrow, int tileX, int tileY) {
             summary = borrow.facts();
+            issues = List.copyOf(borrow.issues());
             rootDeclaredLength = borrow.rootBinding().declaredSize();
             rootSourceLimit = borrow.rootBinding().sourceLimit();
             metadata = borrow.metadata();
@@ -53,6 +55,14 @@ public final class WorldWaterPreview {
 
         public State state() {
             return State.valueOf(summary.state().name());
+        }
+
+        /**
+         * Where this tile's source disagrees with a convention the water followed (for example a
+         * LiquidType row that resolves another vertex format); descriptive, never fatal.
+         */
+        public List<String> issues() {
+            return issues;
         }
 
         public String reason() {

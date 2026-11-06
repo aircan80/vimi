@@ -26,6 +26,7 @@ final class WorldStreamSourceBridge {
         private final WorldTerrainStreaming.Facts facts;
         private WorldTerrainStreaming.WrittenTile<WorldStreamTileWriter.PacketFile> owned;
         private volatile int waterCells;
+        private volatile List<String> waterIssues = List.of();
         private volatile ExteriorSummary exteriorSummary = ExteriorSummary.NONE;
         private volatile boolean exteriorFailed;
 
@@ -71,6 +72,11 @@ final class WorldStreamSourceBridge {
         /** Descriptive count of static water cells carried by this tile's moved packet. */
         int waterCells() {
             return waterCells;
+        }
+
+        /** Where this tile's water source disagrees with a convention the water followed. */
+        List<String> waterIssues() {
+            return waterIssues;
         }
 
         /** Descriptive drawn/omitted counts of this tile's attached objects. */
@@ -564,6 +570,7 @@ final class WorldStreamSourceBridge {
         private Prepared prepared;
         private volatile RefusalMetadata sourceRefusal;
         private volatile String waterNote = "";
+        private volatile List<String> lastWaterIssues = List.of();
 
         Producer(WorldTerrainStreaming source, WorldTerrainStreaming.Scope scope,
                 WorldFormats.Tile tile, BooleanSupplier latest) {
@@ -622,6 +629,7 @@ final class WorldStreamSourceBridge {
                 if (waterCopy != null) {
                     if (attached[0]) {
                         local.waterCells = waterCopy.cells();
+                        local.waterIssues = lastWaterIssues;
                     } else {
                         waterNote = "water packet append rolled back";
                     }
@@ -695,10 +703,12 @@ final class WorldStreamSourceBridge {
                 }
                 var copy = new WaterCopy[1];
                 positive.withWrittenResource(r -> copy[0] = r);
+                lastWaterIssues = facts.issues();
                 waterNote = "water " + facts.state() + " cells=" + facts.cells()
                         + " quads=" + copy[0].water().cells()
                         + (copy[0].capped() ? " capped at " + copy[0].layers() + " of "
-                                + facts.admittedLayers() + " layers" : "");
+                                + facts.admittedLayers() + " layers" : "")
+                        + (facts.issues().isEmpty() ? "" : "; " + String.join("; ", facts.issues()));
                 return copy[0].water();
             } catch (CancellationException canceled) {
                 throw canceled;

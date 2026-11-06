@@ -216,3 +216,23 @@ They are covered by authored tests only.
 The frame probe was rerun with the merged branch: an Elwynn river tile around a 1.69-yard slope
 rendered three of four headings with water on every resident tile. The fourth heading produced
 no frame within its window, which is a probe settle issue to retry on the measurement open.
+
+### Refusal per instance, known formats and visible issues
+
+- **One bad instance is refused alone.** A stream that overlaps a table, a bitmap or another
+  stream, or a used height outside its declared bounds, refuses that instance (both instances of an
+  overlapping pair). The rest of the tile still draws (PARTIAL, reason MALFORMED). Read-time
+  structure errors (headers, instance tables, attributes, bitmaps, direct format-0 streams) still
+  make the root MALFORMED.
+- **Formats 1 and 3 have known lengths** (8 and 9 bytes per vertex), so magma and slime instances
+  are overlap- and bounds-checked and stated UNSUPPORTED_LAYOUT. They no longer hide the tile's
+  water as UNRESOLVED_FOOTPRINT. Only an unknown format still does.
+- **Issues are visible.** `WorldWaterPreview.Facts.issues()` carries the owner's notes: refused
+  instances, a disagreeing LiquidType row 2, and declared levels other than 0. The bridge appends
+  them to the tile's water note, and the World summary reports "water source notes on N tiles"
+  with the first note.
+- **Coplanar layers can still blend twice.** Strict reversed depth stops two coincident
+  triangles from blending twice only when their depths are equal to the bit. Two source layers
+  at almost the same height, or a merged whole-chunk quad over a cell-by-cell layer at one height,
+  can rasterize to slightly different depths and blend twice in places. This hasn't been seen in
+  frames yet; it is a known risk for the appearance slice.

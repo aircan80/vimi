@@ -307,10 +307,11 @@ class WorldLiquidsTest {
         assertThrows(
                 UnsupportedOperationException.class,
                 () -> WorldLiquids.decodeDeclaredHeight(raw, 0, false, () -> false));
-        // A direct depth stream's length is known, so it may not overlap the bitmap.
+        // A depth stream overlapping the bitmap refuses that instance when it is decoded.
         b.putInt(TABLE + 20, TABLE + 40);
+        var aliased = WorldLiquids.readMh2o(root(depth), () -> false);
         assertThrows(
                 WorldLiquids.FormatException.class,
-                () -> WorldLiquids.readMh2o(root(depth), () -> false));
+                () -> WorldLiquids.decodeDeclaredHeight(aliased, 0, true, () -> false));
     }
 }
