@@ -65,19 +65,9 @@ FileSystem, DB2 and generated storage; after reopening both stores, it deletes
 encoded DB2 input and verifies the durable generated table still serves identical
 rows/schema/identity.
 
-The optional compatibility suite builds a friend-name harness against unchanged
-pinned C# assemblies. Build the reference Formats project in Release first:
-
-```sh
-../vibeminer/.local/toolchains/dotnet/dotnet build ../vibeminer/src/backend/VibeMiner.Formats/VibeMiner.Formats.csproj --configuration Release -p:RestoreLockedMode=true -p:NuGetAudit=false
-./gradlew :formats-tables:interopTest -Pdotnet=/absolute/path/to/dotnet -PreferenceRoot=/absolute/path/to/vibeminer -PsqliteLibrary=/absolute/path/to/sqlite-library
-```
-
-This checks exact default/null-versus-empty options hashes, selected-field hashes,
-node identities, rows-v1 bytes and optional metadata fields, then exchanges native
-generated table caches in both directions. The finite single formatter also has
-2,048 deterministic bit patterns plus boundary cases generated with the pinned
-.NET SDK's invariant `Single.ToString("R")`.
+The finite single formatter's checked-in vectors (2,048 deterministic bit patterns
+plus boundary cases) originated in the .NET SDK's invariant `Single.ToString("R")`
+and are verified by the Java unit tests.
 
 ## Provider packaging and qualifications
 
@@ -109,8 +99,8 @@ explicit refusals.
 ## Preparation of the known inventory
 
 `BuildTables.prepareKnown(progress, token)` is an additive preparation boundary for
-application readiness. The existing `preload` contract and its pinned C# behavior
-remain unchanged.
+application readiness. The existing `preload` contract and its behavior remain
+unchanged.
 
 The new operation freezes the handle's catalog of known, nonzero FileDataIDs;
 community filenames do not expand its scope. Its result contains a complete,
@@ -309,7 +299,6 @@ SQLite/pack `TablesPipelineTest`, and raw/Items source adapter regressions. Run:
 
 ```sh
 ./gradlew :formats-tables:check :concepts-comparison:check :gui:check
-./gradlew :formats-tables:interopTest -Pdotnet=/absolute/path/to/dotnet
 ```
 
 Independent implementation acceptance is still required; design approval alone is

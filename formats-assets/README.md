@@ -7,7 +7,7 @@ The module depends on public `files` and `generated-store` APIs. It does not inv
 Use the repository's pinned Java 25/Gradle toolchain:
 
 ```sh
-JAVA_HOME=/opt/homebrew/opt/openjdk@25/libexec/openjdk.jdk/Contents/Home GRADLE_USER_HOME=/private/tmp/vimi-gradle-home ./gradlew :formats-assets:test :formats-assets:check :formats-assets:assemble
+./gradlew :formats-assets:test :formats-assets:check :formats-assets:assemble
 ```
 
 There are 81 deterministic tests, including a shared consumer contract against the independent Files fake and the real `DecodedFileStream` over fake lower boundaries. The latter guards against holding a stream monitor while waiting for its worker. An adapter serializes seek/read transactions with its own private monitor; do not concurrently wrap one stream with separate adapters. Virtual parser/adapter operations have fail-fast admission at 1,024 active operations (`ASSET_FORMAT_LIMIT`); nested tasks never wait for admission permits. Cancellation is explicit and checked during reads, pixel/record loops and derivative work.
@@ -20,12 +20,6 @@ M2 admits unchunked 264 and chunked 272/274 only. SKIN preserves modern raw zero
 
 Appearance reads sequence residency and opacity keys in separate model/SKIN phases with shared 65,536-key/slice budgets. It preserves the reviewed one/two-stage shader mappings, counts omitted blended layers/effects and declines unknown rendering semantics. Static opaque material admission remains a separate, conservative policy.
 
-VMG1 binds exact original receipts and emits canonical header/positions/triangle-edge/directory bytes. Verification checks the descriptor, edge pattern, section provenance, tight bounds and full SHA-256; this grants no source authority. CPU work scopes cover finite work units and never cover source/sink I/O. Artifact bounds retain the reference's 2 MiB, 65,536-vertex, 131,070-index and 256-section ceilings. The 232-byte fixture and its binding/artifact hashes match the original C# writer exactly.
+VMG1 binds exact original receipts and emits canonical header/positions/triangle-edge/directory bytes. Verification checks the descriptor, edge pattern, section provenance, tight bounds and full SHA-256; this grants no source authority. CPU work scopes cover finite work units and never cover source/sink I/O. Artifact bounds retain the reference's 2 MiB, 65,536-vertex, 131,070-index and 256-section ceilings. The 232-byte fixture and its binding/artifact hashes originated in the original C# writer.
 
-Synthetic goldens contain no game bytes. The interop harness compiles the unmodified pinned pure C# parsers and authored fixtures, a type-only Files stub for the pure source check, and the unchanged VMIM helper class excerpt. An optional independent check regenerates all goldens under `build/` and compares their exact payloads (gzip transport is decompressed; VMG1/VMIM remain byte-exact):
-
-```sh
-./gradlew :formats-assets:interopTest -PreferenceRoot=/path/to/vibeminer -Pdotnet=/path/to/dotnet
-```
-
-This check passed alongside the 81 Java unit tests, one disk pipeline and two interop cases, with zero failures or skips. Java budgets account for the reference logical payload; boxed collections have higher physical overhead than C# compact arrays. These fixtures establish supported-format behavior and byte compatibility, without claiming equal throughput, physical memory footprint or coverage of every live game file. See [PARITY.md](PARITY.md) for the source inventory.
+Synthetic goldens contain no game bytes. They were first generated from the pinned pure C# parsers and authored fixtures; the checked-in goldens in `src/test/resources/golden` are verified by the Java unit tests (gzip transport is decompressed; VMG1/VMIM remain byte-exact). Java budgets account for the reference logical payload; boxed collections have higher physical overhead than C# compact arrays. These fixtures establish supported-format behavior and exact bytes, without claiming equal throughput, physical memory footprint or coverage of every live game file. See [PARITY.md](PARITY.md) for the source inventory.

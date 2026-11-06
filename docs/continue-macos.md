@@ -1,27 +1,24 @@
 # Continue development on macOS
 
 Use this guide for native validation of #24, #25 and #26. GitHub Actions already
-runs unit/integration checks on macOS; local runs add native crash, interoperability,
+runs unit/integration checks on macOS; local runs add native crash,
 read-only-media and debugging evidence. The baseline before these guides is main
 commit `724a957`. Always use the latest main and read `HANDOFF.md` first.
 
 ## Open the project
 
-For a fresh workspace, clone into sibling directories:
+For a fresh workspace:
 
 ```sh
 mkdir -p ~/Development
 cd ~/Development
 git clone https://github.com/aircan80/vimi.git
-git clone https://github.com/aircan80/vibeminer.git
-cd vibeminer
-git checkout --detach 4fd92d2a36add50c9b82e1c92bf72706e8d0df2b
-cd ../vimi
+cd vimi
 ```
 
-The reference commit matches CI. If these repositories already exist, keep local
-changes safe: update a clean `vimi` main with `git pull --ff-only`, and have the
-agent inspect the sibling reference before changing its checkout.
+If the repository already exists, keep local changes safe: update a clean `vimi`
+main with `git pull --ff-only`. No .NET SDK or C# reference checkout is needed:
+C# compatibility is not a goal (owner decision, 2026-11-05).
 
 ## Install the toolchain
 
@@ -79,20 +76,6 @@ python3 --version
 ./gradlew :rendering-bgfx:check -Ppython="$(command -v python3)"
 ```
 
-From `vimi`, install the reference's pinned SDK using Microsoft's
-[official .NET installation script](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-install-script):
-
-```sh
-curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/vimi-dotnet-install.sh
-bash /tmp/vimi-dotnet-install.sh --version 10.0.402 \
-  --install-dir "$PWD/../vibeminer/.local/toolchains/dotnet"
-cd ../vibeminer
-.local/toolchains/dotnet/dotnet build \
-  src/backend/VibeMiner.Objects/VibeMiner.Objects.csproj \
-  --configuration Release -p:RestoreLockedMode=true -p:NuGetAudit=false
-cd ../vimi
-```
-
 ## Run native checks
 
 First run focused cases, then the full component checks. The first build downloads
@@ -104,10 +87,8 @@ Gradle and dependencies; do not add `--offline` until they are cached.
   --tests '*ReadOnlyMediaTest' --tests '*SqliteLibraryTest' \
   "-PsqliteLibrary=$(brew --prefix sqlite)/lib/libsqlite3.dylib"
 
-./gradlew :object-store:check :object-store:crashTest \
-  :object-store:interopTest :object-store:assemble \
-  "-PsqliteLibrary=$(brew --prefix sqlite)/lib/libsqlite3.dylib" \
-  "-Pdotnet=$PWD/../vibeminer/.local/toolchains/dotnet/dotnet"
+./gradlew :object-store:check :object-store:crashTest :object-store:assemble \
+  "-PsqliteLibrary=$(brew --prefix sqlite)/lib/libsqlite3.dylib"
 ```
 
 Record actual test counts and skips. Use an unprivileged account for permission

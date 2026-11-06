@@ -11,21 +11,18 @@ multi-machine workflow and are kept for reference.
 
 ## Open the project
 
-Install Git for Windows if needed. For a fresh workspace, clone into sibling folders:
+Install Git for Windows if needed. For a fresh workspace:
 
 ```powershell
 New-Item -ItemType Directory -Force "$env:USERPROFILE\Development" | Out-Null
 Set-Location "$env:USERPROFILE\Development"
 git clone https://github.com/aircan80/vimi.git
-git clone https://github.com/aircan80/vibeminer.git
-Set-Location vibeminer
-git checkout --detach 4fd92d2a36add50c9b82e1c92bf72706e8d0df2b
-Set-Location ..\vimi
+Set-Location vimi
 ```
 
-The reference commit matches CI. For existing checkouts, update a clean `vimi` main
-with `git pull --ff-only`; preserve local changes and inspect the reference before
-changing its checkout.
+For an existing checkout, update a clean `vimi` main with `git pull --ff-only`;
+preserve local changes. No .NET SDK or C# reference checkout is needed: C#
+compatibility is not a goal (owner decision, 2026-11-05).
 
 ## Install the toolchain
 
@@ -57,24 +54,7 @@ Extract `sqlite3.dll` into `.local\sqlite`. Record the downloaded archive/versio
 and its published checksum when collecting validation evidence. Do not commit the
 DLL or archive. The CI downloader supports x64 only; ARM64 needs its matching DLL.
 
-Install the pinned .NET SDK using Microsoft's
-[official installation script](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-install-script):
-
-```powershell
-$installScript = Join-Path $env:TEMP 'vimi-dotnet-install.ps1'
-Invoke-WebRequest https://dot.net/v1/dotnet-install.ps1 -OutFile $installScript
-$dotnetDirectory = [IO.Path]::GetFullPath((Join-Path $PWD '..\vibeminer\.local\toolchains\dotnet'))
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installScript `
-  -Version 10.0.402 -InstallDir $dotnetDirectory
-$dotnetExecutable = Join-Path $dotnetDirectory 'dotnet.exe'
-Set-Location ..\vibeminer
-& $dotnetExecutable build src\backend\VibeMiner.Objects\VibeMiner.Objects.csproj `
-  --configuration Release -p:RestoreLockedMode=true -p:NuGetAudit=false
-Set-Location ..\vimi
-```
-
-Keep Java, SQLite and .NET architectures aligned. Inspect installer failures before
-continuing. The execution-policy option above applies only to the installer process.
+Keep Java and SQLite architectures aligned.
 
 ## Run native checks
 
@@ -82,7 +62,6 @@ From `vimi`, resolve explicit paths and run focused cases, then full checks:
 
 ```powershell
 $sqliteLibrary = (Resolve-Path .local\sqlite\sqlite3.dll).Path
-$dotnetExecutable = (Resolve-Path ..\vibeminer\.local\toolchains\dotnet\dotnet.exe).Path
 
 .\gradlew.bat :object-store:integrationTest `
   --tests '*WriterLockTest' --tests '*PackReaderCacheTest' `
@@ -90,14 +69,8 @@ $dotnetExecutable = (Resolve-Path ..\vibeminer\.local\toolchains\dotnet\dotnet.e
   "-PsqliteLibrary=$sqliteLibrary"
 
 .\gradlew.bat :object-store:check :object-store:crashTest `
-  :object-store:interopTest :object-store:assemble `
-  "-PsqliteLibrary=$sqliteLibrary" "-Pdotnet=$dotnetExecutable"
+  :object-store:assemble "-PsqliteLibrary=$sqliteLibrary"
 ```
-
-C# compatibility is not required; the interoperability suite is optional evidence.
-Its C# harness finds the reference at `..\vibeminer` relative to the `vimi`
-checkout. A worktree in another folder needs a sibling directory junction to it
-(`New-Item -ItemType Junction`); otherwise `buildCsharpInterop` fails with CS0246.
 
 The first build downloads dependencies. Record counts and skips. Only the two
 Unix lock-file mode cases in `WriterLockTest` should skip on Windows.

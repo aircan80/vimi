@@ -194,16 +194,11 @@ redaction/deletion policy for those artifacts was established.
 
 ## C# helpers and development-only inputs
 
-The tracked C# source/projects are under module `src/interopTest/csharp`; they are
-compatibility fixture generators/exchange harnesses, not the Java desktop runtime.
-Their project references read a developer-provided C# reference checkout or
-compiled reference DLLs (`ReferenceRoot` or relative reference paths); some restore
-NuGet packages such as Microsoft.Data.Sqlite and ZstdSharp.Port. Harnesses read and
-write fixture arguments and are launched by Java interop tests using argument
-lists. They should run against disposable fixtures, not private libraries. The
-reference code/DLLs and NuGet restore are trusted executable build inputs. They
-were inspected as checked-in helpers; the external reference checkout and restored
-assemblies were not opened or executed in this review.
+At the time of this review, C# compatibility harnesses lived under module
+`src/interopTest/csharp` and read a developer-provided C# reference checkout and
+NuGet packages as trusted build inputs. #274 removed them (C# compatibility is not
+a goal, owner decision 2026-11-05), so the build no longer runs .NET, restores NuGet
+packages or reads a reference checkout.
 
 Packaging/CI also runs Python, Gradle, `jpackage`, `gh`, OS package managers and
 native shader tools. These are build/release network and executable surfaces,

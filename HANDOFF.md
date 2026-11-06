@@ -4,6 +4,11 @@ Development now happens on a single Windows machine. Live status is tracked on G
 [#253](https://github.com/aircan80/vimi/issues/253) (Windows task list) and [#186](https://github.com/aircan80/vimi/issues/186) (roadmap). The [Linux AI handoff, 2026-11-04](docs/ai-handoff-2026-11-04.md)
 and the [Windows handoff](docs/windows-dev-handoff.md) are historical, as is the release and task status below.
 
+C# compatibility is not a goal (owner decision, 2026-11-05). #274 removed the Java/C#
+interop suites, the compatibility CI job, and the .NET SDK and `../vibeminer` reference
+checkout from setup. Older sections below that mention `interopTest`, `-Pdotnet` or
+the C# reference describe that earlier workflow; those commands no longer exist.
+
 # vimi development handoff
 
 ## Alpha22 ready-feature release candidate — 2026-11-04
@@ -1530,11 +1535,11 @@ The higher-level generated-record store and network clients are separate work.
   a full Java 25 JDK, not just a runtime. JUnit 5.13.4 dependencies are locked.
 - `./gradlew :object-store:test` runs fast format and in-memory contract tests only.
 - `./gradlew :object-store:integrationTest` runs shared disk contracts and native/disk checks.
-- `./gradlew :object-store:interopTest` explicitly opts into the C# harness.
-- `./gradlew check` runs all existing components' unit and integration suites, without .NET.
+- `./gradlew :object-store:crashTest` explicitly opts into the process-kill suite.
+- `./gradlew check` runs all existing components' unit and integration suites.
 - Test fixtures publish the memory fake and shared contracts for future component tests.
 - Run tests for changed components and affected consumers; interface changes need consumer
-  checks, persistence changes need integration checks, format changes need interoperability.
+  checks, persistence changes need integration checks, format changes need crash checks.
 - `README.md` documents exact commands and paths. Existing scripts delegate to Gradle.
 
 ## Validation performed
@@ -1854,14 +1859,14 @@ The higher-level generated-record store and network clients are separate work.
   autonomously by fast-forward or squash. #19 is developing independently in the
   maintenance_bounds agent/worktree and will rebase onto this work before integration.
 
-## Remaining parity work
+## Remaining storage work
 
 Reviewed for #26 on 2026-11-05; see
 [object-store-storage-review.md](docs/object-store-storage-review.md) for the current
 status of each item, the product issues found and the evidence. C# compatibility is
 not a goal (owner decision, 2026-11-05).
 
-This is not yet full reference parity. See README's Current limits. In particular:
+See README's Current limits. In particular:
 - Broader platform readiness remains. Bounded maintenance resources/benchmarks (#19)
   use FILE temporary tables, fixed pack-ID bitmaps and 256-row pages; see
   docs/maintenance-resources.md.

@@ -26,8 +26,8 @@ VMLD1 encoding and replay are streaming, retaining at most a 64 KiB CSV unit per
 chain link plus the delta documents. Chains have at most 16 links. Delta documents
 are limited to 16 MiB by the observation boundary; parsed Java operation objects
 add memory overhead to those bytes. Published names always pass the target hash
-and size checks. The index metadata and delta wire format exchange in both
-directions with the pinned C# implementation.
+and size checks. The index metadata and delta wire format originated in the
+pinned C# implementation.
 
 Checks are due weekly; failed attempts back off 15 minutes. Unreadable history
 loads retry after one minute, and a switch change or explicit update retries sooner.

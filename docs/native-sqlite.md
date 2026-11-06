@@ -63,7 +63,7 @@ change and expects the actionable failure. Both skip when `-PsqliteLibrary` is
 missing or names a file other than `sqlite3.dll`, or when the default DLL search
 path already provides `sqlite3.dll`. The override case also requires the Gradle
 property. These probes do not replace clean-machine/native testing under #24.
-Run the broader disk, crash and interoperability suites before accepting a new native
+Run the broader disk and crash suites before accepting a new native
 library build. Read-only media evidence is tracked separately in #25.
 
 ## Third-party provenance

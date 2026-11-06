@@ -79,7 +79,7 @@ Run the changed component's fast tests by default:
 ```
 
 This suite checks the binary format and the in-memory reader/writer/history
-contracts without SQLite, disk stores, .NET, or the sibling checkout. Gradle skips
+contracts without SQLite or disk stores. Gradle skips
 unchanged compile and test tasks and reuses cached build configuration. Build and
 configuration caches are enabled by default; use `--no-configuration-cache` to
 diagnose future incompatible plugins or tasks. Use `--rerun-tasks` to deliberately run them again.
@@ -92,23 +92,23 @@ Choose additional checks based on the change:
 | Object-store logic | `:object-store:test` |
 | Persistence, locking, staging, recovery or maintenance | Also `:object-store:integrationTest` |
 | Public interfaces or contracts | Also tests for components that consume those interfaces |
-| Disk format or cross-language behavior | Also `:object-store:interopTest` |
+| Disk format or durability | Also `:object-store:crashTest` |
 | Documentation only | No tests unless a documented executable example changes |
 
 The disk suite runs the shared contracts against the actual store, plus temporary
 store tests for reads/ranges, history, cancellation, concurrency, corruption,
-staging, recovery, rebuild and compaction. Functional-parity coverage includes
+staging, recovery, rebuild and compaction. Coverage also includes
 generated-store isolation, chunked BLTE resume, strict history UTF-8, index
 validation, the 64 MiB generated limit, and encoded staging above 64 MiB. Tests never use profile/user data.
 
 ```sh
 ./gradlew :object-store:integrationTest
 ./gradlew check                 # all existing components' unit + integration tests
-./gradlew check :object-store:crashTest :object-store:interopTest  # all current suites
+./gradlew check :object-store:crashTest  # all current suites
 ```
 
-`test`, `check` and normal builds never start .NET or crash-test child processes.
-Crash and interoperability suites are opt in.
+`test`, `check` and normal builds never start crash-test child processes.
+The crash suite is opt in.
 Gradle does not automatically select downstream tests from changed interfaces;
 that impact selection is part of the development workflow until a CI policy is added.
 
@@ -133,25 +133,18 @@ Instrumentation is package-private and instance-scoped, with no public option or
 environment/property switch. The executable worker and parent harness live only
 in test fixtures. Production writes retain their normal unsplit payload-write path.
 
-The interoperability suite additionally kills Java writers and recovers them in
-C#, and kills C# writers and recovers them in Java. The C# harness uses the
-reference assembly's existing friend-test access under the assembly name
-`VibeMiner.Objects.Testing`; no reference source is changed.
-
 The crash suite also terminates temporary-index rebuilds during creation, replay,
 checkpoint and atomic replacement, and live scans before/after their commit. Disk
 integration tests check cancellation/exception rollback, old-versus-new reader
 visibility, repeatable scans and malformed/foreign/newer pack preflight. The old
-main index is retained until the replacement is installed atomically. C# recovery
-is checked after each Java rebuild termination point.
+main index is retained until the replacement is installed atomically.
 
 Compaction tests cover target listing/copy, fsync, the uncommitted/durable switch,
 source deletion and final row cleanup. They check tombstone preservation, corrupt
 and newer source handling, cancellation on both sides of the switch, and whole/range
 read races before and after source-file acquisition. Copied blocks are checked in
 one pass, corrupt compaction candidates are skipped for the session, and a reader
-whose pack disappeared before open retries once against the moved row. Java and
-C# recover each other's interrupted compactions.
+whose pack disappeared before open retries once against the moved row.
 
 Disk integration tests also inject write, sync, truncate, unlink, atomic-replace,
 SQLite commit/rollback and close failures. They exercise real SQLite-full behavior
@@ -164,8 +157,7 @@ with an unknown transaction outcome preserve pack/compaction files and stop writ
 until reopen. Failed rollback/reload leaves the clean-close marker unset; close
 still drains accepted work and releases ownership independently of the opener pool.
 When a write fails with an uncertain outcome, reopening may retain its valid entry,
-so callers should retry by key. Cross-language checks cover C# recovery of these
-failed Java writes.
+so callers should retry by key.
 
 These tests model injected I/O failures and process termination, not a physical
 power cut.
@@ -179,28 +171,7 @@ power cut.
 The component's JAR, source JAR and reusable test-fixtures JAR are written under
 `object-store/build/libs/`. There is no application entry point yet. The Bash
 scripts in `scripts/` delegate to these Gradle tasks; `scripts/check.sh` runs only
-fast tests, and `scripts/interop.sh` runs only interoperability checks.
-
-## Java/C# compatibility checks
-
-First build the original object-store project in a sibling `../vibeminer` checkout,
-producing `src/backend/VibeMiner.Objects/bin/Release/net10.0/VibeMiner.Objects.dll`.
-The C# harness references that assembly without modifying the sibling checkout.
-It requires the .NET 10 SDK and packages pinned in its `packages.lock.json`.
-
-```sh
-./gradlew :object-store:interopTest
-# Override the .NET executable and optionally use a local NuGet package source:
-./gradlew :object-store:interopTest -Pdotnet=/absolute/path/to/dotnet
-./gradlew :object-store:interopTest -PnugetSource=/absolute/path/to/nuget/packages
-```
-
-The default .NET executable is `../vibeminer/.local/toolchains/dotnet/dotnet`.
-On Windows set `-Pdotnet` to the installed `dotnet.exe` path.
-The harness checks bidirectional data/history and generated-store exchange,
-rebuilds, writer exclusion, chunked staging resume in both directions, and
-whole/incremental verification refusal vectors. C# build output stays in the ignored `bin/` and `obj/` directories
-next to its project. The CLI home stays in ignored `.local/dotnet/`.
+fast tests.
 
 ## Overview measurements
 
@@ -253,9 +224,7 @@ consumed with `testImplementation testFixtures(project(':object-store'))`.
 - `object-store/src/testFixtures/java`: reusable memory fake, assertions and contracts.
 - `object-store/src/integrationTest/java`: disk integration tests.
 - `object-store/src/crashTest/java`: opt-in child-process termination tests.
-- `object-store/src/interopTest/java`: cross-language compatibility and recovery tests.
-- `object-store/src/interopTest/csharp`: original implementation's C# test harness.
-- `docs/object-store-v1.md`: reference copy of the authoritative disk specification.
+- `docs/object-store-v1.md`: the store's disk format specification.
 - `scripts/`: convenience wrappers around component Gradle tasks.
 
 ## Library use
@@ -319,7 +288,7 @@ The [`generated-store`](generated-store/README.md) module reuses the pack engine
 an independent `generated-v1/` store, exposing a separate interface for derived
 bytes. It also ports C# VMRF record files: compressed segments, ordered records,
 paging, ID lookup and sequential reads. It includes a memory fake, shared memory/disk
-contracts and opt-in bidirectional C# compatibility tests. Root `check`/`assemble`
+contracts. Root `check`/`assemble`
 include both modules; `scripts/check.sh` runs both fast suites.
 
 ```sh
@@ -327,8 +296,7 @@ include both modules; `scripts/check.sh` runs both fast suites.
 ./gradlew :generated-store:check :generated-store:assemble
 ```
 
-See the module README for usage, bounds, compression provenance and the reference
-build needed for `:generated-store:interopTest`.
+See the module README for usage, bounds and compression provenance.
 
 ## Layer 1 networking
 
@@ -362,15 +330,14 @@ layer 3 code uses layer 2 contracts; lower-layer values flow through that bounda
 
 Their fakes/shared contracts are published as test fixtures. A real pipeline test
 covers persisted observations, catalog projection, opening/resolution, commit
-visibility and repeated offline reopen/rebuild without network requests. The
-optional `:builds:interopTest` exchanges catalog caches with the pinned C# Builds
-reference; see the module README for its Release-build prerequisite.
+visibility and repeated offline reopen/rebuild without network requests.
 
 Layers 1–6 are implemented within the documented supported-format bounds. Layer 7 application wiring and JavaFX integration follow. Native Windows machine certification stays deferred.
 
 ## Current limits
 
-This is a functioning initial port, not full performance/behavior parity. Writes
+This is a functioning initial port; compatibility with the C# implementation is
+not a goal (owner decision, 2026-11-05). Writes
 share group commits: 128 entries, 16 MiB of entry bytes, 250 ms checked after each
 request, queue idle, or `commitNow` closes the group. Pack rolls, deletes, staging
 and maintenance establish commit boundaries. The pack is synced before the index
@@ -399,16 +366,13 @@ The memory fake supports CDN/generated reader/writer/history and resumable stagi
 contracts without native or file dependencies.
 
 Native integration passes in hosted CI on Linux, Windows and macOS; unit tests run
-on all three platforms. Linux ARM64/x64 and cross-language writer locks have been
-exercised. Linux permission tests cover clean read-only media (including absent/empty WAL),
+on all three platforms. Linux ARM64/x64 writer locks have been exercised. Linux permission tests cover clean read-only media (including absent/empty WAL),
 rejection of unclean immutable indexes and inaccessible WAL commits, and live secondary
 reader visibility. POSIX permission cases skip when the filesystem lacks POSIX permissions
-or the process can bypass them. Native macOS ARM64 validation passed all 361 unit,
-integration, crash and Java/C# interoperability cases with zero skips, including
-all read-only permission checks. Native Windows validation is deferred by the
-maintainer and does not block further component development; hosted Windows checks
-continue. Clean-machine SQLite startup and final release-readiness review remain
-open. Recovery tests simulate durable unindexed tails and torn bytes;
+or the process can bypass them; on Windows the read-only cases use native ACLs.
+Native macOS ARM64 and Windows x64 runs passed the unit, integration and crash
+suites, including all read-only permission checks. Clean-machine SQLite startup
+remains open; see the [storage review](docs/object-store-storage-review.md). Recovery tests simulate durable unindexed tails and torn bytes;
 append, rebuild and compaction process-kill boundaries and deterministic I/O
 failures are tested. Real power-cut testing has not been performed. The generated-store wrapper and compressed record files are implemented in
 [`generated-store/`](generated-store/README.md). Layer 1 network primitives are
@@ -426,32 +390,25 @@ index; see [names, staging and portable deltas](files/NAMES.md).
 ```sh
 ./gradlew :files:test
 ./gradlew :files:check :files:assemble -PsqliteLibrary=/absolute/path/to/sqlite-library
-./gradlew :files:interopTest -Pdotnet=/absolute/path/to/dotnet -PsqliteLibrary=/absolute/path/to/sqlite-library
 ```
-
-The opt-in interop suite needs the pinned C# `VibeMiner.Files` project built in
-Release and the reference checkout as a sibling (or `-PreferenceRoot=/path/to/vibeminer`).
-It exchanges VMLD deltas and names record-file indexes in both directions.
 
 ## Image and model formats (layer 5)
 
 [`formats-assets/`](formats-assets/README.md) provides bounded BLP2 RGBA decoding,
 Files-backed image inspection and shared/scoped generated caches, native M2/SKIN
 parsing, explicit dependency resolution, static geometry/material/appearance proofs,
-and source-bound VMG1 artifacts. See the [pinned source inventory](formats-assets/PARITY.md)
+and source-bound VMG1 artifacts. See the [source inventory](formats-assets/PARITY.md)
 for supported profiles and resource qualifications. Table formats live in their
 separate `formats-tables/` module.
 
 ```sh
 ./gradlew :formats-assets:check :formats-assets:assemble -PsqliteLibrary=/absolute/path/to/sqlite-library
-./gradlew :formats-assets:interopTest -PreferenceRoot=/path/to/vibeminer -Pdotnet=/absolute/path/to/dotnet
 ```
 
 A disk pipeline validates real Files image decoding, generated caching and offline
-reopen. Shared real/fake Files contracts also cover model/skin dependency resolution. The opt-in C# harness regenerates all
-checked-in asset goldens using original sources from the pinned reference, including
-its two model fixture sources; it does not build the full reference Formats project.
-Root lifecycle tasks and hosted unit/integration/compatibility checks include assets.
+reopen. Shared real/fake Files contracts also cover model/skin dependency resolution.
+Checked-in asset goldens are verified by the Java unit tests.
+Root lifecycle tasks and hosted unit/integration checks include assets.
 
 ## Table formats (layer 5)
 
@@ -462,13 +419,12 @@ Inputs come through Files; fetched definitions come through layer 2 observations
 
 ```sh
 ./gradlew :formats-tables:check :formats-tables:assemble -PsqliteLibrary=/absolute/path/to/sqlite-library
-./gradlew :formats-tables:interopTest -Pdotnet=/absolute/path/to/dotnet -PsqliteLibrary=/absolute/path/to/sqlite-library
 ```
 
-C# exchange needs the pinned reference Formats project built in Release. The native
+The native
 pipeline reopens stores, removes the encoded DB2 source, and verifies that schema,
 rows, copies and identity still come from the durable generated table. Unsupported
-formats remain explicit, matching the reference. Hands-on Windows certification
+formats remain explicit. Hands-on Windows certification
 and large real-data throughput remain deferred.
 
 
@@ -481,7 +437,7 @@ build/locale handles over layer 5. Each publishes an independent in-memory fake
 and shared consumer contracts. [`concepts-core/`](concepts-core/README.md) shares
 bounded reverse relations, literal name matching and canonical bound cursors.
 
-The modules cover the pinned C# Concepts production scope and complete verified
+The modules cover the original C# Concepts production scope and complete verified
 backend gaps: armor material joins, creature dependency visibility and read
 coalescing, effect definition-match provenance, source-change retries and handle
 cancellation/draining. Unknown appearance choices and unsupported rendering
@@ -490,12 +446,10 @@ evidence; the future application supplies JavaFX controls and rendering.
 
 ```sh
 ./gradlew check assemble -PsqliteLibrary=/absolute/path/to/sqlite-library
-./gradlew :concepts-core:interopTest :concepts-items:interopTest :concepts-creatures:interopTest :concepts-effects:interopTest -Pdotnet=/absolute/path/to/dotnet -PreferenceRoot=/absolute/path/to/vibeminer
 ```
 
-The opt-in compatibility checks regenerate synthetic goldens from the pinned
-original C# sources. See each module README for reference build prerequisites,
-admission and relation budgets, supported profiles and remaining application work.
+Checked-in synthetic goldens are verified by the Java unit tests. See each module
+README for admission and relation budgets, supported profiles and remaining application work.
 
 
 ## JavaFX application: Builds screen

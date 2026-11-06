@@ -30,8 +30,8 @@ objects/results and payload buffers are outside maintenance's internal bounds.
 The regression suite exercises 300-pack replay with a two-channel cache,
 1,025-object compaction across multiple move pages, 270-pack rebuild/validation,
 diagnostic truncation, temporary-table failures and consistent read snapshots
-while a writer rolls packs. Existing crash and interoperability tests continue
-to cover durable switch ordering and compatibility.
+while a writer rolls packs. Existing crash tests continue to cover durable
+switch ordering.
 
 ## Opt-in reproducible benchmark
 
