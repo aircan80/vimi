@@ -686,7 +686,8 @@ public final class WorldNavigationUiTest {
             // Twice, so the map panel and the hidden state end where they started.
             require(view.command(action) && view.command(action),"WorldView.command routes "+action);
         }
-        require(commands>=3,"The command actions are walked: "+commands);
+        // MAP_PANEL, HIDE_HUD, DEV_OVERLAY and SCREENSHOT (no data folder here, so it only toasts).
+        require(commands==4,"The command actions are walked: "+commands);
         view.devOverlay().show(null);
     }
 

@@ -130,10 +130,12 @@ public final class WorldExplorerInputTest {
             }
         }
         var commands = java.util.EnumSet.of(WorldControls.Action.MAP_PANEL,
-                WorldControls.Action.HIDE_HUD, WorldControls.Action.DEV_OVERLAY);
+                WorldControls.Action.HIDE_HUD, WorldControls.Action.DEV_OVERLAY,
+                WorldControls.Action.SCREENSHOT);
         for (var action : WorldControls.Action.values())
             require(action.command == commands.contains(action),
-                    "Exactly the map panel, hide HUD and developer overlay keys are commands: " + action);
+                    "Exactly the map panel, hide HUD, developer overlay and screenshot keys are commands: "
+                            + action);
         var host = new Host();
         var input = exact(host);
         input.controls(WorldControls.DEFAULTS.bind(KeyCode.G, WorldControls.Action.MAP_PANEL));
@@ -238,6 +240,16 @@ public final class WorldExplorerInputTest {
         var older = WorldControls.decode("v1;keys=W:FORWARD;actions=FORWARD,BACK,WALK");
         require(older.keys().get(KeyCode.F3) == WorldControls.Action.DEV_OVERLAY,
                 "Stored controls from before the overlay gain its default key: " + older.keys());
+        for (var layout : WorldControls.Layout.values())
+            require(layout.keys().get(KeyCode.F12) == WorldControls.Action.SCREENSHOT,
+                    layout + " binds F12 to the screenshot");
+        var shots = new Host();
+        var shotInput = exact(shots);
+        shotInput.keyPressed(KeyCode.F12);
+        shotInput.keyPressed(KeyCode.F12);
+        require(shots.commands.equals(List.of(WorldControls.Action.SCREENSHOT))
+                        && shotInput.axes().equals(ExplorerMotion.Input.NONE),
+                "F12 commands one screenshot per press and moves nothing: " + shots.commands);
         require(WorldControls.DEFAULTS.help().contains("F3 developer overlay"),
                 "Help names the overlay key: " + WorldControls.DEFAULTS.help());
     }
