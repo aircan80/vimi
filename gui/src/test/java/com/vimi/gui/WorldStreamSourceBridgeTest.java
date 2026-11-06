@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit;
 /** Uses the actual native Map preparation and actual checked WDT/ADT/BLP source factory. */
 public final class WorldStreamSourceBridgeTest {
     private WorldStreamSourceBridgeTest() {}
-    private static final WorldFormats.Tile TILE =
+    static final WorldFormats.Tile TILE =
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
     public static void main(String[] args) throws Exception {
@@ -552,7 +552,7 @@ public final class WorldStreamSourceBridgeTest {
     }
 
     @SuppressWarnings("try")
-    private static final class Fixture implements AutoCloseable {
+    static final class Fixture implements AutoCloseable {
         final AuthoredTerrainSource.Files files;
         final TerrainAtlasPool pool = new TerrainAtlasPool();
         final AuthoredNativeMap tables;

@@ -50,6 +50,10 @@ public final class WorldStreamNativeProof {
     }
 
     private static long camera = 1, sequence;
+
+    /** A splat trailer the next textured {@link #prepare} appends (splat upload proof). */
+    static volatile WorldStreamTileFile.Splat splatForNextPrepare;
+
     private static int framesDuringUploads;
 
     /**
@@ -186,6 +190,18 @@ public final class WorldStreamNativeProof {
             atlas = atlas.asReadOnlyBuffer();
         }
         var receipt = WorldStreamTileFile.write(directory, header, tile, atlas, () -> false);
+        var splat = splatForNextPrepare;
+        splatForNextPrepare = null;
+        if (splat != null && textured) {
+            // The splat trailer comes before any water trailer.
+            receipt =
+                    WorldStreamTileFile.appendSplat(
+                            directory.resolve("tile-" + tx + ".wst"),
+                            receipt,
+                            header,
+                            splat,
+                            () -> false);
+        }
         if (water != null) {
             receipt =
                     WorldStreamTileFile.appendWater(
@@ -448,8 +464,8 @@ public final class WorldStreamNativeProof {
                                     && backing > stats.contextBuffers(),
                             "Fixed native buffer counts " + stats);
                     require(
-                            stats.textures() == stats.contextTextures() + 15,
-                            "Ten atlases plus five fixed target/readbacks");
+                            stats.textures() == stats.contextTextures() + 16,
+                            "Ten atlases, five fixed target/readbacks and the splat layer stand-in");
                     require(
                             stats.upload().references() == 0
                                     && stats.upload().liveUploadBytes() == 0,

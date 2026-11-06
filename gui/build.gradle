@@ -661,6 +661,15 @@ tasks.register('worldStreamSourceBridgeTest', JavaExec) {
 }
 check.dependsOn worldStreamSourceBridgeTest
 
+// The same authored source with shader-side splatting inputs on (#174 step 2b-1).
+tasks.register('worldStreamSplatBridgeTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldStreamSplatBridgeTest'
+    systemProperty 'vimi.world.splat', 'true'
+}
+check.dependsOn worldStreamSplatBridgeTest
+
 // Detached JavaFX bitmap publication; no window or GPU required.
 tasks.register('worldStreamImagePresentationTest', JavaExec) {
     dependsOn testClasses

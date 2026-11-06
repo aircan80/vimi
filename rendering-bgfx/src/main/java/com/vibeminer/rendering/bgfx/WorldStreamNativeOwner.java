@@ -289,6 +289,28 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.finishLate(upload, live);
     }
 
+    /** Proof observation of the renderer's splat state. */
+    boolean splatted(int slot) {
+        requireOpen();
+        return renderer.splatted(slot);
+    }
+
+    /** Proof observation: RGBA8 bytes of every slot's splat mask chain on the GPU. */
+    long splatMaskBytes() {
+        requireOpen();
+        return renderer.splatMaskBytes();
+    }
+
+    boolean splatBlocks() {
+        requireOpen();
+        return renderer.splatBlocks();
+    }
+
+    boolean splatArrayCreated() {
+        requireOpen();
+        return renderer.splatArrayCreated();
+    }
+
     void commit(long expected, long next, List<WorldStreamState.Lease> table) {
         requireOpen();
         renderer.commit(expected, next, table);

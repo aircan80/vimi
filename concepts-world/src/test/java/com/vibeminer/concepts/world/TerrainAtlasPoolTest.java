@@ -86,7 +86,9 @@ class TerrainAtlasPoolTest {
             }
         }
         assertEquals(18, pool.stats().entries());
-        assertEquals(18 * TerrainAtlasPool.ENTRY_BYTES, pool.stats().chargedBytes());
+        // Each published entry is charged its own atlas, not the HIGH-splat maximum.
+        assertEquals(18 * atlas().retainedBytes(), pool.stats().chargedBytes());
+        assertTrue(atlas().retainedBytes() < TerrainAtlasPool.ENTRY_BYTES);
         assertTrue(pool.reserve().isEmpty());
         assertEquals(18, pool.stats().cachedEntries());
         for (int i = 0; i < 18; i++) {
@@ -257,6 +259,45 @@ class TerrainAtlasPoolTest {
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new AssertionError(interrupted);
+        }
+    }
+
+    @Test
+    @SuppressWarnings("try")
+    void reservationsChargeTheCurrentSplatSettingsBound() throws Exception {
+        boolean splat = WorldTerrainTextureSource.splat;
+        int mask = WorldTerrainTextureSource.splatMask;
+        var pool = new TerrainAtlasPool();
+        try {
+            long none = com.vibeminer.rendering.world.TerrainTileAtlas.maxRetainedBytes(0);
+            long standard =
+                    com.vibeminer.rendering.world.TerrainTileAtlas.maxRetainedBytes(
+                            com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK);
+            long high =
+                    com.vibeminer.rendering.world.TerrainTileAtlas.maxRetainedBytes(
+                            com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK);
+            assertEquals(TerrainAtlasPool.ENTRY_BYTES, high);
+            // 4 MiB for the HIGH mask map, 1 MiB for STANDARD.
+            assertEquals(3L << 20, high - standard);
+            WorldTerrainTextureSource.splat = false;
+            try (var r = pool.reserve().orElseThrow()) {
+                assertEquals(none, pool.stats().chargedBytes());
+            }
+            WorldTerrainTextureSource.splat = true;
+            WorldTerrainTextureSource.splatMask =
+                    com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK;
+            try (var r = pool.reserve().orElseThrow()) {
+                assertEquals(standard, pool.stats().chargedBytes());
+            }
+            WorldTerrainTextureSource.splatMask =
+                    com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK;
+            try (var r = pool.reserve().orElseThrow()) {
+                assertEquals(high, pool.stats().chargedBytes());
+            }
+        } finally {
+            WorldTerrainTextureSource.splat = splat;
+            WorldTerrainTextureSource.splatMask = mask;
+            pool.closeAsync().get(5, java.util.concurrent.TimeUnit.SECONDS);
         }
     }
 }

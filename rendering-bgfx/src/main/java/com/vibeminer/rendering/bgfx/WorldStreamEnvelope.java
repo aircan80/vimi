@@ -16,7 +16,7 @@ import java.util.Objects;
 final class WorldStreamEnvelope {
     static final int BYTES = 256;
     // Terrain 2,284,544B plus the optional 622,720B static water trailer.
-    static final int MAX_PACKET_BYTES = 2_907_264;
+    static final int MAX_PACKET_BYTES = 2_907_264 + WorldStreamTileFile.MAX_SPLAT_BYTES;
     private static final byte[] SESSION_MAGIC = "VIMIWSS2".getBytes(StandardCharsets.US_ASCII);
     private static final byte[] COMMIT_MAGIC = "VIMIWSC2".getBytes(StandardCharsets.US_ASCII);
 
