@@ -872,12 +872,16 @@ final class WorldStreamSourceController {
             boolean needsUsefulFrame=missingCenter || skySuppressed;
             var subset=new ArrayList<>(current.stream().filter(
                     entry->containsResident(wanted,entry.resident())).toList());
-            boolean releases=current.stream().anyMatch(entry->!subset.contains(entry) && !presented.contains(entry));
+            // A tile the borrowed frame shows is kept like a presented one (#366): dropping it frees
+            // nothing until the borrow ends, so it is never the release a shrink commit counts on.
+            boolean releases=current.stream().anyMatch(entry->!subset.contains(entry) && !presented.contains(entry)
+                    && !borrowedTable.contains(entry));
             if(needsUsefulFrame && !releases) {
                 Entry victim=null;
                 int farthest=-1;
                 for(var entry:current) {
-                    if(presented.contains(entry) || !wanted.isEmpty() && same(wanted.getFirst(),entry.resident())) continue;
+                    if(presented.contains(entry) || borrowedTable.contains(entry)
+                            || !wanted.isEmpty() && same(wanted.getFirst(),entry.resident())) continue;
                     int rank=wanted.size();
                     for(int i=0;i<wanted.size();i++) if(same(wanted.get(i),entry.resident())) { rank=i; break; }
                     if(rank>farthest) { farthest=rank; victim=entry; }

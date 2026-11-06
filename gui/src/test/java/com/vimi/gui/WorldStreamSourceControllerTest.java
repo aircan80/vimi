@@ -63,6 +63,7 @@ public final class WorldStreamSourceControllerTest {
         budgetRefusedObjectsRetryAfterAReleaseOnly();
         lateObjectFailuresStayIsolatedFromTerrain();
         lateObjectsCompletingAfterRetirementAreIgnored();
+        borrowedTilesAreNeverDroppedToMakeRoom();
         tilesKeepStreamingWhileAFrameIsBorrowed();
         aBorrowedFrameKeepsTheSourcesOfTheTableItShows();
         fiveByFiveNeighborhoodHoldsTwentyFiveResidentsWithinTheSourceUnion();
@@ -136,6 +137,60 @@ public final class WorldStreamSourceControllerTest {
         } finally {
             fixture.close();
         }
+    }
+
+    /**
+     * #366 review: tiles a borrowed frame shows are never the make-room release. At the 5x5
+     * source bound (25 residents, 28 sources) with three never-presented tiles that a borrowed
+     * frame shows, a demand whose nearest tile is missing must not drop any of them while the
+     * frame is borrowed: retirement keeps them, so each drop would free nothing and repeat.
+     */
+    private static void borrowedTilesAreNeverDroppedToMakeRoom() throws Exception {
+        int residents = WorldStreamTransport.MAX_RESIDENTS;
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), residents + 4);
+        fixture.residents = residents;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            var t = fixture.tiles;
+            fixture.controller.neighborhood(t.subList(0, residents));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == residents);
+            // Three new tiles commit while no newer pixels are accepted: 25 presented + 3 new.
+            fixture.controller.neighborhood(t.subList(3, residents + 3));
+            fixture.until(() -> fixture.pool.stats().leaseClaims() == residents + 3
+                    && fixture.controller.snapshot().prepared() == residents);
+            fixture.camera(2);
+            var borrowed = fixture.nextFrame(); // shows the table with the three new tiles
+            int commits = fixture.commitLines().size();
+            // A new nearest tile is missing: make-room may only drop a tile nobody shows.
+            var demand = new ArrayList<WorldFormats.Tile>();
+            demand.add(t.get(residents + 3));
+            demand.addAll(t.subList(4, residents + 3));
+            fixture.controller.neighborhood(demand);
+            for (int i = 0; i < 100; i++) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            check(fixture.commitLines().size() == commits,
+                    "No resident is dropped while the frame showing it is borrowed: "
+                            + (fixture.commitLines().size() - commits) + " shrink commits");
+            fixture.controller.discard(borrowed);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == residents);
+        } catch (Throwable failure) {
+            // Keep the assertion visible: a close that times out after it is only suppressed.
+            try {
+                fixture.close();
+            } catch (Exception closing) {
+                failure.addSuppressed(closing);
+            }
+            throw failure;
+        }
+        fixture.close();
     }
 
     /** Production bound (#173): 25 residents, and moving on replaces only the leaving tiles. */
