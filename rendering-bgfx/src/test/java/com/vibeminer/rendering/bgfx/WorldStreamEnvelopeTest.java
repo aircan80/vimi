@@ -27,8 +27,8 @@ final class WorldStreamEnvelopeTest {
         assertEquals(SCOPE, HexFormat.of().formatHex(bytes, 32, 64));
         var values = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
         assertEquals(7, values.getLong(80));
-        assertEquals(800, values.getInt(88));
-        assertEquals(500, values.getInt(92));
+        assertEquals(com.vibeminer.rendering.world.WorldFrameLimits.MAX_WIDTH, values.getInt(88));
+        assertEquals(com.vibeminer.rendering.world.WorldFrameLimits.MAX_HEIGHT, values.getInt(92));
         // The default (near) session: 10 slots, 9 active.
         assertEquals(10, values.getInt(96));
         assertEquals(9, values.getInt(100));

@@ -1,6 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
-import com.vibeminer.rendering.world.ObjectTextureMips;
+import com.vibeminer.rendering.world.ObjectTextureFormats;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Objects;
@@ -83,7 +83,20 @@ final class WorldStreamPackedObjects implements AutoCloseable {
     }
 
     int imageCount() {
-        return images.length / 2;
+        return images.length / WorldStreamObjectsFile.IMAGE_INTS;
+    }
+
+    int width(int image) {
+        return images[image * WorldStreamObjectsFile.IMAGE_INTS];
+    }
+
+    int height(int image) {
+        return images[image * WorldStreamObjectsFile.IMAGE_INTS + 1];
+    }
+
+    /** The image's stored format ({@link ObjectTextureFormats}). */
+    int format(int image) {
+        return images[image * WorldStreamObjectsFile.IMAGE_INTS + 2];
     }
 
     int placementCount() {
@@ -101,7 +114,7 @@ final class WorldStreamPackedObjects implements AutoCloseable {
     int imageOffset(int image) {
         int at = 0;
         for (int i = 0; i < image; i++) {
-            at += ObjectTextureMips.chainPixels(images[i * 2], images[i * 2 + 1]) * 4;
+            at += ObjectTextureFormats.chainBytes(format(i), width(i), height(i));
         }
         return at;
     }

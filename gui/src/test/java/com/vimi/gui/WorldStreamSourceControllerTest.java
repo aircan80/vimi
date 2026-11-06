@@ -51,10 +51,18 @@ public final class WorldStreamSourceControllerTest {
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
+        bumpBetweenIssueAndRefusalStillWakesRetry(false, false);
+        bumpBetweenIssueAndRefusalStillWakesRetry(false, true);
+        bumpBetweenIssueAndRefusalStillWakesRetry(true, false);
+        bumpBetweenIssueAndRefusalStillWakesRetry(false, false, true);
+        bumpBetweenIssueAndRefusalStillWakesRetry(false, true, true);
         sameResidentCameraFrameDoesNotRetryMaterialPool();
         transportFrameSignalQueuesPresentationWithoutAnyPulse();
         steadyCameraFramesReuseAFewPixelArrays();
         everyControllerDropPathReleasesItsFrame(false);
+        commitReleasesAQueuedFrameOfTheOldReceipt();
+        refusedPendingSkyKeepsTheOldRasterBelowTwelveOwners();
+        acceptedSkyRelabelsTheRetainedViewAndTerrainClearsTheLabel();
         everyControllerDropPathReleasesItsFrame(true);
         queuedGpuOwnerLateCloseIsPartOfControllerDrain();
         closeDuringActualInitialWdtQualificationIsCleanAndWaitsSourceDrain();
@@ -555,6 +563,91 @@ public final class WorldStreamSourceControllerTest {
         }
     }
 
+
+    /**
+     * #305: a presentation or demand bump that lands after a tile reservation was issued but
+     * before its refusal is processed still wakes the retry. The clock never advances and the
+     * refusal's own unused credit is held, so only the bump inside the window can wake it.
+     */
+    private static void bumpBetweenIssueAndRefusalStillWakesRetry(
+            boolean materialPool, boolean presentation) throws Exception {
+        bumpBetweenIssueAndRefusalStillWakesRetry(materialPool, presentation, false);
+    }
+
+    /**
+     * With {@code beforeIssue}, the bump lands earlier: after the step read its demand and pixels
+     * but before it issued the reservation, so the tile was still chosen from the old ones.
+     */
+    private static void bumpBetweenIssueAndRefusalStillWakesRetry(
+            boolean materialPool, boolean presentation, boolean beforeIssue) throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        AutoCloseable held = materialPool
+                ? AuthoredTerrainPoolPressure.hold(fixture.pool)
+                : com.vibeminer.concepts.world.AuthoredGeometryPressure.hold(fixture.world);
+        Path holdCredit = fixture.directory.resolve("authored-hold-unused-credit");
+        var refused = new java.util.concurrent.atomic.AtomicReference<Object>();
+        String label = (materialPool ? "material pool" : "geometry lane")
+                + (presentation ? ", presentation bump" : ", demand bump")
+                + (beforeIssue ? " before issue" : "");
+        try {
+            Files.writeString(holdCredit, "hold");
+            var revision = WorldStreamSourceController.class.getDeclaredField(
+                    presentation ? "presentationRevision" : "demandRevision");
+            revision.setAccessible(true);
+            var lockField = WorldStreamSourceController.class.getDeclaredField("lock");
+            lockField.setAccessible(true);
+            var bumped = new java.util.concurrent.atomic.AtomicBoolean();
+            Runnable bump = () -> {
+                if (!bumped.compareAndSet(false, true)) return;
+                try {
+                    long before;
+                    synchronized (lockField.get(fixture.controller)) {
+                        before = revision.getLong(fixture.controller);
+                    }
+                    if (presentation) {
+                        // Stands in for an FX presented() acceptance: same field, same lock.
+                        synchronized (lockField.get(fixture.controller)) {
+                            revision.setLong(fixture.controller, before + 1);
+                        }
+                    } else {
+                        fixture.controller.neighborhood(fixture.tiles.subList(0, 2));
+                    }
+                    synchronized (lockField.get(fixture.controller)) {
+                        check(revision.getLong(fixture.controller) == before + 1,
+                                "The bump landed inside the refusal window: " + label);
+                    }
+                } catch (ReflectiveOperationException failure) {
+                    throw new AssertionError(failure);
+                }
+            };
+            Runnable seam = () -> {
+                if (refused.get() != null) return;
+                refused.set(Boolean.TRUE);
+                if (!beforeIssue) bump.run();
+            };
+            fixture.start(scope -> {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (fixture.controller == null && System.nanoTime() < deadline)
+                    java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                fixture.controller.tileRefusalSeam = seam;
+                if (beforeIssue) fixture.controller.tileIssueSeam = bump;
+                return fixture.gpu.start(scope);
+            });
+            fixture.until(() -> refused.get() != null);
+            check(bumped.get(), "The bump ran: " + label);
+            var pool = WorldStreamSourceController.class.getDeclaredField("blockedOnMaterialPool");
+            pool.setAccessible(true);
+            check(pool.getBoolean(fixture.controller) == materialPool, "Refusal site: " + label);
+            // The retry gate opened: the step went on to ask for a new reservation, which the
+            // still-held unused credit refuses. Without the bump it keeps waiting on capacity.
+            fixture.until(() -> fixture.controller.snapshot().detail()
+                    .equals("Waiting for GPU upload capacity"));
+        } finally {
+            Files.deleteIfExists(holdCredit);
+            held.close();
+            fixture.close();
+        }
+    }
     private static void enqueueHeldFile(WorldStreamTransport.Session session,
             java.util.concurrent.CountDownLatch entered,java.util.concurrent.CountDownLatch release) throws Exception {
         var method=session.getClass().getDeclaredMethod("enqueueFile",Runnable.class);method.setAccessible(true);
@@ -680,9 +773,20 @@ public final class WorldStreamSourceControllerTest {
             Files.write(fixture.directory.resolve("authored-sky"),new byte[0]);
             fixture.camera(2);
             fixture.until(()->fixture.controller.snapshot().detail().equals("Loading terrain in viewing direction"));
-            check(drops.stream().anyMatch(d->d.getKey().equals("sky") && released(d.getValue())),
-                    "A suppressed all-sky frame releases its pixels");
-            check(fixture.controller.takePresentation().isEmpty(),"Known all-sky pending frame cannot overwrite prior useful pixels");
+            // The pending all-sky frame is presented (no freeze) and pins no resident.
+            var sky=fixture.nextFrame();
+            try {
+                check(sky.skyOnly(),"The pending view is marked sky-only");
+                check(WorldStreamBackground.matchesBasicSky(sky.pixels(),sky.width(),sky.height(),()->false),
+                        "The presented frame is the live sky");
+                check(fixture.controller.mayPresent(sky),"A sky frame replaces the previous view while terrain loads");
+                check(fixture.controller.presented(sky),"The sky frame is accepted");
+            } finally { fixture.controller.discard(sky); }
+            var pins=WorldStreamSourceController.class.getDeclaredField("presented");pins.setAccessible(true);
+            check(((List<?>)pins.get(fixture.controller)).isEmpty(),"Sky-only pixels pin no resident");
+            check(fixture.controller.snapshot().detail().equals("Loading terrain in viewing direction"),
+                    "Status says terrain is loading in the viewing direction");
+            check(drops.stream().noneMatch(d->d.getKey().equals("sky")),"Sky frames are no longer dropped");
             var initial=fixture.controller.snapshot().seed().camera();
             fixture.controller.camera(new WorldStreamTransport.Camera(3,1,80,50,
                     new TerrainCamera(initial.x(),initial.y(),initial.z(),initial.yaw(),.3)));
@@ -1387,6 +1491,128 @@ public final class WorldStreamSourceControllerTest {
         } catch(AssertionError timeout) {
             throw new AssertionError(message+": leaseClaims="+fixture.pool.stats().leaseClaims(), timeout);
         }
+    }
+
+    private static Object receiptOf(WorldStreamSourceController.Presentation presentation) throws Exception {
+        var field=WorldStreamSourceController.Presentation.class.getDeclaredField("frame");field.setAccessible(true);
+        return ((WorldStreamTransport.Frame)field.get(presentation)).content();
+    }
+
+    private static Object field(WorldStreamSourceController controller, String name) throws Exception {
+        var field=WorldStreamSourceController.class.getDeclaredField(name);field.setAccessible(true);
+        return field.get(controller);
+    }
+
+    /** A queued, untaken frame of the old receipt is released when a commit lands. */
+    private static void commitReleasesAQueuedFrameOfTheOldReceipt() throws Exception {
+        var fixture=new Fixture(new AuthoredTerrainSource.Files(),2);
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            var drops=new ConcurrentLinkedQueue<java.util.Map.Entry<String,WorldStreamTransport.Frame>>();
+            fixture.controller.dropSeam=(path,frame)->drops.add(java.util.Map.entry(path,frame));
+            fixture.camera(2);
+            awaitQueued(fixture);
+            Object oldReceipt=field(fixture.controller,"currentReceipt");
+            // The second tile commits while the frame stays queued (pump never takes it).
+            fixture.controller.neighborhood(fixture.tiles);
+            fixture.until(() -> drops.stream().anyMatch(d->d.getKey().equals("superseded")));
+            awaitDrop(fixture,drops,"superseded");
+            var next=fixture.nextFrame();
+            try {
+                check(receiptOf(next)!=oldReceipt && receiptOf(next)==field(fixture.controller,"currentReceipt"),
+                        "The next frame carries the commit's new receipt");
+            } finally { fixture.controller.discard(next); }
+        } finally { fixture.close(); }
+    }
+
+    /** Terrain shown, then a pending sky frame that cannot be presented: old raster, no relabel. */
+    private static void refusedPendingSkyKeepsTheOldRasterBelowTwelveOwners() throws Exception {
+        var entered=new CompletableFuture<Void>();
+        var release=new CompletableFuture<Void>();
+        var fixture=new Fixture(new AuthoredTerrainSource.Files() {
+            @Override FileTypes.FileStat stat(long id,Cancellation token) {
+                if(id==1002) { entered.complete(null); release.join(); token.check(); }
+                return super.stat(id,token);
+            }
+        },2);
+        try {
+            fixture.start();
+            fixture.until(()->fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            long accepted=(long)field(fixture.controller,"acceptedSequence");
+            // The nearest wanted tile is now the held one, so no frame can be presented yet.
+            fixture.controller.neighborhood(List.of(fixture.tiles.get(1),fixture.tiles.get(0)));
+            fixture.until(entered::isDone);
+            Files.write(fixture.directory.resolve("authored-sky"),new byte[0]);
+            fixture.camera(2);
+            var sky=fixture.nextFrame();
+            try {
+                check(sky.skyOnly(),"Pending sky frame");
+                check(!fixture.controller.mayPresent(sky),"Nearest tile not current: the sky frame is refused");
+                check(!fixture.controller.presented(sky),"Not accepted");
+            } finally { fixture.controller.discard(sky); }
+            check((long)field(fixture.controller,"acceptedSequence")==accepted,"The old raster stays");
+            check(!((List<?>)field(fixture.controller,"presented")).isEmpty(),"Below twelve owners its pins stay");
+            check(!(boolean)field(fixture.controller,"historicalRaster"),"No historical raster below twelve owners");
+            check(!fixture.controller.snapshot().detail().contains("previous view"),
+                    "No 'previous view' label without a historical raster");
+        } finally { release.complete(null); fixture.close(); }
+    }
+
+    /**
+     * A retained view labelled "showing previous view" (the twelve-owner historical raster) is
+     * relabelled when live sky is accepted, and accepted terrain clears the loading label.
+     */
+    private static void acceptedSkyRelabelsTheRetainedViewAndTerrainClearsTheLabel() throws Exception {
+        var entered=new CompletableFuture<Void>();
+        var release=new CompletableFuture<Void>();
+        var fixture=new Fixture(new AuthoredTerrainSource.Files() {
+            @Override FileTypes.FileStat stat(long id,Cancellation token) {
+                if(id==1002) { entered.complete(null); release.join(); token.check(); }
+                return super.stat(id,token);
+            }
+        },2);
+        try {
+            fixture.start();
+            fixture.until(()->fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            fixture.controller.neighborhood(fixture.tiles);
+            fixture.until(entered::isDone);
+            // Stand in for the twelve-owner retirement on the worker: historical raster + label.
+            var worker=(java.util.concurrent.ExecutorService)field(fixture.controller,"worker");
+            var historical=WorldStreamSourceController.class.getDeclaredField("historicalRaster");historical.setAccessible(true);
+            var publish=WorldStreamSourceController.class.getDeclaredMethod("publish",WorldStreamSourceController.Phase.class,String.class);
+            publish.setAccessible(true);
+            worker.submit(() -> { try { historical.setBoolean(fixture.controller,true);
+                    publish.invoke(fixture.controller,WorldStreamSourceController.Phase.PREPARING,"Loading terrain in viewing direction"); }
+                    catch(ReflectiveOperationException e) { throw new AssertionError(e); } }).get(3,TimeUnit.SECONDS);
+            check(fixture.controller.snapshot().detail().equals("Loading terrain; showing previous view"),
+                    "Historical raster label");
+            Files.write(fixture.directory.resolve("authored-sky"),new byte[0]);
+            fixture.camera(2);
+            var sky=fixture.nextFrame();
+            try {
+                check(sky.skyOnly() && fixture.controller.mayPresent(sky) && fixture.controller.presented(sky),
+                        "Live sky accepted");
+                check(fixture.controller.snapshot().detail().equals("Loading terrain in viewing direction"),
+                        "Accepted sky relabels the retained view: "+fixture.controller.snapshot().detail());
+            } finally { fixture.controller.discard(sky); }
+            Files.delete(fixture.directory.resolve("authored-sky"));
+            fixture.camera(3);
+            var terrain=fixture.nextFrame();
+            try {
+                check(!terrain.skyOnly() && fixture.controller.mayPresent(terrain) && fixture.controller.presented(terrain),
+                        "Terrain accepted");
+                String detail=fixture.controller.snapshot().detail();
+                check(!detail.equals("Loading terrain in viewing direction") && !detail.contains("previous view"),
+                        "Accepted terrain clears the loading label: "+detail);
+            } finally { fixture.controller.discard(terrain); }
+        } finally { release.complete(null); fixture.close(); }
     }
 
     private static void steadyCameraFramesReuseAFewPixelArrays() throws Exception {
