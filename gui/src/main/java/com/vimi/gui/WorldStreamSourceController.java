@@ -217,6 +217,8 @@ final class WorldStreamSourceController {
     private volatile WorldStreamTransport.Camera camera;
     private volatile WorldStreamTransport.Session session;
     private List<WorldFormats.Tile> desired;
+    // Tiles one ring beyond the demand (#366): a pending tile there is kept, not canceled.
+    private List<WorldFormats.Tile> keep = List.of();
     private long demandRevision, presentationRevision, acceptedSequence;
     private Snapshot snapshot =
             new Snapshot(Phase.QUALIFYING, "Qualifying world sources", 0, 1, null, null);
@@ -253,6 +255,10 @@ final class WorldStreamSourceController {
     private List<Entry> borrowedTable = List.of();
     private WorldStreamTransport.CommitReceipt borrowedReceipt;
     private Entry staged;
+    // The staged entry's reservation, kept so an unwanted staged tile can be canceled instead of
+    // committed over a wanted resident (#366), and that cancellation while it drains.
+    private WorldStreamTransport.TileReservation stagedReservation;
+    private CompletableFuture<Void> stagedCancellation;
     private final LinkedHashMap<Integer, WorldStreamSourceBridge.RefusalMetadata> unavailable =
             new LinkedHashMap<>();
     private boolean initialBlocked;
@@ -345,7 +351,19 @@ final class WorldStreamSourceController {
     }
 
     void neighborhood(List<WorldFormats.Tile> ordered) {
+        neighborhood(ordered, List.of());
+    }
+
+    /**
+     * The demand in load order, plus the tiles one ring beyond it whose preparation, once
+     * started, is kept rather than canceled (#366).
+     */
+    void neighborhood(List<WorldFormats.Tile> ordered, List<WorldFormats.Tile> beyond) {
         Objects.requireNonNull(ordered);
+        var kept = List.copyOf(beyond);
+        synchronized (lock) {
+            keep = kept;
+        }
         if (ordered.size() > residents)
             throw new IllegalArgumentException("Neighborhood bounds");
         var copy = List.copyOf(ordered);
@@ -713,7 +731,14 @@ final class WorldStreamSourceController {
         if(creditTarget!=null && !contains(wanted,creditTarget)) creditTarget=null;
         unavailable.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
         if (pending != null) {
-            if (!contains(wanted, pending.tile) && pending.cancellation == null) {
+            List<WorldFormats.Tile> kept;
+            synchronized (lock) {
+                kept = keep;
+            }
+            // Hysteresis (#366): a tile one ring beyond the demand keeps its preparation.
+            if (!contains(wanted, pending.tile)
+                    && !contains(kept, pending.tile)
+                    && pending.cancellation == null) {
                 // Parent's explicit stop MUST precede the bridge's latest=false cancellation.
                 pending.cancellation = pending.reservation.cancel();
                 pending.useful = false;
@@ -731,6 +756,7 @@ final class WorldStreamSourceController {
                     var prepared = pending.producer.takePrepared();
                     if(creditTarget!=null && same(creditTarget,pending.tile)) creditTarget=null;
                     staged = new Entry(resident, prepared);
+                    stagedReservation = pending.reservation;
                     entries.put(resident, staged);
                     seed(prepared);
                 } catch (CompletionException failure) {
@@ -850,22 +876,42 @@ final class WorldStreamSourceController {
             commit = null;
             pollFrame();
         }
+        if (stagedCancellation != null) {
+            // An unwanted staged tile is being canceled: drop it once the child has let it go.
+            if (!stagedCancellation.isDone()) return;
+            stagedCancellation.join();
+            stagedCancellation = null;
+            entries.remove(staged.resident());
+            staged.source().close();
+            sourceRetirementRevision++;
+            staged = null;
+            stagedReservation = null;
+        }
         if (staged != null) {
             var latest = camera;
             if (latest == null) return;
             var target = new ArrayList<>(current);
             if (target.size() >= residentLimit()) {
-                int outgoing = target.size() - 1;
+                int outgoing = -1;
                 for (int i = target.size() - 1; i >= 0; i--) {
                     if (!containsResident(wanted, target.get(i).resident())) {
                         outgoing = i;
                         break;
                     }
                 }
-                target.remove(outgoing);
+                if (outgoing < 0 && !containsResident(wanted, staged.resident())) {
+                    // A tile kept by hysteresis that is no longer wanted never displaces a
+                    // wanted resident (#366): cancel it instead of committing it.
+                    stagedCancellation = stagedReservation.cancel();
+                    stagedCancellation.whenComplete((ignored, failure) -> kick());
+                    publish(Phase.PREPARING, "Releasing a tile the camera left");
+                    return;
+                }
+                target.remove(outgoing < 0 ? target.size() - 1 : outgoing);
             }
             target.add(staged);
             staged = null;
+            stagedReservation = null;
             committing = List.copyOf(target);
             commit =
                     issueCommit(

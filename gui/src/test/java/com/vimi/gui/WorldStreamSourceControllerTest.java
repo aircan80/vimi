@@ -64,6 +64,8 @@ public final class WorldStreamSourceControllerTest {
         lateObjectFailuresStayIsolatedFromTerrain();
         lateObjectsCompletingAfterRetirementAreIgnored();
         anIdleViewRunsNoStepOnTicksAndScansAreasOnlyWhenTheCameraMoves();
+        aTileOneRingBeyondKeepsItsPreparation();
+        aKeptTileNeverDisplacesAWantedResident();
         tilesKeepStreamingWhileAFrameIsBorrowed();
         aBorrowedFrameKeepsTheSourcesOfTheTableItShows();
         fiveByFiveNeighborhoodHoldsTwentyFiveResidentsWithinTheSourceUnion();
@@ -177,6 +179,101 @@ public final class WorldStreamSourceControllerTest {
                     "One area scan for the one new camera: "
                             + (fixture.controller.areaScans.get() - scans));
         } finally {
+            fixture.close();
+        }
+    }
+
+    /** Files whose root {@code held} preparation waits for {@code release}, noting cancellation. */
+    private static AuthoredTerrainSource.Files holding(long held,
+            CompletableFuture<Void> entered, CompletableFuture<Void> release,
+            CompletableFuture<Void> canceled) {
+        return new AuthoredTerrainSource.Files() {
+            @Override @SuppressWarnings("try")
+            FileTypes.FileStat stat(long id, Cancellation token) {
+                if (id == held && !entered.isDone()) {
+                    try (var registration = token.onCancel(() -> canceled.complete(null))) {
+                        entered.complete(null);
+                        release.join();
+                        token.check();
+                    }
+                }
+                return super.stat(id, token);
+            }
+        };
+    }
+
+    /** #366: a tile whose demand leaves for the next ring and comes back is never canceled. */
+    private static void aTileOneRingBeyondKeepsItsPreparation() throws Exception {
+        var entered = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var canceled = new CompletableFuture<Void>();
+        var fixture = new Fixture(holding(1002, entered, release, canceled), 4);
+        fixture.residents = 2;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+            var t = fixture.tiles;
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(1)), List.of(t.get(2)));
+            fixture.until(entered::isDone);
+            // The camera crosses a border: tile 1 is one ring beyond the new demand.
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(2)), List.of(t.get(1)));
+            for (int i = 0; i < 50; i++) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            check(!canceled.isDone(), "A tile one ring beyond keeps its preparation");
+            // And crosses back before tile 1 is ready.
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(1)), List.of(t.get(2)));
+            release.complete(null);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2);
+            check(!canceled.isDone(), "Crossing back and forth never restarted tile 1");
+            check(fixture.files.opens(1002) == fixture.files.opens(2),
+                    "Tile 1 was prepared once, as tile 0: " + fixture.files.opens(1002));
+        } finally {
+            release.complete(null);
+            fixture.close();
+        }
+    }
+
+    /**
+     * #366: a kept tile that stages after the demand left it never displaces a wanted resident.
+     * With the table full of wanted tiles it is canceled instead of committed.
+     */
+    private static void aKeptTileNeverDisplacesAWantedResident() throws Exception {
+        var entered = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var canceled = new CompletableFuture<Void>();
+        var fixture = new Fixture(holding(1004, entered, release, canceled), 4);
+        fixture.residents = 2;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            var t = fixture.tiles;
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(1)), List.of(t.get(2)));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2);
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(2)), List.of(t.get(1)));
+            fixture.until(entered::isDone); // tile 2 is being prepared
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(1)), List.of(t.get(2)));
+            int commits = fixture.commitLines().size();
+            release.complete(null);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2
+                    && fixture.pool.stats().leaseClaims() == 2);
+            check(fixture.commitLines().size() == commits,
+                    "Staged tile 2 was canceled, not committed over wanted tile 1");
+            check(fixture.files.opens(1002) == fixture.files.opens(2),
+                    "Wanted tile 1 was never evicted and reloaded: " + fixture.files.opens(1002));
+        } finally {
+            release.complete(null);
             fixture.close();
         }
     }
