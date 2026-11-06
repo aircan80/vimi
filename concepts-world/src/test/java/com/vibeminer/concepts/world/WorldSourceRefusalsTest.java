@@ -308,7 +308,7 @@ class WorldSourceRefusalsTest {
         try (var f = new Fixture()) {
             var outputs = new ArrayList<WorldTerrainStreaming.WrittenTile<AutoCloseable>>();
             try {
-                for (int i = 0; i < 12; i++) {
+                for (int i = 0; i < WorldPreparedTerrain.MAX_OUTPUTS; i++) {
                     outputs.add(f.prepare());
                 }
                 int opens = f.files.totalOpens();
@@ -330,7 +330,7 @@ class WorldSourceRefusalsTest {
             var reserved = new ArrayList<TerrainAtlasPool.Reservation>();
             var writes = new AtomicInteger();
             try {
-                for (int i = 0; i < 18; i++) {
+                for (int i = 0; i < TerrainAtlasPool.MAX_ENTRIES; i++) {
                     reserved.add(f.pool.reserve().orElseThrow());
                 }
                 var refusal =

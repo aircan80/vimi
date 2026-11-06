@@ -13,7 +13,12 @@ import java.util.Objects;
  * unavailable rather than interpolated.
  */
 public final class TerrainGround {
-    public static final int MAX_TILES = 12;
+    /**
+     * The World stream's 25 residents (a 5 x 5 neighborhood) plus staged, pending and retiring
+     * tiles; one retained tile is about 150 KB of heights.
+     */
+    public static final int MAX_TILES = 28;
+
     private static final int GRID = 145, CELLS = 64, MAX_CHUNKS = 256;
     private static final double UNIT = WorldFormats.TILE_SIZE / 256, CELL = 2 * UNIT;
     private static final float POSITION_TOLERANCE = .01f;

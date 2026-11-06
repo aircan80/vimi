@@ -75,14 +75,25 @@ import org.lwjgl.system.MemoryUtil;
 /** Fixed-resource context-owned persistent terrain. All bgfx methods run on its native owner. */
 final class BgfxWorldStreamRenderer implements AutoCloseable {
     /**
-     * Ten slots (nine active, one staged). Exterior objects add at most one validated objects file
-     * per slot: up to {@link WorldStreamObjectsFile#MAX_BYTES} of GPU vertices, indices and RGBA8
-     * textures with their full mip chains. The version 3 maximum profile, with the HIGH texture
-     * tier's chains, is about 27 MB, so the object GPU budget is about 270 MB in the worst case,
-     * charged in Stats.objectBytes; real tiles stay far below it (see WorldStreamObjectsFile). The
-     * owner's x4 multisampled colour and depth target adds about 11 MB on top (issue #357).
+     * At most twenty-six slots (FAR: 25 active, one staged); a NEAR session allocates ten. Each
+     * holds a fixed MAX_TRIANGLES instance buffer (3.93 MB) and one mipmapped 512 x 512 RGBA8 atlas
+     * (1.40 MB). Exterior objects add at most one validated objects file per slot: up to {@link
+     * WorldStreamObjectsFile#MAX_BYTES} of GPU vertices, indices and RGBA8 textures with their full
+     * mip chains (the version 3 maximum profile with HIGH chains is about 27 MB). Real tiles stay
+     * far below that, so instead of a per-slot worst case the objects share {@link
+     * #OBJECT_BUDGET_BYTES}, charged in Stats.objectBytes. The owner's x4 multisampled colour and
+     * depth target adds about 11 MB on top (issue #357).
      */
-    static final int SLOT_COUNT = 10, INSTANCE_BYTES = 48;
+    static final int SLOT_COUNT = WorldStreamState.SLOTS, INSTANCE_BYTES = 48;
+
+    /**
+     * STANDARD-tier GPU bytes all resident and building exterior object sets may reserve together:
+     * 192 MiB, pinned as a literal: about 12% over FAR's measured mean of about 172 MiB with mip
+     * chains. The session's object texture tier selects the budget actually enforced (HIGH: 256
+     * MiB). A set that does not fit fails alone and its terrain is kept; late objects load
+     * nearest-first, so on FAR + HIGH the outer ring is what may report FAILED.
+     */
+    static final long OBJECT_BUDGET_BYTES = WorldStreamEnvelope.Session.STANDARD_OBJECT_BUDGET;
 
     /** Terrain 65536 plus optional static water 16384 instances in one per-slot buffer. */
     static final int MAX_TRIANGLES = 65536 + WorldStreamPackedTile.MAX_WATER_TRIANGLES;
@@ -228,7 +239,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         private List<List<WorldStreamObjectMips.Slice>> imagePlan;
 
         private int imageStep;
-        private boolean failed;
+        private boolean failed, budget;
 
         ObjectsBuild(WorldStreamPackedObjects source) {
             this.source = java.util.Objects.requireNonNull(source);
@@ -320,6 +331,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         short vertices = INVALID, indices = INVALID;
         long bytes;
 
+        /** Full GPU size reserved against OBJECT_BUDGET_BYTES until destroyed. */
+        long reserved;
+
         SlotObjects(WorldStreamPackedObjects source) {
             models = source.models;
             meshes = source.meshes;
@@ -365,6 +379,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 }
             }
             bytes = 0;
+            reserved = 0;
         }
     }
 
@@ -372,7 +387,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     // Reused by the blended pass every frame; grows to the most blended placements seen.
     private long[] blendKeys = new long[64];
     private final WorldStreamEnvelope.Session session;
-    private final Slot[] slots = new Slot[SLOT_COUNT];
+    private final Slot[] slots;
+    // The session tier's shared objects budget; only a native proof lowers it.
+    private long objectBudget;
     private final AtomicReference<Upload> uploading = new AtomicReference<>();
     private final AtomicLong callbackCount = new AtomicLong();
     private final AtomicReference<String> callbackFailure = new AtomicReference<>();
@@ -409,6 +426,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     BgfxWorldStreamRenderer(WorldStreamEnvelope.Session session) throws IOException {
         this.session = java.util.Objects.requireNonNull(session);
+        // A near session allocates fewer slots of the same fixed size; never more than the ceiling.
+        slots = new Slot[session.slots()];
+        objectBudget = session.objectBudgetBytes();
         try {
             var caps = bgfx_get_caps();
             BgfxTerrainRenderer.requireCapabilities(
@@ -659,7 +679,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         String step = "buffers";
         try {
             if (build.building == null) {
+                long need = source.payloadBytes();
+                if (!objectsFit(objectBudget, reservedObjectBytes(), need)) {
+                    build.budget = true;
+                    build.fail();
+                    return 0;
+                }
                 var built = new SlotObjects(source);
+                built.reserved = need;
                 build.building = built;
                 try (var layout = objectLayout()) {
                     built.vertices =
@@ -834,7 +861,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             return WorldStreamStatus.LateOutcome.DROPPED;
         }
         if (upload.build.failed) {
-            return WorldStreamStatus.LateOutcome.FAILED;
+            return upload.build.budget
+                    ? WorldStreamStatus.LateOutcome.BUDGET
+                    : WorldStreamStatus.LateOutcome.FAILED;
         }
         slots[upload.lease.slot()].objects = upload.build.take();
         objectsRevision++;
@@ -1034,10 +1063,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 || expected == Long.MAX_VALUE
                 || next != expected + 1
                 || ordered == null
-                || ordered.size() > 9) {
+                || ordered.size() > session.maxActive()) {
             throw new IllegalArgumentException("Commit revision/count");
         }
-        boolean[] seen = new boolean[SLOT_COUNT], coordinates = new boolean[4096];
+        boolean[] seen = new boolean[slots.length], coordinates = new boolean[4096];
         for (var lease : ordered) {
             if (lease == null
                     || seen[lease.slot()]
@@ -1283,9 +1312,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /**
      * Bits of a blend key holding its entry: the tile's position in the active (producer) order
-     * above the placement's bits.
+     * above the placement's bits. Five position bits hold FAR's 26 slots (#276); #440 widens the
+     * placement bits when tiles may carry more placements.
      */
-    static final int BLEND_ENTRY_BITS = 14, BLEND_PLACEMENT_BITS = 10;
+    static final int BLEND_ENTRY_BITS = 15, BLEND_PLACEMENT_BITS = 10;
 
     static {
         // The key's entry bits must hold every active position and every placement of a tile.
@@ -1300,7 +1330,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * the lowest {@link #BLEND_ENTRY_BITS} replaced by the inverted entry. Non-negative doubles
      * order like their bits, so an ascending sort read backwards is farthest first, and equal
      * distances keep active-order-then-placement order, as the stable sort this replaced did. The
-     * dropped mantissa bits are 2^-38 relative.
+     * dropped mantissa bits are 2^-37 relative.
      */
     static long blendKey(double squaredDistance, int position, int placement) {
         if (!(squaredDistance >= 0)
@@ -1565,6 +1595,42 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 peakStepBytes,
                 maximumStepNanos,
                 objectBytes(upload));
+    }
+
+    /** Whether an objects set of {@code need} GPU bytes fits beside {@code reserved} bytes. */
+    static boolean objectsFit(long reserved, long need) {
+        return objectsFit(OBJECT_BUDGET_BYTES, reserved, need);
+    }
+
+    /** Whether {@code need} more GPU bytes fit beside {@code reserved} under {@code budget}. */
+    static boolean objectsFit(long budget, long reserved, long need) {
+        return need >= 0 && reserved >= 0 && need <= budget - reserved;
+    }
+
+    /** Test seam: a native proof fills past a small budget without hundreds of MiB of objects. */
+    void objectBudgetForProof(long bytes) {
+        requireOwner();
+        if (bytes < 0 || bytes > session.objectBudgetBytes()) {
+            throw new IllegalArgumentException("Proof budget above the session budget");
+        }
+        objectBudget = bytes;
+    }
+
+    private long reservedObjectBytes() {
+        var upload = uploading.get();
+        long total =
+                upload == null || upload.objects == null || upload.objects.building == null
+                        ? 0
+                        : upload.objects.building.reserved;
+        if (late != null && late.build.building != null) {
+            total += late.build.building.reserved;
+        }
+        for (var slot : slots) {
+            if (slot != null && slot.objects != null) {
+                total += slot.objects.reserved;
+            }
+        }
+        return total;
     }
 
     private long objectBytes(Upload upload) {
