@@ -507,6 +507,11 @@ public final class WorldStreamTransport {
         private final Session session;
         private final WorldStreamParentState.Ticket ticket;
         private final CompletableFuture<Resident> result = new CompletableFuture<>();
+
+        // The result as callers see it: it completes only after the splat bookkeeping for the
+        // outcome has run, so no caller reacting to a failure can bind a layer this tile is still
+        // about to forget (#435).
+        private final CompletableFuture<Resident> settled;
         private final CompletableFuture<Void> canceled = new CompletableFuture<>();
         private volatile boolean stop;
         private volatile WorldStreamProducerCancellation.Producer cancellation;
@@ -526,14 +531,15 @@ public final class WorldStreamTransport {
         private TileReservation(Session session, WorldStreamParentState.Ticket ticket) {
             this.session = session;
             this.ticket = ticket;
-            result.whenComplete(
-                    (resident, failure) -> {
-                        if (failure != null) {
-                            session.forgetSplat(this);
-                        } else {
-                            session.keepSplat(this);
-                        }
-                    });
+            settled =
+                    result.whenComplete(
+                            (resident, failure) -> {
+                                if (failure != null) {
+                                    session.forgetSplat(this);
+                                } else {
+                                    session.keepSplat(this);
+                                }
+                            });
         }
 
         /**
@@ -1522,7 +1528,7 @@ public final class WorldStreamTransport {
                 reservation.produced = true;
                 enqueueFile(() -> produceFile(reservation, producer));
             }
-            return reservation.result.copy();
+            return reservation.settled.copy();
         }
 
         private CompletableFuture<Void> cancel(TileReservation reservation) {
