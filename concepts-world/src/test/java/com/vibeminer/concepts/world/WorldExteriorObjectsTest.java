@@ -596,6 +596,56 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void doodadsKeepTheirDrawsAheadOfInstanceInteriors() {
+        // One exterior building (1 draw), an interior-only root placed 60 times whose interior
+        // group has 64 batches (3,840 draws) and 300 MDDF doodads (1 draw each): 4,141 draws for a
+        // 4,096 budget. The doodads and the exterior are spent first; the interior is what is
+        // capped, never a doodad.
+        long interiorRoot = 120;
+        var batches = new ArrayList<Batch>();
+        for (int b = 0; b < 64; b++) {
+            batches.add(new Batch(b * 3, 3, 0, 0));
+        }
+        var records = new ArrayList<Modf>();
+        records.add(Modf.of(ROOT, 1, 0x8));
+        for (int i = 0; i < 60; i++) {
+            records.add(Modf.of(interiorRoot, 100 + i, 0x8));
+        }
+        var doodads = new ArrayList<Mddf>();
+        for (int i = 0; i < 300; i++) {
+            doodads.add(Mddf.of(MODEL, 1000 + i, 0x40));
+        }
+        try (var f = new Fixture(records)) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(interiorRoot, root(INTERIOR));
+            f.files.sources.put(INTERIOR, group(INT, 3, 64, batches));
+            f.files.sources.put(4L, obj0(records, doodads));
+            assertTrue(1 + 60 * 64 + 300 > WorldExteriorObjects.MAX_DRAWS);
+            try (var set = f.runInstance()) {
+                assertEquals(300, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertTrue(set.placements().stream().noneMatch(p -> p.rootId() == interiorRoot));
+                assertTrue(set.placements().stream().anyMatch(p -> p.rootId() == ROOT));
+            }
+        }
+        // With 100 doodads the interior fits after them (1 + 3,840 + 100 draws) and draws too.
+        try (var f = new Fixture(records)) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(interiorRoot, root(INTERIOR));
+            f.files.sources.put(INTERIOR, group(INT, 3, 64, batches));
+            f.files.sources.put(4L, obj0(records, doodads.subList(0, 100)));
+            try (var set = f.runInstance()) {
+                assertEquals(100, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(
+                        60,
+                        set.placements().stream().filter(p -> p.rootId() == interiorRoot).count());
+            }
+        }
+    }
+
+    @Test
     void interiorsNeverCostExteriorCutoutOrBlendedDraws() {
         // 64 placements of a building with 32 opaque and 31 cutout batches draw 4,032 of the
         // 4,096-draw budget. A 2-range interior would need 128 more: it is capped, and the

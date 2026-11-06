@@ -1024,13 +1024,28 @@ public final class WorldExteriorObjects {
                 setRanges = metadata.setRanges();
                 setIds = metadata.setIds();
                 place(metadata.worldObjects());
-                placeInteriors();
                 fitMaterialDraws();
                 // Admission ran largest first; the set keeps obj0 source order.
                 placements.sort(java.util.Comparator.comparingInt(Placement::ordinal));
-                // Buildings first, then MDDF doodads, then the drawn buildings' doodad sets.
+                // Buildings first, then MDDF doodads, then the drawn buildings' doodad sets, and
+                // only then instance interiors (#280): every exterior, doodad and set doodad draw
+                // is spent before an interior group is admitted, so interiors use only what is
+                // left. An interior-only root's own set doodads wait until its interiors decide
+                // whether it draws at all.
                 placeDoodads(metadata.doodads());
-                placeSetDoodads();
+                var deferred = new java.util.HashSet<Long>();
+                placeSetDoodads(
+                        building -> {
+                            boolean pending =
+                                    models.get(building.model()).meshes().isEmpty()
+                                            && heldInteriors.containsKey(building.rootId());
+                            if (pending) {
+                                deferred.add(building.rootId());
+                            }
+                            return !pending;
+                        });
+                placeInteriors();
+                placeSetDoodads(building -> deferred.contains(building.rootId()));
             }
             allocateImages();
             chainImages();
@@ -1096,7 +1111,7 @@ public final class WorldExteriorObjects {
             boolean[] removed = new boolean[models.size()];
             for (int m = models.size() - 1; m >= 0; m--) {
                 var model = models.get(m);
-                if (model.doodad() || admissionDraws(m) == modelDraws(m)) {
+                if (model.doodad() || admissionDraws(m) == modelDraws(m) || awaitingInteriors(m)) {
                     continue;
                 }
                 boolean unusedMaterialOnly = uses[m] == 0 && admissionDraws(m) == 0;
@@ -1152,6 +1167,14 @@ public final class WorldExteriorObjects {
             removeModels(removed);
         }
 
+        /** A building model with no meshes yet whose interiors the interior pass still holds. */
+        private boolean awaitingInteriors(int model) {
+            var value = models.get(model);
+            return !value.doodad()
+                    && value.meshes().isEmpty()
+                    && heldInteriors.containsKey(value.rootId());
+        }
+
         /** Caps the last material-only placements while building placements exceed the slots. */
         private void capMaterialOnlyPlacements() {
             int excess = placements.size() - MAX_PLACEMENTS;
@@ -1160,7 +1183,10 @@ public final class WorldExteriorObjects {
             }
             var capped = new boolean[placements.size()];
             for (int i = placements.size() - 1; i >= 0 && excess > 0; i--) {
-                if (admissionDraws(placements.get(i).model()) == 0) {
+                // An interior-only root waiting for the interior pass is decided there: it draws
+                // only if its placements find free slots then.
+                if (admissionDraws(placements.get(i).model()) == 0
+                        && !awaitingInteriors(placements.get(i).model())) {
                     capped[i] = true;
                     excess--;
                     counts[Count.PLACEMENT_DRAWN.ordinal()]--;
@@ -1220,8 +1246,11 @@ public final class WorldExteriorObjects {
             placements.addAll(keptPlacements);
             modelSlots.clear();
             for (int m = 0; m < models.size(); m++) {
-                modelSlots.put(models.get(m).rootId(), m);
+                if (!models.get(m).doodad()) {
+                    modelSlots.put(models.get(m).rootId(), m);
+                }
             }
+            doodadSlots.replaceAll((id, slot) -> renumbered[slot]);
         }
 
         /**
@@ -1459,7 +1488,7 @@ public final class WorldExteriorObjects {
          * the opaque-only profile left empty never spends doodad, model or draw budget ahead of one
          * it drew. Set doodads are appended in this order.
          */
-        private void placeSetDoodads() {
+        private void placeSetDoodads(java.util.function.Predicate<Placement> include) {
             var buildings = new ArrayList<Placement>(placements.size());
             for (int pass = 0; pass < 2; pass++) {
                 for (var placement : placements) {
@@ -1473,6 +1502,9 @@ public final class WorldExteriorObjects {
             }
             for (var building : buildings) {
                 token.check();
+                if (building.kind() != Kind.BUILDING || !include.test(building)) {
+                    continue;
+                }
                 var declared = rootDoodads.get(building.rootId());
                 if (declared == null || !declared.declared()) {
                     continue; // the root declares no doodads
@@ -1749,12 +1781,20 @@ public final class WorldExteriorObjects {
         }
 
         /**
-         * Instance interiors (#280), after every building's exterior: drawn buildings in admission
-         * order (largest first), each held interior group only if it still fits the tile budgets,
-         * the mesh count and the draw budget for every placement of its building. A group that does
-         * not fit is GROUP_INTERIOR_CAPPED; it never caps or displaces an exterior. A building left
-         * with no meshes (an interior-only root none of whose groups fit) is removed, its root and
-         * placements counted EMPTY.
+         * Instance interiors (#280), after every building's exterior and every MDDF and set doodad
+         * of the drawn exteriors: drawn buildings in admission order (largest first), each held
+         * interior group only if it still fits the tile budgets, the mesh count and the draw budget
+         * left after every placement already drawn, for every placement of its building. A group
+         * that does not fit is GROUP_INTERIOR_CAPPED; it never caps or displaces an exterior or a
+         * doodad. A building left with no meshes (an interior-only root none of whose groups fit)
+         * is removed, its root and placements counted EMPTY.
+         *
+         * <p>An interior-only root takes building slots for its placements when its first group is
+         * admitted, opaque or not, and only if they are free: interiors lose every slot tie, and
+         * since material draws were already fitted, they never push an exterior's glass or foliage
+         * out. Interior images share the building pixel pool with exterior images; the budget
+         * shares it by level, so a dense interior can lower exterior texture levels but never drops
+         * an exterior image.
          */
         private void placeInteriors() {
             if (heldInteriors.isEmpty()) {
@@ -1776,8 +1816,14 @@ public final class WorldExteriorObjects {
             boolean[] removed = new boolean[models.size()];
             for (int m = 0; m < models.size(); m++) {
                 var model = models.get(m);
+                if (model.doodad()) {
+                    continue;
+                }
                 var held = heldInteriors.remove(model.rootId());
-                if (held == null) {
+                if (held == null || uses[m] == 0) {
+                    if (held != null) {
+                        releaseInteriors(held); // a root with no placement draws nothing
+                    }
                     continue;
                 }
                 // A model without opaque draws (an interior-only root) holds no building slot
@@ -1831,7 +1877,7 @@ public final class WorldExteriorObjects {
                     }
                     draws += uses[m] * opaque;
                     reserved += (long) uses[m] * mapped.ranges().size();
-                    if (needsSlots && opaque > 0 && !slotsTaken) {
+                    if (needsSlots && !slotsTaken) {
                         opaquePlacements += uses[m];
                         slotsTaken = true;
                     }
