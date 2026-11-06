@@ -31,6 +31,9 @@ final class WorldSkyFeed {
     private final WorldSkyLook.Throttle throttle = new WorldSkyLook.Throttle(YARDS, NANOS);
     private WorldStreamTransport.Sky last;
     private String label;
+    // Where and when (LightData half-minutes) the last sky was looked up.
+    private int lastTime = -1;
+    private double lastX, lastY, lastZ;
 
     WorldSkyFeed(
             CompletableFuture<WorldSky.Index> index,
@@ -78,14 +81,51 @@ final class WorldSkyFeed {
             return camera;
         }
         var view = camera.view();
-        if (throttle.due(mapId, view.x(), view.y(), view.z(), nanos.getAsLong())) {
-            var result =
-                    sky.at(mapId, view.x(), view.y(), view.z(),
-                            WorldSkyLook.halfMinutes(clock.get()));
+        int time = WorldSkyLook.halfMinutes(clock.get());
+        boolean moved = throttle.due(mapId, view.x(), view.y(), view.z(), nanos.getAsLong());
+        if (moved || time != lastTime) {
+            var result = sky.at(mapId, view.x(), view.y(), view.z(), time);
             last = WorldSkyLook.of(result, WorldStreamTransport.Sky.EXPLORER);
             label = result.label();
+            lastTime = time;
+            lastX = view.x();
+            lastY = view.y();
+            lastZ = view.z();
         }
         return last == null ? camera : camera.withSky(last);
+    }
+
+    /**
+     * True when the time of day has moved on (LightData keys are half-minutes, so at most every
+     * 30 s) and the sky at the last camera's place now differs, so a still camera should be sent
+     * again. A map with a fixed time, or a sky that did not change, asks for nothing.
+     */
+    synchronized boolean stale() {
+        if (last == null) {
+            return false;
+        }
+        int time = WorldSkyLook.halfMinutes(clock.get());
+        if (time == lastTime) {
+            return false;
+        }
+        WorldSky.Index sky;
+        try {
+            sky = index.getNow(null);
+        } catch (CompletionException | CancellationException unavailable) {
+            return false;
+        }
+        if (sky == null) {
+            return false;
+        }
+        var next =
+                WorldSkyLook.of(
+                        sky.at(mapId, lastX, lastY, lastZ, time),
+                        WorldStreamTransport.Sky.EXPLORER);
+        if (next.equals(last)) {
+            lastTime = time;
+            return false;
+        }
+        return true;
     }
 
     /** The source line of the last lookup, or null before the first. */

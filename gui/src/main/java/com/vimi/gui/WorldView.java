@@ -891,6 +891,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 else switchStreamingRendering();
                             }
                             if (streaming != null) streaming.pulse();
+                            // The recorded sky follows the clock even with a still camera.
+                            if (streaming != null && streaming.skyStale()) streamCamera();
                             pollStall(now);
                         }
                         if (camera == null) return;

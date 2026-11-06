@@ -131,6 +131,43 @@ public final class WorldSkyLookTest {
         check(failed.attach(camera(1, 0)).sky() == null, "failed tables keep the explorer's sky");
     }
 
+    /**
+     * With the camera still, the sky follows the clock: once the half-minute changes and the sky
+     * differs, the feed asks for the camera again; a map with a fixed time never does.
+     */
+    private static void aStillCameraFollowsTheClock() {
+        var time = new java.util.concurrent.atomic.AtomicReference<>(LocalTime.NOON);
+        var nanos = new AtomicLong();
+        var feed = new WorldSkyFeed(CompletableFuture.completedFuture(index()), 7, time::get,
+                nanos::get);
+        check(!feed.stale(), "nothing to resend before the first camera");
+        var noon = feed.attach(camera(1, 0)).sky();
+        check(!feed.stale(), "same time: not stale");
+        time.set(LocalTime.of(12, 0, 20));
+        check(!feed.stale(), "same half-minute: not stale");
+        time.set(LocalTime.of(18, 0));
+        check(feed.stale(), "evening differs from noon: resend");
+        var evening = feed.attach(camera(2, 0)).sky();
+        check(!evening.equals(noon), "the resent camera carries the evening sky");
+        check(!feed.stale(), "after the resend: not stale");
+
+        // A map whose time is fixed keeps its sky whatever the clock says.
+        var fixed = WorldSky.Index.of(
+                List.of(new WorldSky.Light(1, 7, 0, 0, 0, 0, 0, 100)),
+                List.of(
+                        new WorldSky.Key(1, 100, 0,
+                                new WorldSky.Sample(0x101010, 0, 0, 0, 0, 0, 0, 0)),
+                        new WorldSky.Key(2, 100, 1440,
+                                new WorldSky.Sample(0xf0f0f0, 0, 0, 0, 0, 0, 0, 0))),
+                Map.of(7L, 0), List.of());
+        var still = new WorldSkyFeed(CompletableFuture.completedFuture(fixed), 7, time::get,
+                nanos::get);
+        time.set(LocalTime.NOON);
+        still.attach(camera(1, 0));
+        time.set(LocalTime.of(20, 0));
+        check(!still.stale(), "a fixed map time never asks for a resend");
+    }
+
     private static void pinsTheClockForOwnerChecks() {
         System.setProperty(WorldSkyFeed.TIME_PROPERTY, "21:30");
         try {
@@ -148,8 +185,9 @@ public final class WorldSkyLookTest {
         clockToHalfMinutes();
         throttlesLookups();
         feedsTheSkyOnCamerasOnceTheTablesAreLoaded();
+        aStillCameraFollowsTheClock();
         pinsTheClockForOwnerChecks();
         System.out.println("World sky look: recorded channels, coverage and fog share, scaler"
-                + " clamp, clock, throttle, camera feed and pinned time passed");
+                + " clamp, clock, throttle, camera feed, still-camera clock and pinned time passed");
     }
 }

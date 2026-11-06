@@ -332,6 +332,12 @@ final class WorldStreamSourceController {
         return session.commit(policy, ordered);
     }
 
+    /** True when the recorded sky has moved on with the clock and the camera should be resent. */
+    boolean skyStale() {
+        var feed = sky;
+        return feed != null && feed.stale();
+    }
+
     void pulse() {
         kick();
     }
