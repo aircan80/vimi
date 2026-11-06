@@ -673,7 +673,8 @@ public final class WorldExteriorObjects {
 
         /**
          * The whole mip chain as RGBA8, top level first ({@link ObjectTextureMips#chainPixels}
-         * texels), for every image a tile set returns; a compressed chain is decoded for this view.
+         * texels), for every image a tile set returns. For a compressed chain this decodes and
+         * allocates a new RGBA8 copy on every call; uploads use {@link #data()} instead.
          */
         public ByteBuffer rgba() {
             if (format == ObjectTextureFormats.RGBA8) {
@@ -2510,17 +2511,26 @@ public final class WorldExteriorObjects {
             int format = demand.blockFormat();
             byte[] chain = new byte[ObjectTextureFormats.chainBytes(format, width, height)];
             int at = 0;
+            var taken = new ArrayList<long[]>();
             for (int k = 0; k < ObjectTextureMips.levels(width, height); k++) {
                 int bytes = ObjectTextureFormats.levelBytes(format, width, height, k);
                 if (level + k >= declared.size()) {
                     return null;
                 }
                 var mip = declared.get(level + k);
+                // As the decoder demands: level data lies past the 148-byte header, inside the
+                // file, and no two carried levels share bytes; otherwise the RGBA8 path decides.
                 if (mip.byteLength() != bytes
-                        || mip.offset() < 0
+                        || mip.offset() < Blp2Decoder.HEADER_BYTES
                         || mip.offset() + bytes > raw.length) {
                     return null;
                 }
+                for (long[] range : taken) {
+                    if (mip.offset() < range[1] && range[0] < mip.offset() + bytes) {
+                        return null;
+                    }
+                }
+                taken.add(new long[] {mip.offset(), mip.offset() + bytes});
                 System.arraycopy(raw, (int) mip.offset(), chain, at, bytes);
                 at += bytes;
             }

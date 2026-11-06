@@ -292,6 +292,24 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void levelsInsideTheHeaderOrOverlappingAreNeverCarriedAsBlocks() {
+        // 64 x 64 BC1, seven levels; the 1 x 1 level (6) is one 8-byte block.
+        byte[] header = blp(64, 64, 7, 0x07e0);
+        var h = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
+        h.putInt(20 + 6 * 4, 100); // inside the 148-byte header
+        var inside = single(0, header);
+        assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, inside.format());
+        byte[] overlap = blp(64, 64, 7, 0x07e0);
+        var o = ByteBuffer.wrap(overlap).order(ByteOrder.LITTLE_ENDIAN);
+        o.putInt(20 + 6 * 4, o.getInt(20 + 5 * 4)); // the 1 x 1 level reuses the 2 x 2 bytes
+        var shared = single(0, overlap);
+        assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, shared.format());
+        // Both still draw, from the RGBA8 path.
+        assertEquals(64, inside.width());
+        assertEquals(64, shared.width());
+    }
+
+    @Test
     void filesWithoutAWholeChainOrUnderOneBlockStayRgba() {
         // Three recorded levels of seven: the chain would need generated levels.
         assertEquals(
