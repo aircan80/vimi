@@ -94,7 +94,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // Viewport-only full screen (F11 / Alt+Enter) and the "hide HUD" toggle (Alt+Z).
     private final Label fullscreenStatus = new Label();
     // HUD over the viewport: Map button and map name, status rows, the map panel (M).
-    private final WorldHud hud = new WorldHud(this::toggleMapPanel, viewport::requestFocus);
+    // Its refocus is shared by every HUD widget (the minimap too); only while exploring.
+    private final WorldHud hud = new WorldHud(this::toggleMapPanel, () -> {
+        if (this.explorer) viewport.requestFocus();
+    });
     private final Button panelBack = new Button();
     // The explorer's one slim bar, and the other control rows behind its "More" toggle.
     private final javafx.scene.control.ToggleButton moreControls = new javafx.scene.control.ToggleButton("More");
@@ -877,6 +880,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         // The developer overlay sits in the HUD's own slot under the left column; it stays when
         // the HUD is hidden.
         hud.devOverlay(devOverlay);
+        // The minimap is a HUD follower: it hides with the HUD (and closes its tracking popup), and
+        // its clicks hand focus back through the HUD's one refocus.
+        minimap.refocus(hud::refocus);
+        minimap.followHud(hud.hiddenProperty());
+        minimap.tracking().onShowing(this::clearKeys);
         VBox.setVgrow(maps, Priority.ALWAYS);
         heading.getStyleClass().add("h2");
         hud.mapNameLabel().textProperty().bind(heading.textProperty());
@@ -1972,8 +1980,6 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 new HBox(8, textureActivity, textureStatus, retryTextures),
                 new HBox(8, new Label("Instances"), entrances, enterInstance, leaveInstance,
                         instanceStatus));
-        if (spawns != null) moreRows.getChildren().add(spawns.controls());
-        if (roles != null) moreRows.getChildren().add(roles.controls());
         content.setBottom(new VBox(6, bar, inspection, moreRows));
         applyPanels();
     }
@@ -2929,6 +2935,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             audio.area(inventory == null ? null : handle,
                     inventory == null ? -1 : inventory.map().id(), snapshot.area());
         }
+        minimap.progress(snapshot.prepared(), snapshot.desired());
         if (camera != null) position.setText(String.format(java.util.Locale.ROOT,
                 "Tile %d,%d · x %.1f / y %.1f / altitude %.1f · %.0f yards/s · %d / %d tiles",
                 tileX(), tileY(), camera.x(), camera.y(), camera.z(),
@@ -3399,6 +3406,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (roles != null || closed) throw new IllegalStateException("Role overlay already attached");
         roles = java.util.Objects.requireNonNull(overlay);
         minimap.attachRoles(overlay);
+        minimap.tracking().roles(overlay.controls());
     }
 
     /** The developer overlay, for tests. */
@@ -3416,6 +3424,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (spawns != null || closed) throw new IllegalStateException("Spawn overlay already attached");
         spawns = java.util.Objects.requireNonNull(overlay);
         viewport.getChildren().add(viewport.getChildren().indexOf(image) + 1, overlay);
+        minimap.tracking().spawns(overlay.controls());
         // A clicked marker whose model outcome was still resolving is re-described once it arrives.
         overlay.models().ifPresent(models -> models.listen(npcId -> {
             var pending = inspectedSpawn;
@@ -3478,6 +3487,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var map = inventory == null ? null : inventory.map();
         if (links == null || map == null) {
             entrances.getItems().clear();
+            minimap.entrances(java.util.List.of());
             instanceStatus.setText(links == null ? "Reading recorded instance entrances…" : "");
             return;
         }
@@ -3488,6 +3498,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var previous = entrances.getValue();
         var found = links.entrancesOn(map.id(), entranceX, entranceY);
         entrances.getItems().setAll(found);
+        minimap.entrances(found);
         if (previous != null) {
             found.stream().filter(l -> l.mapId() == previous.mapId()).findFirst()
                     .ifPresent(entrances::setValue);

@@ -439,12 +439,13 @@ public final class WorldNavigationUiTest {
             require(!view.lookup(id).isVisible() && !view.lookup(id).isManaged(),"Not shown under More: "+id);
         for (var id : new String[] {"#world-gpu-retry","#world-texture-retry"})
             require(view.lookup(id).isVisible(),"Retry stays under More: "+id);
+        // The spawn and role controls live in the minimap's tracking popup (#515), not under More.
         for (var name : new String[] {"spawns","roles"}) {
             var overlay=get(view,name);
             if (overlay==null) continue;
             try {
                 var controls=(Node)overlay.getClass().getDeclaredMethod("controls").invoke(overlay);
-                require(isWithin(controls,rows),"The "+name+" controls are under More");
+                require(!isWithin(controls,rows),"The "+name+" controls are not under More");
             } catch (ReflectiveOperationException error) { throw new AssertionError(error); }
         }
         more.fire();
