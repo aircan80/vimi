@@ -1148,7 +1148,13 @@ public final class WorldTerrainTextureSource {
                 long composing = WorldStageTimings.start();
                 var composition =
                         TerrainAtlasComposer.compose(
-                                tile, grid, data, diffuse, splat, splatMask, request::canceled);
+                                tile,
+                                grid,
+                                data,
+                                diffuse,
+                                reserved.maskSide() > 0,
+                                reserved.maskSide() > 0 ? reserved.maskSide() : splatMask,
+                                request::canceled);
                 WorldStageTimings.stop("terrain.material.atlasCompose", composing);
                 for (var issue : composition.diagnostics()) {
                     issues.add(
