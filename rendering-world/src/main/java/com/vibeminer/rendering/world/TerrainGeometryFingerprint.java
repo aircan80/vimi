@@ -67,13 +67,20 @@ public final class TerrainGeometryFingerprint {
         return digest.hex();
     }
 
+    /** Computed once per immutable tile; later calls return the remembered value. */
     public static String sha256(TerrainScene.Tile tile) {
         Objects.requireNonNull(tile);
+        String cached = tile.cachedFingerprint();
+        if (cached != null) {
+            return cached;
+        }
         Sink digest =
                 header(tile.x(), tile.y(), tile.chunks(), tile.vertexCount(), tile.indexCount());
         digest.floats(tile.vertices());
         digest.ints(tile.indices());
-        return digest.hex();
+        String result = digest.hex();
+        tile.cacheFingerprint(result);
+        return result;
     }
 
     private static Sink header(int x, int y, int chunks, int vertices, int indices) {

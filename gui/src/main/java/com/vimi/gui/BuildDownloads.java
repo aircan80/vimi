@@ -62,17 +62,26 @@ public final class BuildDownloads {
     private final CompletableFuture<Void> closing = new CompletableFuture<>();
 
     static BuildDownloads open(Path database, Runner runner) throws Exception {
-        return new BuildDownloads(new DownloadIntents(database), runner);
+        return open(database, runner, true);
     }
 
-    private BuildDownloads(DownloadIntents persistence, Runner runner) throws Exception {
+    /**
+     * With {@code resume} false, persisted intents are loaded and shown but not resumed; only a
+     * later request runs downloads (measurement probes open the library this way).
+     */
+    static BuildDownloads open(Path database, Runner runner, boolean resume) throws Exception {
+        return new BuildDownloads(new DownloadIntents(database), runner, resume);
+    }
+
+    private BuildDownloads(DownloadIntents persistence, Runner runner, boolean resume)
+            throws Exception {
         this.persistence = persistence;
         this.runner = runner;
         for (var entry : persistence.load()) {
             intents.put(entry.identity(), entry);
             snapshots.put(entry.identity(), snapshot(entry));
         }
-        commands.execute(this::pump);
+        if (resume) commands.execute(this::pump);
     }
 
     public Snapshot snapshot(String identity) {

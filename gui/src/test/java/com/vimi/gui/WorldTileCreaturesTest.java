@@ -39,7 +39,10 @@ public final class WorldTileCreaturesTest {
         defaultGeosetsDrawWithoutCreatureGeosetData();
         aDenseNeighbourNoLongerStarvesTheTilesOwnSpawns();
         busyOrClosedPreviewsCostNoBudget();
+        creaturesStandInTheirIdlePoseOrSayWhyNot();
+        unreadableStandSequencesAreAskedAgainButUnsupportedOnesAreKept();
         cutoutReductionKeepsThinStrands();
+        displayGeosetRowsApplyOnlyWhenTheModelRecordsGeosetData();
         appendDrawsOnlyQualifiedSpawnsOfTheTile();
         buildingsKeepTheirBudgetFirst();
         cachesPerRevisionAndRetriesFailures();
@@ -74,10 +77,8 @@ public final class WorldTileCreaturesTest {
                 == WorldTileCreatures.Count.CHARACTER_APPEARANCE, "Extended display info is refused");
         require(WorldTileCreatures.convert(preview(7, null, 0L, appearance(true)), Cancellation.NONE).refusal()
                 == WorldTileCreatures.Count.CHARACTER_APPEARANCE, "Unknown extended display info is refused");
-        require(WorldTileCreatures.convert(preview(7, 0L, 3L, appearance(true)), Cancellation.NONE).refusal()
-                == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED, "Geoset data is refused");
-        require(WorldTileCreatures.convert(preview(7, 0L, 3L, geosets()), Cancellation.NONE).refusal()
-                == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED, "Recorded geoset data is still refused");
+        require(WorldTileCreatures.convert(preview(7, 0L, 3L, null, geosets()), Cancellation.NONE).refusal()
+                == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED, "Recorded geoset data with unknown rows is refused");
         require(WorldTileCreatures.convert(preview(7, 0L, 0L, additiveOnly()), Cancellation.NONE).refusal()
                 == WorldTileCreatures.Count.NO_OPAQUE_SURFACE, "No opaque or alpha-keyed surface is refused");
         var hidden = WorldTileCreatures.convert(preview(7, 0L, 0L, hiddenGeosets()), Cancellation.NONE);
@@ -152,12 +153,82 @@ public final class WorldTileCreaturesTest {
         var unreadable = WorldTileCreatures.convert(preview(7, 0L, null, geosets()), Cancellation.NONE);
         require(unreadable.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
                 && unreadable.detail().contains("could not be read"), "An unreadable CreatureGeosetDataID is refused");
-        var own = WorldTileCreatures.convert(preview(7, 0L, 0L, true, geosets()), Cancellation.NONE);
-        require(own.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
-                && own.detail().contains("not evaluated"), "A display with its own geoset rows is refused");
-        var unknown = WorldTileCreatures.convert(preview(7, 0L, 0L, null, geosets()), Cancellation.NONE);
+        var unknown = WorldTileCreatures.convert(preview(7, 0L, 5L, null, geosets()), Cancellation.NONE);
         require(unknown.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
-                && unknown.detail().contains("unknown"), "Unknown display geoset rows are refused");
+                && unknown.detail().contains("unknown"), "Unknown display geoset rows are refused when they apply");
+    }
+
+    private static void displayGeosetRowsApplyOnlyWhenTheModelRecordsGeosetData() {
+        // geosets(): parts 0, 100 and 101 (group 1 has x00 and x01).
+        // ID > 0: the display's row chooses value 1 for group 1 (GeosetIndex 0): 0 and 101 draw.
+        var chosen = WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(1, 1), geosets()), Cancellation.NONE);
+        require(chosen.model() != null && java.util.Arrays.equals(chosen.model().ranges(), new int[] {0, 3, 0, 3, 3, 0})
+                && chosen.model().omittedSurfaces() == 0, "The display's chosen variant replaces x00: " + chosen.detail());
+        require(visible(5L, Map.of(1, 1), geosets()).equals(java.util.Set.of(0, 101)), "Chosen: 0 and 101");
+        // ID > 0 without a row for group 1: the group is hidden, not drawn as x00; group 0 stays.
+        require(visible(5L, Map.of(), geosets()).equals(java.util.Set.of(0)), "A group 1-8 without a row is hidden");
+        require(WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(), geosets()), Cancellation.NONE).model() != null,
+                "A display without rows still draws group 0");
+        // ID > 0: a row for group 9 replaces its default; group 9 without a row keeps x00.
+        var high = mesh(0, 900, 901);
+        require(visible(5L, Map.of(9, 1), high).equals(java.util.Set.of(0, 901)), "A row for group 9 chooses 901");
+        require(visible(5L, Map.of(), high).equals(java.util.Set.of(0, 900)), "Group 9 without a row keeps x00");
+        // ID > 0: unknown rows, a missing chosen section or conflicting rows are refused.
+        require(refusal(5L, null, geosets()).contains("unknown"), "Unknown rows are refused");
+        require(refusal(5L, Map.of(1, 7), geosets()).contains("geoset 107 chosen by the display is not in the model"),
+                "A missing chosen section is refused");
+        require(refusal(5L, Map.of(1, DisplayModelTypes.Reference.CONFLICTING_GEOSET), geosets()).contains("conflict"),
+                "Conflicting rows are refused");
+        // ID > 0: a row for a group the model does not have changes nothing.
+        require(visible(5L, Map.of(4, 2, 1, 0), geosets()).equals(java.util.Set.of(0, 100)), "Rows for absent groups are ignored");
+        // ID == 0: display rows are ignored, every group draws x00 (unknown rows do not matter).
+        require(visible(0L, Map.of(1, 1), geosets()).equals(java.util.Set.of(0, 100)), "Rows are ignored when the ID is 0");
+        require(visible(0L, null, geosets()).equals(java.util.Set.of(0, 100)), "Unknown rows do not matter when the ID is 0");
+        require(refusal(0L, Map.of(1, 1), hiddenGeosets()).contains("no default x00"),
+                "With the ID 0 a group without x00 is still refused");
+        require(visible(0L, Map.of(1, DisplayModelTypes.Reference.CONFLICTING_GEOSET), geosets())
+                .equals(java.util.Set.of(0, 100)), "With the ID 0 even conflicting rows are ignored");
+        // ID > 0: group 8 is the last hidden group without a row (801 and 899); a row shows it.
+        var eight = mesh(0, 801, 899);
+        require(visible(5L, Map.of(), eight).equals(java.util.Set.of(0)), "Group 8 without a row is hidden");
+        require(visible(5L, Map.of(8, 99), eight).equals(java.util.Set.of(0, 899)), "A row for group 8 chooses 899");
+        // ID > 0: a group of 9 or more without a row keeps the x00 rule, so without x00 it refuses.
+        require(refusal(5L, Map.of(), mesh(0, 901)).contains("geoset group 9 has no default x00"),
+                "Group 9 without a row and without x00 is refused");
+        // ID > 0: when the rows hide every section there is nothing to draw: a visibility refusal.
+        var allHidden = WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(), hiddenGeosets()), Cancellation.NONE);
+        require(allHidden.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
+                && allHidden.detail().equals("every geoset is hidden by the display's rows"),
+                "All sections hidden is a visibility refusal, not a material one: " + allHidden.detail());
+    }
+
+    private static java.util.Set<Integer> visible(Long geosets, Map<Integer, Integer> rows, MeshAppearance appearance) {
+        var result = WorldTileCreatures.visibleGeosets(preview(7, 0L, geosets, rows, appearance).reference(),
+                appearance.mesh());
+        require(result.refusal() == null, "Unexpected refusal: " + result.refusal());
+        return result.ids();
+    }
+
+    private static String refusal(Long geosets, Map<Integer, Integer> rows, MeshAppearance appearance) {
+        var result = WorldTileCreatures.visibleGeosets(preview(7, 0L, geosets, rows, appearance).reference(),
+                appearance.mesh());
+        require(result.refusal() != null, "Expected a refusal, drew " + result.ids());
+        return result.refusal();
+    }
+
+    /** One opaque one-triangle part per geoset ID. */
+    private static MeshAppearance mesh(int... ids) {
+        var parts = new ArrayList<PreviewMesh.Part>();
+        var surfaces = new ArrayList<MeshAppearance.Surface>();
+        int[] indices = new int[ids.length * 3];
+        for (int i = 0; i < ids.length; i++) {
+            parts.add(new PreviewMesh.Part(ids[i], i * 3, 3));
+            surfaces.add(new MeshAppearance.Surface(i, 0, true, true, false));
+            indices[i * 3 + 1] = 1;
+            indices[i * 3 + 2] = 2;
+        }
+        return new MeshAppearance(new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, indices, parts),
+                new float[6], surfaces, List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})));
     }
 
     private static void cutoutReductionKeepsThinStrands() {
@@ -235,6 +306,154 @@ public final class WorldTileCreaturesTest {
         var crowded = one.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
         require(asked.get() == 1 && crowded.count(WorldTileCreatures.Count.PREVIEWS_BUSY) == 300,
                 "A busy display is not resubmitted for every spawn: " + asked.get());
+    }
+
+    /** One opaque triangle at z 0 and its one-bone Stand sequence that lifts it by 5. */
+    static MeshAppearance standing() {
+        var mesh = new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, new int[] {0, 1, 2},
+                List.of(new PreviewMesh.Part(0, 0, 3)));
+        return new MeshAppearance(mesh, new float[6], List.of(new MeshAppearance.Surface(0, 0, true, true, false)),
+                List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})));
+    }
+
+    static com.vibeminer.rendering.models.PreviewAnimation lift(MeshAppearance appearance) {
+        var up = new com.vibeminer.rendering.models.PreviewAnimation.Track(
+                com.vibeminer.rendering.models.PreviewAnimation.Interpolation.LINEAR, -1, 3, new int[] {0},
+                new float[] {0, 0, 5});
+        var bone = new com.vibeminer.rendering.models.PreviewAnimation.Bone(-1, 0, 0, 0, up, null, null, false);
+        int vertices = appearance.mesh().vertexCount();
+        int[] bones = new int[vertices * 4], weights = new int[vertices * 4];
+        for (int v = 0; v < vertices; v++) weights[v * 4] = 255;
+        return new com.vibeminer.rendering.models.PreviewAnimation("Stand", 1000, new long[0], List.of(bone),
+                appearance.mesh(), new float[0], bones, weights);
+    }
+
+    static WorldTileCreatures standingCreatures(java.util.function.Supplier<DisplayModelTypes.Idle> idle) {
+        var appearance = standing();
+        return new WorldTileCreatures(token -> index(List.of(WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0),
+                WorldSpawnOverlayTest.spawn(1, 2, -110, -100, 10.0))), () -> "r1",
+                (npc, token) -> qualified(7, null), new WorldTileCreatures.Previews() {
+                    public DisplayModelTypes.Preview preview(long display, Cancellation token) {
+                        return preview(display, 0L, 0L, appearance);
+                    }
+
+                    public DisplayModelTypes.Idle idle(long display, Cancellation token) {
+                        return idle.get();
+                    }
+
+                    private DisplayModelTypes.Preview preview(long display, Long extended, Long geosets,
+                            MeshAppearance appearance) {
+                        return WorldTileCreaturesTest.preview(display, extended, geosets, appearance);
+                    }
+                });
+    }
+
+    private static void creaturesStandInTheirIdlePoseOrSayWhyNot() throws Exception {
+        var appearance = standing();
+        var animation = lift(appearance);
+        var available = new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.AVAILABLE, null, animation, "Stand");
+        // The Stand sequence's first frame is baked into the converted mesh.
+        var preview = preview(7, 0L, 0L, appearance);
+        var stood = new WorldTileCreatures(token -> index(List.of()), () -> "r1", (npc, token) -> qualified(7, null),
+                new WorldTileCreatures.Previews() {
+                    public DisplayModelTypes.Preview preview(long display, Cancellation token) {
+                        return preview;
+                    }
+
+                    public DisplayModelTypes.Idle idle(long display, Cancellation token) {
+                        return available;
+                    }
+                }).stand(7, preview, Cancellation.NONE);
+        require(stood.model() != null && stood.model().restPose() == null, "A qualified Stand pose is baked");
+        float[] v = stood.model().vertices();
+        var expected = animation.pose(appearance.mesh(), 0).mesh().positions();
+        require(v[0] == expected[0] && v[1] == expected[1] && v[2] == expected[2] && v[2] == 5,
+                "Posed vertices match the animation's Stand frame: " + v[2]);
+        // Placements of a posed model are not disclosed as rest-posed.
+        var tile = standingCreatures(() -> available).append(WorldStreamTileWriter.Exterior.builder(), 0, TILE,
+                Cancellation.NONE);
+        require(tile.drawn() == 2 && tile.restPosed() == 0, "Both placements stand");
+        require(WorldStreamSourceController.creatureDetail(tile, 1).contains("(Stand pose, facing north)"),
+                WorldStreamSourceController.creatureDetail(tile, 1));
+        // No qualified sequence: the rest pose is drawn and the reason recorded.
+        var missing = standingCreatures(() -> DisplayModelTypes.Idle.unavailable("The Stand sequence records no bone keys"));
+        var rest = missing.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(rest.drawn() == 2 && rest.restPosed() == 2, "Rest-posed placements are counted");
+        require(WorldStreamSourceController.creatureDetail(rest, 1).contains("(rest pose, facing north)"),
+                WorldStreamSourceController.creatureDetail(rest, 1));
+        var otherSurface = new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.AVAILABLE, null, lift(new MeshAppearance(
+                new PreviewMesh(new float[] {0, 0, 1, 1, 0, 1, 0, 1, 1}, new int[] {0, 1, 2},
+                        List.of(new PreviewMesh.Part(0, 0, 3))),
+                new float[6], List.of(new MeshAppearance.Surface(0, 0, true, true, false)),
+                List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})))),
+                "Stand");
+        var mismatched = new WorldTileCreatures(token -> index(List.of()), () -> "r1",
+                (npc, token) -> qualified(7, null), new WorldTileCreatures.Previews() {
+                    public DisplayModelTypes.Preview preview(long display, Cancellation token) {
+                        return preview;
+                    }
+
+                    public DisplayModelTypes.Idle idle(long display, Cancellation token) {
+                        return otherSurface;
+                    }
+                }).stand(7, preview, Cancellation.NONE);
+        require(mismatched.model().restPose().contains("another rest surface"),
+                "A sequence for another surface is not applied: " + mismatched.model().restPose());
+        require(mismatched.model().vertices()[2] == 0, "The rest pose is kept");
+        // An idle read failure keeps the rest pose; a busy reader is not cached as anything.
+        var failing = new WorldTileCreatures(token -> index(List.of()), () -> "r1",
+                (npc, token) -> qualified(7, null), new WorldTileCreatures.Previews() {
+                    public DisplayModelTypes.Preview preview(long display, Cancellation token) {
+                        return preview;
+                    }
+
+                    public DisplayModelTypes.Idle idle(long display, Cancellation token) {
+                        throw new IllegalStateException("broken");
+                    }
+                });
+        require(failing.stand(7, preview, Cancellation.NONE).model().restPose()
+                .equals("Stand pose failed: IllegalStateException"), "An idle failure is stated");
+        var busyIdle = standingCreatures(() -> {
+            throw new DisplayModelTypes.ServiceUnavailable("Display previews busy", false, null);
+        });
+        var busy = busyIdle.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(busy.count(WorldTileCreatures.Count.PREVIEWS_BUSY) == 2 && busy.drawn() == 0,
+                "A busy idle read is a busy preview, not a rest pose");
+    }
+
+    private static void unreadableStandSequencesAreAskedAgainButUnsupportedOnesAreKept() throws Exception {
+        var appearance = standing();
+        var available = new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.AVAILABLE, null, lift(appearance),
+                "Stand");
+        // UNAVAILABLE ("retry can reassess it"): this tile draws the rest pose, the next tile asks again.
+        var asked = new AtomicInteger();
+        var streaming = standingCreatures(() -> asked.incrementAndGet() == 1
+                ? new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.UNAVAILABLE, null, null,
+                        "Model source is incomplete")
+                : available);
+        var first = streaming.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(first.drawn() == 2 && first.restPosed() == 2 && asked.get() == 1,
+                "An unreadable Stand sequence draws the rest pose on this tile");
+        var second = streaming.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(second.drawn() == 2 && second.restPosed() == 0 && asked.get() == 2,
+                "It is not cached: the next tile reads it again and stands");
+        // UNSUPPORTED is a lasting answer, cached with the model.
+        var unsupportedAsked = new AtomicInteger();
+        var unsupported = standingCreatures(() -> {
+            unsupportedAsked.incrementAndGet();
+            return new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.UNSUPPORTED, null, null,
+                    "Bone 3 uses a cylindrical billboard");
+        });
+        unsupported.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        var again = unsupported.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(again.restPosed() == 2 && unsupportedAsked.get() == 1, "An unsupported sequence is cached");
+        // A cancellation from a closed component is not a stated rest pose.
+        var closed = standingCreatures(() -> {
+            throw new CancellationException("Creature models closed");
+        });
+        var refused = closed.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(refused.drawn() == 0 && refused.count(WorldTileCreatures.Count.FAILED) == 2,
+                "A closed component's cancellation propagates as a failed read");
     }
     private static void appendDrawsOnlyQualifiedSpawnsOfTheTile() {
         var previews = new AtomicInteger();
@@ -529,11 +748,12 @@ public final class WorldTileCreaturesTest {
     }
 
     static DisplayModelTypes.Preview preview(long display, Long extended, Long geosets, MeshAppearance appearance) {
-        return preview(display, extended, geosets, false, appearance);
+        return preview(display, extended, geosets, Map.of(), appearance);
     }
 
-    /** {@code displayGeosets}: whether the display has CreatureDisplayInfoGeosetData rows (null unknown). */
-    static DisplayModelTypes.Preview preview(long display, Long extended, Long geosets, Boolean displayGeosets,
+    /** {@code displayGeosets}: the display's geoset group to value choices (null unknown). */
+    static DisplayModelTypes.Preview preview(long display, Long extended, Long geosets,
+            Map<Integer, Integer> displayGeosets,
             MeshAppearance appearance) {
         return new DisplayModelTypes.Preview(DisplayModelTypes.State.PARTIAL,
                 new DisplayModelTypes.Reference(display, 20, 123456, List.of(), extended, geosets, displayGeosets),

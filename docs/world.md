@@ -56,6 +56,82 @@ the viewport reuses its bounded loaded neighborhood. The catalog builds one
 immutable ID index on its worker, limited to 100,000 area records; frame updates
 perform bounded metadata lookup without table/file I/O or full catalog scans.
 
+## Sky and fog lights
+
+`WorldSky` works out sky colours and distance fog for a map position and time of
+day from the Light, LightParams, LightData and Map tables. The renderer doesn't
+use it yet; until it does, the explorer keeps its fixed sky and fog colours.
+
+The reader accepts only the reviewed layouts of these tables, and only fields
+whose names the definitions mark as verified:
+
+- Light: `GameCoords`, `GameFalloffStart`, `GameFalloffEnd`, `ContinentID` and
+  `LightParamsID[0]`.
+- LightData: `LightParamID`, `Time`, the six `Sky*Color` channels, `FogEnd` and
+  `FogScaler`.
+- Map: `TimeOfDayOverride`.
+
+Rows that can't be read are counted and skipped. A partial table is reported on
+every result.
+
+These rules come from the tables:
+
+- A light belongs to the map named by its `ContinentID`.
+- `GameCoords` share the native axes of terrain chunk origins: `[0]` is native X
+  and `[1]` is native Y, in the same units. A check of every positioned light
+  against its own map's terrain tiles supports this; other axis orders and
+  scales fit far fewer lights.
+- A light with zero coordinates and zero radii is the map-wide light.
+- Times count half-minutes over a 2880-step day.
+- A non-negative `Map.TimeOfDayOverride` fixes that map's time. Its unit is
+  assumed to be the same half-minute step as `LightData.Time`; the tables don't
+  record it.
+- Colour cells have an empty top byte and are read as `0xRRGGBB`. Under this
+  reading, sky colours in the recorded data are mostly blue-dominant.
+
+The falloff follows established reference behaviour rather than the tables:
+
+- **Falloff:** a light is a sphere. Its weight is 1 within its inner radius and
+  drops linearly to 0 at its outer radius, over 3D distance. The wowdev wiki's
+  Light page describes the sphere; Noggit's `Skies::findSkyWeights` uses the same
+  3D distance and linear falloff. Six recorded lights sit deeper below the
+  terrain than their outer radius, which only makes sense in 3D, as underground
+  volumes.
+
+These rules are this module's model, not recorded rules:
+
+- **Overlap:** if overlapping positioned lights add up to more than 1, they are
+  scaled to sum to 1. Otherwise the map's single map-wide light takes the
+  remaining weight. Noggit differs here: the smaller light takes precedence and
+  the larger ones are scaled down within its falloff band.
+- **Time:** channels interpolate linearly between the two keys around the
+  requested time, wrapping at midnight.
+- **Parameter slot:** only parameter slot 0 is read. The tables don't record what
+  the other slots mean.
+
+A map with no map-wide light falls back to Light 1, as the client's documented
+rule says: "If there is no (0,0,0) entry for a continent, use m_ID == 1 as
+fallback" (the wowdev wiki's Light structure).
+
+Some cases have no answer in the tables:
+
+- A map with several map-wide lights. Which one applies may depend on zone
+  lights or player conditions, which are not read here.
+- A map with no map-wide light when Light 1 isn't recorded either.
+- A parameter set without LightData rows.
+
+In these cases the result names the gap and blends only the lights that remain.
+It doesn't hide the gap by renormalising: `coverage` says how much of the
+position the recorded lights cover. Callers mix their own fallback in by
+`1 - coverage`, so the sky never snaps at a light's outer radius. If no light
+remains, the result is unavailable (coverage 0).
+
+`FogEnd` 0 means the row records no distance fog (3,362 of 6,008 rows in
+70790). Fog distance and scaler are averaged only over keys and lights that
+record fog. `fogShare` is how much of the value had recorded fog, so a key
+without fog never pulls the distance toward 0. A share of 0 means no recorded
+fog, and callers keep their own.
+
 ## Click to inspect
 
 A still primary click in the explorer reports what lies under the pointer in the
@@ -136,9 +212,10 @@ source terrain heights, holes and qualified texture layers on GPU and in the
 software fallback. The bounded atlas composition includes source tint and fog;
 client height blending and nonlinear sharpening remain unsupported. Missing or
 unsupported materials retain explicit partial/height fallback and a retry action.
-Static flat water renders on the GPU path as an untextured diagnostic teal overlay where the
-Source qualifies it (see [visible water checkpoint](world-visible-water-checkpoint.md)); the CPU
-fallback shows terrain only. Buildings, doodads, collision and creature models are not rendered yet; declared NPC spawn points can be shown as static markers (see [NPC spawn placement](world-npc-placement.md)). Global-WMO-only maps have no
+Static water (lakes, sloped rivers and open sea) renders on the GPU path as an untextured
+diagnostic teal overlay where the Source qualifies it (see
+[visible water checkpoint](world-visible-water-checkpoint.md)); the CPU fallback shows terrain
+only. Buildings, doodads, collision and creature models are not rendered yet; declared NPC spawn points can be shown as static markers (see [NPC spawn placement](world-npc-placement.md)). Global-WMO-only maps have no
 terrain tiles and remain visible with that limitation. The default application viewport now uses inline bgfx GPU rendering on a
 capable backend, with the bounded CPU renderer as fallback. No JavaFX3D pipeline
 is required. **GPU terrain** selects the renderer; **Retry GPU** explicitly retries

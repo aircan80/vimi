@@ -287,7 +287,7 @@ final class WorldPick {
         return mapName == null || mapName.isBlank() ? "map " + mapId : "map " + mapId + " " + mapName;
     }
 
-    private static String levels(WorldSpawns.Npc npc) {
+    static String levels(WorldSpawns.Npc npc) {
         if (npc.levelMin() == null && npc.levelMax() == null) return "unknown";
         if (npc.levelMax() == null) return "≥ " + npc.levelMin() + " (maximum unknown)";
         if (npc.levelMin() == null) return "≤ " + npc.levelMax() + " (minimum unknown)";
