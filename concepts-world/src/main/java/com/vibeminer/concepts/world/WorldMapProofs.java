@@ -818,7 +818,8 @@ final class WorldMapProofs {
     private void validateBinding(FileBinding binding, Cancellation token) {
         token.check();
         var lookup =
-                WorldSourceFutures.await(files.stat(FileTypes.FileRef.id(binding.id()), token));
+                WorldSourceFutures.await(
+                        files.statContent(FileTypes.FileRef.id(binding.id()), token));
         token.check();
         var fresh = lookup.file();
         if (lookup.state() != FileTypes.FileLookupState.FOUND
