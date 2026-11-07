@@ -40,7 +40,11 @@ public final class WorldTextureFormats {
             MHID = 0x4d484944,
             MCNK = 0x4d434e4b,
             MCLY = 0x4d434c59,
-            MCAL = 0x4d43414c;
+            MCAL = 0x4d43414c,
+            MCSH = 0x4d435348;
+
+    /** MCSH payload: a 64x64 one-bit shadow map. */
+    public static final int SHADOW_BYTES = 512;
 
     private WorldTextureFormats() {}
 
@@ -64,6 +68,13 @@ public final class WorldTextureFormats {
         public AlphaFormat alphaFormat() {
             return AlphaFormat.of(flags);
         }
+    }
+
+    /** Whether a tex0 chunk carries an MCSH shadow map. Never affects layer coverage. */
+    public enum ShadowState {
+        ABSENT,
+        BITS,
+        UNSUPPORTED
     }
 
     public enum ChunkIssue {
@@ -125,7 +136,8 @@ public final class WorldTextureFormats {
         }
     }
 
-    private record ChunkSlice(ChunkTexture metadata, Slice alpha) {}
+    private record ChunkSlice(
+            ChunkTexture metadata, Slice alpha, ShadowState shadow, Slice shadowBits) {}
 
     private record Part(int tag, Slice data) {}
 
@@ -290,6 +302,49 @@ public final class WorldTextureFormats {
             return new AlphaResult(count, ChunkIssue.NONE);
         }
 
+        public ShadowState shadowState(int ordinal) {
+            if (ordinal < 0 || ordinal >= chunks.size()) {
+                throw new IllegalArgumentException("Invalid texture chunk");
+            }
+            return chunks.get(ordinal).shadow();
+        }
+
+        /**
+         * Writes the chunk's 64x64 MCSH shadow map, one byte per texel: 255 shadowed, 0 lit. Bits
+         * are read least significant first. Without {@link #DO_NOT_FIX_ALPHA_MAP} in the root MCNK
+         * flags, the last row and column repeat the ones before them, as for alpha maps. That edge
+         * fix is inferred, not verified: it follows the client's alpha rule and Noggit, which
+         * applies it to shadows too; check it against client frames in #373. Returns false, writing
+         * nothing, when the chunk has no supported shadow map.
+         */
+        public synchronized boolean decodeShadow(
+                int ordinal, long rootChunkFlags, ByteBuffer target, BooleanSupplier canceled) {
+            Objects.requireNonNull(target);
+            Objects.requireNonNull(canceled);
+            check(canceled);
+            if (source == null) {
+                throw new IllegalStateException("Texture source closed");
+            }
+            if (shadowState(ordinal) != ShadowState.BITS) {
+                return false;
+            }
+            if (target.isReadOnly() || target.remaining() < 4096) {
+                throw new IllegalArgumentException("Insufficient writable shadow scratch");
+            }
+            var bits = chunks.get(ordinal).shadowBits();
+            int base = target.position();
+            for (int i = 0; i < SHADOW_BYTES; i++) {
+                int packed = source[bits.start() + i] & 255;
+                for (int bit = 0; bit < 8; bit++) {
+                    target.put((byte) ((packed >>> bit & 1) != 0 ? 255 : 0));
+                }
+            }
+            if ((rootChunkFlags & DO_NOT_FIX_ALPHA_MAP) == 0) {
+                fixEdges(target, base);
+            }
+            return true;
+        }
+
         @Override
         public synchronized void close() {
             source = null;
@@ -405,7 +460,8 @@ public final class WorldTextureFormats {
 
     private static ChunkSlice textureChunk(
             ByteBuffer input, Slice bounds, int ordinal, List<Long> diffuse) {
-        Slice layers = null, alpha = null;
+        Slice layers = null, alpha = null, shadowBits = null;
+        var shadow = ShadowState.ABSENT;
         ChunkIssue issue = ChunkIssue.NONE;
         int count = 0;
         input.position(bounds.start());
@@ -413,6 +469,7 @@ public final class WorldTextureFormats {
             while (input.position() < bounds.end()) {
                 if (++count > 16) {
                     issue = ChunkIssue.CHUNK_SHAPE;
+                    shadow = shadow == ShadowState.BITS ? shadow : ShadowState.UNSUPPORTED;
                     break;
                 }
                 var p = part(input, bounds.end());
@@ -426,12 +483,22 @@ public final class WorldTextureFormats {
                         issue = ChunkIssue.CHUNK_SHAPE;
                     }
                     alpha = p.data();
+                } else if (p.tag() == MCSH) {
+                    if (shadow == ShadowState.ABSENT && p.data().length() == SHADOW_BYTES) {
+                        shadow = ShadowState.BITS;
+                        shadowBits = p.data();
+                    } else {
+                        shadow = ShadowState.UNSUPPORTED;
+                        shadowBits = null;
+                    }
                 }
-                // MCSH, MCMT and other sub-chunks do not affect layer coverage.
+                // MCMT and other sub-chunks do not affect layer coverage.
                 input.position(p.data().end());
             }
         } catch (IllegalArgumentException invalid) {
             issue = ChunkIssue.CHUNK_SHAPE;
+            // The walk stopped early, so a later MCSH cannot be ruled out.
+            shadow = shadow == ShadowState.BITS ? shadow : ShadowState.UNSUPPORTED;
         }
         var entries = new ArrayList<Layer>();
         if (alpha == null && layers != null && layers.length() == 16) {
@@ -441,7 +508,9 @@ public final class WorldTextureFormats {
         if (layers != null && layers.length() == 0 && issue == ChunkIssue.NONE) {
             return new ChunkSlice(
                     new ChunkTexture(ordinal, entries, ChunkIssue.NO_LAYERS),
-                    new Slice(layers.end(), layers.end()));
+                    new Slice(layers.end(), layers.end()),
+                    shadow,
+                    shadowBits);
         }
         if (layers == null
                 || alpha == null
@@ -476,7 +545,7 @@ public final class WorldTextureFormats {
             }
             // A lone base layer has no masks; any MCAL bytes there are ignored, as the client does.
         }
-        return new ChunkSlice(new ChunkTexture(ordinal, entries, issue), alpha);
+        return new ChunkSlice(new ChunkTexture(ordinal, entries, issue), alpha, shadow, shadowBits);
     }
 
     private static boolean rle(
@@ -520,12 +589,17 @@ public final class WorldTextureFormats {
             target.put((byte) ((packed >>> 4) * 17));
         }
         if (fix) {
-            for (int row = 0; row < 64; row++) {
-                target.put(base + row * 64 + 63, target.get(base + row * 64 + 62));
-            }
-            for (int column = 0; column < 64; column++) {
-                target.put(base + 63 * 64 + column, target.get(base + 62 * 64 + column));
-            }
+            fixEdges(target, base);
+        }
+    }
+
+    /** Copies column 62 into column 63 and row 62 into row 63 of one 64x64 map. */
+    private static void fixEdges(ByteBuffer target, int base) {
+        for (int row = 0; row < 64; row++) {
+            target.put(base + row * 64 + 63, target.get(base + row * 64 + 62));
+        }
+        for (int column = 0; column < 64; column++) {
+            target.put(base + 63 * 64 + column, target.get(base + 62 * 64 + column));
         }
     }
 

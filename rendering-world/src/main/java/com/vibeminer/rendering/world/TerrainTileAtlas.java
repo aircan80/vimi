@@ -20,11 +20,12 @@ public final class TerrainTileAtlas {
     private final long[] empty;
     private final List<Mapping> mappings;
     private final int supportedChunks, emptyChunks;
+    private final TerrainTileSplat splat;
 
     // Package-private ownership transfer: only the pure composer allocates these arrays.
     TerrainTileAtlas(
             WorldFormats.Tile tile, byte[] pixels, long[] coverage, List<Mapping> mappings) {
-        this(tile, pixels, coverage, new long[4], mappings);
+        this(tile, pixels, coverage, new long[4], mappings, null);
     }
 
     TerrainTileAtlas(
@@ -32,7 +33,8 @@ public final class TerrainTileAtlas {
             byte[] pixels,
             long[] coverage,
             long[] empty,
-            List<Mapping> mappings) {
+            List<Mapping> mappings,
+            TerrainTileSplat splat) {
         if (coverage.length != 4 || empty.length != 4) {
             throw new IllegalArgumentException("Invalid atlas chunk masks");
         }
@@ -44,6 +46,7 @@ public final class TerrainTileAtlas {
             supported += Long.bitCount(coverage[i]);
             nothing += Long.bitCount(empty[i]);
         }
+        this.splat = splat;
         this.tile = tile;
         this.pixels = pixels;
         this.coverage = coverage;
@@ -101,7 +104,35 @@ public final class TerrainTileAtlas {
         return mappings;
     }
 
+    /** Shader-side splatting inputs when the composition requested them (issue #174 step 2). */
+    public java.util.Optional<TerrainTileSplat> splat() {
+        return java.util.Optional.ofNullable(splat);
+    }
+
     public long retainedBytes() {
-        return PIXEL_BYTES + 32L + mappings.size() * 64L + 256;
+        return PIXEL_BYTES
+                + 32L
+                + mappings.size() * 64L
+                + 256
+                + (splat == null ? 0 : splat.retainedBytes());
+    }
+
+    /** The largest {@link #retainedBytes()} with a full splat: 256 mappings, 64 diffuses. */
+    public static final long MAX_RETAINED_BYTES = maxRetainedBytes(TerrainTileSplat.HIGH_MASK);
+
+    /**
+     * The largest {@link #retainedBytes()} of an atlas whose splat mask has {@code maskSide}
+     * ({@link TerrainTileSplat#STANDARD_MASK} or {@link TerrainTileSplat#HIGH_MASK}), or of one
+     * without splatting inputs when {@code maskSide} is 0.
+     */
+    public static long maxRetainedBytes(int maskSide) {
+        long atlas = PIXEL_BYTES + 32L + 256 * 64L + 256;
+        return maskSide == 0
+                ? atlas
+                : atlas
+                        + 64L
+                        + TerrainTileSplat.MAX_DIFFUSES * 8L
+                        + TerrainTileSplat.LAYER_BYTES
+                        + TerrainTileSplat.alphaBytes(maskSide);
     }
 }

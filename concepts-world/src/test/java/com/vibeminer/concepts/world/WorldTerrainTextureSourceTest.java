@@ -1210,6 +1210,11 @@ class WorldTerrainTextureSourceTest {
         }
         files.sources.put(1L, manyWdt(tiles));
         var source = new WorldTerrainTextureSource(files.files(), pool);
+        // Capacity beyond the legacy nine current plus nine pending is held by other borrowers.
+        var others = new ArrayList<TerrainAtlasPool.Reservation>();
+        for (int i = 18; i < TerrainAtlasPool.MAX_ENTRIES; i++) {
+            others.add(pool.reserve().orElseThrow());
+        }
         try (var current =
                         source.read(MAP, tiles.subList(0, 9), Cancellation.NONE, p -> {})
                                 .get(10, TimeUnit.SECONDS);
@@ -1218,7 +1223,7 @@ class WorldTerrainTextureSourceTest {
                                 .get(10, TimeUnit.SECONDS)) {
             assertEquals(9, current.tiles().size());
             assertEquals(9, pending.tiles().size());
-            assertEquals(18, pool.stats().entries());
+            assertEquals(TerrainAtlasPool.MAX_ENTRIES, pool.stats().entries());
             assertEquals(18, pool.stats().leaseClaims());
             assertEquals(18, pool.stats().cachedEntries());
             try (var refused =
@@ -1229,9 +1234,12 @@ class WorldTerrainTextureSourceTest {
                         refused.tiles().getFirst().state());
                 assertTrue(refused.retainAtlas(tiles.getLast().x(), tiles.getLast().y()).isEmpty());
             }
-            assertEquals(18, pool.stats().entries());
+            assertEquals(TerrainAtlasPool.MAX_ENTRIES, pool.stats().entries());
             assertEquals(18, pool.stats().cachedEntries());
         } finally {
+            for (var other : others) {
+                other.close();
+            }
             source.closeAsync().get(5, TimeUnit.SECONDS);
             pool.closeAsync().get(5, TimeUnit.SECONDS);
         }
@@ -1293,12 +1301,54 @@ class WorldTerrainTextureSourceTest {
             assertEquals(WorldTerrainTextureSource.State.READY, result.tiles().getFirst().state());
             assertEquals(8, result.tiles().getFirst().receipt().diffuse().size());
             assertEquals(7_379_048, files.sources.get(3L).length);
-            assertEquals(TerrainAtlasPool.ENTRY_BYTES, pool.stats().chargedBytes());
+            // A published atlas without splatting inputs is charged as one, not at the maximum.
+            assertEquals(
+                    com.vibeminer.rendering.world.TerrainTileAtlas.maxRetainedBytes(0),
+                    pool.stats().chargedBytes());
         } finally {
             source.closeAsync().get(5, TimeUnit.SECONDS);
             pool.closeAsync().get(5, TimeUnit.SECONDS);
         }
         assertEquals(files.totalOpens(), files.closed.get());
+    }
+
+    @Test
+    void splattingInputsRideTheAtlasOnlyWhenEnabledAndWideChunksKeepTheAtlas() throws Exception {
+        for (boolean enabled : new boolean[] {false, true}) {
+            var files = new Files();
+            files.sources.put(3L, eightLayers());
+            for (long id = 10; id <= 17; id++) {
+                files.sources.put(id, blp(0xf800));
+            }
+            var pool = new TerrainAtlasPool();
+            var source = new WorldTerrainTextureSource(files.files(), pool);
+            WorldTerrainTextureSource.splat = enabled;
+            try (var result =
+                    source.read(MAP, List.of(TILE), Cancellation.NONE, p -> {})
+                            .get(10, TimeUnit.SECONDS)) {
+                var lease = result.retainAtlas(TILE.x(), TILE.y()).orElseThrow();
+                try (lease) {
+                    lease.withAtlas(
+                            atlas -> {
+                                assertEquals(enabled, atlas.splat().isPresent());
+                                atlas.splat()
+                                        .ifPresent(
+                                                splat -> {
+                                                    // Eight layers per chunk: no splat layer.
+                                                    assertEquals(0, splat.diffuseCount());
+                                                    assertEquals(
+                                                            com.vibeminer.rendering.world
+                                                                    .TerrainTileSplat.NONE,
+                                                            splat.layer(3, 4, 0));
+                                                });
+                            });
+                }
+            } finally {
+                WorldTerrainTextureSource.splat = false;
+                source.closeAsync().get(5, TimeUnit.SECONDS);
+                pool.closeAsync().get(5, TimeUnit.SECONDS);
+            }
+        }
     }
 
     @Test

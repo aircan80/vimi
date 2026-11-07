@@ -138,6 +138,7 @@ public final class WorldInstanceUiTest {
                         + combo.getItems());
         require(status.getText().contains("2 recorded entrances"), status.getText());
         require(!leave.isVisible(), "No leave in the open world");
+        require(!view.lookup("#world-menu-leave").isVisible(), "No menu Leave instance in the open world");
         require(enter.isDisabled(), "Nothing chosen yet");
         combo.setValue(combo.getItems().get(1));
         enter.fire();
@@ -146,17 +147,55 @@ public final class WorldInstanceUiTest {
                     "A global interior without a GPU is refused, not entered");
             var saved = (TerrainRenderer.Camera) get(view, "camera");
             combo.setValue(combo.getItems().get(0));
+            // Enter with the map panel open and the HUD hidden: the switch closes and restores both.
+            invoke(view, "toggleMapPanel");
+            var hud = (WorldHud) get(view, "hud");
+            require(hud.panelShown(), "Map panel open before entering");
+            var viewportNode = view.lookup("#world-viewport");
+            javafx.event.Event.fireEvent(viewportNode, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_PRESSED,
+                    "", "", javafx.scene.input.KeyCode.Z, false, false, true, false));
+            javafx.event.Event.fireEvent(viewportNode, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_RELEASED,
+                    "", "", javafx.scene.input.KeyCode.Z, false, false, false, false));
+            require(hud.hidden() && !hud.panelShown(), "HUD hidden (which closes the panel) before entering");
+            invoke(view, "toggleMapPanel");
+            require(!hud.hidden() && hud.panelShown(), "M brings the HUD back with the panel");
+            javafx.event.Event.fireEvent(viewportNode, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_PRESSED,
+                    "", "", javafx.scene.input.KeyCode.Z, false, false, true, false));
+            javafx.event.Event.fireEvent(viewportNode, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_RELEASED,
+                    "", "", javafx.scene.input.KeyCode.Z, false, false, false, false));
+            invoke(view, "toggleMapPanel");
+            require(hud.panelShown(), "Panel open again");
+            javafx.event.Event.fireEvent(viewportNode, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_PRESSED,
+                    "", "", javafx.scene.input.KeyCode.Z, false, false, true, false));
+            javafx.event.Event.fireEvent(viewportNode, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_RELEASED,
+                    "", "", javafx.scene.input.KeyCode.Z, false, false, false, false));
+            require(hud.hidden(), "HUD hidden as the entry starts");
             enter.fire();
             await(() -> inventoryMap(view) == DUNGEON.id() && (boolean) get(view, "explorer")
                     && get(view, "camera") != null && !(boolean) get(view, "scenePreparing"), () -> {
+                require(!hud.panelShown() && !hud.hidden() && !(boolean) get(view, "panelsHidden"),
+                        "Inside the instance the map panel is closed and the HUD shown");
                 require(leave.isVisible(), "Leave is offered inside the instance");
-                leave.fire();
+                require(view.lookup("#world-menu-leave").isVisible(), "The Escape menu offers Leave instance inside it");
+                var toasts = view.toasts();
+                require(toasts.getScene() != null && toasts.isVisible() && toasts.toasts().stream()
+                                .anyMatch(t -> t.text().startsWith("Entering ")),
+                        "Entering an instance shows a visible toast: " + toasts.toasts());
+                var chip = view.lookup("#world-zone-leave");
+                require(chip != null && chip.isVisible(), "The zone text offers Leave next to the zone");
+                ((Button) chip).fire();
                 await(() -> inventoryMap(view) == HOME.id() && (boolean) get(view, "explorer")
                         && get(view, "camera") != null && !(boolean) get(view, "scenePreparing"), () -> {
                     var camera = (TerrainRenderer.Camera) get(view, "camera");
                     require(camera.x() == saved.x() && camera.y() == saved.y(),
                             "Leave returns to the open-world position of entry: " + camera);
                     require(!leave.isVisible(), "No leave after returning");
+                    require(!view.lookup("#world-menu-leave").isVisible(), "No menu Leave instance after returning");
+                    require(!view.lookup("#world-zone-leave").isVisible(), "No leave chip after returning");
+                    var back = view.toasts();
+                    require(back.getScene() != null && back.isVisible() && back.toasts().stream()
+                                    .anyMatch(t -> t.text().startsWith("Left the instance")),
+                            "Leaving shows a visible toast: " + back.toasts());
                     enteringBar(view);
                 });
             });
@@ -179,6 +218,25 @@ public final class WorldInstanceUiTest {
         require(leave.isVisible() && leave.getText().equals("Cancel"), "Cancel is offered");
         require(view.lookup("#world-gpu-enabled") == null && view.lookup("#world-instance-enter") == null,
                 "Explorer controls are not reachable while entering");
+        require(((WorldHud) get(view, "hud")).isDisabled() && view.lookup("#world-back") == null,
+                "The HUD does not act and the menu holds no controls while entering");
+        javafx.event.Event.fireEvent(leave, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_PRESSED,
+                "", "", javafx.scene.input.KeyCode.ESCAPE, false, false, false, false));
+        javafx.event.Event.fireEvent(leave, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_RELEASED,
+                "", "", javafx.scene.input.KeyCode.ESCAPE, false, false, false, false));
+        require(!((WorldGameMenu) get(view, "menu")).shown(), "Escape opens no menu while the switch owns the layout");
+        var full = (WorldFullscreen) get(view, "fullscreen");
+        full.windowed(true);
+        javafx.event.Event.fireEvent(leave, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_PRESSED,
+                "", "", javafx.scene.input.KeyCode.F11, false, false, false, false));
+        javafx.event.Event.fireEvent(leave, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_RELEASED,
+                "", "", javafx.scene.input.KeyCode.F11, false, false, false, false));
+        javafx.event.Event.fireEvent(leave, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_PRESSED,
+                "", "", javafx.scene.input.KeyCode.Z, false, false, true, false));
+        javafx.event.Event.fireEvent(leave, new javafx.scene.input.KeyEvent(javafx.scene.input.KeyEvent.KEY_RELEASED,
+                "", "", javafx.scene.input.KeyCode.Z, false, false, false, false));
+        require(!full.active() && leave.isVisible() && content.getBottom().isVisible(),
+                "F11 and Alt+Z are refused while the open world drains: Cancel stays reachable");
         var area = (Label) get(view, "currentArea");
         area.setText("marker");
         invoke(view, "switchStreamingRendering");
