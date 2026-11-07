@@ -450,8 +450,22 @@ final class WorldStreamSourceController {
 
     /** True when the recorded sky has moved on with the clock and the camera should be resent. */
     boolean skyStale() {
-        var feed = sky;
-        return feed != null && feed.stale();
+        return skyStale(sky);
+    }
+
+    /**
+     * Like {@link #camera}, a failing sky lookup is logged and changes nothing: it must not break
+     * the World view's pulse. The feed looks at each half-minute once, so it is not retried on
+     * every pulse.
+     */
+    static boolean skyStale(WorldSkyFeed feed) {
+        if (feed == null) return false;
+        try {
+            return feed.stale();
+        } catch (RuntimeException failure) {
+            WorldDiagnostics.degraded("sky", "World sky lookup failed; the explorer's sky stays", failure);
+            return false;
+        }
     }
 
     /**

@@ -1,6 +1,8 @@
 package com.vibeminer.concepts.world;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -43,6 +45,8 @@ final class WorldSkyTablesTest {
                     new Field("SkyBand2Color", 1, false),
                     new Field("SkySmogColor", 1, false),
                     new Field("SkyFogColor", 1, false),
+                    new Field("DirectColor", 1, false),
+                    new Field("AmbientColor", 1, false),
                     new Field("FogEnd", 1, true),
                     new Field("FogScaler", 1, true));
     private static final List<Field> MAP = List.of(new Field("TimeOfDayOverride", 1, false));
@@ -159,7 +163,7 @@ final class WorldSkyTablesTest {
                                 List.of(
                                         row(
                                                 10, "100", "0", "0", "0", "0", "0", "0", "0", "0",
-                                                "0.25"),
+                                                "0", "0", "0.25"),
                                         row(
                                                 11,
                                                 "200",
@@ -170,14 +174,16 @@ final class WorldSkyTablesTest {
                                                 "0",
                                                 "0",
                                                 "8421504",
+                                                "16769216",
+                                                "4210784",
                                                 "1500",
                                                 "0.5"),
                                         row(
                                                 12, "200", "2880", "0", "0", "0", "0", "0", "0",
-                                                "0", "0"),
+                                                "0", "0", "0", "0"),
                                         row(
                                                 13, "555", "0", "0", "0", "0", "0", "0", "0", "0",
-                                                "0"))),
+                                                "0", "0", "0"))),
                         table(4, "Map", MAP, List.of(row(0, "-1"), row(1, "900")))));
     }
 
@@ -205,6 +211,8 @@ final class WorldSkyTablesTest {
             assertEquals(2, near.contributions().getFirst().lightId());
             assertEquals(0xCC88FF, near.sample().skyTop());
             assertEquals(0x808080, near.sample().skyFog());
+            assertEquals(new WorldSky.Lighting(0xFFE0C0, 0x404060), near.sample().lighting());
+            assertEquals(1, near.sample().lightShare(), 0);
             assertEquals(1500, near.sample().fogEnd(), 0);
             assertEquals(List.of(11L), near.contributions().getFirst().dataRows());
 
@@ -233,6 +241,77 @@ final class WorldSkyTablesTest {
                             WorldSkyTables.Unavailable.class,
                             () -> WorldSky.load(tables, Cancellation.NONE));
             assertTrue(failure.getMessage().contains("FogScaler"), failure.getMessage());
+        }
+    }
+
+    /** The authored tables with one LightData field (and its cells) removed. */
+    private static List<MemoryTables.FakeTable> withoutDataField(String field) {
+        int at = DATA.stream().map(Field::name).toList().indexOf(field);
+        var fields = new ArrayList<>(DATA);
+        fields.remove(at);
+        var rows = new ArrayList<Db2Types.Row>();
+        for (var row : tables(TableTypes.State.READY).get(2).rows()) {
+            var values = new ArrayList<>(row.values());
+            values.remove(at);
+            rows.add(row(row.id(), values.toArray(String[]::new)));
+        }
+        var changed = tables(TableTypes.State.READY);
+        changed.set(2, table(3, "LightData", fields, rows));
+        return changed;
+    }
+
+    @Test
+    void aSchemaWithoutLightFieldsKeepsSkyAndFogWithoutLight() {
+        try (var tables = open(withoutDataField("AmbientColor"))) {
+            var sky = WorldSky.load(tables, Cancellation.NONE);
+            assertTrue(
+                    sky.sourceIssues().stream()
+                            .anyMatch(
+                                    i ->
+                                            i.startsWith("Direct and ambient light are unavailable")
+                                                    && i.contains("AmbientColor")),
+                    String.join("\n", sky.sourceIssues()));
+
+            var near = sky.at(0, 1000, 0, 0, 600);
+            assertEquals(WorldSky.State.PARTIAL, near.state());
+            assertEquals(List.of(11L), near.contributions().getFirst().dataRows());
+            assertEquals(0xCC88FF, near.sample().skyTop());
+            assertEquals(0x808080, near.sample().skyFog());
+            assertEquals(1500, near.sample().fogEnd(), 0);
+            assertTrue(near.sample().hasFog());
+            assertFalse(near.sample().hasLight());
+            assertNull(near.sample().lighting());
+        }
+    }
+
+    @Test
+    void aRowWithABadLightValueKeepsItsSkyAndFog() {
+        var changed = tables(TableTypes.State.READY);
+        var rows = new ArrayList<Db2Types.Row>();
+        for (var row : changed.get(2).rows()) {
+            var values = new ArrayList<>(row.values());
+            if (row.id() == 11) {
+                values.set(8, "16777216"); // DirectColor past 0xFFFFFF
+            }
+            rows.add(row(row.id(), values.toArray(String[]::new)));
+        }
+        changed.set(2, table(3, "LightData", DATA, rows));
+        try (var tables = open(changed)) {
+            var sky = WorldSky.load(tables, Cancellation.NONE);
+            var issues = String.join("\n", sky.sourceIssues());
+            assertTrue(
+                    issues.contains("1 LightData rows have unreadable direct or ambient light"),
+                    issues);
+            // Only the authored bad time (row 12) is skipped; row 11 is kept.
+            assertTrue(issues.contains("1 LightData rows are unreadable and skipped."), issues);
+
+            var near = sky.at(0, 1000, 0, 0, 600);
+            assertEquals(List.of(11L), near.contributions().getFirst().dataRows());
+            assertEquals(0xCC88FF, near.sample().skyTop());
+            assertEquals(1500, near.sample().fogEnd(), 0);
+            assertFalse(near.sample().hasLight());
+            // Another key's light is untouched.
+            assertTrue(sky.at(0, 0, 0, 0, 600).sample().hasLight());
         }
     }
 
