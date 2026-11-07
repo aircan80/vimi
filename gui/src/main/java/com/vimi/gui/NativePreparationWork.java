@@ -540,6 +540,9 @@ public final class NativePreparationWork implements BuildPreparation.Work {
 
     private com.vibeminer.files.keys.TactKeys effectiveKeys() { return effectiveKeySet; }
 
+    /** Fingerprints of the keys this work decrypts with, by key name; for measurement tests. */
+    java.util.Map<String, String> effectiveKeyFingerprints() { return effectiveKeys().fingerprints(); }
+
     TablesOptions tablesOptions(TactKeyStatus status, TableRole role) {
         var defaults =
                 new TablesOptions(

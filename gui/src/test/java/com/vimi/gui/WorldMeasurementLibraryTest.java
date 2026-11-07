@@ -95,8 +95,8 @@ public final class WorldMeasurementLibraryTest {
             creatureModeKeysAndOpenWriteNothing(directory, version);
             System.out.println(
                     "World measurement open: refuses unprepared builds and the application's"
-                            + " library; no stored object or payload write; creatures mode pins"
-                            + " the loaded keys only, without a refresh, and its creature open"
+                            + " library; no stored object or payload write; creatures mode decrypts with"
+                            + " the loaded keys only, without a due refresh, and its creature open"
                             + " writes nothing passed");
         } catch (Throwable failure) {
             primary = failure;
@@ -107,13 +107,25 @@ public final class WorldMeasurementLibraryTest {
     }
 
     /**
-     * Creatures mode (#553): the work is pinned to exactly the library's loaded community key
-     * snapshot, and the key client is never asked; every other mode pins no keys. Opening the
-     * measurement creatures over the measured World returns its warmup issues, closes cleanly, and
-     * neither open stores an object or changes a payload file.
+     * Creatures mode (#553): the work decrypts with the library's loaded community key snapshot,
+     * and the key client is never asked although a startup TACT check is due; every other mode's
+     * work decrypts with no community keys. Opening the measurement creatures over the measured World
+     * returns its warmup issues, closes cleanly, and neither open stores an object or changes a
+     * payload file.
      */
     private static void creatureModeKeysAndOpenWriteNothing(Path directory, String version)
             throws Exception {
+        // A startup check makes the first refreshing key request due, so a refresh would fetch.
+        var service =
+                BuildApplication.open(directory, OfflineSourceFixtures::publicKeys)
+                        .get(20, TimeUnit.SECONDS);
+        try {
+            service.dataSources()
+                    .setChecks(DataSourcesService.Id.TACT_KEYS, DataSourcesService.Checks.STARTUP)
+                    .get(20, TimeUnit.SECONDS);
+        } finally {
+            service.closeAsync().get(20, TimeUnit.SECONDS);
+        }
         var fetches = new java.util.concurrent.atomic.AtomicInteger();
         com.vibeminer.network.TactKeyClient counting =
                 token -> {
@@ -132,7 +144,12 @@ public final class WorldMeasurementLibraryTest {
                         true)) {
             var loaded = opened.sources().tactKeys();
             require(loaded.count() > 0, "The fixture library has loaded community keys");
-            require(opened.pinnedKeys == loaded, "Creatures mode pins the loaded key snapshot");
+            require(
+                    opened.keyFingerprints()
+                            .entrySet()
+                            .containsAll(loaded.fingerprints().entrySet()),
+                    "Creatures mode decrypts with the loaded key snapshot: "
+                            + opened.keyFingerprints().keySet());
             try (var creatures = opened.openCreatures(Cancellation.NONE)) {
                 require(
                         creatures.warmup() != null
@@ -151,8 +168,9 @@ public final class WorldMeasurementLibraryTest {
                         TimeUnit.MINUTES.toNanos(1),
                         false)) {
             require(
-                    opened.pinnedKeys == com.vibeminer.files.keys.TactKeys.EMPTY,
-                    "Other modes pin no community keys");
+                    opened.keyFingerprints().isEmpty(),
+                    "Other modes decrypt with no community keys: "
+                            + opened.keyFingerprints().keySet());
         }
         require(fetches.get() == 0, "No TACT key refresh is started: " + fetches.get());
         require(
