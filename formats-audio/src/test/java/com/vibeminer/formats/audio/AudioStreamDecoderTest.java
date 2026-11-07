@@ -427,4 +427,22 @@ final class AudioStreamDecoderTest {
         assertTrue(System.nanoTime() - started < TimeUnit.SECONDS.toNanos(5));
         assertTrue(stalled.waitFor(5, TimeUnit.SECONDS), "stalled decoder is destroyed");
     }
+
+    /**
+     * The stream reports that its decoder finished while the decoded tail is still buffered, so a
+     * player can open what follows before the audio runs out.
+     */
+    @Test
+    void reportsDecodingFinishedWhileTheTailIsStillBuffered() throws Exception {
+        try (var stream = AudioStreamDecoder.open(fixture("authored-tone.ogg"), () -> false)) {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (!stream.decoded() && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            assertTrue(stream.decoded(), "decoder never finished");
+            byte[] tail = drain(stream);
+            assertTrue(tail.length > 0, "nothing was left to play");
+            assertTrue(audible(tail));
+        }
+    }
 }

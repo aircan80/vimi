@@ -20,17 +20,17 @@ final class RaceNpcsTest {
     private static final BuildRef BUILD =
             new BuildRef("wowf", "a".repeat(32), "b".repeat(32), "us");
 
-    private record Field(String name, String target) {}
+    record Field(String name, String target) {}
 
-    private static Field number(String name) {
+    static Field number(String name) {
         return new Field(name, null);
     }
 
-    private static Field reference(String name, String target) {
+    static Field reference(String name, String target) {
         return new Field(name, target);
     }
 
-    private static Db2Types.Row row(long id, long... values) {
+    static Db2Types.Row row(long id, long... values) {
         var text = new ArrayList<String>();
         for (long value : values) {
             text.add(Long.toString(value));
@@ -45,11 +45,12 @@ final class RaceNpcsTest {
             case "CreatureDisplayInfoOption" -> "2F331C33";
             case "NPCModelItemSlotDisplayInfo" -> "C2057F5B";
             case "TextureFileData" -> "BD7C74C2";
-            default -> throw new IllegalArgumentException(name);
+            case "ChrModel" -> "03FAB755";
+            default -> "F0000000"; // tables whose layout is not checked
         };
     }
 
-    private static MemoryTables.FakeTable table(
+    static MemoryTables.FakeTable table(
             long id, String name, List<Field> fields, List<Db2Types.Row> rows) {
         String layout = layout(name);
         var columns = new ArrayList<Db2Types.Column>();
