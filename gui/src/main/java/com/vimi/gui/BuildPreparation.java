@@ -118,6 +118,14 @@ public final class BuildPreparation {
     }
 
     private final Factory factory;
+
+    /**
+     * The work factory, for the World measurement probe (#422): it drives one work's metadata,
+     * files and keys itself and never starts or publishes a job.
+     */
+    Factory factory() {
+        return factory;
+    }
     private final Executor executor;
     private final Map<String, Job> jobs = new LinkedHashMap<>();
     private final java.util.Set<Context> contexts = new java.util.LinkedHashSet<>();
