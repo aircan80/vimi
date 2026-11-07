@@ -78,7 +78,8 @@ class WorldStreamTransportFileCancelTest {
                                     .start();
                         },
                         WorldStreamTestChildren.STARTUP_GUARD_MILLIS,
-                        5000);
+                        5000,
+                        WorldStreamTestChildren.EXIT_GRACE_MILLIS);
         var fileEntered = new CountDownLatch(1);
         var releaseFile = new CountDownLatch(1);
         try {

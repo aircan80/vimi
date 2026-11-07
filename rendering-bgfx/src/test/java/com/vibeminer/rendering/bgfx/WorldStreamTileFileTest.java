@@ -196,6 +196,30 @@ final class WorldStreamTileFileTest {
                         directory, header(tile, true, diffuse), tile, atlas(), () -> false);
         var decoded = WorldStreamTileFile.read(path(), expected, () -> false);
         assertEquals(diffuse, decoded.header().diffuse().getFirst());
+        // A 2048-square chain bound by the 8 MiB terrain diffuse limit also round-trips.
+        var large =
+                new WorldStreamTileFile.Source(
+                        188809,
+                        "05".repeat(16),
+                        5_592_548,
+                        5_592_548L,
+                        8 << 20,
+                        2048,
+                        9,
+                        2,
+                        WorldStreamTileFile.Encoding.BC3,
+                        8,
+                        7);
+        java.nio.file.Files.delete(path());
+        var written =
+                WorldStreamTileFile.write(
+                        directory, header(tile, true, large), tile, atlas(), () -> false);
+        assertEquals(
+                large,
+                WorldStreamTileFile.read(path(), written, () -> false)
+                        .header()
+                        .diffuse()
+                        .getFirst());
         assertThrows(
                 IllegalArgumentException.class,
                 () ->

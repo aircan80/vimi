@@ -78,7 +78,8 @@ class WorldStreamTransportOfferCancelBoundaryTest {
                                     .start();
                         },
                         WorldStreamTestChildren.STARTUP_GUARD_MILLIS,
-                        5000);
+                        5000,
+                        WorldStreamTestChildren.EXIT_GRACE_MILLIS);
         var packetReady = new CountDownLatch(1);
         var allowReturn = new CountDownLatch(1);
         var packet = new AtomicReference<WorldStreamTransport.OwnedPacket>();
