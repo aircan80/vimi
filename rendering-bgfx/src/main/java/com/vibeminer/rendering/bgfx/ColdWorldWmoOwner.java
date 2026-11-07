@@ -9,7 +9,11 @@ import java.util.function.Consumer;
 
 /** Exactly one attempted exterior per enclosing cold native context, including failed prefixes. */
 final class ColdWorldWmoOwner implements AutoCloseable {
-    static final long CHARGE_BYTES = 6_175_744;
+    /**
+     * The proposal's additional cold WMO envelope. Its three native mesh rows (GPU, queued and
+     * staging) are 21,504 bytes each since #375 widened the world-wmo vertex to 36 bytes.
+     */
+    static final long CHARGE_BYTES = 6_181_888;
 
     private enum Phase {
         NEW,

@@ -13,6 +13,12 @@ import org.lwjgl.system.MemoryUtil;
  * bgfx calls; the renderer copies bounded slices with bgfx_copy and closes this owner.
  */
 final class WorldStreamPackedObjects implements AutoCloseable {
+    /**
+     * GPU object vertex: the file's 32-byte position, normal and uv floats, then its vertex colour
+     * as four bytes R, G, B, 0 (COLOR0, normalized; #375).
+     */
+    static final int GPU_VERTEX_BYTES = WorldStreamObjectsFile.VERTEX_BYTES + 4;
+
     final int[] models, meshes, ranges, placementModels, images;
     final double[] placements;
 
@@ -86,12 +92,11 @@ final class WorldStreamPackedObjects implements AutoCloseable {
         ByteBuffer vertices = null, indices = null, pixels = null;
         try {
             check(canceled);
-            vertices = MemoryUtil.memAlloc(data.vertices.length * 4).order(ByteOrder.nativeOrder());
-            var floats = vertices.asFloatBuffer();
-            for (int at = 0; at < data.vertices.length; at += 16384) {
-                check(canceled);
-                floats.put(data.vertices, at, Math.min(16384, data.vertices.length - at));
-            }
+            int vertexCount = data.vertexCount();
+            vertices =
+                    MemoryUtil.memAlloc(vertexCount * GPU_VERTEX_BYTES)
+                            .order(ByteOrder.nativeOrder());
+            interleave(data.vertices, data.colours, vertices, canceled);
             indices = MemoryUtil.memAlloc(data.indices.length * 2).order(ByteOrder.nativeOrder());
             indices.asShortBuffer().put(data.indices);
             check(canceled);
@@ -142,6 +147,29 @@ final class WorldStreamPackedObjects implements AutoCloseable {
             free(vertices);
             free(indices);
             free(pixels);
+        }
+    }
+
+    /**
+     * Writes each vertex's floats (native order) followed by its colour bytes R, G, B, 0 into out,
+     * which holds exactly one GPU vertex per colour.
+     */
+    static void interleave(
+            float[] floats, int[] colours, ByteBuffer out, BooleanSupplier canceled) {
+        int stride = WorldStreamObjectsFile.VERTEX_FLOATS;
+        for (int v = 0; v < colours.length; v++) {
+            if ((v & 4095) == 0) {
+                check(canceled);
+            }
+            int at = v * GPU_VERTEX_BYTES;
+            for (int i = 0; i < stride; i++) {
+                out.putFloat(at + i * 4, floats[v * stride + i]);
+            }
+            int colour = colours[v];
+            out.put(at + 32, (byte) colour);
+            out.put(at + 33, (byte) (colour >>> 8));
+            out.put(at + 34, (byte) (colour >>> 16));
+            out.put(at + 35, (byte) 0);
         }
     }
 
