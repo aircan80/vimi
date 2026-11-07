@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.formats.world.WorldStageTimings;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -56,6 +57,11 @@ final class WorldStreamSession {
     private WorldStreamControl.Command decodedCommand, deferred;
     private WorldStreamControl.Camera camera;
     private BgfxWorldStreamRenderer.Upload upload;
+    // Opt-in measurement only (-Dvimi.world.stageTimings); stamps are 0 while it is off.
+    private final WorldStageTimingsDump timingsDump = WorldStageTimingsDump.configured();
+    private long uploadStarted, lateStarted;
+    // Opt-in hand-off stamps of the one offer in flight; 0 while timings are off.
+    private volatile long offerReadAt, decodeDoneAt;
     private WorldStreamTileFile.Header uploadHeader;
     private int issued, released;
     private boolean staged, cancelAcknowledgement;
@@ -179,11 +185,15 @@ final class WorldStreamSession {
                     if (window != null) {
                         stepWithinFrameBudget(owner); // #381 spike
                     } else if (upload != null && !upload.finished()) {
+                        long stepping = WorldStageTimings.start();
                         owner.step(upload);
+                        WorldStageTimings.stop("child.tile.uploadStep", stepping);
                         reconcile();
                     } else if (lateUpload != null && !lateUpload.ready()) {
                         // Terrain keeps priority: late object slices use only idle iterations.
+                        long stepping = WorldStageTimings.start();
                         owner.stepLate(lateUpload);
+                        WorldStageTimings.stop("child.objects.uploadStep", stepping);
                     }
                     // GPU mutations must precede draw submission in the same bgfx frame.
                     long now = System.nanoTime();
@@ -202,6 +212,7 @@ final class WorldStreamSession {
                     finishUpload();
                     finishLate(owner);
                     advertiseCredit();
+                    timingsDump.maybeWrite(now);
                     if (window == null) {
                         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
                     } // Native presentation: advance() paces itself on the display.
@@ -243,6 +254,7 @@ final class WorldStreamSession {
             requestClose();
             throw error;
         } finally {
+            timingsDump.write();
             requestClose();
             decoderCanceled.set(true);
             objectsCanceled.set(true);
@@ -331,6 +343,9 @@ final class WorldStreamSession {
                     requestClose();
                     return;
                 }
+                if (command instanceof WorldStreamControl.Offer) {
+                    offerReadAt = WorldStageTimings.start();
+                }
                 var result = mailbox.offer(command);
                 if (command instanceof WorldStreamControl.Close
                         && result == WorldControlMailbox.Result.ACCEPTED) {
@@ -391,7 +406,19 @@ final class WorldStreamSession {
             }
             decoderCanceled.set(false);
             decodedCommand = offer;
-            decoding = CompletableFuture.supplyAsync(() -> decodeOffer(offer), decoder);
+            long executed = WorldStageTimings.lap("child.handoff.offerReadToExecute", offerReadAt);
+            decoding =
+                    CompletableFuture.supplyAsync(
+                            () -> {
+                                WorldStageTimings.lap(
+                                        "child.handoff.executeToDecodeStart", executed);
+                                try {
+                                    return decodeOffer(offer);
+                                } finally {
+                                    decodeDoneAt = WorldStageTimings.start();
+                                }
+                            },
+                            decoder);
         } else if (command instanceof WorldStreamControl.Commit commit) {
             if (decoding != null) {
                 deferred = command;
@@ -504,7 +531,9 @@ final class WorldStreamSession {
                                 WorldStreamObjectsFile.Identity.of(header),
                                 header.objects(),
                                 canceled);
+                long packing = WorldStageTimings.start();
                 objects = WorldStreamPackedObjects.pack(data, canceled);
+                WorldStageTimings.stop("child.objects.pack", packing);
                 state = 1;
             } catch (java.util.concurrent.CancellationException stopped) {
                 payload.close();
@@ -519,7 +548,10 @@ final class WorldStreamSession {
                 state = 2;
             }
         }
-        return WorldStreamPackedTile.prepare(payload, objects, state, canceled);
+        long packing = WorldStageTimings.start();
+        var packed = WorldStreamPackedTile.prepare(payload, objects, state, canceled);
+        WorldStageTimings.stop("child.tile.pack", packing);
+        return packed;
     }
 
     /**
@@ -636,7 +668,10 @@ final class WorldStreamSession {
                                 tileY),
                         new WorldStreamObjectsFile.Reference(command.length(), command.sha256()),
                         canceled);
-        return WorldStreamPackedObjects.pack(data, canceled);
+        long packing = WorldStageTimings.start();
+        var packed = WorldStreamPackedObjects.pack(data, canceled);
+        WorldStageTimings.stop("child.objects.pack", packing);
+        return packed;
     }
 
     private void completeObjectsDecode(WorldStreamNativeOwner owner) {
@@ -667,6 +702,7 @@ final class WorldStreamSession {
         }
         // The renderer takes the packed input; a generation it no longer holds is born dropped.
         lateUpload = owner.beginLate(command.lease(), result.objects());
+        lateStarted = WorldStageTimings.start();
     }
 
     private void finishLate(WorldStreamNativeOwner owner) {
@@ -675,6 +711,7 @@ final class WorldStreamSession {
         }
         var command = objectsCommand;
         var outcome = owner.finishLate(lateUpload, state.objectsLive(command.lease()));
+        WorldStageTimings.stop("child.objects.uploadWall", lateStarted);
         lateUpload = null;
         retireObjects(command, outcome == WorldStreamStatus.LateOutcome.ATTACHED);
         sendObjects(command, outcome);
@@ -739,6 +776,7 @@ final class WorldStreamSession {
         decoding = null;
         decodedCommand = null;
         if (command instanceof WorldStreamControl.Offer offer) {
+            WorldStageTimings.lap("child.handoff.decodeDoneToNoticed", decodeDoneAt);
             send("INPUT_CONSUMED " + offer.transaction() + " TILE");
             if (result.error() != null || closing.get() || decoderCanceled.get()) {
                 if (result.tile() != null) {
@@ -770,6 +808,7 @@ final class WorldStreamSession {
                     } else {
                         uploadHeader = result.header();
                         upload = admitted.upload();
+                        uploadStarted = WorldStageTimings.start();
                         issued = released = 0;
                         staged = false;
                     }
@@ -941,6 +980,7 @@ final class WorldStreamSession {
                 throw new IllegalStateException("Native upload staged outside its credit");
             }
             staged = true;
+            WorldStageTimings.stop("child.tile.uploadWall", uploadStarted);
             int covered = 0;
             for (long word : uploadHeader.coverage()) {
                 covered += Long.bitCount(word);

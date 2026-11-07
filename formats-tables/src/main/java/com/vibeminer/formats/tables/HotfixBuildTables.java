@@ -264,6 +264,9 @@ public final class HotfixBuildTables implements BuildTables {
     // Tables refused during the current operation: one operation never mixes base and overlaid
     // rows of a table, and never recompiles a refused table per read.
     private final Set<Long> operationSkipped = new HashSet<>();
+    // Tables whose view this operation already used, pinned or not (the list cursor unpins as it
+    // goes): a due re-scan never rebuilds one of them mid-operation.
+    private final Set<Long> operationViewed = new HashSet<>();
     // Overlay compilations that started decoding; observed by tests only.
     int compiles;
     // Test seam over the bulk base-ordinal result; production keeps it as is.
@@ -278,12 +281,49 @@ public final class HotfixBuildTables implements BuildTables {
     int fitScans;
     // Set while compiling when the raw-column fit scan was inconclusive.
     private boolean fitInconclusive;
-    // Consecutive inconclusive fit scans per table, for the back-off.
-    private final Map<Long, Integer> fitFailures = new HashMap<>();
+    // Set while compiling when this base's raw-column check was given up on, with the raw
+    // candidate columns that stay refused because of it.
+    private boolean fitGaveUp;
+    private Set<Integer> fitCandidates = Set.of();
+    // Consecutive inconclusive fit scans per base identity (insertion order, bounded), for the
+    // back-off and the give-up cap. A completed scan, or a new base for the table, drops it.
+    private final Map<String, Integer> fitFailures = new LinkedHashMap<>();
 
     /** First wait before re-scanning after an inconclusive fit scan; doubles up to the maximum. */
     private static final long FIT_RETRY_NANOS = TimeUnit.SECONDS.toNanos(5),
             FIT_RETRY_MAX_NANOS = TimeUnit.MINUTES.toNanos(5);
+
+    /**
+     * Inconclusive fit scans of one base before giving up: its raw columns then stay refused
+     * without further scans until the base changes or the handle is reopened.
+     */
+    static final int FIT_SCANS_MAX = 8;
+
+    /** Base identities still backing off or given up; observed by tests only. */
+    int fitBackOffs() {
+        return fitFailures.size();
+    }
+
+    /** Releases every unpinned view, as a full cache would; a test seam over eviction. */
+    CompletableFuture<Void> evictUnpinnedViews() {
+        return operation(
+                Cancellation.NONE,
+                t -> {
+                    while (!views.isEmpty()) {
+                        evictOldestUnpinned();
+                    }
+                    return null;
+                });
+    }
+
+    private long fitRetryAt(String identity) {
+        int failures = Math.max(1, fitFailures.getOrDefault(identity, 1));
+        long at =
+                clock.getAsLong()
+                        + Math.min(
+                                FIT_RETRY_MAX_NANOS, FIT_RETRY_NANOS << Math.min(failures - 1, 6));
+        return at == 0 ? 1 : at;
+    }
 
     private final Set<Job<?>> jobs = new HashSet<>();
     private final ThreadPoolExecutor worker =
@@ -413,6 +453,7 @@ public final class HotfixBuildTables implements BuildTables {
                             job.token.check();
                             pinned.clear();
                             operationSkipped.clear();
+                            operationViewed.clear();
                             value = action.apply(job.token);
                             job.token.check();
                         } catch (RuntimeException | Error e) {
@@ -437,6 +478,7 @@ public final class HotfixBuildTables implements BuildTables {
                             }
                             pinned.clear();
                             operationSkipped.clear();
+                            operationViewed.clear();
                         }
                         var delivery = job.result;
                         T delivered = value;
@@ -542,6 +584,9 @@ public final class HotfixBuildTables implements BuildTables {
         try {
             var compiled = compile(metadata, priority, token);
             unavailable.remove(id);
+            if (compiled != null) {
+                operationViewed.add(id);
+            }
             return compiled;
         } catch (OverBudget over) {
             // One table over its bounds must not fail the workspace. It reads base rows only, and
@@ -592,21 +637,53 @@ public final class HotfixBuildTables implements BuildTables {
             Cancellation token) {
         long id = metadata.entry().fileDataId();
         var cached = views.get(id);
-        if (cached != null
-                && cached.metadata.identity().equals(metadata.identity())
-                && Objects.equals(cached.metadata.schema(), metadata.schema())
+        boolean current =
+                cached != null
+                        && cached.metadata.identity().equals(metadata.identity())
+                        && Objects.equals(cached.metadata.schema(), metadata.schema());
+        if (current
                 && !(cached.rescanAfterNanos != 0
-                        && !pinned.contains(id)
+                        && !operationViewed.contains(id)
                         && clock.getAsLong() - cached.rescanAfterNanos >= 0)) {
             pinned.add(id);
             return cached;
         }
-        if (cached != null) {
+        View previous = null;
+        if (current) {
+            // A due re-scan: keep the working overlay until its rebuild is accepted.
+            previous = cached;
+        } else if (cached != null) {
             if (pinned.contains(id)) {
                 throw new IllegalStateException("Hotfix base changed during operation");
             }
+            fitFailures.remove(cached.metadata.identity());
             charge.release(views.remove(id).bytes);
         }
+        View rebuilt;
+        try {
+            rebuilt = build(metadata, previous, priority, token);
+        } catch (OverBudget refused) {
+            if (previous == null || views.get(id) != previous) {
+                throw refused;
+            }
+            // The rebuild was refused, but the previous overlay still describes this base: keep
+            // it, and retry the re-scan after the back-off.
+            previous.rescanAfterNanos = fitRetryAt(previous.metadata.identity());
+            pinned.add(id);
+            return previous;
+        }
+        if (rebuilt == null && previous != null && views.get(id) == previous) {
+            charge.release(views.remove(id).bytes);
+        }
+        return rebuilt;
+    }
+
+    private View build(
+            ClientBuildTables.HotfixMetadata metadata,
+            View previous,
+            TableTypes.Priority priority,
+            Cancellation token) {
+        long id = metadata.entry().fileDataId();
         long hash = Long.parseUnsignedLong(metadata.header().tableHash(), 16);
         var input = entries(hash);
         if (input.isEmpty()) {
@@ -644,7 +721,10 @@ public final class HotfixBuildTables implements BuildTables {
         }
         compiles++;
         fitInconclusive = false;
+        fitGaveUp = false;
+        fitCandidates = Set.of();
         HotfixRowDecoder.Layout layout = null;
+        String layoutReason = null;
         try {
             layout =
                     new HotfixRowDecoder.Layout(
@@ -655,6 +735,29 @@ public final class HotfixBuildTables implements BuildTables {
                             fittedRawColumns(metadata, priority, token));
         } catch (HotfixRowDecoder.Invalid unsupported) {
             // Selected IDs remain masked UNKNOWN; never fall back to stale base values.
+        }
+        if (fitGaveUp && layout != null) {
+            // Name the give-up only when the refused raw columns are the sole layout mismatch:
+            // validate once with them admitted (an empty body, so no row is decoded).
+            try {
+                HotfixRowDecoder.decode(
+                        new HotfixRowDecoder.Layout(
+                                metadata.schema(),
+                                metadata.header(),
+                                metadata.raw().flags(),
+                                metadata.raw().idFieldIndex(),
+                                fitCandidates),
+                        hash,
+                        0,
+                        ByteBuffer.allocate(0),
+                        new HotfixRowDecoder.Limits(),
+                        token);
+                layoutReason = HotfixViewInfo.RAW_SCAN_GAVE_UP;
+            } catch (HotfixRowDecoder.Invalid probe) {
+                if (probe.reason() != HotfixRowDecoder.Reason.COLUMNS) {
+                    layoutReason = HotfixViewInfo.RAW_SCAN_GAVE_UP;
+                }
+            }
         }
         var changes = new HashMap<Long, Change>();
         var regions = new HashMap<Long, Integer>();
@@ -730,7 +833,11 @@ public final class HotfixBuildTables implements BuildTables {
                     }
                 } catch (com.vibeminer.formats.hotfix.HotfixRowDecoder.Invalid invalid) {
                     kind = Kind.UNKNOWN;
-                    undecoded = invalid.detail();
+                    undecoded =
+                            layoutReason != null
+                                            && invalid.reason() == HotfixRowDecoder.Reason.COLUMNS
+                                    ? layoutReason
+                                    : invalid.detail();
                 }
             } else if (entry.state() == HotfixCacheReader.State.DELETE) {
                 kind = Kind.DELETE;
@@ -812,6 +919,10 @@ public final class HotfixBuildTables implements BuildTables {
         // and an accepted view never fails after evicting them.
         synchronized (memory.lock()) {
             requireRoom(bytes, memory.generation());
+            // Accepted: only now does the rebuilt view replace the previous one.
+            if (previous != null && views.get(id) == previous) {
+                charge.release(views.remove(id).bytes);
+            }
             while (views.size() >= CACHE_TABLES) {
                 evictOldestUnpinned();
             }
@@ -820,17 +931,7 @@ public final class HotfixBuildTables implements BuildTables {
             }
         }
         if (fitInconclusive) {
-            int failures = fitFailures.merge(id, 1, Integer::sum);
-            result.rescanAfterNanos =
-                    clock.getAsLong()
-                            + Math.min(
-                                    FIT_RETRY_MAX_NANOS,
-                                    FIT_RETRY_NANOS << Math.min(failures - 1, 6));
-            if (result.rescanAfterNanos == 0) {
-                result.rescanAfterNanos = 1;
-            }
-        } else {
-            fitFailures.remove(id);
+            result.rescanAfterNanos = fitRetryAt(metadata.identity());
         }
         views.put(id, result);
         pinned.add(id);
@@ -917,6 +1018,12 @@ public final class HotfixBuildTables implements BuildTables {
         if (cached != null) {
             return cached;
         }
+        fitCandidates = Set.copyOf(candidates);
+        if (fitFailures.getOrDefault(metadata.identity(), 0) >= FIT_SCANS_MAX) {
+            // Given up on this base: its raw columns stay refused without another scan.
+            fitGaveUp = true;
+            return Set.of();
+        }
         Set<Integer> fitted;
         fitScans++;
         try {
@@ -928,21 +1035,33 @@ public final class HotfixBuildTables implements BuildTables {
             }
             // A damaged or unreadable base proves nothing about its values: refuse the columns
             // for now, never cache the failure, and re-scan after a back-off.
-            fitInconclusive = true;
-            return Set.of();
+            return inconclusive(metadata.identity());
         }
         if (fitted == null) {
             // Inconclusive (unreadable page, short scan, base changed): refuse, do not cache,
             // and re-scan after a back-off.
-            fitInconclusive = true;
-            return Set.of();
+            return inconclusive(metadata.identity());
         }
+        fitFailures.remove(metadata.identity());
         if (rawFits.size() >= CACHE_TABLES * 4) {
             rawFits.remove(rawFits.keySet().iterator().next());
         }
         // Keyed by the base identity, so an evicted view does not rescan an unchanged base.
         rawFits.put(metadata.identity(), fitted);
         return fitted;
+    }
+
+    private Set<Integer> inconclusive(String identity) {
+        int failures = fitFailures.getOrDefault(identity, 0) + 1;
+        fitFailures.remove(identity);
+        if (fitFailures.size() >= CACHE_TABLES * 4) {
+            fitFailures.remove(fitFailures.keySet().iterator().next());
+        }
+        fitFailures.put(identity, failures);
+        // The last allowed scan schedules no re-scan: the base is given up on.
+        fitInconclusive = failures < FIT_SCANS_MAX;
+        fitGaveUp = !fitInconclusive;
+        return Set.of();
     }
 
     private synchronized boolean isClosed() {

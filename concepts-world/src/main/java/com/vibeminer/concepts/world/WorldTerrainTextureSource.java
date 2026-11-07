@@ -10,6 +10,7 @@ import com.vibeminer.formats.images.Blp2Types;
 import com.vibeminer.formats.images.BlpFormatException;
 import com.vibeminer.formats.world.TerrainGrid;
 import com.vibeminer.formats.world.WorldFormats;
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.formats.world.WorldTextureFormats;
 import com.vibeminer.rendering.world.TerrainAtlasComposer;
 import com.vibeminer.rendering.world.TerrainGeometryFingerprint;
@@ -685,7 +686,10 @@ public final class WorldTerrainTextureSource {
     /**
      * Whole-file bound of a layer diffuse. The decoder reads only the header and the selected mip's
      * byte range (each mip read is bounded by {@code maxMipBytes}), so a large diffuse with a full
-     * mip chain (a 1024 x 1024 BC3 chain is about 1.4 MB) no longer fails a 1 MiB file cap.
+     * mip chain (a 1024 x 1024 BC3 chain is about 1.4 MB) no longer fails a 1 MiB file cap. The
+     * decoded stream holds the BLTE chunk the selected mip lies in, so the transient cost per
+     * diffuse is one decoded chunk: at most the file size, so at most this bound. Diffuses are
+     * decoded one at a time.
      */
     static final int DIFFUSE_SOURCE_LIMIT = 8 << 20;
 
@@ -993,6 +997,7 @@ public final class WorldTerrainTextureSource {
             if (key != null) {
                 var cached = pool.cachedReceipt(key);
                 if (cached.isPresent()) {
+                    WorldStageTimings.add("terrain.material.receiptCacheHits", 1);
                     var hit = cached.get();
                     try {
                         revalidate(hit.receipt().bindings(), request);
@@ -1036,9 +1041,11 @@ public final class WorldTerrainTextureSource {
                     }
                 }
                 request.report(Stage.COMPOSING, tileIndex, 0);
+                long composing = WorldStageTimings.start();
                 var composition =
                         TerrainAtlasComposer.compose(
                                 tile, grid, data, diffuse, splat, splatMask, request::canceled);
+                WorldStageTimings.stop("terrain.material.atlasCompose", composing);
                 for (var issue : composition.diagnostics()) {
                     issues.add(
                             new Issue(
@@ -1088,10 +1095,13 @@ public final class WorldTerrainTextureSource {
 
     private WorldTextureFormats.TextureData readTextureData(
             ReadSource texture, WorldTextureFormats.AlphaFormat alphaFormat, Request request) {
+        long started = WorldStageTimings.start();
         try {
             return WorldTextureFormats.adopt(texture.bytes(), alphaFormat, request::canceled);
         } catch (IllegalArgumentException invalid) {
             throw profileFailure(texture.binding(), Reason.TEXTURE_PROFILE, request);
+        } finally {
+            WorldStageTimings.stop("terrain.material.tex0Parse", started);
         }
     }
 
@@ -1107,6 +1117,15 @@ public final class WorldTerrainTextureSource {
     private record Decoded(TerrainAtlasComposer.DiffuseMip pixels, MipBinding binding) {}
 
     private Decoded decode(FileBinding before, Request request) {
+        long started = WorldStageTimings.start();
+        try {
+            return decodeTimed(before, request);
+        } finally {
+            WorldStageTimings.stop("terrain.material.diffuseReadDecode", started);
+        }
+    }
+
+    private Decoded decodeTimed(FileBinding before, Request request) {
         var opened = files.openRead(FileTypes.FileRef.id(before.fileId()), request.token).join();
         try (var stream = opened.stream()) {
             request.observeOpen(before.fileId(), opened);
@@ -1175,8 +1194,18 @@ public final class WorldTerrainTextureSource {
     TerrainDiffuseDetails.Detail detail(FileBinding before, Request request) {
         var cached = details.get(before.fileId(), before.contentKey());
         if (cached != null) {
+            WorldStageTimings.add("terrain.material.detailCacheHits", 1);
             return cached;
         }
+        long started = WorldStageTimings.start();
+        try {
+            return detailTimed(before, request);
+        } finally {
+            WorldStageTimings.stop("terrain.material.detailReadDecode", started);
+        }
+    }
+
+    private TerrainDiffuseDetails.Detail detailTimed(FileBinding before, Request request) {
         var opened = files.openRead(FileTypes.FileRef.id(before.fileId()), request.token).join();
         try (var stream = opened.stream()) {
             request.observeOpen(before.fileId(), opened);
@@ -1329,6 +1358,15 @@ public final class WorldTerrainTextureSource {
 
     /** Reads one stat'ed source; the caller revalidates it with the tile's other sources. */
     private ReadSource readBytes(FileBinding before, Request request) {
+        long started = WorldStageTimings.start();
+        try {
+            return readBytesTimed(before, request);
+        } finally {
+            WorldStageTimings.stop("terrain.material.read", started);
+        }
+    }
+
+    private ReadSource readBytesTimed(FileBinding before, Request request) {
         long id = before.fileId();
         int limit = before.sourceLimit();
         var opened = files.openRead(FileTypes.FileRef.id(id), request.token).join();
