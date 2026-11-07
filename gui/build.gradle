@@ -825,6 +825,15 @@ tasks.register('worldMeasurementLibraryTest', JavaExec) {
 }
 check.dependsOn worldMeasurementLibraryTest
 
+// Read-only prepared-build route (#346) over an authored offline library: refuses unprepared
+// builds, reads alongside a writer, and changes no library file.
+tasks.register('preparedBuildReaderTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.PreparedBuildReaderTest'
+}
+check.dependsOn preparedBuildReaderTest
+
 // Phase 0 real-data World measurement (docs/world-measurement-baseline.md). Opt-in, never part
 // of check: runs only on a measurement copy of the library (-PdataDirectory=<copy> with a
 // MEASUREMENT_COPY marker; it refuses the app's own library), opens it without background work
@@ -982,3 +991,11 @@ tasks.register('worldAudioZoneChangeProbe', JavaExec) {
     systemProperty 'vimi.audioFixture',
             rootProject.file('formats-audio/src/test/resources/audio/authored-tone.ogg').path
 }
+
+// Recorded sky and fog mixed into the World look (#177-2a); pure, no display.
+tasks.register('worldSkyLookTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldSkyLookTest'
+}
+tasks.named('check') { dependsOn tasks.named('worldSkyLookTest') }
