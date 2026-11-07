@@ -11,12 +11,13 @@ uniform vec4 u_worldLight[3];
 void main()
 {
     float fade = splatFade(v_uvFog.xy);
+    float maskLod = splatMaskLod(v_uvFog.xy);
     vec3 base = v_color.rgb * 255.0;
     if (u_worldAtlas.w > 0.5) {
         vec4 texel = texture2D(s_worldAtlas, v_uvFog.xy);
         vec4 splat = vec4_splat(0.0);
         if (u_worldSplat.x > 0.5) {
-            splat = splatAlbedo(v_uvFog.xy);
+            splat = splatAlbedo(v_uvFog.xy, maskLod);
         }
         if (texel.a >= 0.5) {
             // The atlas bakes MCCV in; the splat takes it from the vertex (#373).

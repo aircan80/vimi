@@ -112,13 +112,34 @@ public final class WorldStreamSplatUploadProof {
             // Only the splatted tile from here: the plain one covers the same ground.
             owner.commit(2, 3, List.of(splatted));
             int[] near = centre(owner, reader, new TerrainCamera(-100, -10, 14, 0, -1.2));
-            int[] expected = blended();
+            int[] first = blended(MASKS[0]), other = blended(MASKS[1]);
             require(
-                    close(near, expected),
+                    close(near, first) || close(near, other),
                     "Near splat pixel "
                             + java.util.Arrays.toString(near)
-                            + ", blend "
-                            + java.util.Arrays.toString(expected));
+                            + ", blends "
+                            + java.util.Arrays.toString(first)
+                            + " / "
+                            + java.util.Arrays.toString(other));
+            int[] mine = close(near, first) ? first : other, theirs = mine == first ? other : first;
+            // Layered chunks alternate their mask in a checkerboard. The next layered chunk along
+            // the columns (two chunks over) and the next one along the rows (one chunk over) each
+            // show the other mask, so a transposed or offset mask map can't pass.
+            int[] across =
+                    centre(owner, reader, new TerrainCamera(-100, -10 - 2 * CHUNK, 14, 0, -1.2));
+            require(
+                    close(across, theirs),
+                    "Two chunks along the columns: "
+                            + java.util.Arrays.toString(across)
+                            + ", expected "
+                            + java.util.Arrays.toString(theirs));
+            int[] down = centre(owner, reader, new TerrainCamera(-100 + CHUNK, -10, 14, 0, -1.2));
+            require(
+                    close(down, theirs),
+                    "One chunk along the rows: "
+                            + java.util.Arrays.toString(down)
+                            + ", expected "
+                            + java.util.Arrays.toString(theirs));
             int[] missing = centre(owner, reader, new TerrainCamera(-100, -45, 14, 0, -1.2));
             require(
                     close(missing, ATLAS),
@@ -142,6 +163,10 @@ public final class WorldStreamSplatUploadProof {
                             + maskBytes
                             + " near="
                             + rgb(near)
+                            + " across="
+                            + rgb(across)
+                            + " down="
+                            + rgb(down)
                             + " missing="
                             + rgb(missing)
                             + " far="
@@ -162,10 +187,15 @@ public final class WorldStreamSplatUploadProof {
     private static final int[] LAYER_565 = {0xf800, 0x07e0, 0x001f, 0xffe0};
 
     /**
-     * Mask texel of every splatted chunk: layers 1 to 3 weights; A (the old MCCV brightness) is no
-     * longer read (#373).
+     * The two mask texels of the splatted chunks, layers 1 to 3 weights, in a checkerboard; A (the
+     * old MCCV brightness) is no longer read (#373).
      */
-    private static final int MASK_R = 64, MASK_G = 32, MASK_B = 0, MASK_A = 192;
+    private static final int[][] MASKS = {{64, 32, 0}, {0, 96, 160}};
+
+    private static final int MASK_A = 192;
+
+    /** One chunk's side in yards. */
+    private static final double CHUNK = 533.3333 / 16;
 
     /**
      * Every vertex's MCCV (#373): the splat takes the vertex colour, 2 x colour / 255 per channel,
@@ -174,8 +204,10 @@ public final class WorldStreamSplatUploadProof {
     private static final int[] MCCV = {192, 96, 160};
 
     /**
-     * A trailer whose chunks in even atlas columns draw array layers 0 to 3 under one uniform mask,
-     * and whose odd columns have no layers (255, as the parent writes for a missing layer).
+     * A trailer whose chunks in even atlas columns draw array layers 0 to 3, and whose odd columns
+     * have no layers (255, as the parent writes for a missing layer). The layered chunks take the
+     * two {@link #MASKS} in a checkerboard: along a row they alternate every layered chunk, and
+     * along a column every chunk.
      */
     static WorldStreamTileFile.Splat blendSplat(int maskSide) {
         byte[] table = new byte[WorldStreamTileFile.SPLAT_TABLE_BYTES];
@@ -187,11 +219,17 @@ public final class WorldStreamSplatUploadProof {
         }
         byte[] alpha =
                 new byte[com.vibeminer.rendering.world.TerrainTileSplat.alphaBytes(maskSide)];
-        for (int at = 0; at < alpha.length; at += 4) {
-            alpha[at] = (byte) MASK_R;
-            alpha[at + 1] = (byte) MASK_G;
-            alpha[at + 2] = (byte) MASK_B;
-            alpha[at + 3] = (byte) MASK_A;
+        int per = maskSide / 16;
+        for (int y = 0; y < maskSide; y++) {
+            for (int x = 0; x < maskSide; x++) {
+                int row = y / per, column = x / per;
+                int[] mask = MASKS[(row + column / 2) % 2];
+                int at = (y * maskSide + x) * 4;
+                alpha[at] = (byte) mask[0];
+                alpha[at + 1] = (byte) mask[1];
+                alpha[at + 2] = (byte) mask[2];
+                alpha[at + 3] = (byte) MASK_A;
+            }
         }
         byte[][] pixels = new byte[4][];
         for (int layer = 0; layer < 4; layer++) {
@@ -208,8 +246,8 @@ public final class WorldStreamSplatUploadProof {
     }
 
     /** The composer's blend of the solid layers under the mask, tinted by its MCCV, 0..255. */
-    static int[] blended() {
-        double a1 = MASK_R / 255.0, a2 = MASK_G / 255.0, a3 = MASK_B / 255.0;
+    static int[] blended(int[] mask) {
+        double a1 = mask[0] / 255.0, a2 = mask[1] / 255.0, a3 = mask[2] / 255.0;
         double sum = a1 + a2 + a3, w0 = Math.max(0, 1 - sum), total = Math.max(1, w0 + sum);
         double[] weights = {w0, a1, a2, a3};
         int[] result = new int[3];
