@@ -720,6 +720,174 @@ final class SpellTextsTest {
     }
 
     @Test
+    void dummyAndProcAmountsWithCoefficientOneResolveOnlyAsPercentages() {
+        for (var type : List.of(List.of("6", "4"), List.of("6", "42"), List.of("3", "0"))) {
+            var effects = List.of(typed(101, type.get(0), type.get(1), "1"));
+            assertEquals(
+                    "A 7% chance.",
+                    scalarPreview("A $s1% chance.", effects, List.of(), List.of()).display(),
+                    type.toString());
+            var flat = scalarPreview("Gain $m1 Rage.", effects, List.of(), List.of());
+            assertEquals("Gain ? Rage.", flat.display(), type.toString());
+            assertEquals(
+                    "Spell power could raise this amount; it is shown only as a percentage",
+                    flat.substitutions().getFirst().issue());
+            assertEquals(
+                    "A 7% chance.",
+                    scalarPreview("A ${$s1*10/10}% chance.", effects, List.of(), List.of())
+                            .display(),
+                    type.toString());
+            assertEquals(
+                    "Gain ? Rage.",
+                    scalarPreview("Gain ${$s1*10/10} Rage.", effects, List.of(), List.of())
+                            .display(),
+                    type.toString());
+        }
+        // Weapon damage, damage and unreviewed auras stay unknown even as a percentage.
+        for (var type :
+                List.of(
+                        List.of("31", "0"),
+                        List.of("2", "0"),
+                        List.of("6", "226"),
+                        List.of("6", "97"))) {
+            assertEquals(
+                    "A ?% chance.",
+                    scalarPreview(
+                                    "A $s1% chance.",
+                                    List.of(typed(101, type.get(0), type.get(1), "1")),
+                                    List.of(),
+                                    List.of())
+                            .display(),
+                    type.toString());
+        }
+        // Every other scaling input must still be zero, and other coefficients never qualify.
+        var leveled = new ArrayList<>(typed(101, "6", "4", "1").values());
+        leveled.set(FIELDS.indexOf("EffectRealPointsPerLevel"), "2");
+        var fractional = typed(101, "6", "4", "0.5");
+        for (var effect :
+                List.of(new Db2Types.Row(101, false, null, leveled, List.of()), fractional)) {
+            assertEquals(
+                    "A ?% chance.",
+                    scalarPreview("A $s1% chance.", List.of(effect), List.of(), List.of())
+                            .display());
+        }
+    }
+
+    @Test
+    void percentageOnlyAmountsResolveOnlyInLinearPercentRoles() {
+        var dummy = typed(101, "6", "4", "1");
+        var second = new ArrayList<>(typed(102, "6", "4", "1").values());
+        second.set(FIELDS.indexOf("EffectIndex"), "1");
+        second.set(FIELDS.indexOf("EffectBasePointsF"), "3");
+        var fixed = new ArrayList<>(typed(103, "6", "108", "0").values());
+        fixed.set(FIELDS.indexOf("EffectIndex"), "2");
+        fixed.set(FIELDS.indexOf("EffectBasePointsF"), "20");
+        var effects =
+                List.of(
+                        dummy,
+                        new Db2Types.Row(102, false, null, second, List.of()),
+                        new Db2Types.Row(103, false, null, fixed, List.of()));
+        // Linear: scaled by literals and summed with other percentage-only amounts.
+        for (var ok :
+                Map.of(
+                                "A ${$s1*2}% b.", "A 14% b.",
+                                "A ${$s1+$s2}% b.", "A 10% b.",
+                                "A ${($s1-$s2)/2}% b.", "A 2% b.",
+                                "A ${-$s1*-1}% b.", "A 7% b.")
+                        .entrySet()) {
+            assertEquals(
+                    ok.getValue(),
+                    scalarPreview(ok.getKey(), effects, List.of(), List.of()).display(),
+                    ok.getKey());
+        }
+        // Not linear: a divisor, a product with another amount, or mixed with other values.
+        for (String bad :
+                List.of(
+                        "A ${$s3/$s1*100}% b.",
+                        "A ${$s1*$s3/100}% b.",
+                        "A ${$s1*$s2}% b.",
+                        "A ${$s1/$s3}% b.",
+                        "A ${$s1+5}% b.",
+                        "A ${$s1+$s3}% b.")) {
+            assertEquals(
+                    "A ?% b.", scalarPreview(bad, effects, List.of(), List.of()).display(), bad);
+        }
+        // %-position edges: the % must follow directly.
+        assertEquals(
+                "A ? % b.", scalarPreview("A $s1 % b.", effects, List.of(), List.of()).display());
+        assertEquals(
+                "A 7.0% b.",
+                scalarPreview("A ${$s1}.1% b.", effects, List.of(), List.of()).display());
+        assertEquals(
+                "Gain 7%", scalarPreview("Gain $s1%", effects, List.of(), List.of()).display());
+        assertEquals("Gain ?", scalarPreview("Gain $s1", effects, List.of(), List.of()).display());
+    }
+
+    @Test
+    void percentageOnlyRequiresEveryOtherGuardAndSurvivesRankOverrides() {
+        var attributes = new ArrayList<>(typed(101, "6", "4", "1").values());
+        attributes.set(FIELDS.indexOf("EffectAttributes"), "2");
+        var variance = new ArrayList<>(typed(101, "6", "4", "1").values());
+        variance.set(FIELDS.indexOf("Variance"), "0.5");
+        var noAura = new ArrayList<>(typed(101, "3", "0", "1").values());
+        noAura.set(FIELDS.indexOf("EffectAura"), "");
+        for (var values : List.of(attributes, variance, noAura)) {
+            assertEquals(
+                    "A ?% chance.",
+                    scalarPreview(
+                                    "A $s1% chance.",
+                                    List.of(new Db2Types.Row(101, false, null, values, List.of())),
+                                    List.of(),
+                                    List.of())
+                            .display());
+        }
+        // A qualifying periodic total shown as a percentage resolves.
+        var tick = new ArrayList<>(typed(101, "6", "4", "1").values());
+        tick.set(FIELDS.indexOf("EffectBasePointsF"), "2");
+        tick.set(FIELDS.indexOf("EffectAuraPeriod"), "3000");
+        assertEquals(
+                "Up to 10% over 15 sec.",
+                scalarPreview(
+                                "Up to $o1% over $d.",
+                                List.of(new Db2Types.Row(101, false, null, tick, List.of())),
+                                List.of(row(90, "16929", "0", "1", "0", "0")),
+                                List.of(row(1, "15000", "0", "15000", "0")))
+                        .display());
+        // A rank override keeps the restriction of the effect it replaces.
+        var world =
+                new MemoryTables()
+                        .add(
+                                BUILD,
+                                "enUS",
+                                List.of(
+                                        table(
+                                                1,
+                                                "Spell",
+                                                List.of("Description_lang"),
+                                                List.of(row(16929, "A $s1% chance, $s1 more.")),
+                                                TableTypes.State.READY),
+                                        table(
+                                                2,
+                                                "SpellEffect",
+                                                FIELDS,
+                                                List.of(typed(101, "6", "4", "1")),
+                                                TableTypes.State.READY)));
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70790")) {
+            var ranked =
+                    service.description(
+                                    16929,
+                                    List.of(
+                                            new SpellTexts.EffectOverride(
+                                                    0, new BigDecimal("40"), null, List.of())),
+                                    TableTypes.Priority.INTERACTIVE,
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals("A 40% chance, ? more.", ranked.display());
+        }
+    }
+
+    @Test
     void aCoefficientOfOneIsInertOnlyForReviewedAuraTypes() {
         // Spell power scaled or unreviewed: health leech (9), school damage (2), heal (10), and
         // periodic damage/heal, mana shield, periodic dummy and heal absorb auras.

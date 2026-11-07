@@ -329,6 +329,7 @@ public final class SpellTexts implements AutoCloseable {
             // coefficient of exactly 0 is inert; exactly 1 is inert only for the aura types in
             // INERT_COEFFICIENT_AURAS. Any other coefficient or effect type is not fixed.
             boolean fixed = effects.rawGuardZero(effect);
+            boolean coefficientOne = false, coefficientInert = false;
             for (String field : CONTEXT_FLOATS) {
                 sources.add(
                         new Source(
@@ -343,11 +344,11 @@ public final class SpellTexts implements AutoCloseable {
                 if (field.equals("EffectBonusCoefficient")) {
                     // Zero adds no spell power. The recorded default of one is inert only for
                     // aura types reviewed as unable to scale with spell power.
-                    fixed &=
+                    coefficientOne = value != null && value.compareTo(BigDecimal.ONE) == 0;
+                    coefficientInert =
                             value != null
                                     && (value.signum() == 0
-                                            || inertCoefficient(kind, aura)
-                                                    && value.compareTo(BigDecimal.ONE) == 0);
+                                            || inertCoefficient(kind, aura) && coefficientOne);
                 } else {
                     fixed &= value != null && value.compareTo(BigDecimal.ONE) == 0;
                 }
@@ -358,6 +359,12 @@ public final class SpellTexts implements AutoCloseable {
                                 "SpellEffect", effect.id(), field, effects.value(effect, field)));
             }
             fixed &= effects.zero(effect, "EffectAttributes");
+            // Dummy and proc-trigger amounts with a coefficient of exactly one are fixed only
+            // when the template shows them as a percentage: spell power adds flat amounts, never
+            // percentage points. SpellText enforces the literal % at each use.
+            boolean percentageOnly =
+                    fixed && !coefficientInert && coefficientOne && dummy(kind, aura);
+            fixed &= coefficientInert || percentageOnly;
             var period = effects.number(effect, "EffectAuraPeriod");
             Long periodMilliseconds =
                     period != null
@@ -376,7 +383,7 @@ public final class SpellTexts implements AutoCloseable {
                                     : fixed
                                             ? null
                                             : "Effect requires random, scaling or character context",
-                            false,
+                            percentageOnly,
                             periodMilliseconds,
                             radii ? radius(effects, effect, priority, token) : null);
             if (amounts.putIfAbsent(slot, amount) != null) {
@@ -412,7 +419,9 @@ public final class SpellTexts implements AutoCloseable {
                 // The radius does not depend on the rank value.
                 radius = original.radius();
             }
+            boolean percentageOnly = false;
             if (original != null && replacement.value() != null) {
+                percentageOnly = original.percentageOnly();
                 sources.addAll(original.sources());
                 period = original.periodMilliseconds();
                 // An unreadable base is what the override supplies; other causes still hold.
@@ -424,7 +433,7 @@ public final class SpellTexts implements AutoCloseable {
             result.put(
                     replacement.effectIndex(),
                     new SpellText.Amount(
-                            replacement.value(), sources, issue, false, period, radius));
+                            replacement.value(), sources, issue, percentageOnly, period, radius));
         }
         return result;
     }
@@ -442,6 +451,17 @@ public final class SpellTexts implements AutoCloseable {
             java.util.Set.of(
                     10, 29, 31, 33, 47, 49, 52, 54, 55, 57, 65, 79, 85, 99, 107, 108, 110, 136, 137,
                     138, 232, 290);
+
+    /** DUMMY effects (3) and APPLY_AURA (6) dummy (4) or proc-trigger (42) auras. */
+    private static boolean dummy(BigDecimal kind, BigDecimal aura) {
+        if (kind == null || aura == null || kind.scale() > 0 || aura.scale() > 0) {
+            return false;
+        }
+        return kind.compareTo(BigDecimal.valueOf(3)) == 0
+                || kind.compareTo(BigDecimal.valueOf(6)) == 0
+                        && (aura.compareTo(BigDecimal.valueOf(4)) == 0
+                                || aura.compareTo(BigDecimal.valueOf(42)) == 0);
+    }
 
     private static boolean inertCoefficient(BigDecimal kind, BigDecimal aura) {
         return kind != null

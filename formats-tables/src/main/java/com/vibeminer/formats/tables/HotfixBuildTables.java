@@ -41,6 +41,8 @@ public final class HotfixBuildTables implements BuildTables {
         UNKNOWN
     }
 
+    private static final String OPTIONAL_KEY_DATA = "OPTIONAL_KEY_DATA";
+
     private record Change(
             HotfixCacheReader.Entry entry, Kind kind, Db2Types.Row row, String reason) {
         private Change(HotfixCacheReader.Entry entry, Kind kind, Db2Types.Row row) {
@@ -807,19 +809,26 @@ public final class HotfixBuildTables implements BuildTables {
                                         entry.ordinal(),
                                         64 << 10,
                                         token);
-                        var decoded =
-                                HotfixRowDecoder.decode(
-                                        layout,
-                                        hash,
-                                        entry.recordId(),
-                                        ByteBuffer.wrap(payload),
-                                        new HotfixRowDecoder.Limits(),
-                                        token);
+                        HotfixRowDecoder.Decoded decoded;
+                        try {
+                            decoded =
+                                    HotfixRowDecoder.decode(
+                                            layout,
+                                            hash,
+                                            entry.recordId(),
+                                            ByteBuffer.wrap(payload),
+                                            new HotfixRowDecoder.Limits(),
+                                            token);
+                        } finally {
+                            // The body may end in a key block; the row holds only decoded text.
+                            Arrays.fill(payload, (byte) 0);
+                        }
                         row = decoded.row();
                         kind = Kind.ADD;
                         if (decoded.optionalKeyData()) {
                             // Shown as a hotfix row; hotfixInfo notes the stripped key block.
-                            undecoded = "OPTIONAL_KEY_DATA";
+                            // Key loading re-reads the block of effective rows only.
+                            undecoded = OPTIONAL_KEY_DATA;
                         }
                     }
                 } catch (com.vibeminer.formats.hotfix.HotfixRowDecoder.Invalid invalid) {
@@ -1483,6 +1492,82 @@ public final class HotfixBuildTables implements BuildTables {
             Cancellation token) {
         requireOpen();
         return base.prepareNativeEvidence(table, priority, access, progress, token);
+    }
+
+    /**
+     * TactKey blocks the effective hotfix rows carry, in table hash then record ID order, for key
+     * loading only: superseded pushes, deleted records, region conflicts and refused rows never
+     * contribute, and a table whose overlay is refused contributes nothing. Every block is
+     * returned, zero and repeated ones included, so the caller applies one join rule to all key
+     * sources. Never logged or rendered.
+     */
+    @Override
+    public CompletableFuture<List<HotfixRowDecoder.OptionalKey>> deliveredKeys(
+            TableTypes.Priority priority, Cancellation token) {
+        return operation(
+                token,
+                t -> {
+                    // Candidate tables: a VALID decodable body whose last 28 bytes open with the
+                    // TactKey hash. Only those 4 bytes are read; decoding decides what counts.
+                    var tables = new java.util.TreeSet<Long>();
+                    var tail = ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+                    for (var entry : binding.index().entries()) {
+                        t.check();
+                        if (entry.state() != HotfixCacheReader.State.VALID
+                                || entry.payloadBytes() <= HotfixRowDecoder.OPTIONAL_KEY_BYTES
+                                || entry.payloadBytes() > 64 << 10
+                                || tables.contains(entry.tableHash())) {
+                            continue;
+                        }
+                        tail.clear();
+                        await(
+                                binding.source()
+                                        .readRange(
+                                                entry.payloadOffset()
+                                                        + entry.payloadBytes()
+                                                        - HotfixRowDecoder.OPTIONAL_KEY_BYTES,
+                                                tail,
+                                                t));
+                        if (tail.position() == 4
+                                && tail.getInt(0) == HotfixRowDecoder.TACT_KEY_HASH) {
+                            tables.add(entry.tableHash());
+                        }
+                    }
+                    var delivered = new ArrayList<HotfixRowDecoder.OptionalKey>();
+                    for (long hash : tables) {
+                        Long id = base.fileDataIdForHash(hash);
+                        if (id == null) {
+                            continue;
+                        }
+                        var view = view(TableTypes.Ref.id(id), priority, t);
+                        if (view == null) {
+                            continue;
+                        }
+                        for (var change : new TreeMap<>(view.changes).values()) {
+                            t.check();
+                            if (change.kind() != Kind.ADD
+                                    || !OPTIONAL_KEY_DATA.equals(change.reason())) {
+                                continue;
+                            }
+                            byte[] payload =
+                                    HotfixCacheReader.readPayloadBlocking(
+                                            binding.source(),
+                                            binding.index(),
+                                            change.entry().ordinal(),
+                                            64 << 10,
+                                            t);
+                            try {
+                                var key = HotfixRowDecoder.optionalKey(payload);
+                                if (key != null) {
+                                    delivered.add(key);
+                                }
+                            } finally {
+                                Arrays.fill(payload, (byte) 0);
+                            }
+                        }
+                    }
+                    return List.copyOf(delivered);
+                });
     }
 
     @Override

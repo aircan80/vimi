@@ -22,9 +22,8 @@ public final class AuthoredGeometryPressure {
         var released = new java.util.concurrent.atomic.AtomicBoolean();
         return () -> {
             if (!released.compareAndSet(false, true)) return;
-            synchronized (cache) {
-                preparing.setBoolean(cache, false);
-            }
+            // End the lane exactly as a real preparation does, waking anyone it turned away.
+            cache.endPreparation();
         };
     }
 }

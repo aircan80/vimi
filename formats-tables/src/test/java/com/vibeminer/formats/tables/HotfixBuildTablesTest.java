@@ -1391,6 +1391,88 @@ class HotfixBuildTablesTest {
         }
     }
 
+    private static byte[] keyed(int value, long name, int keyByte) {
+        var body = ByteBuffer.allocate(4 + 28).order(ByteOrder.LITTLE_ENDIAN);
+        body.putInt(value).putInt(0xDF2F53CF).putLong(name);
+        for (int i = 0; i < 16; i++) {
+            body.put((byte) keyByte);
+        }
+        return body.array();
+    }
+
+    private static List<String> delivered(BuildTables tables) {
+        // Name and first key byte only: enough to tell synthetic blocks apart.
+        return tables.deliveredKeys(P, Cancellation.NONE).join().stream()
+                .map(k -> Long.toHexString(k.name()) + ":" + k.key()[0])
+                .toList();
+    }
+
+    @Test
+    void deliveredKeysComeOnlyFromEffectiveRowsWithEveryBlockKept() {
+        var conflicting = entry(0x11223344L, 2, 24, 1, keyed(47, 0x55L, 5));
+        ByteBuffer.wrap(conflicting).order(ByteOrder.LITTLE_ENDIAN).putInt(4, 71);
+        try (var tables =
+                numbers(
+                        0x11223344L,
+                        // Effective, repeated, differing and zero blocks are all returned in
+                        // record order; the caller applies the join rule.
+                        entry(0x11223344L, 1, 20, 1, keyed(42, 0x51L, 7)),
+                        entry(0x11223344L, 1, 21, 1, keyed(43, 0x51L, 7)),
+                        entry(0x11223344L, 1, 22, 1, keyed(44, 0x52L, 1)),
+                        entry(0x11223344L, 1, 23, 1, keyed(45, 0x52L, 0)),
+                        // Superseded by a later push without a block.
+                        entry(0x11223344L, 1, 25, 1, keyed(48, 0x53L, 3)),
+                        entry(0x11223344L, 2, 25, 1, number(49)),
+                        // Deleted later.
+                        entry(0x11223344L, 1, 26, 1, keyed(50, 0x54L, 4)),
+                        entry(0x11223344L, 2, 26, 2, new byte[0]),
+                        // Region conflict.
+                        entry(0x11223344L, 1, 24, 1, keyed(46, 0x55L, 5)),
+                        conflicting,
+                        // A padded row is refused, so its tail is never a key.
+                        entry(
+                                0x11223344L,
+                                1,
+                                27,
+                                1,
+                                ByteBuffer.allocate(7)
+                                        .order(ByteOrder.LITTLE_ENDIAN)
+                                        .putInt(51)
+                                        .array()))) {
+            assertEquals(List.of("51:7", "51:7", "52:1", "52:0"), delivered(tables));
+            assertEquals(
+                    List.of("20", "42"),
+                    tables.get(TableTypes.Ref.id(100), 20, P, Cancellation.NONE)
+                            .join()
+                            .row()
+                            .row()
+                            .values(),
+                    "the key never reaches the row");
+            assertEquals(
+                    "OptionalKey[redacted]",
+                    tables.deliveredKeys(P, Cancellation.NONE).join().getFirst().toString());
+        }
+        try (var tables = numbers(0x11223344L, entry(0x11223344L, 1, 20, 1, number(42)))) {
+            assertEquals(List.of(), delivered(tables));
+        }
+    }
+
+    @Test
+    void deliveredKeysMergeAcrossTables() {
+        try (var tables =
+                several(
+                        new HotfixMemory(64L << 20, 256L << 20),
+                        cache(
+                                entry(0xAAAA0002L, 1, 30, 1, keyed(1, 0x62L, 2)),
+                                entry(0xAAAA0001L, 1, 31, 1, keyed(1, 0x61L, 1)),
+                                entry(0xAAAA0003L, 1, 32, 1, number(1))),
+                        0xAAAA0001L,
+                        0xAAAA0002L,
+                        0xAAAA0003L)) {
+            assertEquals(List.of("61:1", "62:2"), delivered(tables), "table hash order");
+        }
+    }
+
     @Test
     void replacementFilteringGetAndDenseCursorAgreeWithoutStaleBaseRows() {
         try (var tables =

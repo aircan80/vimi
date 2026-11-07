@@ -3,22 +3,15 @@ package com.vibeminer.rendering.bgfx;
 import com.vibeminer.rendering.world.TerrainGeometryFingerprint;
 import com.vibeminer.rendering.world.TerrainScene;
 import com.vibeminer.rendering.world.TerrainTextureBinding;
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
-import java.security.DigestInputStream;
-import java.security.DigestOutputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
@@ -33,12 +26,107 @@ import java.util.function.BooleanSupplier;
 /** Structural packet IO only. Wire fields and hashes never authenticate an asset source. */
 final class WorldStreamTileFile {
     static final int HEADER_BYTES = 4096, ATLAS_BYTES = 1_048_576;
-    private static final int SCRATCH = 64 << 10;
+    private static final int SCRATCH = 64 << 10, IO_CHUNK = 256 << 10;
     private static final byte[] MAGIC =
             "VIMIWST2".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
     private static final byte[] WATER_MAGIC =
             "VIMIWTR1".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-    static final int WATER_HEADER_BYTES = 128, MAX_WATER_CELLS = 8192, MAX_WATER_LAYERS = 128;
+    private static final byte[] SPLAT_MAGIC =
+            "VIMIWSP1".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+
+    /**
+     * Optional splatting trailer (issue #174 step 2), version 3, before any water trailer: a
+     * 64-byte head (version, new layer count, mask side), the 16 x 16 chunk table of four GPU layer
+     * indices ({@link #SPLAT_NONE} keeps the atlas), the RGBA8 mask map at its tier's side (512 or
+     * 1024, {@link com.vibeminer.rendering.world.TerrainTileSplat}), and up to {@link
+     * #MAX_SPLAT_LAYERS} new layer diffuses (an int layer index and one {@link
+     * com.vibeminer.rendering.world.TerrainLayerBlocks} 256 x 256 BC1 chain) for the parent-owned
+     * shared array.
+     */
+    static final int SPLAT_HEAD_BYTES = 64, SPLAT_TABLE_BYTES = 1024, SPLAT_ALPHA_BYTES = 1 << 20;
+
+    /** Mask map sides a trailer may carry: STANDARD and HIGH. */
+    static final int[] SPLAT_MASK_SIDES = {
+        com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK,
+        com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK
+    };
+
+    static final int SPLAT_LAYER_BYTES =
+            com.vibeminer.rendering.world.TerrainLayerBlocks.CHAIN_BYTES;
+
+    static final int MAX_SPLAT_LAYERS = 16, SPLAT_NONE = 255, SPLAT_VERSION = 3;
+
+    static final int MAX_SPLAT_BYTES =
+            splatBytes(com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK, MAX_SPLAT_LAYERS);
+
+    /** A STANDARD (512) trailer of {@code layers} new layers. */
+    static int splatBytes(int layers) {
+        return splatBytes(com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK, layers);
+    }
+
+    static int splatBytes(int maskSide, int layers) {
+        return SPLAT_HEAD_BYTES
+                + SPLAT_TABLE_BYTES
+                + com.vibeminer.rendering.world.TerrainTileSplat.alphaBytes(maskSide)
+                + layers * (4 + SPLAT_LAYER_BYTES);
+    }
+
+    /** Whether {@code trailer} bytes are exactly one splat trailer of some mask side and count. */
+    static boolean isSplatLength(long trailer) {
+        for (int side : SPLAT_MASK_SIDES) {
+            for (int layers = 0; layers <= MAX_SPLAT_LAYERS; layers++) {
+                if (trailer == splatBytes(side, layers)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Splatting inputs of one tile: {@code table} holds GPU layer indices into the shared array,
+     * {@code layers}/{@code pixels} the new layers this packet uploads (array index, BC1 chain).
+     */
+    record Splat(byte[] table, byte[] alpha, int[] layers, byte[][] pixels) {
+        Splat {
+            Objects.requireNonNull(table);
+            Objects.requireNonNull(alpha);
+            Objects.requireNonNull(layers);
+            Objects.requireNonNull(pixels);
+            require(
+                    table.length == SPLAT_TABLE_BYTES
+                            && (alpha.length == SPLAT_ALPHA_BYTES
+                                    || alpha.length
+                                            == com.vibeminer.rendering.world.TerrainTileSplat
+                                                    .MAX_ALPHA_BYTES)
+                            && layers.length == pixels.length
+                            && layers.length <= MAX_SPLAT_LAYERS,
+                    "Splat shape");
+            var seen = new java.util.HashSet<Integer>();
+            for (int i = 0; i < layers.length; i++) {
+                require(
+                        layers[i] >= 0
+                                && layers[i] < SPLAT_NONE
+                                && seen.add(layers[i])
+                                && pixels[i] != null
+                                && pixels[i].length == SPLAT_LAYER_BYTES,
+                        "Splat layer upload");
+            }
+        }
+
+        /** The mask map's side, from its length: 512 or 1024. */
+        int maskSide() {
+            return alpha.length == SPLAT_ALPHA_BYTES
+                    ? com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK
+                    : com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK;
+        }
+
+        int bytes() {
+            return splatBytes(maskSide(), layers.length);
+        }
+    }
+
+    static final int WATER_HEADER_BYTES = 128, MAX_WATER_CELLS = 8192, MAX_WATER_LAYERS = 1024;
     static final int MAX_WATER_BYTES = waterBytes(MAX_WATER_CELLS * 4, MAX_WATER_CELLS * 6);
 
     static int waterBytes(int vertices, int indices) {
@@ -46,10 +134,11 @@ final class WorldStreamTileFile {
     }
 
     /**
-     * Optional static flat water trailer. Structural only: the closed application bridge is the
-     * sole producer from an actual Source water preparation joined to this exact terrain payload.
-     * Positions use native terrain axes (x north, y west, z up); every cell is four corners
-     * NW,NE,SW,SE with the fixed NE--SW diagonal indices base,base+2,base+1 / base+1,base+2,base+3.
+     * Optional static water trailer. Structural only: the closed application bridge is the sole
+     * producer from an actual Source water preparation joined to this exact terrain payload.
+     * Positions use native terrain axes (x north, y west, z up); every quad (a source cell, or a
+     * whole flat chunk the bridge merged) is four corners NW,NE,SW,SE with the fixed NE--SW
+     * diagonal indices base,base+2,base+1 / base+1,base+2,base+3. Corner heights may differ.
      */
     record Water(float[] positions, byte[] depths, int[] indices, int layers) {
         Water {
@@ -323,7 +412,7 @@ final class WorldStreamTileFile {
             for (var source : diffuse) {
                 require(
                         source.encoding() != null
-                                && source.sourceLimit() <= 1 << 20
+                                && source.sourceLimit() <= 8 << 20
                                 && ids.add(source.id()),
                         "Diffuse source domain");
                 identity(identities, source);
@@ -370,12 +459,21 @@ final class WorldStreamTileFile {
         private TerrainScene.Tile tile;
         private byte[] atlas;
         private Water water;
+        private Splat splat;
 
-        private Payload(Header header, TerrainScene.Tile tile, byte[] atlas, Water water) {
+        private Payload(
+                Header header, TerrainScene.Tile tile, byte[] atlas, Water water, Splat splat) {
             this.header = header;
             this.tile = tile;
             this.atlas = atlas;
             this.water = water;
+            this.splat = splat;
+        }
+
+        /** Validated optional splatting trailer of this textured packet, or null. */
+        Splat splat() {
+            tile();
+            return splat;
         }
 
         /** Validated optional water joined to this exact terrain payload, or null. */
@@ -405,6 +503,7 @@ final class WorldStreamTileFile {
             tile = null;
             atlas = null;
             water = null;
+            splat = null;
         }
     }
 
@@ -425,64 +524,96 @@ final class WorldStreamTileFile {
             }
             var digest = digest();
             var first = ByteBuffer.allocate(HEADER_BYTES);
-            while (first.hasRemaining()) {
-                check(canceled);
-                if (channel.read(first) < 0) {
-                    throw new IOException("Truncated packet header");
-                }
-            }
+            fill(channel, first, canceled);
             digest.update(first.array());
             var header = decodeHeader(first.array(), expected);
             // Only after the complete fixed header/session/count checks may body buffers exist.
-            var input =
-                    new DataInputStream(
-                            new DigestInputStream(
-                                    new BufferedInputStream(
-                                            Channels.newInputStream(channel), SCRATCH),
-                                    digest));
-            var tile = readGeometry(input, header, canceled);
+            // Each section is read whole, in bounded chunks, straight into its final buffer.
+            var geometry = ByteBuffer.allocate(header.geometryBytes());
+            fill(channel, geometry, canceled);
+            digest.update(geometry.array());
             byte[] atlas = null;
             if (header.outcome() == Outcome.TEXTURED) {
                 atlas = new byte[ATLAS_BYTES];
-                for (int at = 0; at < atlas.length; at += SCRATCH) {
-                    check(canceled);
-                    input.readFully(atlas, at, Math.min(SCRATCH, atlas.length - at));
-                }
-                validateAtlas(header, tile, ByteBuffer.wrap(atlas).asReadOnlyBuffer(), canceled);
+                fill(channel, ByteBuffer.wrap(atlas), canceled);
+                digest.update(atlas);
             }
-            long trailer = expected.length() - (long) header.totalBytes();
-            Water water = null;
+            int trailer = Math.toIntExact(expected.length() - (long) header.totalBytes());
+            ByteBuffer trailerBytes = null;
             if (trailer != 0) {
-                water = readWater(input, header, tile, trailer, canceled);
+                trailerBytes = ByteBuffer.allocate(trailer);
+                fill(channel, trailerBytes, canceled);
+                digest.update(trailerBytes.array());
             }
             check(canceled);
-            if (input.read() != -1
+            if (channel.read(ByteBuffer.allocate(1)) != -1
                     || channel.size() != expected.length()
                     || !HexFormat.of().formatHex(digest.digest()).equals(expected.sha256())) {
                 throw new IOException("Packet bytes or full digest differ");
             }
-            return new Payload(header, tile, atlas, water);
+            var tile = readGeometry(geometry, header, canceled);
+            if (atlas != null) {
+                validateAtlas(header, tile, ByteBuffer.wrap(atlas).asReadOnlyBuffer(), canceled);
+            }
+            // Trailers in order: an optional splat trailer (textured packets only), then water.
+            Water water = null;
+            Splat splat = null;
+            if (trailerBytes != null) {
+                require(trailer >= 8, "Packet trailer");
+                int at = 0;
+                if (Arrays.equals(trailerBytes.array(), 0, 8, SPLAT_MAGIC, 0, 8)) {
+                    require(atlas != null, "Splat trailer without an atlas");
+                    splat = readSplat(trailerBytes.slice(0, trailer), canceled);
+                    at = splat.bytes();
+                }
+                if (at < trailer) {
+                    require(trailer - at >= WATER_HEADER_BYTES, "Packet trailer");
+                    water = readWater(trailerBytes.slice(at, trailer - at), header, tile, canceled);
+                }
+            }
+            return new Payload(header, tile, atlas, water, splat);
         } catch (IllegalArgumentException invalid) {
             throw new IOException("Invalid World tile packet", invalid);
         }
     }
 
+    /** Writes all of {@code buffer} in bounded chunks, checking cancellation between them. */
+    private static void drain(FileChannel channel, ByteBuffer buffer, BooleanSupplier canceled)
+            throws IOException {
+        int end = buffer.limit();
+        while (buffer.position() < end) {
+            check(canceled);
+            buffer.limit(Math.min(end, buffer.position() + IO_CHUNK));
+            while (buffer.hasRemaining()) {
+                channel.write(buffer);
+            }
+        }
+    }
+
+    /** Fills {@code buffer} from the channel's current position, refusing a short file. */
+    private static void fill(FileChannel channel, ByteBuffer buffer, BooleanSupplier canceled)
+            throws IOException {
+        int end = buffer.limit();
+        do {
+            check(canceled);
+            buffer.limit(Math.min(end, buffer.position() + IO_CHUNK));
+            while (buffer.hasRemaining()) {
+                if (channel.read(buffer) < 0) {
+                    throw new IOException("Truncated packet");
+                }
+            }
+        } while (buffer.limit() < end);
+        buffer.flip();
+    }
+
     private static TerrainScene.Tile readGeometry(
-            DataInputStream input, Header header, BooleanSupplier canceled) throws IOException {
+            ByteBuffer bytes, Header header, BooleanSupplier canceled) throws IOException {
         float[] vertices = new float[header.vertices() * 3];
         int[] indices = new int[header.indices()];
-        for (int i = 0; i < vertices.length; i++) {
-            if ((i & 1023) == 0) {
-                check(canceled);
-            }
-            vertices[i] = Float.intBitsToFloat(Integer.reverseBytes(input.readInt()));
-        }
-        for (int i = 0; i < indices.length; i++) {
-            if ((i & 1023) == 0) {
-                check(canceled);
-            }
-            indices[i] = Integer.reverseBytes(input.readInt());
-        }
+        bytes.order(ByteOrder.LITTLE_ENDIAN);
+        bytes.asFloatBuffer().get(vertices);
+        bytes.position(vertices.length * 4).asIntBuffer().get(indices);
+        check(canceled);
         var tile =
                 TerrainScene.Tile.copyOf(
                         header.x(), header.y(), vertices, indices, header.chunks());
@@ -529,39 +660,22 @@ final class WorldStreamTileFile {
                             StandardOpenOption.WRITE,
                             LinkOption.NOFOLLOW_LINKS)) {
                 created = true;
-                var output =
-                        new DataOutputStream(
-                                new DigestOutputStream(
-                                        new BufferedOutputStream(
-                                                Channels.newOutputStream(channel), SCRATCH),
-                                        digest));
-                output.write(encodeHeader(header));
-                var vertices = tile.vertices();
-                for (int i = 0; vertices.hasRemaining(); i++) {
-                    if ((i & 1023) == 0) {
-                        check(canceled);
-                    }
-                    output.writeInt(Integer.reverseBytes(Float.floatToRawIntBits(vertices.get())));
-                }
-                var indices = tile.indices();
-                for (int i = 0; indices.hasRemaining(); i++) {
-                    if ((i & 1023) == 0) {
-                        check(canceled);
-                    }
-                    output.writeInt(Integer.reverseBytes(indices.get()));
-                }
+                var body =
+                        ByteBuffer.allocate(HEADER_BYTES + header.geometryBytes())
+                                .order(ByteOrder.LITTLE_ENDIAN);
+                body.put(encodeHeader(header));
+                body.asFloatBuffer().put(tile.vertices());
+                body.position(HEADER_BYTES + tile.vertexCount() * 12);
+                body.asIntBuffer().put(tile.indices());
+                body.clear();
+                digest.update(body.array());
+                drain(channel, body, canceled);
                 if (atlas != null) {
-                    var pixels = atlas.duplicate();
-                    byte[] scratch = new byte[SCRATCH];
-                    while (pixels.hasRemaining()) {
-                        check(canceled);
-                        int count = Math.min(scratch.length, pixels.remaining());
-                        pixels.get(scratch, 0, count);
-                        output.write(scratch, 0, count);
-                    }
+                    digest.update(atlas.duplicate());
+                    drain(channel, atlas.duplicate(), canceled);
                 }
-                output.flush();
-                channel.force(false);
+                // No fsync: a session-private scratch file the child reads back and deletes. A
+                // torn or short file fails the exact length and full digest on read.
             }
             check(canceled);
             // No replace-existing option. Private session owner serializes publication per tx.
@@ -584,15 +698,88 @@ final class WorldStreamTileFile {
         }
     }
 
-    private static Water readWater(
-            DataInputStream input,
-            Header header,
-            TerrainScene.Tile tile,
-            long length,
-            BooleanSupplier canceled)
+    /**
+     * The splat trailer starting at {@code bytes}' position, which may continue with water. Read
+     * through its own slice, so absolute offsets count from the trailer whatever the caller's
+     * buffer.
+     */
+    private static Splat readSplat(ByteBuffer bytes, BooleanSupplier canceled) throws IOException {
+        long limit = bytes.remaining();
+        require(limit >= SPLAT_HEAD_BYTES, "Splat trailer head");
+        var in = bytes.slice().order(ByteOrder.LITTLE_ENDIAN);
+        byte[] head = new byte[SPLAT_HEAD_BYTES];
+        in.get(0, head);
+        var fields = ByteBuffer.wrap(head).order(ByteOrder.LITTLE_ENDIAN);
+        int count = fields.getInt(12), side = fields.getInt(16);
+        require(
+                fields.getInt(8) == SPLAT_VERSION
+                        && count >= 0
+                        && count <= MAX_SPLAT_LAYERS
+                        && (side == SPLAT_MASK_SIDES[0] || side == SPLAT_MASK_SIDES[1])
+                        && splatBytes(side, count) <= limit,
+                "Splat trailer head");
+        zero(head, 20, SPLAT_HEAD_BYTES);
+        in.position(SPLAT_HEAD_BYTES);
+        byte[] table = new byte[SPLAT_TABLE_BYTES];
+        in.get(table);
+        byte[] alpha = new byte[com.vibeminer.rendering.world.TerrainTileSplat.alphaBytes(side)];
+        in.get(alpha);
+        int[] layers = new int[count];
+        byte[][] pixels = new byte[count][];
+        for (int i = 0; i < count; i++) {
+            check(canceled);
+            layers[i] = in.getInt();
+            pixels[i] = new byte[SPLAT_LAYER_BYTES];
+            in.get(pixels[i]);
+        }
+        return new Splat(table, alpha, layers, pixels);
+    }
+
+    /**
+     * Whether a packet's trailer length can be an optional splat trailer (textured packets only)
+     * followed by optional water; the trailers themselves are validated as they are read.
+     */
+    private static boolean trailerFits(long trailer, boolean textured) {
+        if (trailer == 0) {
+            return true;
+        }
+        long[] splats = new long[textured ? 2 * (MAX_SPLAT_LAYERS + 1) + 1 : 1];
+        for (int i = 1; i < splats.length; i++) {
+            int side = SPLAT_MASK_SIDES[(i - 1) / (MAX_SPLAT_LAYERS + 1)];
+            splats[i] = splatBytes(side, (i - 1) % (MAX_SPLAT_LAYERS + 1));
+        }
+        for (long splat : splats) {
+            long water = trailer - splat;
+            if (water == 0 && splat != 0 || water >= waterBytes(4, 6) && water <= MAX_WATER_BYTES) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static byte[] encodeSplat(Splat splat) {
+        var out = ByteBuffer.allocate(splat.bytes()).order(ByteOrder.LITTLE_ENDIAN);
+        out.put(SPLAT_MAGIC)
+                .putInt(SPLAT_VERSION)
+                .putInt(splat.layers().length)
+                .putInt(splat.maskSide());
+        out.position(SPLAT_HEAD_BYTES);
+        out.put(splat.table()).put(splat.alpha());
+        for (int i = 0; i < splat.layers().length; i++) {
+            out.putInt(splat.layers()[i]).put(splat.pixels()[i]);
+        }
+        return out.array();
+    }
+
+    /** The water trailer that is all of {@code bytes}; package-private for its tests. */
+    static Water readWater(
+            ByteBuffer bytes, Header header, TerrainScene.Tile tile, BooleanSupplier canceled)
             throws IOException {
+        long length = bytes.remaining();
+        // Defence in depth: the header's trailer gate already rules out a shorter remainder.
+        require(length >= WATER_HEADER_BYTES, "Water trailer identity");
         byte[] head = new byte[WATER_HEADER_BYTES];
-        input.readFully(head);
+        bytes.get(0, head);
         var in = ByteBuffer.wrap(head).order(ByteOrder.LITTLE_ENDIAN);
         int cells = in.getInt(12), vertices = in.getInt(16), indexCount = in.getInt(20);
         require(
@@ -614,19 +801,11 @@ final class WorldStreamTileFile {
         float[] positions = new float[vertices * 3];
         byte[] depths = new byte[vertices];
         int[] indices = new int[indexCount];
-        for (int i = 0; i < positions.length; i++) {
-            if ((i & 1023) == 0) {
-                check(canceled);
-            }
-            positions[i] = Float.intBitsToFloat(Integer.reverseBytes(input.readInt()));
-        }
-        input.readFully(depths);
-        for (int i = 0; i < indices.length; i++) {
-            if ((i & 1023) == 0) {
-                check(canceled);
-            }
-            indices[i] = Integer.reverseBytes(input.readInt());
-        }
+        bytes.order(ByteOrder.LITTLE_ENDIAN);
+        bytes.position(WATER_HEADER_BYTES).asFloatBuffer().get(positions);
+        bytes.position(WATER_HEADER_BYTES + positions.length * 4).get(depths);
+        bytes.asIntBuffer().get(indices);
+        check(canceled);
         var water = new Water(positions, depths, indices, in.getInt(24));
         require(onFootprint(water, footprint(tile)), "Water outside terrain tile");
         return water;
@@ -704,13 +883,40 @@ final class WorldStreamTileFile {
         Objects.requireNonNull(water);
         Objects.requireNonNull(canceled);
         basename(path, expected.transaction());
+        // Water is the last trailer: directly after the payload, or after its splat trailer.
+        long splatTrailer = (long) expected.length() - header.totalBytes();
+        boolean afterSplat = isSplatLength(splatTrailer);
         require(
-                header.totalBytes() == expected.length()
+                (splatTrailer == 0 || afterSplat && header.outcome() == Outcome.TEXTURED)
                         && header.transaction() == expected.transaction()
                         && header.nonce().equals(expected.nonce())
                         && header.lease().equals(expected.lease()),
                 "Water append expectation");
-        byte[] trailer = encodeWater(header, water);
+        return appendTrailer(path, expected, encodeWater(header, water), "water", canceled);
+    }
+
+    /** Appends the splat trailer directly after a textured packet's atlas, before any water. */
+    static Expected appendSplat(
+            Path path, Expected expected, Header header, Splat splat, BooleanSupplier canceled)
+            throws IOException {
+        Objects.requireNonNull(expected);
+        Objects.requireNonNull(header);
+        Objects.requireNonNull(splat);
+        Objects.requireNonNull(canceled);
+        basename(path, expected.transaction());
+        require(
+                header.outcome() == Outcome.TEXTURED
+                        && header.totalBytes() == expected.length()
+                        && header.transaction() == expected.transaction()
+                        && header.nonce().equals(expected.nonce())
+                        && header.lease().equals(expected.lease()),
+                "Splat append expectation");
+        return appendTrailer(path, expected, encodeSplat(splat), "splat", canceled);
+    }
+
+    private static Expected appendTrailer(
+            Path path, Expected expected, byte[] trailer, String what, BooleanSupplier canceled)
+            throws IOException {
         try (var channel =
                 FileChannel.open(
                         path,
@@ -718,7 +924,7 @@ final class WorldStreamTileFile {
                         StandardOpenOption.WRITE,
                         LinkOption.NOFOLLOW_LINKS)) {
             if (channel.size() != expected.length()) {
-                throw new PacketChanged("Packet size differs before water append");
+                throw new PacketChanged("Packet size differs before " + what + " append");
             }
             var digest = digest();
             var scratch = ByteBuffer.allocate(SCRATCH);
@@ -728,7 +934,7 @@ final class WorldStreamTileFile {
                 scratch.clear();
                 int read = channel.read(scratch, at);
                 if (read < 0) {
-                    throw new PacketChanged("Truncated packet before water append");
+                    throw new PacketChanged("Truncated packet before " + what + " append");
                 }
                 digest.update(scratch.array(), 0, read);
                 at += read;
@@ -740,7 +946,7 @@ final class WorldStreamTileFile {
                 throw new AssertionError(impossible);
             }
             if (!HexFormat.of().formatHex(prior.digest()).equals(expected.sha256())) {
-                throw new PacketChanged("Packet bytes changed before water append");
+                throw new PacketChanged("Packet bytes changed before " + what + " append");
             }
             try {
                 check(canceled);
@@ -749,15 +955,13 @@ final class WorldStreamTileFile {
                 while (body.hasRemaining()) {
                     position += channel.write(body, position);
                 }
-                channel.force(false);
                 check(canceled);
             } catch (IOException | RuntimeException | Error primary) {
                 try {
                     channel.truncate(expected.length());
-                    channel.force(false);
                 } catch (IOException | RuntimeException | Error cleanup) {
                     // Restore unknown: the caller must discard this packet, never advertise it.
-                    var unknown = new PacketChanged("Water rollback failed");
+                    var unknown = new PacketChanged(what + " rollback failed");
                     unknown.addSuppressed(primary);
                     unknown.addSuppressed(cleanup);
                     throw unknown;
@@ -800,7 +1004,7 @@ final class WorldStreamTileFile {
 
     static byte[] encodeHeader(Header h) {
         var out = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
-        out.put(MAGIC).putInt(2).putInt(HEADER_BYTES).putLong(h.totalBytes());
+        out.put(MAGIC).putInt(3).putInt(HEADER_BYTES).putLong(h.totalBytes());
         out.putLong(h.nonce().high()).putLong(h.nonce().low());
         out.put(HexFormat.of().parseHex(h.scope())).putLong(h.transaction());
         out.putLong(h.lease().serial()).putInt(h.lease().slot()).putInt(h.x()).putInt(h.y());
@@ -842,7 +1046,7 @@ final class WorldStreamTileFile {
         try {
             require(
                     Arrays.equals(MAGIC, Arrays.copyOf(bytes, 8))
-                            && in.getInt(8) == 2
+                            && in.getInt(8) == 3
                             && in.getInt(12) == HEADER_BYTES
                             && in.getLong(16) <= expected.length(),
                     "Header magic/size");
@@ -917,10 +1121,9 @@ final class WorldStreamTileFile {
             require(
                     in.getInt(120) == header.geometryBytes()
                             && header.totalBytes() == in.getLong(16)
-                            && (header.totalBytes() == expected.length()
-                                    || expected.length() - header.totalBytes() >= waterBytes(4, 6)
-                                            && expected.length() - header.totalBytes()
-                                                    <= MAX_WATER_BYTES)
+                            && trailerFits(
+                                    expected.length() - header.totalBytes(),
+                                    outcome == Outcome.TEXTURED)
                             && in.getInt(124) == (outcome == Outcome.TEXTURED ? ATLAS_BYTES : 0)
                             && in.getInt(192) == (outcome == Outcome.TEXTURED ? 1 : 0)
                             && in.getInt(196) == 1,
