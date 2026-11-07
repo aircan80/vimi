@@ -111,6 +111,12 @@ public interface BuildWorld extends AutoCloseable {
                 new UnsupportedOperationException("Recorded area audio is unavailable"));
     }
 
+    /** Optional recorded sky and fog lights (#177); custom providers record none. */
+    default CompletableFuture<WorldSky.Index> skyIndex(Cancellation token) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Recorded sky is unavailable"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

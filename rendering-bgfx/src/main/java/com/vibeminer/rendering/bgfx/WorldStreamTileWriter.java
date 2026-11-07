@@ -787,15 +787,7 @@ public final class WorldStreamTileWriter {
                 uploadLayers.add(layer);
                 uploadPixels.add(pixels);
             }
-            byte[] table = new byte[WorldStreamTileFile.SPLAT_TABLE_BYTES];
-            for (int i = 0; i < table.length; i++) {
-                int entry = input.table()[i] & 255;
-                table[i] =
-                        (byte)
-                                (entry < layers.length && layers[entry] >= 0
-                                        ? layers[entry]
-                                        : WorldStreamTileFile.SPLAT_NONE);
-            }
+            byte[] table = gpuTable(input.table(), layers);
             byte[] alpha = new byte[input.alpha().remaining()];
             input.alpha().duplicate().get(alpha);
             splat =
@@ -804,6 +796,36 @@ public final class WorldStreamTileWriter {
                             alpha,
                             uploadLayers.stream().mapToInt(Integer::intValue).toArray(),
                             uploadPixels.toArray(byte[][]::new));
+        }
+
+        /**
+         * The packet's chunk table of array layers from the tile's table of diffuse list indices
+         * and each diffuse's array layer ({@code -1} when it has none: past the per-packet cap, or
+         * its decode failed). A chunk keeps the atlas, all four entries {@link
+         * WorldStreamTileFile#SPLAT_NONE}, when any layer it uses has no array layer: the shader
+         * blends a chunk's layers by its mask, so it cannot draw one with a layer missing (issue
+         * #174 step 2b-2).
+         */
+        static byte[] gpuTable(byte[] source, int[] layers) {
+            byte[] table = new byte[WorldStreamTileFile.SPLAT_TABLE_BYTES];
+            for (int chunk = 0; chunk < table.length / 4; chunk++) {
+                boolean whole = true;
+                for (int i = chunk * 4; i < chunk * 4 + 4; i++) {
+                    int entry = source[i] & 255;
+                    whole &=
+                            entry == WorldStreamTileFile.SPLAT_NONE
+                                    || (entry < layers.length && layers[entry] >= 0);
+                }
+                for (int i = chunk * 4; i < chunk * 4 + 4; i++) {
+                    int entry = source[i] & 255;
+                    table[i] =
+                            (byte)
+                                    (whole && entry != WorldStreamTileFile.SPLAT_NONE
+                                            ? layers[entry]
+                                            : WorldStreamTileFile.SPLAT_NONE);
+                }
+            }
+            return table;
         }
 
         /** Descriptive: the splat trailer this packet will carry, or null. */

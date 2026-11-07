@@ -166,6 +166,41 @@ public final class WorldService implements BuildWorld {
     }
 
     /**
+     * Loads the light tables once, off the caller's thread, under this workspace's own lifetime:
+     * one caller's cancellation never fails the shared load. Later calls share a successful load; a
+     * failed or cancelled one is dropped, so the next call tries again.
+     */
+    public synchronized CompletableFuture<WorldSky.Index> skyIndex(Cancellation token) {
+        java.util.Objects.requireNonNull(token);
+        if (closing != null) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("World workspace closed"));
+        }
+        if (skyIndex == null) {
+            var result = new CompletableFuture<WorldSky.Index>();
+            skyIndex = result;
+            Thread.ofVirtual()
+                    .name("world-sky-index")
+                    .start(
+                            () -> {
+                                try {
+                                    result.complete(WorldSky.load(tables, lifetime));
+                                } catch (Throwable failure) {
+                                    synchronized (WorldService.this) {
+                                        if (skyIndex == result) {
+                                            skyIndex = null;
+                                        }
+                                    }
+                                    result.completeExceptionally(failure);
+                                }
+                            });
+        }
+        return skyIndex.copy();
+    }
+
+    private CompletableFuture<WorldSky.Index> skyIndex;
+
+    /**
      * Prepares native evidence for the two small tables the water preview qualifies indirect layers
      * against (LiquidType, LiquidMaterial) using the configured source. Completes true only if both
      * are READY; any other outcome leaves water honestly unresolved, never terrain.
