@@ -81,13 +81,22 @@ final class ItemGridStore implements AutoCloseable {
     }
 
     void populate(ItemCatalog catalog, Cancellation token) {
+        populate(catalog, BuildItems.CatalogProgress.NONE, token);
+    }
+
+    /** Stores the catalog, reporting rows stored every thousand (#338). */
+    void populate(ItemCatalog catalog, BuildItems.CatalogProgress progress, Cancellation token) {
         try (var bridge = new Token(token)) {
             database.transaction(
                             session -> {
                                 session.execute("DELETE FROM items");
                                 session.execute("DELETE FROM metadata");
+                                long stored = 0;
                                 for (var entry : catalog.entries()) {
                                     token.check();
+                                    if (++stored % 1000 == 0) {
+                                        progress.report("catalog rows stored", stored);
+                                    }
                                     var row = project(entry);
                                     var name = entry.item().name();
                                     String key =

@@ -56,12 +56,33 @@ class WorldObjectMaterialClassTest {
         assertEquals(0, state & BGFX_STATE_WRITE_A, "the frame's alpha stays opaque");
     }
 
+    /** Issue #375: vertex colours are off unless the helper's property is exactly true. */
+    @Test
+    void vertexColoursAreAnOptInShaderSwitch() {
+        assertFalse(BgfxWorldStreamRenderer.vertexColoursEnabled(null));
+        assertFalse(BgfxWorldStreamRenderer.vertexColoursEnabled("1"));
+        assertTrue(BgfxWorldStreamRenderer.vertexColoursEnabled("True"));
+        float[] on = BgfxWorldStreamRenderer.wmoSkyTop(WorldFog.STREAM, true);
+        float[] off = BgfxWorldStreamRenderer.wmoSkyTop(WorldFog.STREAM, false);
+        assertEquals(1, on[3]);
+        assertEquals(0, off[3]);
+        float[] top = WorldFog.STREAM.topUniform();
+        for (int i = 0; i < 3; i++) {
+            assertEquals(top[i], on[i]);
+            assertEquals(top[i], off[i]);
+        }
+    }
+
     @Test
     void rangeClassesAreKindPlusKnownFlagsOnly() {
         assertTrue(WorldObjectPicking.validClass(WorldStreamObjectsFile.ADDITIVE | UNLIT));
         assertTrue(WorldObjectPicking.validClass(WorldStreamObjectsFile.OPAQUE));
         assertFalse(WorldObjectPicking.validClass(4), "modulate stays refused");
-        assertFalse(WorldObjectPicking.validClass(0x200), "unknown flag");
+        assertTrue(
+                WorldObjectPicking.validClass(
+                        WorldStreamObjectsFile.CUTOUT | UNLIT | WorldStreamObjectsFile.TWO_SIDED),
+                "two-sided (#375)");
+        assertFalse(WorldObjectPicking.validClass(0x400), "unknown flag");
         assertFalse(WorldObjectPicking.validClass(-1));
         assertEquals(
                 WorldStreamObjectsFile.CUTOUT,

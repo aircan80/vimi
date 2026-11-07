@@ -365,4 +365,42 @@ class ItemGridSqliteTest {
             assertEquals(1200, page.matches());
         }
     }
+
+    private record Report(String stage, long done) {}
+
+    /** #338: a cold build reports rows read and stored; a catalog reused from disk reports none. */
+    @Test
+    void reportsCatalogRowsWhileBuildingAndNothingWhenReused() {
+        var source = data();
+        var built = new ArrayList<Report>();
+        try (var handle = open(source, "progress")) {
+            var page =
+                    handle.grid(
+                                    new ItemGridQuery(),
+                                    TableTypes.Priority.INTERACTIVE,
+                                    (stage, done) -> built.add(new Report(stage, done)),
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals(1200, page.matches());
+        }
+        assertEquals(List.of(1000L, 1200L), done(built, "item text rows read"));
+        assertEquals(List.of(1000L, 1200L), done(built, "item rows read"));
+        assertEquals(List.of(1000L), done(built, "catalog rows stored"));
+        var reused = new ArrayList<Report>();
+        try (var handle = open(source, "progress")) {
+            var page =
+                    handle.grid(
+                                    new ItemGridQuery(),
+                                    TableTypes.Priority.INTERACTIVE,
+                                    (stage, done) -> reused.add(new Report(stage, done)),
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals(1200, page.matches());
+        }
+        assertEquals(List.of(), reused);
+    }
+
+    private static List<Long> done(List<Report> reports, String stage) {
+        return reports.stream().filter(r -> r.stage().equals(stage)).map(Report::done).toList();
+    }
 }

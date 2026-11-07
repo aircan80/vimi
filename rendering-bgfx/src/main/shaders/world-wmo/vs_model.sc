@@ -1,5 +1,5 @@
-$input a_position, a_normal, a_texcoord0
-$output v_wmoNormal, v_wmoUv, v_wmoDepth, v_wmoRelative
+$input a_position, a_normal, a_texcoord0, a_color0
+$output v_wmoNormal, v_wmoUv, v_wmoDepth, v_wmoRelative, v_wmoColour
 #include <bgfx_shader.sh>
 uniform mat4 u_wmoEye;
 uniform mat4 u_wmoProjection;
@@ -15,4 +15,6 @@ void main()
     v_wmoDepth = -eye.z;
     // Position relative to the model origin, which the hot pass places at the camera.
     v_wmoRelative = relative.xyz;
+    // MOCV vertex colour (0 when the group has none), added to the light in the fragment shader.
+    v_wmoColour = a_color0.rgb;
 }

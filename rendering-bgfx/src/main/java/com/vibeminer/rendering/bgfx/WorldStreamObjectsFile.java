@@ -30,21 +30,23 @@ import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
 /**
- * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 5. Structural
+ * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 6. Structural
  * only: the application's closed source bridge is its sole producer, and the OBJECTS command (or
  * the terrain tile header) names its exact length and SHA-256.
  *
  * <p>Little-endian layout: a 256-byte header, then the model, mesh, range (first index, index
  * count, image, material class), placement (model, translation, scale and a row-major rotation) and
- * image (width, height, format) tables, then 32-byte vertices (position, normal, uv floats), u16
- * mesh-relative indices padded to four bytes, and image data. Each image's data is its full mip
- * chain, top level down to 1 x 1 and tightly packed, in its format: RGBA8 texels ({@link
- * ObjectTextureMips}, issue #265) or BC1, BC2 or BC3 blocks ({@link ObjectTextureFormats}, issue
- * #374). Every count, offset, index and float is validated; reserved bytes must be zero.
+ * image (width, height, format) tables, then 32-byte vertices (position, normal, uv floats), one
+ * 4-byte vertex colour per vertex (R, G, B, then a zero byte), u16 mesh-relative indices padded to
+ * four bytes, and image data. Each image's data is its full mip chain, top level down to 1 x 1 and
+ * tightly packed, in its format: RGBA8 texels ({@link ObjectTextureMips}, issue #265) or BC1, BC2
+ * or BC3 blocks ({@link ObjectTextureFormats}, issue #374). Every count, offset, index and float is
+ * validated; reserved bytes must be zero.
  */
 final class WorldStreamObjectsFile {
     // Version 5 (#367): range classes add ADDITIVE and the UNLIT flag, on #420's version 4.
-    static final int VERSION = 5, HEADER_BYTES = 256, MAX_BYTES = 28 << 20;
+    // Version 6 (#375): vertex colours and the TWO_SIDED range flag.
+    static final int VERSION = 6, HEADER_BYTES = 256, MAX_BYTES = 28 << 20;
     // Opaque buildings (24 roots, 256 meshes, 1,024 ranges, 64 placements, 64 images, 98,304
     // vertices, 294,912 indices), plus cutout and blended building surfaces (256 ranges, 32
     // images, 32,768 vertices, 98,304 indices), plus BASIC doodads (96 models and meshes, 512
@@ -82,11 +84,14 @@ final class WorldStreamObjectsFile {
     /**
      * Range material classes: depth-writing opaque, alpha-tested cutout, sorted alpha blend and
      * sorted additive blend (MOMT blend mode 3, #367). A class may carry {@link #UNLIT} (MOMT
-     * F_UNLIT): drawn at full intensity, without the light.
+     * F_UNLIT): drawn at full intensity, without the light, and {@link #TWO_SIDED} (MOMT
+     * F_UNCULLED), which changes nothing while the pass culls no faces.
      */
     static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2, ADDITIVE = 3;
 
     static final int UNLIT = com.vibeminer.rendering.world.WorldObjectPicking.UNLIT;
+
+    static final int TWO_SIDED = com.vibeminer.rendering.world.WorldObjectPicking.TWO_SIDED;
 
     /** The kind of a range class, without its flags. */
     static int kind(int rangeClass) {
@@ -104,7 +109,7 @@ final class WorldStreamObjectsFile {
     /** Draw calls per tile (sum over placements of their model's ranges); bounds a frame. */
     static final int MAX_DRAWS = 4096;
 
-    static final int VERTEX_FLOATS = 8, VERTEX_BYTES = 32;
+    static final int VERTEX_FLOATS = 8, VERTEX_BYTES = 32, COLOUR_BYTES = 4;
     static final double MAX_SCALE = 64;
     private static final int SCRATCH = 64 << 10;
     private static final byte[] MAGIC = "VIMIWSO1".getBytes(StandardCharsets.US_ASCII);
@@ -133,6 +138,13 @@ final class WorldStreamObjectsFile {
         final int[] images;
 
         final float[] vertices;
+
+        /**
+         * Per vertex: {@code r | g << 8 | b << 16} (MOCV, #375), each 0..255; zero for a vertex
+         * without a colour. The shader adds it to the light.
+         */
+        final int[] colours;
+
         final short[] indices;
 
         /** Every image's packed chain in its format, in image order. */
@@ -148,6 +160,7 @@ final class WorldStreamObjectsFile {
                 double[] placements,
                 int[] images,
                 float[] vertices,
+                int[] colours,
                 short[] indices,
                 byte[] pixels) {
             this.models = Objects.requireNonNull(models);
@@ -157,6 +170,7 @@ final class WorldStreamObjectsFile {
             this.placements = Objects.requireNonNull(placements);
             this.images = Objects.requireNonNull(images);
             this.vertices = Objects.requireNonNull(vertices);
+            this.colours = Objects.requireNonNull(colours);
             this.indices = Objects.requireNonNull(indices);
             this.pixels = Objects.requireNonNull(pixels);
             draws = validate();
@@ -216,6 +230,7 @@ final class WorldStreamObjectsFile {
                             && ranges.length % RANGE_INTS == 0
                             && images.length % IMAGE_INTS == 0
                             && vertices.length % VERTEX_FLOATS == 0
+                            && colours.length == vertexCount
                             && imageBytes % 4 == 0
                             && placements.length == placementCount * PLACEMENT_DOUBLES
                             && modelCount >= 1
@@ -290,6 +305,9 @@ final class WorldStreamObjectsFile {
                     "Mesh table");
             for (float value : vertices) {
                 require(Float.isFinite(value) && Math.abs(value) <= 1_000_000, "Vertex value");
+            }
+            for (int colour : colours) {
+                require((colour & 0xff000000) == 0, "Vertex colour");
             }
             long draws = 0;
             for (int p = 0; p < placementCount; p++) {
@@ -440,7 +458,7 @@ final class WorldStreamObjectsFile {
                         + ranges * (RANGE_INTS * 4L)
                         + placements * (8L + PLACEMENT_DOUBLES * 8L)
                         + images * (IMAGE_INTS * 4L)
-                        + vertices * (long) VERTEX_BYTES
+                        + vertices * (long) (VERTEX_BYTES + COLOUR_BYTES)
                         + (indices * 2L + 3) / 4 * 4
                         + imageBytes;
         return bytes > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) bytes;
@@ -512,6 +530,12 @@ final class WorldStreamObjectsFile {
                     }
                     output.writeInt(
                             Integer.reverseBytes(Float.floatToRawIntBits(data.vertices[i])));
+                }
+                for (int i = 0; i < data.colours.length; i++) {
+                    if ((i & 4095) == 0) {
+                        check(canceled);
+                    }
+                    output.writeInt(Integer.reverseBytes(data.colours[i]));
                 }
                 for (int i = 0; i < data.indices.length; i++) {
                     if ((i & 4095) == 0) {
@@ -663,6 +687,13 @@ final class WorldStreamObjectsFile {
                 }
                 vertexData[i] = Float.intBitsToFloat(Integer.reverseBytes(input.readInt()));
             }
+            int[] colourData = new int[vertices];
+            for (int i = 0; i < colourData.length; i++) {
+                if ((i & 4095) == 0) {
+                    check(canceled);
+                }
+                colourData[i] = Integer.reverseBytes(input.readInt());
+            }
             short[] indexData = new short[indices];
             for (int i = 0; i < indexData.length; i++) {
                 if ((i & 4095) == 0) {
@@ -693,6 +724,7 @@ final class WorldStreamObjectsFile {
                             transforms,
                             imageTable,
                             vertexData,
+                            colourData,
                             indexData,
                             pixelData);
             require(data.draws == draws, "Object draw count");

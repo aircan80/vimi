@@ -179,11 +179,11 @@ public final class WorldWmoNativeProof {
                     var wmo = BgfxWorldWmoPass.readBound(p.annex(), p.base(), () -> false)) {
                 gpu.render(terrain, wmo, new TerrainCamera(0, 0, 0, 0, 0));
                 require(
-                        wmo.issuedMeshBytes() == 19456 && wmo.issuedTextureBytes() == 1572864,
+                        wmo.issuedMeshBytes() == 21504 && wmo.issuedTextureBytes() == 1572864,
                         "Maximum issued GPU/copy payload ledger differs");
                 require(
                         wmo.liveStagingBytes() == 0
-                                && wmo.peakMeshStagingBytes() == 19456
+                                && wmo.peakMeshStagingBytes() == 21504
                                 && wmo.peakTextureStagingBytes() == 262144,
                         "Serial bounded direct staging did not drain");
             }
@@ -261,7 +261,7 @@ public final class WorldWmoNativeProof {
         System.out.println(
                 "WORLD_WMO_NATIVE_PASS acceptedFrames="
                         + acceptedFrames
-                        + " sameContextCameraReuse=true maxMesh=19456 maxRgba=1572864 maxDirectTexture=262144 sourceIndependent=true");
+                        + " sameContextCameraReuse=true maxMesh=21504 maxRgba=1572864 maxDirectTexture=262144 sourceIndependent=true");
     }
 
     private record Handles(

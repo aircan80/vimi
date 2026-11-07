@@ -1,9 +1,11 @@
 package com.vibeminer.rendering.bgfx;
 
+import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_COLOR0;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_NORMAL;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_POSITION;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TEXCOORD0;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TYPE_FLOAT;
+import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TYPE_UINT8;
 import static org.lwjgl.bgfx.BGFX.BGFX_BUFFER_NONE;
 import static org.lwjgl.bgfx.BGFX.BGFX_CLEAR_COLOR;
 import static org.lwjgl.bgfx.BGFX.BGFX_CLEAR_DEPTH;
@@ -487,6 +489,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private long content, nextTag, liveBytes, peakBytes, maximumStepNanos, objectsRevision;
     private int peakStepBytes;
     private boolean closed, callbackFreed, objectCulling = true;
+    private boolean vertexColours = VERTEX_COLOURS;
     private FrameCounts lastFrame = new FrameCounts(0, 0, 0, 0, 0, 0, 0);
     private int frameChunks, frameChunksCulled, frameTerrainSubmits;
     private int framePlacements, frameCulled, frameObjectSubmits, frameCameraUniforms;
@@ -597,6 +600,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             wmoSampler = valid(bgfx_create_uniform("s_wmoDiffuse", BGFX_UNIFORM_TYPE_SAMPLER, 1));
             wmoMaterial = valid(bgfx_create_uniform("u_wmoMaterial", BGFX_UNIFORM_TYPE_VEC4, 1));
             wmoFog = valid(bgfx_create_uniform("u_wmoFog", BGFX_UNIFORM_TYPE_VEC4, 1));
+            // .w is taken: the MOCV vertex colour switch (#375, wmoSkyTop()). Do not reuse it.
             wmoSkyTop = valid(bgfx_create_uniform("u_wmoSkyTop", BGFX_UNIFORM_TYPE_VEC4, 1));
             wmoFogRange = valid(bgfx_create_uniform("u_wmoFogRange", BGFX_UNIFORM_TYPE_VEC4, 1));
         } catch (IOException | RuntimeException failed) {
@@ -1083,7 +1087,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                             valid(
                                     bgfx_create_dynamic_vertex_buffer(
                                             source.vertices.capacity()
-                                                    / WorldStreamObjectsFile.VERTEX_BYTES,
+                                                    / WorldStreamPackedObjects.GPU_VERTEX_BYTES,
                                             layout,
                                             BGFX_BUFFER_NONE));
                 }
@@ -1097,10 +1101,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             var built = build.building;
             step = "vertices";
             if (build.vertexAt < source.vertices.capacity()) {
-                int count = Math.min(OBJECT_CHUNK, source.vertices.capacity() - build.vertexAt);
+                // Whole vertices only: the chunk is rounded down to the vertex stride.
+                int chunk =
+                        OBJECT_CHUNK
+                                / WorldStreamPackedObjects.GPU_VERTEX_BYTES
+                                * WorldStreamPackedObjects.GPU_VERTEX_BYTES;
+                int count = Math.min(chunk, source.vertices.capacity() - build.vertexAt);
                 bgfx_update_dynamic_vertex_buffer(
                         built.vertices,
-                        build.vertexAt / WorldStreamObjectsFile.VERTEX_BYTES,
+                        build.vertexAt / WorldStreamPackedObjects.GPU_VERTEX_BYTES,
                         bgfx_copy(source.vertices.slice(build.vertexAt, count)));
                 build.vertexAt += count;
                 return count;
@@ -1319,6 +1328,33 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         objectCulling = enabled;
     }
 
+    /**
+     * WMO vertex colours (MOCV, #375) added to the building light. Off by default until compared
+     * with the client: only {@code -Dvimi.world.wmoVertexColours=true}, which the application
+     * forwards to this helper, turns them on. The colours are always uploaded; the flag only
+     * reaches the shader (u_wmoSkyTop.w), so turning it on needs no other shader.
+     */
+    static final boolean VERTEX_COLOURS =
+            vertexColoursEnabled(System.getProperty("vimi.world.wmoVertexColours"));
+
+    /** Only {@code true} (any letter case) turns WMO vertex colours on. */
+    static boolean vertexColoursEnabled(String property) {
+        return "true".equalsIgnoreCase(property);
+    }
+
+    /** Proof seam: overrides {@link #VERTEX_COLOURS} for this renderer. */
+    void vertexColours(boolean enabled) {
+        requireOwner();
+        vertexColours = enabled;
+    }
+
+    /** The object sky top uniform: the fog's top colour, with w the vertex colour switch. */
+    static float[] wmoSkyTop(WorldFog fog, boolean vertexColours) {
+        float[] value = fog.topUniform();
+        value[3] = vertexColours ? 1 : 0;
+        return value;
+    }
+
     /** Changes whenever late objects become drawable, so an unchanged camera redraws once. */
     long objectsRevision() {
         return objectsRevision;
@@ -1360,8 +1396,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         bgfx_vertex_layout_add(layout, BGFX_ATTRIB_NORMAL, 3, BGFX_ATTRIB_TYPE_FLOAT, false, false);
         bgfx_vertex_layout_add(
                 layout, BGFX_ATTRIB_TEXCOORD0, 2, BGFX_ATTRIB_TYPE_FLOAT, false, false);
+        bgfx_vertex_layout_add(layout, BGFX_ATTRIB_COLOR0, 4, BGFX_ATTRIB_TYPE_UINT8, true, false);
         bgfx_vertex_layout_end(layout);
-        if (layout.stride() != WorldStreamObjectsFile.VERTEX_BYTES) {
+        if (layout.stride() != WorldStreamPackedObjects.GPU_VERTEX_BYTES) {
             layout.free();
             throw new IOException("Object vertex layout differs");
         }
@@ -1592,7 +1629,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 frameUniform(wmoEye, matrix);
                 frameUniform(wmoProjection, project);
                 bgfx_set_uniform(wmoFog, stack.floats(fog.fogUniform()), 1);
-                bgfx_set_uniform(wmoSkyTop, stack.floats(fog.topUniform()), 1);
+                bgfx_set_uniform(wmoSkyTop, stack.floats(wmoSkyTop(fog, vertexColours)), 1);
                 bgfx_set_uniform(wmoFogRange, stack.floats(fog.rangeUniform()), 1);
             }
             bgfx_set_uniform(worldFog, stack.floats(fog.fogUniform()), 1);
