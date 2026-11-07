@@ -288,6 +288,25 @@ Some building and model counts are small by comparison:
 includes the crop. Staging-path numbers measured after that change are not comparable with the
 ~0.5 ms above.
 
+**These draw counts predate CPU culling.** This baseline drew every resident object placement and
+every terrain chunk each frame. Since then, #369 culls object placements against the view frustum
+(plus a sub-pixel size cull), and #430 culls terrain per chunk run. Later runs report far fewer
+`child.frame.draws` for the same scene. That is the cull working, not objects going missing. To
+tell the two apart, the helper records per submitted frame `child.frame.placements`,
+`placementsCulled`, `objectSubmits`, `terrainChunks`, `terrainChunksCulled` and `terrainSubmits`.
+On 1.60.1.70862 (Linux, same scenarios, rotating in place; single runs), p50:
+
+| | Elwynn, cull on | Elwynn, cull off | Stormwind, cull on | Stormwind, cull off |
+| --- | ---: | ---: | ---: | ---: |
+| `child.frame.draws` | 911 | 6,552 | 277 | 4,877 |
+| `child.frame.triangles` | 0.18 M | 0.97 M | 0.09 M | 0.96 M |
+| `child.frame.placements` / `placementsCulled` | 3,949 / 3,324 | 3,949 / 0 | 2,913 / 2,791 | 2,913 / 0 |
+| `child.frame.terrainChunks` / `terrainChunksCulled` | 2,299 / 1,951 | 2,299 / 0 | 2,299 / 2,039 | 2,299 / 0 |
+| `child.frame.bgfxCpuRender` p50 | 0.67 ms | 4.34 ms | 0.28 ms | 2.80 ms |
+
+With the cull off, the draw count matches this baseline's 6,508 and 4,872 to within about 1%, and
+the per-tile placement counts match section 4. The resident objects are unchanged.
+
 **Reading:**
 - The helper's own per-frame CPU work is about 5 ms, at 800x500, for ~5-6.5k draws and ~1 M
   triangles. Delivery is paced at ~30 fps by the 33 ms draw interval and the 33 ms parent poll,

@@ -585,7 +585,10 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         available.ticket = ticket;
         available.order = ++order;
         available.ready = bgfx_read_texture(available.texture, available.pixels, 0, 0);
-        WorldStageTimings.stop("child.frame.submitCpu", drawing);
+        if (drawing != 0L) {
+            WorldStageTimings.stop("child.frame.submitCpu", drawing);
+            cullCounts(renderer.frameCounts());
+        }
         renderedThisFrame = true;
         submittedCamera = cameraRevision;
         submittedContent = ticket.content();
@@ -734,6 +737,21 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             }
         }
         return published;
+    }
+
+    /**
+     * What the CPU cull kept and skipped in the frame just submitted (opt-in only), so a change in
+     * {@code child.frame.draws} can be told apart from a change in what was resident: exterior
+     * placements tested and culled, object submits, terrain chunk runs tested and culled, and
+     * terrain submits.
+     */
+    static void cullCounts(BgfxWorldStreamRenderer.FrameCounts counts) {
+        WorldStageTimings.value("child.frame.placements", counts.placements());
+        WorldStageTimings.value("child.frame.placementsCulled", counts.culled());
+        WorldStageTimings.value("child.frame.objectSubmits", counts.objectSubmits());
+        WorldStageTimings.value("child.frame.terrainChunks", counts.chunks());
+        WorldStageTimings.value("child.frame.terrainChunksCulled", counts.chunksCulled());
+        WorldStageTimings.value("child.frame.terrainSubmits", counts.terrainSubmits());
     }
 
     /** bgfx's statistics of the frame just rendered, after a frame that drew (opt-in only). */
