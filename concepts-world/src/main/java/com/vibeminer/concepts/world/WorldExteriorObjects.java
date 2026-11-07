@@ -18,6 +18,7 @@ import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.world.ObjectTextureFormats;
 import com.vibeminer.rendering.world.ObjectTextureMips;
 import com.vibeminer.rendering.world.TerrainScene;
+import com.vibeminer.rendering.world.WmoPortalSet;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
@@ -502,7 +503,19 @@ public final class WorldExteriorObjects {
          * blended BC2/BC3, whose file records every level from the drawn one down to 1 x 1. They
          * also count in IMAGE_MIPS_FILE.
          */
-        IMAGE_BLOCKS
+        IMAGE_BLOCKS,
+        /**
+         * Drawn roots carrying their portals and group headers (#383 step 3a), on dungeon and raid
+         * maps. Not an outcome bucket.
+         */
+        ROOT_PORTALS,
+        /**
+         * Drawn roots on dungeon and raid maps whose declared portals are not carried: not retained
+         * by the root reader, a LOD0 group without a readable header, a MOGP portal range outside
+         * MOPR, or past the tile's portal tables (WmoPortalSet). The root draws unculled. Not an
+         * outcome bucket.
+         */
+        ROOT_PORTALS_DROPPED
     }
 
     /** What a placement draws: an outdoor WMO, an MDDF doodad or a WMO doodad-set entry. */
@@ -698,9 +711,24 @@ public final class WorldExteriorObjects {
      * Shared geometry; several placements may reference one model. A doodad model's rootId is its
      * M2 FileDataID and its single mesh's groupId is its SKIN FileDataID.
      */
-    public record Model(long rootId, boolean doodad, List<Mesh> meshes) {
+    public record Model(long rootId, boolean doodad, List<Mesh> meshes, WmoPortalSet portals) {
         public Model {
             meshes = List.copyOf(meshes);
+        }
+
+        public Model(long rootId, boolean doodad, List<Mesh> meshes) {
+            this(rootId, doodad, meshes, null);
+        }
+
+        /**
+         * The root's retained portals and LOD0 group headers (#383 step 3a), carried for drawn
+         * roots on dungeon and raid maps; each mesh's {@link Mesh#groupOrdinal} is its group in
+         * them. Null for doodads, on open-world maps, and for a root whose set is not carried whole
+         * ({@link Count#ROOT_PORTALS_DROPPED}).
+         */
+        @Override
+        public WmoPortalSet portals() {
+            return portals;
         }
     }
 
@@ -1262,6 +1290,9 @@ public final class WorldExteriorObjects {
 
         private long heldVertices, heldIndices;
 
+        /** Portal table rows the carried sets use so far (#383), against WmoPortalSet bounds. */
+        private int portalSets, portalGroups, portalCount, portalVertices, portalRefs;
+
         Builder(
                 WorldStreamScopes.TileAdmission admission,
                 ModelReader modelReader,
@@ -1331,6 +1362,11 @@ public final class WorldExteriorObjects {
             unreadSources.clear();
             retainedSourceBytes = 0;
             dropUnusedImages();
+            for (var model : models) {
+                if (model.portals() != null) {
+                    count(Count.ROOT_PORTALS);
+                }
+            }
             var objects =
                     new TileObjects(
                             admission.mapId(),
@@ -1442,7 +1478,7 @@ public final class WorldExteriorObjects {
                     rootStates.put(model.rootId(), RootState.EMPTY);
                     rootDoodads.remove(model.rootId());
                 }
-                models.set(m, new Model(model.rootId(), false, kept));
+                models.set(m, new Model(model.rootId(), false, kept, model.portals()));
                 total -= (long) uses[m] * dropped;
             }
             draws = (int) total;
@@ -1583,7 +1619,7 @@ public final class WorldExteriorObjects {
                                     mesh.indices,
                                     ranges));
                 }
-                models.set(m, new Model(model.rootId(), model.doodad(), meshes));
+                models.set(m, new Model(model.rootId(), model.doodad(), meshes, model.portals()));
             }
             images.clear();
             images.addAll(kept);
@@ -2179,7 +2215,7 @@ public final class WorldExteriorObjects {
                     rootDoodads.remove(model.rootId());
                     continue;
                 }
-                models.set(m, new Model(model.rootId(), false, kept));
+                models.set(m, new Model(model.rootId(), false, kept, model.portals()));
             }
             for (int i = 0; i < counts.length; i++) {
                 counts[i] += local[i];
@@ -2229,6 +2265,8 @@ public final class WorldExteriorObjects {
             // Instance interiors (#280) are held for the tile-level pass after every building's
             // exterior, so they never cap or displace an exterior.
             var interiors = new ArrayList<PendingMesh>();
+            // Every LOD0 group's header, for the root's portal set (#383); null when unread.
+            var headers = new WmoFormats.GroupHeader[lod0];
             for (int g = 0; g < lod0; g++) {
                 token.check();
                 long groupId = root.gfid(g);
@@ -2237,7 +2275,7 @@ public final class WorldExteriorObjects {
                     continue;
                 }
                 groupsRead++;
-                var mesh = readGroup(g, groupId, root, local);
+                var mesh = readGroup(g, groupId, root, local, headers);
                 if (mesh == null) {
                     continue;
                 }
@@ -2295,7 +2333,9 @@ public final class WorldExteriorObjects {
             }
             rootDoodads.put(rootId, root.doodads());
             modelSlots.put(rootId, models.size());
-            models.add(new Model(rootId, false, built));
+            models.add(
+                    new Model(
+                            rootId, false, built, this.interiors ? portals(root, headers) : null));
             count(Count.ROOT_DRAWN);
             return RootState.DRAWN;
         }
@@ -2419,7 +2459,46 @@ public final class WorldExteriorObjects {
                     kept);
         }
 
-        private PendingMesh readGroup(int ordinal, long id, WmoFormats.Root root, int[] local) {
+        /**
+         * The root's portal set when it can be carried whole within what is left of the tile's
+         * portal tables (#383 step 3a); null, counted, otherwise. Null without declared portals.
+         */
+        private WmoPortalSet portals(WmoFormats.Root root, WmoFormats.GroupHeader[] headers) {
+            var recorded = root.portals();
+            if (!recorded.declared()) {
+                return null;
+            }
+            WmoPortalSet set = null;
+            if (recorded.retained() && Arrays.stream(headers).allMatch(Objects::nonNull)) {
+                try {
+                    set = WmoPortalSet.of(recorded, Arrays.asList(headers));
+                } catch (IllegalArgumentException outsideMopr) {
+                    set = null;
+                }
+            }
+            if (set == null
+                    || portalSets >= WmoPortalSet.MAX_TILE_SETS
+                    || set.groups().size() > WmoPortalSet.MAX_TILE_GROUPS - portalGroups
+                    || set.portals().size() > WmoPortalSet.MAX_TILE_PORTALS - portalCount
+                    || set.vertexCount() > WmoPortalSet.MAX_TILE_VERTICES - portalVertices
+                    || set.refs().size() > WmoPortalSet.MAX_TILE_REFS - portalRefs) {
+                count(Count.ROOT_PORTALS_DROPPED);
+                return null;
+            }
+            portalSets++;
+            portalGroups += set.groups().size();
+            portalCount += set.portals().size();
+            portalVertices += set.vertexCount();
+            portalRefs += set.refs().size();
+            return set;
+        }
+
+        private PendingMesh readGroup(
+                int ordinal,
+                long id,
+                WmoFormats.Root root,
+                int[] local,
+                WmoFormats.GroupHeader[] headers) {
             var input = derived(id, WorldStreamScopes.DerivedKind.WMO_GROUP);
             if (input == null) {
                 local[Count.GROUP_UNAVAILABLE.ordinal()]++;
@@ -2432,6 +2511,7 @@ public final class WorldExteriorObjects {
                         input.bytes(),
                         token::isCanceled,
                         borrow -> {
+                            headers[ordinal] = borrow.header();
                             long flags = borrow.header().flags();
                             if ((flags & INTERIOR) != 0 && !interiors) {
                                 outcome[0] = Count.GROUP_INTERIOR;
