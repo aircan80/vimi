@@ -275,7 +275,17 @@ public final class ItemsService implements Items {
         @Override
         public CompletableFuture<ItemGridPage> grid(
                 ItemGridQuery query, TableTypes.Priority priority, Cancellation token) {
+            return grid(query, priority, CatalogProgress.NONE, token);
+        }
+
+        @Override
+        public CompletableFuture<ItemGridPage> grid(
+                ItemGridQuery query,
+                TableTypes.Priority priority,
+                CatalogProgress progress,
+                Cancellation token) {
             java.util.Objects.requireNonNull(query);
+            java.util.Objects.requireNonNull(progress);
             return call(
                     priority,
                     token,
@@ -327,11 +337,12 @@ public final class ItemsService implements Items {
                                 boolean keep = false;
                                 try {
                                     if (!opened.ready()) {
-                                        var prepared = buildCatalog(identity, priority, token);
+                                        var prepared =
+                                                buildCatalog(identity, priority, progress, token);
                                         if (prepared.state() != ItemsPageState.OK) {
                                             unavailableCatalog = prepared;
                                         } else {
-                                            opened.populate(prepared, token);
+                                            opened.populate(prepared, progress, token);
                                         }
                                     }
                                     if (opened.ready()) {
@@ -366,7 +377,10 @@ public final class ItemsService implements Items {
         }
 
         private ItemCatalog buildCatalog(
-                String identity, TableTypes.Priority priority, Cancellation token) {
+                String identity,
+                TableTypes.Priority priority,
+                CatalogProgress progress,
+                Cancellation token) {
             var s = schemas(priority, token);
             if (s.itemColumns() == null) {
                 return new ItemCatalog(
@@ -384,6 +398,7 @@ public final class ItemsService implements Items {
                             sparse,
                             priority,
                             token,
+                            done -> progress.report("item text rows read", done),
                             row -> {
                                 if (sparseRows.putIfAbsent(row.id(), layout.sparseValue(row))
                                         != null) {
@@ -398,6 +413,7 @@ public final class ItemsService implements Items {
                         item,
                         priority,
                         token,
+                        done -> progress.report("item rows read", done),
                         row -> {
                             var value = sparseRows.get(row.id());
                             var outcome = TableTypes.RowOutcome.UNKNOWN;
@@ -445,6 +461,7 @@ public final class ItemsService implements Items {
                 TableTypes.Ref table,
                 TableTypes.Priority priority,
                 Cancellation token,
+                java.util.function.LongConsumer pages,
                 java.util.function.Consumer<Db2Types.Row> accept) {
             long after = -1, count = 0;
             String identity = null;
@@ -470,6 +487,7 @@ public final class ItemsService implements Items {
                     }
                     accept.accept(row.row());
                 }
+                pages.accept(count);
                 if (page.nextAfter() == null) {
                     break;
                 }
