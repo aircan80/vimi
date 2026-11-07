@@ -24,7 +24,6 @@ final class Dx11InstanceInputSignatureTest {
     @ValueSource(
             strings = {
                 "/com/vibeminer/rendering/bgfx/shaders/terrain/dx11/vs_model.bin",
-                "/com/vibeminer/rendering/bgfx/shaders/world-stream/dx11/vs_model.bin",
                 "/com/vibeminer/rendering/bgfx/terrain-spike/dx11/vs_model.bin",
                 "/com/vibeminer/rendering/bgfx/world-stream-spike/dx11/vs_model.bin"
             })
@@ -35,6 +34,15 @@ final class Dx11InstanceInputSignatureTest {
                 Set.of("POSITION0", "TEXCOORD31", "TEXCOORD30", "TEXCOORD29"),
                 inputs,
                 "D3D11 vertex inputs for " + resource);
+    }
+
+    /** The production World stream terrain is an indexed mesh (issue #373): no instance data. */
+    @org.junit.jupiter.api.Test
+    void worldStreamTerrainReadsPerVertexPositionAndColour() throws IOException {
+        assertEquals(
+                Set.of("POSITION0", "COLOR0"),
+                dx11VertexInputs(
+                        "/com/vibeminer/rendering/bgfx/shaders/world-stream/dx11/vs_model.bin"));
     }
 
     static Set<String> dx11VertexInputs(String resource) throws IOException {
