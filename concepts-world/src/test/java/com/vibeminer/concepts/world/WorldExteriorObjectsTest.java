@@ -633,14 +633,24 @@ class WorldExteriorObjectsTest {
     @Test
     void doodadsKeepTheirDrawsAheadOfInstanceInteriors() {
         // One exterior building (1 draw), an interior-only root placed 60 times and 300 MDDF
-        // doodads (1 draw each). The interior group's batch count is derived from MAX_DRAWS so
-        // that the interior alone fits but not after the doodads: the doodads and the exterior are
-        // spent first, and the interior is what is capped, never a doodad.
+        // doodads (1 draw each). The interior's batch count is derived from MAX_DRAWS so that the
+        // interior alone fits but not after the doodads: the doodads and the exterior are spent
+        // first, and the interior is what is capped, never a doodad. The batches are split over
+        // interior groups of at most WmoGroupSpans.MAX_BATCHES each, admitted group by group, so
+        // the last group is the one that no longer fits.
         long interiorRoot = 120;
         int batchCount = (WorldExteriorObjects.MAX_DRAWS - 1 - 300) / 60 + 1;
-        var batches = new ArrayList<Batch>();
-        for (int b = 0; b < batchCount; b++) {
-            batches.add(new Batch(b * 3, 3, 0, 0));
+        int perGroup = com.vibeminer.formats.world.WmoGroupSpans.MAX_BATCHES;
+        var interiorGroups = new long[(batchCount + perGroup - 1) / perGroup];
+        var interiorSources = new java.util.LinkedHashMap<Long, byte[]>();
+        for (int g = 0; g < interiorGroups.length; g++) {
+            interiorGroups[g] = INTERIOR + 10L * g;
+            int size = Math.min(perGroup, batchCount - g * perGroup);
+            var batches = new ArrayList<Batch>();
+            for (int b = 0; b < size; b++) {
+                batches.add(new Batch(b * 3, 3, 0, 0));
+            }
+            interiorSources.put(interiorGroups[g], group(INT, 3, size, batches));
         }
         var records = new ArrayList<Modf>();
         records.add(Modf.of(ROOT, 1, 0x8));
@@ -653,16 +663,22 @@ class WorldExteriorObjectsTest {
         }
         try (var f = new Fixture(records)) {
             putModel(f, MODEL, model());
-            f.files.sources.put(interiorRoot, root(INTERIOR));
-            f.files.sources.put(INTERIOR, group(INT, 3, batchCount, batches));
+            f.files.sources.put(interiorRoot, root(interiorGroups));
+            f.files.sources.putAll(interiorSources);
             f.files.sources.put(4L, obj0(records, doodads));
             assertTrue(1 + 60 * batchCount + 300 > WorldExteriorObjects.MAX_DRAWS);
             assertTrue(1 + 60 * batchCount <= WorldExteriorObjects.MAX_DRAWS);
             try (var set = f.runInstance()) {
                 assertEquals(300, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
+                assertTrue(interiorGroups.length > 1);
                 assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
-                assertTrue(set.placements().stream().noneMatch(p -> p.rootId() == interiorRoot));
+                assertEquals(
+                        interiorGroups.length - 1,
+                        set.models().stream()
+                                .filter(m -> m.rootId() == interiorRoot)
+                                .mapToInt(m -> m.meshes().size())
+                                .sum());
                 assertTrue(set.placements().stream().anyMatch(p -> p.rootId() == ROOT));
             }
         }
@@ -670,8 +686,8 @@ class WorldExteriorObjectsTest {
         // them and draws too.
         try (var f = new Fixture(records)) {
             putModel(f, MODEL, model());
-            f.files.sources.put(interiorRoot, root(INTERIOR));
-            f.files.sources.put(INTERIOR, group(INT, 3, batchCount, batches));
+            f.files.sources.put(interiorRoot, root(interiorGroups));
+            f.files.sources.putAll(interiorSources);
             int fitting = WorldExteriorObjects.MAX_DRAWS - 1 - 60 * batchCount;
             f.files.sources.put(4L, obj0(records, doodads.subList(0, fitting)));
             try (var set = f.runInstance()) {
@@ -686,12 +702,20 @@ class WorldExteriorObjectsTest {
 
     @Test
     void interiorsNeverCostExteriorCutoutOrBlendedDraws() {
-        // 64 placements of a building with 32 opaque and 31 cutout batches draw 4,032 of the
-        // 4,096-draw budget. A 2-range interior would need 128 more: it is capped, and the
-        // exterior's cutout batches are all still drawn, exactly as without interiors.
-        var batches = new ArrayList<Batch>();
-        for (int i = 0; i < 63; i++) {
-            batches.add(new Batch(i * 3, 3, 0, i < 32 ? 0 : 1));
+        // 64 placements of a building with a group of 64 opaque batches and a group of cutout
+        // batches draw all but 64 of the draw budget (MAX_DRAWS / 64 - 1 batches per placement).
+        // A 2-range interior would need 128 more: it is capped, and the exterior's cutout batches
+        // are all still drawn, exactly as without interiors.
+        int perPlacement = WorldExteriorObjects.MAX_DRAWS / 64 - 1;
+        int cutouts = perPlacement - 64;
+        assertTrue(cutouts > 0 && cutouts <= com.vibeminer.formats.world.WmoGroupSpans.MAX_BATCHES);
+        var opaque = new ArrayList<Batch>();
+        for (int i = 0; i < 64; i++) {
+            opaque.add(new Batch(i * 3, 3, 0, 0));
+        }
+        var cutout = new ArrayList<Batch>();
+        for (int i = 0; i < cutouts; i++) {
+            cutout.add(new Batch(i * 3, 3, 0, 1));
         }
         var records = new ArrayList<Modf>();
         for (int i = 0; i < 64; i++) {
@@ -703,12 +727,13 @@ class WorldExteriorObjectsTest {
                         f.files.sources.put(
                                 ROOT,
                                 root(
-                                        2,
-                                        new long[] {GROUP, INTERIOR},
+                                        3,
+                                        new long[] {GROUP, GROUP + 2, INTERIOR},
                                         List.of(
                                                 new Material(0, IMAGE, 0),
                                                 new Material(1, IMAGE2, 0))));
-                        f.files.sources.put(GROUP, group(EXT, 3, 63, batches));
+                        f.files.sources.put(GROUP, group(EXT, 3, 64, opaque));
+                        f.files.sources.put(GROUP + 2, group(EXT, 3, cutouts, cutout));
                         f.files.sources.put(
                                 INTERIOR,
                                 group(
@@ -723,7 +748,7 @@ class WorldExteriorObjectsTest {
                 };
         var without = run.apply(false);
         var with = run.apply(true);
-        assertEquals(31, with.get(WorldExteriorObjects.Count.BATCH_CUTOUT));
+        assertEquals(cutouts, with.get(WorldExteriorObjects.Count.BATCH_CUTOUT));
         assertEquals(
                 without.get(WorldExteriorObjects.Count.BATCH_CUTOUT),
                 with.get(WorldExteriorObjects.Count.BATCH_CUTOUT));
