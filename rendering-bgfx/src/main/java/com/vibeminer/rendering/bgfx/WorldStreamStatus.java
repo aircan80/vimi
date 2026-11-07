@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -25,6 +26,9 @@ final class WorldStreamStatus {
 
     record CameraApplied(WorldStreamState.Nonce nonce, long policy, int width, int height)
             implements Message {}
+
+    /** Non-reliable wake-up hint that the frame mapping published {@code sequence}. */
+    record FramePublished(WorldStreamState.Nonce nonce, long sequence) implements Message {}
 
     enum InputKind {
         TILE,
@@ -63,7 +67,12 @@ final class WorldStreamStatus {
         /** Read, validation or upload failed; the tile's terrain is untouched. */
         FAILED,
         /** The slot generation was no longer active (stale or retired); nothing was attached. */
-        DROPPED
+        DROPPED,
+        /**
+         * The session's shared objects GPU budget had no room; nothing was attached and the parent
+         * may offer the same generation again later. Terrain is untouched.
+         */
+        BUDGET
     }
 
     record ObjectsDone(
@@ -158,8 +167,14 @@ final class WorldStreamStatus {
                     arity(p, 6);
                     long policy = positive(p[3]);
                     int width = integer(p[4]), height = integer(p[5]);
-                    require(width >= 1 && width <= 800 && height >= 1 && height <= 500);
+                    require(WorldFrameLimits.fits(width, height));
                     yield new CameraApplied(nonce, policy, width, height);
+                }
+                case "FRAME" -> {
+                    arity(p, 4);
+                    long sequence = positive(p[3]);
+                    require(sequence <= WorldFrameFileV2.MAX_SEQUENCE);
+                    yield new FramePublished(nonce, sequence);
                 }
                 case "INPUT_CONSUMED" -> {
                     arity(p, 5);

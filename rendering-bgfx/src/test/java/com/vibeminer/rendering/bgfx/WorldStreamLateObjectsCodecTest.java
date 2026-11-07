@@ -24,7 +24,7 @@ class WorldStreamLateObjectsCodecTest {
                         NONCE, 4, LEASE, WorldStreamObjectsFile.MAX_BYTES, "a".repeat(64));
         byte[] encoded = WorldStreamControl.encode(command);
         assertEquals(
-                PREFIX + "OBJECTS 4 37 9 23 tile-4.wso 25165824 " + "a".repeat(64) + "\n",
+                PREFIX + "OBJECTS 4 37 9 23 tile-4.wso 29360128 " + "a".repeat(64) + "\n",
                 new String(encoded, StandardCharsets.US_ASCII));
         assertEquals(command, WorldStreamControl.decode(encoded, encoded.length));
         var widest =
@@ -46,9 +46,9 @@ class WorldStreamLateObjectsCodecTest {
                         "OBJECTS 4 37 9 23 tile-4.wst 4096 " + sha,
                         "OBJECTS 4 37 9 23 ../tile-4.wso 4096 " + sha,
                         "OBJECTS 4 37 9 23 tile-4.wso 255 " + sha,
-                        "OBJECTS 4 37 9 23 tile-4.wso 25165825 " + sha,
+                        "OBJECTS 4 37 9 23 tile-4.wso 29360129 " + sha,
                         "OBJECTS 0 37 9 23 tile-0.wso 4096 " + sha,
-                        "OBJECTS 4 37 10 23 tile-4.wso 4096 " + sha,
+                        "OBJECTS 4 37 26 23 tile-4.wso 4096 " + sha,
                         "OBJECTS 4 0 9 23 tile-4.wso 4096 " + sha,
                         "OBJECTS 4 37 9 23 tile-4.wso 4096 " + "A".repeat(64),
                         "OBJECTS 4 37 9 23 tile-4.wso 04096 " + sha,

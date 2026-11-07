@@ -6,7 +6,12 @@ import java.util.Objects;
 
 /** Pure owner-thread metadata model for the proposed World v2 mode; no renderer is wired to it. */
 final class WorldStreamState {
-    static final int SLOTS = 10, MAX_ACTIVE = 9, MAX_REFERENCES = 48;
+    /**
+     * Hard ceilings: the far 5 x 5 tile neighborhood (issue #173), 25 active slots plus one staged.
+     * A session's view distance may use fewer (the near 3 x 3 uses 9 + 1); every slot, envelope,
+     * commit and renderer bound derives from these values or the session's own.
+     */
+    static final int SLOTS = 26, MAX_ACTIVE = 25, MAX_REFERENCES = 48;
 
     record Nonce(long high, long low) {
         Nonce {
@@ -60,7 +65,18 @@ final class WorldStreamState {
     private boolean decoderOwned, inputConsumed, stopping;
     private int references;
 
+    // This session's active-table bound, at most MAX_ACTIVE. Granted slots stay below it + 1.
+    private final int maxActive;
+
     WorldStreamState(Nonce nonce) {
+        this(nonce, MAX_ACTIVE);
+    }
+
+    WorldStreamState(Nonce nonce, int maxActive) {
+        if (maxActive < 1 || maxActive > MAX_ACTIVE) {
+            throw new IllegalArgumentException("Invalid active bound");
+        }
+        this.maxActive = maxActive;
         this.nonce = Objects.requireNonNull(nonce);
         java.util.Arrays.fill(coordinates, -1);
         grant();
@@ -96,6 +112,18 @@ final class WorldStreamState {
 
     boolean drained() {
         return phase == Phase.CLOSED;
+    }
+
+    /** What still holds the close open; diagnostics only. */
+    String drainSummary() {
+        return "phase="
+                + phase
+                + " decoderOwned="
+                + decoderOwned
+                + " references="
+                + references
+                + " reservedCommit="
+                + reservedCommit;
     }
 
     Result offer(Nonce session, long tx, Lease lease) {
@@ -248,7 +276,7 @@ final class WorldStreamState {
         if (expected != contentRevision || expected == Long.MAX_VALUE || next != expected + 1) {
             return Result.REVISION_MISMATCH;
         }
-        if (table == null || table.size() > MAX_ACTIVE) {
+        if (table == null || table.size() > maxActive) {
             return Result.INVALID_TABLE;
         }
         var seen = new HashSet<Lease>();

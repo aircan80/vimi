@@ -35,7 +35,14 @@ public final class WorldGpuUiTest {
     private static final AtomicReference<WorldView> VIEW = new AtomicReference<>();
     private static final AtomicReference<Stage> STAGE = new AtomicReference<>();
     private static final CompletableFuture<Void> DONE = new CompletableFuture<>();
+    private static final AtomicReference<String> BACKEND = new AtomicReference<>("");
     private static GpuPreviewService service;
+
+    /**
+     * The service's ready status, followed by the backend the child reports (the platform default,
+     * Direct3D 11 on Windows), so the proof accepts whichever backend the platform qualifies.
+     */
+    private static final String GPU_READY = "Inline GPU renderer ready · ";
 
     public static void main(String[] args) throws Exception {
         Platform.startup(
@@ -68,9 +75,15 @@ public final class WorldGpuUiTest {
             Platform.exit();
         }
         require(children().isEmpty(), "Owned renderer exited after FX close");
+        String expected = expectedBackend();
+        require(
+                expected == null || expected.equals(BACKEND.get()),
+                "Platform default backend: expected " + expected + ", got " + BACKEND.get());
         System.out.println(
-                "World actual GPU FX: Vulkan accepted pixel upload, camera/resize persistence,"
-                    + " hide/resume, software toggle and owner drain passed");
+                "World actual GPU FX: "
+                        + BACKEND.get()
+                        + " accepted pixel upload, camera/resize persistence,"
+                        + " hide/resume, software toggle and owner drain passed");
     }
 
     private static void start() {
@@ -292,9 +305,7 @@ public final class WorldGpuUiTest {
                                                                                                                                     children()
                                                                                                                                                     .isEmpty()
                                                                                                                                             && ((Label)
-                                                                                                                                                            view
-                                                                                                                                                                    .lookup(
-                                                                                                                                                                            "#world-position"))
+                                                                                                                                                            positionLine(view))
                                                                                                                                                     .getText()
                                                                                                                                                     .contains(
                                                                                                                                                             "0 tiles"
@@ -420,12 +431,33 @@ public final class WorldGpuUiTest {
         return true;
     }
 
+    /**
+     * bgfx's name for this platform's default backend (GpuViewerMain), or null when the {@code
+     * vimi.gpu.backend} / {@code VIMI_GPU_BACKEND} override chooses another.
+     */
+    private static String expectedBackend() {
+        String override = System.getProperty("vimi.gpu.backend");
+        if (override == null) {
+            override = System.getenv("VIMI_GPU_BACKEND");
+        }
+        if (override != null && !override.isBlank() && !override.strip().equalsIgnoreCase("default")) {
+            return null;
+        }
+        String os = System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT);
+        return os.contains("win") ? "Direct3D 11" : os.contains("mac") ? "Metal" : "Vulkan";
+    }
+
     private static boolean ready(WorldView view) {
-        return view.lookup("#world-frame") instanceof ImageView image
-                && image.getImage() != null
-                && view.lookup("#world-gpu-status") instanceof Label label
-                && label.getText().contains("Vulkan")
-                && !view.lookup("#world-gpu-activity").isVisible();
+        boolean ready =
+                view.lookup("#world-frame") instanceof ImageView image
+                        && image.getImage() != null
+                        && view.lookup("#world-gpu-status") instanceof Label label
+                        && label.getText().startsWith(GPU_READY)
+                        && !view.lookup("#world-gpu-activity").isVisible();
+        if (ready) {
+            BACKEND.set(((Label) view.lookup("#world-gpu-status")).getText().substring(GPU_READY.length()));
+        }
+        return ready;
     }
 
     private static KeyEvent key(javafx.event.EventType<KeyEvent> type, KeyCode code) {
@@ -433,22 +465,7 @@ public final class WorldGpuUiTest {
     }
 
     private static Set<Long> children() {
-        return ProcessHandle.current()
-                .children()
-                .filter(ProcessHandle::isAlive)
-                .filter(
-                        p ->
-                                p.info()
-                                        .command()
-                                        .map(
-                                                command ->
-                                                        Path.of(command)
-                                                                .getFileName()
-                                                                .toString()
-                                                                .equals("java"))
-                                        .orElse(false))
-                .map(ProcessHandle::pid)
-                .collect(java.util.stream.Collectors.toSet());
+        return RendererChildren.live();
     }
 
     private static long hash(ImageView image) {
@@ -560,6 +577,17 @@ public final class WorldGpuUiTest {
     private static void require(boolean value, String message) {
         if (!value) {
             throw new AssertionError(message);
+        }
+    }
+
+    /** The view's full position line: the model behind the HUD coordinates pill (its tooltip). */
+    private static javafx.scene.Node positionLine(WorldView view) {
+        try {
+            var field = WorldView.class.getDeclaredField("position");
+            field.setAccessible(true);
+            return (javafx.scene.Node) field.get(view);
+        } catch (ReflectiveOperationException error) {
+            throw new AssertionError(error);
         }
     }
 }

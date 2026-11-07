@@ -1,13 +1,15 @@
 package com.vimi.gui;
 
-import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.world.BuildWorld;
 import com.vibeminer.concepts.world.WorldAreaAudio;
 import com.vibeminer.concepts.world.WorldCurrentArea;
 
-import java.util.Objects;
+import java.time.Clock;
 
+import javafx.animation.Animation;
+import javafx.animation.KeyFrame;
 import javafx.animation.PauseTransition;
+import javafx.animation.Timeline;
 import javafx.application.Platform;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.ChoiceBox;
@@ -18,29 +20,20 @@ import javafx.scene.layout.HBox;
 import javafx.util.Duration;
 
 /**
- * World explorer music/ambience controls. Area changes are debounced, resolved off the FX thread
- * and published to owned playback channels; both channels start off.
+ * World explorer music/ambience controls; the selection logic is {@link WorldAudioDirector}.
+ * Both channels start off. The day/night slot follows the local clock unless one is chosen.
  */
 final class WorldAudioControls implements AutoCloseable {
-    private record Key(BuildWorld handle, long mapId, WorldCurrentArea.State state, long areaId,
-            WorldAreaAudio.Variant variant) {}
-
     private final CheckBox music = new CheckBox("Music"), ambience = new CheckBox("Ambience");
     private final Slider musicVolume = slider("world-music-volume"),
             ambienceVolume = slider("world-ambience-volume");
-    private final ChoiceBox<WorldAreaAudio.Variant> variant = new ChoiceBox<>();
+    private final ChoiceBox<WorldAudioDirector.Slot> variant = new ChoiceBox<>();
     private final Label status = new Label("Recorded area audio off");
     private final HBox node = new HBox(8, music, musicVolume, ambience, ambienceVolume, variant,
             status);
     private final PauseTransition settle = new PauseTransition(Duration.millis(750));
-    private final WorldAudioPlayback playback;
-    private String musicStatus = "Music off", ambienceStatus = "Ambience off";
-    private Key observed, resolved;
-    private WorldCurrentArea.Result area;
-    private Cancellation request;
-    private long generation;
-    private BuildWorld sourceHandle;
-    private WorldAudioPlayback.Source source;
+    private final Timeline clock = new Timeline();
+    private final WorldAudioDirector director;
     private boolean closed;
 
     WorldAudioControls() {
@@ -48,33 +41,39 @@ final class WorldAudioControls implements AutoCloseable {
     }
 
     WorldAudioControls(WorldAudioPlayback playback) {
-        this.playback = playback != null ? playback
+        var owned = playback != null ? playback
                 : new WorldAudioPlayback(value -> Platform.runLater(() -> show(value)));
+        director = new WorldAudioDirector(owned, Clock.systemDefaultZone(),
+                settle::playFromStart, Platform::runLater, status::setText);
         node.setId("world-audio");
         music.setId("world-music");
         ambience.setId("world-ambience");
         variant.setId("world-audio-variant");
         status.setId("world-audio-status");
         status.setMinWidth(0);
-        variant.getItems().setAll(WorldAreaAudio.Variant.values());
-        variant.setValue(WorldAreaAudio.Variant.DAY);
-        variant.setTooltip(new Tooltip(
-                "Recorded day or night sound slot; game time is not simulated."));
+        variant.getItems().setAll(WorldAudioDirector.Slot.values());
+        variant.setValue(WorldAudioDirector.Slot.CLOCK);
+        variant.setTooltip(new Tooltip("Recorded day or night sound slot. By default it follows"
+                + " this computer's clock (day " + WorldAudioDirector.DAY_STARTS + " to "
+                + WorldAudioDirector.NIGHT_STARTS + "); game time is not simulated."));
         status.setTooltip(new Tooltip(
                 "Recorded terrain-area audio only: WMO interiors, underwater, intro music, player"
-                        + " conditions and SoundKit mixing are not evaluated."));
-        music.selectedProperty().addListener((o, a, on) -> toggle(this.playback.music, on));
-        ambience.selectedProperty().addListener((o, a, on) -> toggle(this.playback.ambience, on));
-        musicVolume.valueProperty().addListener(
-                (o, a, value) -> this.playback.music.volume(value.doubleValue() / 100));
-        ambienceVolume.valueProperty().addListener(
-                (o, a, value) -> this.playback.ambience.volume(value.doubleValue() / 100));
+                        + " conditions and SoundKit variation are not evaluated."));
+        music.selectedProperty().addListener(
+                (o, a, on) -> director.toggle(WorldAreaAudio.Kind.MUSIC, on));
+        ambience.selectedProperty().addListener(
+                (o, a, on) -> director.toggle(WorldAreaAudio.Kind.AMBIENCE, on));
+        musicVolume.valueProperty().addListener((o, a, value) ->
+                director.volume(WorldAreaAudio.Kind.MUSIC, value.doubleValue() / 100));
+        ambienceVolume.valueProperty().addListener((o, a, value) ->
+                director.volume(WorldAreaAudio.Kind.AMBIENCE, value.doubleValue() / 100));
         variant.valueProperty().addListener((o, a, value) -> {
-            if (observed != null) observed = new Key(observed.handle(), observed.mapId(),
-                    observed.state(), observed.areaId(), value);
-            schedule();
+            if (value != null) director.slot(value);
         });
-        settle.setOnFinished(event -> resolve());
+        settle.setOnFinished(event -> director.settled());
+        clock.getKeyFrames().setAll(new KeyFrame(Duration.seconds(30), e -> director.tick()));
+        clock.setCycleCount(Animation.INDEFINITE);
+        clock.play();
     }
 
     private static Slider slider(String id) {
@@ -84,98 +83,72 @@ final class WorldAudioControls implements AutoCloseable {
         return slider;
     }
 
+    /** The day/night key: by clock, then day, then night, then by clock again. */
+    void cycleSlot() {
+        var all = WorldAudioDirector.Slot.values();
+        var now = variant.getValue() == null ? WorldAudioDirector.Slot.CLOCK : variant.getValue();
+        variant.setValue(all[(now.ordinal() + 1) % all.length]);
+    }
+
+    /** The selected day/night slot; for tests. */
+    WorldAudioDirector.Slot slot() {
+        return variant.getValue();
+    }
+
+    /** The audio status text, e.g. for the developer overlay. */
+    javafx.beans.property.ReadOnlyStringProperty statusText() {
+        return status.textProperty();
+    }
+
     HBox node() {
         return node;
     }
 
+    // The controls themselves, for the HUD's music, ambience and day/night icons.
+    CheckBox music() {
+        return music;
+    }
+
+    CheckBox ambience() {
+        return ambience;
+    }
+
+    Slider volume(WorldAreaAudio.Kind kind) {
+        return kind == WorldAreaAudio.Kind.MUSIC ? musicVolume : ambienceVolume;
+    }
+
+    ChoiceBox<WorldAudioDirector.Slot> variant() {
+        return variant;
+    }
+
+    Label status() {
+        return status;
+    }
+
+    /** True while the channel is on but this area records nothing for it (the icon dims). */
+    javafx.beans.property.ReadOnlyBooleanProperty silent(WorldAreaAudio.Kind kind) {
+        return kind == WorldAreaAudio.Kind.MUSIC ? musicSilent : ambienceSilent;
+    }
+
+    private final javafx.beans.property.SimpleBooleanProperty musicSilent =
+                    new javafx.beans.property.SimpleBooleanProperty(),
+            ambienceSilent = new javafx.beans.property.SimpleBooleanProperty();
+
     /** FX thread; cheap when the area is unchanged, so callers may report it every frame. */
     void area(BuildWorld handle, long mapId, WorldCurrentArea.Result current) {
-        if (closed) return;
-        var key = current == null || handle == null
-                ? new Key(null, -1, WorldCurrentArea.State.UNAVAILABLE, 0, variant.getValue())
-                : new Key(handle, mapId, current.state(), current.areaId(), variant.getValue());
-        if (key.equals(observed)) return;
-        observed = key;
-        area = current;
-        schedule();
-    }
-
-    private void toggle(WorldAudioPlayback.Channel channel, boolean on) {
-        // A previously resolved area may be stale; enabling waits for the current area.
-        if (on) channel.track(null, null);
-        channel.enabled(on);
-        if (on) {
-            resolved = null;
-            schedule();
-        }
-        refresh();
-    }
-
-    private void schedule() {
-        if (closed) return;
-        settle.playFromStart();
-    }
-
-    private void resolve() {
-        if (closed || observed == null || observed.equals(resolved)) return;
-        if (!music.isSelected() && !ambience.isSelected()) return;
-        var key = observed;
-        resolved = key;
-        long current = ++generation;
-        if (request != null) request.cancel();
-        if (key.handle() == null || area == null || area.state() != WorldCurrentArea.State.KNOWN) {
-            publish(null, null);
-            musicStatus = ambienceStatus = "Terrain area unavailable";
-            refresh();
-            return;
-        }
-        var token = new Cancellation();
-        request = token;
-        var handle = key.handle();
-        handle.areaAudio(key.mapId(), area, key.variant(), token).whenComplete(
-                (plan, failure) -> Platform.runLater(() -> {
-                    if (closed || current != generation) return;
-                    if (failure != null || plan == null) {
-                        publish(null, null);
-                        musicStatus = ambienceStatus = "Recorded area audio unavailable";
-                        resolved = null;
-                    } else {
-                        publish(plan, source(handle));
-                        musicStatus = plan.music().message();
-                        ambienceStatus = plan.ambience().message();
-                    }
-                    refresh();
-                }));
-    }
-
-    /** One stable source per handle, so an unchanged sound kit keeps playing. */
-    private WorldAudioPlayback.Source source(BuildWorld handle) {
-        if (handle != sourceHandle) {
-            sourceHandle = handle;
-            source = handle::audioFile;
-        }
-        return source;
-    }
-
-    private void publish(WorldAreaAudio.Plan plan, WorldAudioPlayback.Source source) {
-        playback.music.track(plan == null ? null : plan.music().track(), source);
-        playback.ambience.track(plan == null ? null : plan.ambience().track(), source);
+        director.area(handle, mapId, current);
     }
 
     private void show(WorldAudioPlayback.Status value) {
         if (closed) return;
-        if (value.kind() == WorldAreaAudio.Kind.MUSIC) musicStatus = value.message();
-        else ambienceStatus = value.message();
-        refresh();
+        silent(value);
+        director.show(value);
     }
 
-    private void refresh() {
-        String text;
-        if (!music.isSelected() && !ambience.isSelected()) text = "Recorded area audio off";
-        else if (!ambience.isSelected()) text = musicStatus;
-        else if (!music.isSelected()) text = ambienceStatus;
-        else text = musicStatus + " · " + ambienceStatus;
-        status.setText(Objects.requireNonNullElse(text, ""));
+    /** Records whether a playback status means "nothing recorded here" for its channel. */
+    void silent(WorldAudioPlayback.Status value) {
+        boolean none = !value.playing() && value.message() != null && value.message().startsWith("No recorded");
+        (value.kind() == WorldAreaAudio.Kind.MUSIC ? musicSilent : ambienceSilent).set(none);
     }
 
     @Override
@@ -183,7 +156,7 @@ final class WorldAudioControls implements AutoCloseable {
         if (closed) return;
         closed = true;
         settle.stop();
-        if (request != null) request.cancel();
-        playback.closeAsync();
+        clock.stop();
+        director.close();
     }
 }

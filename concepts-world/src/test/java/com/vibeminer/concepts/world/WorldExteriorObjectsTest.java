@@ -287,6 +287,18 @@ class WorldExteriorObjectsTest {
                     detail);
         }
 
+        /** A dungeon or raid map: interior WMO groups are drawn too (#280). */
+        WorldExteriorObjects.TileObjects runInstance() {
+            return WorldExteriorObjects.prepare(
+                    engine,
+                    scope,
+                    TILE,
+                    Cancellation.NONE,
+                    WorldExteriorObjects.ModelReader.STANDARD,
+                    WorldExteriorObjects.ImageDetail.STANDARD,
+                    true);
+        }
+
         WorldExteriorObjects.TileObjects run(WorldExteriorObjects.ModelReader reader) {
             return WorldExteriorObjects.prepare(engine, scope, TILE, Cancellation.NONE, reader);
         }
@@ -297,12 +309,20 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    /** Mip-chain sources describe decoded images, not outcomes; they have their own test. */
+    private static final java.util.Set<WorldExteriorObjects.Count> MIP_SOURCES =
+            java.util.EnumSet.of(
+                    WorldExteriorObjects.Count.IMAGE_MIPS_FILE,
+                    WorldExteriorObjects.Count.IMAGE_MIPS_PARTIAL,
+                    WorldExteriorObjects.Count.IMAGE_MIPS_GENERATED);
+
+    /** Non-zero outcome buckets. */
     private static Map<WorldExteriorObjects.Count, Integer> counts(
             WorldExteriorObjects.TileObjects set) {
         var result =
                 new EnumMap<WorldExteriorObjects.Count, Integer>(WorldExteriorObjects.Count.class);
         for (var c : WorldExteriorObjects.Count.values()) {
-            if (set.count(c) != 0) {
+            if (set.count(c) != 0 && !MIP_SOURCES.contains(c)) {
                 result.put(c, set.count(c));
             }
         }
@@ -511,6 +531,235 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void instanceMapsDrawInteriorGroupsAfterTheExterior() {
+        // One root: an interior group recorded first, then an exterior group, then a group with
+        // neither flag. On an open-world map the interior is omitted; on a dungeon or raid map it
+        // draws, and the flagless group stays unsupported either way.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(INTERIOR, GROUP, 210));
+            f.files.sources.put(210L, group(0x1));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+            }
+            try (var set = f.runInstance()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_UNSUPPORTED));
+                assertEquals(2, set.models().getFirst().meshes().size());
+            }
+        }
+        // An interior-only root (a dungeon's own building) draws on an instance map.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(INTERIOR));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_EMPTY));
+            }
+            try (var set = f.runInstance()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+            }
+        }
+    }
+
+    @Test
+    void anInteriorOnlyRootNeedsAFreeBuildingSlot() {
+        // A larger interior-only root is admitted first without taking a slot (it has no opaque
+        // draws yet); 64 exterior placements then fill every slot. Its interior must not make
+        // it a 65th building: it is capped, not drawn.
+        long interiorRoot = 120;
+        var records = new ArrayList<Modf>();
+        for (int i = 0; i < 64; i++) {
+            records.add(Modf.of(ROOT, 1 + i, 0x8));
+        }
+        records.add(Modf.of(interiorRoot, 100, 0x8).sized(50));
+        try (var f = new Fixture(records)) {
+            f.files.sources.put(interiorRoot, root(INTERIOR));
+            try (var set = f.runInstance()) {
+                assertEquals(64, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(64, set.placements().size());
+                assertTrue(set.placements().stream().noneMatch(p -> p.rootId() == interiorRoot));
+            }
+            // With a free slot the same interior-only root draws.
+            records.removeFirst();
+        }
+        try (var f = new Fixture(records)) {
+            f.files.sources.put(interiorRoot, root(INTERIOR));
+            try (var set = f.runInstance()) {
+                assertEquals(64, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertTrue(set.placements().stream().anyMatch(p -> p.rootId() == interiorRoot));
+            }
+        }
+    }
+
+    @Test
+    void doodadsKeepTheirDrawsAheadOfInstanceInteriors() {
+        // One exterior building (1 draw), an interior-only root placed 60 times and 300 MDDF
+        // doodads (1 draw each). The interior group's batch count is derived from MAX_DRAWS so
+        // that the interior alone fits but not after the doodads: the doodads and the exterior are
+        // spent first, and the interior is what is capped, never a doodad.
+        long interiorRoot = 120;
+        int batchCount = (WorldExteriorObjects.MAX_DRAWS - 1 - 300) / 60 + 1;
+        var batches = new ArrayList<Batch>();
+        for (int b = 0; b < batchCount; b++) {
+            batches.add(new Batch(b * 3, 3, 0, 0));
+        }
+        var records = new ArrayList<Modf>();
+        records.add(Modf.of(ROOT, 1, 0x8));
+        for (int i = 0; i < 60; i++) {
+            records.add(Modf.of(interiorRoot, 100 + i, 0x8));
+        }
+        var doodads = new ArrayList<Mddf>();
+        for (int i = 0; i < 300; i++) {
+            doodads.add(Mddf.of(MODEL, 1000 + i, 0x40));
+        }
+        try (var f = new Fixture(records)) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(interiorRoot, root(INTERIOR));
+            f.files.sources.put(INTERIOR, group(INT, 3, batchCount, batches));
+            f.files.sources.put(4L, obj0(records, doodads));
+            assertTrue(1 + 60 * batchCount + 300 > WorldExteriorObjects.MAX_DRAWS);
+            assertTrue(1 + 60 * batchCount <= WorldExteriorObjects.MAX_DRAWS);
+            try (var set = f.runInstance()) {
+                assertEquals(300, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertTrue(set.placements().stream().noneMatch(p -> p.rootId() == interiorRoot));
+                assertTrue(set.placements().stream().anyMatch(p -> p.rootId() == ROOT));
+            }
+        }
+        // With only the doodads that fit (no more than MAX_DRAWS leaves), the interior fits after
+        // them and draws too.
+        try (var f = new Fixture(records)) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(interiorRoot, root(INTERIOR));
+            f.files.sources.put(INTERIOR, group(INT, 3, batchCount, batches));
+            int fitting = WorldExteriorObjects.MAX_DRAWS - 1 - 60 * batchCount;
+            f.files.sources.put(4L, obj0(records, doodads.subList(0, fitting)));
+            try (var set = f.runInstance()) {
+                assertEquals(fitting, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(
+                        60,
+                        set.placements().stream().filter(p -> p.rootId() == interiorRoot).count());
+            }
+        }
+    }
+
+    @Test
+    void interiorsNeverCostExteriorCutoutOrBlendedDraws() {
+        // 64 placements of a building with 32 opaque and 31 cutout batches draw 4,032 of the
+        // 4,096-draw budget. A 2-range interior would need 128 more: it is capped, and the
+        // exterior's cutout batches are all still drawn, exactly as without interiors.
+        var batches = new ArrayList<Batch>();
+        for (int i = 0; i < 63; i++) {
+            batches.add(new Batch(i * 3, 3, 0, i < 32 ? 0 : 1));
+        }
+        var records = new ArrayList<Modf>();
+        for (int i = 0; i < 64; i++) {
+            records.add(Modf.of(ROOT, 1 + i, 0x8));
+        }
+        java.util.function.Function<Boolean, Map<WorldExteriorObjects.Count, Integer>> run =
+                interiors -> {
+                    try (var f = new Fixture(records)) {
+                        f.files.sources.put(
+                                ROOT,
+                                root(
+                                        2,
+                                        new long[] {GROUP, INTERIOR},
+                                        List.of(
+                                                new Material(0, IMAGE, 0),
+                                                new Material(1, IMAGE2, 0))));
+                        f.files.sources.put(GROUP, group(EXT, 3, 63, batches));
+                        f.files.sources.put(
+                                INTERIOR,
+                                group(
+                                        INT,
+                                        3,
+                                        2,
+                                        List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 0))));
+                        try (var set = interiors ? f.runInstance() : f.run()) {
+                            return counts(set);
+                        }
+                    }
+                };
+        var without = run.apply(false);
+        var with = run.apply(true);
+        assertEquals(31, with.get(WorldExteriorObjects.Count.BATCH_CUTOUT));
+        assertEquals(
+                without.get(WorldExteriorObjects.Count.BATCH_CUTOUT),
+                with.get(WorldExteriorObjects.Count.BATCH_CUTOUT));
+        assertEquals(
+                without.get(WorldExteriorObjects.Count.BATCH_DRAWN),
+                with.get(WorldExteriorObjects.Count.BATCH_DRAWN));
+        assertNull(with.get(WorldExteriorObjects.Count.BATCH_CAPPED));
+        assertEquals(1, with.get(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+    }
+
+    @Test
+    void anInteriorOnlyRootWhoseGroupsAllFailIsRemovedWithItsDoodads() {
+        // The held interior group's image is missing, so nothing draws: the root and its
+        // placement are EMPTY, and its doodad set is not placed.
+        var chunks =
+                doodadChunks(
+                        new int[][] {{0, 1}},
+                        new long[] {MODEL},
+                        List.of(new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 1}, 1)));
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT,
+                    root(1, new long[] {INTERIOR}, List.of(new Material(0, 4444, 0)), chunks));
+            try (var set = f.runInstance()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_EMPTY));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_EMPTY));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertTrue(set.placements().isEmpty());
+                assertTrue(set.models().isEmpty());
+            }
+        }
+    }
+
+    @Test
+    void heldInteriorCopiesAreBoundedWhileReading() {
+        // Three 65,536-vertex interior groups: two fit the held bound (both budgets together,
+        // 131,072 vertices); the third is counted capped as it is read. Of the two held, one fits
+        // the vertex budget left after the exterior.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(GROUP, 211, 212, 213));
+            for (long id = 211; id <= 213; id++) {
+                f.files.sources.put(id, group(INT, 65536, 1, List.of(new Batch(0, 3, 0, 0))));
+            }
+            try (var set = f.runInstance()) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(3 + 65536, set.vertices());
+            }
+        }
+    }
+
+    @Test
+    void anInteriorThatDoesNotFitIsSkippedWithoutCappingTheExterior() {
+        // A 65,536-vertex exterior group leaves 32,768 opaque vertices; a 40,000-vertex interior
+        // group recorded before it is skipped alone, and the building keeps its exterior.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(INTERIOR, GROUP));
+            f.files.sources.put(GROUP, group(EXT, 65536, 1, List.of(new Batch(0, 3, 0, 0))));
+            f.files.sources.put(INTERIOR, group(INT, 40000, 1, List.of(new Batch(0, 3, 0, 0))));
+            try (var set = f.runInstance()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(65536, set.vertices());
+            }
+        }
+    }
+
+    @Test
     void groupOutcomesInteriorZeroUnavailableMalformedAndLodEntriesNotRead() {
         try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
             // groupCount 5, GFID holds two LOD sets; LOD1 entries (900..904) are never read.
@@ -592,7 +841,7 @@ class WorldExteriorObjectsTest {
                             List.of(
                                     new Material(0, IMAGE, 0),
                                     new Material(2, IMAGE, 0), // blended: drawn, alpha kept
-                                    new Material(3, IMAGE, 0), // additive: unsupported
+                                    new Material(3, IMAGE, 0), // additive (#367): drawn, sorted
                                     new Material(0, 0, 0), // no texture1
                                     new Material(0, 400, 0), // missing image source
                                     new Material(0, 401, 0), // undecodable
@@ -616,9 +865,9 @@ class WorldExteriorObjectsTest {
                                 WorldExteriorObjects.Count.PLACEMENT_DRAWN, 1,
                                 WorldExteriorObjects.Count.ROOT_DRAWN, 1,
                                 WorldExteriorObjects.Count.GROUP_DRAWN, 1,
-                                WorldExteriorObjects.Count.BATCH_DRAWN, 3,
-                                WorldExteriorObjects.Count.BATCH_BLENDED, 2,
-                                WorldExteriorObjects.Count.BATCH_UNSUPPORTED, 5,
+                                WorldExteriorObjects.Count.BATCH_DRAWN, 4,
+                                WorldExteriorObjects.Count.BATCH_BLENDED, 3,
+                                WorldExteriorObjects.Count.BATCH_UNSUPPORTED, 4,
                                 WorldExteriorObjects.Count.BATCH_MISSING_IMAGE, 3,
                                 WorldExteriorObjects.Count.IMAGE_DECODED, 2,
                                 WorldExteriorObjects.Count.IMAGE_UNAVAILABLE, 2,
@@ -630,9 +879,67 @@ class WorldExteriorObjectsTest {
                                         0, 3, 0, 0, WorldExteriorObjects.OPAQUE),
                                 new WorldExteriorObjects.DrawRange(
                                         3, 3, 1, 1, WorldExteriorObjects.BLENDED),
+                                // The additive image is prepared as a blended one: same slot.
                                 new WorldExteriorObjects.DrawRange(
-                                        6, 3, 1, 1, WorldExteriorObjects.BLENDED)),
+                                        6, 3, 1, 2, WorldExteriorObjects.ADDITIVE),
+                                new WorldExteriorObjects.DrawRange(
+                                        9, 3, 1, 1, WorldExteriorObjects.BLENDED)),
                         set.models().getFirst().meshes().getFirst().ranges());
+            }
+        }
+    }
+
+    /**
+     * Issue #367: MOMT flags bit 0x1 (F_UNLIT) marks a range unlit, whatever its kind; blend mode 3
+     * is additive; modes above 3 (modulate and variants) stay unsupported.
+     */
+    @Test
+    void unlitFlagAndAdditiveBlendMapToRangeClasses() {
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            byte[] root =
+                    root(
+                            1,
+                            new long[] {GROUP},
+                            List.of(
+                                    new Material(0, IMAGE, 0), // lit opaque
+                                    new Material(0, IMAGE, 0), // unlit opaque (flag set below)
+                                    new Material(3, IMAGE, 0), // unlit additive (flag below)
+                                    new Material(4, IMAGE, 0), // modulate: unsupported
+                                    new Material(5, IMAGE, 0))); // modulate 2x: unsupported
+            int momt = indexOf(root, "MOMT") + 8;
+            var data = ByteBuffer.wrap(root).order(ByteOrder.LITTLE_ENDIAN);
+            data.putInt(momt + 64, 0x1);
+            data.putInt(momt + 2 * 64, 0x1 | 0x4);
+            f.files.sources.put(ROOT, root);
+            var batches = new ArrayList<Batch>();
+            for (int material = 0; material < 5; material++) {
+                batches.add(new Batch(material * 3, 3, 0, material));
+            }
+            f.files.sources.put(GROUP, group(EXT, 3, 5, batches));
+            try (var set = f.run()) {
+                var ranges = set.models().getFirst().meshes().getFirst().ranges();
+                assertEquals(
+                        List.of(
+                                new WorldExteriorObjects.DrawRange(
+                                        0, 3, 0, 0, WorldExteriorObjects.OPAQUE),
+                                new WorldExteriorObjects.DrawRange(
+                                        3,
+                                        3,
+                                        0,
+                                        1,
+                                        WorldExteriorObjects.OPAQUE | WorldExteriorObjects.UNLIT),
+                                new WorldExteriorObjects.DrawRange(
+                                        6,
+                                        3,
+                                        1,
+                                        2,
+                                        WorldExteriorObjects.ADDITIVE
+                                                | WorldExteriorObjects.UNLIT)),
+                        ranges);
+                assertEquals(2, counts(set).get(WorldExteriorObjects.Count.BATCH_UNSUPPORTED));
+                assertEquals(
+                        WorldExteriorObjects.ADDITIVE,
+                        WorldExteriorObjects.kind(ranges.get(2).blend()));
             }
         }
     }
@@ -732,6 +1039,52 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void imagesCarryTheirFullChainUsingTheFilesOwnMipsWhenTheyArePresent() {
+        // 4x4 has levels 4x4, 2x2, 1x1. Each fixture level is one flat colour.
+        for (int declared = 1; declared <= 3; declared++) {
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+                f.files.sources.put(IMAGE, blp(4, 4, declared, 0xf800));
+                try (var set = f.run()) {
+                    var image = set.images().getFirst();
+                    assertEquals(4, image.width());
+                    assertEquals(
+                            com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(4, 4) * 4,
+                            image.rgba().remaining());
+                    var expected =
+                            switch (declared) {
+                                case 3 ->
+                                        com.vibeminer.rendering.world.ObjectTextureMips.Source.FILE;
+                                case 2 ->
+                                        com.vibeminer.rendering.world.ObjectTextureMips.Source
+                                                .PARTIAL;
+                                default ->
+                                        com.vibeminer.rendering.world.ObjectTextureMips.Source
+                                                .GENERATED;
+                            };
+                    assertEquals(expected, image.mips());
+                    assertEquals(
+                            declared == 3 ? 1 : 0,
+                            set.count(WorldExteriorObjects.Count.IMAGE_MIPS_FILE));
+                    assertEquals(
+                            declared == 2 ? 1 : 0,
+                            set.count(WorldExteriorObjects.Count.IMAGE_MIPS_PARTIAL));
+                    assertEquals(
+                            declared == 1 ? 1 : 0,
+                            set.count(WorldExteriorObjects.Count.IMAGE_MIPS_GENERATED));
+                    // Opaque: every level of the chain is red with alpha 255.
+                    var rgba = image.rgba();
+                    for (int at = 0; at < rgba.remaining(); at += 4) {
+                        assertEquals(255, rgba.get(at) & 255);
+                        assertEquals(255, rgba.get(at + 3) & 255);
+                    }
+                    // Budgets still count the drawn top level only.
+                    assertEquals(16, set.pixels());
+                }
+            }
+        }
+    }
+
+    @Test
     void placementCapKeepsFirstSixtyFourInSourceOrder() {
         var records = new ArrayList<Modf>();
         for (int i = 0; i < 70; i++) {
@@ -815,7 +1168,7 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
-    void imageReadCapCountsMissingImagesDeterministically() {
+    void imageReadCapCountsCappedImagesDeterministically() {
         // WmoGroupSpans admits at most 64 batches per group, so two groups carry 66 materials.
         var materials = new ArrayList<Material>();
         var first = new ArrayList<Batch>();
@@ -834,7 +1187,9 @@ class WorldExteriorObjectsTest {
             try (var set = f.run()) {
                 assertEquals(64, set.images().size());
                 assertEquals(64, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
-                assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
+                // Over the image count cap: a budget, reported as such (#280 review).
+                assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_IMAGE_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
                 assertEquals(2, set.count(WorldExteriorObjects.Count.IMAGE_CAPPED));
                 assertEquals(null, f.files.opens.get(3064L));
                 assertEquals(3063L, set.images().getLast().id());
@@ -985,7 +1340,8 @@ class WorldExteriorObjectsTest {
 
     @Test
     void tilePixelBudgetLowersLevelsInsteadOfDroppingImages() {
-        // 15 x 256^2 + 256x128 fill the 1 Mi pixel budget exactly; the last two images still
+        // 15 x 256^2 + 256x128 chains (1,354,406 texels) leave 43,695 of the 1,398,101-texel
+        // chain budget, so the last two images still
         // draw at 128^2 instead of being dropped. 4016 records level 1, so its own mip is read
         // again from the file; 4017 records only level 0, so it is reduced by a 2x2 box.
         var materials = new ArrayList<Material>();
@@ -1015,8 +1371,12 @@ class WorldExteriorObjectsTest {
                 assertEquals(4016L, recorded.id());
                 assertEquals(1, recorded.mipLevel());
                 assertEquals(128, recorded.width());
-                // Registered at 128 (its recorded level 1): no second read was needed.
+                // Registered at 128 (its recorded level 1); its chain takes the recorded level 2
+                // below it from the bytes kept since registration, so one read in all (#265).
                 assertEquals(1, f.files.opens.get(4016L).get());
+                assertEquals(
+                        com.vibeminer.rendering.world.ObjectTextureMips.Source.PARTIAL,
+                        recorded.mips());
                 var reduced = set.images().get(17);
                 assertEquals(4017L, reduced.id());
                 assertEquals(1, reduced.mipLevel());
@@ -1152,7 +1512,20 @@ class WorldExteriorObjectsTest {
             f.files.sources.put(
                     GROUP, group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 1))));
             f.files.sources.put(IMAGE2, blp(256, 256, 3, 0x001f));
+            // Normally the bytes kept since registration serve the relevel (#265): no second
+            // read, and the allotted level is drawn.
             try (var set = f.run()) {
+                var cutout =
+                        set.images().stream()
+                                .filter(i -> i.id() == IMAGE2)
+                                .findFirst()
+                                .orElseThrow();
+                assertEquals(256, cutout.width(), "allotted level from the kept bytes");
+                assertEquals(1, f.files.opens.get(IMAGE2).get(), "no second read");
+            }
+            // With nothing retained, the second read happens and its refusal keeps the level.
+            f.files.opens.clear();
+            try (var set = retaining(f, 0)) {
                 assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
                 var cutout =
                         set.images().stream()
@@ -1161,6 +1534,143 @@ class WorldExteriorObjectsTest {
                                 .orElseThrow();
                 assertEquals(128, cutout.width(), "registered level kept");
                 assertEquals(2, f.files.opens.get(IMAGE2).get(), "the second read was attempted");
+                assertEquals(0, set.retainedSourceBytes);
+            }
+        }
+    }
+
+    @Test
+    void theChainReusesTheRegisteredLevelInsteadOfDecodingItAgain() {
+        // A 256^2 file recording 256 and 128: registered at 128 (level 1), allotted 256. With
+        // nothing retained, the relevel needs a second read; the chain's only lower level is the
+        // registered one, so it comes from the first decode and no third read happens.
+        for (int materialClass : new int[] {0, 1}) {
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+                f.files.sources.put(
+                        ROOT,
+                        root(
+                                1,
+                                new long[] {GROUP},
+                                List.of(new Material(materialClass, IMAGE, 0))));
+                f.files.sources.put(GROUP, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+                f.files.sources.put(IMAGE, blp(256, 256, 2, 0x001f));
+                try (var set = retaining(f, 0)) {
+                    var image = set.images().getFirst();
+                    assertEquals(256, image.width(), "allotted level");
+                    assertEquals(2, f.files.opens.get(IMAGE).get(), "class " + materialClass);
+                    assertEquals(2, set.levelDecodes, "registration and relevel only");
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_MIPS_PARTIAL));
+                    // Level 1 is the file's own 128^2 (blue), not a reduction artefact.
+                    var rgba = image.rgba();
+                    int at =
+                            com.vibeminer.rendering.world.ObjectTextureMips.levelOffset(
+                                    256, 256, 1);
+                    assertEquals(0, rgba.get(at) & 255);
+                    assertEquals(255, rgba.get(at + 2) & 255);
+                }
+            }
+        }
+    }
+
+    @Test
+    void aReusedLevelMidChainIsDecodedOnceForEveryMaterialClass() {
+        // A 1024^2 file recording all 11 levels registers at 128 (level 3) and is allotted 256
+        // (level 2). The chain below 256 takes level 3 from the registration decode and decodes
+        // levels 4 to 10 once each: 1 + 1 + 7 decodes; decoding level 3 again would make 10.
+        for (int materialClass : new int[] {0, 1, 2}) {
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+                f.files.sources.put(
+                        ROOT,
+                        root(
+                                1,
+                                new long[] {GROUP},
+                                List.of(new Material(materialClass, IMAGE, 0))));
+                f.files.sources.put(GROUP, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+                f.files.sources.put(IMAGE, blp(1024, 1024, 11, 0x07e0));
+                try (var set = f.run()) {
+                    var image = set.images().getFirst();
+                    assertEquals(256, image.width(), "allotted level, class " + materialClass);
+                    assertEquals(2, image.mipLevel());
+                    assertEquals(9, set.levelDecodes, "class " + materialClass);
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_MIPS_FILE));
+                    assertEquals(1, f.files.opens.get(IMAGE).get(), "the kept bytes serve");
+                    // Level 1 of the chain (the reused 128^2) is the file's green.
+                    int at =
+                            com.vibeminer.rendering.world.ObjectTextureMips.levelOffset(
+                                    256, 256, 1);
+                    assertEquals(255, image.rgba().get(at + 1) & 255);
+                }
+            }
+        }
+    }
+
+    @Test
+    void registeredPixelsOfTheWrongLengthAreNotReused() {
+        byte[] level = new byte[4 * 4 * 4];
+        assertTrue(level == WorldExteriorObjects.reusable(level, 4, 4));
+        assertNull(WorldExteriorObjects.reusable(level, 8, 4), "a level of another size");
+        assertNull(WorldExteriorObjects.reusable(null, 4, 4), "released pixels");
+    }
+
+    private static WorldExteriorObjects.TileObjects retaining(Fixture f, long limit) {
+        return WorldExteriorObjects.prepare(
+                f.engine,
+                f.scope,
+                TILE,
+                Cancellation.NONE,
+                WorldExteriorObjects.ModelReader.STANDARD,
+                WorldExteriorObjects.ImageDetail.STANDARD,
+                limit);
+    }
+
+    @Test
+    void retainedImageSourcesStayWithinTheirBoundAndCountEachFileOnce() {
+        // One 256^2 file with three recorded levels, drawn opaque and cutout: two images (one per
+        // material class) from one source file.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            1,
+                            new long[] {GROUP},
+                            List.of(new Material(0, IMAGE2, 0), new Material(1, IMAGE2, 0))));
+            f.files.sources.put(
+                    GROUP, group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 1))));
+            byte[] file = blp(256, 256, 3, 0x001f);
+            f.files.sources.put(IMAGE2, file);
+            try (var set = retaining(f, WorldExteriorObjects.RETAINED_SOURCE_BYTES)) {
+                assertEquals(2, set.images().size(), "one image per material class");
+                assertEquals(file.length, set.retainedSourceBytes, "the file is kept once");
+            }
+            // A bound below one file keeps nothing, yet the tile draws the same images.
+            try (var set = retaining(f, file.length - 1)) {
+                assertEquals(0, set.retainedSourceBytes);
+                assertEquals(2, set.images().size());
+                assertTrue(set.images().stream().allMatch(i -> i.width() == 256));
+            }
+        }
+        // Many files: the kept bytes never pass the bound, and the drawn result is unchanged.
+        var materials = new ArrayList<Material>();
+        var batches = new ArrayList<Batch>();
+        for (int i = 0; i < 18; i++) {
+            materials.add(new Material(0, 4000 + i, 0));
+            batches.add(new Batch(i * 3, 3, 0, i));
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(1, new long[] {GROUP}, materials));
+            f.files.sources.put(GROUP, group(EXT, 3, 18, batches));
+            for (int i = 0; i < 18; i++) {
+                f.files.sources.put(4000L + i, blp(256, 256, 3, i));
+            }
+            long one = f.files.sources.get(4000L).length, bound = one * 5 + one / 2;
+            java.util.List<Integer> unbounded;
+            try (var set = f.run()) {
+                unbounded = set.images().stream().map(i -> i.width()).toList();
+            }
+            try (var set = retaining(f, bound)) {
+                assertTrue(set.retainedSourceBytes <= bound, "kept " + set.retainedSourceBytes);
+                assertEquals(one * 5, set.retainedSourceBytes, "whole files only, up to the bound");
+                assertEquals(unbounded, set.images().stream().map(i -> i.width()).toList());
             }
         }
     }
@@ -1600,6 +2110,192 @@ class WorldExteriorObjectsTest {
                 assertEquals(1, set.placements().size());
             }
         }
+    }
+
+    /**
+     * The authored model with three bones appended (bone 0 plain, bone 1 carrying {@code
+     * billboardFlags}, bone 2 a plain child of bone 1) and every global vertex weighted fully to
+     * one bone: globals 0, 1 and 2 to bone 0, global 3 (SKIN local 3) to bone 2.
+     */
+    private static byte[] billboardModel(long rootFlags, long billboardFlags) {
+        var base = model();
+        int md20 = 40, rel = (base.length - md20 + 3) & ~3, stride = 88;
+        var bytes = Arrays.copyOf(base, md20 + rel + 3 * stride);
+        var b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+        b.putInt(36, rel + 3 * stride); // MD21 chunk size
+        b.putInt(md20 + 44, 3).putInt(md20 + 48, rel); // bones
+        long[] flags = {rootFlags, billboardFlags, 0};
+        int[] parents = {-1, 0, 1};
+        for (int i = 0; i < 3; i++) {
+            int at = md20 + rel + i * stride;
+            b.putInt(at, -1).putInt(at + 4, (int) flags[i]).putShort(at + 8, (short) parents[i]);
+        }
+        int vertices = md20 + b.getInt(md20 + 64);
+        int[] bones = {0, 0, 0, 2};
+        for (int v = 0; v < 4; v++) {
+            b.putInt(vertices + v * 48 + 12, 255).putInt(vertices + v * 48 + 16, bones[v]);
+        }
+        return bytes;
+    }
+
+    /**
+     * A SKIN over the authored lookup (2, 0, 1, 3) with two sections and one batch each: section 0
+     * holds (0, 1, 2) and (0, 2, 3), section 1 holds (1, 3, 2). Local 3 is the billboarded vertex.
+     */
+    private static byte[] twoSectionSkin() {
+        return twoSectionSkin(false);
+    }
+
+    /**
+     * As {@link #twoSectionSkin()}; with {@code unsupportedBatch} a third batch over section 0
+     * records no texture (texture count 0), which the profile refuses as MODEL_BATCH_UNSUPPORTED.
+     */
+    private static byte[] twoSectionSkin(boolean unsupportedBatch) {
+        int batches = unsupportedBatch ? 3 : 2;
+        int[] indices = {0, 1, 2, 0, 2, 3, 1, 3, 2};
+        int[][] sections = {{0, 6}, {6, 3}};
+        int vertices = 0x38, triangles = vertices + 8, properties = triangles + 2 * indices.length;
+        int sectionAt = properties + 16, batchAt = sectionAt + 48 * 2, end = batchAt + 24 * batches;
+        var b = buffer(end);
+        b.put(new byte[] {'S', 'K', 'I', 'N'});
+        b.putInt(4).putInt(vertices).putInt(indices.length).putInt(triangles);
+        b.putInt(4).putInt(properties).putInt(2).putInt(sectionAt).putInt(batches).putInt(batchAt);
+        b.position(vertices);
+        b.putShort((short) 2).putShort((short) 0).putShort((short) 1).putShort((short) 3);
+        for (int i : indices) {
+            b.putShort((short) i);
+        }
+        for (int i = 0; i < 4; i++) {
+            b.putInt(0x03020100);
+        }
+        for (var s : sections) {
+            int at = b.position();
+            b.putShort(at + 6, (short) 4).putShort(at + 8, (short) s[0]);
+            b.putShort(at + 10, (short) s[1]);
+            b.position(at + 48);
+        }
+        for (int s = 0; s < 2; s++) {
+            int at = batchAt + s * 24;
+            b.putShort(at + 4, (short) s).putShort(at + 6, (short) s).putShort(at + 8, (short) -1);
+            b.putShort(at + 14, (short) 1);
+        }
+        if (unsupportedBatch) {
+            b.putShort(batchAt + 48 + 8, (short) -1); // section 0, no colour, texture count 0
+        }
+        return b.array();
+    }
+
+    @Test
+    void billboardWeightedTrianglesAreLeftOutAndTheRestOfTheModelDraws() {
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, billboardModel(0, 0x8));
+            f.files.sources.put(SKIN, twoSectionSkin());
+            try (var set = run(f, obj0(List.of(), List.of(Mddf.of(MODEL, 1, 0x40))))) {
+                assertEquals(
+                        Map.of(
+                                WorldExteriorObjects.Count.DOODAD_DRAWN, 1,
+                                WorldExteriorObjects.Count.MODEL_DRAWN, 1,
+                                WorldExteriorObjects.Count.MODEL_BATCH_DRAWN, 1,
+                                WorldExteriorObjects.Count.MODEL_BATCH_BILLBOARD, 1,
+                                WorldExteriorObjects.Count.MODEL_BATCH_TRIMMED, 1,
+                                WorldExteriorObjects.Count.MODEL_TRIANGLE_BILLBOARD, 2,
+                                WorldExteriorObjects.Count.MODEL_IMAGE_DECODED, 1),
+                        counts(set));
+                var mesh = set.models().getFirst().meshes().getFirst();
+                // (0, 2, 3) of section 0 and all of section 1 touch local 3, a child of bone 1.
+                assertEquals(List.of(0, 1, 2), toList(mesh.indices()));
+                assertEquals(
+                        List.of(
+                                new WorldExteriorObjects.DrawRange(
+                                        0, 3, 0, 0, WorldExteriorObjects.OPAQUE)),
+                        mesh.ranges());
+            }
+        }
+        // Without a billboard bone both sections draw in full.
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, billboardModel(0, 0));
+            f.files.sources.put(SKIN, twoSectionSkin());
+            try (var set = run(f, obj0(List.of(), List.of(Mddf.of(MODEL, 1, 0x40))))) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.MODEL_BATCH_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.MODEL_BATCH_BILLBOARD));
+                var mesh = set.models().getFirst().meshes().getFirst();
+                assertEquals(9, mesh.indices().remaining());
+            }
+        }
+    }
+
+    @Test
+    void aModelWhoseEveryTriangleBillboardsIsStillRefused() {
+        for (long flags : new long[] {0x8, 0x10, 0x20, 0x40}) {
+            try (var f = new Fixture(List.of())) {
+                putModel(f, MODEL, billboardModel(flags, 0));
+                f.files.sources.put(SKIN, twoSectionSkin());
+                try (var set = run(f, obj0(List.of(), List.of(Mddf.of(MODEL, 1, 0x40))))) {
+                    assertEquals(
+                            Map.of(
+                                    WorldExteriorObjects.Count.DOODAD_FAILED_MODEL, 1,
+                                    WorldExteriorObjects.Count.MODEL_ALL_BILLBOARD, 1,
+                                    WorldExteriorObjects.Count.MODEL_BATCH_BILLBOARD, 2,
+                                    WorldExteriorObjects.Count.MODEL_TRIANGLE_BILLBOARD, 3),
+                            counts(set),
+                            "flags 0x" + Long.toHexString(flags));
+                    assertTrue(set.models().isEmpty());
+                }
+            }
+        }
+    }
+
+    @Test
+    void anAllBillboardModelWithAnUnsupportedBatchKeepsBothBatchCounts() {
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, billboardModel(0x8, 0));
+            f.files.sources.put(SKIN, twoSectionSkin(true));
+            try (var set = run(f, obj0(List.of(), List.of(Mddf.of(MODEL, 1, 0x40))))) {
+                assertEquals(
+                        Map.of(
+                                WorldExteriorObjects.Count.DOODAD_FAILED_MODEL, 1,
+                                WorldExteriorObjects.Count.MODEL_ALL_BILLBOARD, 1,
+                                WorldExteriorObjects.Count.MODEL_BATCH_BILLBOARD, 2,
+                                WorldExteriorObjects.Count.MODEL_BATCH_UNSUPPORTED, 1,
+                                WorldExteriorObjects.Count.MODEL_TRIANGLE_BILLBOARD, 3),
+                        counts(set));
+                assertTrue(set.models().isEmpty());
+            }
+        }
+    }
+
+    @Test
+    void billboardBonesIncludeDescendantsAndSurviveParentCycles() {
+        var zero = new com.vibeminer.formats.models.M2Types.Vec3(0, 0, 0);
+        var bones =
+                List.of(
+                        new com.vibeminer.formats.models.M2Types.Bone(-1, 0x200, -1, 0, zero),
+                        new com.vibeminer.formats.models.M2Types.Bone(-1, 0x10, 0, 0, zero),
+                        new com.vibeminer.formats.models.M2Types.Bone(-1, 0, 1, 0, zero),
+                        new com.vibeminer.formats.models.M2Types.Bone(-1, 0, 4, 0, zero),
+                        new com.vibeminer.formats.models.M2Types.Bone(-1, 0, 3, 0, zero));
+        var set = WorldExteriorObjects.billboardBones(bones);
+        assertEquals("{1, 2}", set.toString());
+        assertTrue(WorldExteriorObjects.billboardBones(bones.subList(3, 5)).isEmpty());
+        var vertex =
+                new com.vibeminer.formats.models.M2Types.Vertex(
+                        zero,
+                        0x0000ff00L,
+                        0x00000200L,
+                        zero,
+                        new com.vibeminer.formats.models.M2Types.Vec2(0, 0),
+                        new com.vibeminer.formats.models.M2Types.Vec2(0, 0));
+        assertTrue(WorldExteriorObjects.billboardWeighted(vertex, set));
+        // A zero weight on a billboard bone does not count.
+        var unweighted =
+                new com.vibeminer.formats.models.M2Types.Vertex(
+                        zero,
+                        0x000000ffL,
+                        0x00000200L,
+                        zero,
+                        new com.vibeminer.formats.models.M2Types.Vec2(0, 0),
+                        new com.vibeminer.formats.models.M2Types.Vec2(0, 0));
+        assertTrue(!WorldExteriorObjects.billboardWeighted(unweighted, set));
     }
 
     @Test

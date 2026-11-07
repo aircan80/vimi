@@ -1,5 +1,7 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.ObjectTextureFormats;
+import com.vibeminer.rendering.world.ObjectTextureMips;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
@@ -27,30 +29,74 @@ import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
 /**
- * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 2. Structural
+ * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 5. Structural
  * only: the application's closed source bridge is its sole producer, and the OBJECTS command (or
  * the terrain tile header) names its exact length and SHA-256.
  *
  * <p>Little-endian layout: a 256-byte header, then the model, mesh, range (first index, index
  * count, image, material class), placement (model, translation, scale and a row-major rotation) and
- * image tables, then 32-byte vertices (position, normal, uv floats), u16 mesh-relative indices
- * padded to four bytes, and RGBA8 pixels. Every count, offset, index and float is validated;
- * reserved bytes must be zero.
+ * image (width, height, format) tables, then 32-byte vertices (position, normal, uv floats), u16
+ * mesh-relative indices padded to four bytes, and image data. Each image's data is its full mip
+ * chain, top level down to 1 x 1 and tightly packed, in its format: RGBA8 texels ({@link
+ * ObjectTextureMips}, issue #265) or BC1, BC2 or BC3 blocks ({@link ObjectTextureFormats}, issue
+ * #374). Every count, offset, index and float is validated; reserved bytes must be zero.
  */
 final class WorldStreamObjectsFile {
-    static final int VERSION = 2, HEADER_BYTES = 256, MAX_BYTES = 24 << 20;
+    // Version 5 (#367): range classes add ADDITIVE and the UNLIT flag, on #420's version 4.
+    static final int VERSION = 5, HEADER_BYTES = 256, MAX_BYTES = 28 << 20;
     // Opaque buildings (24 roots, 256 meshes, 1,024 ranges, 64 placements, 64 images, 98,304
-    // vertices, 294,912 indices, 1 Mi pixels, 2 Mi on the HIGH texture tier), plus cutout and
-    // blended building surfaces (256 ranges, 32 images, 32,768 vertices, 98,304 indices, 256 Ki
-    // pixels, 512 Ki on HIGH), plus BASIC doodads (96 models and meshes, 512 ranges and
-    // placements, 96 images, 65,536 vertices, 196,608 indices, 512 Ki pixels, 1 Mi on HIGH).
-    // Creature models share whatever room remains. Every table at its cap is about 22.2 MB.
+    // vertices, 294,912 indices), plus cutout and blended building surfaces (256 ranges, 32
+    // images, 32,768 vertices, 98,304 indices), plus BASIC doodads (96 models and meshes, 512
+    // ranges and placements, 96 images, 65,536 vertices, 196,608 indices). Creature models share
+    // whatever room remains. Every table at its cap is about 27 MB.
     static final int MAX_MODELS = 120, MAX_MESHES = 352, MAX_RANGES = 1792, MAX_PLACEMENTS = 576;
     static final int MAX_IMAGES = 192, MAX_VERTICES = 196_608, MAX_INDICES = 589_824;
-    static final int MAX_PIXELS = 7 << 19, MAX_IMAGE_SIDE = 256, MAX_MESH_VERTICES = 65_536;
+    static final int MAX_IMAGE_SIDE = 256, MAX_MESH_VERTICES = 65_536;
 
-    /** Range material classes: depth-writing opaque, alpha-tested cutout, sorted alpha blend. */
-    static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2;
+    /**
+     * Texels of whole mip chains (issue #265) at the HIGH texture tier's per-tile budgets (#267),
+     * which are themselves the chains of a 2048 x 1024 (buildings), 1024 x 512 (cutout and blended
+     * surfaces) and 1024 x 1024 (doodads) texture: 4,893,355 texels, about 18.7 MiB.
+     */
+    static final int MAX_PIXELS =
+            ObjectTextureMips.chainPixels(2048, 1024)
+                    + ObjectTextureMips.chainPixels(1024, 512)
+                    + ObjectTextureMips.chainPixels(1024, 1024);
+
+    /** Image data bytes per tile: MAX_PIXELS as RGBA8; compressed chains take less of it. */
+    static final int MAX_IMAGE_BYTES = MAX_PIXELS * 4;
+
+    /**
+     * RGBA8 bytes all images may take once decoded: a backend without BC sampling decodes every
+     * compressed chain (up to 8x its size), so its GPU memory never exceeds the RGBA8 profile.
+     */
+    static final int MAX_DECODED_BYTES = MAX_IMAGE_BYTES;
+
+    /** Smallest side of a compressed image's top level: one 4 x 4 block. */
+    static final int MIN_COMPRESSED_SIDE = 4;
+
+    /** Per image: width, height, format ({@link ObjectTextureFormats}). */
+    static final int IMAGE_INTS = 3;
+
+    /**
+     * Range material classes: depth-writing opaque, alpha-tested cutout, sorted alpha blend and
+     * sorted additive blend (MOMT blend mode 3, #367). A class may carry {@link #UNLIT} (MOMT
+     * F_UNLIT): drawn at full intensity, without the light.
+     */
+    static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2, ADDITIVE = 3;
+
+    static final int UNLIT = com.vibeminer.rendering.world.WorldObjectPicking.UNLIT;
+
+    /** The kind of a range class, without its flags. */
+    static int kind(int rangeClass) {
+        return com.vibeminer.rendering.world.WorldObjectPicking.kind(rangeClass);
+    }
+
+    /** Kinds drawn in the sorted blended pass. */
+    static boolean sorted(int rangeClass) {
+        int kind = kind(rangeClass);
+        return kind == BLENDED || kind == ADDITIVE;
+    }
 
     static final int RANGE_INTS = 4, PLACEMENT_DOUBLES = 13;
 
@@ -82,12 +128,15 @@ final class WorldStreamObjectsFile {
          */
         final double[] placements;
 
-        /** Per image: width, height. */
+        /** Per image: width, height, format. */
         final int[] images;
 
         final float[] vertices;
         final short[] indices;
+
+        /** Every image's packed chain in its format, in image order. */
         final byte[] pixels;
+
         final int draws;
 
         Data(
@@ -129,7 +178,7 @@ final class WorldStreamObjectsFile {
         }
 
         int imageCount() {
-            return images.length / 2;
+            return images.length / IMAGE_INTS;
         }
 
         int vertexCount() {
@@ -140,8 +189,8 @@ final class WorldStreamObjectsFile {
             return indices.length;
         }
 
-        int pixelCount() {
-            return pixels.length / 4;
+        int imageBytes() {
+            return pixels.length;
         }
 
         int bytes() {
@@ -153,20 +202,20 @@ final class WorldStreamObjectsFile {
                     imageCount(),
                     vertexCount(),
                     indexCount(),
-                    pixelCount());
+                    imageBytes());
         }
 
         private int validate() {
             int modelCount = modelCount(), meshCount = meshCount(), rangeCount = rangeCount();
             int placementCount = placementCount(), imageCount = imageCount();
-            int vertexCount = vertexCount(), indexCount = indexCount(), pixelCount = pixelCount();
+            int vertexCount = vertexCount(), indexCount = indexCount(), imageBytes = imageBytes();
             require(
                     models.length % 2 == 0
                             && meshes.length % 6 == 0
                             && ranges.length % RANGE_INTS == 0
-                            && images.length % 2 == 0
+                            && images.length % IMAGE_INTS == 0
                             && vertices.length % VERTEX_FLOATS == 0
-                            && pixels.length % 4 == 0
+                            && imageBytes % 4 == 0
                             && placements.length == placementCount * PLACEMENT_DOUBLES
                             && modelCount >= 1
                             && modelCount <= MAX_MODELS
@@ -182,8 +231,8 @@ final class WorldStreamObjectsFile {
                             && vertexCount <= MAX_VERTICES
                             && indexCount >= 3
                             && indexCount <= MAX_INDICES
-                            && pixelCount >= 1
-                            && pixelCount <= MAX_PIXELS,
+                            && imageBytes >= 1
+                            && imageBytes <= MAX_IMAGE_BYTES,
                     "Object counts");
             int meshAt = 0;
             for (int m = 0; m < modelCount; m++) {
@@ -226,8 +275,8 @@ final class WorldStreamObjectsFile {
                                     && (long) first + length <= indexes
                                     && image >= 0
                                     && image < imageCount
-                                    && blend >= OPAQUE
-                                    && blend <= BLENDED,
+                                    && com.vibeminer.rendering.world.WorldObjectPicking.validClass(
+                                            blend),
                             "Draw range");
                 }
                 meshRanges[mesh] = count;
@@ -267,13 +316,31 @@ final class WorldStreamObjectsFile {
                 }
             }
             require(draws <= MAX_DRAWS, "Object draw budget");
-            long pixelSum = 0;
+            long byteSum = 0, decodedSum = 0;
             for (int i = 0; i < imageCount; i++) {
-                int width = images[i * 2], height = images[i * 2 + 1];
+                int width = images[i * IMAGE_INTS], height = images[i * IMAGE_INTS + 1];
+                int format = images[i * IMAGE_INTS + 2];
                 require(side(width) && side(height), "Image size");
-                pixelSum += (long) width * height;
+                require(ObjectTextureFormats.valid(format), "Image format");
+                // D3D11 refuses block-compressed textures whose top level is under one block.
+                require(
+                        !ObjectTextureFormats.compressed(format)
+                                || width >= MIN_COMPRESSED_SIDE && height >= MIN_COMPRESSED_SIDE,
+                        "Compressed image size");
+                byteSum += ObjectTextureFormats.chainBytes(format, width, height);
+                decodedSum += 4L * ObjectTextureMips.chainPixels(width, height);
             }
-            require(pixelSum == pixelCount, "Image pixels");
+            require(byteSum == imageBytes, "Image data");
+            require(decodedSum <= MAX_DECODED_BYTES, "Decoded image budget");
+            // BC1 alpha is not sampled on every backend (bgfx Vulkan uses the RGB block format),
+            // so only opaque ranges, which ignore alpha, may sample a BC1 image.
+            for (int r = 0; r < rangeCount; r++) {
+                require(
+                        kind(ranges[r * RANGE_INTS + 3]) == OPAQUE
+                                || images[ranges[r * RANGE_INTS + 2] * IMAGE_INTS + 2]
+                                        != ObjectTextureFormats.BC1,
+                        "BC1 image sampled with alpha");
+            }
             require(bytes() <= MAX_BYTES, "Objects file ceiling");
             return (int) draws;
         }
@@ -364,17 +431,17 @@ final class WorldStreamObjectsFile {
             int images,
             int vertices,
             int indices,
-            int pixels) {
+            int imageBytes) {
         long bytes =
                 HEADER_BYTES
                         + models * 8L
                         + meshes * 24L
                         + ranges * (RANGE_INTS * 4L)
                         + placements * (8L + PLACEMENT_DOUBLES * 8L)
-                        + images * 8L
+                        + images * (IMAGE_INTS * 4L)
                         + vertices * (long) VERTEX_BYTES
                         + (indices * 2L + 3) / 4 * 4
-                        + pixels * 4L;
+                        + imageBytes;
         return bytes > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) bytes;
     }
 
@@ -517,7 +584,7 @@ final class WorldStreamObjectsFile {
             }
             int models = in.getInt(112), meshes = in.getInt(116), ranges = in.getInt(120);
             int placements = in.getInt(124), images = in.getInt(128), vertices = in.getInt(132);
-            int indices = in.getInt(136), pixels = in.getInt(140), draws = in.getInt(144);
+            int indices = in.getInt(136), imageBytes = in.getInt(140), draws = in.getInt(144);
             require(
                     models >= 1
                             && models <= MAX_MODELS
@@ -533,8 +600,9 @@ final class WorldStreamObjectsFile {
                             && vertices <= MAX_VERTICES
                             && indices >= 3
                             && indices <= MAX_INDICES
-                            && pixels >= 1
-                            && pixels <= MAX_PIXELS
+                            && imageBytes >= 1
+                            && imageBytes <= MAX_IMAGE_BYTES
+                            && imageBytes % 4 == 0
                             && in.getInt(148) == 0
                             && length(
                                             models,
@@ -544,7 +612,7 @@ final class WorldStreamObjectsFile {
                                             images,
                                             vertices,
                                             indices,
-                                            pixels)
+                                            imageBytes)
                                     == reference.length(),
                     "Objects header counts");
             // Bounded by the counts above before any body allocation.
@@ -561,7 +629,7 @@ final class WorldStreamObjectsFile {
                             Double.longBitsToDouble(Long.reverseBytes(input.readLong()));
                 }
             }
-            int[] imageTable = ints(input, images * 2);
+            int[] imageTable = ints(input, images * IMAGE_INTS);
             float[] vertexData = new float[vertices * VERTEX_FLOATS];
             for (int i = 0; i < vertexData.length; i++) {
                 if ((i & 4095) == 0) {
@@ -579,7 +647,7 @@ final class WorldStreamObjectsFile {
             if ((indices & 1) != 0) {
                 require(input.readShort() == 0, "Index padding");
             }
-            byte[] pixelData = new byte[pixels * 4];
+            byte[] pixelData = new byte[imageBytes];
             for (int at = 0; at < pixelData.length; at += SCRATCH) {
                 check(canceled);
                 input.readFully(pixelData, at, Math.min(SCRATCH, pixelData.length - at));
@@ -619,7 +687,7 @@ final class WorldStreamObjectsFile {
         out.putInt(identity.x()).putInt(identity.y()).putInt(0).putLong(identity.lease().serial());
         out.putInt(data.modelCount()).putInt(data.meshCount()).putInt(data.rangeCount());
         out.putInt(data.placementCount()).putInt(data.imageCount()).putInt(data.vertexCount());
-        out.putInt(data.indexCount()).putInt(data.pixelCount()).putInt(data.draws).putInt(0);
+        out.putInt(data.indexCount()).putInt(data.imageBytes()).putInt(data.draws).putInt(0);
         return out.array();
     }
 

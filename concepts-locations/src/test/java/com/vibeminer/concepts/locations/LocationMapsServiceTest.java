@@ -929,4 +929,25 @@ final class LocationMapsServiceTest {
                             .state());
         }
     }
+
+    @Test
+    void worldFramesInvertTheRecordedProjectionExactly() {
+        try (var tables = open(fixture());
+                var service = new LocationMapsService(tables)) {
+            var candidate =
+                    service.resolve(world(), Cancellation.NONE).join().candidates().getFirst();
+            var frames = service.worldFrames(1, Cancellation.NONE).join();
+            assertEquals(MapTypes.State.READY, frames.state());
+            var frame =
+                    frames.frames().stream()
+                            .filter(f -> f.assignmentId() == candidate.assignmentId())
+                            .findFirst()
+                            .orElseThrow();
+            var back = frame.toWorld(candidate.x(), candidate.y());
+            var coordinate = world().coordinates().getFirst();
+            assertEquals(coordinate.x(), back[0], 1e-9);
+            assertEquals(coordinate.y(), back[1], 1e-9);
+            assertTrue(service.worldFrames(999, Cancellation.NONE).join().frames().isEmpty());
+        }
+    }
 }

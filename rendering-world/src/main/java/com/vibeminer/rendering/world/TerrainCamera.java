@@ -8,6 +8,20 @@ public record TerrainCamera(double x, double y, double z, double yaw, double pit
     public static final double NEAR = .5;
     public static final double WHOLE_TRIANGLE_FAR = 2200;
 
+    /**
+     * Horizontal field of view of every World view, in radians: 90 degrees, close to the game
+     * client's default. GPU projection, CPU rendering, picking and overlays all derive from it.
+     */
+    public static final double HORIZONTAL_FOV = Math.PI / 2;
+
+    /** Projection scale across the half frame width: {@code 1 / tan(HORIZONTAL_FOV / 2)}. */
+    public static final double FOCAL = 1 / Math.tan(HORIZONTAL_FOV / 2);
+
+    /** Focal length in pixels for a frame {@code width} pixels wide; square pixels. */
+    public static double focalPixels(double width) {
+        return width * .5 * FOCAL;
+    }
+
     public record Eye(double right, double up, double depth) {}
 
     public TerrainCamera {
@@ -82,12 +96,12 @@ public record TerrainCamera(double x, double y, double z, double yaw, double pit
         dimensions(width, height);
         return FloatBuffer.wrap(
                         new float[] {
-                            1.6f,
+                            (float) FOCAL,
                             0,
                             0,
                             0,
                             0,
-                            1.6f * width / height,
+                            (float) (FOCAL * width / height),
                             0,
                             0,
                             0,
@@ -104,16 +118,16 @@ public record TerrainCamera(double x, double y, double z, double yaw, double pit
 
     public static double screenX(Eye eye, int width, int height) {
         dimensions(width, height);
-        return width * .5 + eye.right * width * .8 / eye.depth;
+        return width * .5 + eye.right * focalPixels(width) / eye.depth;
     }
 
     public static double screenY(Eye eye, int width, int height) {
         dimensions(width, height);
-        return height * .5 - eye.up * width * .8 / eye.depth;
+        return height * .5 - eye.up * focalPixels(width) / eye.depth;
     }
 
     private static void dimensions(int width, int height) {
-        if (width < 1 || height < 1 || width > 1280 || height > 960) {
+        if (!WorldFrameLimits.fits(width, height)) {
             throw new IllegalArgumentException("Invalid terrain frame dimensions");
         }
     }

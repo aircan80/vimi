@@ -3,6 +3,7 @@ package com.vibeminer.rendering.bgfx;
 import com.vibeminer.rendering.world.TerrainScene;
 import com.vibeminer.rendering.world.TerrainTextureBinding;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -234,15 +235,20 @@ public final class WorldStreamTileWriter {
             private final java.util.ArrayList<float[]> vertexBlocks = new java.util.ArrayList<>();
             private final java.util.ArrayList<short[]> indexBlocks = new java.util.ArrayList<>();
             private final java.util.ArrayList<byte[]> pixelBlocks = new java.util.ArrayList<>();
-            private int vertices, indices, pixels, draws;
+            private int vertices, indices, imageBytes, draws;
+
+            /** RGBA8 bytes of every image so far once decoded (the fallback's GPU size). */
+            private long decodedBytes;
+
             private boolean built;
 
             private Builder() {}
 
             /**
              * Whether one more whole model with these totals still fits the per-tile file profile,
-             * so a caller can add a model completely or not at all. Image sides are checked by
-             * {@link #image}; this checks counts only.
+             * so a caller can add a model completely or not at all. {@code pixelCount} counts RGBA8
+             * chain texels (4 bytes each), an upper bound for compressed chains. Image sides are
+             * checked by {@link #image}; this checks counts only.
              */
             public boolean fits(
                     int imageCount,
@@ -260,7 +266,8 @@ public final class WorldStreamTileWriter {
                         && rangeCount >= meshCount
                         && models.size() < WorldStreamObjectsFile.MAX_MODELS
                         && imageCount <= WorldStreamObjectsFile.MAX_IMAGES - images.size()
-                        && pixelCount <= WorldStreamObjectsFile.MAX_PIXELS - pixels
+                        && pixelCount * 4 <= WorldStreamObjectsFile.MAX_IMAGE_BYTES - imageBytes
+                        && pixelCount * 4 <= WorldStreamObjectsFile.MAX_DECODED_BYTES - decodedBytes
                         && meshCount <= WorldStreamObjectsFile.MAX_MESHES - meshes.size()
                         && vertexCount <= WorldStreamObjectsFile.MAX_VERTICES - vertices
                         && indexCount <= WorldStreamObjectsFile.MAX_INDICES - indices
@@ -294,23 +301,57 @@ public final class WorldStreamTileWriter {
                 return placements.size();
             }
 
-            /** Copies one RGBA8 image (power-of-two sides at most 256); returns its index. */
+            /**
+             * Copies one RGBA8 image given as its full packed mip chain (power-of-two sides at most
+             * 256, see {@link com.vibeminer.rendering.world.ObjectTextureMips}); returns its index.
+             */
             public int image(int width, int height, java.nio.ByteBuffer rgba) {
+                return image(
+                        width,
+                        height,
+                        com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8,
+                        rgba);
+            }
+
+            /**
+             * Copies one image given as its full packed mip chain in {@code format} (see {@link
+             * com.vibeminer.rendering.world.ObjectTextureFormats}): RGBA8 texels or the source's
+             * own BC1, BC2 or BC3 blocks, carried byte for byte; returns its index. Compressed
+             * images need both sides at least 4, and a BC1 image may only be drawn by opaque ranges
+             * (checked by {@link #build}).
+             */
+            public int image(int width, int height, int format, java.nio.ByteBuffer chain) {
                 open();
-                Objects.requireNonNull(rgba);
-                long count = (long) width * height;
-                if (images.size() == WorldStreamObjectsFile.MAX_IMAGES
-                        || width < 1
+                Objects.requireNonNull(chain);
+                if (width < 1
                         || height < 1
-                        || count > WorldStreamObjectsFile.MAX_PIXELS - pixels
-                        || rgba.remaining() != count * 4) {
+                        || width > WorldStreamObjectsFile.MAX_IMAGE_SIDE
+                        || height > WorldStreamObjectsFile.MAX_IMAGE_SIDE
+                        || !com.vibeminer.rendering.world.ObjectTextureFormats.valid(format)
+                        || com.vibeminer.rendering.world.ObjectTextureFormats.compressed(format)
+                                && (width < WorldStreamObjectsFile.MIN_COMPRESSED_SIDE
+                                        || height < WorldStreamObjectsFile.MIN_COMPRESSED_SIDE)) {
                     throw new IllegalArgumentException("Exterior image exceeds file profile");
                 }
-                var copy = new byte[(int) count * 4];
-                rgba.duplicate().get(copy);
-                images.add(new int[] {width, height});
+                int count =
+                        com.vibeminer.rendering.world.ObjectTextureFormats.chainBytes(
+                                format, width, height);
+                long decoded =
+                        4L
+                                * com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(
+                                        width, height);
+                if (images.size() == WorldStreamObjectsFile.MAX_IMAGES
+                        || count > WorldStreamObjectsFile.MAX_IMAGE_BYTES - imageBytes
+                        || decoded > WorldStreamObjectsFile.MAX_DECODED_BYTES - decodedBytes
+                        || chain.remaining() != count) {
+                    throw new IllegalArgumentException("Exterior image exceeds file profile");
+                }
+                var copy = new byte[count];
+                chain.duplicate().get(copy);
+                images.add(new int[] {width, height, format});
                 pixelBlocks.add(copy);
-                pixels += (int) count;
+                imageBytes += count;
+                decodedBytes += decoded;
                 return images.size() - 1;
             }
 
@@ -338,7 +379,8 @@ public final class WorldStreamTileWriter {
 
             /**
              * As {@link #mesh(java.nio.FloatBuffer, java.nio.IntBuffer, int[])}, with one material
-             * class per range: 0 opaque, 1 alpha-key cutout, 2 alpha blended.
+             * class per range: 0 opaque, 1 alpha-key cutout, 2 alpha blended, 3 additive, each
+             * optionally with the unlit flag 0x100 (#367).
              */
             public void mesh(
                     java.nio.FloatBuffer vertexData,
@@ -456,9 +498,10 @@ public final class WorldStreamTileWriter {
                     models[i] = placementModels.get(i);
                     System.arraycopy(placements.get(i), 0, transforms, i * doubles, doubles);
                 }
-                var imageTable = new int[images.size() * 2];
+                int imageInts = WorldStreamObjectsFile.IMAGE_INTS;
+                var imageTable = new int[images.size() * imageInts];
                 for (int i = 0; i < images.size(); i++) {
-                    System.arraycopy(images.get(i), 0, imageTable, i * 2, 2);
+                    System.arraycopy(images.get(i), 0, imageTable, i * imageInts, imageInts);
                 }
                 var vertexData = new float[vertices * WorldStreamObjectsFile.VERTEX_FLOATS];
                 int at = 0;
@@ -472,7 +515,7 @@ public final class WorldStreamTileWriter {
                     System.arraycopy(block, 0, indexData, at, block.length);
                     at += block.length;
                 }
-                var pixelData = new byte[pixels * 4];
+                var pixelData = new byte[imageBytes];
                 at = 0;
                 for (var block : pixelBlocks) {
                     System.arraycopy(block, 0, pixelData, at, block.length);
@@ -600,6 +643,60 @@ public final class WorldStreamTileWriter {
         public int cells() {
             return wire.cells();
         }
+
+        /** Copies: native x north, y west, z up per vertex. */
+        public float[] positions() {
+            return wire.positions().clone();
+        }
+
+        public byte[] depths() {
+            return wire.depths().clone();
+        }
+
+        public int[] indices() {
+            return wire.indices().clone();
+        }
+    }
+
+    /**
+     * One tile's splatting inputs for the writer (issue #174 step 2): its distinct layer diffuses
+     * (file id and content key), the 16 x 16 chunk table of four indices into that list (255 for
+     * none), the RGBA8 mask map (512 or 1024 per side, by tier), and a source of a diffuse's 256 x
+     * 256 BC1 layer chain ({@link com.vibeminer.rendering.world.TerrainLayerBlocks}), consulted
+     * only for layers new to the shared array.
+     */
+    public record SplatInput(
+            long[] fileIds,
+            String[] contentKeys,
+            byte[] table,
+            ByteBuffer alpha,
+            java.util.function.LongFunction<java.util.Optional<Diffuse>> decode) {
+        public SplatInput {
+            Objects.requireNonNull(fileIds);
+            Objects.requireNonNull(contentKeys);
+            Objects.requireNonNull(table);
+            Objects.requireNonNull(alpha);
+            Objects.requireNonNull(decode);
+            if (fileIds.length != contentKeys.length
+                    || fileIds.length > 64
+                    || table.length != WorldStreamTileFile.SPLAT_TABLE_BYTES
+                    || alpha.remaining() != WorldStreamTileFile.SPLAT_ALPHA_BYTES
+                            && alpha.remaining()
+                                    != com.vibeminer.rendering.world.TerrainTileSplat
+                                            .MAX_ALPHA_BYTES) {
+                throw new IllegalArgumentException("Splat input shape");
+            }
+        }
+    }
+
+    /** One layer diffuse as its {@link com.vibeminer.rendering.world.TerrainLayerBlocks} chain. */
+    public record Diffuse(ByteBuffer chain) {
+        public Diffuse {
+            Objects.requireNonNull(chain);
+            if (chain.remaining() != WorldStreamTileFile.SPLAT_LAYER_BYTES) {
+                throw new IllegalArgumentException("Splat layer chain size");
+            }
+        }
     }
 
     /** Source R owns this unadvertised file until its independently pinned one-shot MOVE. */
@@ -608,7 +705,83 @@ public final class WorldStreamTileWriter {
         private final float[] footprint;
         private WorldStreamTransport.PacketDestination destination;
         private WorldStreamTileFile.Header writtenHeader;
+        private WorldStreamTileFile.Splat splat;
         private boolean waterAttached, waterDropped;
+
+        /**
+         * Resolves this textured packet's splatting inputs against the session's shared layer array
+         * and holds the trailer for {@link #move}. Keys without a layer, beyond the per-packet
+         * upload cap, or whose decode fails keep the atlas (255); never fails the tile.
+         */
+        public synchronized void splat(SplatInput input) {
+            Objects.requireNonNull(input);
+            if (destination == null) {
+                throw new IllegalStateException("Packet file already moved or closed");
+            }
+            if (writtenHeader.outcome() != WorldStreamTileFile.Outcome.TEXTURED) {
+                return;
+            }
+            var keys = new java.util.ArrayList<WorldStreamDiffuseArray.Key>();
+            for (int i = 0; i < input.fileIds().length; i++) {
+                keys.add(
+                        new WorldStreamDiffuseArray.Key(
+                                input.fileIds()[i], input.contentKeys()[i]));
+            }
+            var binding = destination.bindSplat(keys);
+            int[] layers = binding.layers().clone();
+            var uploadLayers = new java.util.ArrayList<Integer>();
+            var uploadPixels = new java.util.ArrayList<byte[]>();
+            for (int layer : binding.uploads()) {
+                int index = -1;
+                for (int i = 0; i < layers.length; i++) {
+                    if (layers[i] == layer) {
+                        index = i;
+                    }
+                }
+                byte[] pixels = null;
+                try {
+                    var decoded = input.decode().apply(input.fileIds()[index]);
+                    if (decoded.isPresent()) {
+                        pixels = new byte[WorldStreamTileFile.SPLAT_LAYER_BYTES];
+                        decoded.get().chain().duplicate().get(pixels);
+                    }
+                } catch (RuntimeException failed) {
+                    if (failed instanceof java.util.concurrent.CancellationException) {
+                        throw failed;
+                    }
+                    pixels = null;
+                }
+                if (pixels == null) {
+                    destination.dropSplatUpload(layer);
+                    layers[index] = -1;
+                    continue;
+                }
+                uploadLayers.add(layer);
+                uploadPixels.add(pixels);
+            }
+            byte[] table = new byte[WorldStreamTileFile.SPLAT_TABLE_BYTES];
+            for (int i = 0; i < table.length; i++) {
+                int entry = input.table()[i] & 255;
+                table[i] =
+                        (byte)
+                                (entry < layers.length && layers[entry] >= 0
+                                        ? layers[entry]
+                                        : WorldStreamTileFile.SPLAT_NONE);
+            }
+            byte[] alpha = new byte[input.alpha().remaining()];
+            input.alpha().duplicate().get(alpha);
+            splat =
+                    new WorldStreamTileFile.Splat(
+                            table,
+                            alpha,
+                            uploadLayers.stream().mapToInt(Integer::intValue).toArray(),
+                            uploadPixels.toArray(byte[][]::new));
+        }
+
+        /** Descriptive: the splat trailer this packet will carry, or null. */
+        synchronized WorldStreamTileFile.Splat splatTrailer() {
+            return splat;
+        }
 
         /** Descriptive: whether the moved packet carries a water trailer. */
         public synchronized boolean waterAttached() {
@@ -651,16 +824,31 @@ public final class WorldStreamTileWriter {
                     throw new IllegalStateException("Packet file already moved or closed");
                 }
                 WorldStreamTileFile.Expected replacement = null;
+                boolean watered = false;
+                if (splat != null) {
+                    try {
+                        replacement =
+                                WorldStreamTileFile.appendSplat(
+                                        file.path(),
+                                        file.expected(),
+                                        writtenHeader,
+                                        splat,
+                                        stopping);
+                    } catch (IOException failed) {
+                        throw new java.io.UncheckedIOException(failed);
+                    }
+                }
                 if (water != null && !WorldStreamTileFile.onFootprint(water.wire, footprint)) {
                     // Every reader check runs here first: off-tile water never costs terrain.
                     waterDropped = true;
                 } else if (water != null) {
-                    var before = file.expected();
+                    var before = replacement != null ? replacement : file.expected();
                     var path = file.path();
                     try {
                         replacement =
                                 WorldStreamTileFile.appendWater(
                                         path, before, writtenHeader, water.wire, stopping);
+                        watered = true;
                     } catch (WorldStreamTileFile.PacketChanged changed) {
                         throw new java.io.UncheckedIOException(changed);
                     } catch (IOException
@@ -673,7 +861,8 @@ public final class WorldStreamTileWriter {
                             canceled.addSuppressed(failed);
                             throw canceled;
                         }
-                        replacement = null;
+                        // The terrain (and splat) file is exact again: keep what preceded water.
+                        replacement = splat != null ? replacement : null;
                         waterDropped = true;
                     }
                 }
@@ -682,7 +871,7 @@ public final class WorldStreamTileWriter {
                 } catch (IOException failed) {
                     throw new java.io.UncheckedIOException(failed);
                 }
-                waterAttached = replacement != null;
+                waterAttached = watered;
                 target = destination;
                 header = writtenHeader;
                 destination = null;

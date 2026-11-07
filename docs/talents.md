@@ -69,11 +69,20 @@ same-build SpellEffect rows. An amount is fixed when no random, level, resource,
 attack/spell power, PvP or scaling input can change it. A spell power
 coefficient of zero is inert; a coefficient of one is inert only for a reviewed
 allow-list of stat, chance, speed, regeneration and spell-modifier auras, so any
-other effect with it shows `?`. `$o1` multiplies a fixed tick by the whole number
+other effect with it shows `?`. Dummy effects (3) and dummy (4) or
+proc-trigger (42) auras with a coefficient of one are shown only where the
+template prints the value as a percentage (`$s1%`, or a `${...}%` built from
+such values), because spell power adds flat amounts, never percentage points;
+weapon damage and any other rendering stay `?`. `$o1` multiplies a fixed tick by the whole number
 of ticks in a fixed duration; spells that also tick on application
 (`SpellMisc` Attributes[5] 0x200), or whose attribute is unreadable, show `?`, and
 `$h` reads the single DifficultyID 0 `SpellAuraOptions.ProcChance` (1–100, not
-procs per minute). A tokenizer keeps all readable prose: each
+procs per minute). From the same SpellAuraOptions row, `$n` reads ProcCharges
+and `$u` reads CumulativeAura (1–1000). `$t1` is the effect's `EffectAuraPeriod`
+in seconds (exact, at most two decimals), and `$a1` is the radius of its
+`EffectRadiusIndex[0]` `SpellRadius` row when the second index is unset or the
+same row, it does not grow per level, and its min/max are unset or equal to it.
+A tokenizer keeps all readable prose: each
 value it cannot resolve shows `?` in place, with its cause in Source details.
 Tokens are case-insensitive (`$S1`, `$D`). Colour, link and newline markup is
 rendered as text. `$lsingular:plural;` follows the preceding resolved amount and

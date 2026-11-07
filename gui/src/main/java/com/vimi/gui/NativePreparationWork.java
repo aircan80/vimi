@@ -659,9 +659,33 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         }
         try (var bootstrap = openTables(tablesService(token, TableRole.PREPARATION), token)) {
             var found = BuildTactKeys.load(bootstrap, TableTypes.Priority.BACKGROUND, token).join();
-            applyBuildKeys(found, issues, token);
+            applyBuildKeys(withDeliveredKeys(bootstrap, found, token), issues, token);
         }
         return List.copyOf(issues);
+    }
+
+    /**
+     * Joins the TactKey blocks the effective client-cache rows delivered into {@code found} under
+     * the TactKey join rule. A failure to read them only means fewer keys, never a key-loading
+     * error; cancellation still propagates.
+     */
+    static BuildTactKeys.KeySet withDeliveredKeys(
+            BuildTables tables, BuildTactKeys.KeySet found, Cancellation token) {
+        List<com.vibeminer.formats.hotfix.HotfixRowDecoder.OptionalKey> delivered;
+        try {
+            delivered = tables.deliveredKeys(TableTypes.Priority.BACKGROUND, token).join();
+        } catch (java.util.concurrent.CompletionException | IllegalStateException e) {
+            token.check();
+            return found;
+        }
+        try {
+            return BuildTactKeys.withDelivered(found, delivered);
+        } finally {
+            // The key set holds its own copies; the delivered blocks are not needed any more.
+            for (var block : delivered) {
+                block.clear();
+            }
+        }
     }
 
     /** Cached generated key graphs only; never invokes normal table preparation or source refresh. */
@@ -673,6 +697,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         }
         try (var bootstrap = openTables(tablesService(token, TableRole.LOCAL_BASE), token)) {
             var found = BuildTactKeys.loadPreparedLocal(bootstrap, token).join();
+            // No delivered keys here: LOCAL_BASE has no hotfix overlay and this path never
+            // decodes the client cache. keys() joins them on the overlay handle.
             applyBuildKeys(found, issues, token);
         }
         return List.copyOf(issues);

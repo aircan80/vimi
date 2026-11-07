@@ -1,6 +1,10 @@
 package com.vibeminer.rendering.world;
 
 import com.vibeminer.formats.world.TerrainGrid;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -27,7 +31,7 @@ public final class TerrainGeometryFingerprint {
             }
             indices += (64 - Long.bitCount(chunk.holes())) * 12;
         }
-        MessageDigest digest = header(tileX, tileY, 256, 256 * 145, indices);
+        Sink digest = header(tileX, tileY, 256, 256 * 145, indices);
         for (var chunk : grid.chunks()) {
             for (int row = 0; row < 17; row++) {
                 for (int col = 0; col < (row % 2 == 0 ? 9 : 8); col++) {
@@ -60,46 +64,96 @@ public final class TerrainGeometryFingerprint {
                 }
             }
         }
-        return HexFormat.of().formatHex(digest.digest());
+        return digest.hex();
     }
 
+    /** Computed once per immutable tile; later calls return the remembered value. */
     public static String sha256(TerrainScene.Tile tile) {
         Objects.requireNonNull(tile);
-        MessageDigest digest =
+        String cached = tile.cachedFingerprint();
+        if (cached != null) {
+            return cached;
+        }
+        Sink digest =
                 header(tile.x(), tile.y(), tile.chunks(), tile.vertexCount(), tile.indexCount());
-        var vertices = tile.vertices();
-        while (vertices.hasRemaining()) {
-            put(digest, Float.floatToRawIntBits(vertices.get()));
-        }
-        var indices = tile.indices();
-        while (indices.hasRemaining()) {
-            put(digest, indices.get());
-        }
-        return HexFormat.of().formatHex(digest.digest());
+        digest.floats(tile.vertices());
+        digest.ints(tile.indices());
+        String result = digest.hex();
+        tile.cacheFingerprint(result);
+        return result;
     }
 
-    private static MessageDigest header(int x, int y, int chunks, int vertices, int indices) {
+    private static Sink header(int x, int y, int chunks, int vertices, int indices) {
         if (x < 0 || x >= 64 || y < 0 || y >= 64) {
             throw new IllegalArgumentException("Invalid geometry tile coordinates");
         }
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             digest.update(DOMAIN);
-            put(digest, x);
-            put(digest, y);
-            put(digest, chunks);
-            put(digest, vertices);
-            put(digest, indices);
-            return digest;
+            var sink = new Sink(digest);
+            put(sink, x);
+            put(sink, y);
+            put(sink, chunks);
+            put(sink, vertices);
+            put(sink, indices);
+            return sink;
         } catch (NoSuchAlgorithmException impossible) {
             throw new AssertionError("Required SHA-256 unavailable", impossible);
         }
     }
 
-    private static void put(MessageDigest digest, int value) {
-        digest.update((byte) value);
-        digest.update((byte) (value >>> 8));
-        digest.update((byte) (value >>> 16));
-        digest.update((byte) (value >>> 24));
+    private static void put(Sink sink, int value) {
+        if (!sink.buffer.hasRemaining()) {
+            sink.drain();
+        }
+        sink.buffer.putInt(value);
+    }
+
+    /**
+     * Little-endian words batched into one digest update per 8 KiB. The digested byte stream is
+     * unchanged; only the per-byte update calls are gone.
+     */
+    private static final class Sink {
+        private final MessageDigest digest;
+        private final ByteBuffer buffer =
+                ByteBuffer.allocate(8 << 10).order(ByteOrder.LITTLE_ENDIAN);
+
+        private Sink(MessageDigest digest) {
+            this.digest = digest;
+        }
+
+        private void drain() {
+            digest.update(buffer.array(), 0, buffer.position());
+            buffer.clear();
+        }
+
+        private void floats(FloatBuffer values) {
+            while (values.hasRemaining()) {
+                if (!buffer.hasRemaining()) {
+                    drain();
+                }
+                int count = Math.min(values.remaining(), buffer.remaining() / 4);
+                buffer.asFloatBuffer().put(values.slice(values.position(), count));
+                values.position(values.position() + count);
+                buffer.position(buffer.position() + count * 4);
+            }
+        }
+
+        private void ints(IntBuffer values) {
+            while (values.hasRemaining()) {
+                if (!buffer.hasRemaining()) {
+                    drain();
+                }
+                int count = Math.min(values.remaining(), buffer.remaining() / 4);
+                buffer.asIntBuffer().put(values.slice(values.position(), count));
+                values.position(values.position() + count);
+                buffer.position(buffer.position() + count * 4);
+            }
+        }
+
+        private String hex() {
+            drain();
+            return HexFormat.of().formatHex(digest.digest());
+        }
     }
 }

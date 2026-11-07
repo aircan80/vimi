@@ -21,7 +21,11 @@ final class Arithmetic {
     record Operand(Long spell, int index) {}
 
     /** The value, or the reason there is none, with the sources of every operand used. */
-    record Result(BigDecimal value, String issue, List<SpellTexts.Source> sources) {
+    record Result(
+            BigDecimal value,
+            String issue,
+            List<SpellTexts.Source> sources,
+            boolean percentageOnly) {
         Result {
             sources = List.copyOf(sources);
         }
@@ -63,13 +67,13 @@ final class Arithmetic {
         var sources = new ArrayList<SpellTexts.Source>();
         try {
             var parser = new Parser(terms(body), self, amounts, sources);
-            var value = parser.sum(0);
+            var value = parser.evaluate();
             if (parser.at != parser.terms.size()) {
                 throw new Failure("The expression is not supported arithmetic");
             }
-            return new Result(value, null, sources);
+            return new Result(value, null, sources, parser.percentageOnly);
         } catch (Failure failure) {
-            return new Result(null, failure.getMessage(), sources);
+            return new Result(null, failure.getMessage(), sources, false);
         }
     }
 
@@ -154,12 +158,28 @@ final class Arithmetic {
         return terms;
     }
 
+    /**
+     * How a value depends on percentage-only amounts: {@code CONSTANT} is a literal, {@code FIXED}
+     * uses only fixed amounts, and {@code PERCENT} is a sum of percentage-only amounts, each scaled
+     * by literals. A percentage-only amount used any other way (as a divisor, multiplied by an
+     * amount, or added to anything but another such sum) is refused, because a flat change to it
+     * would no longer change the printed percentage by the same flat amount.
+     */
+    private enum Kind {
+        CONSTANT,
+        FIXED,
+        PERCENT
+    }
+
+    private record Value(BigDecimal number, Kind kind) {}
+
     private static final class Parser {
         final List<Term> terms;
         final long self;
         final Map<Long, Map<Integer, SpellText.Amount>> amounts;
         final List<SpellTexts.Source> sources;
         int at;
+        boolean percentageOnly;
 
         Parser(
                 List<Term> terms,
@@ -180,33 +200,68 @@ final class Arithmetic {
             return false;
         }
 
-        BigDecimal sum(int depth) {
+        /** The whole expression; records whether a percentage-only amount determines it. */
+        BigDecimal evaluate() {
+            var value = sum(0);
+            percentageOnly = value.kind() == Kind.PERCENT;
+            return value.number();
+        }
+
+        Value sum(int depth) {
             var value = product(depth);
             while (true) {
-                if (symbol('+')) {
-                    value = bounded(value.add(product(depth)));
-                } else if (symbol('-')) {
-                    value = bounded(value.subtract(product(depth)));
-                } else {
+                boolean add = symbol('+');
+                if (!add && !symbol('-')) {
                     return value;
                 }
+                var other = product(depth);
+                var number =
+                        bounded(
+                                add
+                                        ? value.number().add(other.number())
+                                        : value.number().subtract(other.number()));
+                value = new Value(number, sumKind(value.kind(), other.kind()));
             }
         }
 
-        BigDecimal product(int depth) {
+        private static Kind sumKind(Kind left, Kind right) {
+            if (left == Kind.PERCENT || right == Kind.PERCENT) {
+                if (left != Kind.PERCENT || right != Kind.PERCENT) {
+                    throw new Failure(
+                            "A percentage-only amount is combined with another kind of value");
+                }
+                return Kind.PERCENT;
+            }
+            return left == Kind.CONSTANT && right == Kind.CONSTANT ? Kind.CONSTANT : Kind.FIXED;
+        }
+
+        Value product(int depth) {
             var value = factor(depth);
             while (true) {
                 if (symbol('*')) {
-                    value = bounded(value.multiply(factor(depth)));
+                    var other = factor(depth);
+                    value =
+                            new Value(
+                                    bounded(value.number().multiply(other.number())),
+                                    productKind(value.kind(), other.kind()));
                 } else if (symbol('/')) {
                     var divisor = factor(depth);
-                    if (divisor.signum() == 0) {
+                    if (divisor.kind() == Kind.PERCENT) {
+                        throw new Failure("A percentage-only amount is used as a divisor");
+                    }
+                    if (divisor.number().signum() == 0) {
                         throw new Failure("The expression divides by zero");
+                    }
+                    if (value.kind() == Kind.PERCENT && divisor.kind() != Kind.CONSTANT) {
+                        throw new Failure("A percentage-only amount is divided by another amount");
                     }
                     try {
                         // Exact: a quotient that does not terminate is never rounded into a
                         // value that looks exact.
-                        value = bounded(value.divide(divisor));
+                        value =
+                                new Value(
+                                        bounded(value.number().divide(divisor.number())),
+                                        productKind(value.kind(), divisor.kind()));
                     } catch (ArithmeticException repeating) {
                         throw new Failure("The expression result needs rounding");
                     }
@@ -216,12 +271,24 @@ final class Arithmetic {
             }
         }
 
-        BigDecimal factor(int depth) {
+        private static Kind productKind(Kind left, Kind right) {
+            if (left == Kind.PERCENT || right == Kind.PERCENT) {
+                if (left == Kind.PERCENT && right == Kind.CONSTANT
+                        || right == Kind.PERCENT && left == Kind.CONSTANT) {
+                    return Kind.PERCENT;
+                }
+                throw new Failure("A percentage-only amount is multiplied by another amount");
+            }
+            return left == Kind.CONSTANT && right == Kind.CONSTANT ? Kind.CONSTANT : Kind.FIXED;
+        }
+
+        Value factor(int depth) {
             if (depth > MAX_DEPTH) {
                 throw new Failure("The expression is nested too deeply");
             }
             if (symbol('-')) {
-                return factor(depth + 1).negate();
+                var inner = factor(depth + 1);
+                return new Value(inner.number().negate(), inner.kind());
             }
             if (symbol('(')) {
                 var value = sum(depth + 1);
@@ -235,7 +302,7 @@ final class Arithmetic {
             }
             var term = terms.get(at++);
             if (term instanceof Number number) {
-                return bounded(number.value());
+                return new Value(bounded(number.value()), Kind.CONSTANT);
             }
             if (term instanceof Amount amount) {
                 long spell = amount.operand().spell() == null ? self : amount.operand().spell();
@@ -244,12 +311,6 @@ final class Arithmetic {
                     throw new Failure("Effect amount is unavailable for " + amount.raw());
                 }
                 sources.addAll(found.sources());
-                if (found.percentageOnly()) {
-                    // Such an amount is fixed only where it is shown with a literal %; the
-                    // evaluator does not track that, so it refuses the operand.
-                    throw new Failure(
-                            amount.raw() + ": this amount is shown only as a plain percentage");
-                }
                 if (found.issue() != null || found.base() == null) {
                     throw new Failure(
                             amount.raw()
@@ -258,7 +319,8 @@ final class Arithmetic {
                                             ? "Effect base amount is unreadable"
                                             : found.issue()));
                 }
-                return bounded(found.base());
+                return new Value(
+                        bounded(found.base()), found.percentageOnly() ? Kind.PERCENT : Kind.FIXED);
             }
             throw new Failure("The expression is not supported arithmetic");
         }

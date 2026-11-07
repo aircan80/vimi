@@ -86,7 +86,7 @@ final class WorldStreamAtlasMipsTest {
         // A step adds at most one atlas step to two geometry chunks: the 256 KiB slice bound.
         assertTrue(
                 2 * BgfxWorldStreamRenderer.GEOMETRY_CHUNK + WorldStreamAtlasMips.STEP_BYTES
-                        <= 262144);
+                        <= BgfxWorldStreamRenderer.STEP_BOUND);
     }
 
     @Test
@@ -311,9 +311,15 @@ final class WorldStreamAtlasMipsTest {
     }
 
     @Test
-    void streamSamplerHasNoPointFlagsAndClampsBothAxes() {
+    void streamSamplerIsAnisotropicWithLinearMipsAndClampsBothAxes() {
         assertEquals(
-                org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_U_CLAMP | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_V_CLAMP,
+                org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_U_CLAMP
+                        | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_V_CLAMP
+                        | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIN_ANISOTROPIC
+                        | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MAG_ANISOTROPIC,
                 BgfxWorldStreamRenderer.SAMPLER_FLAGS);
+        assertEquals(
+                0,
+                BgfxWorldStreamRenderer.SAMPLER_FLAGS & org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIP_MASK);
     }
 }
