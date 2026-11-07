@@ -229,8 +229,8 @@ public final class WorldGlobalScenes {
         }
 
         /**
-         * Blended, additive or modulated surfaces (glows, light shafts, fire cards) of drawn groups
-         * left out because this profile draws everything opaque.
+         * Surfaces of drawn groups left out (#297): a blend mode above additive (modulate and its
+         * variants, not pinned), or a blended surface without a texture.
          */
         public int skippedBlendedBatches() {
             return skippedBlendedBatches;

@@ -975,7 +975,9 @@ class WorldGlobalAssetFactoryTest {
                                     b.spans());
                             for (int i = 0; i < 16; i++) {
                                 assertEquals(255, b.imageByte(0, i * 4));
-                                assertEquals(255, b.imageByte(0, i * 4 + 3));
+                                assertTrue(
+                                        java.util.Set.of(0, 217)
+                                                .contains(b.imageByte(0, i * 4 + 3)));
                             }
                             CompletableFuture.runAsync(
                                             () ->
@@ -1305,26 +1307,49 @@ class WorldGlobalAssetFactoryTest {
         return root;
     }
 
+    /**
+     * Issue #297: alpha-blend (2) and additive (3) batches now draw with the outdoor mapping, their
+     * textures read; only modulate (4) and above are left out and counted.
+     */
     @Test
-    void blendedAdditiveAndModulatedBatchesAreLeftOutAndCounted() throws Exception {
+    void blendedAndAdditiveBatchesDrawWithTheSharedMapping() throws Exception {
         try (var f = new Fixture()) {
             f.files.sources.put(302L, f.files.sources.get(301L));
-            for (int blend : new int[] {2, 3, 4}) {
+            for (int blend : new int[] {2, 3}) {
                 f.files.sources.put(
                         123L, withBlend(root(new long[] {201, 202}, 301, 302), 1, blend));
                 f.files.sources.put(201L, twoBatchGroup(0, 1));
                 f.files.sources.put(202L, twoBatchGroup(1, 1));
                 var m = f.inspect();
-                assertEquals(1, m.groups().size(), "a group of only blended batches is skipped");
+                assertEquals(2, m.groups().size());
+                assertEquals(java.util.Map.of(), m.skippedReasons());
+                assertEquals(2, m.groups().getFirst().batches());
+                assertEquals(0, m.skippedBlendedBatches());
+                assertEquals(2, m.images().size(), "the blended material's texture is read");
+            }
+        }
+    }
+
+    @Test
+    void modulatedBatchesAreLeftOutAndCounted() throws Exception {
+        try (var f = new Fixture()) {
+            f.files.sources.put(302L, f.files.sources.get(301L));
+            for (int blend : new int[] {4, 5}) {
+                f.files.sources.put(
+                        123L, withBlend(root(new long[] {201, 202}, 301, 302), 1, blend));
+                f.files.sources.put(201L, twoBatchGroup(0, 1));
+                f.files.sources.put(202L, twoBatchGroup(1, 1));
+                var m = f.inspect();
+                assertEquals(1, m.groups().size(), "a group of only modulated batches is skipped");
                 assertEquals(
-                        java.util.Map.of("only blended or additive surfaces", 1),
+                        java.util.Map.of("only surfaces with unsupported blend modes", 1),
                         m.skippedReasons());
                 var group = m.groups().getFirst();
                 assertEquals(1, group.batches());
                 assertEquals(1, group.blendedBatches());
                 assertEquals(1, group.drawnTriangles());
                 assertEquals(1, m.skippedBlendedBatches());
-                assertEquals(1, m.images().size(), "the blended material's texture is not read");
+                assertEquals(1, m.images().size(), "the modulated material's texture is not read");
                 try (var asset = f.factory.createOwned(f.scope, SELECT, Cancellation.NONE)) {
                     asset.withBorrow(
                             b -> {
@@ -1335,7 +1360,7 @@ class WorldGlobalAssetFactoryTest {
                             });
                 }
             }
-            // Alpha-key (1) still draws, as cutout geometry drawn opaque.
+            // Alpha-key (1) still draws, now as a cutout.
             f.files.sources.put(123L, withBlend(root(new long[] {201}, 301, 302), 1, 1));
             assertEquals(2, f.inspect().groups().getFirst().batches());
         }
@@ -1843,7 +1868,10 @@ class WorldGlobalAssetFactoryTest {
                                 token.check();
                                 assertEquals(3, borrow.vertices());
                                 assertEquals(6, borrow.indices());
-                                assertEquals(255, borrow.imageByte(0, 3));
+                                assertEquals(
+                                        0,
+                                        borrow.imageByte(0, 3),
+                                        "the source alpha is kept (#297)");
                                 saved.set(borrow);
                                 var output = new OutputFile(directory.resolve("global.wgs"));
                                 file.set(output);
@@ -2037,7 +2065,10 @@ class WorldGlobalAssetFactoryTest {
                                 saved.set(borrow);
                                 assertEquals(3, borrow.vertices());
                                 assertEquals(6, borrow.indices());
-                                assertEquals(255, borrow.imageByte(0, 3));
+                                assertEquals(
+                                        0,
+                                        borrow.imageByte(0, 3),
+                                        "the source alpha is kept (#297)");
                                 assertEquals(0xffff_ffffL, borrow.facts().declaration().uniqueId());
                                 assertEquals(1, borrow.facts().groups().size());
                                 return (AutoCloseable) closes::incrementAndGet;
