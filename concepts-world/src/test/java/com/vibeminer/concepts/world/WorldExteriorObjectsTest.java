@@ -369,6 +369,27 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void sampledChainsUnderOneBlockAreNotCountedAsBlockFallbacks() {
+        int bc1 = 1 << com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        // A 2 x 2 DXT1 source in a session that samples BC1: its allotted level is under one 4 x 4
+        // block, so it is planned and decoded as RGBA8 from the start. The blocks were never
+        // planned, so it is no fallback and is not decoded a second time.
+        int rgbaDecodes;
+        try (var set = sampling(0, blp(2, 2, 2, 0x07e0))) {
+            rgbaDecodes = set.levelDecodes;
+        }
+        try (var set = sampling(bc1, blp(2, 2, 2, 0x07e0))) {
+            var image = set.images().getFirst();
+            assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, image.format());
+            assertEquals(2, image.width());
+            assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS_FALLBACK));
+            assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS));
+            // The same decodes as a session that samples no blocks: none is redone.
+            assertEquals(rgbaDecodes, set.levelDecodes);
+        }
+    }
+
+    @Test
     void unusableBlocksAt256FallBackWithinTheirCharge() {
         int bc3 = com.vibeminer.rendering.world.ObjectTextureFormats.BC3;
         // A blended BC3 256^2 registered at 128 and allotted 256 (21,852 texel units), its re-read

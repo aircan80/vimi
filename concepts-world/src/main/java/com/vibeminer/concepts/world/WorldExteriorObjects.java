@@ -3280,7 +3280,11 @@ public final class WorldExteriorObjects {
                         continue;
                     }
                 }
-                if (sampled(demand)) {
+                // A sampled chain allotted under one 4 x 4 block was planned as RGBA8 from the
+                // start
+                // (relevel), so its blocks were never expected and it is no fallback.
+                if (sampled(demand)
+                        && (top.rgba == null || top.width() >= 4 && top.height() >= 4)) {
                     // The blocks were not usable after all: decode the largest RGBA8 level within
                     // the RGBA8 cap whose chain costs no more than the blocks were charged, so the
                     // fallback never spends past the tile's budget.
