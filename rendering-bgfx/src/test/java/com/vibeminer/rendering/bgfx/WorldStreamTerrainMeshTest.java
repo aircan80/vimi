@@ -63,7 +63,9 @@ class WorldStreamTerrainMeshTest {
             assertEquals(-run * 40 - 16, spheres[run * 4], 1e-6);
             assertTrue(spheres[run * 4 + 3] < 30, "chunk radius " + spheres[run * 4 + 3]);
         }
-        assertEquals(mesh.bytes(), 3 * 145 * 16 + mesh.terrainIndices() * 2);
+        assertEquals(
+                mesh.bytes(),
+                3 * 145 * WorldStreamPackedTile.VERTEX_BYTES + mesh.terrainIndices() * 2);
     }
 
     @Test
@@ -89,7 +91,8 @@ class WorldStreamTerrainMeshTest {
                 WorldStreamPackedTile.mesh(tile, WorldStreamTileWaterTest.water(3, 0), () -> false);
         assertEquals(12, mesh.waterVertices());
         assertEquals(18, mesh.waterIndices());
-        assertEquals((145 + 12) * 16 + (768 + 18) * 2, mesh.bytes());
+        assertEquals(
+                (145 + 12) * WorldStreamPackedTile.VERTEX_BYTES + (768 + 18) * 2, mesh.bytes());
         assertThrows(
                 CancellationException.class,
                 () -> WorldStreamPackedTile.mesh(tile, null, () -> true));

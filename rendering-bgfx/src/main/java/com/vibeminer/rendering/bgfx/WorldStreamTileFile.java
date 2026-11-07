@@ -27,6 +27,16 @@ import java.util.function.BooleanSupplier;
 /** Structural packet IO only. Wire fields and hashes never authenticate an asset source. */
 final class WorldStreamTileFile {
     static final int HEADER_BYTES = 4096, ATLAS_BYTES = 1_048_576;
+
+    /**
+     * Packet version. 4 (#373): each terrain vertex carries its MCNR normal (three signed bytes,
+     * all zero when its chunk has none, then a zero byte) and MCCV colour (red, green, blue, 255;
+     * all four zero when its chunk has none) after the indices.
+     */
+    static final int VERSION = 4;
+
+    static final int ATTRIBUTE_BYTES =
+            com.vibeminer.formats.world.WorldFormats.Terrain.ATTRIBUTE_BYTES;
     private static final int SCRATCH = 64 << 10, IO_CHUNK = 256 << 10;
     private static final byte[] MAGIC =
             "VIMIWST2".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
@@ -425,8 +435,12 @@ final class WorldStreamTileFile {
             return coverage.clone();
         }
 
+        /**
+         * Positions, indices, then (packet version 4, #373) {@link #ATTRIBUTE_BYTES} of normal and
+         * colour per vertex.
+         */
         int geometryBytes() {
-            return vertices * 12 + indices * 4;
+            return vertices * (12 + ATTRIBUTE_BYTES) + indices * 4;
         }
 
         int totalBytes() {
@@ -562,7 +576,12 @@ final class WorldStreamTileFile {
                     || !HexFormat.of().formatHex(digest.digest()).equals(expected.sha256())) {
                 throw new IOException("Packet bytes or full digest differ");
             }
-            var tile = readGeometry(geometry, header, canceled);
+            var tile =
+                    readGeometry(
+                            geometry,
+                            header,
+                            HexFormat.of().formatHex(first.array(), 260, 292),
+                            canceled);
             if (atlas != null) {
                 validateAtlas(header, tile, ByteBuffer.wrap(atlas).asReadOnlyBuffer(), canceled);
             }
@@ -618,21 +637,48 @@ final class WorldStreamTileFile {
     }
 
     private static TerrainScene.Tile readGeometry(
-            ByteBuffer bytes, Header header, BooleanSupplier canceled) throws IOException {
+            ByteBuffer bytes, Header header, String attributeSha256, BooleanSupplier canceled)
+            throws IOException {
         float[] vertices = new float[header.vertices() * 3];
         int[] indices = new int[header.indices()];
         bytes.order(ByteOrder.LITTLE_ENDIAN);
         bytes.asFloatBuffer().get(vertices);
         bytes.position(vertices.length * 4).asIntBuffer().get(indices);
+        // Packet version 4 (#373): the vertex attributes follow the indices, bound in the header.
+        byte[] attributes = new byte[header.vertices() * ATTRIBUTE_BYTES];
+        bytes.position(vertices.length * 4 + indices.length * 4).get(attributes);
         check(canceled);
+        validateAttributes(attributes);
+        if (!attributeSha256(attributes).equals(attributeSha256)) {
+            throw new IOException("Vertex attribute digest differs");
+        }
         var tile =
                 TerrainScene.Tile.copyOf(
-                        header.x(), header.y(), vertices, indices, header.chunks());
+                        header.x(), header.y(), vertices, indices, header.chunks(), attributes);
         if (!TerrainGeometryFingerprint.sha256(tile).equals(header.geometrySha256())) {
             throw new IOException("Geometry fingerprint differs");
         }
         // Raw arrays cannot escape this lexical phase; exactly one defensive Tile copy remains.
         return tile;
+    }
+
+    /**
+     * Per vertex: the normal's pad byte is zero, and the colour is either absent (four zero bytes)
+     * or present (alpha 255).
+     */
+    static void validateAttributes(byte[] attributes) {
+        require(attributes.length % ATTRIBUTE_BYTES == 0, "Vertex attributes");
+        for (int at = 0; at < attributes.length; at += ATTRIBUTE_BYTES) {
+            int alpha = attributes[at + 7] & 255;
+            require(
+                    attributes[at + 3] == 0
+                            && (alpha == 255
+                                    || alpha == 0
+                                            && attributes[at + 4] == 0
+                                            && attributes[at + 5] == 0
+                                            && attributes[at + 6] == 0),
+                    "Vertex attributes");
+        }
     }
 
     static Expected write(
@@ -671,6 +717,10 @@ final class WorldStreamTileFile {
                         && TerrainGeometryFingerprint.sha256(tile).equals(header.geometrySha256()),
                 "Geometry/header mismatch");
         WorldStageTimings.stop("tileFile.write.geometryFingerprint", fingerprint);
+        // A tile without attributes writes zeros: no normal, no colour.
+        byte[] attributeBytes = new byte[tile.vertexCount() * ATTRIBUTE_BYTES];
+        tile.attributes().get(0, attributeBytes, 0, tile.attributes().remaining());
+        validateAttributes(attributeBytes);
         if (header.outcome() == Outcome.TEXTURED) {
             validateAtlas(header, tile, atlas, canceled);
         } else {
@@ -692,10 +742,12 @@ final class WorldStreamTileFile {
                 var body =
                         ByteBuffer.allocate(HEADER_BYTES + header.geometryBytes())
                                 .order(ByteOrder.LITTLE_ENDIAN);
-                body.put(encodeHeader(header));
+                body.put(encodeHeader(header, attributeSha256(attributeBytes)));
                 body.asFloatBuffer().put(tile.vertices());
                 body.position(HEADER_BYTES + tile.vertexCount() * 12);
                 body.asIntBuffer().put(tile.indices());
+                body.position(HEADER_BYTES + tile.vertexCount() * 12 + tile.indexCount() * 4);
+                body.put(attributeBytes);
                 body.clear();
                 digest.update(body.array());
                 drain(channel, body, canceled);
@@ -1036,8 +1088,17 @@ final class WorldStreamTileFile {
     }
 
     static byte[] encodeHeader(Header h) {
+        return encodeHeader(h, "00".repeat(32));
+    }
+
+    /** SHA-256 of a packet's vertex attribute bytes, bound in the header at 260 (#373). */
+    static String attributeSha256(byte[] attributes) {
+        return HexFormat.of().formatHex(digest().digest(attributes));
+    }
+
+    static byte[] encodeHeader(Header h, String attributeSha256) {
         var out = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
-        out.put(MAGIC).putInt(3).putInt(HEADER_BYTES).putLong(h.totalBytes());
+        out.put(MAGIC).putInt(VERSION).putInt(HEADER_BYTES).putLong(h.totalBytes());
         out.putLong(h.nonce().high()).putLong(h.nonce().low());
         out.put(HexFormat.of().parseHex(h.scope())).putLong(h.transaction());
         out.putLong(h.lease().serial()).putInt(h.lease().slot()).putInt(h.x()).putInt(h.y());
@@ -1060,6 +1121,7 @@ final class WorldStreamTileFile {
         for (long word : h.coverage()) {
             out.putLong(word);
         }
+        out.put(260, HexFormat.of().parseHex(attributeSha256));
         out.putFloat(h.maxX()).putFloat(h.maxY()).putDouble(h.uvError()).putInt(h.diffuse().size());
         putSource(out, 512, h.wdt());
         putSource(out, 560, h.root());
@@ -1079,7 +1141,7 @@ final class WorldStreamTileFile {
         try {
             require(
                     Arrays.equals(MAGIC, Arrays.copyOf(bytes, 8))
-                            && in.getInt(8) == 3
+                            && in.getInt(8) == VERSION
                             && in.getInt(12) == HEADER_BYTES
                             && in.getLong(16) <= expected.length(),
                     "Header magic/size");
@@ -1092,7 +1154,8 @@ final class WorldStreamTileFile {
                             && in.getLong(72) == expected.transaction()
                             && lease.equals(expected.lease()),
                     "Header expectation");
-            zero(bytes, 260, 512);
+            // 260..292: the vertex attributes' SHA-256 (#373), checked after the geometry.
+            zero(bytes, 292, 512);
             WorldStreamObjectsFile.Reference objects = null;
             if (in.getInt(656) == 0) {
                 zero(bytes, 656, 1024);

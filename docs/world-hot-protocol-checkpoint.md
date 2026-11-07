@@ -79,7 +79,7 @@ arguments: magic8=`VIMIWSS2`, version uint32 at8, length uint32 at12, nonce16 at
 scope32 at32, profile uint32=1 at64, geometry revision uint32 at68, material recipe
 uint32 at72, pixel format uint32=1 at76, initial policy uint64 at80, width cap
 uint32=800 at88, height cap uint32=500 at92, fixed slots uint32=10 at96, active cap
-uint32=9 at100, packet cap uint32=2284544 at104, and148 zero bytes at108. The
+uint32=9 at100, packet cap uint32 at104 (`WorldStreamEnvelope.MAX_PACKET_BYTES`: originally 2284544; since packet version 4, #373, 3204224 bytes of terrain with vertex normals and colours plus water, plus the largest splat trailer), and148 zero bytes at108. The
 bootstrap carries no source payload. Unsupported profiles fail before GPU resource
 allocation; caps are fixed assertions, not caller-configurable increases.
 

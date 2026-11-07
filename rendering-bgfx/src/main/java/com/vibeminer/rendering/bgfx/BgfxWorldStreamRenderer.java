@@ -111,7 +111,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     static final int MAX_TICKETS = 64;
 
     /** One geometry upload slice in bytes: whole vertices and whole indices. */
-    static final int GEOMETRY_CHUNK = 6144 * WorldStreamPackedTile.VERTEX_BYTES;
+    static final int GEOMETRY_CHUNK = 4096 * WorldStreamPackedTile.VERTEX_BYTES;
 
     private static final short INVALID = -1;
 
@@ -466,6 +466,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private short splatDummyArray = INVALID;
     // Fog shared by terrain, objects and the sky's horizon (WorldFog).
     private short worldFog = INVALID, worldFogRange = INVALID, worldSkyTop = INVALID;
+    private short worldLight = INVALID;
+    private WorldLight light = WorldLight.FIXED;
+    private boolean terrainLighting = TERRAIN_LIGHTING;
     private short skyTop = INVALID, skyHorizon = INVALID, skyView = INVALID;
     private short wmoFog = INVALID, wmoFogRange = INVALID, wmoSkyTop = INVALID;
     // Read once per frame; #177 sets it from the light tables (fog(WorldFog)).
@@ -585,6 +588,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             worldSkyTop = valid(bgfx_create_uniform("u_worldSkyTop", BGFX_UNIFORM_TYPE_VEC4, 1));
             worldFogRange =
                     valid(bgfx_create_uniform("u_worldFogRange", BGFX_UNIFORM_TYPE_VEC4, 1));
+            worldLight = valid(bgfx_create_uniform("u_worldLight", BGFX_UNIFORM_TYPE_VEC4, 3));
             skyTop = valid(bgfx_create_uniform("u_skyTop", BGFX_UNIFORM_TYPE_VEC4, 1));
             skyHorizon = valid(bgfx_create_uniform("u_skyHorizon", BGFX_UNIFORM_TYPE_VEC4, 1));
             skyView = valid(bgfx_create_uniform("u_skyView", BGFX_UNIFORM_TYPE_VEC4, 1));
@@ -1323,6 +1327,31 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         fog = java.util.Objects.requireNonNull(value);
     }
 
+    /**
+     * Terrain lighting (#373) from MCNR normals and the World light: on by default, as the client
+     * draws; {@code -Dvimi.world.terrainLighting=false}, forwarded by the application to this
+     * helper, draws terrain at its albedo for comparison.
+     */
+    static final boolean TERRAIN_LIGHTING =
+            terrainLightingEnabled(System.getProperty("vimi.world.terrainLighting"));
+
+    /** Only {@code false} (any letter case) turns terrain lighting off. */
+    static boolean terrainLightingEnabled(String property) {
+        return !"false".equalsIgnoreCase(property);
+    }
+
+    /** The light of the next frames; #177 feeds it from the light tables. */
+    void light(WorldLight value) {
+        requireOwner();
+        light = java.util.Objects.requireNonNull(value);
+    }
+
+    /** Proof seam: overrides {@link #TERRAIN_LIGHTING} for this renderer. */
+    void terrainLighting(boolean enabled) {
+        requireOwner();
+        terrainLighting = enabled;
+    }
+
     /** The sample count of the target the owner created; above 1 enables alpha to coverage. */
     void targetSamples(int samples) {
         requireOwner();
@@ -1626,6 +1655,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             bgfx_set_uniform(worldFog, stack.floats(fog.fogUniform()), 1);
             bgfx_set_uniform(worldSkyTop, stack.floats(fog.topUniform()), 1);
             bgfx_set_uniform(worldFogRange, stack.floats(fog.rangeUniform()), 1);
+            bgfx_set_uniform(worldLight, stack.floats(light.uniform(terrainLighting)), 3);
             var view =
                     objectCulling
                             ? WorldStreamObjectCulling.View.of(camera, width, height, fog.cut())
@@ -2364,6 +2394,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     worldFog,
                     worldFogRange,
                     worldSkyTop,
+                    worldLight,
                     skyTop,
                     skyHorizon,
                     skyView
@@ -2403,19 +2434,24 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
     }
 
-    /** Terrain and water mesh vertices: float position, normalized RGBA8 colour (16 bytes). */
+    /**
+     * Terrain and water mesh vertices (24 bytes): float position, then normalized RGBA8 fallback
+     * colour, MCCV colour and normal ({@link WorldStreamPackedTile#VERTEX_BYTES}).
+     */
     private static BGFXVertexLayout meshLayout() {
         var layout = BGFXVertexLayout.calloc();
         bgfx_vertex_layout_begin(layout, bgfx_get_caps().rendererType());
         bgfx_vertex_layout_add(
                 layout, BGFX_ATTRIB_POSITION, 3, BGFX_ATTRIB_TYPE_FLOAT, false, false);
-        bgfx_vertex_layout_add(
-                layout,
-                org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_COLOR0,
-                4,
-                org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TYPE_UINT8,
-                true,
-                false);
+        for (int attribute :
+                new int[] {
+                    org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_COLOR0,
+                    org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_COLOR1,
+                    BGFX_ATTRIB_NORMAL
+                }) {
+            bgfx_vertex_layout_add(
+                    layout, attribute, 4, org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TYPE_UINT8, true, false);
+        }
         bgfx_vertex_layout_end(layout);
         if (layout.stride() != WorldStreamPackedTile.VERTEX_BYTES) {
             layout.free();
