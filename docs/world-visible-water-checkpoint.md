@@ -139,5 +139,100 @@ A fresh reviewer, given only the code, found no blocker in 1aa76b62. Fixed in fo
 - **No CPU fallback water.** The software renderer remains terrain-only.
 - **Tiles produced before the table wait finished** stay without water until they are produced
   again. A late table-ready event does not refresh them.
-- **Out of scope:** nonplanar layers (for example the seven in ROOT 778147) remain unresolved,
-  and liquid appearance, animation and type colours are a later slice.
+- **Out of scope here:** nonplanar layers (for example the seven in ROOT 778147) remained
+  unresolved, and liquid appearance, animation and type colours are a later slice. The section
+  below lifts the nonplanar, overlap and cap limits.
+
+## Sloped, overlapping and whole-tile water (#171)
+
+Measured on real data (`wowf` 1.60.1), most water the Source declined was not exotic: river and
+lake layers whose used heights differ (often by under 0.05 yards of float jitter, sometimes by
+metres on rivers and falls), two instances in one chunk, and coast or open-sea tiles over the
+old 128-layer / 8192-cell owner caps.
+
+- **Heights.** Every qualified height+depth (LVF 0) layer keeps its actual used vertex heights.
+  A flat layer produces exactly the geometry it did before. A sloped cell is still the two
+  triangles of the fixed NE–SW diagonal; for a nonplanar cell that diagonal is a renderer
+  convention, not a source fact: at the cell centre the two diagonals differ by half the cell's
+  twist, |NW + SE − NE − SW| / 2. `NONPLANAR_PROFILE` is gone; `planar(layer)` stays as a
+  fact.
+- **Overlap.** Several instances of one chunk covering the same cell are all kept: they are
+  separate source surfaces (for example a river layer above a lake). `MULTILAYER` is gone. Two
+  layers at one height cannot blend twice: the water pass uses strict reversed depth with depth
+  writes.
+- **Caps.** One owner now holds a whole root: 1024 layers (256 chunk headers x 4 instances),
+  16,384 cells and 82,944 height samples. A full-tile owner is about 1.3 MB of heap; two credits
+  remain the limit.
+- **Packet and GPU budget unchanged.** The bridge copies a full chunk (8 x 8 cells) whose used
+  heights are all equal as one quad over the chunk, which draws the same plane. Open sea then
+  costs 256 quads per tile instead of 16,384 cells. The trailer stays at 8192 quads and the
+  renderer at 16,384 water triangles per slot, so #276's 26-slot terrain budget does not grow.
+  Layers are copied whole in source order; a layer that would pass 8192 quads is left out and
+  the tile's water note says "capped". `MAX_WATER_LAYERS` (a count in the trailer header) grows
+  from 128 to 1024.
+- **Still declined.** Layers of another vertex format (LVF 1 and 3: every magma, slime, fel and
+  tar type in this build) stay unsupported. Because their vertex stream length is not
+  qualified yet, a tile with one of them still declines all its water (`UNRESOLVED_FOOTPRINT`).
+  Every LiquidType whose material qualifies (LVF 0, materials 1 and 130) is a water type
+  (SoundBank 0 or 1), so the teal diagnostic never paints lava as water.
+
+| real data, actual Source | before | after |
+| --- | --- | --- |
+| Zephras Isle (map 2991), 16 tiles with MH2O: layers drawn | 717 of 764 | 764 of 764 |
+| Zephras Isle: source cells / copied quads | 29,795 / 29,795 | 31,654 / 15,085 |
+| Elwynn and its coast (map 0, x 46–51, y 28–37), 47 tiles: tiles with water | 34 | 44 |
+| Elwynn: layers drawn | 1,580 of 3,668 | 3,556 of 3,668 |
+| Elwynn: source cells / copied quads | 83,798 / 83,798 | 176,780 / 56,450 |
+| Largest tile (cells before, quads after; bound 8192) | 8,192, capped | 4,711 |
+
+The three Elwynn tiles still without water carry Slow Magma (LiquidType 7, LVF 1).
+
+## Layers without vertex heights (#171)
+
+Layers that carry no per-vertex height are now decoded generally:
+
+- **No vertex data** (`vertexOffset` 0): every vertex takes the instance's declared height, when
+  the declared minimum and maximum are one value (signed zeros are equal). Depths are 0. A declared
+  range gives no per-vertex height and stays a stated refusal (`VERTEX_ABSENT`).
+- **Depth-only streams (LVF 2):** the stream holds one depth byte per vertex. Heights come from the
+  declared height the same way. A direct format-2 stream's length is now known, so it is reserved
+  in the overlap checks like format 0.
+- **LiquidType 2** with a LiquidObject is depth-only. This matches the established extractor
+  convention: a secondary value below 42 is the vertex format itself, LiquidType 2 is depth-only
+  without a table lookup, and any other type takes its LiquidType → LiquidMaterial LVF. When this
+  source's own LiquidType row 2 resolves another format, the owner records the disagreement in
+  `issues()` instead of obeying or hiding it.
+- **Water formats:** formats 0 and 2 are water. Formats 1 and 3 (magma, slime) stay unsupported.
+- **Height rule:** the extractor convention places depth-only and no-vertex layers at height 0.
+  The declared-height rule agrees with it whenever the declared height is 0. Another declared
+  level follows the source's own declaration, and the owner records an issue saying how many
+  layers departed from the convention.
+
+None of these occur in `wowf` 1.60.1: the earlier survey of all 591 Eastern Kingdoms tiles with
+MH2O found no layer without vertex data and no LiquidType 2. Ocean there is LiquidType 1250
+through LiquidObject 42 with LVF 0 heights, which the sloped/whole-tile work above already draws.
+They are covered by authored tests only.
+
+The frame probe was rerun with the merged branch: an Elwynn river tile around a 1.69-yard slope
+rendered three of four headings with water on every resident tile. The fourth heading produced
+no frame within its window, which is a probe settle issue to retry on the measurement open.
+
+### Refusal per instance, known formats and visible issues
+
+- **One bad instance is refused alone.** A stream that overlaps a table, a bitmap or another
+  stream, or a used height outside its declared bounds, refuses that instance (both instances of an
+  overlapping pair). The rest of the tile still draws (PARTIAL, reason MALFORMED). Read-time
+  structure errors (headers, instance tables, attributes, bitmaps, direct format-0 streams) still
+  make the root MALFORMED.
+- **Formats 1 and 3 have known lengths** (8 and 9 bytes per vertex), so magma and slime instances
+  are overlap- and bounds-checked and stated UNSUPPORTED_LAYOUT. They no longer hide the tile's
+  water as UNRESOLVED_FOOTPRINT. Only an unknown format still does.
+- **Issues are visible.** `WorldWaterPreview.Facts.issues()` carries the owner's notes: refused
+  instances, a disagreeing LiquidType row 2, and declared levels other than 0. The bridge appends
+  them to the tile's water note, and the World summary reports "water source notes on N tiles"
+  with the first note.
+- **Coplanar layers can still blend twice.** Strict reversed depth stops two coincident
+  triangles from blending twice only when their depths are equal to the bit. Two source layers
+  at almost the same height, or a merged whole-chunk quad over a cell-by-cell layer at one height,
+  can rasterize to slightly different depths and blend twice in places. This hasn't been seen in
+  frames yet; it is a known risk for the appearance slice.

@@ -37,6 +37,16 @@ Admitted (everything else is counted as unsupported, never guessed):
   name block are unsupported, because their texture words are name offsets.
 - Groups: only groups whose MOGP flags carry exterior `0x8` and not interior `0x2000`.
   Interior-only groups, portals and BSP are not evaluated; walking inside is not a claim.
+  On instance maps (#280) interior groups are drawn too, as a last pass after every exterior,
+  MDDF doodad and set doodad of the tile has been admitted: interiors use only the draw,
+  mesh, geometry and image budgets left over, so they never cap or displace an exterior or a
+  doodad. An interior-only root takes building slots only if they are still free (interiors
+  lose every slot tie) and only once its first group is admitted, so it never pushes an
+  exterior's cutout or blended draws out. Interior images share the per-tile pixel pool with
+  exterior images and can lower their texture levels, but never drop an exterior image. An
+  interior-only root none of whose groups fit is removed with its doodads; its set doodads
+  are placed only after its interiors are admitted. A group that does not fit is counted
+  as a capped interior group.
 - Batches: plain material-byte batches (MOBA flags 0) whose material has blend mode 0
   (opaque) and a nonzero texture1 FileDataID. Other blend modes (alpha key, blended glass,
   additive) are unsupported batches. Unlike `WorldBasicWmo`, material shader IDs other than

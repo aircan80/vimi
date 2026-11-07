@@ -7,6 +7,7 @@ import com.vibeminer.rendering.world.TerrainCamera;
 import com.vibeminer.rendering.world.TerrainGeometryFingerprint;
 import com.vibeminer.rendering.world.TerrainScene;
 import java.awt.image.BufferedImage;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -50,15 +51,21 @@ public final class WorldStreamNativeProof {
     }
 
     static long camera = 1, sequence;
+
+    /** A splat trailer the next textured {@link #prepare} appends (splat upload proof). */
+    static volatile WorldStreamTileFile.Splat splatForNextPrepare;
+
     private static int framesDuringUploads;
 
     /**
-     * Packed input of one fixture tile: 65536 terrain triangles without water plus the atlas mip
-     * chain (4,543,828 bytes). The worst case with water is
+     * Packed input of one fixture tile: its indexed mesh (37120 vertices, 196608 u16 indices)
+     * without water plus the atlas mip chain (2,385,236 bytes). The worst case with water is
      * WorldStreamPackedTile.MAX_PAYLOAD_BYTES.
      */
     static final long TERRAIN_FIXTURE_BYTES =
-            65536L * WorldStreamPackedTile.INSTANCE_BYTES + WorldStreamAtlasMips.CHAIN_BYTES;
+            37120L * WorldStreamPackedTile.VERTEX_BYTES
+                    + 196608L * 2
+                    + WorldStreamAtlasMips.CHAIN_BYTES;
 
     private WorldStreamNativeProof() {}
 
@@ -115,6 +122,21 @@ public final class WorldStreamNativeProof {
             int red,
             boolean textured)
             throws Exception {
+        return prepare(nonce, directory, tx, lease, x, y, red, textured, null);
+    }
+
+    /** As above, with optional static water appended to the tile file. */
+    static WorldStreamPackedTile prepare(
+            WorldStreamState.Nonce nonce,
+            Path directory,
+            long tx,
+            WorldStreamState.Lease lease,
+            int x,
+            int y,
+            int red,
+            boolean textured,
+            WorldStreamTileFile.Water water)
+            throws Exception {
         require(
                 !Thread.currentThread().getName().equals("main"),
                 "Packing must be off native owner");
@@ -169,6 +191,26 @@ public final class WorldStreamNativeProof {
             atlas = atlas.asReadOnlyBuffer();
         }
         var receipt = WorldStreamTileFile.write(directory, header, tile, atlas, () -> false);
+        var splat = splatForNextPrepare;
+        splatForNextPrepare = null;
+        if (splat != null && textured) {
+            receipt =
+                    WorldStreamTileFile.appendSplat(
+                            directory.resolve("tile-" + tx + ".wst"),
+                            receipt,
+                            header,
+                            splat,
+                            () -> false);
+        }
+        if (water != null) {
+            receipt =
+                    WorldStreamTileFile.appendWater(
+                            directory.resolve("tile-" + tx + ".wst"),
+                            receipt,
+                            header,
+                            water,
+                            () -> false);
+        }
         var input =
                 WorldStreamTileFile.read(
                         directory.resolve("tile-" + tx + ".wst"), receipt, () -> false);
@@ -193,6 +235,43 @@ public final class WorldStreamNativeProof {
                     }
                 },
                 worker);
+    }
+
+    /** Submits once in-flight readbacks have retired (a resize waits for them), bounded. */
+    private static boolean submitted(
+            WorldStreamNativeOwner owner, WorldStreamControl.Camera command) throws IOException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            if (owner.submit(command)) {
+                return true;
+            }
+            owner.advance();
+        }
+        return false;
+    }
+
+    private static WorldFrameFileV2.Frame frameAt(
+            WorldStreamNativeOwner owner,
+            WorldFrameFileV2 reader,
+            long policy,
+            int width,
+            int height,
+            long camera,
+            long content)
+            throws IOException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            owner.advance();
+            var frame =
+                    reader.readLatest(
+                            0,
+                            new WorldFrameFileV2.Barrier(
+                                    policy, width, height, camera, camera, content, content));
+            if (frame != null) {
+                return frame;
+            }
+        }
+        throw new AssertionError("No " + width + "x" + height + " frame");
     }
 
     static WorldStreamControl.Camera command(long revision, int width, int height, long policy) {
@@ -244,8 +323,12 @@ public final class WorldStreamNativeProof {
             WorldStreamNativeOwner owner, WorldFrameFileV2 reader, long content) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         // Reuse the same camera revision after COMMIT: standing-still content must produce a frame.
-        owner.submit(command(camera, WIDTH, HEIGHT, 1));
+        // A draw may be deferred (no free readback slot yet), like the session loop, retry it.
+        boolean submitted = owner.submit(command(camera, WIDTH, HEIGHT, 1));
         while (System.nanoTime() < deadline) {
+            if (!submitted) {
+                submitted = owner.submit(command(camera, WIDTH, HEIGHT, 1));
+            }
             owner.advance();
             var frame = read(reader, content, content);
             if (frame != null) {
@@ -392,6 +475,9 @@ public final class WorldStreamNativeProof {
                 owner.commit(2, 3, List.of(reusedLease));
                 color(accepted(owner, reader, 3), 60);
                 long content = 3, tx = 3;
+                // The ten slot meshes share bgfx's pooled backing buffers (issue #373); whatever
+                // their number, it never changes while tiles are replaced.
+                int backing = owner.stats().backingBuffers();
                 int incoming = 1;
                 for (int cycle = 0; cycle < 104; cycle++) {
                     var lease = new WorldStreamState.Lease(incoming, cycle + 2, cycle + 2);
@@ -414,8 +500,8 @@ public final class WorldStreamNativeProof {
                     var stats = owner.stats();
                     require(
                             stats.dynamicBuffers() == SESSION.slots()
-                                    && stats.backingBuffers()
-                                            == stats.contextBuffers() + SESSION.slots() + 1,
+                                    && stats.backingBuffers() == backing
+                                    && backing > stats.contextBuffers(),
                             "Fixed native buffer counts " + stats);
                     require(
                             stats.textures() == stats.contextTextures() + SESSION.slots() + 5,
@@ -432,7 +518,19 @@ public final class WorldStreamNativeProof {
                     require(ProcessHandle.current().pid() == pid, "Unexpected process replacement");
                 }
                 long drawnCamera = ++camera;
-                require(owner.submit(command(drawnCamera, 800, 500, 2)), "Resize submit");
+                int allocations = owner.reallocations();
+                int samplesBefore = owner.stats().msaaSamples();
+                require(
+                        submitted(owner, command(drawnCamera, 800, 500, 2)),
+                        "Resize submit after in-flight readbacks retire");
+                require(
+                        owner.reallocations() == allocations + 1
+                                && owner.targetWidth() == 1024
+                                && owner.targetHeight() == 512,
+                        "Grown target in 256 px steps: "
+                                + owner.targetWidth()
+                                + "x"
+                                + owner.targetHeight());
                 require(
                         !owner.submit(command(++camera, 800, 500, 2)),
                         "Two draws in one bgfx frame");
@@ -466,6 +564,87 @@ public final class WorldStreamNativeProof {
                     relabeled = true;
                 }
                 require(relabeled, "Same camera revision changed its view");
+                // Native resolution: the full shared cap, then back down (memory returned).
+                long resizePolicy = 2;
+                var nativeSizes = new StringBuilder();
+                var edges = new StringBuilder();
+                for (int[] size : new int[][] {{2560, 1600}, {1920, 1080}, {256, 256}}) {
+                    long drawn = ++camera;
+                    long epoch = ++resizePolicy;
+                    require(
+                            submitted(owner, command(drawn, size[0], size[1], epoch)),
+                            "Resize to " + size[0] + "x" + size[1]);
+                    var big = frameAt(owner, reader, epoch, size[0], size[1], drawn, content);
+                    require(
+                            big.pixels().remaining() == size[0] * size[1],
+                            "Native frame size " + size[0] + "x" + size[1]);
+                    int center = big.pixels().get(size[1] / 2 * size[0] + size[0] / 2);
+                    require(
+                            Math.abs((center >>> 16 & 255) - 83) <= 1,
+                            "Native-size pixels " + Integer.toHexString(center));
+                    // Edge rows: the crop must take the frame's own first and last rows, never
+                    // rows of the larger allocation beyond the view rect (cleared to black).
+                    int top = big.pixels().get(size[0] / 2);
+                    int bottom = big.pixels().get((size[1] - 1) * size[0] + size[0] / 2);
+                    int left = big.pixels().get(size[1] / 2 * size[0]);
+                    int right = big.pixels().get(size[1] / 2 * size[0] + size[0] - 1);
+                    for (int edge : new int[] {top, bottom, left, right}) {
+                        require(
+                                (edge & 0xffffff) != 0,
+                                "Edge pixel is drawn, not the cleared allocation: "
+                                        + Integer.toHexString(edge));
+                    }
+                    // First row is the sky gradient at that row's elevation (#407), last row the
+                    // terrain.
+                    float[] sky =
+                            WorldFog.STREAM.skyPixel(
+                                    CAMERA.pitch(),
+                                    TerrainCamera.focalPixels(size[0]),
+                                    size[0],
+                                    size[1],
+                                    size[0] / 2,
+                                    0);
+                    require(
+                            Math.abs((top >>> 16 & 255) - Math.round(sky[0])) <= 1
+                                    && Math.abs((top >>> 8 & 255) - Math.round(sky[1])) <= 1
+                                    && Math.abs((top & 255) - Math.round(sky[2])) <= 1,
+                            "Top row is the frame's own first row: "
+                                    + Integer.toHexString(top)
+                                    + " sky "
+                                    + java.util.Arrays.toString(sky));
+                    require(
+                            Math.abs((bottom >>> 16 & 255) - 83) <= 1,
+                            "Bottom row is the frame's own last row: "
+                                    + Integer.toHexString(bottom));
+                    edges.append(' ')
+                            .append(size[0])
+                            .append('x')
+                            .append(size[1])
+                            .append(":top=")
+                            .append(Integer.toHexString(top))
+                            .append(",bottom=")
+                            .append(Integer.toHexString(bottom));
+                    big.release();
+                    nativeSizes
+                            .append(' ')
+                            .append(size[0])
+                            .append('x')
+                            .append(size[1])
+                            .append("->")
+                            .append(owner.targetWidth())
+                            .append('x')
+                            .append(owner.targetHeight());
+                }
+                require(
+                        owner.targetWidth() == 256 && owner.targetHeight() == 256,
+                        "Shrunk target returns memory");
+                // MSAA is chosen once per device; every reallocation keeps it.
+                require(
+                        owner.stats().msaaSamples() == samplesBefore,
+                        "Reallocation kept "
+                                + samplesBefore
+                                + " samples: "
+                                + owner.stats().msaaSamples());
                 require(
                         framesDuringUploads > 20,
                         "Camera frames were starved during incremental uploads");
@@ -486,7 +665,7 @@ public final class WorldStreamNativeProof {
                 require(
                         closingUpload.retainedInputBytes() == TERRAIN_FIXTURE_BYTES,
                         "Closing upload owner");
-                owner.submit(command(++camera, 800, 500, 2));
+                owner.submit(command(++camera, 256, 256, resizePolicy));
                 owner.close();
                 require(
                         closingUpload.finished() && !closingUpload.successful(),
@@ -506,6 +685,18 @@ public final class WorldStreamNativeProof {
                                 + content
                                 + " framesDuringUploads="
                                 + framesDuringUploads
+                                + " nativeSizes="
+                                + nativeSizes.toString().strip()
+                                + " edges="
+                                + edges.toString().strip()
+                                + " readback="
+                                + (owner.stagingReadback() ? "staging" : "direct")
+                                + " meanPublishMicros="
+                                + owner.meanPublishNanos() / 1000
+                                + " reallocations="
+                                + owner.reallocations()
+                                + " samples="
+                                + samplesBefore
                                 + " stats="
                                 + finalStats);
             }

@@ -242,6 +242,7 @@ final class BlteChunks {
         if (encoded[0] != 'Z') {
             throw unsupported("Unsupported chunk mode");
         }
+        long started = FileDecodeTimings.start();
         Inflater inflater = new Inflater();
         try {
             inflater.setInput(encoded, 1, encoded.length - 1);
@@ -259,6 +260,7 @@ final class BlteChunks {
             if (at != size || extra != 0 || !inflater.finished() || inflater.getRemaining() != 0) {
                 throw invalid("Invalid, truncated or trailing zlib data");
             }
+            FileDecodeTimings.inflated(started, size);
             return result;
         } catch (DataFormatException e) {
             throw invalid("Invalid zlib data");

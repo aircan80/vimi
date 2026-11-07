@@ -31,7 +31,24 @@ public final class WorldObjectPicking {
     /** The hot pass's cutout alpha-test reference. */
     public static final float CUTOUT_REFERENCE = 0.5f;
 
-    public static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2;
+    public static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2, ADDITIVE = 3;
+
+    /**
+     * A range class is one of the kinds above, optionally with this flag for an unlit surface (MOMT
+     * F_UNLIT, #367). Unlit changes shading only, never what is hit.
+     */
+    public static final int UNLIT = 0x100;
+
+    /** The kind of a range class, without its flags. */
+    public static int kind(int rangeClass) {
+        return rangeClass & 0xff;
+    }
+
+    /** Whether a range class is a known kind with only known flags. */
+    public static boolean validClass(int rangeClass) {
+        return (rangeClass & ~(UNLIT | 0xff)) == 0 && kind(rangeClass) <= ADDITIVE;
+    }
+
     private static final int VERTEX_FLOATS = 8, PLACEMENT_DOUBLES = 13, RANGE_INTS = 4;
     private static final double EPSILON = 1e-12;
 
@@ -107,9 +124,10 @@ public final class WorldObjectPicking {
          * stream's {@code WorldStreamObjectsFile}): per model (first mesh, mesh count); per mesh
          * (first vertex, vertex count, first index, index count, first range, range count); per
          * range (mesh-relative first index, index count, image, class); per placement its model and
-         * 13 doubles (x, y, z, scale, row-major rotation); per image (width, height); 8 floats per
-         * vertex (position, normal, uv); mesh-relative u16 indices; RGBA8 pixels, one full mip
-         * chain per image of which only the top level is read. Positions, UVs and indices are
+         * 13 doubles (x, y, z, scale, row-major rotation); per image (width, height, {@link
+         * ObjectTextureFormats format}); 8 floats per vertex (position, normal, uv); mesh-relative
+         * u16 indices; image data, one full mip chain per image in its format, of which only the
+         * top level is read (and decoded, for compressed images). Positions, UVs and indices are
          * copied, and only the alpha of images that a cutout or blended range samples is kept.
          */
         public static Tile of(
@@ -132,31 +150,38 @@ public final class WorldObjectPicking {
             Objects.requireNonNull(indexData);
             Objects.requireNonNull(pixelData);
             int modelCount = modelTable.length / 2, meshCount = meshTable.length / 6;
-            int rangeCount = rangeTable.length / RANGE_INTS, imageCount = imageTable.length / 2;
+            int rangeCount = rangeTable.length / RANGE_INTS, imageCount = imageTable.length / 3;
             require(
                     modelTable.length % 2 == 0
                             && meshTable.length % 6 == 0
                             && rangeTable.length % RANGE_INTS == 0
-                            && imageTable.length % 2 == 0
+                            && imageTable.length % 3 == 0
                             && placementTable.length == placementModels.length * PLACEMENT_DOUBLES
                             && vertexData.length % VERTEX_FLOATS == 0,
                     "table shapes");
             var imageOffsets = new long[imageCount + 1];
             for (int i = 0; i < imageCount; i++) {
-                require(imageTable[i * 2] > 0 && imageTable[i * 2 + 1] > 0, "image size");
+                require(
+                        imageTable[i * 3] > 0
+                                && imageTable[i * 3 + 1] > 0
+                                && ObjectTextureFormats.valid(imageTable[i * 3 + 2]),
+                        "image size");
                 // Each image is its full packed mip chain; picking tests the top level.
                 imageOffsets[i + 1] =
                         imageOffsets[i]
-                                + 4L
-                                        * ObjectTextureMips.chainPixels(
-                                                imageTable[i * 2], imageTable[i * 2 + 1]);
+                                + ObjectTextureFormats.chainBytes(
+                                        imageTable[i * 3 + 2],
+                                        imageTable[i * 3],
+                                        imageTable[i * 3 + 1]);
             }
             require(imageOffsets[imageCount] == pixelData.length, "pixel data");
             var sampled = new boolean[imageCount];
             for (int r = 0; r < rangeCount; r++) {
-                int image = rangeTable[r * RANGE_INTS + 2], kind = rangeTable[r * RANGE_INTS + 3];
+                int image = rangeTable[r * RANGE_INTS + 2],
+                        rangeClass = rangeTable[r * RANGE_INTS + 3];
                 require(image >= 0 && image < imageCount, "range image");
-                require(kind >= OPAQUE && kind <= BLENDED, "range class");
+                require(validClass(rangeClass), "range class");
+                int kind = kind(rangeClass);
                 if (kind != OPAQUE) {
                     sampled[image] = true;
                 }
@@ -166,11 +191,23 @@ public final class WorldObjectPicking {
                 if (!sampled[i]) {
                     continue;
                 }
-                int count = imageTable[i * 2] * imageTable[i * 2 + 1];
-                var a = new byte[count];
+                int width = imageTable[i * 3], height = imageTable[i * 3 + 1];
+                int count = width * height;
+                byte[] top = pixelData;
                 int at = (int) imageOffsets[i] + 3;
+                if (ObjectTextureFormats.compressed(imageTable[i * 3 + 2])) {
+                    top =
+                            ObjectTextureFormats.decodeLevel(
+                                    imageTable[i * 3 + 2],
+                                    width,
+                                    height,
+                                    java.nio.ByteBuffer.wrap(pixelData),
+                                    (int) imageOffsets[i]);
+                    at = 3;
+                }
+                var a = new byte[count];
                 for (int p = 0; p < count; p++) {
-                    a[p] = pixelData[at + p * 4];
+                    a[p] = top[at + p * 4];
                 }
                 alpha[i] = a;
             }
@@ -259,6 +296,11 @@ public final class WorldObjectPicking {
                 }
                 require(placementTable[p * PLACEMENT_DOUBLES + 3] > 0, "scale");
             }
+            var sizes = new int[imageCount * 2];
+            for (int i = 0; i < imageCount; i++) {
+                sizes[i * 2] = imageTable[i * 3];
+                sizes[i * 2 + 1] = imageTable[i * 3 + 1];
+            }
             return new Tile(
                     modelTable.clone(),
                     meshRanges,
@@ -266,7 +308,7 @@ public final class WorldObjectPicking {
                     uvs,
                     indices,
                     rangeTable.clone(),
-                    imageTable.clone(),
+                    sizes,
                     alpha,
                     placementModels.clone(),
                     placementTable.clone(),
@@ -400,7 +442,8 @@ public final class WorldObjectPicking {
                 for (int r = firstRange; r < firstRange + tile.meshRanges[m * 2 + 1]; r++) {
                     int start = tile.ranges[r * RANGE_INTS];
                     int end = start + tile.ranges[r * RANGE_INTS + 1];
-                    int kind = tile.ranges[r * RANGE_INTS + 3];
+                    // Additive surfaces pick like blended ones: where their alpha is above zero.
+                    int kind = kind(tile.ranges[r * RANGE_INTS + 3]);
                     for (int i = start; i + 2 < end; i += 3) {
                         int a = idx[i] & 0xffff, b = idx[i + 1] & 0xffff, c = idx[i + 2] & 0xffff;
                         var bary = intersect(pos, a, b, c, local, bestT);
