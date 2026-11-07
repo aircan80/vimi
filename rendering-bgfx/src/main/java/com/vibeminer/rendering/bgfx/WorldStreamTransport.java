@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.world.TerrainCamera;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -521,6 +522,8 @@ public final class WorldStreamTransport {
         private volatile boolean stop;
         private volatile WorldStreamProducerCancellation.Producer cancellation;
         private boolean produced, offerOutstanding, cancelOutstanding;
+        // Opt-in hand-off stamps (-Dvimi.world.stageTimings); 0 while timings are off.
+        private volatile long reservedAt, producedAt, producerStartedAt, offeredAt, consumedAt;
         // Guarded by the session lock: the capacity revision when this reservation was issued and
         // the capacity changes it made itself before its result completed (#283).
         private long issuedCapacity;
@@ -1543,6 +1546,7 @@ public final class WorldStreamTransport {
                 previousTile = tile;
                 tile = new TileReservation(this, reserved);
                 tile.issuedCapacity = capacityRevision;
+                tile.reservedAt = WorldStageTimings.start();
                 return java.util.Optional.of(tile);
             }
         }
@@ -1555,6 +1559,9 @@ public final class WorldStreamTransport {
                 }
                 state.beginProducer(reservation.ticket);
                 reservation.produced = true;
+                reservation.producedAt =
+                        WorldStageTimings.lap(
+                                "handoff.parent.reserveToProduce", reservation.reservedAt);
                 enqueueFile(() -> produceFile(reservation, producer));
             }
             return reservation.settled.copy();
@@ -1692,6 +1699,9 @@ public final class WorldStreamTransport {
         }
 
         private void produceFile(TileReservation reservation, PacketProducer producer) {
+            reservation.producerStartedAt =
+                    WorldStageTimings.lap(
+                            "handoff.parent.produceToProducerStart", reservation.producedAt);
             WorldStreamProducerCancellation.Producer lower;
             try {
                 lower = cancellation.begin();
@@ -1800,6 +1810,10 @@ public final class WorldStreamTransport {
                                         packet.coverage,
                                         packet.objects);
                         enqueueCommand(command);
+                        reservation.offeredAt =
+                                WorldStageTimings.lap(
+                                        "handoff.parent.producerRunToOffer",
+                                        reservation.producerStartedAt);
                         packet = null;
                         published = true;
                     }
@@ -2111,6 +2125,10 @@ public final class WorldStreamTransport {
                         }
                         case INPUT_TILE -> {
                             var current = reservationFor(transaction(message));
+                            current.consumedAt =
+                                    WorldStageTimings.lap(
+                                            "handoff.parent.offerToInputConsumed",
+                                            current.offeredAt);
                             enqueueFile(
                                     () -> {
                                         WorldStreamPacketFile.Moved owned;
@@ -2133,6 +2151,8 @@ public final class WorldStreamTransport {
                         }
                         case STAGED -> {
                             TileReservation current = reservationFor(transaction(message));
+                            WorldStageTimings.lap(
+                                    "handoff.parent.inputConsumedToStaged", current.consumedAt);
                             synchronized (lock) {
                                 if (!current.offerOutstanding) {
                                     throw new IllegalStateException("Missing offer command credit");

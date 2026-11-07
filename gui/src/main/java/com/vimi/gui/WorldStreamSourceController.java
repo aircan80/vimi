@@ -228,6 +228,9 @@ final class WorldStreamSourceController {
     private Presentation queued, borrowed;
     // Opt-in measurement only: when the current receipt was applied, 0 while timings are off.
     private long committedAt;
+    // Opt-in hand-off stamps (worker-owned); 0 while timings are off.
+    private volatile long resultAt;
+    private long resultSeenAt, commitDoneAt;
     private boolean validated;
     // Worker owns every source/transport owner below. FX sees only immutable table aliases under
     // lock.
@@ -815,6 +818,8 @@ final class WorldStreamSourceController {
                     helperRetryAt.remove(key(pending.tile));
                     if(creditTarget!=null && same(creditTarget,pending.tile)) creditTarget=null;
                     staged = new Entry(resident, prepared);
+                    resultSeenAt = WorldStageTimings.lap(
+                            "handoff.controller.resultToSeen", resultAt);
                     entries.put(resident, staged);
                     seed(prepared);
                 } catch (CompletionException failure) {
@@ -933,6 +938,7 @@ final class WorldStreamSourceController {
                 publish(Phase.WAITING_CAPACITY,"Waiting for commit input retirement");
                 return;
             }
+            commitDoneAt = WorldStageTimings.start();
             synchronized (lock) {
                 current = committing;
                 currentReceipt = receipt;
@@ -965,6 +971,11 @@ final class WorldStreamSourceController {
             }
             target.add(staged);
             staged = null;
+            if (resultSeenAt != 0L) {
+                WorldStageTimings.lap(
+                        "handoff.controller.resultSeenToCommitIssued", resultSeenAt);
+                resultSeenAt = 0L;
+            }
             committing = List.copyOf(target);
             commit =
                     issueCommit(
@@ -1100,9 +1111,15 @@ final class WorldStreamSourceController {
             pending.issuedGeometry = source.geometryReleaseRevision();
             long producing = WorldStageTimings.start();
             pending.result = pending.reservation.produce(pending.producer);
+            if (commitDoneAt != 0L) {
+                WorldStageTimings.lap(
+                        "handoff.controller.commitDoneToNextReserve", commitDoneAt);
+                commitDoneAt = 0L;
+            }
             pending.result.whenComplete((ignored, failure) -> {
                 WorldStageTimings.stop(failure == null ? "parent.tile.produceToStaged"
                         : "parent.tile.produceFailed", producing);
+                resultAt = WorldStageTimings.start();
                 kick();
             });
             publish(Phase.PREPARING, "Preparing terrain, textures and upload");
