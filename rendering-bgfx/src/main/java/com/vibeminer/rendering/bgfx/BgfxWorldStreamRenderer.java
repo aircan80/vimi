@@ -1469,7 +1469,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      */
     private void drawHorizon(MemoryStack stack) {
         var ranges = horizonRanges;
-        if (ranges == null || horizon.failed()) {
+        if (!horizonDrawn()) {
             frameHorizonSubmits = 0;
             return;
         }
@@ -1488,10 +1488,28 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
     }
 
-    /** The fog and sky of the next frames; #177 feeds it from the light tables. */
+    /** Whether this frame draws the horizon: one is uploaded and its rebuilds have not failed. */
+    private boolean horizonDrawn() {
+        return horizon != null && horizonRanges != null && !horizon.failed();
+    }
+
+    /**
+     * The fog and sky of the next frames; #177 feeds it from the light tables. It is kept at full
+     * strength by its end ({@link WorldFog#fullAtCut()}), whatever maximum it arrives with.
+     */
     void fog(WorldFog value) {
         requireOwner();
-        fog = java.util.Objects.requireNonNull(value);
+        fog = java.util.Objects.requireNonNull(value).fullAtCut();
+    }
+
+    /**
+     * A frame's fog: the set fog at full strength by its end, reaching out to the horizon only when
+     * the horizon is drawn this frame (#372, option (a)). Before the first upload and after the
+     * horizon has failed, streamed terrain and objects keep their own fog range.
+     */
+    static WorldFog frameFog(WorldFog fog, boolean horizonDrawn) {
+        var full = fog.fullAtCut();
+        return horizonDrawn ? full.withHorizon(WorldStreamHorizon.FOG_END) : full;
     }
 
     /** The sample count of the target the owner created; above 1 enables alpha to coverage. */
@@ -1760,11 +1778,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         bgfx_set_view_rect(0, 0, 0, width, height);
         bgfx_set_view_mode(0, BGFX_VIEW_MODE_SEQUENTIAL);
         bgfx_set_view_clear(0, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x000000ff, 0, 0);
-        // With a horizon, one fog range reaches out to it for every pass (#372, option (a)).
-        var fog = horizon == null ? this.fog : this.fog.withHorizon(WorldStreamHorizon.FOG_END);
         if (horizon != null) {
             refreshHorizon(camera);
         }
+        // With a drawn horizon, one fog range reaches out to it for every pass (#372, option (a)).
+        var fog = frameFog(this.fog, horizonDrawn());
         try (var stack = MemoryStack.stackPush()) {
             var origin =
                     new TerrainScene.Origin(

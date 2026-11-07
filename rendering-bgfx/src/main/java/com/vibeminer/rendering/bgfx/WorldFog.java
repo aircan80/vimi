@@ -70,6 +70,9 @@ record WorldFog(
      * frame's CPU culling of streamed chunks and objects uses this cut too, so they are drawn out
      * to {@code horizonEnd}; past the streamed neighbourhood there is nothing of theirs to draw.
      *
+     * <p>The result always has {@code maximum} 1: nothing past the cut is discarded (the horizon is
+     * never cut, streamed terrain only by whole chunks), so fog alone must hide it completely.
+     *
      * <p>Callers must not rely on {@code end() == cut()} afterwards: #177's recorded fog may later
      * keep a shorter end with the cut at the horizon.
      */
@@ -79,8 +82,15 @@ record WorldFog(
         }
         // A longer recorded end or start (#177) is clamped to the horizon, never refused.
         float clampedStart = Math.min(start, Math.nextDown(horizonEnd));
-        return new WorldFog(
-                horizon, top, clampedStart, horizonEnd, maximum, horizonEnd, topElevation);
+        return new WorldFog(horizon, top, clampedStart, horizonEnd, 1, horizonEnd, topElevation);
+    }
+
+    /**
+     * This fog at full strength (maximum 1) by its end. The World stream renderer draws only this:
+     * geometry past the cut is not discarded, so a weaker maximum would show it against the sky.
+     */
+    WorldFog fullAtCut() {
+        return maximum == 1 ? this : new WorldFog(horizon, top, start, end, 1, cut, topElevation);
     }
 
     @Override
