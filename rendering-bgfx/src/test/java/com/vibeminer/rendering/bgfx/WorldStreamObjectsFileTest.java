@@ -826,8 +826,7 @@ final class WorldStreamObjectsFileTest {
         assertEquals(h, read.placements[8], 0);
         // An unknown class, a scaled matrix or a reflection is refused.
         // Modulate (4) and unknown flag bits stay refused: 0x400 alone and beside a known kind
-        // (0x200 is
-        // TWO_SIDED since version 6).
+        // (0x200 is TWO_SIDED since version 6).
         for (int unknown : new int[] {4, 0x400, WorldStreamObjectsFile.OPAQUE | 0x400}) {
             var badClass = WorldStreamTileWriter.Exterior.builder();
             badClass.image(1, 1, ByteBuffer.allocate(4));
