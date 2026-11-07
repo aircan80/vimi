@@ -86,10 +86,18 @@ final class WorldMinimaps {
         }
     }
 
-    /** Callers may turn a failed image into unavailable artwork, so the cause is logged here. */
+    /**
+     * Callers may turn a failed image into unavailable artwork, so the cause is logged here. The
+     * future is settled even if logging fails (likely under OutOfMemoryError): callers join it.
+     */
     private static void fail(CompletableFuture<WorldService.Minimap> result, Throwable failure) {
-        LOG.log(System.Logger.Level.ERROR, "Minimap artwork read failed", failure);
-        result.completeExceptionally(failure);
+        try {
+            LOG.log(System.Logger.Level.ERROR, "Minimap artwork read failed", failure);
+        } catch (Throwable logFailure) {
+            // A failing logger must not leave the request pending or kill the worker.
+        } finally {
+            result.completeExceptionally(failure);
+        }
     }
 
     private WorldService.Minimap read(WorldFormats.Tile tile, Cancellation token) {

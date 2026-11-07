@@ -194,6 +194,67 @@ class WorldMinimapsTest {
         }
     }
 
+    /** A logger that throws (as under OutOfMemoryError) must not leave the image pending. */
+    @Test
+    void failingLoggerStillSettlesTheFailedImage() throws Exception {
+        var logger = Logger.getLogger(WorldMinimaps.class.getName());
+        var handler =
+                new Handler() {
+                    @Override
+                    public void publish(LogRecord record) {
+                        throw new OutOfMemoryError("scripted logging failure");
+                    }
+
+                    @Override
+                    public void flush() {}
+
+                    @Override
+                    public void close() {}
+                };
+        boolean parents = logger.getUseParentHandlers();
+        logger.setUseParentHandlers(false);
+        logger.addHandler(handler);
+        try {
+            for (String stage : List.of("direct", "statContent")) {
+                var source = new Source();
+                source.failing = stage;
+                BuildFiles files =
+                        stage.equals("direct")
+                                ? (BuildFiles)
+                                        Proxy.newProxyInstance(
+                                                BuildFiles.class.getClassLoader(),
+                                                new Class<?>[] {BuildFiles.class},
+                                                (proxy, method, args) -> {
+                                                    throw source.error;
+                                                })
+                                : source.files();
+                var images = new WorldMinimaps(files);
+                try {
+                    var failure =
+                            assertThrows(
+                                    java.util.concurrent.ExecutionException.class,
+                                    () ->
+                                            images.image(tile(91), Cancellation.NONE)
+                                                    .get(10, java.util.concurrent.TimeUnit.SECONDS),
+                                    stage);
+                    assertSame(source.error, failure.getCause(), stage);
+                    // The worker survives: a second request is still served.
+                    assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () ->
+                                    images.image(tile(91), Cancellation.NONE)
+                                            .get(10, java.util.concurrent.TimeUnit.SECONDS),
+                            stage);
+                } finally {
+                    images.closeAsync().get(10, java.util.concurrent.TimeUnit.SECONDS);
+                }
+            }
+        } finally {
+            logger.removeHandler(handler);
+            logger.setUseParentHandlers(parents);
+        }
+    }
+
     private static WorldFormats.Tile tile(long fid) {
         return new WorldFormats.Tile(17, 23, 0, 0, fid);
     }
