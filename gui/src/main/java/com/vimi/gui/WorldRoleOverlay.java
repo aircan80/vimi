@@ -128,6 +128,15 @@ final class WorldRoleOverlay implements AutoCloseable {
         controls.getChildren().addAll(faction, activity, status);
     }
 
+    /**
+     * What {@link #paint} depends on besides the view: the source key and the shown layers. A
+     * minimap that skips repaints for an unchanged view still repaints when this changes.
+     */
+    Object paintKey() {
+        var layers = layers();
+        return closed || layers.isEmpty() ? layers : java.util.Arrays.asList(key.get(), layers);
+    }
+
     /** The minimap's repaint; set once by the minimap that draws this overlay. */
     void bindRedraw(Runnable value) {
         redraw = Objects.requireNonNull(value);
@@ -229,6 +238,20 @@ final class WorldRoleOverlay implements AutoCloseable {
         drawn = List.copyOf(shown);
         grid = new MapRoleOverlay.HitGrid(hits);
         status.setText(summary(loaded, layers, filter, shown.size(), onMap, hidden));
+    }
+
+    /** The loaded role record of one NPC on the current map, or null (none loaded or listed). */
+    MapRoles.Npc npc(long npcId) {
+        if (loaded == null) return null;
+        for (var marker : loaded.world().markers())
+            if (marker.marker().npc().id() == npcId) return marker.marker().npc();
+        return null;
+    }
+
+    /** The nearest drawn marker under a minimap canvas point, or null. */
+    MapRoles.Marker markerAt(double x, double y) {
+        var near = grid.near(x, y);
+        return near.markers().isEmpty() || loaded == null ? null : near.markers().getFirst();
     }
 
     /** Hover text for the markers under a minimap canvas point, or null. */

@@ -1356,7 +1356,7 @@ final class GpuPreviewService {
         return List.copyOf(result);
     }
 
-    private static ArrayList<String> nativeCommand() {
+    static ArrayList<String> nativeCommand() { // package-private for tests
         var command = new ArrayList<String>();
         boolean windows =
                 System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT).contains("win");
@@ -1370,6 +1370,9 @@ final class GpuPreviewService {
         command.add("--enable-native-access=ALL-UNNAMED");
         // Debug frame verification (CRC32C, opaque alpha) must run on the writing side too.
         if (Boolean.getBoolean("vimi.frameVerify")) command.add("-Dvimi.frameVerify=true");
+        // Diagnostic comparison of the World readback paths (#370): the helper reads it.
+        if (Boolean.getBoolean("vimi.world.readbackStaging"))
+            command.add("-Dvimi.world.readbackStaging=true");
         command.add("-cp");
         command.add(System.getProperty("java.class.path"));
         command.add("com.vibeminer.rendering.bgfx.GpuViewerMain");

@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 /**
@@ -22,7 +23,10 @@ final class WorldGeometryCache {
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
     private int constructing;
     private volatile boolean closed;
-    private boolean preparing;
+    private boolean preparing, contended;
+    // Bumped whenever the construction lane or an output credit is released (#304).
+    private volatile long releases;
+    private final CopyOnWriteArrayList<Runnable> releaseListeners = new CopyOnWriteArrayList<>();
 
     private record RootProof(
             long id,
@@ -192,6 +196,7 @@ final class WorldGeometryCache {
         synchronized (this) {
             checkOpen();
             if (preparing) {
+                contended = true;
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.GEOMETRY_CREDIT);
             }
             preparing = true;
@@ -199,14 +204,28 @@ final class WorldGeometryCache {
         try {
             return prepareOwned(admission);
         } finally {
-            boolean finish;
-            synchronized (this) {
-                preparing = false;
-                finish = isDrained();
-            }
-            if (finish) {
-                drained.complete(null);
-            }
+            endPreparation();
+        }
+    }
+
+    /**
+     * Frees the construction lane. It counts as a release only if another preparation was turned
+     * away while it was busy: a caller's own refused attempt must not wake its own wait (#304).
+     * Package-private so test pressure that holds the lane frees it the same way.
+     */
+    void endPreparation() {
+        boolean finish, wake;
+        synchronized (this) {
+            preparing = false;
+            wake = contended;
+            contended = false;
+            finish = isDrained();
+        }
+        if (wake) {
+            released();
+        }
+        if (finish) {
+            drained.complete(null);
         }
     }
 
@@ -402,6 +421,7 @@ final class WorldGeometryCache {
             }
             finish = isDrained();
         }
+        released();
         if (finish) {
             drained.complete(null);
         }
@@ -454,6 +474,30 @@ final class WorldGeometryCache {
             drained.complete(null);
         }
         return drained.copy();
+    }
+
+    /**
+     * Revision of releases of the construction lane and of output credits. A GEOMETRY_CREDIT
+     * refusal can only clear after it moves, so a waiter compares it instead of polling.
+     */
+    long releaseRevision() {
+        return releases;
+    }
+
+    /** Runs {@code listener} after each release, outside the cache lock; close to remove. */
+    AutoCloseable onRelease(Runnable listener) {
+        Objects.requireNonNull(listener);
+        releaseListeners.add(listener);
+        return () -> releaseListeners.remove(listener);
+    }
+
+    private void released() {
+        synchronized (this) {
+            releases++;
+        }
+        for (var listener : releaseListeners) {
+            listener.run();
+        }
     }
 
     private boolean isDrained() {

@@ -129,7 +129,16 @@ class WorldStreamTransportSplatTest {
                                 resident.set(session.splatResident());
                                 throw new java.io.IOException("Authored producer failure");
                             });
+            // A caller reacting to the failure at once (on the completing thread) must already
+            // see the layers forgotten: the result is observable only after its bookkeeping, so
+            // no next tile can bind a layer that is about to be discarded.
+            var seenOnFailure = new AtomicReference<Integer>();
+            var reacted =
+                    produced.whenComplete(
+                            (ignored, failure) -> seenOnFailure.set(session.splatResident()));
             assertThrows(ExecutionException.class, () -> produced.get(5, TimeUnit.SECONDS));
+            assertThrows(ExecutionException.class, () -> reacted.get(5, TimeUnit.SECONDS));
+            assertEquals(0, seenOnFailure.get(), "Forgotten before the failure is observable");
             var binding = bindings.get();
             assertEquals(WorldStreamTileFile.MAX_SPLAT_LAYERS, binding.uploads().size());
             assertEquals(-1, binding.layers()[16], "Beyond the per-packet cap: keeps the atlas");

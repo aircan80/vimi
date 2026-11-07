@@ -86,15 +86,16 @@ public final class WorldStreamSplatUploadProof {
             require(!owner.splatted(1), "A packet without splat inputs uploads as before");
             owner.commit(1, 2, List.of(splatted, plain));
             long revision = ++cameraRevision;
-            owner.submit(
+            var camera =
                     new WorldStreamControl.Camera(
-                            NONCE,
-                            revision,
-                            1,
-                            256,
-                            256,
-                            new TerrainCamera(-100, -10, 50, 0, -.6)));
+                            NONCE, revision, 1, 256, 256, new TerrainCamera(-100, -10, 50, 0, -.6));
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            // The owner refuses a draw while no readback slot is free (the upload's last frames
+            // may still be in flight): resubmit the same camera until it is drawn.
+            while (!owner.submit(camera)) {
+                owner.advance();
+                require(System.nanoTime() < deadline, "The final camera was never drawn");
+            }
             WorldFrameFileV2.Frame frame = null;
             long sequence = 0;
             while (frame == null && System.nanoTime() < deadline) {
