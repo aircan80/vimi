@@ -42,9 +42,13 @@ record WorldFog(
      * stream cut, or {@code horizonEnd} when the WDL horizon is drawn ({@code NaN} when not). With
      * the horizon the fog ends at the horizon where nothing is recorded, and a recorded end below
      * it is kept, so foggy zones stay foggy and fog stays full from there to the cut. The end never
-     * passes the cut. A null sky is the explorer's own.
+     * passes the cut. A null sky is the explorer's own. {@code horizonEnd} is finite and positive,
+     * or {@code NaN}.
      */
     static WorldFog sky(WorldStreamTransport.Sky sky, float horizonEnd) {
+        if (!Float.isNaN(horizonEnd) && !(Float.isFinite(horizonEnd) && horizonEnd > 0)) {
+            throw new IllegalArgumentException("World horizon fog end");
+        }
         var value = sky == null ? WorldStreamTransport.Sky.EXPLORER : sky;
         boolean horizon = !Float.isNaN(horizonEnd);
         float cut = horizon ? horizonEnd : STREAM.cut();
@@ -140,7 +144,11 @@ record WorldFog(
         return new float[] {horizon[0], horizon[1], horizon[2], topElevation};
     }
 
-    /** The sky top uniform (u_worldSkyTop, u_wmoSkyTop, u_skyTop). */
+    /**
+     * The sky top uniform (u_worldSkyTop, u_wmoSkyTop, u_skyTop), with w zero. The renderer sets
+     * u_wmoSkyTop.w itself: it is the WMO vertex colour switch (#375), so no other value may use
+     * it.
+     */
     float[] topUniform() {
         return new float[] {top[0], top[1], top[2], 0};
     }

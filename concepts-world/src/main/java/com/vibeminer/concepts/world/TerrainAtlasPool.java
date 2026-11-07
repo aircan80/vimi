@@ -135,7 +135,7 @@ public final class TerrainAtlasPool {
             if (atlas.retainedBytes() > ENTRY_BYTES
                     || atlas.supportedChunks() == 0
                     || (completeCacheKey != null
-                            && (atlas.supportedChunks() != 256 || !validKey(completeCacheKey)))) {
+                            && (!atlas.complete() || !validKey(completeCacheKey)))) {
                 throw new IllegalArgumentException("Invalid reserved atlas publication");
             }
             synchronized (TerrainAtlasPool.this) {

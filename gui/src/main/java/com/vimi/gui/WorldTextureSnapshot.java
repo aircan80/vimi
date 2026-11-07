@@ -16,13 +16,15 @@ final class WorldTextureSnapshot implements AutoCloseable {
     private record Entry(TerrainTextureBinding.Metadata metadata, TerrainAtlasPool.Lease lease) {}
 
     private final TerrainScene scene;
-    private final int coveredChunks;
+    private final int coveredChunks, emptyChunks;
     private List<Entry> entries;
 
-    private WorldTextureSnapshot(TerrainScene scene, List<Entry> entries, int coveredChunks) {
+    private WorldTextureSnapshot(
+            TerrainScene scene, List<Entry> entries, int coveredChunks, int emptyChunks) {
         this.scene = scene;
         this.entries = List.copyOf(entries);
         this.coveredChunks = coveredChunks;
+        this.emptyChunks = emptyChunks;
     }
 
     /** Preparation worker only. Consumes and closes the batch even on cancellation or rejection. */
@@ -31,7 +33,7 @@ final class WorldTextureSnapshot implements AutoCloseable {
             BooleanSupplier canceled) {
         Objects.requireNonNull(batch);
         var entries = new ArrayList<Entry>();
-        int covered = 0;
+        int covered = 0, empty = 0;
         try (batch) {
             Objects.requireNonNull(scene);
             Objects.requireNonNull(canceled);
@@ -58,6 +60,7 @@ final class WorldTextureSnapshot implements AutoCloseable {
                     check(canceled);
                     entries.add(new Entry(metadata[0], lease));
                     covered += result.supportedChunks();
+                    empty += metadata[0].emptyRectangles();
                     accepted = true;
                 } catch (IllegalArgumentException unsupportedBinding) {
                     // This geometry cannot safely use the basic uniform mapping; keep height shading.
@@ -66,7 +69,7 @@ final class WorldTextureSnapshot implements AutoCloseable {
                 }
             }
             check(canceled);
-            return new WorldTextureSnapshot(scene, entries, covered);
+            return new WorldTextureSnapshot(scene, entries, covered, empty);
         } catch (RuntimeException | Error failure) {
             for (var entry : entries) entry.lease().close();
             throw failure;
@@ -76,7 +79,8 @@ final class WorldTextureSnapshot implements AutoCloseable {
     TerrainScene scene() { return scene; }
     int coveredChunks() { return coveredChunks; }
     synchronized int atlasCount() { requireOpen(); return entries.size(); }
-    int totalChunks() { return scene.tiles().size() * 256; }
+    /** Drawable chunks: every scene chunk except those with no texture layers. */
+    int totalChunks() { return scene.tiles().size() * 256 - emptyChunks; }
 
     /** Own a separate claim before queuing asynchronous work. No pixel view escapes. */
     synchronized WorldTextureSnapshot retain() {
@@ -86,7 +90,7 @@ final class WorldTextureSnapshot implements AutoCloseable {
             for (var entry : entries) {
                 retained.add(new Entry(entry.metadata(), entry.lease().retain()));
             }
-            return new WorldTextureSnapshot(scene, retained, coveredChunks);
+            return new WorldTextureSnapshot(scene, retained, coveredChunks, emptyChunks);
         } catch (RuntimeException | Error failure) {
             for (var entry : retained) entry.lease().close();
             throw failure;
