@@ -76,11 +76,13 @@ final class WorldStreamAtlasMipsTest {
         assertEquals(
                 16, WorldStreamAtlasMips.STEPS.stream().filter(s -> s.get(0).level() == 0).count());
         // Worst-case geometry tickets plus atlas references fit the 64 release tickets.
+        // Vertex and index sections are sliced separately: at most one extra partial slice.
         int geometryTickets =
                 (WorldStreamPackedTile.MAX_GEOMETRY_BYTES
-                                + BgfxWorldStreamRenderer.GEOMETRY_CHUNK
-                                - 1)
-                        / BgfxWorldStreamRenderer.GEOMETRY_CHUNK;
+                                        + BgfxWorldStreamRenderer.GEOMETRY_CHUNK
+                                        - 1)
+                                / BgfxWorldStreamRenderer.GEOMETRY_CHUNK
+                        + 1;
         assertEquals(21, referenced);
         assertTrue(geometryTickets + referenced <= BgfxWorldStreamRenderer.MAX_TICKETS);
         // A step adds at most one atlas step to two geometry chunks: the 256 KiB slice bound.

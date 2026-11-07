@@ -31,16 +31,26 @@ final class RaceAppearancePlan {
         }
     }
 
+    /** A texture plan; {@code npc} marks a humanoid NPC's, which is drawn whole or not at all. */
     record Plan(
             List<Canvas> canvases,
             List<Layer> layers,
             List<Item> items,
-            RaceAppearanceProfiles.Profile profile) {
+            RaceAppearanceProfiles.Profile profile,
+            boolean npc) {
         Plan {
             canvases = List.copyOf(canvases);
             layers = List.copyOf(layers);
             items = List.copyOf(items);
             java.util.Objects.requireNonNull(profile, "profile");
+        }
+
+        Plan(
+                List<Canvas> canvases,
+                List<Layer> layers,
+                List<Item> items,
+                RaceAppearanceProfiles.Profile profile) {
+            this(canvases, layers, items, profile, false);
         }
     }
 
@@ -95,6 +105,84 @@ final class RaceAppearancePlan {
             Cancellation token,
             List<String> issues,
             RaceCustomization.Selection sample) {
+        return build(raceId, classId, variant, token, issues, sample, null);
+    }
+
+    /**
+     * What a humanoid NPC wears instead of a starting loadout (#385): its slot items and its
+     * pre-baked body texture, which replaces every body (type 1) layer.
+     */
+    record Npc(List<RaceNpcs.Item> items, long bakeFileDataId) {
+        Npc {
+            items = List.copyOf(items);
+        }
+    }
+
+    /**
+     * {@code NPCModelItemSlotDisplayInfo.ItemSlot} to item InventoryType, by the order wowdev lists
+     * {@code CreatureDisplayInfoExtra}'s former inline NPC item columns (wowdev
+     * DB/CreatureDisplayInfoExtra, Wrath columns 9 to 19: Helm, Shoulder, Shirt, Cuirass, Belt,
+     * Legs, Boots, Wrist, Gloves, Tabard, Cape); "In Legion+ NPC armor has been moved to
+     * DB/NpcModelItemSlotDisplayInfo.db2". Not documented for the slot table itself: to be checked
+     * on real data before NPCs draw (#385). Slots past the table (held items) are attachments.
+     */
+    static final int[] NPC_SLOT_INVENTORY = {1, 3, 4, 5, 6, 7, 8, 9, 10, 19, 16};
+
+    /**
+     * Largest side of an NPC's texture canvases and decoded images (#385 design budget: at most 256
+     * x 256 per NPC body), so a district of NPCs stays small. Canvases and layer rectangles are
+     * scaled down proportionally; texture coordinates are relative, so the mapping is unchanged.
+     */
+    static final int NPC_TEXTURE_SIDE = 256;
+
+    /** Item slots whose geometry is not drawn yet (cape 16, tabard 19): counted as omitted. */
+    static boolean undrawnNpcSlot(int inventory) {
+        return inventory == 16 || inventory == 19;
+    }
+
+    /**
+     * An NPC's items left undrawn: item models (helms, shoulders, held items), displays the build
+     * does not record, and slots not drawn yet ({@link #undrawnNpcSlot}).
+     */
+    record NpcOmissions(int attachments, int missing, int undrawn) {}
+
+    /**
+     * Counts what an NPC's items leave undrawn, independently of any remembered appearance: slots
+     * past {@link #NPC_SLOT_INVENTORY} (held items) and displays with item models are attachments,
+     * displays recorded as absent are missing, and capes and tabards are undrawn. A display that
+     * cannot be read now is unreadable ({@link RacesService.Unreadable}), never an omission.
+     */
+    NpcOmissions npcOmissions(Npc npc, Cancellation token, List<String> issues) {
+        var display = schema("ItemDisplayInfo", token, issues, "GeosetGroupOverride");
+        display.field("ModelResourcesID", true, 2);
+        int attachments = 0, missing = 0, undrawn = 0;
+        for (var item : npc.items()) {
+            token.check();
+            if (item.slot() >= NPC_SLOT_INVENTORY.length) {
+                attachments++;
+                continue;
+            }
+            var info = owner.row(display, item.itemDisplayInfoId(), token, issues);
+            if (info == null) {
+                missing++;
+            } else if (display.number(info, "ModelResourcesID[0]") != 0
+                    || display.number(info, "ModelResourcesID[1]") != 0) {
+                attachments++;
+            } else if (undrawnNpcSlot(NPC_SLOT_INVENTORY[item.slot()])) {
+                undrawn++;
+            }
+        }
+        return new NpcOmissions(attachments, missing, undrawn);
+    }
+
+    Plan build(
+            long raceId,
+            long classId,
+            RaceMediaTypes.Variant variant,
+            Cancellation token,
+            List<String> issues,
+            RaceCustomization.Selection sample,
+            Npc npc) {
         unsettled = false;
         if (sample != null) {
             sample.requireContext(media, raceId, classId, variant.chrModelId());
@@ -327,18 +415,52 @@ final class RaceAppearancePlan {
                 }
             }
         }
-        if (RaceAppearanceProfiles.nightElf(profile)
+        // An NPC's bake covers the whole body, so the selected base skin is not needed.
+        if (npc == null
+                && RaceAppearanceProfiles.nightElf(profile)
                 && recipe.stream().noneMatch(layer -> wholeBodyBase(layer, canvases))) {
             throw models.unsupported(
                     "Known eligible full base skin is unavailable for this preview");
         }
         var items = new ArrayList<Item>();
-        try {
-            clothing(
-                    raceId, classId, variant.sex(), layout, sections, recipe, items, token, issues);
-        } catch (RacesService.Projection unavailable) {
-            unsettled |= unavailable instanceof RacesService.Unreadable;
-            note(issues, "Starting clothing is partial: " + unavailable.getMessage());
+        if (npc != null) {
+            npcClothing(npc, items, token, issues);
+            // The client's pre-baked NPC texture already composites skin, face, underwear and
+            // armour: it is the whole body canvas, and no other body layer is drawn.
+            var body =
+                    canvases.stream()
+                            .filter(canvas -> canvas.type() == 1)
+                            .findFirst()
+                            .orElseThrow(() -> models.unsupported("No body texture canvas"));
+            recipe.removeIf(layer -> layer.type() == 1);
+            recipe.add(
+                    new Layer(
+                            1,
+                            npc.bakeFileDataId(),
+                            0,
+                            0,
+                            body.width(),
+                            body.height(),
+                            1,
+                            Integer.MIN_VALUE,
+                            "NPC bake #" + npc.bakeFileDataId()));
+            scaleForNpc(canvases, recipe);
+        } else {
+            try {
+                clothing(
+                        raceId,
+                        classId,
+                        variant.sex(),
+                        layout,
+                        sections,
+                        recipe,
+                        items,
+                        token,
+                        issues);
+            } catch (RacesService.Projection unavailable) {
+                unsettled |= unavailable instanceof RacesService.Unreadable;
+                note(issues, "Starting clothing is partial: " + unavailable.getMessage());
+            }
         }
         recipe.sort(
                 Comparator.comparingInt(Layer::order)
@@ -348,7 +470,106 @@ final class RaceAppearancePlan {
             throw new RacesService.Projection(
                     RaceTypes.State.UNSUPPORTED, "Texture recipe exceeds preview bounds.");
         }
-        return new Plan(canvases, recipe, items, profile);
+        return new Plan(canvases, recipe, items, profile, npc != null);
+    }
+
+    /**
+     * Scales every canvas wider or taller than {@link #NPC_TEXTURE_SIDE} down to it, keeping its
+     * aspect, and each of its layers' rectangles with it (outward to whole texels).
+     */
+    private static void scaleForNpc(List<Canvas> canvases, List<Layer> recipe) {
+        for (int c = 0; c < canvases.size(); c++) {
+            var canvas = canvases.get(c);
+            int side = Math.max(canvas.width(), canvas.height());
+            if (side <= NPC_TEXTURE_SIDE) {
+                continue;
+            }
+            int width = (int) Math.max(1, (long) canvas.width() * NPC_TEXTURE_SIDE / side);
+            int height = (int) Math.max(1, (long) canvas.height() * NPC_TEXTURE_SIDE / side);
+            canvases.set(c, new Canvas(canvas.type(), width, height));
+            for (int i = 0; i < recipe.size(); i++) {
+                var layer = recipe.get(i);
+                if (layer.type() != canvas.type()) {
+                    continue;
+                }
+                int x0 = (int) ((long) layer.x() * width / canvas.width());
+                int y0 = (int) ((long) layer.y() * height / canvas.height());
+                int x1 =
+                        (int)
+                                Math.min(
+                                        width,
+                                        Math.ceilDiv(
+                                                (long) (layer.x() + layer.width()) * width,
+                                                canvas.width()));
+                int y1 =
+                        (int)
+                                Math.min(
+                                        height,
+                                        Math.ceilDiv(
+                                                (long) (layer.y() + layer.height()) * height,
+                                                canvas.height()));
+                recipe.set(
+                        i,
+                        new Layer(
+                                layer.type(),
+                                layer.fileDataId(),
+                                Math.min(x0, width - 1),
+                                Math.min(y0, height - 1),
+                                Math.max(1, x1 - x0),
+                                Math.max(1, y1 - y0),
+                                layer.blend(),
+                                layer.order(),
+                                layer.source()));
+            }
+        }
+    }
+
+    /**
+     * The NPC's slot items as clothing geometry. Item models (a display with ModelResourcesID:
+     * helms, shoulders, held items) are counted as attachments and not drawn. Robes are never
+     * inferred from the slot: a chest whose display sets the robe group (GeosetGroup[2] above 0,
+     * which RaceClothingGeometry applies to group 13, the robe/kilt) is treated as a robe
+     * (InventoryType 20); any other chest as InventoryType 5. Capes and tabards are left out
+     * ({@link #undrawnNpcSlot}). A display that cannot be read now is unreadable, so the NPC is
+     * asked for again rather than drawn without it.
+     */
+    private void npcClothing(Npc npc, List<Item> items, Cancellation token, List<String> issues) {
+        var display = schema("ItemDisplayInfo", token, issues, "GeosetGroupOverride");
+        display.field("GeosetGroup", true, 6);
+        display.field("ModelResourcesID", true, 2);
+        for (var item : npc.items()) {
+            token.check();
+            if (item.slot() >= NPC_SLOT_INVENTORY.length) {
+                continue; // a held item: only its model, counted by npcOmissions
+            }
+            if (undrawnNpcSlot(NPC_SLOT_INVENTORY[item.slot()])) {
+                note(issues, "NPC capes and tabards are not drawn yet.");
+                continue;
+            }
+            var info = owner.row(display, item.itemDisplayInfoId(), token, issues);
+            if (info == null) {
+                note(issues, "Some NPC item displays are not recorded.");
+                continue;
+            }
+            var groups = new ArrayList<Integer>();
+            for (int n = 0; n < 6; n++) {
+                int value = integer(display, info, "GeosetGroup[" + n + "]");
+                if (value < 0 || value > 98) {
+                    throw display.unsupported("Clothing geoset variant exceeds reviewed bounds");
+                }
+                groups.add(value);
+            }
+            int inventory = NPC_SLOT_INVENTORY[item.slot()];
+            if (inventory == 5 && groups.get(2) > 0) {
+                inventory = 20; // the display itself sets the robe group
+            }
+            boolean simple = display.number(info, "GeosetGroupOverride") == 0;
+            if (!simple) {
+                note(issues, "Some NPC clothing geoset overrides are not evaluated.");
+            }
+            items.add(
+                    new Item(0, inventory, item.itemDisplayInfoId(), simple ? groups : List.of()));
+        }
     }
 
     static boolean wholeBodyBase(Layer layer, List<Canvas> canvases) {

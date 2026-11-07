@@ -9,6 +9,16 @@ public interface BuildRaces extends AutoCloseable {
 
     CompletableFuture<RaceTypes.Overview> overview(long raceId, Cancellation token);
 
+    /**
+     * A humanoid NPC's static appearance from its {@code CreatureDisplayInfoExtra} row (#385), or
+     * the stated reason it is refused.
+     */
+    default CompletableFuture<RaceNpcs.Appearance> npcAppearance(
+            long extendedDisplayInfoId, Cancellation token) {
+        return CompletableFuture.completedFuture(
+                RaceNpcs.Appearance.refused("NPC appearances are not provided by this source"));
+    }
+
     default CompletableFuture<RaceMediaTypes.Variants> modelVariants(
             long raceId, Cancellation token) {
         return CompletableFuture.completedFuture(

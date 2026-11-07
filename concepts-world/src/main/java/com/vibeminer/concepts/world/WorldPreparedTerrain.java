@@ -2,6 +2,7 @@ package com.vibeminer.concepts.world;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.world.WorldFormats;
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.world.TerrainScene;
 import com.vibeminer.rendering.world.TerrainTextureBinding;
 import java.util.ArrayList;
@@ -585,6 +586,7 @@ final class WorldPreparedTerrain {
         var owned = this.<R>reserve(scope);
         boolean transferred = false;
         Throwable primary = null;
+        long started = WorldStageTimings.start();
         try {
             var result =
                     scopes.withRecordedTile(
@@ -600,6 +602,8 @@ final class WorldPreparedTerrain {
             primary = failure;
             throw failure;
         } finally {
+            WorldStageTimings.stop(
+                    transferred ? "terrain.tile.total" : "terrain.tile.totalFailed", started);
             if (!transferred) {
                 owned.close();
             }
@@ -623,11 +627,16 @@ final class WorldPreparedTerrain {
         try {
             owned.check();
             owned.metadata = admission.metadata();
+            long geometry = WorldStageTimings.start();
             owned.attachGeometry(world.prepareGeometry(admission));
+            WorldStageTimings.stop("terrain.tile.geometry", geometry);
             owned.root = owned.geometry.rootBinding();
             owned.areas = owned.geometry.areas();
             owned.geometrySha256 = owned.geometry.fingerprint();
+            long material = WorldStageTimings.start();
             prepareMaterial(admission, owned);
+            WorldStageTimings.stop("terrain.tile.material", material);
+            long written = WorldStageTimings.start();
             owned.withPayload(
                     borrow ->
                             owned.attachWritten(
@@ -635,6 +644,7 @@ final class WorldPreparedTerrain {
                                             writer.writeUnadvertised(
                                                     borrow, admission.cancellation()),
                                             "Missing unadvertised output")));
+            WorldStageTimings.stop("terrain.tile.write", written);
             var result = new AdmissionResult<>(owned);
             returned = true;
             return result;
