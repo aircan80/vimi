@@ -178,10 +178,17 @@ public final class WorldExteriorObjects {
      * round by round, larger buildings first, so a tight budget lowers resolution instead of
      * dropping surfaces.
      */
-    static final int[] IMAGE_SIDES = {256, 128, 64, 32};
+    static final int[] IMAGE_SIDES = {512, 256, 128, 64, 32};
 
-    /** Doodad image sides: at most 128. */
-    static final int[] MODEL_IMAGE_SIDES = {128, 64, 32};
+    /** Doodad image sides. */
+    static final int[] MODEL_IMAGE_SIDES = {256, 128, 64, 32};
+
+    /**
+     * Largest side of a chain uploaded as RGBA8: 256 for buildings and their surfaces, 128 for
+     * doodads. The larger sides above are only for chains the session samples as blocks (#374),
+     * which cost a quarter (BC2, BC3) or an eighth (BC1) of the GPU bytes.
+     */
+    static final int RGBA_SIDE = 256, MODEL_RGBA_SIDE = 128;
 
     /** Images are first decoded at this side; the budget later picks the uploaded level. */
     static final int REGISTRATION_SIDE = 128;
@@ -456,7 +463,12 @@ public final class WorldExteriorObjects {
          * blended BC2/BC3, whose file records every level from the drawn one down to 1 x 1. They
          * also count in IMAGE_MIPS_FILE.
          */
-        IMAGE_BLOCKS
+        IMAGE_BLOCKS,
+        /**
+         * Chains allotted as sampled blocks whose blocks were not usable (issue #374): decoded to
+         * RGBA8 instead, at the largest level costing no more than the blocks were charged.
+         */
+        IMAGE_BLOCKS_FALLBACK
     }
 
     /** What a placement draws: an outdoor WMO, an MDDF doodad or a WMO doodad-set entry. */
@@ -754,6 +766,9 @@ public final class WorldExteriorObjects {
         private final RuntimeException modelFailure;
         private volatile boolean closed;
 
+        /** Compressed formats the session samples as blocks; the objects file charges them so. */
+        private final int compressedFormats;
+
         /** Most image source bytes its builder kept at once (#265); diagnostics and tests. */
         long retainedSourceBytes;
 
@@ -769,7 +784,9 @@ public final class WorldExteriorObjects {
                 List<Image> images,
                 int[] counts,
                 RuntimeException modelFailure,
-                ImageDetail detail) {
+                ImageDetail detail,
+                int compressedFormats) {
+            this.compressedFormats = compressedFormats;
             this.modelFailure = modelFailure;
             this.mapId = mapId;
             this.tileX = tileX;
@@ -788,7 +805,14 @@ public final class WorldExteriorObjects {
                 }
             }
             for (var image : this.images) {
-                p += image.width * image.height;
+                // Charged as uploaded: a chain the session samples as blocks at its stored bytes
+                // (in RGBA8 texel units), any other at its top level's texels.
+                p +=
+                        (compressedFormats & (1 << image.format)) != 0
+                                ? ObjectTextureFormats.chainBytes(
+                                                image.format, image.width, image.height)
+                                        / 4
+                                : image.width * image.height;
             }
             require(
                     this.placements.size() <= MAX_PLACEMENTS + MAX_DOODADS
@@ -905,6 +929,15 @@ public final class WorldExteriorObjects {
             return pixels;
         }
 
+        /**
+         * The compressed formats this set was charged for as blocks (bit per {@link
+         * ObjectTextureFormats} code): the objects file must be built with the same mask.
+         */
+        public int compressedFormats() {
+            check();
+            return compressedFormats;
+        }
+
         @Override
         public void close() {
             closed = true;
@@ -984,9 +1017,10 @@ public final class WorldExteriorObjects {
             ModelReader modelReader,
             ImageDetail detail,
             long retainLimit) {
-        return prepare(engine, scope, tile, token, modelReader, detail, retainLimit, false);
+        return prepare(engine, scope, tile, token, modelReader, detail, retainLimit, false, 0);
     }
 
+    /** As above, with {@code interiors} drawn too (dungeon and raid maps, #280). */
     static TileObjects prepare(
             WorldStreamScopes engine,
             WorldStreamScopes.Scope scope,
@@ -996,6 +1030,27 @@ public final class WorldExteriorObjects {
             ImageDetail detail,
             long retainLimit,
             boolean interiors) {
+        return prepare(engine, scope, tile, token, modelReader, detail, retainLimit, interiors, 0);
+    }
+
+    /**
+     * As above, for a session whose child samples {@code compressedFormats} as blocks (bit per
+     * {@link ObjectTextureFormats} code, issue #374): chains carried in those formats are charged
+     * their stored bytes and may take the larger sides.
+     */
+    static TileObjects prepare(
+            WorldStreamScopes engine,
+            WorldStreamScopes.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation token,
+            ModelReader modelReader,
+            ImageDetail detail,
+            long retainLimit,
+            boolean interiors,
+            int compressedFormats) {
+        if ((compressedFormats & ~0xE) != 0) {
+            throw new IllegalArgumentException("Compressed format mask");
+        }
         if (retainLimit < 0) {
             throw new IllegalArgumentException("Retained source bound");
         }
@@ -1013,7 +1068,13 @@ public final class WorldExteriorObjects {
                     WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
                     token,
                     admission ->
-                            new Builder(admission, modelReader, detail, retainLimit, interiors)
+                            new Builder(
+                                            admission,
+                                            modelReader,
+                                            detail,
+                                            retainLimit,
+                                            interiors,
+                                            compressedFormats)
                                     .build());
         } finally {
             WorldStageTimings.stop("objects.tile.total", started);
@@ -1107,6 +1168,9 @@ public final class WorldExteriorObjects {
 
         private final ImageDetail detail;
 
+        /** Compressed formats the session samples as blocks (bit per format code). */
+        private final int compressedFormats;
+
         /** Draw interior WMO groups too (dungeon and raid maps, #280). */
         private final boolean interiors;
 
@@ -1120,7 +1184,9 @@ public final class WorldExteriorObjects {
                 ModelReader modelReader,
                 ImageDetail detail,
                 long retainLimit,
-                boolean interiors) {
+                boolean interiors,
+                int compressedFormats) {
+            this.compressedFormats = compressedFormats;
             this.interiors = interiors;
             this.detail = detail;
             this.retainLimit = retainLimit;
@@ -1191,7 +1257,8 @@ public final class WorldExteriorObjects {
                             images,
                             counts,
                             modelFailure,
-                            detail);
+                            detail,
+                            compressedFormats);
             objects.retainedSourceBytes = peakRetainedSourceBytes;
             WorldStageTimings.stop("objects.phase.assembly", phase);
             objects.levelDecodes = levelDecodes;
@@ -2885,15 +2952,25 @@ public final class WorldExteriorObjects {
             if (declared.size() < levels) {
                 return -1;
             }
+            var taken = new ArrayList<long[]>();
             for (int k = 0; k < levels; k++) {
                 var mip = declared.get(k);
+                int bytes = ObjectTextureFormats.levelBytes(format, (int) width, (int) height, k);
+                // As blockChain will demand: past the header, inside the file, and no two levels
+                // sharing bytes. Checked up front, so a planned chain rarely falls back (#374).
                 if (mip.level() != k
                         || mip.storage() != Blp2Types.MipStorage.EXACT
-                        || mip.byteLength()
-                                != ObjectTextureFormats.levelBytes(
-                                        format, (int) width, (int) height, k)) {
+                        || mip.byteLength() != bytes
+                        || mip.offset() < Blp2Decoder.HEADER_BYTES
+                        || mip.offset() + bytes > raw.length) {
                     return -1;
                 }
+                for (long[] range : taken) {
+                    if (mip.offset() < range[1] && range[0] < mip.offset() + bytes) {
+                        return -1;
+                    }
+                }
+                taken.add(new long[] {mip.offset(), mip.offset() + bytes});
             }
             return format;
         }
@@ -3014,9 +3091,18 @@ public final class WorldExteriorObjects {
                 for (var demand : demands) {
                     if (demand != null && demand.pool() == pool && used[demand.slot()]) {
                         chosen.add(demand);
+                        boolean blocks = sampled(demand);
                         requests.add(
                                 new WorldImageBudget.Request(
-                                        demand.width(), demand.height(), levelsDown(demand)));
+                                        demand.width(),
+                                        demand.height(),
+                                        levelsDown(demand),
+                                        blocks ? demand.blockFormat() : ObjectTextureFormats.RGBA8,
+                                        blocks
+                                                ? Integer.MAX_VALUE
+                                                : pool == Pool.DOODAD
+                                                        ? MODEL_RGBA_SIDE
+                                                        : RGBA_SIDE));
                     }
                 }
                 long budget =
@@ -3044,9 +3130,18 @@ public final class WorldExteriorObjects {
             // demand lets them go now instead of holding them, unbudgeted, until the chains.
             for (int i = 0; i < demands.size(); i++) {
                 var demand = demands.get(i);
-                if (demand != null
-                        && demand.registeredRgba() != null
-                        && !(images.get(demand.slot()).mipLevel() < demand.registered())) {
+                if (demand == null || demand.registeredRgba() == null) {
+                    continue;
+                }
+                if (sampled(demand)) {
+                    // A chain to be uploaded as sampled blocks keeps them until its blocks are
+                    // read: they are its RGBA8 fallback should the blocks not be usable. Counted
+                    // with the retained sources (at most 64 KiB each, at the 128 registration
+                    // side), so sources yield to them, and dropped as soon as the chain is built.
+                    retainedSourceBytes += demand.registeredRgba().length;
+                    peakRetainedSourceBytes =
+                            Math.max(peakRetainedSourceBytes, retainedSourceBytes);
+                } else if (!(images.get(demand.slot()).mipLevel() < demand.registered())) {
                     demands.set(i, demand.withoutRegisteredRgba());
                 }
             }
@@ -3066,7 +3161,8 @@ public final class WorldExteriorObjects {
                     }
                 }
             }
-            for (var demand : demands) {
+            for (int d = 0; d < demands.size(); d++) {
+                var demand = demands.get(d);
                 if (demand == null || !used[demand.slot()]) {
                     continue;
                 }
@@ -3076,6 +3172,7 @@ public final class WorldExteriorObjects {
                 if (demand.blockFormat() >= 0) {
                     byte[] blocks = blockChain(demand, level, top.width(), top.height());
                     if (blocks != null) {
+                        releaseSampledRgba(d);
                         counts[Count.IMAGE_BLOCKS.ordinal()]++;
                         counts[Count.IMAGE_MIPS_FILE.ordinal()]++;
                         images.set(
@@ -3091,6 +3188,23 @@ public final class WorldExteriorObjects {
                         continue;
                     }
                 }
+                if (sampled(demand)) {
+                    // The blocks were not usable after all: decode the largest RGBA8 level within
+                    // the RGBA8 cap whose chain costs no more than the blocks were charged, so the
+                    // fallback never spends past the tile's budget.
+                    top =
+                            relevelRgba(
+                                    demand,
+                                    blockRequest(demand)
+                                            .rgbaLevelWithin(
+                                                    level,
+                                                    demand.pool() == Pool.DOODAD
+                                                            ? MODEL_RGBA_SIDE
+                                                            : RGBA_SIDE));
+                    level = top.mipLevel();
+                    counts[Count.IMAGE_BLOCKS_FALLBACK.ordinal()]++;
+                }
+                int chainLevel = level;
                 // The file's own mips below the final level, when it records any: the registered
                 // level from its first decode, the others decoded once each from the source,
                 // which is fetched only when such a level is asked for.
@@ -3122,7 +3236,7 @@ public final class WorldExteriorObjects {
                                 top.height(),
                                 top.rgba,
                                 demand.materialClass(),
-                                (below, w, h) -> file.level(level + below, w, h),
+                                (below, w, h) -> file.level(chainLevel + below, w, h),
                                 token::isCanceled);
                 switch (chain.source()) {
                     case FILE -> counts[Count.IMAGE_MIPS_FILE.ordinal()]++;
@@ -3139,6 +3253,26 @@ public final class WorldExteriorObjects {
                                 level,
                                 chain.rgba(),
                                 chain.source()));
+                releaseSampledRgba(d);
+            }
+        }
+
+        /** The budget request a sampled chain was allotted under (its blocks' format). */
+        private WorldImageBudget.Request blockRequest(Demand demand) {
+            return new WorldImageBudget.Request(
+                    demand.width(),
+                    demand.height(),
+                    levelsDown(demand),
+                    demand.blockFormat(),
+                    Integer.MAX_VALUE);
+        }
+
+        /** Drops the registration pixels a sampled demand kept for its fallback, once built. */
+        private void releaseSampledRgba(int index) {
+            var demand = demands.get(index);
+            if (demand.registeredRgba() != null && sampled(demand)) {
+                retainedSourceBytes -= demand.registeredRgba().length;
+                demands.set(index, demand.withoutRegisteredRgba());
             }
         }
 
@@ -3213,8 +3347,37 @@ public final class WorldExteriorObjects {
             return Math.max(levels, demand.recorded());
         }
 
+        /** Whether this image will be uploaded as blocks the session samples. */
+        private boolean sampled(Demand demand) {
+            return demand.blockFormat() >= 0
+                    && (compressedFormats & (1 << demand.blockFormat())) != 0;
+        }
+
         private Image relevel(Demand demand, int level) {
+            int w = (int) Math.max(1, demand.width() >> level);
+            int h = (int) Math.max(1, demand.height() >> level);
+            if (sampled(demand) && w >= 4 && h >= 4) {
+                // Uploaded as the file's blocks: no RGBA8 decode at this level (it may exceed the
+                // RGBA8 sides); chainImages copies the blocks, or decodes a smaller level instead.
+                return new Image(demand.id(), w, h, level, null);
+            }
+            return relevelRgba(demand, level);
+        }
+
+        private Image relevelRgba(Demand demand, int level) {
             var registered = images.get(demand.slot());
+            if (registered.rgba == null) {
+                // A blocks placeholder replaced the registration decode: rebuild it from the
+                // pixels the demand kept (they are kept while the drawn level lies above them).
+                int r = demand.registered();
+                registered =
+                        new Image(
+                                demand.id(),
+                                (int) Math.max(1, demand.width() >> r),
+                                (int) Math.max(1, demand.height() >> r),
+                                r,
+                                Objects.requireNonNull(demand.registeredRgba()));
+            }
             if (level < demand.recorded()) {
                 byte[] raw = source(demand);
                 if (raw != null) {

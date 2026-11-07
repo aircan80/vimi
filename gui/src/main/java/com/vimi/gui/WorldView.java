@@ -3284,12 +3284,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
         // Dungeon and raid maps (Map.InstanceType 1 or 2) draw their WMO interiors too (#280).
         boolean interiors = instanceInteriors(inventory.map());
         WorldStreamSourceBridge.ExteriorPreparer preparer = creatureSource == null
-                ? (source, scope, tile, cancellation) -> WorldStreamSourceBridge.prepareExterior(
-                        source, scope, tile, cancellation, null, detail, interiors)
-                : (source, scope, tile, cancellation) -> WorldStreamSourceBridge.prepareExterior(
+                ? (source, scope, tile, cancellation, formats) -> WorldStreamSourceBridge.prepareExterior(
+                        source, scope, tile, cancellation, null, detail, interiors, formats)
+                : (source, scope, tile, cancellation, formats) -> WorldStreamSourceBridge.prepareExterior(
                         source, scope, tile, cancellation,
                         (builder, owned, token) -> creatureSource.append(builder, creatureMap, owned, token),
-                        detail, interiors);
+                        detail, interiors, formats);
         stallWatchdog.reset();
         streaming = new WorldStreamSourceController(request, scope -> {
             var owner = new WorldStreamGpuOwner(gpuService, scope, detail);

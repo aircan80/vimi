@@ -1041,6 +1041,15 @@ public final class WorldStreamTransport {
             return initialized.copy();
         }
 
+        /**
+         * The compressed object texture formats the child samples as blocks (issue #374), one bit
+         * per {@link com.vibeminer.rendering.world.ObjectTextureFormats} code; meaningful once
+         * {@link #initialized()} completed, 0 before.
+         */
+        public int objectFormats() {
+            return state.objectFormats();
+        }
+
         /** Whether this session's profile admits BASIC_EXTERIOR objects. */
         public boolean exteriorObjects() {
             return descriptor.exteriorObjects();

@@ -318,7 +318,10 @@ final class WorldStreamSourceController {
             Events events,
             Consumer<Runnable> fxPost,
             LongSupplier clock) {
-        this(request, starter, events, fxPost, clock, WorldStreamSourceBridge::prepareExterior);
+        this(request, starter, events, fxPost, clock,
+                (source, scope, tile, cancellation, formats) -> WorldStreamSourceBridge.prepareExterior(
+                        source, scope, tile, cancellation, null,
+                        com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.STANDARD, false, formats));
     }
 
     /** Tests replace the exterior source operation. */
@@ -1141,11 +1144,14 @@ final class WorldStreamSourceController {
                             Thread.ofPlatform().daemon().name("world-exterior-objects").factory());
                 var lane = source;
                 var owner = scope;
+                // The child's sampled BC formats, reported in SESSION, set how textures are charged.
+                int formats = session == null ? 0 : session.objectFormats();
                 work.prepared = CompletableFuture.supplyAsync(
                         () -> {
                             long preparing = WorldStageTimings.start();
                             try {
-                                return exteriorPreparer.prepare(lane, owner, tile, work.cancellation);
+                                return exteriorPreparer.prepare(
+                                        lane, owner, tile, work.cancellation, formats);
                             } finally {
                                 WorldStageTimings.stop(work.cancellation.isCanceled()
                                         ? "parent.objects.prepareCanceled" : "parent.objects.prepare",

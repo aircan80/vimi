@@ -1124,21 +1124,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     // once, so a partly filled chain is destroyed with it. A 256 x 256 RGBA8
                     // chain exceeds one step, so levels are filled in planned row bands; BC
                     // chains are filled in block rows.
-                    int stored = source.format(image);
-                    int format = uploadFormat(stored, objectFormats);
+                    int format = source.format(image);
+                    if (uploadFormat(format, objectFormats) != format) {
+                        throw new IllegalStateException("Object texture format not sampled");
+                    }
                     var chain =
                             source.pixels.slice(
                                     source.imageOffset(image),
-                                    ObjectTextureFormats.chainBytes(stored, width, height));
-                    if (format != stored) {
-                        // This backend does not sample the stored blocks: decode the chain.
-                        byte[] rgba =
-                                ObjectTextureFormats.decodeChain(stored, width, height, chain, 0);
-                        chain = java.nio.ByteBuffer.allocateDirect(rgba.length).put(rgba).flip();
-                        decodedImages++;
-                    } else if (ObjectTextureFormats.compressed(format)) {
-                        compressedImages++;
-                    }
+                                    ObjectTextureFormats.chainBytes(format, width, height));
                     build.imageData = chain;
                     build.imageFormat = format;
                     build.imagePlan =
@@ -1179,6 +1172,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 }
                 return count;
             }
+            // Counted once per completed set, however often an earlier build of it restarted:
+            // packing decoded every format this renderer does not sample (#374).
+            decodedImages += source.decodedImages;
+            compressedImages += source.compressedImages;
             // Every slice is a bgfx-owned copy; the packed native input can retire now.
             build.closeSource();
             if (!objectPathsReported) {
@@ -2101,6 +2098,20 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 objectBytes(upload),
                 compressedImages,
                 decodedImages);
+    }
+
+    /**
+     * The compressed object texture formats this renderer uploads as blocks, one bit per {@link
+     * ObjectTextureFormats} code; reported to the parent in SESSION (issue #374).
+     */
+    int objectFormatMask() {
+        int mask = 0;
+        for (int f = ObjectTextureFormats.BC1; f <= ObjectTextureFormats.BC3; f++) {
+            if (objectFormats[f]) {
+                mask |= 1 << f;
+            }
+        }
+        return mask;
     }
 
     /**

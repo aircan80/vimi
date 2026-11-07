@@ -12,6 +12,9 @@ import org.junit.jupiter.api.Test;
 final class WorldStreamObjectMipsTest {
     private static final int BUDGET = BgfxWorldStreamRenderer.OBJECT_CHUNK;
 
+    /** One block row of the widest BC2/BC3 level: the smallest budget every format fits. */
+    private static final int SMALL = WorldStreamObjectsFile.MAX_IMAGE_SIDE / 4 * 16;
+
     private static void assertCovers(
             int width, int height, int budget, List<List<WorldStreamObjectMips.Slice>> plan) {
         assertCovers(ObjectTextureFormats.RGBA8, width, height, budget, plan);
@@ -82,8 +85,8 @@ final class WorldStreamObjectMipsTest {
                             format,
                             width,
                             height,
-                            1024,
-                            WorldStreamObjectMips.plan(format, width, height, 1024));
+                            SMALL,
+                            WorldStreamObjectMips.plan(format, width, height, SMALL));
                 }
             }
         }
@@ -105,7 +108,8 @@ final class WorldStreamObjectMipsTest {
                 pairs++;
             }
         }
-        assertEquals(81, pairs);
+        int sides = Integer.numberOfTrailingZeros(WorldStreamObjectsFile.MAX_IMAGE_SIDE) + 1;
+        assertEquals(sides * sides, pairs);
         assertTrue(BUDGET <= BgfxWorldStreamRenderer.STEP_BOUND);
     }
 

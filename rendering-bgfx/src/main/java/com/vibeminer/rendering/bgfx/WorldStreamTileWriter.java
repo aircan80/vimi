@@ -187,7 +187,20 @@ public final class WorldStreamTileWriter {
         }
 
         public static Builder builder() {
-            return new Builder();
+            return new Builder(0);
+        }
+
+        /**
+         * A builder for a session whose child samples {@code compressedFormats} as blocks (bit per
+         * {@link com.vibeminer.rendering.world.ObjectTextureFormats} code, the transport session's
+         * {@code objectFormats()}): images in those formats are charged their stored size against
+         * the GPU byte cap, every other image its decoded RGBA8 size (#374).
+         */
+        public static Builder builder(int compressedFormats) {
+            if ((compressedFormats & ~0xE) != 0) {
+                throw new IllegalArgumentException("Compressed format mask");
+            }
+            return new Builder(compressedFormats);
         }
 
         public int placements() {
@@ -237,12 +250,18 @@ public final class WorldStreamTileWriter {
             private final java.util.ArrayList<byte[]> pixelBlocks = new java.util.ArrayList<>();
             private int vertices, indices, imageBytes, draws;
 
-            /** RGBA8 bytes of every image so far once decoded (the fallback's GPU size). */
+            /**
+             * GPU bytes of every image so far as the child will upload it (see {@link #builder}).
+             */
             private long decodedBytes;
 
             private boolean built;
 
-            private Builder() {}
+            private final int compressedFormats;
+
+            private Builder(int compressedFormats) {
+                this.compressedFormats = compressedFormats;
+            }
 
             /**
              * Whether one more whole model with these totals still fits the per-tile file profile,
@@ -337,9 +356,11 @@ public final class WorldStreamTileWriter {
                         com.vibeminer.rendering.world.ObjectTextureFormats.chainBytes(
                                 format, width, height);
                 long decoded =
-                        4L
-                                * com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(
-                                        width, height);
+                        (compressedFormats & (1 << format)) != 0
+                                ? count
+                                : 4L
+                                        * com.vibeminer.rendering.world.ObjectTextureMips
+                                                .chainPixels(width, height);
                 if (images.size() == WorldStreamObjectsFile.MAX_IMAGES
                         || count > WorldStreamObjectsFile.MAX_IMAGE_BYTES - imageBytes
                         || decoded > WorldStreamObjectsFile.MAX_DECODED_BYTES - decodedBytes
@@ -531,7 +552,8 @@ public final class WorldStreamTileWriter {
                                 imageTable,
                                 vertexData,
                                 indexData,
-                                pixelData));
+                                pixelData,
+                                compressedFormats));
             }
 
             private void open() {
