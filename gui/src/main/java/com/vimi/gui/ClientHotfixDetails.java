@@ -198,6 +198,9 @@ final class ClientHotfixDetails {
 
     /** Fixed text for a cache record that could not be shown; never includes payload bytes. */
     static String undecoded(String reason) {
+        if (HotfixViewInfo.RAW_SCAN_GAVE_UP.equals(reason))
+            return "raw-column check inconclusive after 8 tries; local hotfix cache row not shown,"
+                    + " no stale base substitution";
         if (reason != null && reason.matches("TRAILING_BYTES:[0-9]{1,6}"))
             return "local hotfix cache row has " + reason.substring("TRAILING_BYTES:".length())
                     + " bytes its layout does not describe; not shown, no stale base substitution";

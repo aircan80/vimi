@@ -14,6 +14,8 @@ import com.vibeminer.formats.world.WmoFormats;
 import com.vibeminer.formats.world.WmoGroupSpans;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldPlacements;
+import com.vibeminer.formats.world.WorldStageTimings;
+import com.vibeminer.rendering.world.ObjectTextureFormats;
 import com.vibeminer.rendering.world.ObjectTextureMips;
 import com.vibeminer.rendering.world.TerrainScene;
 import java.nio.ByteBuffer;
@@ -148,6 +150,22 @@ public final class WorldExteriorObjects {
     static int imageClass(int rangeClass) {
         int kind = kind(rangeClass);
         return kind == ADDITIVE ? BLENDED : kind;
+    }
+
+    /**
+     * The format an image drawn by {@code rangeClass} is carried in when its file stores {@code
+     * fileFormat} blocks (an {@link ObjectTextureFormats} code, or -1 when it has none), or -1 for
+     * RGBA8 (issue #374). Only the kind counts, never the UNLIT flag: opaque ranges, which ignore
+     * alpha, take BC1, BC2 or BC3; blended and additive ones BC2 or BC3 only, because BC1 alpha is
+     * not sampled on every backend; cutout ranges keep RGBA8, whose mips preserve alpha-test
+     * coverage (#265). The World objects file refuses BC1 for any range but an opaque one.
+     */
+    public static int blockFormatFor(int fileFormat, int rangeClass) {
+        int image = imageClass(rangeClass);
+        if (fileFormat < 0 || image == CUTOUT) {
+            return -1;
+        }
+        return image == BLENDED && fileFormat == ObjectTextureFormats.BC1 ? -1 : fileFormat;
     }
 
     /** Position xyz, unit normal xyz, texture1 uv: 32 bytes per vertex. */
@@ -432,7 +450,13 @@ public final class WorldExteriorObjects {
          */
         IMAGE_MIPS_FILE,
         IMAGE_MIPS_PARTIAL,
-        IMAGE_MIPS_GENERATED
+        IMAGE_MIPS_GENERATED,
+        /**
+         * Images carried as the file's own BC1, BC2 or BC3 blocks (issue #374): opaque DXT, or
+         * blended BC2/BC3, whose file records every level from the drawn one down to 1 x 1. They
+         * also count in IMAGE_MIPS_FILE.
+         */
+        IMAGE_BLOCKS
     }
 
     /** What a placement draws: an outdoor WMO, an MDDF doodad or a WMO doodad-set entry. */
@@ -630,6 +654,9 @@ public final class WorldExteriorObjects {
         private final byte[] rgba;
         private final ObjectTextureMips.Source mips;
 
+        /** Storage format of {@link #data} ({@link ObjectTextureFormats}). */
+        private final int format;
+
         private Image(long id, int width, int height, int mipLevel, byte[] rgba) {
             this(id, width, height, mipLevel, rgba, null);
         }
@@ -641,12 +668,38 @@ public final class WorldExteriorObjects {
                 int mipLevel,
                 byte[] rgba,
                 ObjectTextureMips.Source mips) {
+            this(id, width, height, mipLevel, rgba, mips, ObjectTextureFormats.RGBA8);
+        }
+
+        private Image(
+                long id,
+                int width,
+                int height,
+                int mipLevel,
+                byte[] data,
+                ObjectTextureMips.Source mips,
+                int format) {
             this.id = id;
             this.width = width;
             this.height = height;
             this.mipLevel = mipLevel;
-            this.rgba = rgba;
+            this.rgba = data;
             this.mips = mips;
+            this.format = format;
+        }
+
+        /**
+         * How the chain is stored and uploaded (issue #374): {@link ObjectTextureFormats#RGBA8}, or
+         * the file's own {@link ObjectTextureFormats#BC1}, {@link ObjectTextureFormats#BC2} or
+         * {@link ObjectTextureFormats#BC3} blocks.
+         */
+        public int format() {
+            return format;
+        }
+
+        /** The whole chain in {@link #format()}, top level first, as the GPU takes it. */
+        public ByteBuffer data() {
+            return ByteBuffer.wrap(rgba).asReadOnlyBuffer();
         }
 
         /**
@@ -674,11 +727,82 @@ public final class WorldExteriorObjects {
         }
 
         /**
-         * The whole mip chain, top level first ({@link ObjectTextureMips#chainPixels} texels), for
-         * every image a tile set returns.
+         * The whole mip chain as RGBA8, top level first ({@link ObjectTextureMips#chainPixels}
+         * texels), for every image a tile set returns. For a compressed chain this decodes and
+         * allocates a new RGBA8 copy on every call; uploads use {@link #data()} instead.
          */
         public ByteBuffer rgba() {
-            return ByteBuffer.wrap(rgba).asReadOnlyBuffer();
+            if (format == ObjectTextureFormats.RGBA8) {
+                return ByteBuffer.wrap(rgba).asReadOnlyBuffer();
+            }
+            return ByteBuffer.wrap(
+                            ObjectTextureFormats.decodeChain(
+                                    format, width, height, ByteBuffer.wrap(rgba), 0))
+                    .asReadOnlyBuffer();
+        }
+    }
+
+    /**
+     * How one tile's placements use its models, for instancing estimates (#382): distinct building
+     * and doodad models with at least one placement, the draws of one submit per placement and
+     * range ({@code draws}), the draws if each model were submitted once for all its placements
+     * ({@code instancedDraws}), and placements per used model, largest first.
+     */
+    public record ModelUse(
+            int buildingModels,
+            int doodadModels,
+            long draws,
+            long instancedDraws,
+            int[] placementsPerModel) {
+        public ModelUse {
+            placementsPerModel = placementsPerModel.clone();
+        }
+
+        @Override
+        public int[] placementsPerModel() {
+            return placementsPerModel.clone();
+        }
+
+        /** {@code placementModel} holds each placement's model index into the other arrays. */
+        public static ModelUse of(int[] modelRanges, boolean[] doodad, int[] placementModel) {
+            if (modelRanges.length != doodad.length) {
+                throw new IllegalArgumentException("Model arrays differ in length");
+            }
+            int[] placed = new int[modelRanges.length];
+            long draws = 0;
+            for (int model : placementModel) {
+                placed[model]++;
+                draws += modelRanges[model];
+            }
+            int buildings = 0, doodads = 0;
+            long instanced = 0;
+            int used = 0;
+            for (int m = 0; m < placed.length; m++) {
+                if (placed[m] == 0) {
+                    continue;
+                }
+                used++;
+                instanced += modelRanges[m];
+                if (doodad[m]) {
+                    doodads++;
+                } else {
+                    buildings++;
+                }
+            }
+            int[] counts = new int[used];
+            int at = 0;
+            for (int count : placed) {
+                if (count > 0) {
+                    counts[at++] = count;
+                }
+            }
+            Arrays.sort(counts);
+            for (int i = 0, j = counts.length - 1; i < j; i++, j--) {
+                int swap = counts[i];
+                counts[i] = counts[j];
+                counts[j] = swap;
+            }
+            return new ModelUse(buildings, doodads, draws, instanced, counts);
         }
     }
 
@@ -750,6 +874,54 @@ public final class WorldExteriorObjects {
         private void check() {
             if (closed) {
                 throw new IllegalStateException("Exterior object set retired");
+            }
+        }
+
+        /**
+         * Opt-in measurement ({@code -Dvimi.world.stageTimings}): adds every non-zero count bucket
+         * of this set to the process tallies {@code objects.count.<BUCKET>}, plus its tile, vertex,
+         * index, range and pixel totals. Does nothing while the timings are off.
+         */
+        public void tallyCounts() {
+            check();
+            if (!WorldStageTimings.enabled()) {
+                return;
+            }
+            WorldStageTimings.add("objects.count.tiles", 1);
+            for (var count : Count.values()) {
+                int n = counts[count.ordinal()];
+                if (n != 0) {
+                    WorldStageTimings.add("objects.count." + count.name(), n);
+                }
+            }
+            WorldStageTimings.add("objects.count.vertices", vertices);
+            WorldStageTimings.add("objects.count.indices", indices);
+            WorldStageTimings.add("objects.count.ranges", ranges);
+            WorldStageTimings.add("objects.count.pixels", pixels);
+            int[] modelRanges = new int[models.size()];
+            boolean[] doodad = new boolean[models.size()];
+            for (int m = 0; m < modelRanges.length; m++) {
+                doodad[m] = models.get(m).doodad();
+                for (var mesh : models.get(m).meshes()) {
+                    modelRanges[m] += mesh.ranges.size();
+                }
+            }
+            int[] placementModel = new int[placements.size()];
+            for (int p = 0; p < placementModel.length; p++) {
+                placementModel[p] = placements.get(p).model();
+            }
+            var use = ModelUse.of(modelRanges, doodad, placementModel);
+            WorldStageTimings.value("objects.models.buildingsPerTile", use.buildingModels());
+            WorldStageTimings.value("objects.models.doodadsPerTile", use.doodadModels());
+            WorldStageTimings.value("objects.models.drawsPerTile", use.draws());
+            WorldStageTimings.value("objects.models.instancedDrawsPerTile", use.instancedDraws());
+            for (int placed : use.placementsPerModel()) {
+                WorldStageTimings.value("objects.models.placementsPerModel", placed);
+            }
+            for (int rank = 0; rank < Math.min(5, use.placementsPerModel().length); rank++) {
+                WorldStageTimings.value(
+                        "objects.models.top" + (rank + 1) + "Placements",
+                        use.placementsPerModel()[rank]);
             }
         }
 
@@ -922,14 +1094,19 @@ public final class WorldExteriorObjects {
         Objects.requireNonNull(scope);
         Objects.requireNonNull(tile);
         Objects.requireNonNull(token);
-        return engine.withRecordedTile(
-                scope,
-                tile,
-                WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
-                token,
-                admission ->
-                        new Builder(admission, modelReader, detail, retainLimit, interiors)
-                                .build());
+        long started = WorldStageTimings.start();
+        try {
+            return engine.withRecordedTile(
+                    scope,
+                    tile,
+                    WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
+                    token,
+                    admission ->
+                            new Builder(admission, modelReader, detail, retainLimit, interiors)
+                                    .build());
+        } finally {
+            WorldStageTimings.stop("objects.tile.total", started);
+        }
     }
 
     private enum RootState {
@@ -1050,8 +1227,10 @@ public final class WorldExteriorObjects {
                 }
                 setRanges = metadata.setRanges();
                 setIds = metadata.setIds();
+                long phase = WorldStageTimings.start();
                 place(metadata.worldObjects());
                 fitMaterialDraws();
+                WorldStageTimings.stop("objects.phase.buildings", phase);
                 // Admission ran largest first; the set keeps obj0 source order.
                 placements.sort(java.util.Comparator.comparingInt(Placement::ordinal));
                 // Buildings first, then MDDF doodads, then the drawn buildings' doodad sets, and
@@ -1059,7 +1238,10 @@ public final class WorldExteriorObjects {
                 // is spent before an interior group is admitted, so interiors use only what is
                 // left. An interior-only root's own set doodads wait until its interiors decide
                 // whether it draws at all.
+                phase = WorldStageTimings.start();
                 placeDoodads(metadata.doodads());
+                WorldStageTimings.stop("objects.phase.doodads", phase);
+                phase = WorldStageTimings.start();
                 var deferred = new java.util.HashSet<Long>();
                 placeSetDoodads(
                         building -> {
@@ -1071,11 +1253,22 @@ public final class WorldExteriorObjects {
                             }
                             return !pending;
                         });
+                WorldStageTimings.stop("objects.phase.setDoodads", phase);
+                // objects.phase.interiors also covers the second set-doodad pass: the doodad sets
+                // of interior-only roots, deferred above, are placed here and are not counted
+                // under objects.phase.setDoodads.
+                phase = WorldStageTimings.start();
                 placeInteriors();
                 placeSetDoodads(building -> deferred.contains(building.rootId()));
+                WorldStageTimings.stop("objects.phase.interiors", phase);
             }
+            long phase = WorldStageTimings.start();
             allocateImages();
+            WorldStageTimings.stop("objects.phase.imageBudget", phase);
+            phase = WorldStageTimings.start();
             chainImages();
+            WorldStageTimings.stop("objects.phase.mipChains", phase);
+            phase = WorldStageTimings.start();
             sources.clear();
             unreadSources.clear();
             retainedSourceBytes = 0;
@@ -1092,6 +1285,7 @@ public final class WorldExteriorObjects {
                             modelFailure,
                             detail);
             objects.retainedSourceBytes = peakRetainedSourceBytes;
+            WorldStageTimings.stop("objects.phase.assembly", phase);
             objects.levelDecodes = levelDecodes;
             return objects;
         }
@@ -1941,8 +2135,10 @@ public final class WorldExteriorObjects {
                 count(Count.ROOT_UNAVAILABLE);
                 return RootState.FAILED;
             }
+            long parsing = WorldStageTimings.start();
             try (input) {
                 root = WmoFormats.root(input.bytes(), ROOT_LIMITS, token::isCanceled);
+                WorldStageTimings.stop("objects.wmo.rootParse", parsing);
             } catch (IllegalArgumentException malformed) {
                 count(Count.ROOT_FAILED);
                 return RootState.FAILED;
@@ -2321,9 +2517,11 @@ public final class WorldExteriorObjects {
                 count(Count.MODEL_UNAVAILABLE);
                 return RootState.FAILED;
             }
+            long parsing = WorldStageTimings.start();
             try (input) {
                 byte[] raw = input.bytes();
                 model = await(modelReader.read(id, raw, token));
+                WorldStageTimings.stop("objects.m2.modelParse", parsing);
             } catch (ModelFormatException malformed) {
                 count(modelOutcome(malformed));
                 return RootState.FAILED;
@@ -2341,9 +2539,11 @@ public final class WorldExteriorObjects {
                 count(Count.MODEL_UNAVAILABLE);
                 return RootState.FAILED;
             }
+            long skinning = WorldStageTimings.start();
             try (skinInput) {
                 byte[] raw = skinInput.bytes();
                 skin = await(M2SkinReader.read(AssetSource.bytes(raw), model, MODEL_LIMITS, token));
+                WorldStageTimings.stop("objects.m2.skinParse", skinning);
             } catch (ModelFormatException malformed) {
                 count(modelOutcome(malformed));
                 return RootState.FAILED;
@@ -2647,10 +2847,20 @@ public final class WorldExteriorObjects {
                 long height,
                 int recorded,
                 int registered,
-                byte[] registeredRgba) {
+                byte[] registeredRgba,
+                int blockFormat) {
             Demand withoutRegisteredRgba() {
                 return new Demand(
-                        slot, pool, id, materialClass, width, height, recorded, registered, null);
+                        slot,
+                        pool,
+                        id,
+                        materialClass,
+                        width,
+                        height,
+                        recorded,
+                        registered,
+                        null,
+                        blockFormat);
             }
         }
 
@@ -2681,16 +2891,20 @@ public final class WorldExteriorObjects {
                 long width = Integer.toUnsignedLong(header.getInt(12));
                 long height = Integer.toUnsignedLong(header.getInt(16));
                 int recorded;
+                List<Blp2Types.Mip> declared = List.of();
+                long mipsRead = WorldStageTimings.start();
                 try {
-                    recorded =
-                            WorldImageBudget.recordedLevels(
-                                    Blp2Decoder.readMipsSynchronous(
-                                            AssetSource.borrowed(raw),
-                                            IMAGE_LIMITS,
-                                            token,
-                                            Blp2Types.MipProfile.STRICT));
+                    declared =
+                            Blp2Decoder.readMipsSynchronous(
+                                    AssetSource.borrowed(raw),
+                                    IMAGE_LIMITS,
+                                    token,
+                                    Blp2Types.MipProfile.STRICT);
+                    recorded = WorldImageBudget.recordedLevels(declared);
                 } catch (BlpFormatException undeclared) {
                     recorded = 0;
+                } finally {
+                    WorldStageTimings.stop("objects.blp.readMips", mipsRead);
                 }
                 if (width == 0 || height == 0 || width > 8192 || height > 8192 || recorded == 0) {
                     local[undecodable.ordinal()]++;
@@ -2728,10 +2942,105 @@ public final class WorldExteriorObjects {
                                 height,
                                 recorded,
                                 level,
-                                image.rgba));
+                                image.rgba,
+                                blockFormat(raw, width, height, declared, materialClass)));
                 local[(building ? Count.IMAGE_DECODED : Count.MODEL_IMAGE_DECODED).ordinal()]++;
                 return slot;
             }
+        }
+
+        /**
+         * The BC format this image can be uploaded in as the file's own blocks (issue #374), or -1.
+         * The file must be DXT and record every level down to 1 x 1 in exact storage. Opaque
+         * surfaces take BC1, BC2 or BC3 (alpha is not drawn); blended ones BC2 or BC3, because BC1
+         * alpha is not sampled on every backend; cutout surfaces keep RGBA8, whose mips preserve
+         * alpha-test coverage (#265).
+         */
+        static int blockFormat(
+                byte[] raw, long width, long height, List<Blp2Types.Mip> declared, int material) {
+            if (raw.length < Blp2Decoder.HEADER_BYTES || raw[8] != 2) {
+                return -1;
+            }
+            int format =
+                    blockFormatFor(
+                            switch (raw[10] & 255) {
+                                case 0 -> ObjectTextureFormats.BC1;
+                                case 1 -> ObjectTextureFormats.BC2;
+                                case 7 -> ObjectTextureFormats.BC3;
+                                default -> -1;
+                            },
+                            material);
+            if (format < 0) {
+                return -1;
+            }
+            int levels = ObjectTextureMips.levels((int) width, (int) height);
+            if (declared.size() < levels) {
+                return -1;
+            }
+            for (int k = 0; k < levels; k++) {
+                var mip = declared.get(k);
+                if (mip.level() != k
+                        || mip.storage() != Blp2Types.MipStorage.EXACT
+                        || mip.byteLength()
+                                != ObjectTextureFormats.levelBytes(
+                                        format, (int) width, (int) height, k)) {
+                    return -1;
+                }
+            }
+            return format;
+        }
+
+        /**
+         * The file's own blocks from {@code level} down to 1 x 1 as one packed chain, or null when
+         * the source is not readable again or no longer matches (the RGBA8 path is used instead).
+         */
+        private byte[] blockChain(Demand demand, int level, int width, int height) {
+            if (width < 4 || height < 4) {
+                return null; // a compressed top level is at least one block (#420)
+            }
+            byte[] raw = source(demand);
+            if (raw == null) {
+                return null;
+            }
+            List<Blp2Types.Mip> declared;
+            try {
+                // Synchronous: the borrowed source is done with raw before the blocks are copied.
+                declared =
+                        Blp2Decoder.readMipsSynchronous(
+                                AssetSource.borrowed(raw),
+                                IMAGE_LIMITS,
+                                token,
+                                Blp2Types.MipProfile.STRICT);
+            } catch (BlpFormatException changed) {
+                return null;
+            }
+            int format = demand.blockFormat();
+            byte[] chain = new byte[ObjectTextureFormats.chainBytes(format, width, height)];
+            int at = 0;
+            var taken = new ArrayList<long[]>();
+            for (int k = 0; k < ObjectTextureMips.levels(width, height); k++) {
+                int bytes = ObjectTextureFormats.levelBytes(format, width, height, k);
+                if (level + k >= declared.size()) {
+                    return null;
+                }
+                var mip = declared.get(level + k);
+                // As the decoder demands: level data lies past the 148-byte header, inside the
+                // file, and no two carried levels share bytes; otherwise the RGBA8 path decides.
+                if (mip.byteLength() != bytes
+                        || mip.offset() < Blp2Decoder.HEADER_BYTES
+                        || mip.offset() + bytes > raw.length) {
+                    return null;
+                }
+                for (long[] range : taken) {
+                    if (mip.offset() < range[1] && range[0] < mip.offset() + bytes) {
+                        return null;
+                    }
+                }
+                taken.add(new long[] {mip.offset(), mip.offset() + bytes});
+                System.arraycopy(raw, (int) mip.offset(), chain, at, bytes);
+                at += bytes;
+            }
+            return chain;
         }
 
         private static WorldStreamScopes.DerivedKind imageKind(Pool pool) {
@@ -2747,6 +3056,7 @@ public final class WorldExteriorObjects {
                 return null;
             }
             Blp2Types.Image image;
+            long decoding = WorldStageTimings.start();
             levelDecodes++;
             try {
                 image =
@@ -2758,6 +3068,8 @@ public final class WorldExteriorObjects {
                                 Blp2Types.MipProfile.STRICT);
             } catch (BlpFormatException undecodableImage) {
                 return null;
+            } finally {
+                WorldStageTimings.stop("objects.blp.decodeLevel", decoding);
             }
             int w = image.width(), h = image.height();
             if (image.mipLevel() != level
@@ -2853,6 +3165,24 @@ public final class WorldExteriorObjects {
                 token.check();
                 var top = images.get(demand.slot());
                 int level = top.mipLevel();
+                if (demand.blockFormat() >= 0) {
+                    byte[] blocks = blockChain(demand, level, top.width(), top.height());
+                    if (blocks != null) {
+                        counts[Count.IMAGE_BLOCKS.ordinal()]++;
+                        counts[Count.IMAGE_MIPS_FILE.ordinal()]++;
+                        images.set(
+                                demand.slot(),
+                                new Image(
+                                        top.id,
+                                        top.width(),
+                                        top.height(),
+                                        level,
+                                        blocks,
+                                        ObjectTextureMips.Source.FILE,
+                                        demand.blockFormat()));
+                        continue;
+                    }
+                }
                 // The file's own mips below the final level, when it records any: the registered
                 // level from its first decode, the others decoded once each from the source,
                 // which is fetched only when such a level is asked for.
@@ -2944,6 +3274,7 @@ public final class WorldExteriorObjects {
 
         /** The file's own mip {@code level}, or null when it does not decode at that size. */
         private byte[] fileMip(byte[] raw, int level, int width, int height) {
+            long decoding = WorldStageTimings.start();
             levelDecodes++;
             try {
                 var mip =
@@ -2958,6 +3289,8 @@ public final class WorldExteriorObjects {
                         : null;
             } catch (BlpFormatException | IllegalArgumentException absent) {
                 return null;
+            } finally {
+                WorldStageTimings.stop("objects.blp.fileMip", decoding);
             }
         }
 

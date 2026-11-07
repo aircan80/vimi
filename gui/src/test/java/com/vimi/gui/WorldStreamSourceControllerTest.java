@@ -8,6 +8,7 @@ import com.vibeminer.concepts.world.WorldService;
 import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.tables.AuthoredNativeMap;
 import com.vibeminer.formats.world.WorldFormats;
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.bgfx.WorldStreamTransport;
 import com.vibeminer.rendering.world.TerrainCamera;
 
@@ -90,6 +91,7 @@ public final class WorldStreamSourceControllerTest {
         aKeptTileNeverDisplacesAWantedResident();
         aKeptTileYieldsTheLaneWhenTheCameraTileIsMissing();
         tilesKeepStreamingWhileAFrameIsBorrowed();
+        commitTimingStopsOnlyOnAFrameOfTheNewReceipt();
         aBorrowedFrameKeepsTheSourcesOfTheTableItShows();
         fiveByFiveNeighborhoodHoldsTwentyFiveResidentsWithinTheSourceUnion();
     }
@@ -122,6 +124,50 @@ public final class WorldStreamSourceControllerTest {
                     && fixture.controller.snapshot().prepared() == 4);
         } finally {
             fixture.close();
+        }
+    }
+
+    /**
+     * Opt-in timings: parent.commit.toAcceptedFrame ends at the first accepted frame drawn from
+     * the committed receipt. A borrowed frame of an older table, accepted after the commit, is
+     * not that frame and must not end the measurement early.
+     */
+    private static void commitTimingStopsOnlyOnAFrameOfTheNewReceipt() throws Exception {
+        boolean wasEnabled = WorldStageTimings.enabled();
+        WorldStageTimings.enable(true);
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 4);
+        fixture.residents = 4;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+            int before = fixture.commitLines().size();
+            fixture.camera(2);
+            var borrowed = fixture.nextFrame(); // drawn from the table accepted before
+            WorldStageTimings.reset();
+            Object committedBefore = fixture.currentReceipt();
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 4));
+            fixture.until(() -> fixture.commitLines().size() >= before + 1);
+            // The helper logs the commit before it sends COMMITTED, so the log line alone does not
+            // prove the controller applied the receipt. Wait for the receipt itself, read under the
+            // controller's lock, so the old-table frame below is judged after the commit landed.
+            fixture.until(() -> fixture.currentReceipt() != committedBefore);
+            check(fixture.controller.mayPresent(borrowed) && fixture.controller.presented(borrowed),
+                    "The borrowed old-table frame is accepted");
+            check(WorldStageTimings.snapshot().get("parent.commit.toAcceptedFrame") == null,
+                    "An old-receipt frame does not end the commit-to-frame timing");
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 4);
+            var series = WorldStageTimings.snapshot().get("parent.commit.toAcceptedFrame");
+            check(series != null && series.count() >= 1,
+                    "A frame of the committed receipt ends the commit-to-frame timing");
+        } finally {
+            fixture.close();
+            WorldStageTimings.reset();
+            WorldStageTimings.enable(wasEnabled);
         }
     }
 
@@ -692,22 +738,24 @@ public final class WorldStreamSourceControllerTest {
             fixture.untilPresented(() -> fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
                     && fixture.controller.snapshot().prepared() == residents);
             check(fixture.commitLines().size() == residents, "One commit per resident up to the 5x5 bound");
-            check(fixture.pool.stats().leaseClaims() == residents, "One source atlas owner per resident");
+            awaitLeaseClaims(fixture, residents, "One source atlas owner per resident");
             fixture.controller.neighborhood(fixture.tiles.subList(5, residents + 5));
             long[] peak = {0};
             // Right after the shift the snapshot still reads READY with 25 prepared from the old
             // demand, so wait for the five new tiles' commits too. Keep presenting throughout:
             // replaced tiles retire only after accepted pixels stop showing them, and at the
             // residents + 3 source bound the controller rightly waits for those pixels.
+            // Owners are atlases held or reserved, not lease claims (#498): while a tile prepares,
+            // its texture batch and the retained copy it hands over both hold a claim on one atlas.
             fixture.untilPresented(() -> {
-                peak[0] = Math.max(peak[0], fixture.pool.stats().leaseClaims());
+                peak[0] = Math.max(peak[0], sourceOwners(fixture));
                 return fixture.commitLines().size() >= residents + 5
                         && fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
                         && fixture.controller.snapshot().prepared() == residents
                         && fixture.pool.stats().leaseClaims() == residents;
             });
             check(peak[0] <= residents + 3, "Source owners never exceed residents plus staged, pending and retiring");
-            check(fixture.pool.stats().leaseClaims() <= com.vibeminer.concepts.world.TerrainAtlasPool.MAX_ENTRIES,
+            check(sourceOwners(fixture) <= com.vibeminer.concepts.world.TerrainAtlasPool.MAX_ENTRIES,
                     "The shared atlas pool keeps headroom for other borrowers");
         } finally { fixture.close(); }
     }
@@ -1399,7 +1447,7 @@ public final class WorldStreamSourceControllerTest {
             // Current-only new9/10/11 remain wanted; the only unwanted current0 is also
             // last-presented. Drop/reload one non-nearest neighbor rather than deadlock.
             fixture.until(() -> fixture.commitLines().size() >= 14);
-            check(fixture.pool.stats().leaseClaims() <= 12, "No thirteenth source owner while useful nearest is restored");
+            check(sourceOwners(fixture) <= 12, "No thirteenth source owner while useful nearest is restored");
         } finally { fixture.close(); }
     }
 
@@ -1422,7 +1470,7 @@ public final class WorldStreamSourceControllerTest {
             // Latest nearest12 was NEVER presented; all three newly loaded fringe tiles
             // remain wanted after fast camera motion. Prior-presentation restoration is insufficient.
             fixture.until(() -> fixture.commitLines().size() >= 14);
-            check(fixture.pool.stats().leaseClaims() <= 12, "No thirteenth source owner while useful nearest is restored");
+            check(sourceOwners(fixture) <= 12, "No thirteenth source owner while useful nearest is restored");
         } finally { fixture.close(); }
     }
 
@@ -1470,7 +1518,7 @@ public final class WorldStreamSourceControllerTest {
             Files.writeString(fixture.directory.resolve("authored-sky-until-y"),Integer.toString(fixture.tiles.get(12).y()));
             fixture.controller.neighborhood(fixture.tiles.subList(4,13));
             fixture.until(()->fixture.files.opens(1024)>0);
-            check(fixture.pool.stats().leaseClaims()<=12,"Sky-blocked relief keeps source owner limit");
+            check(sourceOwners(fixture)<=12,"Sky-blocked relief keeps source owner limit");
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
             check(fixture.controller.snapshot().prepared()==9,"Useful lookahead pixels unblock victim reacquisition");
             awaitLeaseClaims(fixture,9,"Final useful frame retires old presentation pins");
@@ -1652,7 +1700,7 @@ public final class WorldStreamSourceControllerTest {
             fixture.until(()->fixture.commitLines().size()>=14);
             check(fixture.commitLines().get(12).endsWith(emptySubset?" 0":" 6"),
                     "Relief commit contains only exact live wanted subset, including legitimate empty subset");
-            check(fixture.pool.stats().leaseClaims()<=12,"Restoration never increases source owner cap");
+            check(sourceOwners(fixture)<=12,"Restoration never increases source owner cap");
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
             check(fixture.controller.snapshot().prepared()==(emptySubset?1:9),
                     "Retired requested residents are freshly source-qualified/uploaded rather than skipped");
@@ -1727,7 +1775,7 @@ public final class WorldStreamSourceControllerTest {
             // only for the last visible image. Its native resident was retired by COMMIT10.
             fixture.controller.neighborhood(fixture.tiles.subList(0, 9));
             fixture.until(() -> fixture.commitLines().size() == 11);
-            check(fixture.pool.stats().leaseClaims() <= 12,
+            check(sourceOwners(fixture) <= 12,
                     "Returning demand creates a separately charged live resident without dropping old pixels");
         } finally {
             fixture.close();
@@ -1862,9 +1910,7 @@ public final class WorldStreamSourceControllerTest {
                     () ->
                             fixture.controller.snapshot().phase()
                                     == WorldStreamSourceController.Phase.READY);
-            check(
-                    fixture.pool.stats().leaseClaims() == 9,
-                    "Outgoing base retires only after replacement pixels accepted");
+            awaitLeaseClaims(fixture, 9, "Outgoing base retires only after replacement pixels accepted");
             fixture.camera(3);
             held = fixture.nextFrame();
             var closing = fixture.controller.closeAsync();
@@ -2278,8 +2324,7 @@ public final class WorldStreamSourceControllerTest {
             check(
                     fixture.files.opens(1024) > 0,
                     "Accepted current pixels unblock remaining actual source acquisition");
-            check(
-                    fixture.pool.stats().leaseClaims() == 9,
+            awaitLeaseClaims(fixture, 9,
                     "Final accepted table retires outgoing sources without a new camera event");
         } finally {
             fixture.close();
@@ -2426,6 +2471,16 @@ public final class WorldStreamSourceControllerTest {
                 fixture.controller=null;
             }
         } finally { fixture.close(); }
+    }
+
+    /**
+     * Source owners now: atlases with an open lease plus slots reserved for a preparation (#498).
+     * Bounds use this, not leaseClaims: while a tile prepares, its texture batch and the retained
+     * copy it hands over both hold a claim on the same atlas, so one owner counts twice.
+     */
+    private static int sourceOwners(Fixture fixture) {
+        var stats = fixture.pool.stats();
+        return stats.claimedEntries() + stats.reservedEntries();
     }
 
     /**
@@ -2637,9 +2692,7 @@ public final class WorldStreamSourceControllerTest {
                     () ->
                             fixture.controller.snapshot().phase()
                                     == WorldStreamSourceController.Phase.READY);
-            check(
-                    fixture.pool.stats().leaseClaims() == 1,
-                    "Bounded retry recovers actual source material without new demand");
+            awaitLeaseClaims(fixture, 1, "Bounded retry recovers actual source material without new demand");
         } finally {
             Files.deleteIfExists(fixture.directory.resolve("authored-hold-unused-credit"));
             held.close();
@@ -2908,6 +2961,21 @@ public final class WorldStreamSourceControllerTest {
                 return Files.exists(path) ? Files.readAllLines(path) : List.of();
             } catch (java.io.IOException error) {
                 throw new java.io.UncheckedIOException(error);
+            }
+        }
+
+        /** The controller's current commit receipt, read under its lock. */
+        Object currentReceipt() {
+            try {
+                var lock = WorldStreamSourceController.class.getDeclaredField("lock");
+                var receipt = WorldStreamSourceController.class.getDeclaredField("currentReceipt");
+                lock.setAccessible(true);
+                receipt.setAccessible(true);
+                synchronized (lock.get(controller)) {
+                    return receipt.get(controller);
+                }
+            } catch (ReflectiveOperationException error) {
+                throw new AssertionError(error);
             }
         }
 

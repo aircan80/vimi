@@ -5,6 +5,7 @@ import com.vibeminer.concepts.world.WorldExteriorObjects;
 import com.vibeminer.concepts.world.WorldTerrainStreaming;
 import com.vibeminer.concepts.world.WorldWaterPreview;
 import com.vibeminer.formats.world.WorldFormats;
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.bgfx.WorldStreamTileWriter;
 import com.vibeminer.rendering.bgfx.WorldStreamTransport;
 import com.vibeminer.rendering.world.TerrainTileAtlas;
@@ -412,6 +413,7 @@ final class WorldStreamSourceBridge {
             try {
                 set = source.prepareExteriorObjects(scope, tile, cancellation, detail, interiors);
                 logModelFailure(set);
+                set.tallyCounts();
                 summary = ExteriorSummary.of(set);
                 note = note(summary);
             } catch (CancellationException canceled) {
@@ -427,8 +429,13 @@ final class WorldStreamSourceBridge {
                 WorldDiagnostics.degraded("exterior objects",
                         "World exterior objects failed; tile kept as terrain only", failure);
             }
-            return finish(failed ? null : ObjectSet.of(set), failed, note, summary, tile, cancellation,
-                    creatures);
+            long copying = WorldStageTimings.start();
+            try {
+                return finish(failed ? null : ObjectSet.of(set), failed, note, summary, tile,
+                        cancellation, creatures);
+            } finally {
+                WorldStageTimings.stop("objects.bridge.copyAndCreatures", copying);
+            }
         } finally {
             if (set != null) set.close();
         }
@@ -822,7 +829,8 @@ final class WorldStreamSourceBridge {
             Cancellation cancellation) {
         for (var image : set.images()) {
             cancellation.check();
-            builder.image(image.width(), image.height(), image.rgba());
+            // The chain as stored: RGBA8, or the file's own BC blocks (#374).
+            builder.image(image.width(), image.height(), image.format(), image.data());
         }
         for (var model : set.models()) {
             builder.model();

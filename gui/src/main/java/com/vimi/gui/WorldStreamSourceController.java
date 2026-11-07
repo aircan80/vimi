@@ -7,6 +7,7 @@ import com.vibeminer.concepts.world.WorldService;
 import com.vibeminer.concepts.world.WorldTerrainStreaming;
 import com.vibeminer.concepts.world.WorldTerrainTextureSource;
 import com.vibeminer.formats.world.WorldFormats;
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.bgfx.WorldStreamTransport;
 import com.vibeminer.rendering.world.TerrainCamera;
 import com.vibeminer.rendering.world.TerrainGround;
@@ -238,6 +239,11 @@ final class WorldStreamSourceController {
     private Snapshot snapshot =
             new Snapshot(Phase.QUALIFYING, "Qualifying world sources", 0, 1, null, null);
     private Presentation queued, borrowed;
+    // Opt-in measurement only: when the current receipt was applied, 0 while timings are off.
+    private long committedAt;
+    // Opt-in hand-off stamps (worker-owned); 0 while timings are off.
+    private volatile long resultAt;
+    private long resultSeenAt, commitDoneAt;
     private boolean validated;
     // Worker owns every source/transport owner below. FX sees only immutable table aliases under
     // lock.
@@ -434,7 +440,18 @@ final class WorldStreamSourceController {
     private java.util.concurrent.CompletableFuture<WorldStreamTransport.CommitReceipt> issueCommit(
             long policy, WorldStreamTransport.Resident[] ordered) {
         commitIssuedCapacity = session.capacityRevision();
-        return session.commit(policy, ordered);
+        long started = WorldStageTimings.start();
+        var issued = session.commit(policy, ordered);
+        if (started != 0L) {
+            issued.whenComplete(
+                    (ignored, failure) ->
+                            WorldStageTimings.stop(
+                                    failure == null
+                                            ? "parent.commit.roundTrip"
+                                            : "parent.commit.refusedRoundTrip",
+                                    started));
+        }
+        return issued;
     }
 
     /** The resident bound, never above what the open session's view distance admits. */
@@ -543,6 +560,12 @@ final class WorldStreamSourceController {
                 borrowed = null;
                 validated = false;
                 if (accepted) {
+                    // The first accepted frame drawn from the committed receipt; a borrowed frame
+                    // of an older table, accepted later, does not end the measurement.
+                    if (borrowedReceipt == currentReceipt && acceptedReceipt != currentReceipt) {
+                        WorldStageTimings.stop("parent.commit.toAcceptedFrame", committedAt);
+                        committedAt = 0L;
+                    }
                     historicalRaster=false;
                     acceptedSequence = value.sequence();
                     acceptedReceipt = borrowedReceipt;
@@ -861,6 +884,8 @@ final class WorldStreamSourceController {
                     if(creditTarget!=null && same(creditTarget,pending.tile)) creditTarget=null;
                     staged = new Entry(resident, prepared);
                     stagedReservation = pending.reservation;
+                    resultSeenAt = WorldStageTimings.lap(
+                            "handoff.controller.resultToSeen", resultAt);
                     entries.put(resident, staged);
                     seed(prepared);
                 } catch (CompletionException failure) {
@@ -996,9 +1021,11 @@ final class WorldStreamSourceController {
                 wake.set(true);
                 return;
             }
+            commitDoneAt = WorldStageTimings.start();
             synchronized (lock) {
                 current = committing;
                 currentReceipt = receipt;
+                committedAt = WorldStageTimings.start();
                 skyPending=false;
                 committing = List.of();
                 // A queued frame of the old receipt can no longer be presented; release it so
@@ -1047,6 +1074,11 @@ final class WorldStreamSourceController {
             target.add(staged);
             staged = null;
             stagedReservation = null;
+            if (resultSeenAt != 0L) {
+                WorldStageTimings.lap(
+                        "handoff.controller.resultSeenToCommitIssued", resultSeenAt);
+                resultSeenAt = 0L;
+            }
             committing = List.copyOf(target);
             commit =
                     issueCommit(
@@ -1201,8 +1233,19 @@ final class WorldStreamSourceController {
             pending.issuedDemand = stepDemand;
             pending.issuedSourceRetirement = sourceRetirementRevision;
             pending.issuedGeometry = source.geometryReleaseRevision();
+            long producing = WorldStageTimings.start();
             pending.result = pending.reservation.produce(pending.producer);
-            pending.result.whenComplete((ignored, failure) -> kick());
+            if (commitDoneAt != 0L) {
+                WorldStageTimings.lap(
+                        "handoff.controller.commitDoneToNextReserve", commitDoneAt);
+                commitDoneAt = 0L;
+            }
+            pending.result.whenComplete((ignored, failure) -> {
+                WorldStageTimings.stop(failure == null ? "parent.tile.produceToStaged"
+                        : "parent.tile.produceFailed", producing);
+                resultAt = WorldStageTimings.start();
+                kick();
+            });
             publish(Phase.PREPARING, "Preparing terrain, textures and upload");
             return;
         }
@@ -1240,7 +1283,16 @@ final class WorldStreamSourceController {
                 var lane = source;
                 var owner = scope;
                 work.prepared = CompletableFuture.supplyAsync(
-                        () -> exteriorPreparer.prepare(lane, owner, tile, work.cancellation),
+                        () -> {
+                            long preparing = WorldStageTimings.start();
+                            try {
+                                return exteriorPreparer.prepare(lane, owner, tile, work.cancellation);
+                            } finally {
+                                WorldStageTimings.stop(work.cancellation.isCanceled()
+                                        ? "parent.objects.prepareCanceled" : "parent.objects.prepare",
+                                        preparing);
+                            }
+                        },
                         exteriorWorker);
                 exterior = work;
                 work.prepared.whenComplete((ignored, failure) -> kick());
@@ -1294,9 +1346,13 @@ final class WorldStreamSourceController {
             work.buildingsFailed = copy.failed();
             work.creatures = copy.creatures();
             work.picks = copy.picks();
+            long attaching = WorldStageTimings.start();
             work.releaseRevision = session.objectsReleaseRevision();
             work.attached = session.attachObjects(work.entry.resident(), copy.exterior());
-            work.attached.whenComplete((ignored, failure) -> kick());
+            work.attached.whenComplete((ignored, failure) -> {
+                WorldStageTimings.stop("parent.objects.attachRoundTrip", attaching);
+                kick();
+            });
             return;
         }
         if (!work.attached.isDone()) return;
@@ -1490,8 +1546,10 @@ final class WorldStreamSourceController {
         synchronized (lock) {
             if (borrowed != null || queued != null || currentReceipt == null) return;
         }
+        long taking = WorldStageTimings.start();
         var frame = session.takeLatestFrame();
         if (frame.isPresent()) {
+            WorldStageTimings.stop("parent.frame.takeLatest", taking);
             var candidate=frame.orElseThrow();
             if(candidate.content()!=currentReceipt) { drop(candidate, "content"); return; }
             var latest=camera;

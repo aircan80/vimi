@@ -135,9 +135,10 @@ final class WorldStreamObjectCulling {
     /** One frame's camera and projection, in the explorer's eye convention. Immutable. */
     static final class View {
         private final double x, y, z, cy, sy, cp, sp;
-        private final double kx, ky, nx, ny, focal;
+        private final double kx, ky, nx, ny, focal, cut;
 
-        private View(TerrainCamera camera, int width, int height) {
+        private View(TerrainCamera camera, int width, int height, double cut) {
+            this.cut = cut;
             x = camera.x();
             y = camera.y();
             z = camera.z();
@@ -145,9 +146,9 @@ final class WorldStreamObjectCulling {
             sy = Math.sin(camera.yaw());
             cp = Math.cos(camera.pitch());
             sp = Math.sin(camera.pitch());
-            // TerrainCamera.reversedProjection scales eye right by FOCAL and eye up by FOCAL *
-            // width
-            // / height, so the frustum's half-extents per unit depth are their inverses.
+            // TerrainCamera.reversedProjection scales eye right by FOCAL and eye up by
+            // FOCAL * width / height, so the frustum's half-extents per unit depth are their
+            // inverses.
             kx = 1 / TerrainCamera.FOCAL;
             ky = height / (TerrainCamera.FOCAL * width);
             nx = Math.sqrt(1 + kx * kx);
@@ -155,12 +156,21 @@ final class WorldStreamObjectCulling {
             focal = TerrainCamera.focalPixels(width);
         }
 
+        /** A view cut at {@link TerrainCamera#WHOLE_TRIANGLE_FAR}. */
         static View of(TerrainCamera camera, int width, int height) {
+            return of(camera, width, height, TerrainCamera.WHOLE_TRIANGLE_FAR);
+        }
+
+        /**
+         * A view cut at {@code cut}, the eye depth past which the shaders draw nothing: the
+         * renderer passes the frame's fog cut, so the CPU cull and the shaders agree.
+         */
+        static View of(TerrainCamera camera, int width, int height, double cut) {
             Objects.requireNonNull(camera);
-            if (width < 1 || height < 1) {
-                throw new IllegalArgumentException("Frame dimensions");
+            if (width < 1 || height < 1 || !(cut > 0)) {
+                throw new IllegalArgumentException("Frame dimensions or cut");
             }
-            return new View(camera, width, height);
+            return new View(camera, width, height, cut);
         }
 
         /** Whether sphere i of {@code spheres} (x, y, z, radius per sphere) may draw a pixel. */
@@ -177,7 +187,7 @@ final class WorldStreamObjectCulling {
             double up = cp * dz - sp * forward;
             double depth = sp * dz + cp * forward;
             if (depth + radius < TerrainCamera.NEAR
-                    || depth - radius > TerrainCamera.WHOLE_TRIANGLE_FAR
+                    || depth - radius > cut
                     || right - kx * depth > radius * nx
                     || -right - kx * depth > radius * nx
                     || up - ky * depth > radius * ny
