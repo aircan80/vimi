@@ -270,7 +270,7 @@ final class Db2Numbers {
                 if (usesRaw(s, f)) {
                     interpretation =
                             new Db2Types.Interpretation(
-                                    "raw-physical-integer-v1",
+                                    Db2Types.RAW_PHYSICAL_POLICY,
                                     s.physicalBits(),
                                     s.kind == 5,
                                     f.integerBits() == null ? 32 : f.integerBits(),
@@ -279,7 +279,7 @@ final class Db2Numbers {
                                             ? "Candidate integer width is narrower than the physical value width. Explicit raw evidence preserves this entire column without narrowing; semantic references and calculations are not admitted."
                                             : s.collides
                                                     ? "Candidate integer width is narrower than the physical value width. Keeping only the low bits would give different stored values the same number, so this entire column keeps its physical integers; semantic references and calculations are not admitted."
-                                                    : "Unverified provider field: values preserve the physical integer without narrowing to the candidate schema. Names, relationships and semantic meaning are unverified.");
+                                                    : Db2Types.UNVERIFIED_RAW_WARNING);
                 }
                 if (s.narrow) {
                     narrowing =
@@ -305,12 +305,12 @@ final class Db2Numbers {
                 if (raw) {
                     interpretation =
                             new Db2Types.Interpretation(
-                                    "raw-physical-integer-v1",
+                                    Db2Types.RAW_PHYSICAL_POLICY,
                                     32,
                                     false,
                                     width,
                                     Boolean.TRUE.equals(f.unsigned()),
-                                    "Unverified provider field: values preserve the physical integer without narrowing to the candidate schema. Names, relationships and semantic meaning are unverified.");
+                                    Db2Types.UNVERIFIED_RAW_WARNING);
                 }
             }
             for (int i = 0; i < f.arrayLength(); i++) {

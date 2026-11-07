@@ -23,6 +23,29 @@ public final class ClientHotfixDetailsTest {
                         var ref = (TableTypes.Ref) values[0];
                         var id = (Long) values[1];
                         if (id != null && id == 998) return CompletableFuture.completedFuture(Optional.empty());
+                        if (id != null && (id == 997 || id == 996)) {
+                            var unresolved = new HotfixViewInfo.RowSource(HotfixViewInfo.Origin.UNRESOLVED,
+                                    1, 70, 5, 1, id == 997 ? "INVALID" : "VALID", "UNKNOWN");
+                            return CompletableFuture.completedFuture(Optional.of(new HotfixViewInfo(
+                                    "private-input", "private-identity", "policy-v1", 10, 9, 0, 0, 0, 0, 1, 0,
+                                    unresolved)));
+                        }
+                        if (id != null && (id == 993 || id == 992)) {
+                            var undecoded = new HotfixViewInfo.RowSource(
+                                    id == 993 ? HotfixViewInfo.Origin.HOTFIX : HotfixViewInfo.Origin.UNRESOLVED,
+                                    1, 70, 5, 1, "VALID", id == 993 ? "OPTIONAL_KEY_DATA" : "TRAILING_BYTES:28");
+                            return CompletableFuture.completedFuture(Optional.of(new HotfixViewInfo(
+                                    "private-input", "private-identity", "policy-v1", 10, 9, 0, 0, 0, 0, 1, 0,
+                                    undecoded)));
+                        }
+                        if (id != null && (id == 995 || id == 994)) {
+                            String reason = id == 995 ? HotfixViewInfo.TABLE_BUDGET : HotfixViewInfo.RETAINED_BUDGET;
+                            var base = new HotfixViewInfo.RowSource(HotfixViewInfo.Origin.BASE,
+                                    null, null, null, null, null, reason);
+                            return CompletableFuture.completedFuture(Optional.of(new HotfixViewInfo(
+                                    "private-input", null, "policy-v1", 10, 10, 0, 0, 0, 0, 0, 0,
+                                    base, reason)));
+                        }
                         var origin = ref.name().equals("SpellName") || ref.name().equals("SpellMisc")
                                 ? HotfixViewInfo.Origin.HOTFIX : HotfixViewInfo.Origin.BASE;
                         if (id != null && id == 999) origin = HotfixViewInfo.Origin.NOT_PUBLIC;
@@ -57,6 +80,28 @@ public final class ClientHotfixDetailsTest {
                 && traitLines.get(3).contains("local hotfix cache"), "Trait talents report their trait rows");
         check(ClientHotfixDetails.row(tables, "Spell", 999, "Description", "70707", Cancellation.NONE)
                 .join().contains("hidden"), "Not-public origin stays explicit");
+        check(ClientHotfixDetails.row(tables, "Item", 997, "Item", "70707", Cancellation.NONE)
+                .join().equals("Item: hidden by local hotfix cache (INVALID), build 70707"),
+                "INVALID cache records are explained as hidden by the cache");
+        check(ClientHotfixDetails.row(tables, "Item", 996, "Item", "70707", Cancellation.NONE)
+                .join().contains("unresolved"), "Other unresolved records stay unresolved");
+        check(ClientHotfixDetails.row(tables, "BroadcastText", 993, "Text", "70707", Cancellation.NONE).join()
+                        .equals("Text: local hotfix cache, build 70707 (carried a key, not needed to read this row)"),
+                "A row that carried a key is shown, with a note");
+        check(ClientHotfixDetails.row(tables, "BroadcastText", 992, "Text", "70707", Cancellation.NONE).join()
+                        .contains("has 28 bytes its layout does not describe"),
+                "Trailing bytes state their count");
+        check(ClientHotfixDetails.undecoded("TRAILING_BYTES:<script>").contains("unresolved"),
+                "Only a fixed-format count is ever shown");
+        check(ClientHotfixDetails.row(tables, "ItemSparse", 995, "Item", "70707", Cancellation.NONE)
+                .join().contains("not applied to this table (too large)"), "Oversized overlay is visible");
+        check(ClientHotfixDetails.row(tables, "ItemSparse", 994, "Item", "70707", Cancellation.NONE)
+                .join().contains("overlay memory busy, showing base rows"), "Busy overlay memory is not called too large");
+        check(ClientHotfixDetails.unavailable(HotfixViewInfo.OPERATION_TABLES).contains("more than 8 tables")
+                && !ClientHotfixDetails.unavailable(HotfixViewInfo.OPERATION_TABLES).contains("memory busy"),
+                "Too many tables in one request has its own reason");
+        check(ClientHotfixDetails.unavailable(HotfixViewInfo.BASE_UNAVAILABLE).contains("base table could not be read"),
+                "Unreadable base has its own reason");
         check(ClientHotfixDetails.row(tables, "Spell", 998, "Description", "70707", Cancellation.NONE)
                 .join().contains("origin not retained"), "Evicted metadata does not imply base origin");
         var header = java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN)
@@ -68,6 +113,20 @@ public final class ClientHotfixDetailsTest {
         } catch (java.util.concurrent.CompletionException mismatch) {
             check(ClientHotfixDetails.failure(mismatch).contains("different client build"),
                     "Build mismatch remains useful");
+        }
+        var three = java.nio.ByteBuffer.allocate(44 + 3 * 32).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        three.putInt(0x48544658).putInt(9).putInt(70707).put(new byte[32]);
+        for (int i = 0; i < 3; i++)
+            three.putInt(0x48544658).putInt(70).putInt(1).putInt(1).putInt(0x12345678).putInt(i).putInt(0)
+                    .put((byte) 2).put(new byte[3]);
+        try {
+            HotfixCacheReader.inspect(com.vibeminer.formats.db2.Db2ByteSource.memory(three.array()), 70707,
+                    new HotfixCacheReader.Limits(64L << 20, 2, 1 << 20), Cancellation.NONE).join();
+            throw new AssertionError("Over-bound cache accepted");
+        } catch (java.util.concurrent.CompletionException tooMany) {
+            check(ClientHotfixDetails.failure(tooMany)
+                            .equals("The cache holds 3 records; vimi reads at most 2. Its hotfixes are not applied."),
+                    "Record bound refusal names the count and the bound: " + ClientHotfixDetails.failure(tooMany));
         }
         var pathFailure = new java.io.UncheckedIOException("storage failed", new java.io.IOException("/private/client/path"));
         check(!ClientHotfixDetails.failure(pathFailure).contains("/private"), "No original path in failure label");

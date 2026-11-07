@@ -95,7 +95,13 @@ final class WorldStreamLaunchOwner {
         private final AtomicBoolean initialized = new AtomicBoolean();
         private volatile boolean startupDone;
         private final AtomicBoolean stopping = new AtomicBoolean();
+        // Runs once, without a lock, when stopping first becomes true (or at once if it already
+        // is). Must not block.
+        private final java.util.concurrent.CopyOnWriteArrayList<Runnable> stopListeners =
+                new java.util.concurrent.CopyOnWriteArrayList<>();
         private final CompletableFuture<Void> childExited = new CompletableFuture<>();
+        // The child's own terminal CLOSED status: after it, only process exit remains.
+        private final CompletableFuture<Void> closedAcknowledged = new CompletableFuture<>();
         private final CompletableFuture<Drain> actualDrain = new CompletableFuture<>();
         private final CompletableFuture<Drain> boundedClose = new CompletableFuture<>();
         private final List<AtomicBoolean> workers = new ArrayList<>(MAX_WORKERS);
@@ -119,6 +125,22 @@ final class WorldStreamLaunchOwner {
             startupDone = startupMillis == 0;
         }
 
+        /** The child reported CLOSED: its drain is done and only process exit remains. */
+        void closedAcknowledged() {
+            closedAcknowledged.complete(null);
+        }
+
+        /**
+         * How long close lets a live child finish on its own before signalling it. A child that has
+         * not yet reported CLOSED is still draining (decoders, GPU teardown take a few hundred ms
+         * on a loaded host), so it gets up to {@code drainMillis}; after CLOSED only {@code
+         * graceMillis} for process exit. Pure, for tests.
+         */
+        static long exitWaitMillis(
+                boolean acknowledged, long sinceCloseMillis, long graceMillis, long drainMillis) {
+            return acknowledged ? graceMillis : drainMillis - sinceCloseMillis;
+        }
+
         /** Metadata acknowledgement only; never a callback or a source readiness claim. */
         void initialized() {
             initialized.set(true);
@@ -126,6 +148,14 @@ final class WorldStreamLaunchOwner {
 
         boolean stopping() {
             return stopping.get();
+        }
+
+        /** Wake-up hook for parked owner workers: runs once when stopping begins. */
+        void onStopping(Runnable listener) {
+            stopListeners.add(listener);
+            if (stopping.get() && stopListeners.remove(listener)) {
+                listener.run();
+            }
         }
 
         IOException failure() {
@@ -249,6 +279,11 @@ final class WorldStreamLaunchOwner {
         /** Never joins, closes a pipe, waits for a Process or calls user code on the caller. */
         CompletableFuture<Drain> closeAsync() {
             if (stopping.compareAndSet(false, true)) {
+                for (var listener : stopListeners) {
+                    if (stopListeners.remove(listener)) {
+                        listener.run();
+                    }
+                }
                 Thread.ofVirtual()
                         .name("world-v2-parent-close-deadline")
                         .start(
@@ -303,7 +338,7 @@ final class WorldStreamLaunchOwner {
                                 true); // Best effort, never a proof of exit or cleanup permission.
                         throw new IOException("Started process has no exit observation");
                     }
-                    if (!await(exit, graceMillis)) {
+                    if (!awaitOrderlyExit(exit)) {
                         signal(child, false);
                         if (!await(exit, 250)) {
                             signal(child, true);
@@ -385,6 +420,45 @@ final class WorldStreamLaunchOwner {
             failure.setStackTrace(new StackTraceElement[0]);
             return failure;
         }
+
+        /**
+         * Waits for the child to exit on its own: until it reports CLOSED (bounded by the drain
+         * budget, which leaves the signal steps inside the close deadline), then {@code
+         * graceMillis} more for the exit itself. Signalling a child before its CLOSED terminates it
+         * mid-drain (exit 1 on Windows) and the session ends with "EOF before CLOSED" (#431).
+         */
+        private boolean awaitOrderlyExit(CompletableFuture<Process> exit) throws Exception {
+            long start = System.nanoTime();
+            long drainMillis = Math.max(graceMillis, deadlineMillis - SIGNAL_RESERVE_MILLIS);
+            while (true) {
+                long since = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+                boolean acknowledged = closedAcknowledged.isDone();
+                long wait = exitWaitMillis(acknowledged, since, graceMillis, drainMillis);
+                if (!acknowledged) {
+                    if (wait <= 0) {
+                        return exit.isDone();
+                    }
+                    // Wake on exit or on CLOSED, whichever comes first.
+                    try {
+                        CompletableFuture.anyOf(exit, closedAcknowledged)
+                                .get(wait, TimeUnit.MILLISECONDS);
+                    } catch (TimeoutException timeout) {
+                        return exit.isDone();
+                    }
+                    if (exit.isDone()) {
+                        return true;
+                    }
+                    continue; // CLOSED arrived: now only the exit grace
+                }
+                return await(exit, wait);
+            }
+        }
+
+        /**
+         * Kept for the exit grace and the signal steps after the orderly wait, inside the deadline.
+         */
+        // 250 ms exit grace + 250 ms after destroy + 2 s after destroyForcibly, plus headroom.
+        static final long SIGNAL_RESERVE_MILLIS = 3000;
 
         private static boolean await(CompletableFuture<Process> exit, long millis)
                 throws Exception {

@@ -3,20 +3,18 @@ package com.vibeminer.store;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 /** Actual backend process termination checks, independent of the earlier experimental backend. */
-@Timeout(30)
+@Timeout(KillPoint.TEST_TIMEOUT_SECONDS)
 final class SqliteStoreProcessRecoveryTest {
     @TempDir Path directory;
 
@@ -54,24 +52,7 @@ final class SqliteStoreProcessRecoveryTest {
                         .redirectErrorStream(true)
                         .redirectOutput(log.toFile())
                         .start();
-        try {
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
-            while (!Files.exists(marker) && child.isAlive() && System.nanoTime() < deadline) {
-                Thread.sleep(20);
-            }
-            assertTrue(
-                    Files.exists(marker),
-                    () -> {
-                        try {
-                            return Files.readString(log);
-                        } catch (java.io.IOException error) {
-                            return error.toString();
-                        }
-                    });
-        } finally {
-            child.destroyForcibly();
-            assertTrue(child.waitFor(5, TimeUnit.SECONDS));
-        }
+        KillPoint.kill(child, marker, log);
         byte[] bytes = encoded();
         ObjectKey key = key(bytes);
         var store = SqliteObjectStore.open(database).join();

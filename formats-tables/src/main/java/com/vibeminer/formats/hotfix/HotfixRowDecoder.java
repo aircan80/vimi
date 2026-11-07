@@ -17,7 +17,7 @@ import java.util.Objects;
  * select cache entries, authenticate sources, apply overlays or mint native capture evidence.
  */
 public final class HotfixRowDecoder {
-    public static final String REVISION = "hotfix-flat-dbd-v1";
+    public static final String REVISION = "hotfix-flat-dbd-v6";
 
     public enum Reason {
         LIMIT,
@@ -29,35 +29,121 @@ public final class HotfixRowDecoder {
         TRUNCATED,
         TEXT,
         INLINE_ID,
-        TRAILING_BYTES
+        TRAILING_BYTES,
+        /** Non-finite single; base DB2 rows refuse these too. */
+        FLOAT,
+        /**
+         * Negative value in a raw-physical column, whose base rows print unsigned physical values.
+         */
+        RAW_INTEGER
+    }
+
+    /** Table hash of TactKey, which opens a server's optional key data block. */
+    public static final int TACT_KEY_HASH = 0xDF2F53CF;
+
+    /** Optional key data: table hash (4) + key name (8) + key (16). */
+    public static final int OPTIONAL_KEY_BYTES = 28;
+
+    /**
+     * A TactKey delivered in an optional-data block, for key loading only. The key is copied in and
+     * out, and {@code toString} renders neither the name nor the key.
+     */
+    public record OptionalKey(long name, byte[] key) {
+        public OptionalKey {
+            if (key == null || key.length != 16) {
+                throw new IllegalArgumentException("TactKey must be 16 bytes");
+            }
+            key = key.clone();
+        }
+
+        @Override
+        public byte[] key() {
+            return key.clone();
+        }
+
+        /** Zeroes this record's key once key loading has copied it; best effort. */
+        public void clear() {
+            java.util.Arrays.fill(key, (byte) 0);
+        }
+
+        @Override
+        public String toString() {
+            return "OptionalKey[redacted]";
+        }
+    }
+
+    /**
+     * The TactKey block a hotfix body ends in, or null. Only meaningful for a body whose decode set
+     * {@link Decoded#optionalKeyData()}: the decoder decides that the block is not part of the row.
+     */
+    public static OptionalKey optionalKey(byte[] payload) {
+        if (payload.length < OPTIONAL_KEY_BYTES) {
+            return null;
+        }
+        var input = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
+        int at = payload.length - OPTIONAL_KEY_BYTES;
+        if (input.getInt(at) != TACT_KEY_HASH) {
+            return null;
+        }
+        byte[] key = java.util.Arrays.copyOfRange(payload, at + 12, at + OPTIONAL_KEY_BYTES);
+        try {
+            return new OptionalKey(input.getLong(at + 4), key);
+        } finally {
+            java.util.Arrays.fill(key, (byte) 0);
+        }
     }
 
     public static final class Invalid extends IllegalArgumentException {
         private static final long serialVersionUID = 1L;
         private final Reason reason;
+        private final int trailingBytes;
 
         private Invalid(Reason reason) {
+            this(reason, 0);
+        }
+
+        private Invalid(Reason reason, int trailingBytes) {
             super("Hotfix row " + reason.name());
             this.reason = reason;
+            this.trailingBytes = trailingBytes;
         }
 
         public Reason reason() {
             return reason;
         }
+
+        /** Bytes left after the described fields, for {@code TRAILING_BYTES}; else 0. */
+        public int trailingBytes() {
+            return trailingBytes;
+        }
+
+        /** Fixed-vocabulary detail: the reason, plus the byte count for trailing bytes. */
+        public String detail() {
+            return reason == Reason.TRAILING_BYTES
+                    ? reason.name() + ":" + trailingBytes
+                    : reason.name();
+        }
     }
 
-    /** Fixed upper ceilings cannot be widened by a caller. */
+    /**
+     * Fixed upper ceilings cannot be widened by a caller. The column ceiling equals the base DB2
+     * reader's flattened-column bound ({@code Db2Types.Limits().maxColumns()}): a hotfix row never
+     * has more columns than a header the base reader accepts (PlayerCondition has 224).
+     */
     public record Limits(
             int maxPayloadBytes, int maxColumns, int maxStringBytes, int maxDecodedChars) {
+        /** Same bound as the base reader's flattened columns. */
+        public static final int MAX_COLUMNS = 512;
+
         public Limits() {
-            this(65536, 128, 16384, 131072);
+            this(65536, MAX_COLUMNS, 16384, 131072);
         }
 
         public Limits {
             if (maxPayloadBytes < 1
                     || maxPayloadBytes > 65536
                     || maxColumns < 1
-                    || maxColumns > 128
+                    || maxColumns > MAX_COLUMNS
                     || maxStringBytes < 1
                     || maxStringBytes > 16384
                     || maxDecodedChars < 1
@@ -73,10 +159,15 @@ public final class HotfixRowDecoder {
      * does not retain raw flags/id index, so they are explicit, not guessed from names.
      */
     public record Layout(
-            TableSchema schema, Db2Types.Header header, int nativeFlags, int nativeIdFieldIndex) {
+            TableSchema schema,
+            Db2Types.Header header,
+            int nativeFlags,
+            int nativeIdFieldIndex,
+            java.util.Set<Integer> fittedRawColumns) {
         public Layout {
             Objects.requireNonNull(schema);
             Objects.requireNonNull(header);
+            fittedRawColumns = java.util.Set.copyOf(fittedRawColumns);
             if (nativeFlags < 0
                     || nativeFlags > 65535
                     || nativeIdFieldIndex < 0
@@ -84,12 +175,69 @@ public final class HotfixRowDecoder {
                 throw new IllegalArgumentException("Hotfix layout scalars");
             }
         }
+
+        /** No raw-physical column admitted: any such column refuses the table. */
+        public Layout(
+                TableSchema schema,
+                Db2Types.Header header,
+                int nativeFlags,
+                int nativeIdFieldIndex) {
+            this(schema, header, nativeFlags, nativeIdFieldIndex, java.util.Set.of());
+        }
     }
 
-    /** Values may include key material; toString deliberately does not render any cells. */
-    public record Decoded(Db2Types.Row row, int consumedBytes) {
+    /**
+     * Whether a header column is a raw-physical integer the hotfix body may decode at its declared
+     * width: an unverified-name, non-relation field whose interpretation describes exactly the
+     * declared width and signedness. Raw-evidence and low-bit-collision columns never qualify. The
+     * caller must still show that every base value of the column fits that width.
+     */
+    public static boolean rawCandidate(Db2Types.Column column, TableSchema.SchemaColumn field) {
+        var raw = column.interpretation();
+        return raw != null
+                && Db2Types.RAW_PHYSICAL_POLICY.equals(raw.policy())
+                && Db2Types.UNVERIFIED_RAW_WARNING.equals(raw.warning())
+                && field.kind() == TableSchema.ColumnKind.INT
+                && field.id() == TableSchema.KeyStorage.NONE
+                && field.relation() == TableSchema.KeyStorage.NONE
+                && field.bits() != null
+                && raw.candidateBits() == field.bits()
+                && raw.candidateUnsigned() == Boolean.TRUE.equals(field.unsigned())
+                && raw.physicalBits() >= raw.candidateBits()
+                && !raw.physicalSigned();
+    }
+
+    /** Whether a base row's text for a raw candidate column is a value of its declared width. */
+    public static boolean fitsDeclared(String text, Db2Types.Interpretation raw) {
+        long value;
+        try {
+            value = Long.parseLong(text);
+        } catch (NumberFormatException notDecimal) {
+            return false;
+        }
+        int bits = raw.candidateBits();
+        // Base rows print the physical unsigned value; only non-negative declared values have the
+        // same text in base and hotfix rows.
+        long limit =
+                raw.candidateUnsigned()
+                        ? (bits >= 63 ? Long.MAX_VALUE : 1L << bits)
+                        : 1L << (bits - 1);
+        return value >= 0 && value < limit;
+    }
+
+    /**
+     * Values may include key material; toString deliberately does not render any cells. {@code
+     * optionalKeyData} is true when the body was followed by a server optional-data block for the
+     * TactKey table (table hash, 8-byte key name, 16-byte key). The row is fully described without
+     * it; the block is stripped and never part of the row.
+     */
+    public record Decoded(Db2Types.Row row, int consumedBytes, boolean optionalKeyData) {
         public Decoded {
             Objects.requireNonNull(row);
+        }
+
+        public Decoded(Db2Types.Row row, int consumedBytes) {
+            this(row, consumedBytes, false);
         }
 
         @Override
@@ -142,6 +290,8 @@ public final class HotfixRowDecoder {
                 if (field.id() == TableSchema.KeyStorage.NONINLINE) {
                     value = Long.toString(recordId);
                 } else if (field.kind() == TableSchema.ColumnKind.INT) {
+                    boolean rawColumn =
+                            layout.header().columns().get(values.size()).interpretation() != null;
                     int bits = field.bits();
                     need(input, bits / 8);
                     long raw = integer(input, bits);
@@ -150,18 +300,24 @@ public final class HotfixRowDecoder {
                             throw invalid(Reason.INLINE_ID);
                         }
                         value = Long.toString(recordId);
+                    } else if (Boolean.TRUE.equals(field.unsigned())) {
+                        value = Long.toUnsignedString(raw);
                     } else {
-                        value =
-                                Boolean.TRUE.equals(field.unsigned())
-                                        ? Long.toUnsignedString(raw)
-                                        : Long.toString(
-                                                bits == 64
-                                                        ? raw
-                                                        : (raw << (64 - bits)) >> (64 - bits));
+                        long signed = bits == 64 ? raw : (raw << (64 - bits)) >> (64 - bits);
+                        if (rawColumn && signed < 0) {
+                            // The base row would print a physical unsigned value instead.
+                            throw invalid(Reason.RAW_INTEGER);
+                        }
+                        value = Long.toString(signed);
                     }
                 } else if (field.kind() == TableSchema.ColumnKind.FLOAT) {
                     need(input, 4);
-                    value = Float.toString(input.getFloat());
+                    float single = input.getFloat();
+                    if (!Float.isFinite(single)) {
+                        throw invalid(Reason.FLOAT);
+                    }
+                    // Same text as base DB2 rows; the effective view mixes both in one table.
+                    value = com.vibeminer.formats.db2.SingleText.format(single);
                 } else {
                     value = text(input, limits, token);
                 }
@@ -173,11 +329,22 @@ public final class HotfixRowDecoder {
             }
         }
         token.check();
+        boolean optionalKeyData = false;
         if (input.hasRemaining()) {
-            throw invalid(Reason.TRAILING_BYTES);
+            int rest = input.remaining();
+            if (rest == OPTIONAL_KEY_BYTES && input.getInt(input.position()) == TACT_KEY_HASH) {
+                // A recognized optional key block after a fully described row: the row reads
+                // the same without it, so it is stripped. Its bytes never reach the row.
+                optionalKeyData = true;
+            } else {
+                // Zero padding included: extra bytes mean the layout may not describe this row.
+                throw new Invalid(Reason.TRAILING_BYTES, rest);
+            }
         }
         return new Decoded(
-                new Db2Types.Row(recordId, false, null, values, List.of()), input.position());
+                new Db2Types.Row(recordId, false, null, values, List.of()),
+                input.position(),
+                optionalKeyData);
     }
 
     private static void validate(Layout layout, long tableHash, Limits limits, Cancellation token) {
@@ -266,7 +433,9 @@ public final class HotfixRowDecoder {
                 if (!name.equals(actual.name())
                         || !kind.equals(actual.kind())
                         || actual.isId() != (field.id() != TableSchema.KeyStorage.NONE)
-                        || actual.interpretation() != null) {
+                        || actual.interpretation() != null
+                                && !(layout.fittedRawColumns().contains(column - 1)
+                                        && rawCandidate(actual, field))) {
                     throw invalid(Reason.COLUMNS);
                 }
             }

@@ -9,10 +9,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+@org.junit.jupiter.api.Timeout(KillPoint.TEST_TIMEOUT_SECONDS)
 final class StagingProcessRecoveryTest {
     @TempDir Path directory;
 
@@ -50,18 +50,7 @@ final class StagingProcessRecoveryTest {
                         .redirectErrorStream(true)
                         .redirectOutput(log.toFile())
                         .start();
-        try {
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-            while (!Files.exists(marker) && child.isAlive() && System.nanoTime() < deadline) {
-                Thread.sleep(20);
-            }
-            assertTrue(
-                    Files.exists(marker),
-                    () -> "Child did not reach staging boundary; see test output");
-        } finally {
-            child.destroyForcibly();
-            assertTrue(child.waitFor(5, TimeUnit.SECONDS));
-        }
+        KillPoint.kill(child, marker, log);
         try (var store = new SqliteBlobPrototype(path)) {
             var stages = new BoundedBlobStaging(store);
             if (!published) {

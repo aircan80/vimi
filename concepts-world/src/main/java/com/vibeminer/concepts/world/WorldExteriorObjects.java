@@ -14,12 +14,14 @@ import com.vibeminer.formats.world.WmoFormats;
 import com.vibeminer.formats.world.WmoGroupSpans;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldPlacements;
+import com.vibeminer.rendering.world.ObjectTextureMips;
 import com.vibeminer.rendering.world.TerrainScene;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -46,8 +48,13 @@ public final class WorldExteriorObjects {
     static final int MAX_VERTICES = 98_304, MAX_INDICES = 294_912;
     static final int MAX_RANGES = 1024, MAX_MESHES = 256, MAX_PIXELS = 1 << 20;
 
-    /** BASIC doodad caps, separate from the building caps so buildings are never displaced. */
-    static final int MAX_DOODADS = 512, MAX_MODELS = 48, MAX_MODEL_IMAGES = 64;
+    /**
+     * BASIC doodad caps, separate from the building caps so buildings are never displaced. Distinct
+     * models are the binding cap on dense tiles: Zephras Isle read 48 models per tile and capped
+     * 791 set doodads at 48, while no tile came near 512 doodad placements, so 96 models (and 96
+     * model images) are read.
+     */
+    static final int MAX_DOODADS = 512, MAX_MODELS = 96, MAX_MODEL_IMAGES = 96;
 
     static final int MAX_DOODAD_VERTICES = 65_536, MAX_DOODAD_INDICES = 196_608;
     static final int MAX_DOODAD_RANGES = 512, MAX_DOODAD_PIXELS = 1 << 19;
@@ -67,8 +74,11 @@ public final class WorldExteriorObjects {
      * The objects file and renderer admit the HIGH totals.
      */
     public enum ImageDetail {
-        STANDARD(1 << 20, 1 << 18, 1 << 19),
-        HIGH(1 << 21, 1 << 19, 1 << 20);
+        // Budgets count whole mip chains (#265): each is the chain of one texture of the old
+        // top-level size (1 Mi, 256 Ki, 512 Ki texels; doubled on HIGH), so the same images keep
+        // the same top levels while the chains below them are paid for.
+        STANDARD(chain(1024, 1024), chain(512, 512), chain(1024, 512)),
+        HIGH(chain(2048, 1024), chain(1024, 512), chain(1024, 1024));
         private final int buildingPixels, materialPixels, doodadPixels;
 
         ImageDetail(int buildingPixels, int materialPixels, int doodadPixels) {
@@ -89,11 +99,21 @@ public final class WorldExteriorObjects {
             return doodadPixels;
         }
 
+        private static int chain(int width, int height) {
+            return ObjectTextureMips.chainPixels(width, height);
+        }
+
         /** All pools together: the most RGBA8 pixels one tile's object set can carry. */
         public int totalPixels() {
             return buildingPixels + materialPixels + doodadPixels;
         }
     }
+
+    /**
+     * Image source bytes a tile build keeps between an image's first read, its budget relevel and
+     * its mip chain (#265); real tiles read about 7 MiB of BLP data.
+     */
+    static final long RETAINED_SOURCE_BYTES = 32L << 20;
 
     /** Per-tile draw budget: the sum over all placements of their model's ranges. */
     static final int MAX_DRAWS = 4096;
@@ -103,6 +123,32 @@ public final class WorldExteriorObjects {
 
     /** Material classes carried by every draw range. */
     public static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2;
+
+    /**
+     * Additive blend (MOMT blend mode 3, issue #367): sorted with the blended surfaces and added to
+     * what is behind them. Its images are prepared as blended ones.
+     */
+    public static final int ADDITIVE = 3;
+
+    /**
+     * Flag on a range class (MOMT F_UNLIT, flags bit 0x1): the surface is drawn at full intensity,
+     * without the light. The World objects file carries it in the same int.
+     */
+    public static final int UNLIT = 0x100;
+
+    /** MOMT flags bit 0x1, F_UNLIT: the material is not lit. */
+    static final long MOMT_F_UNLIT = 0x1;
+
+    /** The kind of a range class, without its flags. */
+    public static int kind(int rangeClass) {
+        return rangeClass & 0xff;
+    }
+
+    /** The image preparation class of a range class: additive images are prepared as blended. */
+    static int imageClass(int rangeClass) {
+        int kind = kind(rangeClass);
+        return kind == ADDITIVE ? BLENDED : kind;
+    }
 
     /** Position xyz, unit normal xyz, texture1 uv: 32 bytes per vertex. */
     static final int VERTEX_FLOATS = 8;
@@ -130,8 +176,21 @@ public final class WorldExteriorObjects {
      */
     private static final int DOODAD_DIRECT_ID = 0x40, DOODAD_ADMITTED = 0x2 | 0x20 | 0x200 | 0x1000;
 
-    /** MODD flags: only 0x1 (accepts projected textures) is admitted; it carries no transform. */
-    private static final int SET_DOODAD_ADMITTED = 0x1;
+    /**
+     * MODD flags (the high byte over the 24-bit reference) admitted without being interpreted: 0x1
+     * accepts projected textures, 0x2 selects interior rather than exterior lighting, and 0x4, 0x8
+     * and 0x10 are undocumented (0x10 lies in the bits wowdev records as unused as of 7.0.1.20994).
+     * No reviewed source lets any of them change the model reference or the transform: wowdev WMO
+     * (MODD, SMODoodadDef) keeps them apart from nameIndex, position, orientation and scale, and
+     * wow.export 4474fa4 reads them in WMOLoader.js but never uses them; WMORendererGL.js:380-418
+     * resolves the model from the reference alone and places it from position, rotation and scale.
+     * Zephras Isle records 0x10, 0x12, 0x16 and 0x1e on 1,337 set doodads. 0x20 to 0x80 are not
+     * seen and stay refused.
+     */
+    private static final int SET_DOODAD_ADMITTED = 0x1 | 0x2 | 0x4 | 0x8 | 0x10;
+
+    // MODD 0x2 selects interior rather than exterior lighting; vimi lights every set doodad as
+    // exterior (BASIC profile, fixed light), so the flag is admitted but not honoured.
 
     /**
      * Whether texture1 of a batch is sampled with UV0: the batch's shader ID and texture count name
@@ -155,6 +214,54 @@ public final class WorldExteriorObjects {
     /** M2 bone flags that billboard (spherical or cylindrical); no view policy here. */
     private static final long BILLBOARD = 0x78;
 
+    /**
+     * Bones that billboard or inherit a billboard: a bone whose own flags carry {@link #BILLBOARD}
+     * and every descendant of one, since a child's transform composes its parent's camera-facing
+     * rotation. Empty when the model has no billboard bone; a parent cycle stops the walk.
+     *
+     * <p>Together with {@link #billboardWeighted} (any non-zero weight) this deliberately leaves
+     * out more rather than less: a triangle only partly bound to a camera-facing bone would be
+     * drawn static at a wrong place, while leaving it out only loses a part the profile cannot draw
+     * correctly anyway.
+     */
+    static BitSet billboardBones(List<M2Types.Bone> bones) {
+        var result = new BitSet(bones.size());
+        boolean any = false;
+        for (var bone : bones) {
+            any |= (bone.flags() & BILLBOARD) != 0;
+        }
+        if (!any) {
+            return result;
+        }
+        for (int index = 0; index < bones.size(); index++) {
+            int steps = 0;
+            for (int at = index;
+                    at >= 0 && at < bones.size() && steps++ <= bones.size();
+                    at = bones.get(at).parent()) {
+                if ((bones.get(at).flags() & BILLBOARD) != 0) {
+                    result.set(index);
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Whether a vertex has a non-zero weight on a bone in {@code billboard}. Bone indices outside
+     * the model's bones are not billboards (they were never checked before this rule either).
+     */
+    static boolean billboardWeighted(M2Types.Vertex vertex, BitSet billboard) {
+        for (int k = 0; k < 4; k++) {
+            int weight = (int) (vertex.boneWeights() >>> (k * 8) & 255);
+            int bone = (int) (vertex.boneIndices() >>> (k * 8) & 255);
+            if (weight != 0 && billboard.get(bone)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static final M2Types.Limits MODEL_LIMITS =
             new M2Types.Limits(
                     2L << 20, 32L << 20, 65_536, 65_536, 196_608, 256, 256, 512, 32, 32, 128, 4096,
@@ -162,6 +269,13 @@ public final class WorldExteriorObjects {
 
     /** MODF flags: 0x2 LOD-capable, 0x4 scale-enable, 0x8 direct FileDataID (required). */
     private static final int DIRECT_ID = 0x8, SCALED = 0x4, LOD_CAPABLE = 0x2;
+
+    /**
+     * MODF 0x80 (modf_use_sets_from_mwds, Shadowlands+, wowdev ADT/v18): doodadSet names an MWDR
+     * entry whose inclusive MWDS range lists the WMO MODS sets to load. It changes neither the
+     * model reference nor the transform.
+     */
+    private static final int SETS_FROM_MWDS = 0x80;
 
     /** MOGP exterior and interior flags; interior wins when both are present. */
     private static final long EXTERIOR = 0x8, INTERIOR = 0x2000;
@@ -173,6 +287,14 @@ public final class WorldExteriorObjects {
             new Blp2Types.Limits(1 << 20, 8192, 65536, 256 << 10, 256 << 10);
 
     private WorldExteriorObjects() {}
+
+    /**
+     * Registered pixels when they are exactly one {@code w x h} RGBA level, else null so the chain
+     * decodes that level from the source instead.
+     */
+    static byte[] reusable(byte[] kept, int w, int h) {
+        return kept != null && kept.length == (long) w * h * 4 ? kept : null;
+    }
 
     /**
      * Mutually exclusive outcome buckets. Placements: every obj0 MODF record lands in exactly one
@@ -208,7 +330,13 @@ public final class WorldExteriorObjects {
         ROOT_CAPPED,
         ROOT_EMPTY,
         GROUP_DRAWN,
+        /** An interior group, not drawn: the map is not a dungeon or raid (#280). */
         GROUP_INTERIOR,
+        /**
+         * An instance interior group that did not fit the tile budgets left after the building's
+         * exterior groups; only that group is omitted (#280).
+         */
+        GROUP_INTERIOR_CAPPED,
         GROUP_UNSUPPORTED,
         GROUP_UNAVAILABLE,
         GROUP_EMPTY,
@@ -217,6 +345,11 @@ public final class WorldExteriorObjects {
         BATCH_BLENDED,
         BATCH_UNSUPPORTED,
         BATCH_MISSING_IMAGE,
+        /**
+         * A building batch whose image did not fit the per-tile image count cap (IMAGE_CAPPED); a
+         * budget, not a data problem.
+         */
+        BATCH_IMAGE_CAPPED,
         /** A cutout or blended batch over the separate material budget. */
         BATCH_CAPPED,
         /**
@@ -238,7 +371,7 @@ public final class WorldExteriorObjects {
         DOODAD_EMPTY,
         SET_DOODAD_DRAWN,
         /**
-         * Name-table (MODN) reference, zero or out-of-range MODI entry, a MODD flag other than 0x1,
+         * Name-table (MODN) reference, zero or out-of-range MODI entry, a MODD flag outside 0x1F,
          * or a bad transform.
          */
         SET_DOODAD_UNSUPPORTED,
@@ -253,13 +386,34 @@ public final class WorldExteriorObjects {
         MODEL_DRAWN,
         /** Malformed, or outside the reader ceilings. */
         MODEL_FAILED,
-        /** Parsed, but no SKIN, billboard bones, an unsupported version or zero normals. */
+        /** Parsed, but no SKIN, an unsupported version or zero normals. */
         MODEL_UNSUPPORTED,
+        /**
+         * Parsed and otherwise admitted, but every admitted triangle is weighted to a billboard
+         * bone, so nothing static is left to draw. Unlike the other refused models, its batch
+         * buckets (MODEL_BATCH_BILLBOARD, MODEL_BATCH_UNSUPPORTED, MODEL_TRIANGLE_BILLBOARD) are
+         * kept, so real-data counts show what billboards still cost.
+         */
+        MODEL_ALL_BILLBOARD,
         MODEL_UNAVAILABLE,
         MODEL_CAPPED,
         MODEL_EMPTY,
         MODEL_BATCH_DRAWN,
         MODEL_BATCH_UNSUPPORTED,
+        /**
+         * An otherwise admitted doodad batch omitted because every one of its triangles has a
+         * vertex weighted to a billboard bone (or a descendant of one). Billboards turn to face the
+         * camera, which the static BASIC profile does not evaluate; the rest of the model draws.
+         */
+        MODEL_BATCH_BILLBOARD,
+        /**
+         * Admitted doodad batches that keep some triangles but lost others to billboard bones: the
+         * place to look for a torn wedge in a drawn model. Not an outcome bucket; such a batch also
+         * lands in one of the MODEL_BATCH outcomes.
+         */
+        MODEL_BATCH_TRIMMED,
+        /** Doodad triangles left out because a vertex is weighted to a billboard bone. */
+        MODEL_TRIANGLE_BILLBOARD,
         MODEL_BATCH_MISSING_IMAGE,
         MODEL_IMAGE_DECODED,
         MODEL_IMAGE_UNAVAILABLE,
@@ -270,7 +424,15 @@ public final class WorldExteriorObjects {
          * or a short read. Each is also counted as that read's UNAVAILABLE bucket; unlike a
          * building read, it omits only its doodads instead of failing the whole set.
          */
-        DOODAD_SOURCE_INPUT
+        DOODAD_SOURCE_INPUT,
+        /**
+         * Decoded images (building and model) by where their lower mip levels came from (issue
+         * #265): all from the file's own mips, some from the file and the rest generated, or all
+         * generated. A 1 x 1 image counts in none of these.
+         */
+        IMAGE_MIPS_FILE,
+        IMAGE_MIPS_PARTIAL,
+        IMAGE_MIPS_GENERATED
     }
 
     /** What a placement draws: an outdoor WMO, an MDDF doodad or a WMO doodad-set entry. */
@@ -393,8 +555,9 @@ public final class WorldExteriorObjects {
             Rotation rotation) {}
 
     /**
-     * Index range into one mesh, drawn with one decoded image (index into images()); blend is
-     * {@link #OPAQUE}, {@link #CUTOUT} or {@link #BLENDED}.
+     * Index range into one mesh, drawn with one decoded image (index into images()); blend is the
+     * range class: {@link #OPAQUE}, {@link #CUTOUT}, {@link #BLENDED} or {@link #ADDITIVE}, plus
+     * {@link #UNLIT} for an unlit surface. Use {@link #kind} for the kind alone.
      */
     public record DrawRange(int firstIndex, int indexCount, int image, int material, int blend) {}
 
@@ -465,13 +628,33 @@ public final class WorldExteriorObjects {
         private final long id;
         private final int width, height, mipLevel;
         private final byte[] rgba;
+        private final ObjectTextureMips.Source mips;
 
         private Image(long id, int width, int height, int mipLevel, byte[] rgba) {
+            this(id, width, height, mipLevel, rgba, null);
+        }
+
+        private Image(
+                long id,
+                int width,
+                int height,
+                int mipLevel,
+                byte[] rgba,
+                ObjectTextureMips.Source mips) {
             this.id = id;
             this.width = width;
             this.height = height;
             this.mipLevel = mipLevel;
             this.rgba = rgba;
+            this.mips = mips;
+        }
+
+        /**
+         * Where the chain's lower levels came from; null only while a builder still holds the
+         * single registered level.
+         */
+        public ObjectTextureMips.Source mips() {
+            return mips;
         }
 
         public long id() {
@@ -490,6 +673,10 @@ public final class WorldExteriorObjects {
             return mipLevel;
         }
 
+        /**
+         * The whole mip chain, top level first ({@link ObjectTextureMips#chainPixels} texels), for
+         * every image a tile set returns.
+         */
         public ByteBuffer rgba() {
             return ByteBuffer.wrap(rgba).asReadOnlyBuffer();
         }
@@ -506,6 +693,12 @@ public final class WorldExteriorObjects {
         private final int vertices, indices, ranges, pixels;
         private final RuntimeException modelFailure;
         private volatile boolean closed;
+
+        /** Most image source bytes its builder kept at once (#265); diagnostics and tests. */
+        long retainedSourceBytes;
+
+        /** BLP levels its builder decoded, over every image (#360); diagnostics and tests. */
+        int levelDecodes;
 
         private TileObjects(
                 long mapId,
@@ -679,6 +872,50 @@ public final class WorldExteriorObjects {
             Cancellation token,
             ModelReader modelReader,
             ImageDetail detail) {
+        return prepare(
+                engine, scope, tile, token, modelReader, detail, RETAINED_SOURCE_BYTES, false);
+    }
+
+    /**
+     * As above; with {@code interiors} (dungeon and raid maps, #280) interior WMO groups are drawn
+     * too, after every building's exterior groups and only within the budgets they leave.
+     */
+    static TileObjects prepare(
+            WorldStreamScopes engine,
+            WorldStreamScopes.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation token,
+            ModelReader modelReader,
+            ImageDetail detail,
+            boolean interiors) {
+        return prepare(
+                engine, scope, tile, token, modelReader, detail, RETAINED_SOURCE_BYTES, interiors);
+    }
+
+    /** As above, with the retained image source bound; tests pass 0 to force every re-read. */
+    static TileObjects prepare(
+            WorldStreamScopes engine,
+            WorldStreamScopes.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation token,
+            ModelReader modelReader,
+            ImageDetail detail,
+            long retainLimit) {
+        return prepare(engine, scope, tile, token, modelReader, detail, retainLimit, false);
+    }
+
+    static TileObjects prepare(
+            WorldStreamScopes engine,
+            WorldStreamScopes.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation token,
+            ModelReader modelReader,
+            ImageDetail detail,
+            long retainLimit,
+            boolean interiors) {
+        if (retainLimit < 0) {
+            throw new IllegalArgumentException("Retained source bound");
+        }
         Objects.requireNonNull(modelReader);
         Objects.requireNonNull(detail);
         Objects.requireNonNull(engine);
@@ -690,7 +927,9 @@ public final class WorldExteriorObjects {
                 tile,
                 WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
                 token,
-                admission -> new Builder(admission, modelReader, detail).build());
+                admission ->
+                        new Builder(admission, modelReader, detail, retainLimit, interiors)
+                                .build());
     }
 
     private enum RootState {
@@ -701,6 +940,10 @@ public final class WorldExteriorObjects {
     }
 
     private record Candidate(int firstIndex, int indexCount, int material, long image, int blend) {}
+
+    /** copyModel's marker for a model whose every admitted triangle billboards. */
+    private static final PendingMesh ALL_BILLBOARD =
+            new PendingMesh(0, 0, 0, new float[0], new int[0], List.of());
 
     private record PendingMesh(
             int ordinal,
@@ -719,7 +962,7 @@ public final class WorldExteriorObjects {
     }
 
     /** image() results that are not slots. */
-    private static final int MISSING = -1, UNREADABLE = -2;
+    private static final int MISSING = -1, UNREADABLE = -2, IMAGE_FULL = -3;
 
     private static final class Builder {
         private final WorldStreamScopes.TileAdmission admission;
@@ -736,6 +979,28 @@ public final class WorldExteriorObjects {
         private final Map<Long, WmoFormats.Doodads> rootDoodads = new HashMap<>();
         private final Map<Long, RootState> doodadStates = new HashMap<>();
         private final Map<Long, Integer> doodadSlots = new HashMap<>();
+
+        /** obj0 MWDR ranges and MWDS set indexes, for MODF flag 0x80 placements. */
+        private List<WorldPlacements.SetRange> setRanges = List.of();
+
+        private List<Integer> setIds = List.of();
+
+        /**
+         * Image source bytes by file, kept from an image's first read until its chain is built, so
+         * the budget's relevel and the chain's file mips need no second read (#265). One file used
+         * under two material classes is kept and counted once. Bounded by retainLimit: past it a
+         * re-read source serves its one use and is dropped.
+         */
+        private final Map<Long, byte[]> sources = new HashMap<>();
+
+        /** Files whose second read was refused; never tried again. */
+        private final java.util.Set<Long> unreadSources = new java.util.HashSet<>();
+
+        private final long retainLimit;
+        private long retainedSourceBytes, peakRetainedSourceBytes;
+
+        /** Pixel decodes of single BLP levels (registration, relevel and chain); diagnostics. */
+        private int levelDecodes;
 
         /** Registered images by slot, in admission (priority) order; null for other slots. */
         private final List<Demand> demands = new ArrayList<>();
@@ -754,11 +1019,23 @@ public final class WorldExteriorObjects {
 
         private final ImageDetail detail;
 
+        /** Draw interior WMO groups too (dungeon and raid maps, #280). */
+        private final boolean interiors;
+
+        /** Interior meshes of drawn roots, held for {@link #placeInteriors}; bounded copies. */
+        private final Map<Long, List<PendingMesh>> heldInteriors = new LinkedHashMap<>();
+
+        private long heldVertices, heldIndices;
+
         Builder(
                 WorldStreamScopes.TileAdmission admission,
                 ModelReader modelReader,
-                ImageDetail detail) {
+                ImageDetail detail,
+                long retainLimit,
+                boolean interiors) {
+            this.interiors = interiors;
             this.detail = detail;
+            this.retainLimit = retainLimit;
             this.admission = admission;
             this.token = admission.cancellation();
             this.modelReader = modelReader;
@@ -771,26 +1048,52 @@ public final class WorldExteriorObjects {
                 try (var input = admission.readRecorded(WorldStreamScopes.RecordedInput.OBJ0)) {
                     metadata = WorldPlacements.readObj0(input.bytes(), token::isCanceled);
                 }
+                setRanges = metadata.setRanges();
+                setIds = metadata.setIds();
                 place(metadata.worldObjects());
                 fitMaterialDraws();
                 // Admission ran largest first; the set keeps obj0 source order.
                 placements.sort(java.util.Comparator.comparingInt(Placement::ordinal));
-                // Buildings first, then MDDF doodads, then the drawn buildings' doodad sets.
+                // Buildings first, then MDDF doodads, then the drawn buildings' doodad sets, and
+                // only then instance interiors (#280): every exterior, doodad and set doodad draw
+                // is spent before an interior group is admitted, so interiors use only what is
+                // left. An interior-only root's own set doodads wait until its interiors decide
+                // whether it draws at all.
                 placeDoodads(metadata.doodads());
-                placeSetDoodads();
+                var deferred = new java.util.HashSet<Long>();
+                placeSetDoodads(
+                        building -> {
+                            boolean pending =
+                                    models.get(building.model()).meshes().isEmpty()
+                                            && heldInteriors.containsKey(building.rootId());
+                            if (pending) {
+                                deferred.add(building.rootId());
+                            }
+                            return !pending;
+                        });
+                placeInteriors();
+                placeSetDoodads(building -> deferred.contains(building.rootId()));
             }
             allocateImages();
+            chainImages();
+            sources.clear();
+            unreadSources.clear();
+            retainedSourceBytes = 0;
             dropUnusedImages();
-            return new TileObjects(
-                    admission.mapId(),
-                    recorded.x(),
-                    recorded.y(),
-                    models,
-                    placements,
-                    images,
-                    counts,
-                    modelFailure,
-                    detail);
+            var objects =
+                    new TileObjects(
+                            admission.mapId(),
+                            recorded.x(),
+                            recorded.y(),
+                            models,
+                            placements,
+                            images,
+                            counts,
+                            modelFailure,
+                            detail);
+            objects.retainedSourceBytes = peakRetainedSourceBytes;
+            objects.levelDecodes = levelDecodes;
+            return objects;
         }
 
         private void count(Count count) {
@@ -806,7 +1109,7 @@ public final class WorldExteriorObjects {
             int opaque = 0;
             for (var mesh : models.get(model).meshes()) {
                 for (var range : mesh.ranges()) {
-                    opaque += range.blend() == OPAQUE ? 1 : 0;
+                    opaque += kind(range.blend()) == OPAQUE ? 1 : 0;
                 }
             }
             return opaque;
@@ -835,7 +1138,7 @@ public final class WorldExteriorObjects {
             boolean[] removed = new boolean[models.size()];
             for (int m = models.size() - 1; m >= 0; m--) {
                 var model = models.get(m);
-                if (model.doodad() || admissionDraws(m) == modelDraws(m)) {
+                if (model.doodad() || admissionDraws(m) == modelDraws(m) || awaitingInteriors(m)) {
                     continue;
                 }
                 boolean unusedMaterialOnly = uses[m] == 0 && admissionDraws(m) == 0;
@@ -848,7 +1151,7 @@ public final class WorldExteriorObjects {
                     var opaque = new ArrayList<DrawRange>();
                     int end = 0;
                     for (var range : mesh.ranges()) {
-                        if (range.blend() == OPAQUE) {
+                        if (kind(range.blend()) == OPAQUE) {
                             opaque.add(range);
                             end = Math.max(end, range.firstIndex() + range.indexCount());
                             continue;
@@ -857,7 +1160,9 @@ public final class WorldExteriorObjects {
                         count(Count.BATCH_CAPPED);
                         counts[Count.BATCH_DRAWN.ordinal()]--;
                         counts[
-                                (range.blend() == CUTOUT ? Count.BATCH_CUTOUT : Count.BATCH_BLENDED)
+                                (kind(range.blend()) == CUTOUT
+                                                ? Count.BATCH_CUTOUT
+                                                : Count.BATCH_BLENDED)
                                         .ordinal()]--;
                     }
                     if (opaque.isEmpty()) {
@@ -891,6 +1196,14 @@ public final class WorldExteriorObjects {
             removeModels(removed);
         }
 
+        /** A building model with no meshes yet whose interiors the interior pass still holds. */
+        private boolean awaitingInteriors(int model) {
+            var value = models.get(model);
+            return !value.doodad()
+                    && value.meshes().isEmpty()
+                    && heldInteriors.containsKey(value.rootId());
+        }
+
         /** Caps the last material-only placements while building placements exceed the slots. */
         private void capMaterialOnlyPlacements() {
             int excess = placements.size() - MAX_PLACEMENTS;
@@ -899,7 +1212,10 @@ public final class WorldExteriorObjects {
             }
             var capped = new boolean[placements.size()];
             for (int i = placements.size() - 1; i >= 0 && excess > 0; i--) {
-                if (admissionDraws(placements.get(i).model()) == 0) {
+                // An interior-only root waiting for the interior pass is decided there: it draws
+                // only if its placements find free slots then.
+                if (admissionDraws(placements.get(i).model()) == 0
+                        && !awaitingInteriors(placements.get(i).model())) {
                     capped[i] = true;
                     excess--;
                     counts[Count.PLACEMENT_DRAWN.ordinal()]--;
@@ -959,8 +1275,11 @@ public final class WorldExteriorObjects {
             placements.addAll(keptPlacements);
             modelSlots.clear();
             for (int m = 0; m < models.size(); m++) {
-                modelSlots.put(models.get(m).rootId(), m);
+                if (!models.get(m).doodad()) {
+                    modelSlots.put(models.get(m).rootId(), m);
+                }
             }
+            doodadSlots.replaceAll((id, slot) -> renumbered[slot]);
         }
 
         /**
@@ -1111,7 +1430,8 @@ public final class WorldExteriorObjects {
                                         transform.scale(),
                                         transform.cos(),
                                         transform.sin(),
-                                        Rotation.heading(transform.cos(), transform.sin())));
+                                        buildingRotation(
+                                                record, transform.cos(), transform.sin())));
                     }
                 }
             }
@@ -1197,7 +1517,7 @@ public final class WorldExteriorObjects {
          * the opaque-only profile left empty never spends doodad, model or draw budget ahead of one
          * it drew. Set doodads are appended in this order.
          */
-        private void placeSetDoodads() {
+        private void placeSetDoodads(java.util.function.Predicate<Placement> include) {
             var buildings = new ArrayList<Placement>(placements.size());
             for (int pass = 0; pass < 2; pass++) {
                 for (var placement : placements) {
@@ -1211,6 +1531,9 @@ public final class WorldExteriorObjects {
             }
             for (var building : buildings) {
                 token.check();
+                if (building.kind() != Kind.BUILDING || !include.test(building)) {
+                    continue;
+                }
                 var declared = rootDoodads.get(building.rootId());
                 if (declared == null || !declared.declared()) {
                     continue; // the root declares no doodads
@@ -1223,21 +1546,18 @@ public final class WorldExteriorObjects {
                 }
                 var selected = new ArrayList<Integer>(2);
                 selected.add(0);
-                if (building.doodadSet() != 0) {
+                if ((building.flags() & SETS_FROM_MWDS) != 0) {
+                    // MODF doodadSet names an MWDR range of MWDS set indexes (set 0 is kept).
+                    if (!selectFromMwds(building.doodadSet(), declared, selected)) {
+                        count(Count.SET_UNSUPPORTED);
+                    }
+                } else if (building.doodadSet() != 0) {
                     if (building.doodadSet() >= declared.sets().size()) {
                         count(Count.SET_UNSUPPORTED);
                     } else {
                         selected.add(building.doodadSet());
                     }
                 }
-                var parent =
-                        new WorldBasicWmo.Transform(
-                                building.x(),
-                                building.y(),
-                                building.z(),
-                                building.scale(),
-                                building.cos(),
-                                building.sin());
                 for (int set : selected) {
                     var range = declared.sets().get(set);
                     long end = range.firstDefinition() + range.count();
@@ -1247,18 +1567,41 @@ public final class WorldExteriorObjects {
                             count(Count.SET_DOODAD_UNSUPPORTED);
                             continue;
                         }
-                        setDoodad(building, parent, declared, set, (int) d);
+                        setDoodad(building, declared, set, (int) d);
                     }
                 }
             }
         }
 
+        /**
+         * Adds the MWDS sets of MWDR entry {@code entry}; false (nothing added) when the entry or
+         * any set index it lists is outside the recorded MWDR, MWDS or MODS.
+         */
+        private boolean selectFromMwds(
+                int entry, WmoFormats.Doodads declared, List<Integer> selected) {
+            if (entry >= setRanges.size()) {
+                return false;
+            }
+            var range = setRanges.get(entry);
+            if (range.end() < range.begin() || range.end() >= setIds.size()) {
+                return false;
+            }
+            var listed = new ArrayList<Integer>();
+            for (long i = range.begin(); i <= range.end(); i++) {
+                int set = setIds.get((int) i);
+                if (set >= declared.sets().size()) {
+                    return false;
+                }
+                if (!selected.contains(set) && !listed.contains(set)) {
+                    listed.add(set);
+                }
+            }
+            selected.addAll(listed);
+            return true;
+        }
+
         private void setDoodad(
-                Placement building,
-                WorldBasicWmo.Transform parent,
-                WmoFormats.Doodads declared,
-                int set,
-                int ordinal) {
+                Placement building, WmoFormats.Doodads declared, int set, int ordinal) {
             var def = declared.definitions().get(ordinal);
             long id =
                     def.reference() < declared.fileIdCount() ? declared.fileId(def.reference()) : 0;
@@ -1276,8 +1619,13 @@ public final class WorldExteriorObjects {
                 count(Count.SET_DOODAD_UNSUPPORTED);
                 return;
             }
-            double x = parent.x(def.x(), def.y()), y = parent.y(def.x(), def.y());
-            double z = parent.z(def.z());
+            // The building's full rotation (heading, pitch, roll) and scale carry the MODD
+            // position; for an untilted building this is exactly the heading rule.
+            double[] m = building.rotation().rowMajor();
+            double s = building.scale(), a = def.x(), b = def.y(), c = def.z();
+            double x = building.x() + s * (m[0] * a + m[1] * b + m[2] * c);
+            double y = building.y() + s * (m[3] * a + m[4] * b + m[5] * c);
+            double z = building.z() + s * (m[6] * a + m[7] * b + m[8] * c);
             if (!finite(x, y, z)) {
                 count(Count.SET_DOODAD_UNSUPPORTED);
                 return;
@@ -1352,6 +1700,239 @@ public final class WorldExteriorObjects {
             return RootState.DRAWN;
         }
 
+        private enum Admission {
+            ADMITTED,
+            /** A material-only mesh resolve would cap entirely; counted, its copy not kept. */
+            DROPPED,
+            /** Over a per-tile budget: the root is capped, or an interior group is skipped. */
+            OVER
+        }
+
+        /**
+         * One root's tentative charges against the tile budgets. Caps are decided by opaque
+         * candidates alone, exactly as the opaque-only profile did; cutout and blended candidates
+         * draw from their own budget later. Pending copies (every candidate vertex and index of
+         * every kept group) never exceed what both budgets together could draw.
+         */
+        private final class RootBudget {
+            long vertices, indices, ranges, pendingVertices, pendingIndices, materialVertices;
+
+            long[] mark() {
+                return new long[] {
+                    vertices, indices, ranges, pendingVertices, pendingIndices, materialVertices
+                };
+            }
+
+            void reset(long[] m) {
+                vertices = m[0];
+                indices = m[1];
+                ranges = m[2];
+                pendingVertices = m[3];
+                pendingIndices = m[4];
+                materialVertices = m[5];
+            }
+
+            /** Whether the mesh alone fits the tile's empty budgets; otherwise never hold it. */
+            boolean couldEverFit(PendingMesh mesh) {
+                return mesh.vertices().length / VERTEX_FLOATS
+                                <= MAX_VERTICES + MAX_MATERIAL_VERTICES
+                        && mesh.indices().length <= MAX_INDICES + MAX_MATERIAL_INDICES;
+            }
+
+            Admission admit(PendingMesh mesh, int[] local) {
+                int meshVertices = mesh.vertices().length / VERTEX_FLOATS;
+                boolean materialOnly =
+                        mesh.ranges().stream().noneMatch(r -> kind(r.blend()) == OPAQUE);
+                if (materialOnly
+                        && !mesh.ranges().isEmpty()
+                        && meshVertices
+                                > MAX_MATERIAL_VERTICES
+                                        - Builder.this.materialVertices
+                                        - materialVertices) {
+                    // resolveBuilding would cap every range of this cutout- or blend-only mesh on
+                    // its vertices (BATCH_CAPPED, then GROUP_EMPTY) before reading any image; do it
+                    // now so its copy is never held. Material vertices still pending are charged
+                    // as if kept, a conservative bound.
+                    local[Count.BATCH_CAPPED.ordinal()] += mesh.ranges().size();
+                    local[Count.GROUP_EMPTY.ordinal()]++;
+                    return Admission.DROPPED;
+                }
+                if (materialOnly) {
+                    materialVertices += meshVertices;
+                }
+                pendingVertices += meshVertices;
+                pendingIndices += mesh.indices().length;
+                if (pendingVertices > MAX_VERTICES + MAX_MATERIAL_VERTICES
+                        || pendingIndices > MAX_INDICES + MAX_MATERIAL_INDICES) {
+                    return Admission.OVER;
+                }
+                int opaqueIndices = 0, opaqueRanges = 0;
+                for (var range : mesh.ranges()) {
+                    if (kind(range.blend()) == OPAQUE) {
+                        opaqueIndices += range.indexCount();
+                        opaqueRanges++;
+                    }
+                }
+                if (opaqueRanges > 0) {
+                    vertices += meshVertices;
+                }
+                indices += opaqueIndices;
+                ranges += opaqueRanges;
+                if (vertices > MAX_VERTICES - Builder.this.vertices
+                        || indices > MAX_INDICES - Builder.this.indices
+                        || ranges > MAX_RANGES - Builder.this.ranges) {
+                    return Admission.OVER;
+                }
+                return Admission.ADMITTED;
+            }
+        }
+
+        /**
+         * Holds one interior mesh for the interior pass while the tile could still draw it: false,
+         * and nothing held, past both budgets together. Bounds held copies across all roots.
+         */
+        private boolean holdInterior(PendingMesh mesh) {
+            long meshVertices = mesh.vertices().length / VERTEX_FLOATS;
+            if (heldVertices + meshVertices > MAX_VERTICES + MAX_MATERIAL_VERTICES
+                    || heldIndices + mesh.indices().length > MAX_INDICES + MAX_MATERIAL_INDICES) {
+                return false;
+            }
+            heldVertices += meshVertices;
+            heldIndices += mesh.indices().length;
+            return true;
+        }
+
+        /** Returns a capped root's held interior copies to the bound. */
+        private void releaseInteriors(List<PendingMesh> interiors) {
+            for (var mesh : interiors) {
+                heldVertices -= mesh.vertices().length / VERTEX_FLOATS;
+                heldIndices -= mesh.indices().length;
+            }
+        }
+
+        /**
+         * Instance interiors (#280), after every building's exterior and every MDDF and set doodad
+         * of the drawn exteriors: drawn buildings in admission order (largest first), each held
+         * interior group only if it still fits the tile budgets, the mesh count and the draw budget
+         * left after every placement already drawn, for every placement of its building. A group
+         * that does not fit is GROUP_INTERIOR_CAPPED; it never caps or displaces an exterior or a
+         * doodad. A building left with no meshes (an interior-only root none of whose groups fit)
+         * is removed, its root and placements counted EMPTY.
+         *
+         * <p>An interior-only root takes building slots for its placements when its first group is
+         * admitted, opaque or not, and only if they are free: interiors lose every slot tie, and
+         * since material draws were already fitted, they never push an exterior's glass or foliage
+         * out. Interior images share the building pixel pool with exterior images; the budget
+         * shares it by level, so a dense interior can lower exterior texture levels but never drops
+         * an exterior image.
+         */
+        private void placeInteriors() {
+            if (heldInteriors.isEmpty()) {
+                return;
+            }
+            int[] uses = new int[models.size()];
+            for (var placement : placements) {
+                uses[placement.model()]++;
+            }
+            int meshes = 0;
+            // Every exterior draw is reserved first, opaque, cutout and blended alike, so admitting
+            // an interior never makes fitMaterialDraws trim an exterior's glass or foliage.
+            long reserved = 0;
+            for (int m = 0; m < models.size(); m++) {
+                meshes += models.get(m).meshes().size();
+                reserved += (long) uses[m] * modelDraws(m);
+            }
+            int[] local = new int[counts.length];
+            boolean[] removed = new boolean[models.size()];
+            for (int m = 0; m < models.size(); m++) {
+                var model = models.get(m);
+                if (model.doodad()) {
+                    continue;
+                }
+                var held = heldInteriors.remove(model.rootId());
+                if (held == null || uses[m] == 0) {
+                    if (held != null) {
+                        releaseInteriors(held); // a root with no placement draws nothing
+                    }
+                    continue;
+                }
+                // A model without opaque draws (an interior-only root) holds no building slot
+                // yet; its placements need free slots before an interior can give it one.
+                boolean needsSlots = admissionDraws(m) == 0;
+                if (needsSlots && uses[m] > MAX_PLACEMENTS - opaquePlacements) {
+                    local[Count.GROUP_INTERIOR_CAPPED.ordinal()] += held.size();
+                    if (model.meshes().isEmpty()) {
+                        removed[m] = true;
+                        counts[Count.PLACEMENT_DRAWN.ordinal()] -= uses[m];
+                        counts[Count.PLACEMENT_CAPPED.ordinal()] += uses[m];
+                        counts[Count.ROOT_DRAWN.ordinal()]--;
+                        count(Count.ROOT_CAPPED);
+                        rootStates.put(model.rootId(), RootState.CAPPED);
+                        rootDoodads.remove(model.rootId());
+                    }
+                    continue;
+                }
+                var kept = new ArrayList<>(model.meshes());
+                boolean slotsTaken = false;
+                for (var mesh : held) {
+                    token.check();
+                    int candidateRanges = mesh.ranges().size();
+                    if (meshes >= MAX_MESHES
+                            || (long) uses[m] * candidateRanges > MAX_DRAWS - reserved) {
+                        local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
+                        continue;
+                    }
+                    var admission = new RootBudget().admit(mesh, local);
+                    if (admission == Admission.DROPPED) {
+                        continue; // counted by admit: BATCH_CAPPED, GROUP_EMPTY
+                    }
+                    if (admission == Admission.OVER) {
+                        local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
+                        continue;
+                    }
+                    var mapped = resolveBuilding(mesh, local);
+                    if (mapped == null) {
+                        local[Count.GROUP_EMPTY.ordinal()]++;
+                        continue;
+                    }
+                    int opaque = 0;
+                    for (var range : mapped.ranges()) {
+                        if (kind(range.blend()) == CUTOUT) {
+                            local[Count.BATCH_CUTOUT.ordinal()]++;
+                        } else if (kind(range.blend()) >= BLENDED) {
+                            local[Count.BATCH_BLENDED.ordinal()]++;
+                        } else {
+                            opaque++;
+                        }
+                    }
+                    draws += uses[m] * opaque;
+                    reserved += (long) uses[m] * mapped.ranges().size();
+                    if (needsSlots && !slotsTaken) {
+                        opaquePlacements += uses[m];
+                        slotsTaken = true;
+                    }
+                    local[Count.GROUP_DRAWN.ordinal()]++;
+                    kept.add(mapped);
+                    meshes++;
+                }
+                if (kept.isEmpty()) {
+                    removed[m] = true;
+                    counts[Count.PLACEMENT_DRAWN.ordinal()] -= uses[m];
+                    counts[Count.PLACEMENT_EMPTY.ordinal()] += uses[m];
+                    counts[Count.ROOT_DRAWN.ordinal()]--;
+                    count(Count.ROOT_EMPTY);
+                    rootStates.put(model.rootId(), RootState.EMPTY);
+                    rootDoodads.remove(model.rootId());
+                    continue;
+                }
+                models.set(m, new Model(model.rootId(), false, kept));
+            }
+            for (int i = 0; i < counts.length; i++) {
+                counts[i] += local[i];
+            }
+            removeModels(removed);
+        }
+
         private RootState readRoot(long rootId) {
             rootsRead++;
             WmoFormats.Root root;
@@ -1388,7 +1969,10 @@ public final class WorldExteriorObjects {
             // Tentative per-root counts merge only if the root is not capped: caps never split.
             int[] local = new int[counts.length];
             var pending = new ArrayList<PendingMesh>();
-            int tentativeVertices = 0, tentativeIndices = 0, tentativeRanges = 0;
+            var budget = new RootBudget();
+            // Instance interiors (#280) are held for the tile-level pass after every building's
+            // exterior, so they never cap or displace an exterior.
+            var interiors = new ArrayList<PendingMesh>();
             for (int g = 0; g < lod0; g++) {
                 token.check();
                 long groupId = root.gfid(g);
@@ -1401,27 +1985,24 @@ public final class WorldExteriorObjects {
                 if (mesh == null) {
                     continue;
                 }
-                pending.add(mesh);
-                // Caps are decided by opaque candidates alone, exactly as the opaque-only profile
-                // did; cutout and blended candidates draw from their own budget later. Meshes
-                // cannot exceed MAX_MESHES: one per group read.
-                int opaqueIndices = 0, opaqueRanges = 0;
-                for (var range : mesh.ranges()) {
-                    if (range.blend() == OPAQUE) {
-                        opaqueIndices += range.indexCount();
-                        opaqueRanges++;
+                if ((mesh.flags() & INTERIOR) != 0) {
+                    // Bounded as it is read: past what both budgets could draw, a copy is never
+                    // held (GROUP_INTERIOR_CAPPED). Released again if this root is capped.
+                    if (!holdInterior(mesh)) {
+                        local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
+                    } else {
+                        interiors.add(mesh);
                     }
+                    continue;
                 }
-                if (opaqueRanges > 0) {
-                    tentativeVertices += mesh.vertices().length / VERTEX_FLOATS;
-                }
-                tentativeIndices += opaqueIndices;
-                tentativeRanges += opaqueRanges;
-                if (tentativeVertices > MAX_VERTICES - vertices
-                        || tentativeIndices > MAX_INDICES - indices
-                        || tentativeRanges > MAX_RANGES - ranges) {
-                    count(Count.ROOT_CAPPED);
-                    return RootState.CAPPED;
+                switch (budget.admit(mesh, local)) {
+                    case ADMITTED -> pending.add(mesh);
+                    case DROPPED -> {}
+                    case OVER -> {
+                        releaseInteriors(interiors);
+                        count(Count.ROOT_CAPPED);
+                        return RootState.CAPPED;
+                    }
                 }
             }
             var built = new ArrayList<Mesh>(pending.size());
@@ -1433,9 +2014,10 @@ public final class WorldExteriorObjects {
                     continue;
                 }
                 for (var range : mapped.ranges()) {
-                    if (range.blend() == CUTOUT) {
+                    if (kind(range.blend()) == CUTOUT) {
                         local[Count.BATCH_CUTOUT.ordinal()]++;
-                    } else if (range.blend() == BLENDED) {
+                    } else if (kind(range.blend()) >= BLENDED) {
+                        // Additive surfaces count with the blended ones.
                         local[Count.BATCH_BLENDED.ordinal()]++;
                     }
                 }
@@ -1445,9 +2027,15 @@ public final class WorldExteriorObjects {
             for (int i = 0; i < counts.length; i++) {
                 counts[i] += local[i];
             }
-            if (built.isEmpty()) {
+            var held = interiors;
+            if (built.isEmpty() && held.isEmpty()) {
                 count(Count.ROOT_EMPTY);
                 return RootState.EMPTY;
+            }
+            if (!held.isEmpty()) {
+                // An interior-only root draws nothing until the interior pass; a model with no
+                // meshes costs no draws and takes no building slot until then.
+                heldInteriors.put(rootId, held);
             }
             rootDoodads.put(rootId, root.doodads());
             modelSlots.put(rootId, models.size());
@@ -1468,17 +2056,24 @@ public final class WorldExteriorObjects {
             var compact = new int[mesh.indices().length];
             int used = 0, vertexCount = mesh.vertices().length / VERTEX_FLOATS;
             for (var range : mesh.ranges()) {
-                if (range.blend() != OPAQUE) {
+                if (kind(range.blend()) != OPAQUE) {
                     continue;
                 }
-                int slot = image(range.image(), true, Pool.BUILDING, local);
+                int slot = image(range.image(), OPAQUE, Pool.BUILDING, local);
                 if (slot < 0) {
-                    local[Count.BATCH_MISSING_IMAGE.ordinal()]++;
+                    local[
+                            (slot == IMAGE_FULL
+                                            ? Count.BATCH_IMAGE_CAPPED
+                                            : Count.BATCH_MISSING_IMAGE)
+                                    .ordinal()]++;
                     continue;
                 }
                 System.arraycopy(
                         mesh.indices(), range.firstIndex(), compact, used, range.indexCount());
-                kept.add(new DrawRange(used, range.indexCount(), slot, range.material(), OPAQUE));
+                // The range class keeps its flags (an unlit opaque surface stays unlit).
+                kept.add(
+                        new DrawRange(
+                                used, range.indexCount(), slot, range.material(), range.blend()));
                 used += range.indexCount();
                 local[Count.BATCH_DRAWN.ordinal()]++;
             }
@@ -1490,7 +2085,7 @@ public final class WorldExteriorObjects {
             }
             boolean materialVerticesCharged = false;
             for (var range : mesh.ranges()) {
-                if (range.blend() == OPAQUE) {
+                if (kind(range.blend()) == OPAQUE) {
                     continue;
                 }
                 int extraVertices = opaqueVertices || materialVerticesCharged ? 0 : vertexCount;
@@ -1500,12 +2095,14 @@ public final class WorldExteriorObjects {
                     local[Count.BATCH_CAPPED.ordinal()]++;
                     continue;
                 }
-                int slot = image(range.image(), false, Pool.MATERIAL, local);
+                int slot = image(range.image(), imageClass(range.blend()), Pool.MATERIAL, local);
                 if (slot < 0) {
                     local[
                             (slot == UNREADABLE
                                             ? Count.BATCH_UNREADABLE
-                                            : Count.BATCH_MISSING_IMAGE)
+                                            : slot == IMAGE_FULL
+                                                    ? Count.BATCH_IMAGE_CAPPED
+                                                    : Count.BATCH_MISSING_IMAGE)
                                     .ordinal()]++;
                     continue;
                 }
@@ -1539,7 +2136,7 @@ public final class WorldExteriorObjects {
             var compact = new int[mesh.indices().length];
             int used = 0;
             for (var range : mesh.ranges()) {
-                int slot = image(range.image(), range.blend() == OPAQUE, pool, local);
+                int slot = image(range.image(), imageClass(range.blend()), pool, local);
                 if (slot < 0) {
                     local[missing.ordinal()]++;
                     continue;
@@ -1578,11 +2175,11 @@ public final class WorldExteriorObjects {
                         token::isCanceled,
                         borrow -> {
                             long flags = borrow.header().flags();
-                            if ((flags & INTERIOR) != 0) {
+                            if ((flags & INTERIOR) != 0 && !interiors) {
                                 outcome[0] = Count.GROUP_INTERIOR;
                                 return;
                             }
-                            if ((flags & EXTERIOR) == 0) {
+                            if ((flags & (EXTERIOR | INTERIOR)) == 0) {
                                 outcome[0] = Count.GROUP_UNSUPPORTED;
                                 return;
                             }
@@ -1638,11 +2235,17 @@ public final class WorldExteriorObjects {
                     continue;
                 }
                 var material = materials.get(index);
-                // MOMT blend mode: 0 opaque, 1 alpha key (cutout), 2 alpha (blended).
+                // MOMT blend mode (EGxBlend): 0 opaque, 1 alpha key (cutout), 2 alpha (blended),
+                // 3 add (additive). Higher modes (modulate and their variants) stay refused until
+                // their behaviour is pinned (#367).
                 long blend = material.word(2);
-                if (blend > BLENDED || material.word(3) == 0) {
+                if (blend > ADDITIVE || material.word(3) == 0) {
                     unsupported++;
                     continue;
+                }
+                // MOMT flags word 0, bit 0x1 F_UNLIT: no lighting.
+                if ((material.word(0) & MOMT_F_UNLIT) != 0) {
+                    blend |= UNLIT;
                 }
                 candidates.add(
                         new Candidate(
@@ -1727,9 +2330,7 @@ public final class WorldExteriorObjects {
             } catch (RuntimeException failure) {
                 return readerFailed(failure);
             }
-            if (model.skinFileDataIds().isEmpty()
-                    || model.skinFileDataIds().getFirst() <= 0
-                    || model.bones().stream().anyMatch(b -> (b.flags() & BILLBOARD) != 0)) {
+            if (model.skinFileDataIds().isEmpty() || model.skinFileDataIds().getFirst() <= 0) {
                 count(Count.MODEL_UNSUPPORTED);
                 return RootState.FAILED;
             }
@@ -1755,6 +2356,11 @@ public final class WorldExteriorObjects {
                 pending = copyModel(id, skinId, model, skin, local);
             } catch (RuntimeException failure) {
                 return readerFailed(failure);
+            }
+            if (pending == ALL_BILLBOARD) {
+                mergeLocal(local);
+                count(Count.MODEL_ALL_BILLBOARD);
+                return RootState.FAILED;
             }
             if (pending == null) {
                 count(Count.MODEL_UNSUPPORTED);
@@ -1817,8 +2423,10 @@ public final class WorldExteriorObjects {
 
         /**
          * One static mesh over the SKIN's vertex lookup, with one range per admitted batch; null
-         * when an admitted section references a zero or non-finite normal, or the mesh exceeds the
-         * 16-bit index domain.
+         * when an admitted section references a zero or non-finite normal, the mesh exceeds the
+         * 16-bit index domain; {@link #ALL_BILLBOARD} when billboard bones leave no admitted
+         * triangle. Triangles with a vertex weighted to a billboard bone are left out; a batch left
+         * with none is counted as MODEL_BATCH_BILLBOARD, one left with some as MODEL_BATCH_TRIMMED.
          */
         private PendingMesh copyModel(
                 long id, long skinId, M2Types.Model model, M2Types.Skin skin, int[] local) {
@@ -1879,29 +2487,69 @@ public final class WorldExteriorObjects {
                 return new PendingMesh(0, skinId, 0, new float[0], new int[0], List.of());
             }
             var source = model.vertices();
+            var billboard = billboardBones(model.bones());
+            boolean[] facing = null;
+            if (!billboard.isEmpty()) {
+                facing = new boolean[lookup.size()];
+                for (int v = 0; v < lookup.size(); v++) {
+                    int global = lookup.get(v);
+                    facing[v] =
+                            global >= 0
+                                    && global < source.size()
+                                    && billboardWeighted(source.get(global), billboard);
+                }
+            }
             float[] vertices = new float[lookup.size() * VERTEX_FLOATS];
             boolean[] referenced = new boolean[lookup.size()];
             int[] indices = new int[candidateIndices];
             var rebased = new ArrayList<Candidate>(candidates.size());
-            int used = 0;
+            int used = 0, billboarded = 0, trimmed = 0, dropped = 0;
             for (var candidate : candidates) {
                 token.check();
-                for (int i = 0; i < candidate.indexCount(); i++) {
-                    int local16 = triangles.get(candidate.firstIndex() + i);
-                    if (local16 < 0 || local16 >= lookup.size()) {
-                        return null;
+                int kept = 0;
+                for (int i = 0; i < candidate.indexCount(); i += 3) {
+                    boolean faces = false;
+                    for (int k = 0; k < 3; k++) {
+                        int local16 = triangles.get(candidate.firstIndex() + i + k);
+                        if (local16 < 0 || local16 >= lookup.size()) {
+                            return null;
+                        }
+                        faces |= facing != null && facing[local16];
                     }
-                    indices[used + i] = local16;
-                    referenced[local16] = true;
+                    if (faces) {
+                        dropped++;
+                        continue;
+                    }
+                    for (int k = 0; k < 3; k++) {
+                        int local16 = triangles.get(candidate.firstIndex() + i + k);
+                        indices[used + kept++] = local16;
+                        referenced[local16] = true;
+                    }
+                }
+                if (kept == 0) {
+                    billboarded++;
+                    continue;
+                }
+                if (kept < candidate.indexCount()) {
+                    trimmed++;
                 }
                 rebased.add(
                         new Candidate(
                                 used,
-                                candidate.indexCount(),
+                                kept,
                                 candidate.material(),
                                 candidate.image(),
                                 candidate.blend()));
-                used += candidate.indexCount();
+                used += kept;
+            }
+            local[Count.MODEL_BATCH_BILLBOARD.ordinal()] += billboarded;
+            local[Count.MODEL_BATCH_TRIMMED.ordinal()] += trimmed;
+            local[Count.MODEL_TRIANGLE_BILLBOARD.ordinal()] += dropped;
+            if (rebased.isEmpty()) {
+                return ALL_BILLBOARD; // every admitted triangle billboards
+            }
+            if (used < indices.length) {
+                indices = Arrays.copyOf(indices, used);
             }
             for (int v = 0; v < lookup.size(); v++) {
                 if ((v & 1023) == 0) {
@@ -1944,9 +2592,10 @@ public final class WorldExteriorObjects {
          * Image slot for a texture1 FileDataID; MISSING when it is missing for any other reason,
          * UNREADABLE when a material-pool read was refused at SOURCE_INPUT.
          */
-        private int image(long id, boolean opaque, Pool pool, int[] local) {
-            // Alpha is forced only for opaque ranges, so one ID may decode twice.
-            long key = id * 2 + (opaque ? 0 : 1);
+        private int image(long id, int materialClass, Pool pool, int[] local) {
+            // Alpha is forced for opaque ranges and coverage-preserved down the chain for cutout
+            // ones, so one ID may decode once per material class.
+            long key = id * 3 + materialClass;
             var slots =
                     switch (pool) {
                         case BUILDING -> imageSlots;
@@ -1968,37 +2617,49 @@ public final class WorldExteriorObjects {
                 local[
                         (pool == Pool.DOODAD ? Count.MODEL_IMAGE_CAPPED : Count.IMAGE_CAPPED)
                                 .ordinal()]++;
+                // Building batches report the budget, not a data problem; doodad batches keep
+                // their missing-image count.
+                slot = pool == Pool.DOODAD ? MISSING : IMAGE_FULL;
             } else {
                 switch (pool) {
                     case BUILDING -> imagesRead++;
                     case MATERIAL -> materialImagesRead++;
                     case DOODAD -> modelImagesRead++;
                 }
-                slot = decode(id, opaque, pool, local);
+                slot = decode(id, materialClass, pool, local);
             }
             slots.put(key, slot);
             return slot;
         }
 
         /**
-         * One registered image: its slot, pool, source, level-0 size, recorded mip count and the
-         * level it was first decoded at.
+         * One registered image: its slot, pool, source, level-0 size, recorded mip count, the level
+         * it was first decoded at and that level's pixels. The chain reuses those pixels when the
+         * allotted level lies above the registered one, so no level is decoded twice (opaque pixels
+         * already have alpha 255, which the opaque chain sets anyway).
          */
         private record Demand(
                 int slot,
                 Pool pool,
                 long id,
-                boolean opaque,
+                int materialClass,
                 long width,
                 long height,
                 int recorded,
-                int registered) {}
+                int registered,
+                byte[] registeredRgba) {
+            Demand withoutRegisteredRgba() {
+                return new Demand(
+                        slot, pool, id, materialClass, width, height, recorded, registered, null);
+            }
+        }
 
         /**
          * Reads and decodes one image at the registration side; the uploaded level is chosen later
          * by {@link #allocateImages}. Missing, protected or undecodable images are counted here.
          */
-        private int decode(long id, boolean opaque, Pool pool, int[] local) {
+        private int decode(long id, int materialClass, Pool pool, int[] local) {
+            boolean opaque = materialClass == OPAQUE;
             boolean building = pool != Pool.DOODAD;
             var unavailable = building ? Count.IMAGE_UNAVAILABLE : Count.MODEL_IMAGE_UNAVAILABLE;
             var undecodable = building ? Count.IMAGE_UNDECODABLE : Count.MODEL_IMAGE_UNDECODABLE;
@@ -2024,7 +2685,7 @@ public final class WorldExteriorObjects {
                     recorded =
                             WorldImageBudget.recordedLevels(
                                     Blp2Decoder.readMipsSynchronous(
-                                            AssetSource.bytes(raw),
+                                            AssetSource.borrowed(raw),
                                             IMAGE_LIMITS,
                                             token,
                                             Blp2Types.MipProfile.STRICT));
@@ -2053,10 +2714,21 @@ public final class WorldExteriorObjects {
                 }
                 images.add(image);
                 int slot = images.size() - 1;
+                retain(id, raw);
                 while (demands.size() < slot) {
                     demands.add(null);
                 }
-                demands.add(new Demand(slot, pool, id, opaque, width, height, recorded, level));
+                demands.add(
+                        new Demand(
+                                slot,
+                                pool,
+                                id,
+                                materialClass,
+                                width,
+                                height,
+                                recorded,
+                                level,
+                                image.rgba));
                 local[(building ? Count.IMAGE_DECODED : Count.MODEL_IMAGE_DECODED).ordinal()]++;
                 return slot;
             }
@@ -2075,10 +2747,11 @@ public final class WorldExteriorObjects {
                 return null;
             }
             Blp2Types.Image image;
+            levelDecodes++;
             try {
                 image =
                         Blp2Decoder.decodeSynchronous(
-                                AssetSource.bytes(raw),
+                                AssetSource.borrowed(raw),
                                 level,
                                 IMAGE_LIMITS,
                                 token,
@@ -2147,6 +2820,145 @@ public final class WorldExteriorObjects {
                     }
                 }
             }
+            // Registered pixels are reused only when the drawn level lies above them; every other
+            // demand lets them go now instead of holding them, unbudgeted, until the chains.
+            for (int i = 0; i < demands.size(); i++) {
+                var demand = demands.get(i);
+                if (demand != null
+                        && demand.registeredRgba() != null
+                        && !(images.get(demand.slot()).mipLevel() < demand.registered())) {
+                    demands.set(i, demand.withoutRegisteredRgba());
+                }
+            }
+        }
+
+        /**
+         * Replaces every used image's final level with its full mip chain (#265): the file's own
+         * mips below that level while it records them, generated after that, with the alpha
+         * treatment of the image's material class.
+         */
+        private void chainImages() {
+            boolean[] used = new boolean[images.size()];
+            for (var model : models) {
+                for (var mesh : model.meshes()) {
+                    for (var range : mesh.ranges()) {
+                        used[range.image()] = true;
+                    }
+                }
+            }
+            for (var demand : demands) {
+                if (demand == null || !used[demand.slot()]) {
+                    continue;
+                }
+                token.check();
+                var top = images.get(demand.slot());
+                int level = top.mipLevel();
+                // The file's own mips below the final level, when it records any: the registered
+                // level from its first decode, the others decoded once each from the source,
+                // which is fetched only when such a level is asked for.
+                var file =
+                        new Object() {
+                            boolean fetched;
+                            byte[] raw;
+
+                            byte[] level(int at, int w, int h) {
+                                if (at >= demand.recorded()) {
+                                    return null;
+                                }
+                                if (at == demand.registered()) {
+                                    byte[] kept = reusable(demand.registeredRgba(), w, h);
+                                    if (kept != null) {
+                                        return kept;
+                                    }
+                                }
+                                if (!fetched) {
+                                    fetched = true;
+                                    raw = source(demand);
+                                }
+                                return raw == null ? null : fileMip(raw, at, w, h);
+                            }
+                        };
+                var chain =
+                        ObjectTextureMips.build(
+                                top.width(),
+                                top.height(),
+                                top.rgba,
+                                demand.materialClass(),
+                                (below, w, h) -> file.level(level + below, w, h),
+                                token::isCanceled);
+                switch (chain.source()) {
+                    case FILE -> counts[Count.IMAGE_MIPS_FILE.ordinal()]++;
+                    case PARTIAL -> counts[Count.IMAGE_MIPS_PARTIAL.ordinal()]++;
+                    case GENERATED -> counts[Count.IMAGE_MIPS_GENERATED.ordinal()]++;
+                    case SINGLE -> {}
+                }
+                images.set(
+                        demand.slot(),
+                        new Image(
+                                top.id,
+                                top.width(),
+                                top.height(),
+                                level,
+                                chain.rgba(),
+                                chain.source()));
+            }
+        }
+
+        /** The image's retained source bytes, or a second read when they were not kept. */
+        private byte[] source(Demand demand) {
+            byte[] kept = sources.get(demand.id());
+            if (kept != null || unreadSources.contains(demand.id())) {
+                return kept; // A refused second read is not tried again.
+            }
+            // A refused second read of a cutout or blended image keeps what the first read gave,
+            // as the first read would have: it never costs the tile its set.
+            var input =
+                    derived(
+                            demand.id(),
+                            imageKind(demand.pool()),
+                            demand.pool() == Pool.MATERIAL ? new boolean[1] : null);
+            if (input == null) {
+                unreadSources.add(demand.id());
+                return null;
+            }
+            try (input) {
+                byte[] raw = input.bytes();
+                retain(demand.id(), raw);
+                return raw;
+            }
+        }
+
+        /**
+         * Keeps one file's source bytes while they fit the bound; counts each file once. The array
+         * is kept as read, not copied: every source read allocates its own array, the input only
+         * drops its reference on close, and nothing here writes to source bytes.
+         */
+        private void retain(long id, byte[] raw) {
+            if (sources.containsKey(id) || retainedSourceBytes + raw.length > retainLimit) {
+                return;
+            }
+            sources.put(id, raw);
+            retainedSourceBytes += raw.length;
+            peakRetainedSourceBytes = Math.max(peakRetainedSourceBytes, retainedSourceBytes);
+        }
+
+        /** The file's own mip {@code level}, or null when it does not decode at that size. */
+        private byte[] fileMip(byte[] raw, int level, int width, int height) {
+            levelDecodes++;
+            try {
+                var mip =
+                        Blp2Decoder.decodeSynchronous(
+                                AssetSource.borrowed(raw),
+                                level,
+                                IMAGE_LIMITS,
+                                token,
+                                Blp2Types.MipProfile.STRICT);
+                return mip.mipLevel() == level && mip.width() == width && mip.height() == height
+                        ? mip.rgba()
+                        : null;
+            } catch (BlpFormatException | IllegalArgumentException absent) {
+                return null;
+            }
         }
 
         /** Every level down to 1x1: recorded levels come from the file, the rest are reduced. */
@@ -2163,26 +2975,18 @@ public final class WorldExteriorObjects {
         private Image relevel(Demand demand, int level) {
             var registered = images.get(demand.slot());
             if (level < demand.recorded()) {
-                // A refused second read of a cutout or blended image keeps the registered level,
-                // as the first read would have: it never costs the tile its set.
-                var input =
-                        derived(
-                                demand.id(),
-                                imageKind(demand.pool()),
-                                demand.pool() == Pool.MATERIAL ? new boolean[1] : null);
-                if (input != null) {
-                    try (input) {
-                        var image =
-                                decodeLevel(
-                                        input.bytes(),
-                                        demand.id(),
-                                        demand.width(),
-                                        demand.height(),
-                                        level,
-                                        demand.opaque());
-                        if (image != null) {
-                            return image;
-                        }
+                byte[] raw = source(demand);
+                if (raw != null) {
+                    var image =
+                            decodeLevel(
+                                    raw,
+                                    demand.id(),
+                                    demand.width(),
+                                    demand.height(),
+                                    level,
+                                    demand.materialClass() == OPAQUE);
+                    if (image != null) {
+                        return image;
                     }
                 }
                 if (level < demand.registered()) {
@@ -2323,15 +3127,26 @@ public final class WorldExteriorObjects {
                 && a.scale() == b.scale();
     }
 
+    /**
+     * A MODF rotation: the same construction as MDDF ({@link Rotation#mddf}), heading from rotation
+     * y, pitch from rotation x and roll from rotation z. wowdev ADT/v18 builds MODF and MDDF
+     * placement matrices with the identical sequence (rotation[1] - 270, -rotation[0], rotation[2]
+     * - 90), and TrinityCore ec72c19 places WMO and M2 instances alike through {@code
+     * ModelInstance} with {@code fromEulerAnglesZYX}. Untilted placements stay bit-identical to the
+     * heading rule.
+     */
+    static Rotation buildingRotation(WorldPlacements.WorldObject p, double cos, double sin) {
+        return Rotation.mddf(cos, sin, p.rotation().x(), p.rotation().z());
+    }
+
     /** Placement policy; null means unsupported. The ADT heading rule is WorldBasicWmo's. */
     private static WorldBasicWmo.Transform qualify(WorldPlacements.WorldObject p) {
         int flags = p.flags();
         if ((flags & DIRECT_ID) == 0
-                || (flags & ~(DIRECT_ID | SCALED | LOD_CAPABLE)) != 0
+                || (flags & ~(DIRECT_ID | SCALED | LOD_CAPABLE | SETS_FROM_MWDS)) != 0
                 || p.reference().kind() != WorldPlacements.ReferenceKind.FILE_DATA_ID
                 || p.reference().value() <= 0
-                || p.rotation().x() != 0
-                || p.rotation().z() != 0) {
+                || !buildingRotation(p, 1, 0).finite()) {
             return null;
         }
         double scale = 1.0;

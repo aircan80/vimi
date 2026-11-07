@@ -28,13 +28,37 @@ final class SpellText {
 
     private SpellText() {}
 
+    /**
+     * One effect's amount. {@code periodMilliseconds} is the recorded aura tick period, or null
+     * when the effect is not periodic; {@code $o} and {@code $t} use it. {@code radius} is the
+     * effect's fixed radius in yards for {@code $a}, or null when it was not read.
+     */
     record Amount(
             BigDecimal base,
             List<SpellTexts.Source> sources,
             String issue,
-            boolean percentageOnly) {
+            boolean percentageOnly,
+            Long periodMilliseconds,
+            Value radius) {
         Amount(BigDecimal base, List<SpellTexts.Source> sources, String issue) {
-            this(base, sources, issue, false);
+            this(base, sources, issue, false, null, null);
+        }
+
+        Amount(
+                BigDecimal base,
+                List<SpellTexts.Source> sources,
+                String issue,
+                boolean percentageOnly) {
+            this(base, sources, issue, percentageOnly, null, null);
+        }
+
+        Amount(
+                BigDecimal base,
+                List<SpellTexts.Source> sources,
+                String issue,
+                boolean percentageOnly,
+                Long periodMilliseconds) {
+            this(base, sources, issue, percentageOnly, periodMilliseconds, null);
         }
 
         Amount {
@@ -42,28 +66,71 @@ final class SpellText {
         }
     }
 
-    record Value(String text, List<SpellTexts.Source> sources, String issue) {
+    /**
+     * A resolved value; {@code milliseconds} is set for a fixed duration, and {@code
+     * extraInitialTick} says whether the spell also ticks on application (null when unknown).
+     */
+    record Value(
+            String text,
+            List<SpellTexts.Source> sources,
+            String issue,
+            Long milliseconds,
+            Boolean extraInitialTick) {
+        Value(String text, List<SpellTexts.Source> sources, String issue) {
+            this(text, sources, issue, null, null);
+        }
+
         Value {
             sources = List.copyOf(sources);
         }
     }
 
     /** Source values for the described spell and any spell it references. */
-    record Values(Map<Long, Map<Integer, Amount>> amounts, Map<Long, Value> durations) {
+    record Values(
+            Map<Long, Map<Integer, Amount>> amounts,
+            Map<Long, Value> durations,
+            Map<Long, Value> procChances,
+            Map<Long, Value> procCharges,
+            Map<Long, Value> maxStacks) {
+        Values(Map<Long, Map<Integer, Amount>> amounts, Map<Long, Value> durations) {
+            this(amounts, durations, Map.of(), Map.of(), Map.of());
+        }
+
+        Values(
+                Map<Long, Map<Integer, Amount>> amounts,
+                Map<Long, Value> durations,
+                Map<Long, Value> procChances) {
+            this(amounts, durations, procChances, Map.of(), Map.of());
+        }
+
         Values {
             amounts = Map.copyOf(amounts);
+            durations = present(durations);
+            procChances = present(procChances);
+            procCharges = present(procCharges);
+            maxStacks = present(maxStacks);
+        }
+
+        private static Map<Long, Value> present(Map<Long, Value> values) {
             var copy = new LinkedHashMap<Long, Value>();
-            durations.forEach(
+            values.forEach(
                     (spell, value) -> {
                         if (value != null) {
                             copy.put(spell, value);
                         }
                     });
-            durations = Map.copyOf(copy);
+            return Map.copyOf(copy);
         }
     }
 
-    private sealed interface Part permits Literal, Token, Forms, Unknown, Markup {}
+    private sealed interface Part permits Literal, Token, Forms, Unknown, Markup, Expression {}
+
+    /**
+     * {@code ${...}} with an optional {@code .N} decimal suffix. Only numbers, {@code + - * /},
+     * parentheses and effect amount tokens ({@code $s1}, {@code $m2}, {@code $123s1}) are
+     * evaluated; anything else leaves the whole expression unknown.
+     */
+    private record Expression(String raw, String body, Integer decimals, int end) implements Part {}
 
     private record Literal(String text) implements Part {}
 
@@ -89,10 +156,18 @@ final class SpellText {
     /** Display markup with no value: colours, links and textures. */
     private record Markup(String raw, String text, String issue) implements Part {}
 
-    /** What a template needs from source rows: effect amounts and durations per spell. */
-    record Needs(Set<Long> amounts, Set<Long> durations, boolean parsed) {
+    /**
+     * What a template needs from source rows per spell: effect amounts, durations, aura options
+     * ($h, $n, $u) and effect radii ($a).
+     */
+    record Needs(
+            Set<Long> amounts,
+            Set<Long> durations,
+            Set<Long> procChances,
+            Set<Long> radii,
+            boolean parsed) {
         boolean any() {
-            return !amounts.isEmpty() || !durations.isEmpty();
+            return !amounts.isEmpty() || !durations.isEmpty() || !procChances.isEmpty();
         }
     }
 
@@ -101,11 +176,29 @@ final class SpellText {
         var parts = raw == null || raw.length() > LIMIT ? null : parse(raw, new ArrayList<>());
         var amounts = new LinkedHashSet<Long>();
         var durations = new LinkedHashSet<Long>();
+        var procs = new LinkedHashSet<Long>();
+        var radii = new LinkedHashSet<Long>();
         if (parts == null) {
-            return new Needs(Set.of(), Set.of(), false);
+            return new Needs(Set.of(), Set.of(), Set.of(), Set.of(), false);
         }
         var cross = new LinkedHashSet<Long>();
         for (var part : parts) {
+            if (part instanceof Expression expression) {
+                var operands = Arithmetic.operands(expression.body());
+                if (operands != null) {
+                    for (var operand : operands) {
+                        long spell = operand.spell() == null ? self : operand.spell();
+                        if (spell != self) {
+                            if (!cross.contains(spell) && cross.size() >= CROSS_SPELLS) {
+                                continue;
+                            }
+                            cross.add(spell);
+                        }
+                        amounts.add(spell);
+                    }
+                }
+                continue;
+            }
             if (part instanceof Token token) {
                 long spell = token.spell() == null ? self : token.spell();
                 if (spell != self) {
@@ -114,16 +207,30 @@ final class SpellText {
                     }
                     cross.add(spell);
                 }
-                if (token.kind() == 's' && token.index() != null) {
+                if ((amountKind(token.kind()) || token.kind() == 't' || token.kind() == 'a')
+                        && token.index() != null) {
                     amounts.add(spell);
-                } else if (token.kind() == 'd'
-                        && token.divisor() == null
-                        && token.multiplier() == null) {
+                }
+                if (token.kind() == 'o' && token.index() != null
+                        || token.kind() == 'd'
+                                && token.divisor() == null
+                                && token.multiplier() == null) {
                     durations.add(spell);
+                }
+                if (token.kind() == 'h' || token.kind() == 'n' || token.kind() == 'u') {
+                    procs.add(spell);
+                }
+                if (token.kind() == 'a' && token.index() != null) {
+                    radii.add(spell);
                 }
             }
         }
-        return new Needs(Set.copyOf(amounts), Set.copyOf(durations), true);
+        return new Needs(
+                Set.copyOf(amounts),
+                Set.copyOf(durations),
+                Set.copyOf(procs),
+                Set.copyOf(radii),
+                true);
     }
 
     static SpellTexts.Description project(
@@ -192,6 +299,63 @@ final class SpellText {
                         allIssues.add(markup.issue());
                     }
                 }
+                case Expression expression -> {
+                    var evaluation =
+                            Arithmetic.evaluate(expression.body(), spell, values.amounts());
+                    String value = null;
+                    String issue = evaluation.issue();
+                    BigDecimal number = evaluation.value();
+                    if (number != null
+                            && evaluation.percentageOnly()
+                            && (expression.end() >= template.length()
+                                    || template.charAt(expression.end()) != '%')) {
+                        number = null;
+                        issue =
+                                "Spell power could raise an amount in this expression; it is"
+                                        + " shown only as a percentage";
+                    }
+                    if (number != null) {
+                        if (number.signum() < 0) {
+                            issue = "Negative expression results are not shown";
+                        } else if (expression.decimals() == null) {
+                            var whole = number.stripTrailingZeros();
+                            if (whole.scale() > 0) {
+                                issue =
+                                        "The expression result is not a whole number and no"
+                                                + " decimal places are given";
+                            } else {
+                                value = whole.setScale(0).toPlainString();
+                            }
+                        } else {
+                            try {
+                                value =
+                                        number.setScale(
+                                                        expression.decimals(),
+                                                        RoundingMode.UNNECESSARY)
+                                                .toPlainString();
+                            } catch (ArithmeticException inexact) {
+                                issue =
+                                        "The expression result needs rounding to "
+                                                + expression.decimals()
+                                                + " decimal place(s)";
+                            }
+                        }
+                    }
+                    if (value == null) {
+                        resolved = false;
+                        number = null;
+                    }
+                    sawNumber = true;
+                    lastNumber = number;
+                    display.append(value == null ? "?" : value);
+                    substitutions.add(
+                            new SpellTexts.Substitution(
+                                    expression.raw(),
+                                    null,
+                                    value,
+                                    evaluation.sources(),
+                                    value == null ? issue : null));
+                }
                 case Unknown unknown -> {
                     resolved = false;
                     sawNumber = true;
@@ -246,7 +410,88 @@ final class SpellText {
                             issue = duration.issue();
                             sources = duration.sources();
                         }
-                    } else if (token.kind() == 's' && token.index() != null) {
+                    } else if (token.kind() == 'n' || token.kind() == 'u') {
+                        var count =
+                                (token.kind() == 'n' ? values.procCharges() : values.maxStacks())
+                                        .get(source);
+                        issue =
+                                token.kind() == 'n'
+                                        ? "Proc charges are unavailable"
+                                        : "Maximum stacks are unavailable";
+                        if (count != null) {
+                            sources = count.sources();
+                            issue = count.issue();
+                            if (issue == null) {
+                                number = scaled(new BigDecimal(count.text()), token);
+                                if (number == null) {
+                                    issue = "Scaled counts are unsupported";
+                                } else {
+                                    value = number.toPlainString();
+                                }
+                            }
+                        }
+                    } else if ((token.kind() == 't' || token.kind() == 'a')
+                            && token.index() != null) {
+                        var amount =
+                                values.amounts().getOrDefault(source, Map.of()).get(token.index());
+                        issue =
+                                token.kind() == 't'
+                                        ? "Aura period is unavailable"
+                                        : "Effect radius is unavailable";
+                        if (amount != null && token.kind() == 't') {
+                            sources = amount.sources();
+                            Long period = amount.periodMilliseconds();
+                            if (period == null || period <= 0) {
+                                issue = "Effect is not periodic";
+                            } else {
+                                // Seconds, shown exactly (at most two decimals) or not at all.
+                                number =
+                                        scaled(
+                                                BigDecimal.valueOf(period)
+                                                        .divide(BigDecimal.valueOf(1000)),
+                                                new Token(
+                                                        token.raw(),
+                                                        token.end(),
+                                                        token.spell(),
+                                                        token.kind(),
+                                                        token.index(),
+                                                        token.divisor() == null
+                                                                ? BigDecimal.ONE
+                                                                : token.divisor(),
+                                                        token.multiplier()));
+                                if (number == null) {
+                                    issue = "Aura period is not a whole hundredth of a second";
+                                } else {
+                                    value = number.toPlainString();
+                                }
+                            }
+                        } else if (amount != null && amount.radius() != null) {
+                            sources = amount.radius().sources();
+                            issue = amount.radius().issue();
+                            if (issue == null) {
+                                number = scaled(new BigDecimal(amount.radius().text()), token);
+                                value = number == null ? null : number.toPlainString();
+                                if (value == null) {
+                                    issue = "Scaled radius is unsupported";
+                                }
+                            }
+                        }
+                    } else if (token.kind() == 'h') {
+                        var chance = values.procChances().get(source);
+                        issue = "Proc chance is unavailable";
+                        if (chance != null) {
+                            sources = chance.sources();
+                            issue = chance.issue();
+                            if (issue == null) {
+                                number = scaled(new BigDecimal(chance.text()), token);
+                                if (number == null) {
+                                    issue = "Scaled proc chance is unsupported";
+                                } else {
+                                    value = number.toPlainString();
+                                }
+                            }
+                        }
+                    } else if (amountKind(token.kind()) && token.index() != null) {
                         var amount =
                                 values.amounts().getOrDefault(source, Map.of()).get(token.index());
                         issue =
@@ -260,11 +505,42 @@ final class SpellText {
                                     && (token.end() == template.length()
                                             || template.charAt(token.end()) != '%')) {
                                 issue =
-                                        "This fixed scalar profile requires a literal percent"
-                                                + " suffix";
+                                        "Spell power could raise this amount; it is shown only"
+                                                + " as a percentage";
                             }
-                            if (issue == null && amount.base() != null) {
-                                number = scaled(amount.base().abs(), token);
+                            BigDecimal shown = amount.base() == null ? null : amount.base().abs();
+                            if (issue == null && shown != null && token.kind() == 'o') {
+                                // Total periodic value: amount per tick times recorded ticks.
+                                var duration = values.durations().get(source);
+                                Long period = amount.periodMilliseconds();
+                                if (period == null || period <= 0) {
+                                    issue = "Effect is not periodic";
+                                } else if (duration == null || duration.milliseconds() == null) {
+                                    issue =
+                                            "Total periodic value needs a fixed duration: "
+                                                    + (duration == null || duration.issue() == null
+                                                            ? "duration is unavailable"
+                                                            : duration.issue());
+                                } else if (duration.extraInitialTick() == null) {
+                                    issue = "Whether the spell ticks on application is unreadable";
+                                } else if (duration.extraInitialTick()) {
+                                    issue =
+                                            "The spell also ticks on application; the total is not"
+                                                    + " computed";
+                                } else if (duration.milliseconds() % period != 0) {
+                                    issue = "Duration is not a whole number of ticks";
+                                } else {
+                                    shown =
+                                            shown.multiply(
+                                                    BigDecimal.valueOf(
+                                                            duration.milliseconds() / period));
+                                    var both = new ArrayList<>(sources);
+                                    both.addAll(duration.sources());
+                                    sources = both;
+                                }
+                            }
+                            if (issue == null && shown != null) {
+                                number = scaled(shown, token);
                                 if (number == null) {
                                     issue =
                                             "Non-integral or out-of-range effect amount is"
@@ -289,7 +565,11 @@ final class SpellText {
                     substitutions.add(
                             new SpellTexts.Substitution(
                                     token.raw(),
-                                    token.kind() == 's' ? token.index() : null,
+                                    amountKind(token.kind())
+                                                    || token.kind() == 't'
+                                                    || token.kind() == 'a'
+                                            ? token.index()
+                                            : null,
                                     value,
                                     sources,
                                     value == null ? issue : null));
@@ -330,7 +610,13 @@ final class SpellText {
             if (token.divisor().signum() == 0) {
                 return null;
             }
-            value = value.divide(token.divisor(), 6, RoundingMode.HALF_EVEN);
+            try {
+                // Exact: a quotient that does not terminate is never rounded into a value that
+                // looks exact (as ${...} expressions already do).
+                value = value.divide(token.divisor());
+            } catch (ArithmeticException repeating) {
+                return null;
+            }
         }
         value = value.stripTrailingZeros();
         boolean scaledToken = token.divisor() != null || token.multiplier() != null;
@@ -413,12 +699,22 @@ final class SpellText {
         char c = raw.charAt(i);
         if (c == '{') {
             int end = balanced(raw, i, '{', '}');
-            return end < 0
-                    ? null
-                    : new Found(
-                            new Unknown(
-                                    raw.substring(at, end), "Client expressions are not evaluated"),
-                            end);
+            if (end < 0) {
+                return null;
+            }
+            Integer decimals = null;
+            int stop = end;
+            if (end + 1 < raw.length()
+                    && raw.charAt(end) == '.'
+                    && Character.isDigit(raw.charAt(end + 1))
+                    && (end + 2 >= raw.length() || !Character.isDigit(raw.charAt(end + 2)))) {
+                decimals = raw.charAt(end + 1) - '0';
+                stop = end + 2;
+            }
+            return new Found(
+                    new Expression(
+                            raw.substring(at, stop), raw.substring(i + 1, end - 1), decimals, stop),
+                    stop);
         }
         if (c == '?') {
             int end = conditional(raw, i + 1);
@@ -556,7 +852,7 @@ final class SpellText {
                         new Unknown(raw.substring(at, end), "Effect index is unsupported"), end);
             }
         }
-        if (kind == 's' && index == null) {
+        if ((amountKind(kind) || kind == 't' || kind == 'a') && index == null) {
             return new Found(new Unknown(raw.substring(at, end), "Unsupported spell token"), end);
         }
         return new Found(
@@ -669,6 +965,11 @@ final class SpellText {
                 return null;
             }
         }
+    }
+
+    /** $s (amount), $m (base points; the same fixed amount) and $o (total periodic value). */
+    private static boolean amountKind(char kind) {
+        return kind == 's' || kind == 'm' || kind == 'o';
     }
 
     private static boolean isLetter(char c) {

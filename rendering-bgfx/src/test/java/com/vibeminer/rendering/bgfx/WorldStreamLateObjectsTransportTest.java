@@ -28,7 +28,7 @@ import org.junit.jupiter.api.io.TempDir;
  * actual objects file. Control files next to the session directory hold or fail the child's objects
  * work, so every interleaving below is deterministic.
  */
-@Timeout(60)
+@Timeout(WorldStreamTestChildren.TEST_TIMEOUT_SECONDS)
 @SuppressWarnings("try")
 class WorldStreamLateObjectsTransportTest {
     @TempDir Path directory;
@@ -303,8 +303,11 @@ class WorldStreamLateObjectsTransportTest {
                                                 arguments.get(1),
                                                 arguments.get(3))
                                         .start();
-                            });
-            session.initialized().get(20, TimeUnit.SECONDS);
+                            },
+                            WorldStreamTestChildren.STARTUP_GUARD_MILLIS,
+                            5000);
+            session.initialized()
+                    .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);
         }
 
         Path control(String name) {
@@ -501,7 +504,7 @@ class WorldStreamLateObjectsTransportTest {
             Set<WorldStreamState.Lease> active = java.util.concurrent.ConcurrentHashMap.newKeySet();
             Map<Integer, int[]> tiles = new HashMap<>();
             Map<Integer, Long> transactions = new HashMap<>();
-            long[] generations = new long[10];
+            long[] generations = new long[WorldStreamState.SLOTS];
             long serial = 0;
             // The renderer's object pass reports why it is unavailable on stderr only.
             System.err.println(

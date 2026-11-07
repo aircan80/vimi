@@ -54,9 +54,9 @@ public final class WorldSpawnOverlayTest {
         // Frame 800x500 fits the 1600x1200 viewport at scale 2 with 100 px vertical letterbox.
         var ahead = marker(markers, 1);
         require(near(ahead.x(), 800) && near(ahead.footY(), 600), "Point ahead projects to the frame center");
-        require(near(ahead.headY(), 600 - 2 * (2 * 800 * .8 / 100)), "Head stem rises by two yards");
+        require(near(ahead.headY(), 600 - 2 * (2 * TerrainCamera.focalPixels(800) / 100)), "Head stem rises by two yards");
         var east = marker(markers, 2);
-        require(near(east.x(), 800 + 2 * (10 * 800 * .8 / 100)), "Negative native Y (east) is screen right when facing north");
+        require(near(east.x(), 800 + 2 * (10 * TerrainCamera.focalPixels(800) / 100)), "Negative native Y (east) is screen right when facing north");
         require(markers.stream().noneMatch(m -> m.spawn().npcId() == 3), "Points behind the camera are culled");
         require(markers.stream().noneMatch(m -> m.spawn().npcId() == 4), "Points without height are never placed");
         require(markers.stream().noneMatch(m -> m.spawn().npcId() == 5), "Points outside the frame are culled");

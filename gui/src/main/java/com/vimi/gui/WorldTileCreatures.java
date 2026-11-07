@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -34,16 +35,23 @@ import java.util.function.Supplier;
  * the terrain child draws them in its own depth-shared object pass (issue #175, third slice).
  *
  * <p>Only a spawn with a recorded height whose NPC has a {@link CreatureModelPolicy} QUALIFIED
- * display is drawn. The display's static rest-pose preview must need no character appearance and
- * no surface-visibility choice; only its opaque diffuse surfaces are drawn, with textures reduced
- * to at most {@value #IMAGE_SIDE} pixels a side. Facing is not recorded by the source, so every
+ * display is drawn. The display's static preview must need no character appearance, and each
+ * geoset group draws one variant decided from recorded facts ({@link #visibleGeosets}: when the
+ * model records geoset data, the display's own geoset rows choose and unchosen groups 1 to 8 are
+ * hidden; otherwise every group draws its x00 section); only its opaque and alpha-keyed
+ * (cutout) diffuse surfaces are drawn, with
+ * textures reduced to at most {@value #IMAGE_SIDE} pixels a side. Facing is not recorded by the source, so every
  * model faces native north. Each spawn belongs to exactly one tile (the filename-index rule), and
  * selection is nearest to the tile centre first, so it never depends on the camera. Everything
  * else is counted by reason, never guessed. The spawn index, choices and converted models are
  * cached per source revision; work runs on the caller's (exterior objects) thread.
  */
 final class WorldTileCreatures implements AutoCloseable {
-    static final int IMAGE_SIDE = 128;
+    static final int IMAGE_SIDE = 256;
+
+    /** Range material classes, as in the objects file: opaque and alpha-key cutout. */
+    static final int OPAQUE = com.vibeminer.rendering.world.ObjectTextureMips.OPAQUE,
+            CUTOUT = com.vibeminer.rendering.world.ObjectTextureMips.CUTOUT;
 
     /** Per tile, on top of the shared objects file profile that buildings use first. */
     static final int TILE_MODELS = 8, TILE_PLACEMENTS = 32, TILE_PREVIEWS = 16;
@@ -62,8 +70,10 @@ final class WorldTileCreatures implements AutoCloseable {
         NOT_QUALIFIED("no single qualified model"),
         CHARACTER_APPEARANCE("character appearance not evaluated"),
         VISIBILITY_UNRESOLVED("surface visibility unresolved"),
-        NO_OPAQUE_SURFACE("no opaque textured surface"),
+        NO_OPAQUE_SURFACE("no opaque or alpha-keyed textured surface"),
         MODEL_UNAVAILABLE("model unavailable"),
+        /** The preview component was busy or closed; not cached and costs no preview budget. */
+        PREVIEWS_BUSY("model reader busy or closed"),
         CAPPED("over the tile budget"),
         FAILED("lookup failed");
 
@@ -76,22 +86,29 @@ final class WorldTileCreatures implements AutoCloseable {
 
     /** One tile's creature outcome; immutable. */
     static final class Summary {
-        static final Summary NONE = new Summary(new int[Count.values().length], 0, null, List.of());
+        static final Summary NONE = new Summary(new int[Count.values().length], 0, 0, null, List.of());
 
         private final int[] counts;
-        private final int models;
+        private final int models, restPosed;
         private final String note;
         private final List<WorldObjectPicks.Creature> placed;
 
-        private Summary(int[] counts, int models, String note, List<WorldObjectPicks.Creature> placed) {
+        private Summary(int[] counts, int models, int restPosed, String note,
+                List<WorldObjectPicks.Creature> placed) {
             this.counts = counts.clone();
             this.models = models;
+            this.restPosed = restPosed;
             this.note = note;
             this.placed = List.copyOf(placed);
         }
 
         static Summary failed(String note) {
-            return new Summary(new int[Count.values().length], 0, Objects.requireNonNull(note), List.of());
+            return new Summary(new int[Count.values().length], 0, 0, Objects.requireNonNull(note), List.of());
+        }
+
+        /** Drawn placements whose model is in its rest (bind) pose because no Stand pose was baked. */
+        int restPosed() {
+            return restPosed;
         }
 
         int count(Count count) {
@@ -132,7 +149,8 @@ final class WorldTileCreatures implements AutoCloseable {
         Summary plus(Summary other) {
             var sum = counts.clone();
             for (int i = 0; i < sum.length; i++) sum[i] += other.counts[i];
-            return new Summary(sum, models + other.models, note != null ? note : other.note, List.of());
+            return new Summary(sum, models + other.models, restPosed + other.restPosed,
+                    note != null ? note : other.note, List.of());
         }
     }
 
@@ -151,18 +169,43 @@ final class WorldTileCreatures implements AutoCloseable {
     @FunctionalInterface
     interface Previews {
         DisplayModelTypes.Preview preview(long displayId, Cancellation token) throws Exception;
+
+        /**
+         * The display's Stand sequence over the same rest surface as {@link #preview}. A source
+         * without idle sequences answers UNSUPPORTED, a lasting answer cached with the model.
+         */
+        default DisplayModelTypes.Idle idle(long displayId, Cancellation token) throws Exception {
+            return new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.UNSUPPORTED, null, null,
+                    "Idle animation is not provided by this source.");
+        }
     }
 
-    /** RGBA8 image with power-of-two sides of at most {@link #IMAGE_SIDE}. */
+    /**
+     * RGBA8 image with power-of-two sides of at most {@link #IMAGE_SIDE}, as its full packed mip
+     * chain ({@link com.vibeminer.rendering.world.ObjectTextureMips}).
+     */
     record Image(int width, int height, byte[] rgba) {}
 
     /**
      * A converted static model in M2 model space (Z up, +X forward): 8 floats per vertex
-     * (position, normal, uv), u16-range indices and (first index, index count, local image) ranges.
+     * (position, normal, uv), u16-range indices, (first index, index count, local image) ranges and
+     * one material class per range ({@link #OPAQUE} or {@link #CUTOUT}).
      */
-    record Model(float[] vertices, int[] indices, int[] ranges, List<Image> images, int omittedSurfaces) {
+    record Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
+            int omittedSurfaces, String restPose) {
+        Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
+                int omittedSurfaces) {
+            this(vertices, indices, ranges, blends, images, omittedSurfaces, null);
+        }
+
+        /** The same model with why it stays in its rest pose (null: baked in the Stand pose). */
+        Model withRestPose(String reason) {
+            return new Model(vertices, indices, ranges, blends, images, omittedSurfaces, reason);
+        }
+
         Model {
             images = List.copyOf(images);
+            if (blends.length * 3 != ranges.length) throw new IllegalArgumentException("Range classes");
         }
 
         int vertexCount() {
@@ -171,13 +214,24 @@ final class WorldTileCreatures implements AutoCloseable {
 
         long pixels() {
             long sum = 0;
-            for (var image : images) sum += (long) image.width() * image.height();
+            for (var image : images) {
+                sum += com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(
+                        image.width(), image.height());
+            }
             return sum;
         }
     }
 
-    /** A display's conversion: a model, or the bucket that refuses it. */
-    record Converted(Model model, Count refusal, String detail) {
+    /**
+     * A display's conversion: a model, or the bucket that refuses it. {@code transientPose} marks a
+     * model drawn in its rest pose only because its Stand sequence could not be read yet; it is
+     * drawn on this tile but not cached, so a later tile asks again.
+     */
+    record Converted(Model model, Count refusal, String detail, boolean transientPose) {
+        Converted(Model model, Count refusal, String detail) {
+            this(model, refusal, detail, false);
+        }
+
         Converted {
             if ((model == null) == (refusal == null)) throw new IllegalArgumentException("Inconsistent conversion");
         }
@@ -256,7 +310,22 @@ final class WorldTileCreatures implements AutoCloseable {
 
         @Override
         public DisplayModelTypes.Preview preview(long displayId, Cancellation token) {
-            BuildDisplayModels models;
+            var models = component();
+            if (models == null) {
+                return new DisplayModelTypes.Preview(DisplayModelTypes.State.UNAVAILABLE, null, null,
+                        java.util.Set.of(), List.of(), false, "Model files are not open");
+            }
+            return models.preview(displayId, token).join();
+        }
+
+        @Override
+        public DisplayModelTypes.Idle idle(long displayId, Cancellation token) {
+            var models = component();
+            return models == null ? DisplayModelTypes.Idle.unavailable("Model files are not open")
+                    : models.idle(displayId, token).join();
+        }
+
+        private BuildDisplayModels component() {
             synchronized (this) {
                 if (closed) throw new CancellationException("Creature models closed");
                 var now = revision.get();
@@ -265,13 +334,8 @@ final class WorldTileCreatures implements AutoCloseable {
                     current = factory.get();
                     currentRevision = now;
                 }
-                models = current;
+                return current;
             }
-            if (models == null) {
-                return new DisplayModelTypes.Preview(DisplayModelTypes.State.UNAVAILABLE, null, null,
-                        java.util.Set.of(), List.of(), false, "Model files are not open");
-            }
-            return models.preview(displayId, token).join();
         }
 
         @Override
@@ -305,11 +369,20 @@ final class WorldTileCreatures implements AutoCloseable {
         if (spawns.spawns() == 0) return Summary.failed("no prepared spawn source");
         double size = WorldFormats.TILE_SIZE;
         double centerX = (31.5 - tile.x()) * size, centerY = (31.5 - tile.y()) * size;
-        var nearby = spawns.near(mapId, centerX, centerY, size * Math.sqrt(.5) + 1, WorldSpawns.MAX_NEARBY);
+        // Only this tile's own points take the query's limit: a dense neighbour tile inside the
+        // circle around the tile can no longer starve them.
+        var nearby = spawns.near(mapId, centerX, centerY, size * Math.sqrt(.5) + 1, WorldSpawns.MAX_NEARBY,
+                spawn -> WorldBookmarks.tileIndex(spawn.x()) == tile.x()
+                        && WorldBookmarks.tileIndex(spawn.y()) == tile.y());
         var counts = new int[Count.values().length];
         var added = new HashMap<Long, Integer>();
         var placed = new java.util.ArrayList<WorldObjectPicks.Creature>();
         int placements = 0, previewsTried = 0;
+        // Displays whose preview was busy on this tile: not asked again for every later spawn.
+        var busyDisplays = new HashSet<Long>();
+        // Builder model indices drawn in their rest pose; their placements are disclosed.
+        var restModels = new HashSet<Integer>();
+        int restPosed = 0;
         for (var spawn : nearby.placed()) {
             token.check();
             if (WorldBookmarks.tileIndex(spawn.x()) != tile.x() || WorldBookmarks.tileIndex(spawn.y()) != tile.y()) continue;
@@ -344,6 +417,10 @@ final class WorldTileCreatures implements AutoCloseable {
                 synchronized (this) {
                     converted = models.get(display);
                 }
+                if (converted == null && busyDisplays.contains(display)) {
+                    counts[Count.PREVIEWS_BUSY.ordinal()]++;
+                    continue;
+                }
                 if (converted == null) {
                     if (previewsTried == TILE_PREVIEWS) {
                         counts[Count.CAPPED.ordinal()]++;
@@ -351,6 +428,11 @@ final class WorldTileCreatures implements AutoCloseable {
                     }
                     previewsTried++;
                     converted = load(display, token);
+                    // A busy or closed reader learned nothing: refund the preview it cost.
+                    if (converted.refusal() == Count.PREVIEWS_BUSY) {
+                        previewsTried--;
+                        busyDisplays.add(display);
+                    }
                 }
                 if (converted.refusal() != null) {
                     counts[converted.refusal().ordinal()]++;
@@ -366,6 +448,7 @@ final class WorldTileCreatures implements AutoCloseable {
                 }
                 model = add(builder, m);
                 added.put(display, model);
+                if (m.restPose() != null) restModels.add(model);
             }
             if (builder.drawCost(model) > builder.drawRoom()) {
                 counts[Count.CAPPED.ordinal()]++;
@@ -378,9 +461,10 @@ final class WorldTileCreatures implements AutoCloseable {
                     transform[3], new WorldObjectPicks.Key(model, transform[0], transform[1], transform[2],
                             transform[3])));
             placements++;
+            if (restModels.contains(model)) restPosed++;
             counts[Count.DRAWN.ordinal()]++;
         }
-        return new Summary(counts, added.size(), nearby.omitted() == 0 ? null
+        return new Summary(counts, added.size(), restPosed, nearby.omitted() == 0 ? null
                 : nearby.omitted() + " nearby points beyond the query limit were not considered", placed);
     }
 
@@ -411,18 +495,67 @@ final class WorldTileCreatures implements AutoCloseable {
     private Converted load(long display, Cancellation token) {
         Converted converted;
         try {
-            converted = convert(previews.preview(display, token), token);
+            converted = stand(display, previews.preview(display, token), token);
         } catch (Exception failed) {
             // Only this tile's cancellation propagates; a closed or retired component is a failure.
             token.check();
+            if (busy(failed))
+                return Converted.refused(Count.PREVIEWS_BUSY, failed.getClass().getSimpleName());
             WorldDiagnostics.degraded("creature models", "World creature model read failed", failed);
             // Not cached: a failed read may succeed on the next tile.
             return Converted.refused(Count.FAILED, failed.getClass().getSimpleName());
         }
+        if (converted.transientPose()) return converted; // asked again on a later tile
         synchronized (this) {
             if (!closed) models.put(display, converted);
         }
         return converted;
+    }
+
+    /**
+     * Converts the preview in its Stand pose (issue #377): the display's idle sequence evaluated at
+     * its first frame, baked once on the CPU. When there is no qualified Stand sequence for the
+     * same rest surface, the rest pose is converted and the reason recorded on the model. An
+     * UNSUPPORTED sequence or one for another rest surface is a lasting answer and is cached with
+     * the model. An UNAVAILABLE sequence ("could not be read; retry can reassess it") or an idle
+     * read failure draws the rest pose on this tile only: it is not cached. A busy or closed reader
+     * and a cancellation propagate.
+     */
+    Converted stand(long display, DisplayModelTypes.Preview preview, Cancellation token) throws Exception {
+        if (preview == null || preview.appearance() == null) return convert(preview, token);
+        String restPose;
+        boolean retry = false;
+        var appearance = preview.appearance();
+        try {
+            var idle = previews.idle(display, token);
+            token.check();
+            if (idle == null || idle.state() != DisplayModelTypes.IdleState.AVAILABLE) {
+                restPose = idle == null ? "no idle result" : idle.message();
+                retry = idle == null || idle.state() == DisplayModelTypes.IdleState.UNAVAILABLE;
+            } else if (!idle.animation().matches(appearance)) {
+                restPose = "the Stand sequence belongs to another rest surface";
+            } else {
+                appearance = idle.animation().pose(appearance, 0);
+                restPose = null;
+            }
+        } catch (Exception failed) {
+            token.check();
+            if (busy(failed) || failed instanceof CancellationException) throw failed;
+            restPose = "Stand pose failed: " + failed.getClass().getSimpleName();
+            retry = true;
+        }
+        var converted = convert(new DisplayModelTypes.Preview(preview.state(), preview.reference(), appearance,
+                preview.visibleParts(), preview.issues(), preview.restored(), preview.message()), token);
+        return converted.model() == null || restPose == null ? converted
+                : new Converted(converted.model().withRestPose(restPose), null, null, retry);
+    }
+
+    /** Whether a preview failure is the component's busy or closed refusal, however wrapped. */
+    static boolean busy(Throwable failure) {
+        for (int depth = 0; failure != null && depth < 8; depth++, failure = failure.getCause()) {
+            if (failure instanceof DisplayModelTypes.ServiceUnavailable) return true;
+        }
+        return false;
     }
 
     private static int add(WorldStreamTileWriter.Exterior.Builder builder, Model model) {
@@ -434,13 +567,16 @@ final class WorldTileCreatures implements AutoCloseable {
         var ranges = model.ranges().clone();
         for (int r = 2; r < ranges.length; r += 3) ranges[r] = images[ranges[r]];
         int index = builder.model();
-        builder.mesh(FloatBuffer.wrap(model.vertices()), IntBuffer.wrap(model.indices()), ranges);
+        builder.mesh(FloatBuffer.wrap(model.vertices()), IntBuffer.wrap(model.indices()), ranges,
+                model.blends().clone());
         return index;
     }
 
     /**
      * The tile-independent BASIC conversion of one display's static preview. Refuses character
-     * appearance, unresolved surface visibility and models without an opaque diffuse surface.
+     * appearance, models without an opaque or alpha-keyed diffuse surface, and every geoset choice
+     * it cannot make from recorded facts ({@link #visibleGeosets}), including a model whose every
+     * section the display's rows hide. Never a guessed variant.
      */
     static Converted convert(DisplayModelTypes.Preview preview, Cancellation token) {
         if (preview == null || preview.appearance() == null || preview.reference() == null)
@@ -451,9 +587,11 @@ final class WorldTileCreatures implements AutoCloseable {
             return Converted.refused(Count.CHARACTER_APPEARANCE, "extended display info is not evaluated");
         var appearance = preview.appearance();
         var mesh = appearance.mesh();
-        if (reference.creatureGeosetDataId() == null || reference.creatureGeosetDataId() != 0
-                || mesh.parts().stream().anyMatch(part -> part.id() != 0))
-            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "geoset visibility is not evaluated");
+        var visible = visibleGeosets(reference, mesh);
+        if (visible.refusal() != null) return Converted.refused(Count.VISIBILITY_UNRESOLVED, visible.refusal());
+        // Nothing left to draw is a visibility outcome, not a material one.
+        if (mesh.parts().stream().noneMatch(part -> visible.ids().contains(part.id())))
+            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "every geoset is hidden by the display's rows");
         var surfaces = new HashMap<Integer, MeshAppearance.Surface>();
         for (var surface : appearance.surfaces()) surfaces.put(surface.sectionIndex(), surface);
         var cards = new HashSet<Integer>();
@@ -465,20 +603,25 @@ final class WorldTileCreatures implements AutoCloseable {
         var vertices = new ArrayList<Float>();
         var indices = new ArrayList<Integer>();
         var ranges = new ArrayList<Integer>();
+        var blends = new ArrayList<Integer>();
         var imageSlots = new HashMap<Integer, Integer>();
         var images = new ArrayList<Image>();
         int omitted = 0;
         for (int ordinal = 0; ordinal < mesh.parts().size(); ordinal++) {
             token.check();
             var part = mesh.parts().get(ordinal);
+            // Hidden geosets are not surface omissions: the section is hidden by the chosen geosets.
+            if (!visible.ids().contains(part.id())) continue;
             var surface = surfaces.get(ordinal);
+            var blend = surface == null ? null : surface.material().blend();
             if (surface == null
                     || surface.material().combiner() != MeshAppearance.Combiner.DIFFUSE
-                    || surface.material().blend() != MeshAppearance.Blend.OPAQUE
+                    || blend != MeshAppearance.Blend.OPAQUE && blend != MeshAppearance.Blend.ALPHA_KEY
                     || surface.textureIndex() >= textures.size()) {
                 omitted++;
                 continue;
             }
+            int materialClass = blend == MeshAppearance.Blend.ALPHA_KEY ? CUTOUT : OPAQUE;
             int first = indices.size();
             for (int at = part.firstIndex(); at + 2 < part.firstIndex() + part.indexCount(); at += 3) {
                 int a = source[at], b = source[at + 1], c = source[at + 2];
@@ -512,58 +655,154 @@ final class WorldTileCreatures implements AutoCloseable {
                 omitted++;
                 continue;
             }
-            Integer slot = imageSlots.get(surface.textureIndex());
+            // One image per texture and material class: opaque forces alpha, cutout keeps it.
+            int key = surface.textureIndex() * 2 + materialClass;
+            Integer slot = imageSlots.get(key);
             if (slot == null) {
-                var image = reduce(textures.get(surface.textureIndex()), token);
+                var image = reduce(textures.get(surface.textureIndex()), materialClass, token);
                 if (image.width() < 1 || image.height() < 1)
                     return Converted.refused(Count.MODEL_UNAVAILABLE, "texture has no pixels");
                 slot = images.size();
-                imageSlots.put(surface.textureIndex(), slot);
+                imageSlots.put(key, slot);
                 images.add(image);
             }
             ranges.add(first);
             ranges.add(count);
             ranges.add(slot);
+            blends.add(materialClass);
         }
         if (ranges.isEmpty() || remap.size() < 3)
-            return Converted.refused(Count.NO_OPAQUE_SURFACE, "no opaque diffuse surface with a texture");
+            return Converted.refused(Count.NO_OPAQUE_SURFACE, "no opaque or alpha-keyed diffuse surface with a texture");
         var vertexArray = new float[vertices.size()];
         for (int i = 0; i < vertexArray.length; i++) vertexArray[i] = vertices.get(i);
         return new Converted(new Model(vertexArray, indices.stream().mapToInt(Integer::intValue).toArray(),
-                ranges.stream().mapToInt(Integer::intValue).toArray(), images, omitted), null, null);
+                ranges.stream().mapToInt(Integer::intValue).toArray(),
+                blends.stream().mapToInt(Integer::intValue).toArray(), images, omitted), null, null);
     }
 
-    /** Box-filters ARGB to power-of-two sides of at most {@link #IMAGE_SIDE}; alpha becomes opaque. */
+    /** The geoset IDs a model draws, or why that cannot be decided from recorded facts. */
+    record Geosets(Set<Integer> ids, String refusal) {}
+
+    /**
+     * Which geoset sections draw (#361, #455). Sections are grouped by geoset ID / 100.
+     *
+     * <ul>
+     *   <li>When the model's CreatureGeosetDataID is above 0, the display's own rows
+     *       (CreatureDisplayInfoGeosetData: group = GeosetIndex + 1, section = group * 100 + value)
+     *       choose: each listed group draws its chosen section, and a group from 1 to 8 without a
+     *       row is hidden. Group 0 draws its x00 section (ID 0), and groups 9 and above without a
+     *       row keep the default below.
+     *   <li>When it is 0, display rows are ignored and every group draws its x00 section.
+     * </ul>
+     *
+     * The gating follows wow.export ({@code DBCreatures.js}: rows are used only when the model's ID
+     * is above 0, and then every geoset from 1 to 899 not listed is hidden). That is a viewer's
+     * behaviour, not confirmed client behaviour; the x00 default for an ID of 0 waits for real-data
+     * counts (#455). Nothing is guessed: an unreadable ID, unknown or conflicting rows when they
+     * apply, a chosen section the model does not have, and a default group without its x00 section
+     * all refuse.
+     */
+    static Geosets visibleGeosets(DisplayModelTypes.Reference reference, com.vibeminer.rendering.models.PreviewMesh mesh) {
+        if (reference.creatureGeosetDataId() == null)
+            return new Geosets(Set.of(), "creature geoset data could not be read");
+        // A negative ID is treated like 0: only a positive one says the display rows apply.
+        boolean rows = reference.creatureGeosetDataId() > 0;
+        var chosen = reference.displayGeosets();
+        if (rows && chosen == null) return new Geosets(Set.of(), "display geoset selections are unknown");
+        var present = new java.util.TreeMap<Integer, java.util.TreeSet<Integer>>();
+        for (var part : mesh.parts()) present.computeIfAbsent(part.id() / 100, g -> new java.util.TreeSet<>()).add(part.id());
+        var ids = new HashSet<Integer>();
+        if (rows) {
+            for (var choice : chosen.entrySet()) {
+                int group = choice.getKey(), value = choice.getValue();
+                // Rows key groups GeosetIndex + 1, so never group 0; refuse to read one as such.
+                if (group < 1) continue;
+                if (value == DisplayModelTypes.Reference.CONFLICTING_GEOSET)
+                    return new Geosets(Set.of(), "the display's geoset rows conflict for group " + group);
+                if (!present.containsKey(group)) continue; // the model has no such group: nothing to show
+                if (!present.get(group).contains(group * 100 + value))
+                    return new Geosets(Set.of(), "geoset " + (group * 100 + value) + " chosen by the display is not in the model");
+                ids.add(group * 100 + value);
+            }
+        }
+        for (var group : present.entrySet()) {
+            int g = group.getKey();
+            // With rows, a group a row chose draws only that section (added above), and groups
+            // 1 to 8 without a row are hidden.
+            if (rows && g >= 1 && (chosen.containsKey(g) || g <= 8)) continue;
+            if (!group.getValue().contains(g * 100))
+                return new Geosets(Set.of(), "geoset group " + g + " has no default x00 section");
+            ids.add(g * 100);
+        }
+        return new Geosets(Set.copyOf(ids), null);
+    }
+
+    /** {@link #reduce(MeshAppearance.Texture, int, Cancellation)} for an opaque surface. */
     static Image reduce(MeshAppearance.Texture texture, Cancellation token) {
+        return reduce(texture, OPAQUE, token);
+    }
+
+    /**
+     * Box-filters ARGB to power-of-two sides of at most {@link #IMAGE_SIDE} and builds its mip
+     * chain for the material class. Opaque images become alpha 255; cutout images keep alpha, with
+     * colour weighted by alpha so transparent texels do not darken the edges, and their chain keeps
+     * the top level's alpha-test coverage ({@link com.vibeminer.rendering.world.ObjectTextureMips}).
+     */
+    static Image reduce(MeshAppearance.Texture texture, int materialClass, Cancellation token) {
+        if (materialClass != OPAQUE && materialClass != CUTOUT) throw new IllegalArgumentException("Material class");
         int width = texture.width(), height = texture.height();
+        long sourcePassing = 0;
         int w = Math.min(IMAGE_SIDE, Integer.highestOneBit(width));
         int h = Math.min(IMAGE_SIDE, Integer.highestOneBit(height));
         if (w < 1 || h < 1) return new Image(Math.max(w, 0), Math.max(h, 0), new byte[0]);
-        int[] argb = texture.argb();
+        // A read-only view: the texture's pixels are not copied again for every conversion.
+        var argb = texture.argbView();
+        boolean opaque = materialClass == OPAQUE;
         var rgba = new byte[w * h * 4];
         for (int y = 0; y < h; y++) {
             token.check();
             int y0 = (int) ((long) y * height / h), y1 = Math.max(y0 + 1, (int) ((long) (y + 1) * height / h));
             for (int x = 0; x < w; x++) {
                 int x0 = (int) ((long) x * width / w), x1 = Math.max(x0 + 1, (int) ((long) (x + 1) * width / w));
-                long r = 0, g = 0, b = 0, n = 0;
+                long r = 0, g = 0, b = 0, a = 0, wr = 0, wg = 0, wb = 0, n = 0;
                 for (int sy = y0; sy < y1; sy++) {
                     for (int sx = x0; sx < x1; sx++) {
-                        int pixel = argb[sy * width + sx];
-                        r += pixel >>> 16 & 255;
-                        g += pixel >>> 8 & 255;
-                        b += pixel & 255;
+                        int pixel = argb.get(sy * width + sx);
+                        int alpha = pixel >>> 24, red = pixel >>> 16 & 255, green = pixel >>> 8 & 255,
+                                blue = pixel & 255;
+                        if (alpha >= com.vibeminer.rendering.world.ObjectTextureMips.CUTOUT_ALPHA) sourcePassing++;
+                        r += red;
+                        g += green;
+                        b += blue;
+                        a += alpha;
+                        wr += (long) red * alpha;
+                        wg += (long) green * alpha;
+                        wb += (long) blue * alpha;
                         n++;
                     }
                 }
                 int at = (y * w + x) * 4;
-                rgba[at] = (byte) (r / n);
-                rgba[at + 1] = (byte) (g / n);
-                rgba[at + 2] = (byte) (b / n);
-                rgba[at + 3] = (byte) 255;
+                if (opaque || a == 0) {
+                    rgba[at] = (byte) (r / n);
+                    rgba[at + 1] = (byte) (g / n);
+                    rgba[at + 2] = (byte) (b / n);
+                } else {
+                    rgba[at] = (byte) ((wr + a / 2) / a);
+                    rgba[at + 1] = (byte) ((wg + a / 2) / a);
+                    rgba[at + 2] = (byte) ((wb + a / 2) / a);
+                }
+                rgba[at + 3] = (byte) (opaque ? 255 : (a + n / 2) / n);
             }
         }
-        return new Image(w, h, rgba);
+        // Averaging alpha thins strands (manes, feathers) below the cutout reference; the reduced
+        // top level keeps the source's alpha-test coverage, as the chain's lower levels do.
+        if (!opaque && (w != width || h != height))
+            com.vibeminer.rendering.world.ObjectTextureMips.matchCoverage(rgba, 0, w * h,
+                    sourcePassing / ((double) width * height));
+        // Creature textures arrive as one level: the chain is generated (issue #265).
+        var chain = com.vibeminer.rendering.world.ObjectTextureMips.build(w, h, rgba, materialClass,
+                (below, lw, lh) -> null, token::isCanceled);
+        return new Image(w, h, chain.rgba());
     }
 
     /** The source revision's spawn index, loaded once on its own daemon thread. */

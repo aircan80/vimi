@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.ObjectTextureFormats;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Objects;
@@ -14,6 +15,10 @@ import org.lwjgl.system.MemoryUtil;
 final class WorldStreamPackedObjects implements AutoCloseable {
     final int[] models, meshes, ranges, placementModels, images;
     final double[] placements;
+
+    /** Per placement world bounding sphere (x, y, z, radius), see WorldStreamObjectCulling. */
+    final double[] spheres;
+
     final int draws;
     ByteBuffer vertices, indices, pixels;
 
@@ -21,13 +26,20 @@ final class WorldStreamPackedObjects implements AutoCloseable {
             WorldStreamObjectsFile.Data data,
             ByteBuffer vertices,
             ByteBuffer indices,
-            ByteBuffer pixels) {
+            ByteBuffer pixels,
+            BooleanSupplier canceled) {
         models = data.models.clone();
         meshes = data.meshes.clone();
         ranges = data.ranges.clone();
         placementModels = data.placementModels.clone();
         images = data.images.clone();
         placements = data.placements.clone();
+        spheres =
+                WorldStreamObjectCulling.placementSpheres(
+                        placementModels,
+                        placements,
+                        WorldStreamObjectCulling.modelSpheres(
+                                models, meshes, ranges, data.vertices, data.indices, canceled));
         draws = data.draws;
         this.vertices = vertices;
         this.indices = indices;
@@ -56,7 +68,7 @@ final class WorldStreamPackedObjects implements AutoCloseable {
                 pixels.put(data.pixels, at, Math.min(64 << 10, data.pixels.length - at));
             }
             pixels.flip();
-            var result = new WorldStreamPackedObjects(data, vertices, indices, pixels);
+            var result = new WorldStreamPackedObjects(data, vertices, indices, pixels, canceled);
             vertices = indices = pixels = null;
             return result;
         } finally {
@@ -71,7 +83,20 @@ final class WorldStreamPackedObjects implements AutoCloseable {
     }
 
     int imageCount() {
-        return images.length / 2;
+        return images.length / WorldStreamObjectsFile.IMAGE_INTS;
+    }
+
+    int width(int image) {
+        return images[image * WorldStreamObjectsFile.IMAGE_INTS];
+    }
+
+    int height(int image) {
+        return images[image * WorldStreamObjectsFile.IMAGE_INTS + 1];
+    }
+
+    /** The image's stored format ({@link ObjectTextureFormats}). */
+    int format(int image) {
+        return images[image * WorldStreamObjectsFile.IMAGE_INTS + 2];
     }
 
     int placementCount() {
@@ -89,7 +114,7 @@ final class WorldStreamPackedObjects implements AutoCloseable {
     int imageOffset(int image) {
         int at = 0;
         for (int i = 0; i < image; i++) {
-            at += images[i * 2] * images[i * 2 + 1] * 4;
+            at += ObjectTextureFormats.chainBytes(format(i), width(i), height(i));
         }
         return at;
     }

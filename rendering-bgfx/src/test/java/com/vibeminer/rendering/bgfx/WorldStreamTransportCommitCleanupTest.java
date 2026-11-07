@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
-@Timeout(20)
+@Timeout(WorldStreamTestChildren.TEST_TIMEOUT_SECONDS)
 class WorldStreamTransportCommitCleanupTest {
     @TempDir Path directory;
 
@@ -194,15 +194,22 @@ class WorldStreamTransportCommitCleanupTest {
                                             nonce,
                                             arguments.get(1))
                                     .start();
-                        });
+                        },
+                        WorldStreamTestChildren.STARTUP_GUARD_MILLIS,
+                        5000);
         var held = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var file = new AtomicReference<Path>();
         try {
-            session.initialized().get(8, TimeUnit.SECONDS);
+            session.initialized()
+                    .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);
             assertThrows(
                     IllegalArgumentException.class,
-                    () -> session.commit(1, new WorldStreamTransport.Resident[10]));
+                    () ->
+                            session.commit(
+                                    1,
+                                    new WorldStreamTransport.Resident
+                                            [WorldStreamTransport.MAX_RESIDENTS + 1]));
             WorldStreamTransport.TileReservation ticket = null;
             long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
             while (ticket == null && System.nanoTime() < until) {

@@ -15,7 +15,14 @@ import java.util.function.Consumer;
  */
 final class WorldPreparedTerrain {
     static final long MAX_RECEIPT_BYTES = 2048L + 64L * 512;
-    static final long MAX_OUTPUT_RECEIPT_BYTES = 12 * MAX_RECEIPT_BYTES;
+
+    /**
+     * Written outputs alive at once: the World stream's 25 residents (a 5 x 5 neighborhood), its
+     * staged tile, one pending tile and one retiring (issue #173).
+     */
+    static final int MAX_OUTPUTS = 28;
+
+    static final long MAX_OUTPUT_RECEIPT_BYTES = MAX_OUTPUTS * MAX_RECEIPT_BYTES;
 
     enum Outcome {
         TEXTURED,
@@ -39,15 +46,55 @@ final class WorldPreparedTerrain {
     static final class Borrow {
         private TerrainScene.Tile tile;
         private TerrainTextureBinding texture;
+        private com.vibeminer.rendering.world.TerrainTileSplat splat;
         private WrittenTile<?> owner;
         private final long worker = Thread.currentThread().threadId();
         private boolean active = true;
 
         private Borrow(
-                WrittenTile<?> owner, TerrainScene.Tile tile, TerrainTextureBinding texture) {
+                WrittenTile<?> owner,
+                TerrainScene.Tile tile,
+                TerrainTextureBinding texture,
+                com.vibeminer.rendering.world.TerrainTileSplat splat) {
             this.owner = owner;
             this.tile = tile;
             this.texture = texture;
+            this.splat = splat;
+        }
+
+        /** The atlas's splatting inputs, when composed (issue #174 step 2); null otherwise. */
+        com.vibeminer.rendering.world.TerrainTileSplat splat() {
+            check();
+            return splat;
+        }
+
+        /** Splat layers this source prepared from file blocks and with the lossy encoder. */
+        long[] splatLayerCounts() {
+            check();
+            var details = owner.source.materials.details;
+            return new long[] {details.fileBlockLayers(), details.encodedLayers()};
+        }
+
+        /**
+         * Decodes (or reuses) one of this tile's layer diffuses for splatting, bound to the exact
+         * source tuple the atlas was composed from; null if that diffuse is not in its receipt.
+         */
+        TerrainDiffuseDetails.Detail detail(long fileId, com.vibeminer.access.Cancellation token) {
+            check();
+            var receipt = owner.receipt;
+            if (receipt == null) {
+                return null;
+            }
+            for (var mip : receipt.diffuse()) {
+                if (mip.file().fileId() == fileId) {
+                    var materials = owner.source.materials;
+                    return materials.detail(
+                            mip.file(),
+                            new WorldTerrainTextureSource.Request(
+                                    materials, null, List.of(), token, progress -> {}, false));
+                }
+            }
+            return null;
         }
 
         private void check() {
@@ -125,6 +172,7 @@ final class WorldPreparedTerrain {
             active = false;
             tile = null;
             texture = null;
+            splat = null;
             owner = null;
         }
     }
@@ -306,7 +354,7 @@ final class WorldPreparedTerrain {
                 pinnedGeometry.withTile(
                         tile -> {
                             if (pinnedAtlas == null) {
-                                useBorrow(tile, null, use);
+                                useBorrow(tile, null, null, use);
                             } else {
                                 pinnedAtlas.withAtlas(
                                         pixels ->
@@ -314,6 +362,7 @@ final class WorldPreparedTerrain {
                                                         tile,
                                                         TerrainTextureBinding.borrow(
                                                                 texture, pixels.pixels()),
+                                                        pixels.splat().orElse(null),
                                                         use));
                             }
                         });
@@ -338,8 +387,11 @@ final class WorldPreparedTerrain {
         }
 
         private void useBorrow(
-                TerrainScene.Tile tile, TerrainTextureBinding pixels, Consumer<Borrow> use) {
-            var borrowed = new Borrow(this, tile, pixels);
+                TerrainScene.Tile tile,
+                TerrainTextureBinding pixels,
+                com.vibeminer.rendering.world.TerrainTileSplat splat,
+                Consumer<Borrow> use) {
+            var borrowed = new Borrow(this, tile, pixels, splat);
             try {
                 use.accept(borrowed);
             } finally {
@@ -472,6 +524,14 @@ final class WorldPreparedTerrain {
         return scopes.create(comparison, cancel);
     }
 
+    long geometryReleaseRevision() {
+        return world.geometryReleaseRevision();
+    }
+
+    AutoCloseable onGeometryRelease(Runnable listener) {
+        return world.onGeometryRelease(listener);
+    }
+
     void activate(WorldStreamScopes.Scope scope) {
         checkOpen();
         scopes.activate(scope);
@@ -482,9 +542,17 @@ final class WorldPreparedTerrain {
             WorldStreamScopes.Scope scope,
             WorldFormats.Tile tile,
             Cancellation cancel,
-            WorldExteriorObjects.ImageDetail detail) {
+            WorldExteriorObjects.ImageDetail detail,
+            boolean interiors) {
         checkOpen();
-        return WorldExteriorObjects.prepare(scopes, scope, tile, cancel, detail);
+        return WorldExteriorObjects.prepare(
+                scopes,
+                scope,
+                tile,
+                cancel,
+                WorldExteriorObjects.ModelReader.STANDARD,
+                detail,
+                interiors);
     }
 
     void invalidate() {
@@ -500,7 +568,7 @@ final class WorldPreparedTerrain {
     private synchronized <R extends AutoCloseable> WrittenTile<R> reserve(
             WorldStreamScopes.Scope scope) {
         checkOpen();
-        if (outputs.size() >= 12) {
+        if (outputs.size() >= MAX_OUTPUTS) {
             throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OUTPUT_CREDIT);
         }
         var value = new WrittenTile<R>(this, Objects.requireNonNull(scope));
@@ -596,13 +664,15 @@ final class WorldPreparedTerrain {
         if (!materials.matchesNamespace(namespace.build(), namespace.locale())) {
             throw new IllegalStateException("Configured material namespace differs");
         }
+        var map = new WorldService.MapInfo(namespace.mapId(), null, null, 0, namespace.wdtId());
+        // Reuse the geometry's checked root parse and fingerprint instead of a second read.
+        var root = owned.geometry.materialRoot();
         var operation =
-                materials.readOwned(
-                        new WorldService.MapInfo(
-                                namespace.mapId(), null, null, 0, namespace.wdtId()),
-                        List.of(tile),
-                        admission.cancellation(),
-                        p -> {});
+                root != null && root.binding().fileId() == tile.rootId()
+                        ? materials.readOwned(
+                                map, List.of(tile), admission.cancellation(), p -> {}, root)
+                        : materials.readOwned(
+                                map, List.of(tile), admission.cancellation(), p -> {});
         WorldTerrainTextureSource.BatchResult batch = null;
         try {
             Throwable materialFailure = null;
@@ -660,6 +730,9 @@ final class WorldPreparedTerrain {
                     || receipt.textures().fileId() != tile.tex0Id()) {
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MATERIAL_BINDING);
             }
+            // With a prepared root both sides come from the geometry cache's single walk, so
+            // this holds by construction; the cache asserts (enabled in tests) that the grid and
+            // the mesh of that walk fingerprint alike, so a parser divergence still fails there.
             if (!receipt.geometrySha256().equals(owned.geometry.fingerprint())) {
                 throw new IllegalStateException(
                         "Material geometry disagrees with the same root source");

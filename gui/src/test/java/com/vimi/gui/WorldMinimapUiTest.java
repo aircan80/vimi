@@ -9,7 +9,6 @@ import javafx.application.Platform;
 import javafx.scene.Scene;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.control.Label;
-import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.ProgressIndicator;
 import javafx.scene.image.WritableImage;
 import javafx.stage.Stage;
@@ -53,6 +52,10 @@ public final class WorldMinimapUiTest {
             orientationAndNeighborPlacement();
             cameraForwardCardinalLandmarks();
             delayedLatestSourceAndHide();
+            roleMarkersFollowTheMinimapAndHover();
+            clusterZoomRingEntrancesAndClicks();
+            redrawsAndScansFollowTheVisibleView();
+            nonMovementChangesStillRedraw();
             synchronousProviderCancellation();
             fx(
                     () -> {
@@ -61,7 +64,9 @@ public final class WorldMinimapUiTest {
                     });
             System.out.println(
                     "WorldMinimapUiTest PASS: axes, artwork, facing, bounded"
-                            + " latest/source/hide/close/cancel");
+                            + " latest/source/hide/close/cancel, role markers, hover and"
+                            + " per-view redraw/scan gating, zoom, streaming ring, entrances and"
+                            + " marker clicks");
         } finally {
             Platform.exit();
         }
@@ -86,8 +91,8 @@ public final class WorldMinimapUiTest {
         fx(() -> { map.hide(); update(source, inventory, X - SIDE / 2, Y - SIDE / 2, 0); });
         await(() -> !busy(), "cardinal landmark artwork");
         fx(() -> {
-            var orientation = (ChoiceBox<?>) map.lookup("#world-minimap-orientation");
-            orientation.getSelectionModel().select(1);
+            var orientation = (javafx.scene.control.ToggleButton) map.lookup("#world-minimap-orientation");
+            orientation.setSelected(true);
             var origin = new com.vibeminer.rendering.world.TerrainCamera(
                     X - SIDE / 2, Y - SIDE / 2, 0, 0, 0);
             double[] headings = {0, Math.PI / 2, Math.PI, -Math.PI / 2};
@@ -110,7 +115,7 @@ public final class WorldMinimapUiTest {
                         "actual positive strafe reaches right-hand landmark: " + names[i]);
                 saveScreenshot("camera-forward-" + names[i] + ".png");
             }
-            orientation.getSelectionModel().select(0);
+            orientation.setSelected(false);
         });
     }
 
@@ -133,10 +138,10 @@ public final class WorldMinimapUiTest {
                             snapshot().getPixelReader().getArgb(85, 90) == 0xffffd66b,
                             "yaw pi/2 arrow west");
                     saveScreenshot("facing-west.png");
-                    var orientation = (ChoiceBox<?>) map.lookup("#world-minimap-orientation");
+                    var orientation = (javafx.scene.control.ToggleButton) map.lookup("#world-minimap-orientation");
                     require(!map.isMouseTransparent() && !orientation.isDisabled(),
                             "Orientation control accepts user input");
-                    orientation.getSelectionModel().select(1);
+                    orientation.setSelected(true);
                     pixels = snapshot().getPixelReader();
                     require(pixels.getArgb(125, 55) == 0xffff0000, "heading west rotates northwest red to northeast");
                     require(pixels.getArgb(125, 125) == 0xff00ff00, "heading west rotates northeast green to southeast");
@@ -148,7 +153,7 @@ public final class WorldMinimapUiTest {
                     pixels = snapshot().getPixelReader();
                     require(pixels.getArgb(125, 125) == 0xffff0000, "heading south rotates artwork halfway");
                     require(pixels.getArgb(90, 85) == 0xffffd66b, "heading south arrow still points up");
-                    orientation.getSelectionModel().select(0);
+                    orientation.setSelected(false);
                     require(snapshot().getPixelReader().getArgb(55, 55) == 0xffff0000,
                             "North-up toggle restores original orientation");
                     require(
@@ -285,6 +290,332 @@ public final class WorldMinimapUiTest {
                             !map.isVisible() && !busy(),
                             "close rejects late completion and resume");
                 });
+    }
+
+    /**
+     * One authored vendor 60 yards north of the player (world X is north). Its minimap marker is
+     * drawn above the center north-up and keeps its heading-relative place when the map rotates;
+     * hover and the faction filter follow every repaint.
+     */
+    private static void roleMarkersFollowTheMinimapAndHover() throws Exception {
+        var source = new Provider();
+        source.immediate = image(0xff223038, 0xff223038, 0xff223038, 0xff223038);
+        var inventory = inventory(List.of(ORIGIN));
+        double px = X - SIDE / 2, py = Y - SIDE / 2;
+        var placement = MapRoleOverlayTest.placement("v1.0.10", 1429,
+                List.of(MapRoleOverlayTest.npc(2, 4, (List<Object>) null, 25, 25)));
+        var marker = placement.markers(1429, java.util.EnumSet.allOf(
+                com.vibeminer.concepts.locations.MapRoles.Layer.class)).getFirst();
+        var loads = new AtomicInteger();
+        var overlay = new WorldRoleOverlay((worldMapId, token) -> {
+            require(!Platform.isFxApplicationThread(), "role load off FX");
+            loads.incrementAndGet();
+            return new WorldRoleOverlay.Loaded(placement.catalog(),
+                    new com.vibeminer.concepts.locations.MapRoles.WorldPlacement(worldMapId,
+                            List.of(new com.vibeminer.concepts.locations.MapRoles.WorldMarker(
+                                    marker, px + 60, py, 7)), 1, 0, 0, List.of()));
+        }, () -> "authored");
+        fx(() -> {
+            map.hide();
+            map.attachRoles(overlay);
+            update(source, inventory, px, py, 0);
+            var orientation = (javafx.scene.control.ToggleButton) map.lookup("#world-minimap-orientation");
+            orientation.setSelected(false);
+            overlay.toggle(com.vibeminer.concepts.locations.MapRoles.Layer.VENDOR).setSelected(true);
+        });
+        await(() -> overlay.drawn().size() == 1, "role marker placed off FX");
+        double scale = 2 * WorldMinimap.RADIUS / SIDE;
+        int mx = (int) Math.round(WorldMinimap.CENTER), my = (int) Math.round(WorldMinimap.CENTER - 60 * scale);
+        fx(() -> {
+            var color = snapshot().getPixelReader().getColor(mx, my);
+            require(color.getGreen() > color.getBlue() && color.getGreen() > .6,
+                    "vendor marker drawn north of the player: " + color);
+            var status = overlay.status().getText();
+            require(status.contains("1 in view of 1 on this map")
+                    && status.contains("1 marker without a unique world point")
+                    && status.endsWith("minimap only: Questie positions record no height"), status);
+            hoverAt(mx, my);
+            var tip = map.roleTipText();
+            require(tip != null && tip.startsWith("NPC 2") && tip.contains("carried to world yards"),
+                    "minimap hover: " + tip);
+            // Heading west (yaw pi/2) in heading-up mode: north is now to the right.
+            ((javafx.scene.control.ToggleButton) map.lookup("#world-minimap-orientation")).setSelected(true);
+            update(source, inventory, px, py, Math.PI / 2);
+            require(map.roleTipText() == null, "tooltip re-checked after the map rotates");
+            int rx = (int) Math.round(WorldMinimap.CENTER + 60 * scale), ry = (int) Math.round(WorldMinimap.CENTER);
+            var rotated = snapshot().getPixelReader().getColor(rx, ry);
+            require(rotated.getGreen() > rotated.getBlue() && rotated.getGreen() > .6,
+                    "marker turns with the heading-up map: " + rotated);
+            hoverAt(rx, ry);
+            require(map.roleTipText() != null, "hover uses the rotated position");
+            overlay.faction().setValue(MapRoleOverlay.Faction.HORDE);
+            require(overlay.drawn().isEmpty() && map.roleTipText() == null,
+                    "faction filter hides the marker and its tooltip");
+            overlay.faction().setValue(MapRoleOverlay.Faction.ALL);
+            require(overlay.drawn().size() == 1 && loads.get() == 1, "filter never reloads");
+            ((javafx.scene.control.ToggleButton) map.lookup("#world-minimap-orientation")).setSelected(false);
+            overlay.toggle(com.vibeminer.concepts.locations.MapRoles.Layer.VENDOR).setSelected(false);
+            require(overlay.drawn().isEmpty() && map.roleTipText() == null, "markers off");
+        });
+    }
+
+    /**
+     * The cluster's own state on the detached minimap: zoom buttons scale markers and reach
+     * neighbouring artwork, the rim ring follows prepared/desired and fades after full, entrance
+     * markers draw only with their tracking layer, and marker clicks reach the callback only.
+     */
+    private static void clusterZoomRingEntrancesAndClicks() throws Exception {
+        var source = new Provider();
+        source.immediate = image(0xff223038, 0xff223038, 0xff223038, 0xff223038);
+        var east = new WorldFormats.Tile(21, 30, 0, 0, 92);
+        var inventory = inventory(List.of(ORIGIN, east));
+        // 10 yards north of the tile centre: the southern neighbour is clearly outside the circle.
+        double px = X - SIDE / 2 + 10, py = Y - SIDE / 2;
+        var placement = MapRoleOverlayTest.placement("v1.0.10", 1429,
+                List.of(MapRoleOverlayTest.npc(2, 4, (List<Object>) null, 25, 25)));
+        var marker = placement.markers(1429, java.util.EnumSet.allOf(
+                com.vibeminer.concepts.locations.MapRoles.Layer.class)).getFirst();
+        var overlay = new WorldRoleOverlay((worldMapId, token) -> new WorldRoleOverlay.Loaded(
+                placement.catalog(), new com.vibeminer.concepts.locations.MapRoles.WorldPlacement(worldMapId,
+                        List.of(new com.vibeminer.concepts.locations.MapRoles.WorldMarker(
+                                marker, px + 60, py, 7)), 1, 0, 0, List.of())), () -> "cluster");
+        var zoomIn = (javafx.scene.control.Button) map.lookup("#world-minimap-zoom-in");
+        var zoomOut = (javafx.scene.control.Button) map.lookup("#world-minimap-zoom-out");
+        fx(() -> {
+            map.hide();
+            map.attachRoles(overlay);
+            map.headingUp(false);
+            update(source, inventory, px, py, 0);
+            overlay.toggle(com.vibeminer.concepts.locations.MapRoles.Layer.VENDOR).setSelected(true);
+            require(map.zoom() == 1 && !zoomIn.isDisabled() && !zoomOut.isDisabled(), "Default zoom 1");
+            for (var id : List.of("#world-minimap-zoom-out", "#world-minimap-orientation",
+                    "#world-minimap-zoom-in", "#world-minimap-tracking")) {
+                require(!map.lookup(id).isFocusTraversable(), "Not focus traversable: " + id);
+            }
+        });
+        await(() -> overlay.drawn().size() == 1 && !busy(), "role marker and artwork");
+        fx(() -> {
+            require(source.calls.get() == 1,
+                    "At zoom 1 only the player's tile is in the circle: " + source.calls.get());
+            zoomIn.fire();
+            require(map.zoom() == 1.5, "Zoom in: " + map.zoom());
+            double scale = 2 * WorldMinimap.RADIUS / SIDE * 1.5;
+            int my = (int) Math.round(WorldMinimap.CENTER - 60 * scale);
+            var color = snapshot().getPixelReader().getColor((int) WorldMinimap.CENTER, my);
+            require(color.getGreen() > color.getBlue() && color.getGreen() > .6,
+                    "The marker moves out with the zoom: " + color);
+            var clicks = new ArrayList<WorldMinimap.Clicked>();
+            var canvas = (Canvas) map.lookup("#world-minimap-canvas");
+            require(bubbles(canvas, WorldMinimap.CENTER, my),
+                    "Without a callback a marker click bubbles like any other");
+            map.onMarkerClicked(clicks::add);
+            require(!bubbles(canvas, WorldMinimap.CENTER, my) && clicks.size() == 1
+                            && clicks.getFirst().role() == marker && clicks.getFirst().entrance() == null
+                            && clicks.getFirst().description().startsWith("NPC 2"),
+                    "A marker click reaches the callback and stops: " + clicks);
+            require(bubbles(canvas, 20, WorldMinimap.CENTER) && clicks.size() == 1,
+                    "A click off the markers bubbles to the world pick");
+            map.onMarkerClicked(null);
+            for (int i = 0; i < 5; i++) zoomIn.fire();
+            require(map.zoom() == 3 && zoomIn.isDisabled(), "Zoom in stops at 3");
+            for (int i = 0; i < 9; i++) zoomOut.fire();
+            require(map.zoom() == .5 && zoomOut.isDisabled() && !zoomIn.isDisabled(), "Zoom out stops at .5");
+        });
+        await(() -> source.calls.get() == 2 && !busy(), "zoomed-out artwork of the next tile");
+        fx(() -> {
+            zoomIn.fire();
+            zoomIn.fire();
+            require(map.zoom() == 1, "Back to 1");
+            // A recorded entrance 60 yards east (world Y falls to the east).
+            var link = new com.vibeminer.concepts.world.WorldInstanceLinks.Link(33, "Authored Depths",
+                    com.vibeminer.concepts.world.WorldInstanceLinks.Kind.DUNGEON, null,
+                    new com.vibeminer.concepts.world.WorldInstanceLinks.Entrance(0, px, py - 60), null);
+            map.entrances(List.of(link));
+            double scale = 2 * WorldMinimap.RADIUS / SIDE;
+            double ex = WorldMinimap.CENTER + 60 * scale, ey = WorldMinimap.CENTER;
+            require(map.markerAt(ex, ey) == null, "Entrances stay hidden until their layer is on");
+            map.tracking().entrances().setSelected(true);
+            var color = snapshot().getPixelReader().getColor((int) Math.round(ex), (int) Math.round(ey));
+            require(Math.abs(color.getRed() - WorldMinimap.ENTRANCE.getRed()) < .1
+                            && Math.abs(color.getBlue() - WorldMinimap.ENTRANCE.getBlue()) < .1,
+                    "The entrance is drawn east of the player: " + color);
+            var hit = map.markerAt(ex, ey);
+            require(hit != null && hit.entrance() == link && hit.description().startsWith("Authored Depths"),
+                    "The entrance is a marker: " + hit);
+            hoverAt(ex, ey);
+            require(map.roleTipText() != null && map.roleTipText().contains("Map #33"),
+                    "Hovering an entrance explains it: " + map.roleTipText());
+            map.tracking().entrances().setSelected(false);
+            require(map.markerAt(ex, ey) == null, "And hide with it");
+            overlay.toggle(com.vibeminer.concepts.locations.MapRoles.Layer.VENDOR).setSelected(false);
+            // Ring: a third of the rim clockwise from north while 3 of 9 tiles are ready.
+            map.progress(3, 9);
+            require(map.ring()[0] == 1 / 3.0 && map.ring()[1] == 1, "Ring fraction and opacity");
+            var pixels = snapshot().getPixelReader();
+            double r = WorldMinimap.RADIUS;
+            var lit = pixels.getColor((int) Math.round(WorldMinimap.CENTER + r * Math.sin(Math.toRadians(60))),
+                    (int) Math.round(WorldMinimap.CENTER - r * Math.cos(Math.toRadians(60))));
+            var dark = pixels.getColor((int) Math.round(WorldMinimap.CENTER - r * Math.sin(Math.toRadians(60))),
+                    (int) Math.round(WorldMinimap.CENTER - r * Math.cos(Math.toRadians(60))));
+            require(ringColored(lit) && !ringColored(dark),
+                    "The ring fills clockwise from north: lit " + lit + " unlit " + dark);
+            map.progress(9, 9);
+            require(map.ring()[0] == 1 && map.ring()[1] == 1, "Full: still shown during the hold");
+        });
+        long full = System.nanoTime();
+        await(() -> map.ring()[1] == 0, "ring fade after full");
+        long faded = System.nanoTime() - full;
+        require(faded >= WorldMinimapRing.HOLD_NANOS, "The ring holds a second before it fades: " + faded);
+        fx(() -> {
+            double r = WorldMinimap.RADIUS;
+            var after = snapshot().getPixelReader().getColor(
+                    (int) Math.round(WorldMinimap.CENTER + r * Math.sin(Math.toRadians(60))),
+                    (int) Math.round(WorldMinimap.CENTER - r * Math.cos(Math.toRadians(60))));
+            require(!ringColored(after), "The faded ring is gone from the canvas: " + after);
+            map.progress(0, 0);
+            map.hide();
+        });
+    }
+
+    private static boolean ringColored(javafx.scene.paint.Color color) {
+        return color.getBlue() > .8 && color.getRed() < .6;
+    }
+
+    /** Fires a still primary click on the canvas; true when it bubbled up to the minimap. */
+    private static boolean bubbles(Canvas canvas, double x, double y) {
+        var screen = canvas.localToScreen(x, y);
+        var scene = canvas.localToScene(x, y);
+        boolean[] arrived = {false};
+        javafx.event.EventHandler<javafx.scene.input.MouseEvent> seen = event -> arrived[0] = true;
+        map.addEventHandler(javafx.scene.input.MouseEvent.MOUSE_CLICKED, seen);
+        try {
+            javafx.event.Event.fireEvent(canvas, new javafx.scene.input.MouseEvent(
+                    javafx.scene.input.MouseEvent.MOUSE_CLICKED, scene.getX(), scene.getY(),
+                    screen.getX(), screen.getY(), javafx.scene.input.MouseButton.PRIMARY, 1,
+                    false, false, false, false, false, false, false, false, false, true, null));
+        } finally {
+            map.removeEventHandler(javafx.scene.input.MouseEvent.MOUSE_CLICKED, seen);
+        }
+        return arrived[0];
+    }
+
+    private static void hoverAt(double x, double y) {
+        var canvas = (Canvas) map.lookup("#world-minimap-canvas");
+        var screen = canvas.localToScreen(x, y);
+        var scene = canvas.localToScene(x, y);
+        canvas.fireEvent(new javafx.scene.input.MouseEvent(
+                javafx.scene.input.MouseEvent.MOUSE_MOVED, scene.getX(), scene.getY(),
+                screen.getX(), screen.getY(), javafx.scene.input.MouseButton.NONE, 0,
+                false, false, false, false, false, false, false, false, false, false, null));
+    }
+
+    /** Camera updates every pulse redraw only when the drawn picture changes. */
+    private static void redrawsAndScansFollowTheVisibleView() throws Exception {
+        var source = new Provider();
+        source.immediate = image(0xff335577, 0xff335577, 0xff335577, 0xff335577);
+        var tiles = new ArrayList<WorldFormats.Tile>();
+        for (int x = 18; x <= 22; x++)
+            for (int y = 28; y <= 32; y++) tiles.add(new WorldFormats.Tile(x, y, 0, 0, 200 + x * 10 + y));
+        var grid = inventory(tiles);
+        // Near the origin tile's maximum corner, so four tiles overlap and small moves keep them;
+        // on a quarter-pixel grid point, so sub-pixel moves stay inside one rounding step.
+        double quarter = 1 / (4 * WorldMinimap.DrawKey.PIXELS_PER_YARD);
+        double startX = Math.round((X - .3 * SIDE) / quarter) * quarter, startY = Y - .3 * SIDE;
+        double tiny = .4 * quarter / 200;
+        fx(() -> update(source, grid, startX, startY, .3));
+        await(() -> !busy(), "gating artwork");
+        fx(
+                () -> {
+                    long redraws = map.redraws(), scans = map.scans();
+                    // 200 moves that together stay under half a quarter canvas pixel.
+                    for (int i = 1; i <= 200; i++) update(source, grid, startX + i * tiny, startY, .3);
+                    require(map.redraws() == redraws, "sub-pixel moves never redraw: " + (map.redraws() - redraws));
+                    require(map.scans() == scans, "moves inside a tile never rescan the map");
+                    update(source, grid, startX + 10, startY, .3);
+                    require(map.redraws() == redraws + 1, "a visible move redraws once: " + (map.redraws() - redraws) + " busy " + busy());
+                    update(source, grid, startX + 10, startY, .3 + Math.toRadians(1));
+                    require(map.redraws() == redraws + 2, "a one degree turn redraws");
+                    update(source, grid, startX + 10, startY, .3 + Math.toRadians(1) + 2 * Math.PI);
+                    require(map.redraws() == redraws + 2, "a full turn is the same heading");
+                    require(map.scans() == scans, "still the same tile");
+                    update(source, grid, startX - SIDE, startY, .3);
+                    require(map.scans() == scans + 1, "entering the next tile rescans once");
+                    require(WorldMinimap.playerTile(ORIGIN.x(), X, startX - SIDE) == ORIGIN.x() + 1
+                            && WorldMinimap.playerTile(ORIGIN.x(), X, X) == ORIGIN.x()
+                            && WorldMinimap.playerTile(ORIGIN.x(), X, X + 1) == ORIGIN.x() - 1,
+                            "player tile index follows the falling tile maxima");
+                });
+        await(() -> !busy(), "next tile artwork");
+    }
+
+    /** After the gate is armed, changes that are not player movement still redraw. */
+    private static void nonMovementChangesStillRedraw() throws Exception {
+        var first = new Provider();
+        first.immediate = image(0xff446688, 0xff446688, 0xff446688, 0xff446688);
+        var grid = inventory(List.of(ORIGIN));
+        double px = X - SIDE / 2, py = Y - SIDE / 2;
+        fx(() -> update(first, grid, px, py, 0));
+        await(() -> !busy(), "first artwork");
+        var second = new Provider();
+        second.immediate = image(0xff884422, 0xff884422, 0xff884422, 0xff884422);
+        fx(() -> {
+            long before = map.redraws();
+            update(second, grid, px, py, 0);
+            require(map.redraws() > before, "a new source redraws at the same position");
+        });
+        await(() -> !busy(), "second artwork");
+        fx(() -> require(snapshot().getPixelReader().getArgb(55, 125) == 0xff884422, "late artwork drawn"));
+        fx(() -> {
+            long before = map.redraws();
+            map.hide();
+            update(second, grid, px, py, 0);
+            require(map.redraws() > before && map.isVisible(), "hide then an identical update redraws");
+        });
+        await(() -> !busy(), "artwork after hide");
+        fx(() -> {
+            long before = map.redraws();
+            var orientation = (javafx.scene.control.ToggleButton) map.lookup("#world-minimap-orientation");
+            orientation.setSelected(true);
+            require(map.redraws() > before, "orientation redraws");
+            orientation.setSelected(false);
+            before = map.redraws();
+            map.update(second, grid, ORIGIN, X + 1, Y, px + 1, py, 0);
+            require(map.redraws() > before, "a moved origin with the same relative view redraws");
+        });
+        // Role markers whose source becomes available while the player stands still.
+        var available = new java.util.concurrent.atomic.AtomicReference<Object>("unpublished");
+        var placement = MapRoleOverlayTest.placement("v1.0.10", 1429,
+                List.of(MapRoleOverlayTest.npc(2, 4, (List<Object>) null, 25, 25)));
+        var marker = placement.markers(1429, java.util.EnumSet.allOf(
+                com.vibeminer.concepts.locations.MapRoles.Layer.class)).getFirst();
+        var overlay = new WorldRoleOverlay((worldMapId, token) -> {
+            if ("unpublished".equals(available.get()))
+                throw new IllegalStateException("Selected-build map tables are unavailable.");
+            return new WorldRoleOverlay.Loaded(placement.catalog(),
+                    new com.vibeminer.concepts.locations.MapRoles.WorldPlacement(worldMapId,
+                            List.of(new com.vibeminer.concepts.locations.MapRoles.WorldMarker(marker, px + 60, py, 7)),
+                            1, 0, 0, List.of()));
+        }, available::get);
+        fx(() -> {
+            map.attachRoles(overlay);
+            update(second, grid, px, py, 0);
+            overlay.toggle(com.vibeminer.concepts.locations.MapRoles.Layer.VENDOR).setSelected(true);
+        });
+        await(() -> overlay.status().getText().contains("unavailable"), "markers unavailable before publication");
+        fx(() -> {
+            available.set("published");
+            long before = map.redraws();
+            update(second, grid, px, py, 0);
+            require(map.redraws() > before, "a new role source key redraws without moving");
+        });
+        await(() -> overlay.drawn().size() == 1, "markers appear while standing still");
+        fx(() -> {
+            long before = map.redraws();
+            overlay.faction().setValue(MapRoleOverlay.Faction.HORDE);
+            require(map.redraws() > before && overlay.drawn().isEmpty(), "faction filter redraws");
+            overlay.faction().setValue(MapRoleOverlay.Faction.ALL);
+            overlay.toggle(com.vibeminer.concepts.locations.MapRoles.Layer.VENDOR).setSelected(false);
+        });
     }
 
     private static void update(

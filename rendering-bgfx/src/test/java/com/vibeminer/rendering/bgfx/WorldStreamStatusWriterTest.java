@@ -66,6 +66,56 @@ class WorldStreamStatusWriterTest {
     }
 
     @Test
+    void frameHintsCoalesceToLatestAndNeverFollowQuietTerminal() throws Exception {
+        var output = new HeldOutput();
+        var clock = new WorldStatusDeadline();
+        var writer = new WorldStreamStatusWriter(NONCE, output, clock);
+        writer.reliable("SESSION TERRAIN_BASIC_V1");
+        assertTrue(output.entered.await(2, TimeUnit.SECONDS));
+        for (int i = 1; i <= 1000; i++) {
+            assertTrue(writer.framePublished(i));
+        }
+        assertTrue(writer.cameraApplied(1, 800, 500));
+        assertEquals(1, clock.outstanding());
+        output.release.countDown();
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (output.lines().size() < 3 && System.nanoTime() < until) {
+            Thread.sleep(1);
+        }
+        assertEquals(
+                java.util.List.of(
+                        "SESSION TERRAIN_BASIC_V1", "CAMERA_APPLIED 1 800 500", "FRAME 1000"),
+                output.lines());
+        writer.quiet();
+        assertFalse(writer.framePublished(1001));
+        assertFalse(writer.cameraApplied(2, 800, 500));
+        writer.reliable("CLOSED");
+        writer.finish().get(3, TimeUnit.SECONDS);
+        assertEquals("CLOSED", output.lines().getLast());
+        assertEquals(4, output.lines().size());
+        assertThrows(IllegalArgumentException.class, () -> writer.framePublished(0));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> writer.framePublished(WorldFrameFileV2.MAX_SEQUENCE + 1));
+    }
+
+    @Test
+    void quietDropsPendingHintsQueuedBehindAReliableWrite() throws Exception {
+        var output = new HeldOutput();
+        var writer = new WorldStreamStatusWriter(NONCE, output, new WorldStatusDeadline());
+        writer.reliable("SESSION TERRAIN_BASIC_V1");
+        assertTrue(output.entered.await(2, TimeUnit.SECONDS));
+        assertTrue(writer.framePublished(5));
+        assertTrue(writer.cameraApplied(1, 800, 500));
+        writer.quiet();
+        writer.reliable("CLOSED");
+        var finish = writer.finish();
+        output.release.countDown();
+        finish.get(3, TimeUnit.SECONDS);
+        assertEquals(java.util.List.of("SESSION TERRAIN_BASIC_V1", "CLOSED"), output.lines());
+    }
+
+    @Test
     void invalidLinesRejectBeforeCreditAndWriteFailureFinishesExceptionally() throws Exception {
         var clock = new WorldStatusDeadline();
         var writer =
@@ -106,6 +156,13 @@ class WorldStreamStatusWriterTest {
                 throw new IOException(error);
             }
             bytes.write(value);
+        }
+
+        synchronized java.util.List<String> lines() {
+            return bytes.toString(StandardCharsets.US_ASCII)
+                    .lines()
+                    .map(line -> line.substring(line.indexOf(' ', 4) + 1))
+                    .toList();
         }
 
         @Override
