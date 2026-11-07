@@ -568,6 +568,7 @@ final class WorldStreamScopesTest {
         var tables = new Tables(files);
         var rawFiles = files.files();
         var calls = new java.util.concurrent.ConcurrentLinkedQueue<String>();
+        var sites = new java.util.concurrent.ConcurrentLinkedQueue<String>();
         var fileHandle =
                 (com.vibeminer.files.BuildFiles)
                         Proxy.newProxyInstance(
@@ -575,7 +576,38 @@ final class WorldStreamScopesTest {
                                 new Class<?>[] {com.vibeminer.files.BuildFiles.class},
                                 (proxy, method, args) -> {
                                     if (args != null && args[0] instanceof FileTypes.FileRef ref) {
+                                        // Tag with the calling site: the first World frame
+                                        // outside the stat helpers and this test.
+                                        String site =
+                                                StackWalker.getInstance()
+                                                        .walk(
+                                                                frames ->
+                                                                        frames.filter(
+                                                                                        frame ->
+                                                                                                frame.getClassName()
+                                                                                                                .startsWith(
+                                                                                                                        "com.vibeminer.concepts.world.World")
+                                                                                                        && !frame.getClassName()
+                                                                                                                .contains(
+                                                                                                                        "Test")
+                                                                                                        && !frame.getMethodName()
+                                                                                                                .equals(
+                                                                                                                        "statContent"))
+                                                                                .map(
+                                                                                        frame ->
+                                                                                                frame
+                                                                                                        .getMethodName())
+                                                                                .findFirst()
+                                                                                .orElse(""));
                                         calls.add(method.getName() + ":" + ref.fileDataId());
+                                        if (!site.isEmpty()) {
+                                            sites.add(
+                                                    method.getName()
+                                                            + ":"
+                                                            + ref.fileDataId()
+                                                            + "@"
+                                                            + site);
+                                        }
                                     }
                                     try {
                                         return method.invoke(rawFiles, args);
@@ -597,6 +629,15 @@ final class WorldStreamScopesTest {
                             (borrow, cancel) -> (AutoCloseable) () -> {})) {
                 assertTrue(written.isOpen());
             }
+            // A second prepare of the same tile reuses the recorded root through its proof.
+            try (var again =
+                    source.prepareAndWrite(
+                            scope,
+                            TILE,
+                            Cancellation.NONE,
+                            (borrow, cancel) -> (AutoCloseable) () -> {})) {
+                assertTrue(again.isOpen());
+            }
             // The scopes' source reads of the WDT (1) and root ADT (2) bind index facts only:
             // per file, the first calls are statContent, open, statContent; never a full stat
             // with names and a format sniff. Other files and later calls are not constrained.
@@ -610,6 +651,18 @@ final class WorldStreamScopesTest {
                 assertEquals(
                         List.of("statContent", "openRead", "statContent"), forId, calls.toString());
             }
+            // Every lookup while preparing a terrain tile (scopes' proofs, root reuse, material
+            // re-checks, binding revalidation and the texture source's reads) uses index facts
+            // only: no full stat with listfile names or a format sniff.
+            assertTrue(
+                    sites.stream()
+                            .anyMatch(call -> call.startsWith("statContent:2@reuseRecordedRoot")),
+                    sites.toString());
+            assertTrue(
+                    sites.stream().anyMatch(call -> call.equals("statContent:10@withRecordedTile")),
+                    "the material re-check of a diffuse texture ran: " + sites);
+            assertFalse(
+                    calls.stream().anyMatch(call -> call.startsWith("stat:")), calls.toString());
         } finally {
             world.closeAsync().get(5, TimeUnit.SECONDS);
             pool.closeAsync().get(5, TimeUnit.SECONDS);

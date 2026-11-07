@@ -156,7 +156,10 @@ final class WorldStreamScopes {
             if (!maps.revalidate(map, token)
                     || !maid.key()
                             .equals(
-                                    stat(map.wdtId(), token, WorldSourceRefusals.Site.MAP_BINDING)
+                                    statContent(
+                                                    map.wdtId(),
+                                                    token,
+                                                    WorldSourceRefusals.Site.MAP_BINDING)
                                             .contentKey())) {
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_BINDING);
             }
@@ -804,7 +807,8 @@ final class WorldStreamScopes {
                 throw new IllegalStateException("Input credit busy");
             }
             var fresh =
-                    engine.stat(recorded.rootId(), token, WorldSourceRefusals.Site.SOURCE_BINDING);
+                    engine.statContent(
+                            recorded.rootId(), token, WorldSourceRefusals.Site.SOURCE_BINDING);
             if (!Objects.equals(key, fresh.contentKey())
                     || fresh.size() != null && fresh.size() != length) {
                 return false;
@@ -1046,7 +1050,8 @@ final class WorldStreamScopes {
                     token.check();
                     var fresh =
                             WorldSourceFutures.await(
-                                    files.stat(FileTypes.FileRef.id(observed.fileId()), token));
+                                    files.statContent(
+                                            FileTypes.FileRef.id(observed.fileId()), token));
                     token.check();
                     if (!observed.matches(fresh)) {
                         throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MATERIAL_BINDING);
@@ -1161,7 +1166,8 @@ final class WorldStreamScopes {
     private void validateBinding(Binding binding, Cancellation token) {
         token.check();
         var lookup =
-                WorldSourceFutures.await(files.stat(FileTypes.FileRef.id(binding.id()), token));
+                WorldSourceFutures.await(
+                        files.statContent(FileTypes.FileRef.id(binding.id()), token));
         token.check();
         var fresh = lookup.file();
         if (lookup.state() != FileTypes.FileLookupState.FOUND
@@ -1425,17 +1431,7 @@ final class WorldStreamScopes {
         }
     }
 
-    private FileTypes.BuildFile stat(
-            long id, Cancellation token, WorldSourceRefusals.Site unbound) {
-        token.check();
-        return bound(
-                id,
-                WorldSourceFutures.await(files.stat(FileTypes.FileRef.id(id), token)),
-                token,
-                unbound);
-    }
-
-    /** As {@link #stat} with index facts only: file id, size and content key, never names. */
+    /** A lookup with index facts only: file id, size and content key, never names. */
     private FileTypes.BuildFile statContent(
             long id, Cancellation token, WorldSourceRefusals.Site unbound) {
         token.check();
