@@ -871,3 +871,10 @@ tasks.register('worldAudioZoneChangeProbe', JavaExec) {
     systemProperty 'vimi.audioFixture',
             rootProject.file('formats-audio/src/test/resources/audio/authored-tone.ogg').path
 }
+tasks.register('oneScratch', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.OneScratch'
+    systemProperty 'one.method', providers.gradleProperty('oneMethod').getOrElse('')
+    systemProperty 'one.n', providers.gradleProperty('oneN').getOrElse('20')
+}

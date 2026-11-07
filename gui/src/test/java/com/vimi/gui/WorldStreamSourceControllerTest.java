@@ -1875,7 +1875,7 @@ public final class WorldStreamSourceControllerTest {
         Path reject = fixture.directory.resolve("authored-reject-tile");
         Path hold = fixture.directory.resolve("authored-hold-reject");
         Path held = fixture.directory.resolve("authored-held-reject");
-        var switched = new java.util.concurrent.atomic.AtomicBoolean();
+        var gate = new java.util.concurrent.CountDownLatch(1);
         try {
             Files.writeString(reject, Integer.toString(fixture.tiles.get(1).y()));
             Files.writeString(hold, "hold");
@@ -1887,18 +1887,29 @@ public final class WorldStreamSourceControllerTest {
                             == WorldStreamSourceController.Phase.READY);
             fixture.controller.neighborhood(fixture.tiles);
             fixture.until(() -> Files.exists(held));
-            // The step that handles the completed rejection is the first to see the tile gone.
-            // The seam asks the pending preparation itself: the transport completes the result
-            // (which wakes this step) before it counts the rejection, so a seam keyed on the
-            // transport's counter could miss that step under load (Linux CI).
-            fixture.controller.demandSeam =
-                    () -> {
-                        if (fixture.controller.pendingRejectedByHelper()
-                                && switched.compareAndSet(false, true)) {
-                            fixture.controller.neighborhood(List.of(fixture.tiles.get(0)));
-                        }
-                    };
+            // The step that handles the completed rejection must be the first to see the tile gone.
+            // Hold the controller's single worker so no step can run while the rejection completes
+            // and the demand changes: a step already running at completion (one kicked by the
+            // rejection's own capacity change, say) would otherwise read the old demand first.
+            var workerField = WorldStreamSourceController.class.getDeclaredField("worker");
+            workerField.setAccessible(true);
+            var entered = new java.util.concurrent.CountDownLatch(1);
+            ((java.util.concurrent.ExecutorService) workerField.get(fixture.controller)).execute(() -> {
+                entered.countDown();
+                try {
+                    gate.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            check(entered.await(5, TimeUnit.SECONDS), "Controller worker held");
             Files.delete(hold);
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (!fixture.controller.pendingRejectedByHelper() && System.nanoTime() < until)
+                Thread.sleep(2);
+            check(fixture.controller.pendingRejectedByHelper(), "The rejection completed while held");
+            fixture.controller.neighborhood(List.of(fixture.tiles.get(0)));
+            gate.countDown();
             fixture.until(() -> fixture.controller.rejectionsOutOfDemand() == 1);
             int key = fixture.tiles.get(1).x() * 64 + fixture.tiles.get(1).y();
             check(fixture.controller.helperRejections(key) == 0,
@@ -1910,7 +1921,7 @@ public final class WorldStreamSourceControllerTest {
                     !fixture.controller.snapshot().detail().contains("HELPER_REJECTED"),
                     "No unavailable status for a tile out of demand");
         } finally {
-            fixture.controller.demandSeam = null;
+            gate.countDown();
             Files.deleteIfExists(hold);
             Files.deleteIfExists(reject);
             fixture.close();
