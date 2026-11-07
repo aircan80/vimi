@@ -62,6 +62,7 @@ public final class WorldStreamSourceControllerTest {
         bumpBetweenIssueAndRefusalStillWakesRetry("geometry", false, true);
         bumpBetweenIssueAndRefusalStillWakesRetry("output", true, true);
         busyGeometryLaneIsNotPolledAndItsReleaseWakesTheTile();
+        heldSourceWorkerIsNotRetriedByItsOwnCredit();
         sameResidentCameraFrameDoesNotRetryMaterialPool();
         transportFrameSignalQueuesPresentationWithoutAnyPulse();
         steadyCameraFramesReuseAFewPixelArrays();
@@ -1098,6 +1099,56 @@ public final class WorldStreamSourceControllerTest {
             var hold = held.get();
             if (hold != null) hold.close();
             fixture.close();
+        }
+    }
+
+    /**
+     * #366 review: a tile refused RETRY_LATER on a capacity path (here a held source worker) waits
+     * for a capacity change it did not cause. Its own unused-credit CREDIT is part of its baseline,
+     * so it cannot wake its own retry at the transport's round-trip rate. Clock frozen and no
+     * pulses during the window, so nothing else may retry it; the deadline still does afterwards.
+     */
+    private static void heldSourceWorkerIsNotRetriedByItsOwnCredit() throws Exception {
+        String water = System.getProperty("vimi.world.water");
+        System.setProperty("vimi.world.water", "false");
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        var refusals = new java.util.concurrent.atomic.AtomicInteger();
+        AutoCloseable held = () -> {};
+        try {
+            fixture.start(scope -> {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (fixture.controller == null && System.nanoTime() < deadline)
+                    java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                fixture.controller.tileRefusalSeam = refusals::incrementAndGet;
+                return fixture.gpu.start(scope);
+            });
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+            held = com.vibeminer.concepts.world.AuthoredSourceWorkerPressure.hold(
+                    fixture.world.terrainStreaming().orElseThrow());
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 2));
+            long first = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (refusals.get() < 1 && System.nanoTime() < first) Thread.sleep(1);
+            check(refusals.get() >= 1, "The held source worker refuses the new tile");
+            // Let the refusal's own unused credit land; no pulse, frozen clock.
+            int before = refusals.get();
+            long window = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500);
+            while (System.nanoTime() < window) Thread.sleep(2);
+            int attempts = refusals.get() - before;
+            System.out.println("Held source worker: " + attempts + " refused attempts in 500 ms");
+            check(attempts <= 1, "A refusal's own credit does not retry it: " + attempts);
+            held.close();
+            fixture.clock.addAndGet(600_000_000L);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2);
+        } finally {
+            held.close();
+            fixture.close();
+            if (water == null) System.clearProperty("vimi.world.water");
+            else System.setProperty("vimi.world.water", water);
         }
     }
 
