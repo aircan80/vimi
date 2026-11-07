@@ -11,12 +11,14 @@ import java.nio.IntBuffer;
 import java.util.LinkedHashMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 /** Bounded minimap artwork reads; file services remain borrowed. */
 final class WorldMinimaps {
     private static final long SOURCE_LIMIT = 16L << 20;
+    private static final System.Logger LOG = System.getLogger(WorldMinimaps.class.getName());
     private final BuildFiles files;
     private final Cancellation lifetime = new Cancellation();
     private final ThreadPoolExecutor worker =
@@ -65,15 +67,29 @@ final class WorldMinimaps {
         } catch (java.util.concurrent.CancellationException canceled) {
             result.completeExceptionally(canceled);
         } catch (RuntimeException unavailable) {
-            if (token.isCanceled()) {
+            Throwable cause = unavailable;
+            while (cause instanceof CompletionException && cause.getCause() != null) {
+                cause = cause.getCause();
+            }
+            if (cause instanceof Error error) {
+                // An Error completing an inner statContent/openRead/decode future arrives
+                // wrapped by join(); it is a failure, not unavailable artwork.
+                fail(result, error);
+            } else if (token.isCanceled()) {
                 result.completeExceptionally(new java.util.concurrent.CancellationException());
             } else {
                 result.complete(WorldService.Minimap.unavailable("Minimap artwork unavailable"));
             }
         } catch (Throwable failure) {
             // An Error (or anything else) must still settle the request: callers join it.
-            result.completeExceptionally(failure);
+            fail(result, failure);
         }
+    }
+
+    /** Callers may turn a failed image into unavailable artwork, so the cause is logged here. */
+    private static void fail(CompletableFuture<WorldService.Minimap> result, Throwable failure) {
+        LOG.log(System.Logger.Level.ERROR, "Minimap artwork read failed", failure);
+        result.completeExceptionally(failure);
     }
 
     private WorldService.Minimap read(WorldFormats.Tile tile, Cancellation token) {
