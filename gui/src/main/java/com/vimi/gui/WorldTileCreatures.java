@@ -6,6 +6,8 @@ import com.vibeminer.concepts.creatures.CreatureModelPolicy;
 import com.vibeminer.concepts.locations.WorldSpawns;
 import com.vibeminer.concepts.models.BuildDisplayModels;
 import com.vibeminer.concepts.models.DisplayModelTypes;
+import com.vibeminer.concepts.races.BuildRaces;
+import com.vibeminer.concepts.races.RaceNpcs;
 import com.vibeminer.concepts.world.WorldBookmarks;
 import com.vibeminer.formats.tables.TableTypes;
 import com.vibeminer.formats.world.WorldFormats;
@@ -68,7 +70,13 @@ final class WorldTileCreatures implements AutoCloseable {
     enum Count {
         DRAWN("drawn"),
         NOT_QUALIFIED("no single qualified model"),
-        CHARACTER_APPEARANCE("character appearance not evaluated"),
+        /** A character (humanoid NPC) appearance that is refused or not provided; cached. */
+        CHARACTER_APPEARANCE("character appearance unavailable"),
+        /**
+         * A humanoid NPC appearance whose data cannot be read yet (#385): not cached, asked again on
+         * a later tile, and asked once per tile.
+         */
+        CHARACTER_RETRY("character appearance not readable yet"),
         VISIBILITY_UNRESOLVED("surface visibility unresolved"),
         NO_OPAQUE_SURFACE("no opaque or alpha-keyed textured surface"),
         MODEL_UNAVAILABLE("model unavailable"),
@@ -86,24 +94,33 @@ final class WorldTileCreatures implements AutoCloseable {
 
     /** One tile's creature outcome; immutable. */
     static final class Summary {
-        static final Summary NONE = new Summary(new int[Count.values().length], 0, 0, null, List.of());
+        static final Summary NONE = new Summary(new int[Count.values().length], 0, 0, NpcCounts.NONE, null,
+                List.of());
 
         private final int[] counts;
         private final int models, restPosed;
+        private final NpcCounts npcs;
         private final String note;
         private final List<WorldObjectPicks.Creature> placed;
 
-        private Summary(int[] counts, int models, int restPosed, String note,
+        private Summary(int[] counts, int models, int restPosed, NpcCounts npcs, String note,
                 List<WorldObjectPicks.Creature> placed) {
             this.counts = counts.clone();
             this.models = models;
             this.restPosed = restPosed;
+            this.npcs = Objects.requireNonNull(npcs);
             this.note = note;
             this.placed = List.copyOf(placed);
         }
 
         static Summary failed(String note) {
-            return new Summary(new int[Count.values().length], 0, 0, Objects.requireNonNull(note), List.of());
+            return new Summary(new int[Count.values().length], 0, 0, NpcCounts.NONE, Objects.requireNonNull(note),
+                    List.of());
+        }
+
+        /** Drawn humanoid NPC placements and what their items left undrawn (#385). */
+        NpcCounts npcs() {
+            return npcs;
         }
 
         /** Drawn placements whose model is in its rest (bind) pose because no Stand pose was baked. */
@@ -149,9 +166,49 @@ final class WorldTileCreatures implements AutoCloseable {
         Summary plus(Summary other) {
             var sum = counts.clone();
             for (int i = 0; i < sum.length; i++) sum[i] += other.counts[i];
-            return new Summary(sum, models + other.models, restPosed + other.restPosed,
+            return new Summary(sum, models + other.models, restPosed + other.restPosed, npcs.plus(other.npcs),
                     note != null ? note : other.note, List.of());
         }
+    }
+
+    /**
+     * Drawn humanoid NPC placements, the item records left out of their appearances, the item
+     * models (helms, shoulders, held items) not drawn on them, the placements drawn with visible
+     * sections left out (not plain diffuse opaque or alpha-keyed, such as blended hair) and those
+     * sections, summed per placement.
+     */
+    record NpcCounts(int drawn, int omittedItems, int attachments, int withOmittedSurfaces,
+            int omittedSurfaces) {
+        static final NpcCounts NONE = new NpcCounts(0, 0, 0, 0, 0);
+
+        NpcCounts plus(NpcCounts other) {
+            return new NpcCounts(drawn + other.drawn, omittedItems + other.omittedItems,
+                    attachments + other.attachments, withOmittedSurfaces + other.withOmittedSurfaces,
+                    omittedSurfaces + other.omittedSurfaces);
+        }
+    }
+
+    /**
+     * Humanoid NPC appearances (#385): the race model with the NPC's recorded choices, clothing
+     * geometry and pre-baked texture, by its extended display info.
+     */
+    @FunctionalInterface
+    interface Npcs {
+        /** No humanoid appearances: every humanoid display is a stated {@link Count#CHARACTER_APPEARANCE}. */
+        Npcs NONE = (extendedDisplayInfoId, token) ->
+                RaceNpcs.Appearance.refused("character appearances are not provided by this source");
+
+        RaceNpcs.Appearance appearance(long extendedDisplayInfoId, Cancellation token) throws Exception;
+    }
+
+    /** Production NPC appearances from the workspace's races component, when it is open. */
+    static Npcs npcs(Supplier<BuildRaces> races) {
+        Objects.requireNonNull(races);
+        return (extendedDisplayInfoId, token) -> {
+            var handle = races.get();
+            if (handle == null) return RaceNpcs.Appearance.refused("race data is not open");
+            return handle.npcAppearance(extendedDisplayInfoId, token).join();
+        };
     }
 
     /** A policy choice and the client-data scale of its display (null when not recorded). */
@@ -192,15 +249,26 @@ final class WorldTileCreatures implements AutoCloseable {
      * one material class per range ({@link #OPAQUE} or {@link #CUTOUT}).
      */
     record Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
-            int omittedSurfaces, String restPose) {
+            int omittedSurfaces, String restPose, NpcCounts npc) {
         Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
                 int omittedSurfaces) {
-            this(vertices, indices, ranges, blends, images, omittedSurfaces, null);
+            this(vertices, indices, ranges, blends, images, omittedSurfaces, null, null);
+        }
+
+        Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
+                int omittedSurfaces, String restPose) {
+            this(vertices, indices, ranges, blends, images, omittedSurfaces, restPose, null);
         }
 
         /** The same model with why it stays in its rest pose (null: baked in the Stand pose). */
         Model withRestPose(String reason) {
-            return new Model(vertices, indices, ranges, blends, images, omittedSurfaces, reason);
+            return new Model(vertices, indices, ranges, blends, images, omittedSurfaces, reason, npc);
+        }
+
+        /** The same model as one humanoid NPC's, with what each placement leaves undrawn. */
+        Model withNpc(int omittedItems, int attachments) {
+            return new Model(vertices, indices, ranges, blends, images, omittedSurfaces, restPose,
+                    new NpcCounts(1, omittedItems, attachments, omittedSurfaces > 0 ? 1 : 0, omittedSurfaces));
         }
 
         Model {
@@ -236,6 +304,11 @@ final class WorldTileCreatures implements AutoCloseable {
             if ((model == null) == (refusal == null)) throw new IllegalArgumentException("Inconsistent conversion");
         }
 
+        /** A refusal asked again on a later tile instead of being cached. */
+        static Converted later(Count refusal, String detail) {
+            return new Converted(null, refusal, detail, true);
+        }
+
         static Converted refused(Count refusal, String detail) {
             return new Converted(null, refusal, detail);
         }
@@ -245,6 +318,7 @@ final class WorldTileCreatures implements AutoCloseable {
     private final Supplier<Object> revision;
     private final Chooser chooser;
     private final Previews previews;
+    private final Npcs npcs;
     private final Map<Long, Chosen> choices = lru(CHOICE_CACHE);
     private final Map<Long, Converted> models = lru(MODEL_CACHE);
     private Object cachedRevision;
@@ -255,12 +329,23 @@ final class WorldTileCreatures implements AutoCloseable {
     private boolean closed;
 
     WorldTileCreatures(WorldSpawnOverlay.Loader loader, Supplier<Object> revision, Chooser chooser, Previews previews) {
-        this(loader, revision, chooser, previews, System::nanoTime);
+        this(loader, revision, chooser, previews, Npcs.NONE);
+    }
+
+    WorldTileCreatures(WorldSpawnOverlay.Loader loader, Supplier<Object> revision, Chooser chooser, Previews previews,
+            Npcs npcs) {
+        this(loader, revision, chooser, previews, npcs, System::nanoTime);
     }
 
     /** Tests supply the clock that times the index back-off. */
     WorldTileCreatures(WorldSpawnOverlay.Loader loader, Supplier<Object> revision, Chooser chooser, Previews previews,
             java.util.function.LongSupplier clock) {
+        this(loader, revision, chooser, previews, Npcs.NONE, clock);
+    }
+
+    WorldTileCreatures(WorldSpawnOverlay.Loader loader, Supplier<Object> revision, Chooser chooser, Previews previews,
+            Npcs npcs, java.util.function.LongSupplier clock) {
+        this.npcs = Objects.requireNonNull(npcs);
         this.clock = Objects.requireNonNull(clock);
         this.loader = Objects.requireNonNull(loader);
         this.revision = Objects.requireNonNull(revision);
@@ -378,10 +463,14 @@ final class WorldTileCreatures implements AutoCloseable {
         var added = new HashMap<Long, Integer>();
         var placed = new java.util.ArrayList<WorldObjectPicks.Creature>();
         int placements = 0, previewsTried = 0;
-        // Displays whose preview was busy on this tile: not asked again for every later spawn.
-        var busyDisplays = new HashSet<Long>();
+        // Displays whose preview was busy, or whose NPC appearance cannot be read yet, on this
+        // tile: not asked again for every later spawn.
+        var busyDisplays = new HashMap<Long, Count>();
         // Builder model indices drawn in their rest pose; their placements are disclosed.
         var restModels = new HashSet<Integer>();
+        // Builder model indices of humanoid NPCs, with what each placement leaves undrawn.
+        var npcModels = new HashMap<Integer, NpcCounts>();
+        var npcCounts = NpcCounts.NONE;
         int restPosed = 0;
         for (var spawn : nearby.placed()) {
             token.check();
@@ -417,8 +506,8 @@ final class WorldTileCreatures implements AutoCloseable {
                 synchronized (this) {
                     converted = models.get(display);
                 }
-                if (converted == null && busyDisplays.contains(display)) {
-                    counts[Count.PREVIEWS_BUSY.ordinal()]++;
+                if (converted == null && busyDisplays.containsKey(display)) {
+                    counts[busyDisplays.get(display).ordinal()]++;
                     continue;
                 }
                 if (converted == null) {
@@ -428,10 +517,13 @@ final class WorldTileCreatures implements AutoCloseable {
                     }
                     previewsTried++;
                     converted = load(display, token);
-                    // A busy or closed reader learned nothing: refund the preview it cost.
+                    // A busy or closed reader learned nothing: refund the preview it cost. An NPC
+                    // appearance that cannot be read yet keeps its cost but is asked once per tile.
                     if (converted.refusal() == Count.PREVIEWS_BUSY) {
                         previewsTried--;
-                        busyDisplays.add(display);
+                        busyDisplays.put(display, Count.PREVIEWS_BUSY);
+                    } else if (converted.refusal() == Count.CHARACTER_RETRY) {
+                        busyDisplays.put(display, Count.CHARACTER_RETRY);
                     }
                 }
                 if (converted.refusal() != null) {
@@ -449,6 +541,7 @@ final class WorldTileCreatures implements AutoCloseable {
                 model = add(builder, m);
                 added.put(display, model);
                 if (m.restPose() != null) restModels.add(model);
+                if (m.npc() != null) npcModels.put(model, m.npc());
             }
             if (builder.drawCost(model) > builder.drawRoom()) {
                 counts[Count.CAPPED.ordinal()]++;
@@ -462,9 +555,11 @@ final class WorldTileCreatures implements AutoCloseable {
                             transform[3])));
             placements++;
             if (restModels.contains(model)) restPosed++;
+            var npc = npcModels.get(model);
+            if (npc != null) npcCounts = npcCounts.plus(npc);
             counts[Count.DRAWN.ordinal()]++;
         }
-        return new Summary(counts, added.size(), restPosed, nearby.omitted() == 0 ? null
+        return new Summary(counts, added.size(), restPosed, npcCounts, nearby.omitted() == 0 ? null
                 : nearby.omitted() + " nearby points beyond the query limit were not considered", placed);
     }
 
@@ -495,7 +590,11 @@ final class WorldTileCreatures implements AutoCloseable {
     private Converted load(long display, Cancellation token) {
         Converted converted;
         try {
-            converted = stand(display, previews.preview(display, token), token);
+            var preview = previews.preview(display, token);
+            token.check();
+            var extended = preview == null || preview.reference() == null ? null
+                    : preview.reference().extendedDisplayInfoId();
+            converted = extended != null && extended > 0 ? npc(extended, token) : stand(display, preview, token);
         } catch (Exception failed) {
             // Only this tile's cancellation propagates; a closed or retired component is a failure.
             token.check();
@@ -550,6 +649,34 @@ final class WorldTileCreatures implements AutoCloseable {
                 : new Converted(converted.model().withRestPose(restPose), null, null, retry);
     }
 
+    /**
+     * A humanoid NPC's display (#385): drawn whole from its race appearance, which is static (rest
+     * pose, disclosed), with its item models left undrawn and counted; refused as
+     * {@link Count#CHARACTER_APPEARANCE} (cached), or {@link Count#CHARACTER_RETRY} when its data
+     * cannot be read yet (asked again on a later tile). Cancellation and a busy reader propagate.
+     */
+    Converted npc(long extendedDisplayInfoId, Cancellation token) throws Exception {
+        var answer = npcs.appearance(extendedDisplayInfoId, token);
+        token.check();
+        if (answer == null) return Converted.refused(Count.CHARACTER_APPEARANCE, "no NPC appearance");
+        if (answer.refusal() != null)
+            return answer.retry() ? Converted.later(Count.CHARACTER_RETRY, answer.refusal())
+                    : Converted.refused(Count.CHARACTER_APPEARANCE, answer.refusal());
+        var result = answer.result();
+        if (result.appearance() == null)
+            return Converted.refused(Count.CHARACTER_APPEARANCE,
+                    result.message() == null ? "no NPC appearance" : result.message());
+        var visible = result.visibleParts();
+        var mesh = result.appearance().mesh();
+        if (mesh.parts().stream().noneMatch(part -> visible.contains(part.id())))
+            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "the NPC appearance shows no geoset");
+        var converted = surfaces(result.appearance(), visible, token);
+        return converted.model() == null ? converted
+                : new Converted(converted.model()
+                        .withNpc(answer.omittedItems(), answer.omittedAttachments())
+                        .withRestPose("NPC appearances are static"), null, null);
+    }
+
     /** Whether a preview failure is the component's busy or closed refusal, however wrapped. */
     static boolean busy(Throwable failure) {
         for (int depth = 0; failure != null && depth < 8; depth++, failure = failure.getCause()) {
@@ -592,6 +719,15 @@ final class WorldTileCreatures implements AutoCloseable {
         // Nothing left to draw is a visibility outcome, not a material one.
         if (mesh.parts().stream().noneMatch(part -> visible.ids().contains(part.id())))
             return Converted.refused(Count.VISIBILITY_UNRESOLVED, "every geoset is hidden by the display's rows");
+        return surfaces(appearance, visible.ids(), token);
+    }
+
+    /**
+     * The opaque and alpha-keyed diffuse surfaces of the {@code visible} geoset sections of one
+     * appearance, as a model; rigid cards are dropped.
+     */
+    static Converted surfaces(MeshAppearance appearance, Set<Integer> visibleIds, Cancellation token) {
+        var mesh = appearance.mesh();
         var surfaces = new HashMap<Integer, MeshAppearance.Surface>();
         for (var surface : appearance.surfaces()) surfaces.put(surface.sectionIndex(), surface);
         var cards = new HashSet<Integer>();
@@ -611,7 +747,7 @@ final class WorldTileCreatures implements AutoCloseable {
             token.check();
             var part = mesh.parts().get(ordinal);
             // Hidden geosets are not surface omissions: the section is hidden by the chosen geosets.
-            if (!visible.ids().contains(part.id())) continue;
+            if (!visibleIds.contains(part.id())) continue;
             var surface = surfaces.get(ordinal);
             var blend = surface == null ? null : surface.material().blend();
             if (surface == null

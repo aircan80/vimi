@@ -106,21 +106,177 @@ class WmoPortalTraversalTest {
         assertTrue(t.visible(15, 0, 1, looking(1, 15, 0, 1)).visible(C));
     }
 
+    /**
+     * Room A's box overhangs its own door: A x 0..12, door to B at x = 10 (y -1..1), B x 10..20 but
+     * y 6..16, so a camera at x 10..12, y 0 is in A's box alone and past A's door plane. Both
+     * references agree with their box centres (A at x 6 on the negative side, B at x 15 on the
+     * positive one).
+     */
+    private static WmoPortalTraversal overhang() {
+        var groups =
+                List.of(
+                        new Group(WmoPortalTraversal.INTERIOR, 0, -5, 0, 12, 5, 5, 0, 1),
+                        new Group(WmoPortalTraversal.INTERIOR, 10, 6, 0, 20, 16, 5, 1, 1));
+        var refs = List.of(new Ref(0, 1, -1), new Ref(0, 0, 1));
+        return WmoPortalTraversal.of(groups, List.of(door(10, -1, 1)), refs);
+    }
+
     @Test
     void theSideSignDecidesWhichWayAPortalIsPassable() {
-        // With every side inverted the camera is never on its group's side: nothing is entered.
-        var flipped = building(true);
-        assertEquals(List.of(A), visible(flipped, 1, 5, 0, 1));
+        var t = overhang();
+        assertEquals(0, t.inconsistentReferences());
+        // In A's box but past its door plane: not on A's side, so B is not entered.
+        assertFalse(t.visible(10.5, 0, 1, looking(1, 10.5, 0, 1)).visible(1));
+        // On A's side of the same door: B is visible.
+        assertTrue(t.visible(9.5, 0, 1, looking(1, 9.5, 0, 1)).visible(1));
         // From B looking back at A, A is visible through the same door the other way.
         assertTrue(building(false).visible(15, 0, 1, looking(-1, 15, 0, 1)).visible(A));
     }
 
     @Test
     void nearAPortalPlaneItIsPassedWithTheCurrentFrustum() {
-        // 0.01 from the A|B door with inverted sides: not facing, but within the epsilon.
-        var flipped = building(true);
-        assertTrue(flipped.visible(9.99, 0, 1, looking(1, 9.99, 0, 1)).visible(B));
-        assertFalse(flipped.visible(9.5, 0, 1, looking(1, 9.5, 0, 1)).visible(B));
+        // 0.01 past A's door plane: not on A's side, but within the epsilon.
+        var t = overhang();
+        assertTrue(t.visible(10.01, 0, 1, looking(1, 10.01, 0, 1)).visible(1));
+        assertFalse(t.visible(10.5, 0, 1, looking(1, 10.5, 0, 1)).visible(1));
+    }
+
+    /**
+     * Shaped like real data (an exterior group nested under a room): room R (interior, x 0..20, y
+     * 0..20, z 10..30) and exterior group X (x 6..14, y 6..14, z 0..8) below it, joined by four
+     * vertical portals at x = 5, x = 15, y = 5 and y = 15 (z 8..10) whose normals point into the
+     * enclosure. R records side +1 and its box centre agrees; X records side -1 although all of it
+     * lies on the + side, so its references are inconsistent.
+     */
+    private static WmoPortalTraversal nestedExterior(boolean xSidesAgree) {
+        var portals =
+                List.of(
+                        new Portal(
+                                new double[] {5, 5, 8, 5, 15, 8, 5, 15, 10, 5, 5, 10}, 1, 0, 0, -5),
+                        new Portal(
+                                new double[] {15, 5, 8, 15, 15, 8, 15, 15, 10, 15, 5, 10},
+                                -1,
+                                0,
+                                0,
+                                15),
+                        new Portal(
+                                new double[] {5, 5, 8, 15, 5, 8, 15, 5, 10, 5, 5, 10}, 0, 1, 0, -5),
+                        new Portal(
+                                new double[] {5, 15, 8, 15, 15, 8, 15, 15, 10, 5, 15, 10},
+                                0,
+                                -1,
+                                0,
+                                15));
+        int x = xSidesAgree ? 1 : -1;
+        var refs = new ArrayList<Ref>();
+        for (int p = 0; p < 4; p++) {
+            refs.add(new Ref(p, 1, 1));
+        }
+        for (int p = 0; p < 4; p++) {
+            refs.add(new Ref(p, 0, x));
+        }
+        var groups =
+                List.of(
+                        new Group(WmoPortalTraversal.INTERIOR, 0, 0, 10, 20, 20, 30, 0, 4),
+                        new Group(WmoPortalTraversal.EXTERIOR, 6, 6, 0, 14, 14, 8, 4, 4));
+        return WmoPortalTraversal.of(groups, portals, refs);
+    }
+
+    @Test
+    void anInconsistentReferenceIsAlwaysPassableFromItsGroup() {
+        var t = nestedExterior(false);
+        assertEquals(4, t.inconsistentReferences());
+        // The camera in X's box (outside every interior box) starts from X and still sees R.
+        var all = t.visible(10, 10, 4, List.of());
+        assertFalse(all.inside());
+        assertTrue(all.visible(1));
+        assertTrue(all.visible(0));
+        assertTrue(t.visible(10, 10, 4, looking(1, 10, 10, 4)).visible(0));
+        // From R's centre the walk starts in R (an interior box holds the camera) and reaches X
+        // through the portals over R's own, consistent references.
+        var fromRoom = t.visible(10, 10, 20, List.of());
+        assertTrue(fromRoom.inside());
+        assertTrue(fromRoom.visible(0));
+    }
+
+    /**
+     * The side planes of a frustum looking straight up (+z) from {@code x, y, z} with a full
+     * opening angle of {@code degrees}, without a near plane.
+     */
+    private static List<Plane> lookingUp(double degrees, double x, double y, double z) {
+        double t = Math.tan(Math.toRadians(degrees / 2));
+        return List.of(
+                new Plane(-1, 0, t, x - t * z),
+                new Plane(1, 0, t, -x - t * z),
+                new Plane(0, -1, t, y - t * z),
+                new Plane(0, 1, t, -y - t * z));
+    }
+
+    @Test
+    void fromTheWrongSideTheDestinationBoxDecidesNotThePortal() {
+        // In X looking straight up at R's floor with a 60-degree frustum: at z = 10 the view
+        // spans x, y 6.5..13.5, inside R's box, while all four portals are more than 30 degrees
+        // off axis. R must still be visible.
+        var t = nestedExterior(false);
+        assertTrue(t.visible(10, 10, 4, lookingUp(60, 10, 10, 4)).visible(0));
+        assertTrue(t.visible(10, 10, 4, lookingUp(90, 10, 10, 4)).visible(0));
+    }
+
+    @Test
+    void aPortalPassedFromTheWrongSideHandsOnTheFrustumUnnarrowed() {
+        // nestedExterior(false) plus room Q (interior, x 20..30) behind a high door in R's wall
+        // at x = 20 (y 9..11, z 20..22). From X at (10, 10, 4) every cone through one of the four
+        // low portals misses that door, so Q is reached only if R is walked with the caller's
+        // frustum rather than one narrowed from the wrong side. R records only its door to Q (a
+        // portal may be referenced from one side), so no cycle widens R's entries to the caller's
+        // frustum anyway.
+        var portals =
+                List.of(
+                        new Portal(
+                                new double[] {5, 5, 8, 5, 15, 8, 5, 15, 10, 5, 5, 10}, 1, 0, 0, -5),
+                        new Portal(
+                                new double[] {15, 5, 8, 15, 15, 8, 15, 15, 10, 15, 5, 10},
+                                -1,
+                                0,
+                                0,
+                                15),
+                        new Portal(
+                                new double[] {5, 5, 8, 15, 5, 8, 15, 5, 10, 5, 5, 10}, 0, 1, 0, -5),
+                        new Portal(
+                                new double[] {5, 15, 8, 15, 15, 8, 15, 15, 10, 5, 15, 10},
+                                0,
+                                -1,
+                                0,
+                                15),
+                        new Portal(
+                                new double[] {20, 9, 20, 20, 11, 20, 20, 11, 22, 20, 9, 22},
+                                1,
+                                0,
+                                0,
+                                -20));
+        var refs = new ArrayList<Ref>();
+        refs.add(new Ref(4, 2, -1));
+        for (int p = 0; p < 4; p++) {
+            refs.add(new Ref(p, 0, -1));
+        }
+        refs.add(new Ref(4, 0, 1));
+        var groups =
+                List.of(
+                        new Group(WmoPortalTraversal.INTERIOR, 0, 0, 10, 20, 20, 30, 0, 1),
+                        new Group(WmoPortalTraversal.EXTERIOR, 6, 6, 0, 14, 14, 8, 1, 4),
+                        new Group(WmoPortalTraversal.INTERIOR, 20, 0, 10, 30, 20, 30, 5, 1));
+        var t = WmoPortalTraversal.of(groups, portals, refs);
+        assertEquals(4, t.inconsistentReferences());
+        var result = t.visible(10, 10, 4, List.of());
+        assertTrue(result.visible(0));
+        assertTrue(result.visible(2));
+    }
+
+    @Test
+    void consistentReferencesAreNotCounted() {
+        assertEquals(0, building(false).inconsistentReferences());
+        // With X's recorded sides matching its geometry, nothing is inconsistent.
+        assertEquals(0, nestedExterior(true).inconsistentReferences());
     }
 
     @Test

@@ -108,6 +108,7 @@ public final class GlobalWmoNativeProof {
         Files.createDirectories(output);
         Path scratch = Files.createTempDirectory(output, "global-");
         try (var gpu = new Harness()) {
+            materialClasses(gpu, scratch);
             for (boolean reversed : new boolean[] {false, true}) {
                 // Authored source=(-10,+4,z) becomes native=(+10,-4,z): east is screen-right.
                 try (var scene =
@@ -441,8 +442,70 @@ public final class GlobalWmoNativeProof {
         System.out.println(
                 "GLOBAL_NATIVE_PROOF PASS frames="
                         + acceptedFrames
-                        + " candidateProfiles=4 dx11=COMPILED_UNTESTED noSource=true noGui=true");
+                        + " candidateProfiles=4 dx11=COMPILED_UNTESTED noSource=true noGui=true"
+                        + " materials:"
+                        + materialPixels);
     }
+
+    /**
+     * Issue #297: one front triangle (eye depth 5) of each material class, recorded BEFORE an
+     * opaque red background triangle (depth 10), over the frame centre. Opaque ignores the texel
+     * alpha; a cutout of alpha 0 discards; blended and additive draw after the opaque pass whatever
+     * their recorded order: blue at alpha 128 over red gives (127, 0, 128) blended and (255, 0,
+     * 128) additive.
+     */
+    private static void materialClasses(Harness gpu, Path scratch) throws Exception {
+        record Case(String name, long words, byte[] front, int r, int g, int b) {}
+        var cases =
+                List.of(
+                        new Case("opaque", 0, GlobalWmoAuthoredData.solid(0, 0, 255, 0), 0, 0, 255),
+                        new Case("cutout", 1, GlobalWmoAuthoredData.solid(0, 0, 255, 0), 255, 0, 0),
+                        new Case(
+                                "blended",
+                                2,
+                                GlobalWmoAuthoredData.solid(0, 0, 255, 128),
+                                127,
+                                0,
+                                128),
+                        new Case(
+                                "additive",
+                                // Unlit too: the interior profile is unlit, so it changes nothing.
+                                1L << 32 | 3,
+                                GlobalWmoAuthoredData.solid(0, 0, 255, 128),
+                                255,
+                                0,
+                                128));
+        for (var c : cases) {
+            float[] vertices = new float[30];
+            float[][] corners = {
+                {5, -1, -1}, {5, 1, -1}, {5, 0, 1}, {10, -3, -3}, {10, 3, -3}, {10, 0, 3}
+            };
+            for (int v = 0; v < 6; v++) {
+                System.arraycopy(corners[v], 0, vertices, v * 5, 3);
+            }
+            var data =
+                    new GlobalWmoAuthoredData(
+                            vertices,
+                            new int[] {0, 1, 2, 3, 4, 5},
+                            List.of(c.front(), GlobalWmoAuthoredData.solid(255, 0, 0)),
+                            List.of(
+                                    new WorldGlobalHashes.Batch(0, 0, 0, 3),
+                                    new WorldGlobalHashes.Batch(0, 1, 3, 3)),
+                            new long[] {c.words(), 0});
+            try (var scene =
+                    upload(gpu, decoded(scratch, "material-" + c.name(), data), () -> false)) {
+                int pixel = gpu.render(scene, CAMERA)[128 * SIDE + 128];
+                rgb(pixel, c.r(), c.g(), c.b(), 1, "Material class " + c.name());
+                materialPixels
+                        .append(' ')
+                        .append(c.name())
+                        .append('=')
+                        .append(Integer.toHexString(pixel));
+            }
+        }
+    }
+
+    private static final StringBuilder materialPixels = new StringBuilder();
 
     private static void require(boolean value, String message) {
         if (!value) {

@@ -1,6 +1,7 @@
 package com.vibeminer.rendering.bgfx;
 
 import com.vibeminer.formats.world.WorldStageTimings;
+import com.vibeminer.rendering.world.ExteriorObjectLimits;
 import com.vibeminer.rendering.world.ObjectTextureFormats;
 import com.vibeminer.rendering.world.ObjectTextureMips;
 import com.vibeminer.rendering.world.WmoPortalSet;
@@ -51,17 +52,30 @@ import java.util.function.BooleanSupplier;
  */
 final class WorldStreamObjectsFile {
     // Version 5 (#367): range classes add ADDITIVE and the UNLIT flag, on #420's version 4.
-    // Version 6 (#375): vertex colours and the TWO_SIDED range flag. Version 7 (#383 step 3a):
-    // mesh group ordinals and the portal tables of building roots on instance maps.
-    static final int VERSION = 7, HEADER_BYTES = 256, MAX_BYTES = 28 << 20;
-    // Opaque buildings (24 roots, 256 meshes, 1,024 ranges, 64 placements, 64 images, 98,304
-    // vertices, 294,912 indices), plus cutout and blended building surfaces (256 ranges, 32
-    // images, 32,768 vertices, 98,304 indices), plus BASIC doodads (96 models and meshes, 512
-    // ranges and placements, 96 images, 65,536 vertices, 196,608 indices). Creature models share
-    // whatever room remains. Every table at its cap is about 27 MB.
-    static final int MAX_MODELS = 120, MAX_MESHES = 352, MAX_RANGES = 1792, MAX_PLACEMENTS = 576;
-    static final int MAX_IMAGES = 192, MAX_VERTICES = 196_608, MAX_INDICES = 589_824;
-    static final int MAX_IMAGE_SIDE = 256, MAX_MESH_VERTICES = 65_536;
+    // Version 6 (#375): vertex colours and the TWO_SIDED range flag. Header int 148 carries the
+    // compressed formats the file charges at their stored size, those its session's child samples
+    // as blocks (#374); a reader before #374 refuses a nonzero mask there. Version 7 (#383 step
+    // 3a): mesh group ordinals and the portal tables of building roots on instance maps, whose
+    // counts follow at header bytes 152-171.
+    static final int VERSION = 7, HEADER_BYTES = 256;
+    // The tables are the sums of the producer's pools (ExteriorObjectLimits): opaque buildings,
+    // their cutout and blended surfaces, and doodads. Creature models share whatever room remains.
+    static final int MAX_MODELS = ExteriorObjectLimits.MODELS;
+    static final int MAX_MESHES = ExteriorObjectLimits.MESHES;
+    static final int MAX_RANGES = ExteriorObjectLimits.RANGES;
+    static final int MAX_PLACEMENTS = ExteriorObjectLimits.PLACEMENTS;
+    static final int MAX_IMAGES = ExteriorObjectLimits.IMAGES;
+    static final int MAX_VERTICES = ExteriorObjectLimits.VERTICES;
+    static final int MAX_INDICES = ExteriorObjectLimits.INDICES;
+
+    /**
+     * Largest image side. 512 is reachable only by chains charged compressed (issue #374): the
+     * producer keeps RGBA8 chains at most 256, and every image still fits the GPU byte budget.
+     */
+    static final int MAX_IMAGE_SIDE = 512, MAX_MESH_VERTICES = 65_536;
+
+    /** Largest side of a chain uploaded as RGBA8, stored so or decoded from unsampled blocks. */
+    static final int MAX_RGBA_SIDE = 256;
 
     /**
      * Texels of whole mip chains (issue #265) at the HIGH texture tier's per-tile budgets (#267),
@@ -77,8 +91,10 @@ final class WorldStreamObjectsFile {
     static final int MAX_IMAGE_BYTES = MAX_PIXELS * 4;
 
     /**
-     * RGBA8 bytes all images may take once decoded: a backend without BC sampling decodes every
-     * compressed chain (up to 8x its size), so its GPU memory never exceeds the RGBA8 profile.
+     * GPU bytes all images may take as the child uploads them: each image in a format the file's
+     * {@code compressedFormats} names at its stored size, every other image at its decoded RGBA8
+     * size, because a child that does not sample a format decodes it (up to 8x). The child refuses
+     * a file that names a format it does not sample, so its GPU memory never exceeds this.
      */
     static final int MAX_DECODED_BYTES = MAX_IMAGE_BYTES;
 
@@ -125,9 +141,38 @@ final class WorldStreamObjectsFile {
     static final int MAX_PORTAL_REFS = WmoPortalSet.MAX_TILE_REFS;
 
     /** Draw calls per tile (sum over placements of their model's ranges); bounds a frame. */
-    static final int MAX_DRAWS = 4096;
+    static final int MAX_DRAWS = ExteriorObjectLimits.DRAWS;
 
     static final int VERTEX_FLOATS = 8, VERTEX_BYTES = 32, COLOUR_BYTES = 4;
+
+    /**
+     * The file ceiling: every table at its cap ({@link #length}, with the mesh group column) plus
+     * the portal tables at theirs ({@link #portalLength}), rounded up to the next MiB. With the
+     * #308 pools, #375's vertex colours and #383's portal tables that is 28 MiB; it is derived so a
+     * raised pool can never outgrow the file.
+     */
+    static final int MAX_BYTES =
+            ceilingMiB(
+                    length(
+                                    MAX_MODELS,
+                                    MAX_MESHES,
+                                    MAX_RANGES,
+                                    MAX_PLACEMENTS,
+                                    MAX_IMAGES,
+                                    MAX_VERTICES,
+                                    MAX_INDICES,
+                                    MAX_IMAGE_BYTES)
+                            + portalLength(
+                                    WmoPortalSet.MAX_TILE_SETS,
+                                    WmoPortalSet.MAX_TILE_GROUPS,
+                                    WmoPortalSet.MAX_TILE_PORTALS,
+                                    WmoPortalSet.MAX_TILE_VERTICES,
+                                    WmoPortalSet.MAX_TILE_REFS));
+
+    private static int ceilingMiB(int bytes) {
+        return (bytes + (1 << 20) - 1) >>> 20 << 20;
+    }
+
     static final double MAX_SCALE = 64;
     private static final int SCRATCH = 64 << 10;
     private static final byte[] MAGIC = "VIMIWSO1".getBytes(StandardCharsets.US_ASCII);
@@ -194,6 +239,12 @@ final class WorldStreamObjectsFile {
 
         final int draws;
 
+        /**
+         * Compressed formats this file charges at their stored size (bit per {@link
+         * ObjectTextureFormats} code): those its session's child samples as blocks (#374).
+         */
+        final int compressedFormats;
+
         Data(
                 int[] models,
                 int[] meshes,
@@ -216,6 +267,33 @@ final class WorldStreamObjectsFile {
                     colours,
                     indices,
                     pixels,
+                    0);
+        }
+
+        Data(
+                int[] models,
+                int[] meshes,
+                int[] ranges,
+                int[] placementModels,
+                double[] placements,
+                int[] images,
+                float[] vertices,
+                int[] colours,
+                short[] indices,
+                byte[] pixels,
+                int compressedFormats) {
+            this(
+                    models,
+                    meshes,
+                    ranges,
+                    placementModels,
+                    placements,
+                    images,
+                    vertices,
+                    colours,
+                    indices,
+                    pixels,
+                    compressedFormats,
                     unset(meshes.length / 6),
                     new int[0],
                     new int[0],
@@ -237,6 +315,7 @@ final class WorldStreamObjectsFile {
                 int[] colours,
                 short[] indices,
                 byte[] pixels,
+                int compressedFormats,
                 int[] meshGroups,
                 int[] portalSets,
                 int[] portalGroups,
@@ -245,6 +324,8 @@ final class WorldStreamObjectsFile {
                 float[] portalPlanes,
                 float[] portalVertices,
                 int[] portalRefs) {
+            require((compressedFormats & ~0xE) == 0, "Compressed format mask");
+            this.compressedFormats = compressedFormats;
             this.models = Objects.requireNonNull(models);
             this.meshes = Objects.requireNonNull(meshes);
             this.ranges = Objects.requireNonNull(ranges);
@@ -533,8 +614,15 @@ final class WorldStreamObjectsFile {
                         !ObjectTextureFormats.compressed(format)
                                 || width >= MIN_COMPRESSED_SIDE && height >= MIN_COMPRESSED_SIDE,
                         "Compressed image size");
+                require(
+                        (compressedFormats & (1 << format)) != 0
+                                || width <= MAX_RGBA_SIDE && height <= MAX_RGBA_SIDE,
+                        "RGBA8 image size");
                 byteSum += ObjectTextureFormats.chainBytes(format, width, height);
-                decodedSum += 4L * ObjectTextureMips.chainPixels(width, height);
+                decodedSum +=
+                        (compressedFormats & (1 << format)) != 0
+                                ? ObjectTextureFormats.chainBytes(format, width, height)
+                                : 4L * ObjectTextureMips.chainPixels(width, height);
             }
             require(byteSum == imageBytes, "Image data");
             require(decodedSum <= MAX_DECODED_BYTES, "Decoded image budget");
@@ -962,7 +1050,7 @@ final class WorldStreamObjectsFile {
                             && imageBytes >= 1
                             && imageBytes <= MAX_IMAGE_BYTES
                             && imageBytes % 4 == 0
-                            && in.getInt(148) == 0
+                            && (in.getInt(148) & ~0xE) == 0
                             && (long)
                                                     length(
                                                             models,
@@ -1052,6 +1140,7 @@ final class WorldStreamObjectsFile {
                             colourData,
                             indexData,
                             pixelData,
+                            in.getInt(148),
                             meshGroupData,
                             portalSetData,
                             portalGroupData,
@@ -1078,7 +1167,8 @@ final class WorldStreamObjectsFile {
         out.putInt(identity.x()).putInt(identity.y()).putInt(0).putLong(identity.lease().serial());
         out.putInt(data.modelCount()).putInt(data.meshCount()).putInt(data.rangeCount());
         out.putInt(data.placementCount()).putInt(data.imageCount()).putInt(data.vertexCount());
-        out.putInt(data.indexCount()).putInt(data.imageBytes()).putInt(data.draws).putInt(0);
+        out.putInt(data.indexCount()).putInt(data.imageBytes()).putInt(data.draws);
+        out.putInt(data.compressedFormats);
         out.putInt(data.portalSetCount()).putInt(data.portalGroupCount());
         out.putInt(data.portalCount()).putInt(data.portalVertexCount());
         out.putInt(data.portalRefCount());

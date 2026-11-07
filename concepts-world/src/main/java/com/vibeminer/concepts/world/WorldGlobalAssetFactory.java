@@ -7,6 +7,8 @@ import com.vibeminer.formats.images.Blp2Types;
 import com.vibeminer.formats.world.WmoFormats;
 import com.vibeminer.formats.world.WmoGroupSpans;
 import com.vibeminer.rendering.world.GlobalInteriorLimits;
+import com.vibeminer.rendering.world.WmoMaterialClass;
+import com.vibeminer.rendering.world.WorldObjectPicking;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.security.MessageDigest;
@@ -19,7 +21,6 @@ import java.util.Objects;
 
 /** G1 source/ancestry/material inspection only. No mesh, image payload, packet or public facade. */
 final class WorldGlobalAssetFactory {
-    static final String PROFILE = "GLOBAL_UNLIT_OPAQUE_RGB_V2";
     private static final WmoFormats.Limits ROOT_LIMITS =
             new WmoFormats.Limits(
                     GlobalInteriorLimits.ROOT_BYTES,
@@ -88,12 +89,18 @@ final class WorldGlobalAssetFactory {
     }
 
     /**
-     * MOMT blend modes from 2 up (alpha blend, additive, modulate and their variants) are glows,
-     * light shafts and fire or lava cards. This profile has no blending, so drawn opaque and
-     * depth-writing they would become solid sheets that block corridors; they are left out and
-     * counted instead. Modes 0 (opaque) and 1 (alpha key) draw.
+     * Whether a batch's material is left out (issue #297): its blend mode is above additive
+     * (modulate and its variants, not pinned; {@link WmoMaterialClass}), or it is an alpha-blended
+     * or additive surface without a texture. Opaque, alpha-key, alpha-blend and additive materials
+     * draw with the same mapping as the outdoor objects; left-out batches are counted.
      */
-    static final long FIRST_BLENDED_MODE = 2;
+    static boolean leftOut(Material material) {
+        var words = material.rawWords();
+        int rangeClass = WmoMaterialClass.of(words.get(0), words.get(2));
+        return rangeClass == WmoMaterialClass.UNSUPPORTED
+                || WorldObjectPicking.kind(rangeClass) >= WorldObjectPicking.BLENDED
+                        && material.texture() <= 0;
+    }
 
     /**
      * The recorded MOGP bounds in the same native space as the copied mesh (x and y mirrored, z
@@ -184,7 +191,10 @@ final class WorldGlobalAssetFactory {
             return skippedGroups;
         }
 
-        /** Blended, additive or modulated batches of drawn groups that were left out. */
+        /**
+         * Batches of drawn groups left out ({@link #leftOut}): unsupported blend modes, or blended
+         * surfaces without a texture.
+         */
         int skippedBlendedBatches() {
             return groups.stream().mapToInt(GroupFacts::blendedBatches).sum();
         }
@@ -1023,7 +1033,7 @@ final class WorldGlobalAssetFactory {
                             && batch.indexCount() % 3 == 0
                             && batch.firstIndex() + batch.indexCount() <= borrow.indices().size(),
                     "a batch outside the group's indices");
-            if (root.materials().get(material).rawWords().get(2) >= FIRST_BLENDED_MODE) {
+            if (leftOut(root.materials().get(material))) {
                 blended++; // Left out before its texture matters, so it never skips the group.
                 continue;
             }
@@ -1044,7 +1054,7 @@ final class WorldGlobalAssetFactory {
             skipUnless(batch.firstIndex() >= end, "overlapping batches");
             end = batch.firstIndex() + batch.indexCount();
         }
-        skipUnless(!drawnBatches.isEmpty(), "only blended or additive surfaces");
+        skipUnless(!drawnBatches.isEmpty(), "only surfaces with unsupported blend modes");
         return new GroupFacts(
                 ordinal,
                 id,
@@ -1142,8 +1152,10 @@ final class WorldGlobalAssetFactory {
             if (value != 255) {
                 nonopaque++;
             }
-            rgba[i] = (byte) 255;
         }
+        // The payload keeps its source alpha (#297): cutout and blended materials need it, and
+        // opaque materials ignore it. The opaque digest stays a recorded fact.
+        String opaqueHash = opaqueHash(rgba, token);
         if (payload != null) {
             payload.adoptImage(rgba);
         }
@@ -1160,7 +1172,23 @@ final class WorldGlobalAssetFactory {
                 max,
                 nonopaque,
                 sourceHash,
-                hash(rgba));
+                opaqueHash);
+    }
+
+    /** SHA-256 of {@code rgba} with every alpha byte read as 255, without changing it. */
+    private static String opaqueHash(byte[] rgba, Cancellation token) {
+        var digest = digest();
+        byte[] scratch = new byte[Math.min(rgba.length, 64 << 10)];
+        for (int at = 0; at < rgba.length; at += scratch.length) {
+            token.check();
+            int count = Math.min(scratch.length, rgba.length - at);
+            System.arraycopy(rgba, at, scratch, 0, count);
+            for (int i = 3; i < count; i += 4) {
+                scratch[i] = (byte) 255;
+            }
+            digest.update(scratch, 0, count);
+        }
+        return HexFormat.of().formatHex(digest.digest());
     }
 
     private static final class StreamHash {

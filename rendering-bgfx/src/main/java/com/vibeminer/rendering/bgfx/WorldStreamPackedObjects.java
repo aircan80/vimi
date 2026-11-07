@@ -28,6 +28,12 @@ final class WorldStreamPackedObjects implements AutoCloseable {
 
     final int draws;
 
+    /**
+     * Compressed images this owner decoded to RGBA8 because the renderer does not sample their
+     * format, and compressed images it keeps as blocks (issue #374); diagnostics.
+     */
+    final int decodedImages, compressedImages;
+
     /** Per mesh: its group in its model's portal set, or -1 (#383). */
     final int[] meshGroups;
 
@@ -43,15 +49,20 @@ final class WorldStreamPackedObjects implements AutoCloseable {
 
     private WorldStreamPackedObjects(
             WorldStreamObjectsFile.Data data,
+            int[] images,
             ByteBuffer vertices,
             ByteBuffer indices,
             ByteBuffer pixels,
+            int decodedImages,
+            int compressedImages,
             BooleanSupplier canceled) {
         models = data.models.clone();
         meshes = data.meshes.clone();
         ranges = data.ranges.clone();
         placementModels = data.placementModels.clone();
-        images = data.images.clone();
+        this.images = images;
+        this.decodedImages = decodedImages;
+        this.compressedImages = compressedImages;
         placements = data.placements.clone();
         spheres =
                 WorldStreamObjectCulling.placementSpheres(
@@ -72,10 +83,31 @@ final class WorldStreamPackedObjects implements AutoCloseable {
         this.pixels = pixels;
     }
 
+    /** Packs with every compressed format sampled: chains stay as stored. */
     static WorldStreamPackedObjects pack(
             WorldStreamObjectsFile.Data data, BooleanSupplier canceled) {
+        return pack(data, canceled, 0xE);
+    }
+
+    /**
+     * Packs for a renderer that samples {@code sampledFormats} as blocks (bit per {@link
+     * ObjectTextureFormats} code). A chain in any other compressed format is decoded to RGBA8 here,
+     * on the decode worker, so no upload step decodes (issue #374); the file's GPU byte cap already
+     * charges such images their decoded size.
+     *
+     * <p>Peak native memory: the packed pixels are what the GPU will hold, at most {@link
+     * WorldStreamObjectsFile#MAX_DECODED_BYTES} per set, not the file's stored bytes. A set whose
+     * BC chains are decoded here can be several times its stored size, so anything sizing how many
+     * packed sets may wait for upload must count this bound, not the file length.
+     */
+    static WorldStreamPackedObjects pack(
+            WorldStreamObjectsFile.Data data, BooleanSupplier canceled, int sampledFormats) {
         Objects.requireNonNull(data);
         Objects.requireNonNull(canceled);
+        if ((data.compressedFormats & ~sampledFormats) != 0) {
+            throw new IllegalArgumentException(
+                    "Objects file charges compressed formats the renderer decodes");
+        }
         ByteBuffer vertices = null, indices = null, pixels = null;
         try {
             check(canceled);
@@ -87,13 +119,47 @@ final class WorldStreamPackedObjects implements AutoCloseable {
             indices = MemoryUtil.memAlloc(data.indices.length * 2).order(ByteOrder.nativeOrder());
             indices.asShortBuffer().put(data.indices);
             check(canceled);
-            pixels = MemoryUtil.memAlloc(data.pixels.length);
-            for (int at = 0; at < data.pixels.length; at += 64 << 10) {
+            int[] images = data.images.clone();
+            int count = images.length / WorldStreamObjectsFile.IMAGE_INTS;
+            long total = 0;
+            int decoded = 0, compressed = 0;
+            for (int i = 0; i < count; i++) {
+                int width = images[i * 3], height = images[i * 3 + 1], format = images[i * 3 + 2];
+                boolean decode =
+                        ObjectTextureFormats.compressed(format)
+                                && (sampledFormats & (1 << format)) == 0;
+                total +=
+                        decode
+                                ? com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(
+                                                width, height)
+                                        * 4L
+                                : ObjectTextureFormats.chainBytes(format, width, height);
+            }
+            pixels = MemoryUtil.memAlloc(Math.toIntExact(total));
+            var source = java.nio.ByteBuffer.wrap(data.pixels);
+            int from = 0;
+            for (int i = 0; i < count; i++) {
                 check(canceled);
-                pixels.put(data.pixels, at, Math.min(64 << 10, data.pixels.length - at));
+                int width = images[i * 3], height = images[i * 3 + 1], format = images[i * 3 + 2];
+                int stored = ObjectTextureFormats.chainBytes(format, width, height);
+                if (ObjectTextureFormats.compressed(format)
+                        && (sampledFormats & (1 << format)) == 0) {
+                    pixels.put(
+                            ObjectTextureFormats.decodeChain(format, width, height, source, from));
+                    images[i * 3 + 2] = ObjectTextureFormats.RGBA8;
+                    decoded++;
+                } else {
+                    for (int at = 0; at < stored; at += 64 << 10) {
+                        pixels.put(data.pixels, from + at, Math.min(64 << 10, stored - at));
+                    }
+                    compressed += ObjectTextureFormats.compressed(format) ? 1 : 0;
+                }
+                from += stored;
             }
             pixels.flip();
-            var result = new WorldStreamPackedObjects(data, vertices, indices, pixels, canceled);
+            var result =
+                    new WorldStreamPackedObjects(
+                            data, images, vertices, indices, pixels, decoded, compressed, canceled);
             vertices = indices = pixels = null;
             return result;
         } finally {

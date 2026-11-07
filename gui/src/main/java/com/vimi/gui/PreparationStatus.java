@@ -27,6 +27,9 @@ public final class PreparationStatus {
                 };
         if (snapshot.busy() && snapshot.total() != null)
             activity += " " + snapshot.done() + "/" + snapshot.total() + " " + snapshot.unit();
+        else if (snapshot.busy() && snapshot.done() > 0)
+            // An open-ended count (#338): rows so far, so a long step is visibly moving.
+            activity += " " + snapshot.done() + " " + snapshot.unit();
         return ready + " · " + activity;
     }
 

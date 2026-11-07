@@ -66,6 +66,53 @@ final class WorldStreamSourceController {
         void changed();
     }
 
+    private volatile java.util.function.LongConsumer presentedListener;
+    private final java.util.concurrent.atomic.AtomicLong latestNative = new java.util.concurrent.atomic.AtomicLong();
+    // #381: the content the helper last reported presenting natively; -1 before any (lock).
+    private long nativeContent = -1;
+    private final java.util.concurrent.atomic.AtomicBoolean nativePosted = new java.util.concurrent.atomic.AtomicBoolean();
+
+    /**
+     * #381: a frame the helper presented into its child window for {@code camera} over content
+     * {@code content}. When that is the current committed content, it is accepted exactly like a
+     * presented readback frame (the current table becomes the presented one), so the phase
+     * reaches READY and capacity waiting on accepted pixels is relieved. The FX listener is told
+     * the latest camera, coalesced to one posted task at a time.
+     */
+    void presentedNatively(long camera, long content) {
+        boolean accepted;
+        synchronized (lock) {
+            // Kept: the helper presents one interval after COMMITTED and may report it before the
+            // worker has recorded the receipt; it never repeats it for a still camera.
+            nativeContent = content;
+            accepted = acceptNativeLocked();
+        }
+        if (accepted) kick();
+        latestNative.set(camera);
+        if (presentedListener != null && nativePosted.compareAndSet(false, true)) {
+            fxPost.accept(() -> {
+                nativePosted.set(false);
+                var listener = presentedListener;
+                if (listener != null) listener.accept(latestNative.get());
+            });
+        }
+    }
+
+    /** The current committed content revision, or -1 before the first commit; for tests. */
+    long currentContentRevision() {
+        synchronized (lock) {
+            return currentReceipt == null ? -1 : currentReceipt.contentRevision();
+        }
+    }
+
+    /**
+     * #381, native presentation: {@code listener} runs on the FX thread with the camera revision
+     * of each frame the helper presented into its window.
+     */
+    void onPresented(java.util.function.LongConsumer listener) {
+        presentedListener = listener;
+    }
+
     enum Phase {
         QUALIFYING,
         STARTING,
@@ -231,8 +278,14 @@ final class WorldStreamSourceController {
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
     private volatile boolean closing;
     private volatile WorldStreamTransport.Camera camera;
+    // The recorded sky (#177-2a), behind -Dvimi.world.sky=recorded; null when off.
+    private volatile WorldSkyFeed sky;
     private volatile WorldStreamTransport.Session session;
+    // Whether this session's WDL horizon was asked for (#372); once per session.
+    private boolean horizonStarted;
     private List<WorldFormats.Tile> desired;
+    // Tiles one ring beyond the demand (#366): a pending tile there is kept, not canceled.
+    private List<WorldFormats.Tile> keep = List.of();
     private long demandRevision, presentationRevision, acceptedSequence;
     private Snapshot snapshot =
             new Snapshot(Phase.QUALIFYING, "Qualifying world sources", 0, 1, null, null);
@@ -274,6 +327,10 @@ final class WorldStreamSourceController {
     private List<Entry> borrowedTable = List.of();
     private WorldStreamTransport.CommitReceipt borrowedReceipt;
     private Entry staged;
+    // The staged entry's reservation, kept so an unwanted staged tile can be canceled instead of
+    // committed over a wanted resident (#366), and that cancellation while it drains.
+    private WorldStreamTransport.TileReservation stagedReservation;
+    private CompletableFuture<Void> stagedCancellation;
     private final LinkedHashMap<Integer, WorldStreamSourceBridge.RefusalMetadata> unavailable =
             new LinkedHashMap<>();
     private boolean initialBlocked;
@@ -334,7 +391,10 @@ final class WorldStreamSourceController {
             Events events,
             Consumer<Runnable> fxPost,
             LongSupplier clock) {
-        this(request, starter, events, fxPost, clock, WorldStreamSourceBridge::prepareExterior);
+        this(request, starter, events, fxPost, clock,
+                (source, scope, tile, cancellation, formats) -> WorldStreamSourceBridge.prepareExterior(
+                        source, scope, tile, cancellation, null,
+                        com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.STANDARD, false, formats));
     }
 
     /** Tests replace the exterior source operation. */
@@ -374,6 +434,15 @@ final class WorldStreamSourceController {
 
     void camera(WorldStreamTransport.Camera next) {
         Objects.requireNonNull(next);
+        // The sky lookup runs outside the lock, and a failing one only leaves the camera's sky
+        // unchanged: camera() must not fail every frame because of it.
+        var feed=sky;
+        if(feed!=null) {
+            try { next=feed.attach(next); }
+            catch(RuntimeException failure) {
+                WorldDiagnostics.degraded("sky", "World sky lookup failed; the explorer's sky stays", failure);
+            }
+        }
         RuntimeException problem=null;
         synchronized (lock) {
             if (closing) return;
@@ -395,7 +464,16 @@ final class WorldStreamSourceController {
     }
 
     void neighborhood(List<WorldFormats.Tile> ordered) {
+        neighborhood(ordered, List.of());
+    }
+
+    /**
+     * The demand in load order, plus the tiles one ring beyond it whose preparation, once
+     * started, is kept rather than canceled (#366).
+     */
+    void neighborhood(List<WorldFormats.Tile> ordered, List<WorldFormats.Tile> beyond) {
         Objects.requireNonNull(ordered);
+        var kept = List.copyOf(beyond);
         if (ordered.size() > residents)
             throw new IllegalArgumentException("Neighborhood bounds");
         var copy = List.copyOf(ordered);
@@ -406,11 +484,45 @@ final class WorldStreamSourceController {
             }
         }
         synchronized (lock) {
-            if (closing || desired.equals(copy)) return;
-            desired = copy;
-            demandRevision++;
+            if (closing) return;
+            // Published only once the demand is validated (#366 review). A changed keep set alone
+            // still kicks: a pending tile it no longer covers must be canceled.
+            boolean keepChanged = !keep.equals(kept);
+            keep = kept;
+            if (desired.equals(copy)) {
+                if (!keepChanged) return;
+            } else {
+                desired = copy;
+                demandRevision++;
+            }
         }
         kick();
+    }
+
+    /**
+     * Once per session: reads the map's WDL and hands it to the World child, which draws the
+     * low-resolution horizon (#372). Any failure only means no horizon.
+     */
+    private void startHorizon() {
+        if (horizonStarted || closing) return;
+        horizonStarted = true;
+        var opened = session;
+        request.world().horizon(request.map(), qualificationCancellation)
+                .whenComplete((result, failure) -> {
+                    if (failure != null) {
+                        WorldDiagnostics.degradedUnlessClean("horizon",
+                                "World horizon unavailable; terrain continues without it", failure);
+                        return;
+                    }
+                    byte[] wdl = result.sourceBytes();
+                    if (result.state() != com.vibeminer.concepts.world.WorldHorizon.State.READY
+                            || wdl == null || closing) return;
+                    opened.attachHorizon(wdl).whenComplete((outcome, sendFailure) -> {
+                        if (sendFailure != null)
+                            WorldDiagnostics.degradedUnlessClean("horizon",
+                                    "World horizon was not delivered", sendFailure);
+                    });
+                });
     }
 
     /** Records the capacity revision before the transport can refuse this commit. */
@@ -435,6 +547,26 @@ final class WorldStreamSourceController {
     private int residentLimit() {
         var open = session;
         return open == null ? residents : Math.min(residents, open.viewDistance().residents());
+    }
+
+    /** True when the recorded sky has moved on with the clock and the camera should be resent. */
+    boolean skyStale() {
+        return skyStale(sky);
+    }
+
+    /**
+     * Like {@link #camera}, a failing sky lookup is logged and changes nothing: it must not break
+     * the World view's pulse. The feed looks at each half-minute once, so it is not retried on
+     * every pulse.
+     */
+    static boolean skyStale(WorldSkyFeed feed) {
+        if (feed == null) return false;
+        try {
+            return feed.stale();
+        } catch (RuntimeException failure) {
+            WorldDiagnostics.degraded("sky", "World sky lookup failed; the explorer's sky stays", failure);
+            return false;
+        }
     }
 
     /**
@@ -592,6 +724,25 @@ final class WorldStreamSourceController {
         kick();
     }
 
+    /**
+     * Under the lock: accepts the content the helper last reported presenting natively once it is
+     * the current receipt and drawable as readback pixels must be (see {@link #drawableLocked}).
+     * Rechecked when the report arrives, when a receipt is recorded and on every worker step.
+     */
+    private boolean acceptNativeLocked() {
+        if (closing || nativeContent < 0 || currentReceipt == null
+                || currentReceipt.contentRevision() != nativeContent) return false;
+        if (acceptedReceipt == currentReceipt && !historicalRaster && presented.equals(current))
+            return false;
+        if (!drawableLocked(current)) return false;
+        historicalRaster = false;
+        acceptedSequence++;
+        acceptedReceipt = currentReceipt;
+        presented = List.copyOf(current);
+        presentationRevision++;
+        return true;
+    }
+
     private boolean validPresentation(Presentation value) {
         if (closing
                 || borrowed != value
@@ -602,14 +753,22 @@ final class WorldStreamSourceController {
                 || camera.width() != value.width()
                 || camera.height() != value.height()
                 || borrowedReceipt != value.frame.content()) return false;
+        return drawableLocked(borrowedTable);
+    }
+
+    /**
+     * Under the lock: {@code table} (the one a frame shows) draws terrain where the camera is,
+     * from open sources. Readback judges the borrowed frame's table; native acceptance the current.
+     */
+    private boolean drawableLocked(List<Entry> table) {
         // A valid receipt can still draw only sky after motion beyond its resident neighborhood.
         // Keep the last readable pixels until the nearest requested recorded tile is GPU-current.
         // Judged on the table the frame shows, which a later commit does not change. A nearest
         // tile the helper keeps rejecting will not become current (#365): show the neighbours
         // instead of holding the last pixels forever.
-        if(!desired.isEmpty() && borrowedTable.stream().noneMatch(entry->same(desired.getFirst(),entry.resident()))
+        if(!desired.isEmpty() && table.stream().noneMatch(entry->same(desired.getFirst(),entry.resident()))
                 && helperRejections.getOrDefault(key(desired.getFirst()),0) < MAX_HELPER_REJECTIONS) return false;
-        for (var entry : borrowedTable) if (!entry.source().isOpen()) return false;
+        for (var entry : table) if (!entry.source().isOpen()) return false;
         return true;
     }
 
@@ -714,12 +873,15 @@ final class WorldStreamSourceController {
     }
 
     private void step() {
+        boolean nativeAccepted;
         steps.incrementAndGet();
         pulseArmed = false; // no timed wait until this step returns on one
         synchronized (lock) {
+            nativeAccepted = acceptNativeLocked();
             // Pixels this step decides from; a later FX acceptance must still wake a refusal.
             stepPresentation = presentationRevision;
         }
+        if (nativeAccepted) kick();
         if (!initialized) {
             if (initialBlocked && clock.getAsLong() - initialRetryAt < RETRY_NANOS) {
                 wakeAt(initialRetryAt + RETRY_NANOS);
@@ -740,6 +902,9 @@ final class WorldStreamSourceController {
                 // drop a release landing between issue and the refusal being recorded, and kicks
                 // coalesce in schedule(), so an unneeded one costs a gate check.
                 geometryWake=source.onGeometryRelease(this::kick);
+                if(WorldSkyFeed.enabled())
+                    sky=new WorldSkyFeed(request.world().skyIndex(qualificationCancellation),
+                            request.map().id(),WorldSkyFeed.clock(),System::nanoTime);
                 // Static diagnostic water joins each actual terrain tile; disable with
                 // -Dvimi.world.water=false.
                 if(!"false".equals(System.getProperty("vimi.world.water")))
@@ -793,6 +958,8 @@ final class WorldStreamSourceController {
                 if(camera!=null && !closing) opened.camera(camera);
             }
             session.onFrame(this::frameArrived);
+            // #381: native presentation reports presented frames instead of mapping frames.
+            session.onPresented(this::presentedNatively);
             // Credits, retirements and releases wake a step waiting on capacity (#366).
             session.onCapacity(this::kick);
             session.initialized().whenComplete((ignored, failure) -> kick());
@@ -809,6 +976,7 @@ final class WorldStreamSourceController {
         }
         if (!session.initialized().isDone()) return;
         session.initialized().join();
+        startHorizon();
         pollFrame();
         updateArea();
         stepExterior();
@@ -820,8 +988,17 @@ final class WorldStreamSourceController {
         helperRejections.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
         helperRetryAt.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
         if (pending != null) {
+            List<WorldFormats.Tile> kept;
+            synchronized (lock) {
+                kept = keep;
+            }
+            // Hysteresis (#366): a tile one ring beyond the demand keeps its preparation, unless
+            // the camera tile or a wanted tile around it is still missing: the single lane then
+            // goes to what the view needs now (#366 review).
             // A preparation that already ended in a helper rejection is terminal: nothing to cancel.
-            if (!contains(wanted, pending.tile) && pending.cancellation == null
+            if (!contains(wanted, pending.tile)
+                    && (!contains(kept, pending.tile) || nearestMissing(wanted))
+                    && pending.cancellation == null
                     && !rejectedByHelper(pending.result)) {
                 // Parent's explicit stop MUST precede the bridge's latest=false cancellation.
                 pending.cancellation = pending.reservation.cancel();
@@ -851,6 +1028,7 @@ final class WorldStreamSourceController {
                     helperRetryAt.remove(key(pending.tile));
                     if(creditTarget!=null && same(creditTarget,pending.tile)) creditTarget=null;
                     staged = new Entry(resident, prepared);
+                    stagedReservation = pending.reservation;
                     resultSeenAt = WorldStageTimings.lap(
                             "handoff.controller.resultToSeen", resultAt);
                     entries.put(resident, staged);
@@ -894,6 +1072,13 @@ final class WorldStreamSourceController {
                             && origin != null
                             && origin.reason().name().equals(refusal.reason().name())
                             && tileUnavailable(origin)) {
+                        // As for a helper rejection: a tile kept one ring beyond, whose demand has
+                        // already left, publishes no UNAVAILABLE for terrain nobody asked for.
+                        if (!contains(wanted, refusedTile)) {
+                            rejectionsOutOfDemand.incrementAndGet();
+                            wake.set(true);
+                            return;
+                        }
                         unavailable.put(failedTile, origin);
                         publish(Phase.UNAVAILABLE, "Terrain unavailable: " + origin.site());
                         wake.set(true);
@@ -994,26 +1179,48 @@ final class WorldStreamSourceController {
                     drop(queued.frame, "superseded");
                     queued = null;
                 }
+                nativeAccepted = acceptNativeLocked();
             }
+            if (nativeAccepted) kick();
             commit = null;
             pollFrame();
+        }
+        if (stagedCancellation != null) {
+            // An unwanted staged tile is being canceled: drop it once the child has let it go.
+            if (!stagedCancellation.isDone()) return;
+            stagedCancellation.join();
+            stagedCancellation = null;
+            entries.remove(staged.resident());
+            staged.source().close();
+            sourceRetirementRevision++;
+            staged = null;
+            stagedReservation = null;
         }
         if (staged != null) {
             var latest = camera;
             if (latest == null) return;
             var target = new ArrayList<>(current);
             if (target.size() >= residentLimit()) {
-                int outgoing = target.size() - 1;
+                int outgoing = -1;
                 for (int i = target.size() - 1; i >= 0; i--) {
                     if (!containsResident(wanted, target.get(i).resident())) {
                         outgoing = i;
                         break;
                     }
                 }
-                target.remove(outgoing);
+                if (outgoing < 0 && !containsResident(wanted, staged.resident())) {
+                    // A tile kept by hysteresis that is no longer wanted never displaces a
+                    // wanted resident (#366): cancel it instead of committing it.
+                    stagedCancellation = stagedReservation.cancel();
+                    stagedCancellation.whenComplete((ignored, failure) -> kick());
+                    publish(Phase.PREPARING, "Releasing a tile the camera left");
+                    return;
+                }
+                target.remove(outgoing < 0 ? target.size() - 1 : outgoing);
             }
             target.add(staged);
             staged = null;
+            stagedReservation = null;
             if (resultSeenAt != 0L) {
                 WorldStageTimings.lap(
                         "handoff.controller.resultSeenToCommitIssued", resultSeenAt);
@@ -1222,11 +1429,14 @@ final class WorldStreamSourceController {
                             Thread.ofPlatform().daemon().name("world-exterior-objects").factory());
                 var lane = source;
                 var owner = scope;
+                // The child's sampled BC formats, reported in SESSION, set how textures are charged.
+                int formats = session == null ? 0 : session.objectFormats();
                 work.prepared = CompletableFuture.supplyAsync(
                         () -> {
                             long preparing = WorldStageTimings.start();
                             try {
-                                return exteriorPreparer.prepare(lane, owner, tile, work.cancellation);
+                                return exteriorPreparer.prepare(
+                                        lane, owner, tile, work.cancellation, formats);
                             } finally {
                                 WorldStageTimings.stop(work.cancellation.isCanceled()
                                         ? "parent.objects.prepareCanceled" : "parent.objects.prepare",
@@ -1348,6 +1558,20 @@ final class WorldStreamSourceController {
                     .append(tiles == 1 ? " tile" : " tiles").append(creatures.restPosed() == 0 ? " (Stand pose, facing north)"
                             : creatures.restPosed() == creatures.drawn() ? " (rest pose, facing north)"
                             : " (" + creatures.restPosed() + " in rest pose, facing north)");
+        var npcs = creatures.npcs();
+        if (npcs.drawn() > 0) {
+            // Humanoid NPCs (#385): their item models and item records left out are disclosed.
+            text.append(", of which ").append(plural(npcs.drawn(), "humanoid NPC"));
+            var notes = new java.util.ArrayList<String>();
+            // Drawn with visible sections it cannot draw (such as blended hair): disclosed.
+            if (npcs.withOmittedSurfaces() > 0)
+                notes.add(npcs.withOmittedSurfaces() + " with " + plural(npcs.omittedSurfaces(), "surface") + " left out");
+            var undrawn = new java.util.ArrayList<String>();
+            if (npcs.attachments() > 0) undrawn.add(plural(npcs.attachments(), "item model"));
+            if (npcs.omittedItems() > 0) undrawn.add(plural(npcs.omittedItems(), "item record"));
+            if (!undrawn.isEmpty()) notes.add(String.join(" and ", undrawn) + " not drawn");
+            if (!notes.isEmpty()) text.append(" (").append(String.join("; ", notes)).append(")");
+        }
         if (creatures.omitted() > 0) {
             text.append("; spawns not drawn: ");
             String separator = "";
@@ -1433,7 +1657,8 @@ final class WorldStreamSourceController {
             var facts = entry.source().facts();
             if (facts.outcome() == WorldTerrainStreaming.Outcome.TEXTURED) {
                 textured++;
-                if (entry.resident().coveredRectangles() < 256
+                // Chunks with no layers have nothing to draw: compare with what the material drew.
+                if (entry.resident().coveredRectangles() < facts.supportedChunks()
                         || facts.materialState() == WorldTerrainTextureSource.State.PARTIAL) partial++;
             } else {
                 height++;
@@ -1455,6 +1680,7 @@ final class WorldStreamSourceController {
                 + (watered == 0 ? "" : "; static diagnostic water on " + watered)
                 + (waterNoted == 0 ? "" : "; water source notes on " + plural(waterNoted, "tile")
                         + " (" + waterIssue + ")")
+                + (sky == null || sky.label() == null ? "" : "; " + sky.label())
                 + (buildingTiles == 0 ? "" : objectsDetail(objects, buildingTiles))
                 + (buildingFailures == 0 ? "" : "; building objects failed on " + buildingFailures)
                 + creatureDetail(creatures, creatureTiles)
@@ -1679,6 +1905,21 @@ final class WorldStreamSourceController {
                             snapshot.seed(),
                             result);
         }
+    }
+
+    /**
+     * Whether the first wanted tile (the camera tile) or a wanted tile within one ring of it is
+     * neither current nor known unavailable.
+     */
+    private boolean nearestMissing(List<WorldFormats.Tile> wanted) {
+        if (wanted.isEmpty()) return false;
+        var first = wanted.getFirst();
+        for (var tile : wanted) {
+            if (Math.max(Math.abs(tile.x() - first.x()), Math.abs(tile.y() - first.y())) > 1) continue;
+            if (unavailable.containsKey(key(tile))) continue;
+            if (current.stream().noneMatch(entry -> same(tile, entry.resident()))) return true;
+        }
+        return false;
     }
 
     private void retireUnused() {
@@ -1912,7 +2153,10 @@ final class WorldStreamSourceController {
         return current != null && rejectedByHelper(current.result);
     }
 
-    /** Test observation: helper rejections that arrived for tiles out of demand. */
+    /**
+     * Test observation: helper rejections and unavailable-terrain refusals that arrived for tiles
+     * out of demand.
+     */
     int rejectionsOutOfDemand() {
         return rejectionsOutOfDemand.get();
     }

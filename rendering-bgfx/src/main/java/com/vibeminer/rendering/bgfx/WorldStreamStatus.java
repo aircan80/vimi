@@ -15,10 +15,31 @@ final class WorldStreamStatus {
         WorldStreamState.Nonce nonce();
     }
 
-    /** {@code exteriorObjects} is the child's BASIC_EXTERIOR_V1 session profile. */
-    record Session(WorldStreamState.Nonce nonce, boolean exteriorObjects) implements Message {
+    /**
+     * {@code exteriorObjects} is the child's BASIC_EXTERIOR_V1 session profile; {@code
+     * objectFormats}: the compressed object texture formats the child samples as blocks (issue
+     * #374), one bit per {@link com.vibeminer.rendering.world.ObjectTextureFormats} code (BC1 =
+     * 0x2, BC2 = 0x4, BC3 = 0x8); 0 when every texture is decoded to RGBA8.
+     */
+    record Session(WorldStreamState.Nonce nonce, boolean exteriorObjects, int objectFormats)
+            implements Message {
+        Session {
+            if ((objectFormats & ~0xE) != 0) {
+                throw new IllegalArgumentException("Object format mask");
+            }
+        }
+
+        Session(WorldStreamState.Nonce nonce, boolean exteriorObjects) {
+            this(nonce, exteriorObjects, 0);
+        }
+
         Session(WorldStreamState.Nonce nonce) {
             this(nonce, false);
+        }
+
+        /** Whether the child uploads {@code format} as blocks. */
+        boolean samples(int format) {
+            return (objectFormats & (1 << format)) != 0;
         }
     }
 
@@ -29,6 +50,13 @@ final class WorldStreamStatus {
 
     /** Non-reliable wake-up hint that the frame mapping published {@code sequence}. */
     record FramePublished(WorldStreamState.Nonce nonce, long sequence) implements Message {}
+
+    /**
+     * #381, native presentation only: non-reliable latest value, the child window's swap chain
+     * presented a frame drawn for {@code camera} (a camera revision) over committed content
+     * revision {@code content}. No mapping is involved.
+     */
+    record Presented(WorldStreamState.Nonce nonce, long camera, long content) implements Message {}
 
     enum InputKind {
         TILE,
@@ -83,6 +111,22 @@ final class WorldStreamStatus {
             implements Message {
         ObjectsDone {
             java.util.Objects.requireNonNull(lease);
+            java.util.Objects.requireNonNull(outcome);
+        }
+    }
+
+    /** The one terminal reply to {@code HORIZON}; none of them is ever session-fatal. */
+    enum HorizonOutcome {
+        /** Read and attached; the horizon is drawn from the next frame on. */
+        DRAWN,
+        /** The WDL was valid but declares no readable tile. */
+        NONE,
+        /** Read, validation or allocation failed; the session continues without a horizon. */
+        FAILED
+    }
+
+    record HorizonDone(WorldStreamState.Nonce nonce, HorizonOutcome outcome) implements Message {
+        HorizonDone {
             java.util.Objects.requireNonNull(outcome);
         }
     }
@@ -155,9 +199,12 @@ final class WorldStreamStatus {
                             Long.parseUnsignedLong(p[1].substring(16), 16));
             return switch (p[2]) {
                 case "SESSION" -> {
-                    arity(p, 4);
+                    // SESSION <profile> [<object format mask>]; without a mask, RGBA8 only.
+                    require(p.length == 4 || p.length == 5);
                     require(p[3].equals("TERRAIN_BASIC_V1") || p[3].equals("TERRAIN_EXTERIOR_V1"));
-                    yield new Session(nonce, p[3].equals("TERRAIN_EXTERIOR_V1"));
+                    int formats = p.length == 5 ? integer(p[4]) : 0;
+                    require((formats & ~0xE) == 0);
+                    yield new Session(nonce, p[3].equals("TERRAIN_EXTERIOR_V1"), formats);
                 }
                 case "CREDIT" -> {
                     arity(p, 6);
@@ -169,6 +216,10 @@ final class WorldStreamStatus {
                     int width = integer(p[4]), height = integer(p[5]);
                     require(WorldFrameLimits.fits(width, height));
                     yield new CameraApplied(nonce, policy, width, height);
+                }
+                case "PRESENTED" -> {
+                    arity(p, 5);
+                    yield new Presented(nonce, positive(p[3]), number(p[4]));
                 }
                 case "FRAME" -> {
                     arity(p, 4);
@@ -196,6 +247,11 @@ final class WorldStreamStatus {
                     arity(p, 8);
                     yield new ObjectsDone(
                             nonce, transaction(p[3]), lease(p, 4), LateOutcome.valueOf(p[7]));
+                }
+                case "HORIZON_DONE" -> {
+                    arity(p, 5);
+                    require(p[3].equals("1"));
+                    yield new HorizonDone(nonce, HorizonOutcome.valueOf(p[4]));
                 }
                 case "COMMITTED" -> {
                     arity(p, 6);

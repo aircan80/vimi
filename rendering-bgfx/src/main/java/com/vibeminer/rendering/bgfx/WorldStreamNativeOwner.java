@@ -84,7 +84,9 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             long publishedSequence,
             int pendingReadbacks,
             long gpuHeapBytes,
-            int msaaSamples) {}
+            int msaaSamples,
+            // The WDL horizon (#372), last so earlier fields keep their positions.
+            BgfxWorldStreamRenderer.HorizonCounts horizon) {}
 
     /** Reset flags: no back buffer; anisotropic samplers use the device maximum (issue #357). */
     static final int RESET_FLAGS = org.lwjgl.bgfx.BGFX.BGFX_RESET_MAXANISOTROPY;
@@ -470,6 +472,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.finishLate(upload, live);
     }
 
+    /** The compressed object texture formats the renderer samples as blocks (bit per code). */
+    int objectFormatMask() {
+        requireOpen();
+        return renderer.objectFormatMask();
+    }
+
     /** Proof observation of the renderer's splat state. */
     boolean splatted(int slot) {
         requireOpen();
@@ -530,7 +538,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         if (submittedCamera == cameraRevision
                 && submittedContent == renderer.contentRevision()
                 && submittedObjects == renderer.objectsRevision()
-                && submittedPolicy == policy) {
+                && submittedPolicy == policy
+                && !renderer.horizonWaiting()) {
             return false;
         }
         if (renderedThisFrame) {
@@ -565,6 +574,11 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         if (order == WorldFrameFileV2.MAX_SEQUENCE) {
             throw new IllegalStateException("Frame order exhausted");
         }
+        // The frame's sky travels with its camera, so a coalesced camera never loses it.
+        // TODO(#479): with the WDL horizon drawn, pass its end here (WorldStreamHorizon.FOG_END)
+        // instead of NaN and drop draw()'s withHorizon, so a recorded fog end below the horizon
+        // is kept; whichever of #479 and #486 lands second makes this one-line change.
+        renderer.fog(WorldFog.sky(command.sky(), Float.NaN));
         long drawing = WorldStageTimings.start();
         var ticket = renderer.draw(command.camera(), cameraRevision, policy, width, height);
         bgfx_blit(1, available.texture, 0, 0, 0, 0, color, 0, 0, 0, 0, width, height, 1);
@@ -580,7 +594,10 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         available.ticket = ticket;
         available.order = ++order;
         available.ready = bgfx_read_texture(available.texture, available.pixels, 0, 0);
-        WorldStageTimings.stop("child.frame.submitCpu", drawing);
+        if (drawing != 0L) {
+            WorldStageTimings.stop("child.frame.submitCpu", drawing);
+            cullCounts(renderer.frameCounts());
+        }
         renderedThisFrame = true;
         submittedCamera = cameraRevision;
         submittedContent = ticket.content();
@@ -608,6 +625,18 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return true;
     }
 
+    /** #381: camera revision of the latest scene frame presented into the window; 0 before. */
+    long presentedCamera() {
+        return presentedCamera;
+    }
+
+    private long presentedCamera, presentedContent;
+
+    /** #381: content revision of the latest scene frame presented into the window. */
+    long presentedContent() {
+        return presentedContent;
+    }
+
     /** True in native presentation: frames go to the child window, never to the mapping. */
     boolean presentsToWindow() {
         return window != null;
@@ -625,10 +654,15 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             if (pace > 0) {
                 java.util.concurrent.locks.LockSupport.parkNanos(pace);
             }
+            boolean drew = renderedThisFrame;
             currentFrame = bgfx_frame(BGFX_FRAME_NONE);
             renderedThisFrame = false;
             renderer.pollUploads();
             window.presented(System.nanoTime());
+            if (drew) {
+                presentedCamera = submittedCamera;
+                presentedContent = submittedContent;
+            }
             return false;
         }
         long advanceStart = System.nanoTime();
@@ -731,6 +765,21 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return published;
     }
 
+    /**
+     * What the CPU cull kept and skipped in the frame just submitted (opt-in only), so a change in
+     * {@code child.frame.draws} can be told apart from a change in what was resident: exterior
+     * placements tested and culled, object submits, terrain chunk runs tested and culled, and
+     * terrain submits.
+     */
+    static void cullCounts(BgfxWorldStreamRenderer.FrameCounts counts) {
+        WorldStageTimings.value("child.frame.placements", counts.placements());
+        WorldStageTimings.value("child.frame.placementsCulled", counts.culled());
+        WorldStageTimings.value("child.frame.objectSubmits", counts.objectSubmits());
+        WorldStageTimings.value("child.frame.terrainChunks", counts.chunks());
+        WorldStageTimings.value("child.frame.terrainChunksCulled", counts.chunksCulled());
+        WorldStageTimings.value("child.frame.terrainSubmits", counts.terrainSubmits());
+    }
+
     /** bgfx's statistics of the frame just rendered, after a frame that drew (opt-in only). */
     private static void frameStats() {
         var stats = bgfx_get_stats();
@@ -812,6 +861,37 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return current - ready >= 0;
     }
 
+    /** Draws the map's WDL horizon from now on (#372); its rebuilds run on their own worker. */
+    void attachHorizon(com.vibeminer.formats.world.WorldLowRes.LowRes lowRes) throws IOException {
+        requireOpen();
+        var built = new WorldStreamHorizon(lowRes);
+        try {
+            renderer.horizon(built);
+        } catch (IOException | RuntimeException failed) {
+            built.close();
+            throw failed;
+        }
+    }
+
+    /** Whether the next horizon build is waiting for idle upload steps. */
+    boolean horizonUploading() {
+        requireOpen();
+        return renderer.horizonUploading();
+    }
+
+    /** One bounded horizon upload step; like late objects, only in idle iterations. */
+    void stepHorizon() {
+        requireOpen();
+        if (!renderedThisFrame) {
+            renderer.stepHorizon();
+        }
+    }
+
+    BgfxWorldStreamRenderer.HorizonCounts horizonCounts() {
+        requireOpen();
+        return renderer.horizonCounts();
+    }
+
     /** Exterior object counts of the last drawn frame. */
     BgfxWorldStreamRenderer.FrameCounts frameCounts() {
         requireOpen();
@@ -850,7 +930,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 sequence,
                 pending,
                 stats.gpuMemoryUsed(),
-                samples);
+                samples,
+                renderer.horizonCounts());
     }
 
     private void requireOpen() {

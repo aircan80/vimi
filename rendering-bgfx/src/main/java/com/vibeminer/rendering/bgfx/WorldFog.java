@@ -36,6 +36,41 @@ record WorldFog(
 
     static final WorldFog STREAM = stream(FOG_COLOUR, SKY_TOP, 600, 2200, 0.75f);
 
+    /**
+     * The recorded sky composed with the stream fog (#177): colours as recorded; the fog start and
+     * end mixed from the stream's toward the recorded ones by {@code fogWeight}. The cut is the
+     * stream cut, or {@code horizonEnd} when the WDL horizon is drawn ({@code NaN} when not). With
+     * the horizon the fog ends at the horizon where nothing is recorded, and a recorded end below
+     * it is kept, so foggy zones stay foggy and fog stays full from there to the cut. The end never
+     * passes the cut. A null sky is the explorer's own. {@code horizonEnd} is finite and positive,
+     * or {@code NaN}.
+     */
+    static WorldFog sky(WorldStreamTransport.Sky sky, float horizonEnd) {
+        if (!Float.isNaN(horizonEnd) && !(Float.isFinite(horizonEnd) && horizonEnd > 0)) {
+            throw new IllegalArgumentException("World horizon fog end");
+        }
+        var value = sky == null ? WorldStreamTransport.Sky.EXPLORER : sky;
+        boolean horizon = !Float.isNaN(horizonEnd);
+        float cut = horizon ? horizonEnd : STREAM.cut();
+        float baseEnd = horizon ? horizonEnd : STREAM.end();
+        double weight = value.fogWeight();
+        double end = baseEnd + (value.recordedEnd() - baseEnd) * weight;
+        double start = STREAM.start() + (value.recordedStart() - STREAM.start()) * weight;
+        end = Math.min(end, cut);
+        if (!(end > start)) {
+            // A recorded start at its end (or past a short cut) keeps a sliver of ramp.
+            start = Math.max(0, end * 0.99);
+        }
+        return new WorldFog(
+                value.horizon(),
+                value.top(),
+                (float) start,
+                (float) end,
+                1,
+                cut,
+                STREAM.topElevation());
+    }
+
     /** The fog before #357: flat, 0.85 at 2200 yd. The cold pass draws no horizon sky. */
     static final WorldFog LEGACY =
             new WorldFog(FOG_COLOUR, FOG_COLOUR, 600, 2200, 0.85f, 2200, 0.75f);
@@ -61,6 +96,36 @@ record WorldFog(
             float[] horizon, float[] top, float start, float end, float topElevation) {
         float cut = (float) TerrainCamera.WHOLE_TRIANGLE_FAR;
         return new WorldFog(horizon, top, start, Math.min(end, cut), 1, cut, topElevation);
+    }
+
+    /**
+     * This fog with the WDL horizon drawn (#372, option (a)): fog reaches its maximum at {@code
+     * horizonEnd} instead of the streamed-terrain cut, and the cut moves out to it as well, so
+     * terrain, objects and the horizon all fade into the sky together and nothing is sliced. The
+     * frame's CPU culling of streamed chunks and objects uses this cut too, so they are drawn out
+     * to {@code horizonEnd}; past the streamed neighbourhood there is nothing of theirs to draw.
+     *
+     * <p>The result always has {@code maximum} 1: nothing past the cut is discarded (the horizon is
+     * never cut, streamed terrain only by whole chunks), so fog alone must hide it completely.
+     *
+     * <p>Callers must not rely on {@code end() == cut()} afterwards: #177's recorded fog may later
+     * keep a shorter end with the cut at the horizon.
+     */
+    WorldFog withHorizon(float horizonEnd) {
+        if (!(horizonEnd > 0) || Float.isInfinite(horizonEnd)) {
+            throw new IllegalArgumentException("Horizon fog end");
+        }
+        // A longer recorded end or start (#177) is clamped to the horizon, never refused.
+        float clampedStart = Math.min(start, Math.nextDown(horizonEnd));
+        return new WorldFog(horizon, top, clampedStart, horizonEnd, 1, horizonEnd, topElevation);
+    }
+
+    /**
+     * This fog at full strength (maximum 1) by its end. The World stream renderer draws only this:
+     * geometry past the cut is not discarded, so a weaker maximum would show it against the sky.
+     */
+    WorldFog fullAtCut() {
+        return maximum == 1 ? this : new WorldFog(horizon, top, start, end, 1, cut, topElevation);
     }
 
     @Override

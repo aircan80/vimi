@@ -42,6 +42,19 @@ class ShaderBuildTests(unittest.TestCase):
                 with self.assertRaises(FileNotFoundError):
                     shaders.verify(directory)
 
+    def test_local_includes_are_inputs_so_changing_one_invalidates_the_manifest(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            sources = Path(scratch) / "sources"
+            sources.mkdir()
+            for name in ("vs_model.sc", "fs_model.sc", "varying.def.sc"):
+                (sources / name).write_text(name, encoding="utf-8")
+            (sources / "splat.sh").write_text("// include", encoding="utf-8")
+            with patch.object(shaders, "SOURCES", sources):
+                before = shaders.inputs()
+                self.assertIn("splat.sh", before)
+                (sources / "splat.sh").write_text("// changed", encoding="utf-8")
+                self.assertNotEqual(before, shaders.inputs())
+
     def test_verify_requires_current_sources_all_profiles_and_pinned_compiler(self):
         with tempfile.TemporaryDirectory() as scratch:
             directory = Path(scratch)

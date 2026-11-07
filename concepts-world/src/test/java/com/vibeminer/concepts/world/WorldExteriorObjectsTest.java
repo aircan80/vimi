@@ -261,6 +261,192 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    /** One opaque building image from {@code file}, for a session sampling {@code formats}. */
+    private static WorldExteriorObjects.TileObjects sampling(int formats, byte[] file) {
+        var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)));
+        f.files.sources.put(ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0))));
+        f.files.sources.put(GROUP, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+        f.files.sources.put(IMAGE, file);
+        try {
+            return f.runSampling(formats);
+        } finally {
+            f.close();
+        }
+    }
+
+    @Test
+    void aSessionSamplingBc1TakesTheLargerSideAtItsCompressedCost() {
+        int bc1 = 1 << com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        byte[] file = blp(1024, 1024, 11, 0x07e0);
+        try (var set = sampling(bc1, file)) {
+            var image = set.images().getFirst();
+            assertEquals(512, image.width(), "a sampled BC1 chain reaches the 512 side");
+            assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.BC1, image.format());
+            assertEquals(bc1, set.compressedFormats());
+            // Charged as uploaded: its stored bytes in RGBA8 texel units, not 512 x 512.
+            assertEquals(
+                    com.vibeminer.rendering.world.ObjectTextureFormats.chainBytes(
+                                    com.vibeminer.rendering.world.ObjectTextureFormats.BC1,
+                                    512,
+                                    512)
+                            / 4,
+                    set.pixels());
+            // The 512 level is never decoded to RGBA8: only the registration decode ran.
+            assertEquals(1, set.levelDecodes);
+            assertEquals(255, image.rgba().get(1) & 255, "green");
+        }
+        try (var set = sampling(0, file)) {
+            // A session that decodes BC1 keeps the RGBA8 cap and charge: 256 at most.
+            assertEquals(256, set.images().getFirst().width());
+            assertEquals(0, set.compressedFormats());
+        }
+    }
+
+    @Test
+    void unusableBlocksAtALargerSideFallBackToRgbaWithinItsCharge() {
+        int bc3 = com.vibeminer.rendering.world.ObjectTextureFormats.BC3;
+        // A blended BC3 512^2 allotted 512 (87,388 texel units); nothing retained and its
+        // blocks' re-read refused (a blended image keeps what its first read gave). RGBA8 512 would
+        // cost 4x: the fallback may take at most 256^2 (87,381), within the charge and cap.
+        try (var f = blocksUnreadable(blp3(512, 512, 10, 0x07e0), 2);
+                var set = sampling(f, 0, 1 << bc3)) {
+            var image = set.images().getFirst();
+            assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, image.format());
+            // The charge admits 256^2 (rgbaLevelWithin, WorldImageBudgetTest), but with the re-read
+            // refused the largest level at hand is the 128 registration.
+            assertEquals(128, image.width());
+            assertTrue(
+                    WorldImageBudget.cost(256, 256, 0)
+                            <= com.vibeminer.rendering.world.ObjectTextureFormats.chainBytes(
+                                            bc3, 512, 512)
+                                    / 4);
+            assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS_FALLBACK));
+            assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS));
+        }
+    }
+
+    /** One building image of material {@code blend} whose second read is refused. */
+    private static Fixture blocksUnreadable(byte[] file, int blend) {
+        var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), refusingSecondRead(IMAGE));
+        f.files.sources.put(
+                ROOT, root(1, new long[] {GROUP}, List.of(new Material(blend, IMAGE, 0))));
+        f.files.sources.put(GROUP, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+        f.files.sources.put(IMAGE, file);
+        return f;
+    }
+
+    @Test
+    void sampledRegistrationPixelsCountAsRetainedUntilTheirBlocksAreRead() {
+        int bc1 = 1 << com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        // Nothing else retained: the only retained bytes are the 128^2 registration pixels the
+        // sampled chain kept for its fallback, dropped once its blocks were read.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0))));
+            f.files.sources.put(GROUP, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+            f.files.sources.put(IMAGE, blp(1024, 1024, 11, 0x07e0));
+            try (var set = sampling(f, 0, bc1)) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS));
+                assertEquals(128 * 128 * 4, set.retainedSourceBytes);
+            }
+            try (var set = sampling(f, 0, 0)) {
+                assertEquals(0, set.retainedSourceBytes, "an RGBA8 plan keeps none of them");
+            }
+        }
+    }
+
+    @Test
+    void blocksWhoseLevelsOverlapTheHeaderAreNeverPlanned() {
+        int bc1 = 1 << com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        byte[] file = blp(1024, 1024, 11, 0x07e0);
+        // Level 2 (the 256 side) points inside the header: blockFormat refuses the file up
+        // front, so it is planned as RGBA8 within its cap and never needs the fallback.
+        ByteBuffer.wrap(file).order(ByteOrder.LITTLE_ENDIAN).putInt(20 + 2 * 4, 100);
+        try (var set = sampling(bc1, file)) {
+            var image = set.images().getFirst();
+            assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, image.format());
+            assertTrue(image.width() <= 256);
+            assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS_FALLBACK));
+            assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS));
+        }
+    }
+
+    @Test
+    void sampledChainsUnderOneBlockAreNotCountedAsBlockFallbacks() {
+        int bc1 = 1 << com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        // A 2 x 2 DXT1 source in a session that samples BC1: its allotted level is under one 4 x 4
+        // block, so it is planned and decoded as RGBA8 from the start. The blocks were never
+        // planned, so it is no fallback and is not decoded a second time.
+        int rgbaDecodes;
+        try (var set = sampling(0, blp(2, 2, 2, 0x07e0))) {
+            rgbaDecodes = set.levelDecodes;
+        }
+        try (var set = sampling(bc1, blp(2, 2, 2, 0x07e0))) {
+            var image = set.images().getFirst();
+            assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, image.format());
+            assertEquals(2, image.width());
+            assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS_FALLBACK));
+            assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS));
+            // The same decodes as a session that samples no blocks: none is redone.
+            assertEquals(rgbaDecodes, set.levelDecodes);
+        }
+    }
+
+    @Test
+    void unusableBlocksAt256FallBackWithinTheirCharge() {
+        int bc3 = com.vibeminer.rendering.world.ObjectTextureFormats.BC3;
+        // A blended BC3 256^2 registered at 128 and allotted 256 (21,852 texel units), its re-read
+        // refused: RGBA8 256 would cost 4x, so it draws its 128 registration level (21,845).
+        try (var f = blocksUnreadable(blp3(256, 256, 9, 0x07e0), 2);
+                var set = sampling(f, 0, 1 << bc3)) {
+            var image = set.images().getFirst();
+            assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, image.format());
+            assertEquals(128, image.width());
+            assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS_FALLBACK));
+        }
+    }
+
+    @Test
+    void unusableBlocksBelowTheRegistrationLevelStillFallBack() {
+        int bc3 = com.vibeminer.rendering.world.ObjectTextureFormats.BC3;
+        // The material pool holds 3 cutout 256^2 and 28 cutout 256x128 RGBA8 chains ahead of one
+        // blended 256^2 BC3 chain; by the 128 round the pool has too little left to raise the
+        // BC3 chain past 64, below its 128 registration level. Its 32 x 32 level points inside
+        // the header, so the blocks are unusable and the RGBA8 fallback needs the registration
+        // pixels, which the release step must keep for a sampled chain.
+        var materials = new ArrayList<Material>();
+        var batches = new ArrayList<Batch>();
+        materials.add(new Material(0, IMAGE, 0));
+        batches.add(new Batch(0, 3, 0, 0));
+        for (int i = 0; i < 32; i++) {
+            materials.add(new Material(i < 31 ? 1 : 2, 6000 + i, 0));
+            batches.add(new Batch((i + 1) * 3, 3, 0, i + 1));
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), refusingSecondRead(6031L))) {
+            f.files.sources.put(ROOT, root(1, new long[] {GROUP}, materials));
+            f.files.sources.put(GROUP, group(EXT, 3, 33, batches));
+            f.files.sources.put(IMAGE, blp(64, 64, 7, 0x07e0));
+            for (int i = 0; i < 31; i++) {
+                f.files.sources.put(6000L + i, blp(256, i < 3 ? 256 : 128, 3, i));
+            }
+            f.files.sources.put(6031L, blp3(256, 256, 9, 0x07e0));
+            try (var set = sampling(f, 0, 1 << bc3)) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
+                var image =
+                        set.images().stream()
+                                .filter(i -> i.id() == 6031L)
+                                .findFirst()
+                                .orElseThrow();
+                // Allotted 64 as BC3 (1,372 texel units): a 64^2 RGBA8 chain (5,461) would
+                // overspend, so the fallback takes 32^2 (1,365).
+                assertEquals(32, image.width(), "within what its blocks were charged");
+                assertEquals(
+                        com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, image.format());
+                assertEquals(255, image.rgba().get(1) & 255, "green");
+            }
+        }
+    }
+
     @Test
     void opaqueDxtWithItsWholeChainIsCarriedAsTheFilesOwnBlocks() {
         byte[] file = blp(256, 256, 9, 0x07e0);
@@ -391,6 +577,20 @@ class WorldExteriorObjectsTest {
                     Cancellation.NONE,
                     WorldExteriorObjects.ModelReader.STANDARD,
                     detail);
+        }
+
+        /** A run for a GPU session that samples {@code formats} as blocks (#374). */
+        WorldExteriorObjects.TileObjects runSampling(int formats) {
+            return WorldExteriorObjects.prepare(
+                    engine,
+                    scope,
+                    TILE,
+                    Cancellation.NONE,
+                    WorldExteriorObjects.ModelReader.STANDARD,
+                    WorldExteriorObjects.ImageDetail.STANDARD,
+                    WorldExteriorObjects.RETAINED_SOURCE_BYTES,
+                    false,
+                    formats);
         }
 
         /** A dungeon or raid map: interior WMO groups are drawn too (#280). */
@@ -771,14 +971,24 @@ class WorldExteriorObjectsTest {
     @Test
     void doodadsKeepTheirDrawsAheadOfInstanceInteriors() {
         // One exterior building (1 draw), an interior-only root placed 60 times and 300 MDDF
-        // doodads (1 draw each). The interior group's batch count is derived from MAX_DRAWS so
-        // that the interior alone fits but not after the doodads: the doodads and the exterior are
-        // spent first, and the interior is what is capped, never a doodad.
+        // doodads (1 draw each). The interior's batch count is derived from MAX_DRAWS so that the
+        // interior alone fits but not after the doodads: the doodads and the exterior are spent
+        // first, and the interior is what is capped, never a doodad. The batches are split over
+        // interior groups of at most WmoGroupSpans.MAX_BATCHES each, admitted group by group, so
+        // the last group is the one that no longer fits.
         long interiorRoot = 120;
         int batchCount = (WorldExteriorObjects.MAX_DRAWS - 1 - 300) / 60 + 1;
-        var batches = new ArrayList<Batch>();
-        for (int b = 0; b < batchCount; b++) {
-            batches.add(new Batch(b * 3, 3, 0, 0));
+        int perGroup = com.vibeminer.formats.world.WmoGroupSpans.MAX_BATCHES;
+        var interiorGroups = new long[(batchCount + perGroup - 1) / perGroup];
+        var interiorSources = new java.util.LinkedHashMap<Long, byte[]>();
+        for (int g = 0; g < interiorGroups.length; g++) {
+            interiorGroups[g] = INTERIOR + 10L * g;
+            int size = Math.min(perGroup, batchCount - g * perGroup);
+            var batches = new ArrayList<Batch>();
+            for (int b = 0; b < size; b++) {
+                batches.add(new Batch(b * 3, 3, 0, 0));
+            }
+            interiorSources.put(interiorGroups[g], group(INT, 3, size, batches));
         }
         var records = new ArrayList<Modf>();
         records.add(Modf.of(ROOT, 1, 0x8));
@@ -791,16 +1001,22 @@ class WorldExteriorObjectsTest {
         }
         try (var f = new Fixture(records)) {
             putModel(f, MODEL, model());
-            f.files.sources.put(interiorRoot, root(INTERIOR));
-            f.files.sources.put(INTERIOR, group(INT, 3, batchCount, batches));
+            f.files.sources.put(interiorRoot, root(interiorGroups));
+            f.files.sources.putAll(interiorSources);
             f.files.sources.put(4L, obj0(records, doodads));
             assertTrue(1 + 60 * batchCount + 300 > WorldExteriorObjects.MAX_DRAWS);
             assertTrue(1 + 60 * batchCount <= WorldExteriorObjects.MAX_DRAWS);
             try (var set = f.runInstance()) {
                 assertEquals(300, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
+                assertTrue(interiorGroups.length > 1);
                 assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
-                assertTrue(set.placements().stream().noneMatch(p -> p.rootId() == interiorRoot));
+                assertEquals(
+                        interiorGroups.length - 1,
+                        set.models().stream()
+                                .filter(m -> m.rootId() == interiorRoot)
+                                .mapToInt(m -> m.meshes().size())
+                                .sum());
                 assertTrue(set.placements().stream().anyMatch(p -> p.rootId() == ROOT));
             }
         }
@@ -808,8 +1024,8 @@ class WorldExteriorObjectsTest {
         // them and draws too.
         try (var f = new Fixture(records)) {
             putModel(f, MODEL, model());
-            f.files.sources.put(interiorRoot, root(INTERIOR));
-            f.files.sources.put(INTERIOR, group(INT, 3, batchCount, batches));
+            f.files.sources.put(interiorRoot, root(interiorGroups));
+            f.files.sources.putAll(interiorSources);
             int fitting = WorldExteriorObjects.MAX_DRAWS - 1 - 60 * batchCount;
             f.files.sources.put(4L, obj0(records, doodads.subList(0, fitting)));
             try (var set = f.runInstance()) {
@@ -824,12 +1040,20 @@ class WorldExteriorObjectsTest {
 
     @Test
     void interiorsNeverCostExteriorCutoutOrBlendedDraws() {
-        // 64 placements of a building with 32 opaque and 31 cutout batches draw 4,032 of the
-        // 4,096-draw budget. A 2-range interior would need 128 more: it is capped, and the
-        // exterior's cutout batches are all still drawn, exactly as without interiors.
-        var batches = new ArrayList<Batch>();
-        for (int i = 0; i < 63; i++) {
-            batches.add(new Batch(i * 3, 3, 0, i < 32 ? 0 : 1));
+        // 64 placements of a building with a group of 64 opaque batches and a group of cutout
+        // batches draw all but 64 of the draw budget (MAX_DRAWS / 64 - 1 batches per placement).
+        // A 2-range interior would need 128 more: it is capped, and the exterior's cutout batches
+        // are all still drawn, exactly as without interiors.
+        int perPlacement = WorldExteriorObjects.MAX_DRAWS / 64 - 1;
+        int cutouts = perPlacement - 64;
+        assertTrue(cutouts > 0 && cutouts <= com.vibeminer.formats.world.WmoGroupSpans.MAX_BATCHES);
+        var opaque = new ArrayList<Batch>();
+        for (int i = 0; i < 64; i++) {
+            opaque.add(new Batch(i * 3, 3, 0, 0));
+        }
+        var cutout = new ArrayList<Batch>();
+        for (int i = 0; i < cutouts; i++) {
+            cutout.add(new Batch(i * 3, 3, 0, 1));
         }
         var records = new ArrayList<Modf>();
         for (int i = 0; i < 64; i++) {
@@ -841,12 +1065,13 @@ class WorldExteriorObjectsTest {
                         f.files.sources.put(
                                 ROOT,
                                 root(
-                                        2,
-                                        new long[] {GROUP, INTERIOR},
+                                        3,
+                                        new long[] {GROUP, GROUP + 2, INTERIOR},
                                         List.of(
                                                 new Material(0, IMAGE, 0),
                                                 new Material(1, IMAGE2, 0))));
-                        f.files.sources.put(GROUP, group(EXT, 3, 63, batches));
+                        f.files.sources.put(GROUP, group(EXT, 3, 64, opaque));
+                        f.files.sources.put(GROUP + 2, group(EXT, 3, cutouts, cutout));
                         f.files.sources.put(
                                 INTERIOR,
                                 group(
@@ -861,7 +1086,7 @@ class WorldExteriorObjectsTest {
                 };
         var without = run.apply(false);
         var with = run.apply(true);
-        assertEquals(31, with.get(WorldExteriorObjects.Count.BATCH_CUTOUT));
+        assertEquals(cutouts, with.get(WorldExteriorObjects.Count.BATCH_CUTOUT));
         assertEquals(
                 without.get(WorldExteriorObjects.Count.BATCH_CUTOUT),
                 with.get(WorldExteriorObjects.Count.BATCH_CUTOUT));
@@ -2055,46 +2280,64 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    /** Files whose second and later opens of {@code target} read nothing (a refused re-read). */
+    private static WorldTerrainTextureSourceTest.Files refusingSecondRead(long target) {
+        return new WorldTerrainTextureSourceTest.Files() {
+            @Override
+            com.vibeminer.files.FileReadStream open(long id, Cancellation cancel) {
+                var actual = super.open(id, cancel);
+                if (id != target || opens.get(id).get() < 2) {
+                    return actual;
+                }
+                return new com.vibeminer.files.FileReadStream() {
+                    public long length() {
+                        return actual.length();
+                    }
+
+                    public long position() {
+                        return actual.position();
+                    }
+
+                    public void seek(long position) {
+                        actual.seek(position);
+                    }
+
+                    public List<com.vibeminer.files.FileTypes.FileHole> holes() {
+                        return actual.holes();
+                    }
+
+                    public java.util.concurrent.CompletableFuture<Integer> read(
+                            ByteBuffer destination, Cancellation token) {
+                        return java.util.concurrent.CompletableFuture.completedFuture(-1);
+                    }
+
+                    public void close() {
+                        actual.close();
+                    }
+                };
+            }
+        };
+    }
+
+    /** A sampling run retaining at most {@code limit} source bytes. */
+    private static WorldExteriorObjects.TileObjects sampling(Fixture f, long limit, int formats) {
+        return WorldExteriorObjects.prepare(
+                f.engine,
+                f.scope,
+                TILE,
+                Cancellation.NONE,
+                WorldExteriorObjects.ModelReader.STANDARD,
+                WorldExteriorObjects.ImageDetail.STANDARD,
+                limit,
+                false,
+                formats);
+    }
+
     @Test
     void aRefusedSecondReadOfACutoutImageKeepsItsRegisteredLevel() {
         // The cutout image registers at 128 (level 1) and is allotted 256 (level 0); its second
         // read is refused at SOURCE_INPUT. The tile keeps the registered level instead of failing.
-        var files =
-                new WorldTerrainTextureSourceTest.Files() {
-                    @Override
-                    com.vibeminer.files.FileReadStream open(long id, Cancellation cancel) {
-                        var actual = super.open(id, cancel);
-                        if (id != IMAGE2 || opens.get(id).get() < 2) {
-                            return actual;
-                        }
-                        return new com.vibeminer.files.FileReadStream() {
-                            public long length() {
-                                return actual.length();
-                            }
-
-                            public long position() {
-                                return actual.position();
-                            }
-
-                            public void seek(long position) {
-                                actual.seek(position);
-                            }
-
-                            public List<com.vibeminer.files.FileTypes.FileHole> holes() {
-                                return actual.holes();
-                            }
-
-                            public java.util.concurrent.CompletableFuture<Integer> read(
-                                    ByteBuffer destination, Cancellation token) {
-                                return java.util.concurrent.CompletableFuture.completedFuture(-1);
-                            }
-
-                            public void close() {
-                                actual.close();
-                            }
-                        };
-                    }
-                };
+        var files = refusingSecondRead(IMAGE2);
         try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
             f.files.sources.put(
                     ROOT,
@@ -2927,19 +3170,34 @@ class WorldExteriorObjectsTest {
 
     @Test
     void doodadPlacementAndModelCapsKeepSourceOrder() {
+        // MDDF doodads fill the placement cap first (an obj0 records at most 4,096 of them, the
+        // cap itself); the drawn building's three set doodads come after and are capped.
         var doodads = new ArrayList<Mddf>();
-        for (int i = 0; i < WorldExteriorObjects.MAX_DOODADS + 3; i++) {
+        for (int i = 0; i < WorldExteriorObjects.MAX_DOODADS; i++) {
             doodads.add(Mddf.of(MODEL, i + 1, 0x40));
+        }
+        var three = new ArrayList<Modd>();
+        for (int i = 0; i < 3; i++) {
+            three.add(new Modd(0, i, 0, 0, new double[] {0, 0, 0, 1}, 1));
         }
         try (var f = new Fixture(List.of())) {
             putModel(f, MODEL, model());
-            try (var set = run(f, obj0(List.of(), doodads))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            1,
+                            new long[] {GROUP},
+                            List.of(new Material(0, IMAGE, 0)),
+                            doodadChunks(new int[][] {{0, 3}}, new long[] {MODEL}, three)));
+            try (var set = run(f, obj0(List.of(Modf.of(ROOT, 1, 0x8)), doodads, 0))) {
                 assertEquals(
                         WorldExteriorObjects.MAX_DOODADS,
                         set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
-                assertEquals(3, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
-                assertEquals(
-                        WorldExteriorObjects.MAX_DOODADS - 1, set.placements().getLast().ordinal());
+                assertEquals(3, set.count(WorldExteriorObjects.Count.SET_DOODAD_CAPPED));
+                assertEquals(3, set.count(WorldExteriorObjects.Count.DOODAD_CAP_PLACEMENTS));
+                var last = set.placements().getLast();
+                assertEquals(WorldExteriorObjects.Kind.DOODAD, last.kind());
+                assertEquals(WorldExteriorObjects.MAX_DOODADS - 1, last.ordinal());
             }
         }
         var distinct = new ArrayList<Mddf>();
@@ -2956,6 +3214,7 @@ class WorldExteriorObjectsTest {
                         set.count(WorldExteriorObjects.Count.MODEL_DRAWN));
                 assertEquals(2, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
                 assertEquals(WorldExteriorObjects.MAX_MODELS, set.models().size());
+                assertEquals(2, set.count(WorldExteriorObjects.Count.DOODAD_CAP_MODELS));
             }
         }
     }
@@ -3746,8 +4005,10 @@ class WorldExteriorObjectsTest {
 
     @Test
     void cutoutRangesAreDroppedBeforeAnOpaqueBuildingIsCappedAtTheDrawBudget() {
-        // A group of 64 opaque batches and a group with one cutout batch: 64 placements cost
-        // exactly the 4,096-draw budget under the opaque-only profile, 4,160 with the cutout.
+        // Two groups of 64 opaque batches and a group with one cutout batch: 64 placements cost
+        // exactly the 8,192-draw budget under the opaque-only profile, 64 more with the cutout.
+        int per = WorldExteriorObjects.MAX_DRAWS / 64;
+        assertEquals(128, per);
         var batches = new ArrayList<Batch>();
         for (int b = 0; b < 64; b++) {
             batches.add(new Batch(b * 3, 3, 0, 0));
@@ -3761,44 +4022,51 @@ class WorldExteriorObjectsTest {
             f.files.sources.put(
                     ROOT,
                     root(
-                            2,
-                            new long[] {GROUP, GROUP + 1},
+                            3,
+                            new long[] {GROUP, GROUP + 2, GROUP + 1},
                             List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
             f.files.sources.put(GROUP, group(EXT, 3, 64, batches));
+            f.files.sources.put(GROUP + 2, group(EXT, 3, 64, batches));
             f.files.sources.put(GROUP + 1, cutout);
             putModel(f, MODEL, model());
             f.files.sources.put(4L, obj0(records, List.of(Mddf.of(MODEL, 900, 0x40))));
             try (var set = f.run()) {
                 assertEquals(64, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
-                assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
-                assertEquals(64, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
+                assertEquals(
+                        1,
+                        set.count(WorldExteriorObjects.Count.BATCH_CAPPED),
+                        counts(set).toString());
+                assertEquals(per, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
-                // The cutout-only group is dropped whole; the opaque group is untouched.
-                assertEquals(1, set.models().getFirst().meshes().size());
-                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
-                var mesh = set.models().getFirst().meshes().getFirst();
-                assertEquals(64, mesh.ranges().size());
-                assertEquals(64 * 3, mesh.indices().remaining());
-                assertTrue(
-                        mesh.ranges().stream()
-                                .allMatch(r -> r.blend() == WorldExteriorObjects.OPAQUE));
+                // The cutout-only group is dropped whole; the opaque groups are untouched.
+                assertEquals(2, set.models().getFirst().meshes().size());
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                for (var mesh : set.models().getFirst().meshes()) {
+                    assertEquals(64, mesh.ranges().size());
+                    assertEquals(64 * 3, mesh.indices().remaining());
+                    assertTrue(
+                            mesh.ranges().stream()
+                                    .allMatch(r -> r.blend() == WorldExteriorObjects.OPAQUE));
+                }
                 // The budget is full, so the doodad is capped, never a building.
                 assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_CAP_DRAWS));
                 // The dropped cutout range's image is not uploaded.
                 assertTrue(set.images().stream().noneMatch(image -> image.id() == IMAGE2));
                 assertImageSlotsValid(set);
             }
         }
-        // One placement fewer: the cutout range fits (63 * 65 = 4,095 draws) and is kept.
+        // One placement fewer: the cutout range fits (63 * (per + 1) draws) and is kept.
         try (var f = new Fixture(records.subList(0, 63))) {
             f.files.sources.put(
                     ROOT,
                     root(
-                            2,
-                            new long[] {GROUP, GROUP + 1},
+                            3,
+                            new long[] {GROUP, GROUP + 2, GROUP + 1},
                             List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
             f.files.sources.put(GROUP, group(EXT, 3, 64, batches));
+            f.files.sources.put(GROUP + 2, group(EXT, 3, 64, batches));
             f.files.sources.put(GROUP + 1, cutout);
             try (var set = f.run()) {
                 assertEquals(63, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
@@ -3820,10 +4088,12 @@ class WorldExteriorObjectsTest {
 
     @Test
     void aMaterialOnlyBuildingNeverCapsALaterOpaqueBuildingAndIsTrimmedInstead() {
-        // A building with only two cutout batches, placed first, then a building with 65 opaque
-        // batches in two groups. The opaque-only profile left the first empty, so it costs
-        // nothing at admission: 63 opaque placements (4,095 draws) are all drawn, and the cutout
-        // building, which no longer fits, returns to its opaque-only outcome.
+        // A building with only three cutout batches, placed first, then a building with 130
+        // opaque batches in two groups. The opaque-only profile left the first empty, so it
+        // costs nothing at admission: 63 opaque placements (8,190 of the 8,192 draws) are all
+        // drawn, and the cutout building, which no longer fits, returns to its opaque-only
+        // outcome.
+        assertEquals(8192, WorldExteriorObjects.MAX_DRAWS);
         long cutoutRoot = ROOT + 10, cutoutGroup = GROUP + 10;
         var opaque = new ArrayList<Batch>();
         for (int b = 0; b < 64; b++) {
@@ -3840,18 +4110,31 @@ class WorldExteriorObjectsTest {
                 records.add(Modf.of(ROOT, i + 2, 0x8));
             }
             try (var f = new Fixture(records)) {
-                // 64 opaque batches in one group and one in a second: 65 opaque ranges.
+                // 64 + 64 opaque batches in two groups and two in a third: 130 opaque ranges.
                 f.files.sources.put(
                         ROOT,
-                        root(2, new long[] {GROUP, GROUP + 1}, List.of(new Material(0, IMAGE, 0))));
+                        root(
+                                3,
+                                new long[] {GROUP, GROUP + 2, GROUP + 1},
+                                List.of(new Material(0, IMAGE, 0))));
                 f.files.sources.put(GROUP, group(EXT, 3, 64, opaque));
-                f.files.sources.put(GROUP + 1, group(EXT));
+                f.files.sources.put(GROUP + 2, group(EXT, 3, 64, opaque));
+                f.files.sources.put(
+                        GROUP + 1,
+                        group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 0))));
                 f.files.sources.put(
                         cutoutRoot,
                         root(1, new long[] {cutoutGroup}, List.of(new Material(1, IMAGE2, 0))));
                 f.files.sources.put(
                         cutoutGroup,
-                        group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 0))));
+                        group(
+                                EXT,
+                                3,
+                                3,
+                                List.of(
+                                        new Batch(0, 3, 0, 0),
+                                        new Batch(3, 3, 0, 0),
+                                        new Batch(6, 3, 0, 0))));
                 try (var set = f.run()) {
                     // Slots: only a material-only placement beyond 64 placements is capped.
                     int capped =
@@ -3871,9 +4154,9 @@ class WorldExteriorObjectsTest {
                                 set.count(WorldExteriorObjects.Count.PLACEMENT_EMPTY));
                         assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
                         assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_EMPTY));
-                        assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
+                        assertEquals(3, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
                         assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
-                        assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                        assertEquals(3, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
                         assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_EMPTY));
                         assertEquals(1, set.models().size());
                         assertEquals(63, set.placements().size());
@@ -3886,7 +4169,7 @@ class WorldExteriorObjectsTest {
                     } else {
                         assertEquals(63, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
                         assertEquals(2, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
-                        assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
+                        assertEquals(3, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
                         assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
                         assertEquals(2, set.images().size());
                     }
@@ -3996,6 +4279,378 @@ class WorldExteriorObjectsTest {
                 assertEquals(1, set.placements().get(0).uniqueId());
                 assertEquals(2, set.placements().get(1).uniqueId());
             }
+        }
+    }
+
+    /**
+     * Files whose group reads each take a while and are counted while open, so overlapping reads
+     * are visible. Serial reads never have two groups open at once.
+     */
+    private static class SlowGroups extends WorldTerrainTextureSourceTest.Files {
+        final AtomicInteger open = new AtomicInteger(), peak = new AtomicInteger();
+        final AtomicInteger groupOpens = new AtomicInteger();
+        volatile java.util.function.IntConsumer onGroupOpen = ignored -> {};
+        // Sees each group open with the cancellation its read was given.
+        volatile java.util.function.BiConsumer<Integer, Cancellation> onGroupOpenWith =
+                (opened, cancel) -> {};
+        volatile long delay = 20;
+
+        @Override
+        com.vibeminer.files.FileReadStream open(long id, Cancellation cancel) {
+            var actual = super.open(id, cancel);
+            if (id < GROUP + 10 || id >= GROUP + 100) {
+                return actual;
+            }
+            int opened = groupOpens.incrementAndGet();
+            onGroupOpen.accept(opened);
+            onGroupOpenWith.accept(opened, cancel);
+            peak.accumulateAndGet(open.incrementAndGet(), Math::max);
+            try {
+                Thread.sleep(delay);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            return new com.vibeminer.files.FileReadStream() {
+                boolean closed;
+
+                public long length() {
+                    return actual.length();
+                }
+
+                public long position() {
+                    return actual.position();
+                }
+
+                public void seek(long position) {
+                    actual.seek(position);
+                }
+
+                public List<com.vibeminer.files.FileTypes.FileHole> holes() {
+                    return actual.holes();
+                }
+
+                public java.util.concurrent.CompletableFuture<Integer> read(
+                        ByteBuffer destination, Cancellation token) {
+                    return actual.read(destination, token);
+                }
+
+                public void close() {
+                    if (!closed) {
+                        closed = true;
+                        open.decrementAndGet();
+                    }
+                    actual.close();
+                }
+            };
+        }
+    }
+
+    private static long[] manyGroups(SlowGroups files, int count) {
+        var ids = new long[count];
+        for (int i = 0; i < count; i++) {
+            ids[i] = GROUP + 10 + i;
+            files.sources.put(ids[i], group(EXT));
+        }
+        return ids;
+    }
+
+    @Test
+    void anUncappedRootReadsItsGroupsAheadWithinTheReadBoundAndDrawsTheSame() {
+        List<Object> serial = null;
+        for (boolean ahead : new boolean[] {false, true}) {
+            var files = new SlowGroups();
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+                f.files.sources.put(ROOT, root(manyGroups(files, 12)));
+                WorldStreamScopes.Prefetcher.enabled = ahead;
+                var summary = new ArrayList<Object>();
+                try (var set = f.run()) {
+                    summary.add(counts(set));
+                    summary.add(set.vertices());
+                    summary.add(set.placements());
+                    summary.add(set.models().getFirst().meshes().size());
+                } finally {
+                    WorldStreamScopes.Prefetcher.enabled = true;
+                }
+                assertEquals(12, files.groupOpens.get(), "each group is read exactly once");
+                assertEquals(0, files.open.get(), "every read is closed");
+                if (!ahead) {
+                    assertEquals(1, files.peak.get(), "serial reads never overlap");
+                    serial = summary;
+                } else {
+                    assertTrue(files.peak.get() >= 2, "groups were read concurrently");
+                    // At most the read-ahead bound plus the operation's own read.
+                    assertTrue(
+                            files.peak.get() <= WorldStreamScopes.Prefetcher.READS + 1,
+                            "peak " + files.peak.get());
+                    assertEquals(serial, summary, "read-ahead changes no output");
+                }
+            }
+        }
+    }
+
+    @Test
+    void aPrefetchedReadIsTimedAsAWaitAndNotAsAFullSourceRead() {
+        long serialReads = -1;
+        for (boolean ahead : new boolean[] {false, true}) {
+            var files = new SlowGroups();
+            WorldStageTimings.reset();
+            WorldStageTimings.enable(true);
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+                f.files.sources.put(ROOT, root(manyGroups(files, 12)));
+                WorldStreamScopes.Prefetcher.enabled = ahead;
+                try (var set = f.run()) {
+                    assertEquals(1, set.models().size());
+                } finally {
+                    WorldStreamScopes.Prefetcher.enabled = true;
+                }
+                var snapshot = WorldStageTimings.snapshot();
+                var reads = snapshot.get("source.read.BASIC_EXTERIOR");
+                var waits = snapshot.get("source.prefetchWait.BASIC_EXTERIOR");
+                var bytes = snapshot.get("source.readBytes.BASIC_EXTERIOR");
+                assertEquals(reads.count(), bytes.count(), "bytes counted per full read only");
+                if (!ahead) {
+                    assertNull(waits, "no read-ahead, no wait series");
+                    serialReads = reads.count();
+                } else {
+                    assertTrue(waits != null && waits.count() > 0, "read-ahead hits are timed");
+                    assertEquals(
+                            serialReads,
+                            reads.count() + waits.count(),
+                            "every consumed input is either a full read or a read-ahead hit");
+                    assertTrue(reads.count() < serialReads, "hits leave source.read.*");
+                }
+            } finally {
+                WorldStageTimings.enable(false);
+                WorldStageTimings.reset();
+            }
+        }
+    }
+
+    @Test
+    void cancelingTheOperationInterruptsAReadAheadItIsWaitingOnAsFastAsASerialRead() {
+        long[] elapsed = new long[2];
+        for (boolean ahead : new boolean[] {false, true}) {
+            var files = new SlowGroups();
+            var token = new Cancellation();
+            var canceler = new java.util.concurrent.atomic.AtomicReference<Thread>();
+            // The first group's open stalls until its own read is canceled (3 s safety cap); the
+            // operation is canceled 200 ms after that open starts.
+            files.onGroupOpenWith =
+                    (opened, cancel) -> {
+                        if (opened != 1) {
+                            return;
+                        }
+                        canceler.set(
+                                Thread.ofVirtual()
+                                        .start(
+                                                () -> {
+                                                    try {
+                                                        Thread.sleep(200);
+                                                    } catch (InterruptedException interrupted) {
+                                                        return;
+                                                    }
+                                                    token.cancel();
+                                                }));
+                        long cap = System.nanoTime() + 3_000_000_000L;
+                        while (!cancel.isCanceled() && System.nanoTime() < cap) {
+                            try {
+                                Thread.sleep(2);
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                return;
+                            }
+                        }
+                    };
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+                f.files.sources.put(ROOT, root(manyGroups(files, 12)));
+                WorldStreamScopes.Prefetcher.enabled = ahead;
+                long started = System.nanoTime();
+                try {
+                    assertThrows(
+                            CancellationException.class,
+                            () -> WorldExteriorObjects.prepare(f.engine, f.scope, TILE, token));
+                } finally {
+                    WorldStreamScopes.Prefetcher.enabled = true;
+                }
+                elapsed[ahead ? 1 : 0] = (System.nanoTime() - started) / 1_000_000;
+                assertEquals(0, files.open.get(), "no read is left open");
+            } finally {
+                var thread = canceler.get();
+                if (thread != null) {
+                    thread.interrupt();
+                }
+            }
+        }
+        // Without the link a taken read-ahead waits out its stalled open (the 3 s cap).
+        assertTrue(elapsed[0] < 1500, "serial cancel took " + elapsed[0] + " ms");
+        assertTrue(elapsed[1] < 1500, "read-ahead cancel took " + elapsed[1] + " ms");
+    }
+
+    @Test
+    void cancellationDrainsAndClosesEveryReadAheadBeforeThePreparationReturns() {
+        var files = new SlowGroups();
+        var token = new Cancellation();
+        files.onGroupOpen =
+                opened -> {
+                    if (opened == 2) { // this open's own count, not a racy re-read
+                        token.cancel();
+                    }
+                };
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+            f.files.sources.put(ROOT, root(manyGroups(files, 12)));
+            assertThrows(
+                    CancellationException.class,
+                    () -> WorldExteriorObjects.prepare(f.engine, f.scope, TILE, token));
+            int opened = files.groupOpens.get();
+            assertEquals(0, files.open.get(), "no read-ahead stream is left open");
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException interrupted) {
+                throw new AssertionError(interrupted);
+            }
+            assertEquals(opened, files.groupOpens.get(), "no read starts after the return");
+            // The engine stays healthy for the next operation.
+            try (var set = f.run()) {
+                assertEquals(12, set.models().getFirst().meshes().size());
+            }
+        }
+    }
+
+    @Test
+    void readAheadFasterThanParsingStillReadsEveryGroupOnce() {
+        // No delay: reads finish long before parsing reaches them, more groups than the window.
+        var files = new SlowGroups();
+        files.delay = 0;
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+            f.files.sources.put(
+                    ROOT, root(manyGroups(files, 3 * WorldStreamScopes.Prefetcher.WINDOW)));
+            try (var set = f.run()) {
+                assertEquals(
+                        3 * WorldStreamScopes.Prefetcher.WINDOW,
+                        set.models().getFirst().meshes().size());
+            }
+            assertEquals(
+                    3 * WorldStreamScopes.Prefetcher.WINDOW,
+                    files.groupOpens.get(),
+                    "the read the consumer needs next is never dropped and read again");
+            assertEquals(0, files.open.get());
+            assertTrue(f.engine.prefetchPeakHeldBytes.get() > 0, "read-ahead held bytes");
+            assertTrue(
+                    f.engine.prefetchPeakHeldBytes.get()
+                            <= WorldStreamScopes.Prefetcher.HELD_BYTES
+                                    + (long) WorldStreamScopes.Prefetcher.READS
+                                            * f.files.sources.get(GROUP + 10).length,
+                    "held bytes stay within the budget plus the reads in flight");
+        }
+    }
+
+    @Test
+    void aRootCappedMidwayWithdrawsItsReadAheadAndFetchesNoFurtherGroup() {
+        // Seven 16384-vertex groups exceed the vertex budget: the first root caps at its seventh
+        // group. A second root then keeps the operation reading, so capped hints left queued
+        // would still be fetched ahead of its groups.
+        var files = new SlowGroups();
+        files.delay = 30;
+        long second = 800;
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8), Modf.of(second, 2, 0x8)), files)) {
+            var capped = manyGroups(files, 20);
+            for (long id : capped) {
+                files.sources.put(id, group(EXT, 16384, 1, List.of(new Batch(0, 3, 0, 0))));
+            }
+            f.files.sources.put(ROOT, root(capped));
+            var kept = new long[] {GROUP + 50, GROUP + 51, GROUP + 52, GROUP + 53};
+            for (long id : kept) {
+                files.sources.put(id, group(EXT));
+            }
+            f.files.sources.put(second, root(kept));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(1, set.models().size());
+                assertEquals(second, set.models().getFirst().rootId());
+            }
+            int cappedOpens = 0;
+            for (long id : capped) {
+                cappedOpens += files.opens(id);
+            }
+            // Seven consumed, plus at most the reads already started when the cap was decided.
+            assertTrue(
+                    cappedOpens <= 7 + WorldStreamScopes.Prefetcher.WINDOW,
+                    "capped root groups opened: " + cappedOpens);
+            for (long id : kept) {
+                assertEquals(1, files.opens(id), "kept group " + id);
+            }
+            assertEquals(0, files.open.get(), "withdrawn reads are closed");
+        }
+    }
+
+    @Test
+    @SuppressWarnings("try")
+    void withdrawnReadAheadStartsNoFurtherReadAndClosesWhatRan() throws Exception {
+        // Directly on one operation: hint twelve slow groups, withdraw once four are running.
+        var files = new SlowGroups();
+        files.delay = 50;
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+            var ids = manyGroups(files, 12);
+            var observed = new int[2];
+            try (var ignored =
+                    f.engine.withRecordedTile(
+                            f.scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
+                            Cancellation.NONE,
+                            admission -> {
+                                for (long id : ids) {
+                                    admission.prefetch(id, WorldStreamScopes.DerivedKind.WMO_GROUP);
+                                }
+                                long deadline = System.nanoTime() + 5_000_000_000L;
+                                while (files.groupOpens.get() < WorldStreamScopes.Prefetcher.READS
+                                        && System.nanoTime() < deadline) {
+                                    Thread.onSpinWait();
+                                }
+                                admission.cancelPrefetch();
+                                observed[0] = files.groupOpens.get();
+                                observed[1] = files.open.get();
+                                try {
+                                    Thread.sleep(200);
+                                } catch (InterruptedException interrupted) {
+                                    throw new AssertionError(interrupted);
+                                }
+                                return () -> {};
+                            })) {
+                assertEquals(WorldStreamScopes.Prefetcher.READS, observed[0]);
+                assertEquals(0, observed[1], "withdrawal waits for and closes the running reads");
+                assertEquals(
+                        observed[0],
+                        files.groupOpens.get(),
+                        "no withdrawn hint starts later, even while the operation goes on");
+            }
+        }
+    }
+
+    @Test
+    void aReadAheadThatFailsIsOnlyAMissAndTheConsumersOwnReadDecides() {
+        // The first open of one group fails (store queue pressure, say); that open is the
+        // read-ahead's, so the consumer reads it again and the whole set still draws.
+        long flaky = GROUP + 10;
+        var failedOnce = new java.util.concurrent.atomic.AtomicBoolean();
+        var files =
+                new SlowGroups() {
+                    @Override
+                    com.vibeminer.files.FileReadStream open(long id, Cancellation cancel) {
+                        if (id == flaky && failedOnce.compareAndSet(false, true)) {
+                            throw new IllegalStateException("authored transient store failure");
+                        }
+                        return super.open(id, cancel);
+                    }
+                };
+        files.delay = 0;
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+            f.files.sources.put(ROOT, root(manyGroups(files, 6)));
+            try (var set = f.run()) {
+                assertEquals(6, set.models().getFirst().meshes().size());
+            }
+            assertTrue(failedOnce.get(), "the read-ahead met the failure");
+            assertEquals(1, files.opens(flaky), "one successful open: the consumer's own");
         }
     }
 }

@@ -540,6 +540,9 @@ public final class NativePreparationWork implements BuildPreparation.Work {
 
     private com.vibeminer.files.keys.TactKeys effectiveKeys() { return effectiveKeySet; }
 
+    /** Fingerprints of the keys this work decrypts with, by key name; for measurement tests. */
+    java.util.Map<String, String> effectiveKeyFingerprints() { return effectiveKeys().fingerprints(); }
+
     TablesOptions tablesOptions(TactKeyStatus status, TableRole role) {
         var defaults =
                 new TablesOptions(
@@ -737,6 +740,54 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         }
     }
 
+    /**
+     * Creature models and humanoid NPC appearances over a measurement World's table handle, for
+     * the measurement probe's opt-in creature counts (#553). Same requirements as {@link
+     * #openWorldForMeasurement}; it never stages or publishes a workspace. Its lookups may add
+     * derived entries (decoded images, appearances) to this work's generated store, as the
+     * workspace's do. Caller closes it before the World.
+     */
+    MeasurementCreatures openCreaturesForMeasurement(BuildTables tables, Cancellation token) {
+        token.check();
+        if (opened == null || fileHandle == null)
+            throw new IllegalStateException("Files must be prepared before measurement creatures");
+        var open =
+                new CreaturesService(
+                                tablesService(token, TableRole.WORKSPACE),
+                                files,
+                                new BlpImages(generated))
+                        .forBuild(ref, locale, token)
+                        .join();
+        if (open.creatures() == null)
+            throw new IllegalStateException("Creatures " + open.code());
+        try {
+            // As the workspace does before publishing: the creature lookups need their warmup.
+            var issues = new ArrayList<String>();
+            appendWarm(
+                    issues,
+                    open.creatures().warmup(TableTypes.Priority.BACKGROUND, token).join());
+            return new MeasurementCreatures(
+                    issues,
+                    open.creatures(),
+                    new com.vibeminer.concepts.races.RacesService(tables, fileHandle, generated));
+        } catch (RuntimeException | Error failure) {
+            closeResources(open.creatures());
+            throw failure;
+        }
+    }
+
+    /** Measurement creature and race handles; both close before the World's tables. */
+    record MeasurementCreatures(
+            List<String> warmup,
+            BuildCreatures creatures,
+            com.vibeminer.concepts.races.BuildRaces races)
+            implements AutoCloseable {
+        @Override
+        public void close() {
+            closeResources(races, creatures);
+        }
+    }
+
     /** One measurement World and the table handle it borrows; the World closes first. */
     record MeasurementWorld(BuildTables tables, com.vibeminer.concepts.world.WorldService world)
             implements AutoCloseable {
@@ -869,6 +920,52 @@ public final class NativePreparationWork implements BuildPreparation.Work {
 
     @Override
     public List<String> warm(Cancellation token) {
+        return warm(ignored -> {}, token);
+    }
+
+    /** The research lookup steps, in order, as the status names them (#338). */
+    static final List<String> LOOKUP_STEPS =
+            List.of("items", "item catalog", "item attributes", "creatures", "effects");
+
+    /** Reports step {@code index} as started and returns the time it started. */
+    private static long lookupStep(
+            java.util.function.Consumer<BuildPreparation.Counter> progress, int index) {
+        progress.accept(
+                new BuildPreparation.Counter(
+                        index,
+                        (long) LOOKUP_STEPS.size(),
+                        "lookup steps · " + LOOKUP_STEPS.get(index)));
+        return System.nanoTime();
+    }
+
+    /** "lookup step 2 of 5 (item catalog)" for step {@code index}. */
+    static String stepLabel(int index) {
+        return "lookup step "
+                + (index + 1)
+                + " of "
+                + LOOKUP_STEPS.size()
+                + " ("
+                + LOOKUP_STEPS.get(index)
+                + ")";
+    }
+
+    /** One log line with the whole step's duration and each lookup's share (#338). */
+    static String lookupTimings(long[] stepNanos, long totalNanos) {
+        var text = new StringBuilder("Research lookups prepared in ");
+        text.append(totalNanos / 1_000_000).append(" ms (");
+        for (int i = 0; i < LOOKUP_STEPS.size(); i++) {
+            if (i > 0) text.append(", ");
+            text.append(LOOKUP_STEPS.get(i)).append(' ').append(stepNanos[i] / 1_000_000).append(" ms");
+        }
+        return text.append(')').toString();
+    }
+
+    @Override
+    public List<String> warm(
+            java.util.function.Consumer<BuildPreparation.Counter> progress, Cancellation token) {
+        java.util.Objects.requireNonNull(progress);
+        long started = System.nanoTime();
+        long[] stepNanos = new long[LOOKUP_STEPS.size()];
         final Workspace staged;
         synchronized (handlesGate) {
             staged = pending;
@@ -883,6 +980,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         boolean ownedByPending = false;
         try {
             token.check();
+            long step = lookupStep(progress, 0);
             var itemOpen =
                     new ItemsService(
                                     staged.service(),
@@ -896,7 +994,15 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             nextItems = itemOpen.items();
             if (nextItems == null) issues.add("Items: " + itemOpen.code());
             else appendWarm(issues, nextItems.warmup(TableTypes.Priority.BACKGROUND, token).join());
+            stepNanos[0] = System.nanoTime() - step;
             if (nextItems != null && indexDirectory != null) {
+                step = lookupStep(progress, 1);
+                // Rebuilding the derived catalog can take minutes on a new build: report its rows.
+                com.vibeminer.concepts.items.BuildItems.CatalogProgress rows =
+                        (stage, done) ->
+                                progress.accept(
+                                        new BuildPreparation.Counter(
+                                                done, null, stage + " · " + stepLabel(1)));
                 var catalog =
                         nextItems
                                 .grid(
@@ -911,19 +1017,24 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                                                 0,
                                                 1),
                                         TableTypes.Priority.BACKGROUND,
+                                        rows,
                                         token)
                                 .join();
+                stepNanos[1] = System.nanoTime() - step;
                 if (catalog.state() != com.vibeminer.concepts.items.ItemsPageState.OK)
                     issues.add("Item catalog: " + catalog.message());
                 else {
+                    step = lookupStep(progress, 2);
                     var attributeIssues =
                             nextItems
                                     .prepareAttributes(TableTypes.Priority.BACKGROUND, token)
                                     .join();
                     attributeIssues.forEach(issue -> issues.add("Item attributes: " + issue));
+                    stepNanos[2] = System.nanoTime() - step;
                 }
             }
             token.check();
+            step = lookupStep(progress, 3);
             var creatureOpen =
                     new CreaturesService(staged.service(), files, images)
                             .forBuild(ref, locale, token)
@@ -933,7 +1044,9 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             else
                 appendWarm(
                         issues, nextCreatures.warmup(TableTypes.Priority.BACKGROUND, token).join());
+            stepNanos[3] = System.nanoTime() - step;
             token.check();
+            step = lookupStep(progress, 4);
             var effectOpen =
                     new ItemEffectsService(staged.service(),
                             new com.vibeminer.concepts.effects.EffectsTypes.Options(), info.version()).forBuild(ref, locale, token).join();
@@ -942,6 +1055,11 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             else
                 appendWarm(
                         issues, nextEffects.warmup(TableTypes.Priority.BACKGROUND, token).join());
+            stepNanos[4] = System.nanoTime() - step;
+            System.getLogger(NativePreparationWork.class.getName())
+                    .log(
+                            System.Logger.Level.INFO,
+                            lookupTimings(stepNanos, System.nanoTime() - started));
             synchronized (handlesGate) {
                 token.check();
                 if (closed.get() || pending != staged)

@@ -545,6 +545,17 @@ final class WorldPreparedTerrain {
             Cancellation cancel,
             WorldExteriorObjects.ImageDetail detail,
             boolean interiors) {
+        return exteriorObjects(scope, tile, cancel, detail, interiors, 0);
+    }
+
+    /** As above, for a session sampling {@code compressedFormats} as blocks (#374). */
+    WorldExteriorObjects.TileObjects exteriorObjects(
+            WorldStreamScopes.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation cancel,
+            WorldExteriorObjects.ImageDetail detail,
+            boolean interiors,
+            int compressedFormats) {
         checkOpen();
         return WorldExteriorObjects.prepare(
                 scopes,
@@ -553,7 +564,9 @@ final class WorldPreparedTerrain {
                 cancel,
                 WorldExteriorObjects.ModelReader.STANDARD,
                 detail,
-                interiors);
+                WorldExteriorObjects.RETAINED_SOURCE_BYTES,
+                interiors,
+                compressedFormats);
     }
 
     void invalidate() {

@@ -360,6 +360,30 @@ tasks.register('worldPickTest', JavaExec) {
 }
 check.dependsOn worldPickTest
 
+// #381: native-present gating, placement and user32 binding; no display.
+tasks.register('worldNativePresenterTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldNativePresenterTest'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+check.dependsOn worldNativePresenterTest
+
+// #381: the native-presentation surface on a real window, recording user32; requires a display.
+tasks.register('worldNativeSurfaceUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldNativeSurfaceUiTest'
+}
+
+// The World view and native presentation share the viewport with full screen and instance
+// switches; display, any OS.
+tasks.register('worldNativeViewportUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldNativeViewportUiTest'
+}
+
 // Streamed frame size debounce over authored pulses; no display.
 tasks.register('worldResizeDebounceTest', JavaExec) {
     dependsOn testClasses
@@ -367,6 +391,7 @@ tasks.register('worldResizeDebounceTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldResizeDebounceTest'
 }
 check.dependsOn worldResizeDebounceTest
+
 // Stream camera revisions and presented-frame overlay projection; no display.
 tasks.register('worldCameraRingTest', JavaExec) {
     dependsOn testClasses
@@ -838,7 +863,10 @@ check.dependsOn preparedBuildReaderTest
 // of check: runs only on a measurement copy of the library (-PdataDirectory=<copy> with a
 // MEASUREMENT_COPY marker; it refuses the app's own library), opens it without background work
 // and a build already prepared there, never a preparation job; starts the GPU helper and a
-// JavaFX toolkit, and ends within ten minutes. -Pprobe.mode=refusals
+// JavaFX toolkit, and ends within ten minutes. -Pprobe.mode=creatures counts creature and humanoid
+// NPC outcomes per scenario through the production bridge, without a helper (#553); it uses the
+// copy's loaded community keys and may add decoded images or previews to the copy's generated
+// store, so a second run starts warm; -Pprobe.mode=refusals
 // counts terrain texture refusals over whole maps; -Pprobe.mode=prep times tile prep alone (#422).
 tasks.register('worldMeasurementProbe', JavaExec) {
     group = 'verification'
@@ -991,3 +1019,11 @@ tasks.register('worldAudioZoneChangeProbe', JavaExec) {
     systemProperty 'vimi.audioFixture',
             rootProject.file('formats-audio/src/test/resources/audio/authored-tone.ogg').path
 }
+
+// Recorded sky and fog mixed into the World look (#177-2a); pure, no display.
+tasks.register('worldSkyLookTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldSkyLookTest'
+}
+tasks.named('check') { dependsOn tasks.named('worldSkyLookTest') }

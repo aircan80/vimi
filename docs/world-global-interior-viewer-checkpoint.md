@@ -218,7 +218,28 @@ collision walls.
 - Raw MOCV and lighting are deliberately omitted, so interiors are lit uniformly. The renderer
   has no face culling. The 3,039 Onyxia raw triangles that no MOBA batch covers are all
   collision-only (MOPY material 0xFF), so they are not the cause of any visible gaps.
-- Alpha-tested and blended materials draw opaque.
+- Alpha-tested and blended materials draw opaque. (Superseded by profile V3 below.)
+
+## Materials (#297, profile V3)
+
+- **One mapping.** `rendering-world` `WmoMaterialClass` maps a MOMT material to a range class for
+  both the outdoor objects and this viewer: blend mode 0 opaque, 1 alpha key (cutout), 2 alpha
+  blend, 3 additive. F_UNLIT and F_UNCULLED are flags. Other flag bits are ignored.
+- **Scene file profile 3.** Images keep their source alpha. The writer and reader bind the image
+  bytes to the image record's original-RGBA hash; the opaque hash stays a recorded fact.
+- **Draw.** The child draws opaque and cutout batches first, then alpha-blended, then additive,
+  each in recorded order, with the outdoor objects' blend states. Cutouts discard below alpha
+  0.5. Opaque materials ignore texel alpha. The viewer stays unlit, and nothing is culled, so the
+  unlit and two-sided flags change nothing here. The material vectors are allocated once per
+  draw, so the 4,096-batch limit fits the native stack.
+- **Known limit: no depth sort.** Blended and additive batches draw in recorded (file) order, as
+  within one outdoor model, not sorted back to front. Overlapping glass or glows can layer in the
+  wrong order; sorting by group or batch bounds is a follow-up.
+- **Left out.** Blend modes above additive (modulate and its variants, not pinned), and blended
+  surfaces without a texture, are counted. The status line says how many were not drawn.
+- **Proof.** `nativeGpuGlobalWmoProof` (Vulkan) draws one front triangle of each class, recorded
+  before an opaque background: opaque, a cutout of alpha 0, blended at alpha 128 (127, 0, 128)
+  and additive (255, 0, 128).
 
 ## Independent review follow-up
 

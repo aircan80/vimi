@@ -148,11 +148,108 @@ public final class WorldStreamTransport {
         }
     }
 
-    public record Camera(long revision, long policy, int width, int height, TerrainCamera view) {
+    /**
+     * The recorded sky for a frame (#177): the horizon colour the fog fades into, the sky top
+     * colour (0..255 gamma), and the recorded distance fog with {@code fogWeight}, how much of the
+     * position records fog (0..1). The renderer composes it with its own fog distances and the WDL
+     * horizon ({@link WorldFog#sky}).
+     */
+    public record Sky(
+            float[] horizon,
+            float[] top,
+            double fogWeight,
+            float recordedStart,
+            float recordedEnd) {
+        /** The explorer's own sky, with no recorded fog. */
+        public static final Sky EXPLORER = new Sky(WorldFog.FOG_COLOUR, WorldFog.SKY_TOP, 0, 0, 0);
+
+        /** Recorded fog distances are whole yards up to this bound. */
+        public static final int MAX_YARDS = 1_000_000;
+
+        /**
+         * Values are quantized as the control line carries them, so every Sky round-trips exactly:
+         * colours to whole 0..255 steps, the weight to thousandths, distances to whole yards. Every
+         * value must be finite and in range, whatever the weight.
+         */
+        public Sky {
+            if (horizon.length != 3 || top.length != 3) {
+                throw new IllegalArgumentException("Invalid sky colours");
+            }
+            horizon = horizon.clone();
+            top = top.clone();
+            for (int i = 0; i < 3; i++) {
+                if (!(horizon[i] >= 0 && horizon[i] <= 255 && top[i] >= 0 && top[i] <= 255)) {
+                    throw new IllegalArgumentException("Invalid sky colours");
+                }
+                horizon[i] = Math.round(horizon[i]);
+                top[i] = Math.round(top[i]);
+            }
+            if (!(fogWeight >= 0 && fogWeight <= 1)
+                    || !(recordedStart >= 0 && recordedStart <= MAX_YARDS)
+                    || !(recordedEnd >= 0 && recordedEnd <= MAX_YARDS)) {
+                throw new IllegalArgumentException("Invalid recorded fog");
+            }
+            fogWeight = Math.round(fogWeight * 1000) / 1000.0;
+            recordedStart = Math.round(recordedStart);
+            recordedEnd = Math.round(recordedEnd);
+            if (fogWeight > 0 && !(recordedEnd > recordedStart)) {
+                throw new IllegalArgumentException("Invalid recorded fog");
+            }
+        }
+
+        @Override
+        public float[] horizon() {
+            return horizon.clone();
+        }
+
+        @Override
+        public float[] top() {
+            return top.clone();
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof Sky o
+                    && java.util.Arrays.equals(horizon, o.horizon)
+                    && java.util.Arrays.equals(top, o.top)
+                    && Double.compare(fogWeight, o.fogWeight) == 0
+                    && Float.compare(recordedStart, o.recordedStart) == 0
+                    && Float.compare(recordedEnd, o.recordedEnd) == 0;
+        }
+
+        @Override
+        public int hashCode() {
+            return java.util.Objects.hash(
+                    java.util.Arrays.hashCode(horizon),
+                    java.util.Arrays.hashCode(top),
+                    fogWeight,
+                    recordedStart,
+                    recordedEnd);
+        }
+    }
+
+    /** {@code sky} is the recorded sky for this frame, or null for the explorer's own. */
+    public record Camera(
+            long revision, long policy, int width, int height, TerrainCamera view, Sky sky) {
         public Camera {
             new WorldStreamControl.Camera(
-                    new WorldStreamState.Nonce(1, 1), revision, policy, width, height, view);
+                    new WorldStreamState.Nonce(1, 1), revision, policy, width, height, view, sky);
         }
+
+        public Camera(long revision, long policy, int width, int height, TerrainCamera view) {
+            this(revision, policy, width, height, view, null);
+        }
+
+        /** This camera with another sky. */
+        public Camera withSky(Sky value) {
+            return new Camera(revision, policy, width, height, view, value);
+        }
+    }
+
+    /** #381: a frame the helper presented into its child window. */
+    @FunctionalInterface
+    public interface PresentedListener {
+        void presented(long camera, long content);
     }
 
     /** Must return every spawned child, or throw only when no child was spawned. */
@@ -775,6 +872,7 @@ public final class WorldStreamTransport {
         // so a lost or absent hint costs at most the old poll interval.
         private final WorldFrameSignal frameSignal = new WorldFrameSignal();
         private volatile Runnable frameListener;
+        private volatile PresentedListener presentedListener;
         private volatile Runnable capacityListener;
         // Test seams: the reader's fallback wait, and completion when the reader has returned.
         volatile long framePollMillis = FRAME_POLL_MILLIS;
@@ -806,7 +904,31 @@ public final class WorldStreamTransport {
         private final WorldStreamStdout stdout;
         private final CompletableFuture<String> stdoutDiagnostic = new CompletableFuture<>();
 
+        // Reliable parent commands in flight, as a sum of named parts so a change to one (e.g.
+        // more tiles in flight, #371) adds to it without re-deriving the total.
+        private static final int RELIABLE_TILE = 2; // the tile's OFFER and its CANCEL
+        private static final int RELIABLE_COMMIT = 1;
+        private static final int RELIABLE_OBJECTS = 1; // late OBJECTS
+        private static final int RELIABLE_HORIZON = 1; // the session's one HORIZON (#372)
+        private static final int RELIABLE_COMMANDS =
+                RELIABLE_TILE + RELIABLE_COMMIT + RELIABLE_OBJECTS + RELIABLE_HORIZON;
+
         private ObjectsOperation objectsOperation;
+        // The session's one horizon WDL (#372) and whether any commit has completed yet.
+        private HorizonOperation horizonOperation;
+        private boolean horizonRequested, horizonStarted, committedOnce;
+
+        /** The one horizon delivery: file write, HORIZON, reply, file delete. */
+        private static final class HorizonOperation {
+            final byte[] wdl;
+            final CompletableFuture<HorizonOutcome> result = new CompletableFuture<>();
+            boolean advertised;
+            WorldStreamStatus.HorizonOutcome reply;
+
+            HorizonOperation(byte[] wdl) {
+                this.wdl = wdl;
+            }
+        }
 
         /**
          * Test probe only: runs on the objects worker, under the session lock, after the stop check
@@ -1041,8 +1163,106 @@ public final class WorldStreamTransport {
                     });
         }
 
+        /**
+         * Sends the map's WDL for the child to draw as a horizon (#372); at most once per session.
+         * The file is written after the first commit, so it never delays the first visible tile.
+         * The future completes with the child's one outcome; any failure only means no horizon. A
+         * stopping session cancels it.
+         */
+        public CompletableFuture<HorizonOutcome> attachHorizon(byte[] wdl) {
+            Objects.requireNonNull(wdl);
+            if (wdl.length < 12
+                    || wdl.length > com.vibeminer.formats.world.WorldLowRes.MAX_SOURCE_BYTES) {
+                return CompletableFuture.failedFuture(
+                        new IllegalArgumentException("Horizon WDL size"));
+            }
+            synchronized (lock) {
+                if (closing || owner.stopping()) {
+                    return CompletableFuture.failedFuture(
+                            new java.util.concurrent.CancellationException("World stopped"));
+                }
+                if (horizonRequested) {
+                    return CompletableFuture.failedFuture(
+                            new IllegalStateException("Horizon already sent for this session"));
+                }
+                horizonRequested = true;
+                var operation = new HorizonOperation(wdl.clone());
+                horizonOperation = operation;
+                lock.notifyAll();
+                return operation.result.copy();
+            }
+        }
+
+        /** On the objects worker: the one horizon delivery, once the first commit is done. */
+        private void deliverHorizon(
+                HorizonOperation operation, WorldStreamLaunchOwner.Handle handle) throws Exception {
+            Path path = handle.files().directory().resolve(WorldStreamControl.Horizon.BASENAME);
+            WorldStreamStatus.HorizonOutcome outcome = null;
+            // Set before the write, so a partial file from a failed write is deleted too.
+            boolean written = false;
+            Throwable fatal = null;
+            try {
+                // Session scratch: no fsync, the same as tile files (#364).
+                written = true;
+                java.nio.file.Files.write(
+                        path,
+                        operation.wdl,
+                        java.nio.file.StandardOpenOption.CREATE_NEW,
+                        java.nio.file.StandardOpenOption.WRITE);
+                String sha =
+                        java.util.HexFormat.of()
+                                .formatHex(
+                                        java.security.MessageDigest.getInstance("SHA-256")
+                                                .digest(operation.wdl));
+                synchronized (lock) {
+                    var command = state.horizon(operation.wdl.length, sha);
+                    if (command != null && !closing && !handle.stopping()) {
+                        operation.advertised = enqueueCommand(command);
+                    }
+                    if (command != null && !operation.advertised) {
+                        state.horizonUnsent();
+                    }
+                }
+                if (operation.advertised) {
+                    synchronized (lock) {
+                        while (operation.reply == null && !(actualExit && statusesDrained)) {
+                            lock.wait(20);
+                        }
+                        outcome = operation.reply;
+                    }
+                }
+            } catch (IOException failed) {
+                // Only the horizon is lost; the session goes on.
+                outcome = WorldStreamStatus.HorizonOutcome.FAILED;
+            } catch (Throwable failed) {
+                fatal = failed;
+            } finally {
+                if (written) {
+                    java.nio.file.Files.deleteIfExists(path);
+                }
+            }
+            if (fatal != null) {
+                operation.result.completeExceptionally(fatal);
+                fail(fatal);
+            } else if (outcome != null) {
+                operation.result.complete(HorizonOutcome.valueOf(outcome.name()));
+            } else {
+                operation.result.completeExceptionally(
+                        new java.util.concurrent.CancellationException("World stopped"));
+            }
+        }
+
         public CompletableFuture<Void> initialized() {
             return initialized.copy();
+        }
+
+        /**
+         * The compressed object texture formats the child samples as blocks (issue #374), one bit
+         * per {@link com.vibeminer.rendering.world.ObjectTextureFormats} code; meaningful once
+         * {@link #initialized()} completed, 0 before.
+         */
+        public int objectFormats() {
+            return state.objectFormats();
         }
 
         /** Whether this session's profile admits BASIC_EXTERIOR objects. */
@@ -1276,17 +1496,37 @@ public final class WorldStreamTransport {
         private void objects(WorldStreamLaunchOwner.Handle handle) throws Exception {
             while (true) {
                 ObjectsOperation operation;
+                HorizonOperation wdl = null;
                 synchronized (lock) {
                     operation = objectsOperation;
-                    if (operation == null) {
+                    if (operation == null
+                            && horizonOperation != null
+                            && committedOnce
+                            && !horizonStarted
+                            && !handle.stopping()) {
+                        // The horizon shares this worker so its 8 MiB write and digest never
+                        // stall tile production; it goes only after the first visible tile.
+                        horizonStarted = true;
+                        wdl = horizonOperation;
+                    }
+                    if (operation == null && wdl == null) {
                         if (handle.stopping()) {
+                            if (horizonOperation != null && !horizonStarted) {
+                                horizonOperation.result.completeExceptionally(
+                                        new java.util.concurrent.CancellationException(
+                                                "World stopped"));
+                            }
                             return;
                         }
                         lock.wait(20);
                         continue;
                     }
                 }
-                deliverObjects(operation, handle);
+                if (operation != null) {
+                    deliverObjects(operation, handle);
+                } else {
+                    deliverHorizon(wdl, handle);
+                }
             }
         }
 
@@ -1425,6 +1665,15 @@ public final class WorldStreamTransport {
          */
         public void onFrame(Runnable listener) {
             frameListener = listener;
+        }
+
+        /**
+         * #381, native presentation: runs on the status reader with the camera and content
+         * revisions of each frame the helper presented into its child window. It must not block; a
+         * throw is logged and does not end the session.
+         */
+        public void onPresented(PresentedListener listener) {
+            presentedListener = listener;
         }
 
         private void pollFrames(WorldStreamLaunchOwner.Handle handle) throws Exception {
@@ -1675,7 +1924,7 @@ public final class WorldStreamTransport {
                 if (closing || owner.stopping()) {
                     return false;
                 }
-                if (outstandingReliable == 4) {
+                if (outstandingReliable == RELIABLE_COMMANDS) {
                     throw new IllegalStateException("World reliable command capacity");
                 }
                 if (command instanceof WorldStreamControl.Offer) {
@@ -1705,7 +1954,7 @@ public final class WorldStreamTransport {
 
         private void retireReliable() {
             synchronized (lock) {
-                if (outstandingReliable < 1 || outstandingReliable > 4) {
+                if (outstandingReliable < 1 || outstandingReliable > RELIABLE_COMMANDS) {
                     throw new IllegalStateException("World reliable command credit underflow");
                 }
                 outstandingReliable--;
@@ -1927,7 +2176,8 @@ public final class WorldStreamTransport {
                             camera.policy(),
                             camera.width(),
                             camera.height(),
-                            camera.view());
+                            camera.view(),
+                            camera.sky());
             synchronized (lock) {
                 if (closing || owner != null && owner.stopping()) {
                     throw new IllegalStateException("World session is stopping");
@@ -2099,6 +2349,22 @@ public final class WorldStreamTransport {
                         }
                         case CAMERA -> frames.applied((WorldStreamStatus.CameraApplied) message);
                         case FRAME -> frameSignaled();
+                        case PRESENTED -> {
+                            var listener = presentedListener;
+                            if (listener != null) {
+                                var presented = (WorldStreamStatus.Presented) message;
+                                try {
+                                    listener.presented(presented.camera(), presented.content());
+                                } catch (RuntimeException failure) {
+                                    // A consumer's fault must not end the status reader.
+                                    System.getLogger(WorldStreamTransport.class.getName())
+                                            .log(
+                                                    System.Logger.Level.WARNING,
+                                                    "World presented listener failed",
+                                                    failure);
+                                }
+                            }
+                        }
                         case INPUT_COMMIT -> {
                             CommitOperation operation;
                             synchronized (lock) {
@@ -2127,6 +2393,9 @@ public final class WorldStreamTransport {
                                                 operation.metadata.policy,
                                                 operation.ordered);
                                 currentReceipt = receipt;
+                                // The horizon waits for the first visible tile (#372).
+                                committedOnce = true;
+                                lock.notifyAll();
                                 if (operation.deleted) {
                                     commitRequested = false;
                                 }
@@ -2281,6 +2550,19 @@ public final class WorldStreamTransport {
                             handle.closedAcknowledged();
                             requestClose();
                             handle.closeAsync();
+                        }
+                        case HORIZON -> {
+                            synchronized (lock) {
+                                var operation = horizonOperation;
+                                if (operation != null
+                                        && operation.advertised
+                                        && operation.reply == null) {
+                                    operation.reply =
+                                            ((WorldStreamStatus.HorizonDone) message).outcome();
+                                    retireReliable();
+                                    lock.notifyAll();
+                                }
+                            }
                         }
                         case OBJECTS -> {
                             var outcome = ((WorldStreamStatus.ObjectsDone) message).outcome();
@@ -2594,6 +2876,13 @@ public final class WorldStreamTransport {
             if (objects != null) {
                 objects.result.completeExceptionally(failure);
             }
+            HorizonOperation wdl;
+            synchronized (lock) {
+                wdl = horizonOperation;
+            }
+            if (wdl != null) {
+                wdl.result.completeExceptionally(failure);
+            }
             if (current != null) {
                 current.result.completeExceptionally(failure);
                 current.canceled.completeExceptionally(failure);
@@ -2615,6 +2904,16 @@ public final class WorldStreamTransport {
             completion.completeExceptionally(failure);
             failPending(failure);
         }
+    }
+
+    /** The child's one answer to the session's horizon WDL (#372); never session-fatal. */
+    public enum HorizonOutcome {
+        /** Read and attached; drawn from the next frame on. */
+        DRAWN,
+        /** A valid WDL with no readable tile. */
+        NONE,
+        /** Write, read, validation or allocation failed; the session continues without it. */
+        FAILED
     }
 
     private WorldStreamTransport() {}

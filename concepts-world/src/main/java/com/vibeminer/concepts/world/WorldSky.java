@@ -90,11 +90,27 @@ public final class WorldSky {
     }
 
     /**
-     * Sky and fog channels; colours are recorded 0xRRGGBB values. A recorded {@code FogEnd} of 0
-     * (or less) means the row records no distance fog. {@code fogShare} is how much of this value
-     * had recorded fog (0..1): fog distance and scaler are averaged over that share only, so a key
-     * or light without fog never pulls the distance toward 0. A share of 0 means no recorded fog
-     * here; callers keep their own fog, or blend it in by {@code 1 - fogShare}.
+     * Recorded light, 0xRRGGBB: {@code direct} is {@code DirectColor} (sun or moon light) and
+     * {@code ambient} is {@code AmbientColor}.
+     */
+    public record Lighting(int direct, int ambient) {
+        public Lighting {
+            if (((direct | ambient) & 0xff00_0000) != 0) {
+                throw new IllegalArgumentException("Colour is not 0xRRGGBB");
+            }
+        }
+    }
+
+    /**
+     * Sky, fog and light channels; colours are recorded 0xRRGGBB values. A recorded {@code FogEnd}
+     * of 0 (or less) means the row records no distance fog. {@code fogShare} is how much of this
+     * value had recorded fog (0..1): fog distance and scaler are averaged over that share only, so
+     * a key or light without fog never pulls the distance toward 0. A share of 0 means no recorded
+     * fog here; callers keep their own fog, or blend it in by {@code 1 - fogShare}. {@code
+     * lighting} and {@code lightShare} work the same way for the recorded light: {@code lighting}
+     * is null exactly when {@code lightShare} is 0 (no recorded light here, for example when the
+     * build's LightData has no light fields), and a key without light never pulls the light toward
+     * black.
      */
     public record Sample(
             int skyTop,
@@ -105,7 +121,12 @@ public final class WorldSky {
             int skyFog,
             double fogEnd,
             double fogScaler,
-            double fogShare) {
+            double fogShare,
+            Lighting lighting,
+            double lightShare) {
+        /** Number of sky colour channels, in {@link #colours()} order. */
+        static final int COLOURS = 6;
+
         public Sample {
             for (int colour : new int[] {skyTop, skyMiddle, skyBand1, skyBand2, skySmog, skyFog}) {
                 if ((colour & 0xff00_0000) != 0) {
@@ -117,9 +138,12 @@ public final class WorldSky {
                     || !(fogShare >= 0 && fogShare <= 1)) {
                 throw new IllegalArgumentException("Invalid fog values");
             }
+            if (!(lightShare >= 0 && lightShare <= 1) || (lighting == null) != (lightShare == 0)) {
+                throw new IllegalArgumentException("Invalid light values");
+            }
         }
 
-        /** A recorded LightData row: it has fog exactly when its {@code FogEnd} is positive. */
+        /** Sky and fog without recorded light. */
         public Sample(
                 int skyTop,
                 int skyMiddle,
@@ -127,6 +151,39 @@ public final class WorldSky {
                 int skyBand2,
                 int skySmog,
                 int skyFog,
+                double fogEnd,
+                double fogScaler,
+                double fogShare) {
+            this(
+                    skyTop, skyMiddle, skyBand1, skyBand2, skySmog, skyFog, fogEnd, fogScaler,
+                    fogShare, null, 0);
+        }
+
+        /** A recorded LightData row without light: see the light-bearing constructor. */
+        public Sample(
+                int skyTop,
+                int skyMiddle,
+                int skyBand1,
+                int skyBand2,
+                int skySmog,
+                int skyFog,
+                double fogEnd,
+                double fogScaler) {
+            this(skyTop, skyMiddle, skyBand1, skyBand2, skySmog, skyFog, null, fogEnd, fogScaler);
+        }
+
+        /**
+         * A recorded LightData row: it has fog exactly when its {@code FogEnd} is positive, and
+         * light exactly when {@code lighting} is not null.
+         */
+        public Sample(
+                int skyTop,
+                int skyMiddle,
+                int skyBand1,
+                int skyBand2,
+                int skySmog,
+                int skyFog,
+                Lighting lighting,
                 double fogEnd,
                 double fogScaler) {
             this(
@@ -138,7 +195,30 @@ public final class WorldSky {
                     skyFog,
                     fogEnd > 0 ? fogEnd : 0,
                     fogEnd > 0 ? fogScaler : 0,
-                    fogEnd > 0 ? 1 : 0);
+                    fogEnd > 0 ? 1 : 0,
+                    lighting,
+                    lighting == null ? 0 : 1);
+        }
+
+        private Sample(
+                int[] c,
+                double fogEnd,
+                double fogScaler,
+                double fogShare,
+                int[] light,
+                double lightShare) {
+            this(
+                    c[0],
+                    c[1],
+                    c[2],
+                    c[3],
+                    c[4],
+                    c[5],
+                    fogEnd,
+                    fogScaler,
+                    fogShare,
+                    lightShare > 0 ? new Lighting(light[0], light[1]) : null,
+                    lightShare > 0 ? Math.min(1, lightShare) : 0);
         }
 
         /** True when part of this value has recorded distance fog. */
@@ -146,66 +226,92 @@ public final class WorldSky {
             return fogShare > 0;
         }
 
+        /** True when part of this value has recorded direct and ambient light. */
+        public boolean hasLight() {
+            return lightShare > 0;
+        }
+
+        private int[] colours() {
+            return new int[] {skyTop, skyMiddle, skyBand1, skyBand2, skySmog, skyFog};
+        }
+
+        private int[] light() {
+            return lighting == null
+                    ? new int[2]
+                    : new int[] {lighting.direct(), lighting.ambient()};
+        }
+
         /** Weighted average; weights sum to 1 and each colour channel is rounded once. */
         static Sample blend(List<Sample> samples, double[] weights) {
             if (samples.size() == 1) {
                 return samples.getFirst();
             }
-            double[] sum = new double[6 * 3 + 3];
+            double[] sum = new double[COLOURS * 3];
+            double[] lightSum = new double[2 * 3];
+            double fogEnd = 0, fogScaler = 0, fogShare = 0, lightShare = 0;
             for (int i = 0; i < samples.size(); i++) {
                 var s = samples.get(i);
-                int[] colours = {
-                    s.skyTop, s.skyMiddle, s.skyBand1, s.skyBand2, s.skySmog, s.skyFog
-                };
-                for (int c = 0; c < 6; c++) {
-                    for (int b = 0; b < 3; b++) {
-                        sum[c * 3 + b] += ((colours[c] >> (16 - 8 * b)) & 0xff) * weights[i];
-                    }
-                }
-                // Fog averages over the fog-bearing share of each sample only.
+                add(sum, s.colours(), weights[i]);
+                // Fog and light average over the share of each sample that records them only.
                 double fog = s.fogShare * weights[i];
-                sum[18] += s.fogEnd * fog;
-                sum[19] += s.fogScaler * fog;
-                sum[20] += fog;
+                fogEnd += s.fogEnd * fog;
+                fogScaler += s.fogScaler * fog;
+                fogShare += fog;
+                double lit = s.lightShare * weights[i];
+                add(lightSum, s.light(), lit);
+                lightShare += lit;
             }
-            int[] out = new int[6];
-            for (int c = 0; c < 6; c++) {
+            return new Sample(
+                    rounded(sum, 1),
+                    fogShare > 0 ? fogEnd / fogShare : 0,
+                    fogShare > 0 ? fogScaler / fogShare : 0,
+                    Math.min(1, fogShare),
+                    lightShare > 0 ? rounded(lightSum, lightShare) : null,
+                    lightShare);
+        }
+
+        private static void add(double[] sum, int[] colours, double weight) {
+            for (int c = 0; c < colours.length; c++) {
                 for (int b = 0; b < 3; b++) {
-                    int value = Math.clamp(Math.round(sum[c * 3 + b]), 0, 255);
+                    sum[c * 3 + b] += ((colours[c] >> (16 - 8 * b)) & 0xff) * weight;
+                }
+            }
+        }
+
+        private static int[] rounded(double[] sum, double share) {
+            int[] out = new int[sum.length / 3];
+            for (int c = 0; c < out.length; c++) {
+                for (int b = 0; b < 3; b++) {
+                    int value = Math.clamp(Math.round(sum[c * 3 + b] / share), 0, 255);
                     out[c] |= value << (16 - 8 * b);
                 }
             }
-            double share = Math.min(1, sum[20]);
-            return sum[20] > 0
-                    ? new Sample(
-                            out[0],
-                            out[1],
-                            out[2],
-                            out[3],
-                            out[4],
-                            out[5],
-                            sum[18] / sum[20],
-                            sum[19] / sum[20],
-                            share)
-                    : new Sample(out[0], out[1], out[2], out[3], out[4], out[5], 0, 0, 0);
+            return out;
         }
 
         /**
          * Interpolates from {@code a} to {@code b}; a key without fog contributes no fog distance,
-         * only a smaller fog share.
+         * only a smaller fog share, and a key without light no light, only a smaller light share.
          */
         static Sample mix(Sample a, Sample b, double f) {
             double wa = (1 - f) * a.fogShare, wb = f * b.fogShare, share = wa + wb;
+            int[] from = a.colours(), to = b.colours(), out = new int[COLOURS];
+            for (int c = 0; c < COLOURS; c++) {
+                out[c] = colour(from[c], to[c], f);
+            }
+            double la = (1 - f) * a.lightShare, lb = f * b.lightShare, lit = la + lb;
+            // Light averages over the lit share of each key, like fog.
+            double[] lightSum = new double[2 * 3];
+            add(lightSum, a.light(), la);
+            add(lightSum, b.light(), lb);
+            int[] light = lit > 0 ? rounded(lightSum, lit) : null;
             return new Sample(
-                    colour(a.skyTop, b.skyTop, f),
-                    colour(a.skyMiddle, b.skyMiddle, f),
-                    colour(a.skyBand1, b.skyBand1, f),
-                    colour(a.skyBand2, b.skyBand2, f),
-                    colour(a.skySmog, b.skySmog, f),
-                    colour(a.skyFog, b.skyFog, f),
+                    out,
                     share > 0 ? (a.fogEnd * wa + b.fogEnd * wb) / share : 0,
                     share > 0 ? (a.fogScaler * wa + b.fogScaler * wb) / share : 0,
-                    Math.min(1, share));
+                    Math.min(1, share),
+                    light,
+                    lit);
         }
 
         private static int colour(int a, int b, double f) {

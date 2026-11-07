@@ -80,6 +80,7 @@ final class WorldStreamParentState {
         CREDIT,
         CAMERA,
         FRAME,
+        PRESENTED,
         INPUT_TILE,
         INPUT_COMMIT,
         STAGED,
@@ -88,6 +89,7 @@ final class WorldStreamParentState {
         CANCEL_REJECTED,
         CANCELED,
         OBJECTS,
+        HORIZON,
         CLOSED
     }
 
@@ -101,6 +103,9 @@ final class WorldStreamParentState {
     private WorldStreamState.Lease credit;
     private long serial, transaction, content;
     private boolean hello, closed, childGone;
+    // The session's one HORIZON (#372): sent, then answered once.
+    private boolean horizonSent, horizonAnswered;
+    private int objectFormats;
     private Ticket ticket;
     // The ticket whose lease the latest CREDIT returned (null for the first credit); read by the
     // status reader right after that CREDIT, before any later status replaces it.
@@ -274,6 +279,23 @@ final class WorldStreamParentState {
     }
 
     /**
+     * The session's one horizon command, or null once one was sent or the session ended. It sits
+     * outside the tile transaction sequence.
+     */
+    synchronized WorldStreamControl.Horizon horizon(int length, String sha) {
+        if (closed || !hello || horizonSent) {
+            return null;
+        }
+        horizonSent = true;
+        return new WorldStreamControl.Horizon(session.nonce(), length, sha);
+    }
+
+    /** A horizon command that was built but not sent (the session began stopping). */
+    synchronized void horizonUnsent() {
+        horizonAnswered = true;
+    }
+
+    /**
      * Publishes the one late objects command for a resident admitted by {@link #admitLateObjects}.
      * Returns null when the resident is no longer the active generation of its slot (the caller
      * then reports it dropped without sending anything).
@@ -397,6 +419,7 @@ final class WorldStreamParentState {
                     value.exteriorObjects() == session.exteriorObjects(),
                     "Session profile differs");
             hello = true;
+            objectFormats = value.objectFormats();
             return Change.SESSION;
         }
         require(hello, "Status before session");
@@ -434,6 +457,9 @@ final class WorldStreamParentState {
         }
         if (message instanceof WorldStreamStatus.FramePublished) {
             return Change.FRAME;
+        }
+        if (message instanceof WorldStreamStatus.Presented) {
+            return Change.PRESENTED;
         }
         if (message instanceof WorldStreamStatus.InputConsumed value) {
             if (value.kind() == WorldStreamStatus.InputKind.TILE) {
@@ -547,6 +573,14 @@ final class WorldStreamParentState {
             ticket.cancelResolved = true;
             return Change.CANCELED;
         }
+        if (message instanceof WorldStreamStatus.HorizonDone) {
+            // Only the one answer to a sent HORIZON counts; anything else is ignored, never fatal.
+            if (!horizonSent || horizonAnswered) {
+                return Change.IGNORED;
+            }
+            horizonAnswered = true;
+            return Change.HORIZON;
+        }
         if (message instanceof WorldStreamStatus.ObjectsDone value) {
             require(
                     objectsTarget != null
@@ -592,6 +626,14 @@ final class WorldStreamParentState {
             return Cancellation.RETIRED;
         }
         return Cancellation.PENDING;
+    }
+
+    /**
+     * The compressed object texture formats the child samples as blocks (one bit per {@link
+     * com.vibeminer.rendering.world.ObjectTextureFormats} code), from its SESSION status.
+     */
+    synchronized int objectFormats() {
+        return objectFormats;
     }
 
     synchronized List<Resident> active() {

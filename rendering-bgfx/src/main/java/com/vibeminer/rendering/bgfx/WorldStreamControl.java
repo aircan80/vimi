@@ -14,7 +14,7 @@ final class WorldStreamControl {
     static final int MAX_LINE_BYTES = 256;
 
     sealed interface Command
-            permits Camera, Offer, Commit, Cancel, CancelUnused, LateObjects, Close {
+            permits Camera, Offer, Commit, Cancel, CancelUnused, LateObjects, Horizon, Close {
         WorldStreamState.Nonce nonce();
     }
 
@@ -24,7 +24,8 @@ final class WorldStreamControl {
             long policy,
             int width,
             int height,
-            TerrainCamera camera)
+            TerrainCamera camera,
+            WorldStreamTransport.Sky sky)
             implements Command {
         Camera {
             Objects.requireNonNull(nonce);
@@ -34,6 +35,16 @@ final class WorldStreamControl {
             if (!WorldFrameLimits.fits(width, height)) {
                 throw new IllegalArgumentException("Invalid camera dimensions");
             }
+        }
+
+        Camera(
+                WorldStreamState.Nonce nonce,
+                long revision,
+                long policy,
+                int width,
+                int height,
+                TerrainCamera camera) {
+            this(nonce, revision, policy, width, height, camera, null);
         }
     }
 
@@ -107,6 +118,23 @@ final class WorldStreamControl {
         }
     }
 
+    /**
+     * The map's WDL bytes for the horizon (#372), file {@code horizon-1.wsh}. At most one per
+     * session, outside the tile transaction sequence; the child answers with exactly one {@code
+     * HORIZON_DONE}, and any failure only means no horizon.
+     */
+    record Horizon(WorldStreamState.Nonce nonce, int length, String sha256) implements Command {
+        static final String BASENAME = "horizon-1.wsh";
+
+        Horizon {
+            Objects.requireNonNull(nonce);
+            digest(sha256);
+            if (length < 12 || length > com.vibeminer.formats.world.WorldLowRes.MAX_SOURCE_BYTES) {
+                throw new IllegalArgumentException("Invalid horizon length");
+            }
+        }
+    }
+
     record Close(WorldStreamState.Nonce nonce) implements Command {
         Close {
             Objects.requireNonNull(nonce);
@@ -114,6 +142,63 @@ final class WorldStreamControl {
     }
 
     private WorldStreamControl() {}
+
+    /**
+     * The optional sky tail, bounded so a camera line always fits: {@code SKY} then the six colours
+     * as one 12-digit hex token (horizon then top, red-green-blue), the fog weight in thousandths
+     * (0..1000) and the recorded start and end in whole yards. Sky values are already quantized to
+     * exactly these steps.
+     */
+    private static String sky(WorldStreamTransport.Sky sky) {
+        if (sky == null) {
+            return "";
+        }
+        var colours = new StringBuilder(12);
+        for (float[] rgb : new float[][] {sky.horizon(), sky.top()}) {
+            for (float channel : rgb) {
+                colours.append(HexFormat.of().toHexDigits((byte) (int) channel));
+            }
+        }
+        return " SKY "
+                + colours
+                + " "
+                + Math.round(sky.fogWeight() * 1000)
+                + " "
+                + (long) sky.recordedStart()
+                + " "
+                + (long) sky.recordedEnd();
+    }
+
+    private static WorldStreamTransport.Sky sky(String[] parts) {
+        if (!parts[13].matches("[0-9a-f]{12}")) {
+            throw new IllegalArgumentException("Invalid sky colours");
+        }
+        float[] channels = new float[6];
+        for (int i = 0; i < 6; i++) {
+            channels[i] = Integer.parseInt(parts[13].substring(2 * i, 2 * i + 2), 16);
+        }
+        long weight = bounded(parts[14], 1000);
+        long start = bounded(parts[15], WorldStreamTransport.Sky.MAX_YARDS);
+        long end = bounded(parts[16], WorldStreamTransport.Sky.MAX_YARDS);
+        return new WorldStreamTransport.Sky(
+                new float[] {channels[0], channels[1], channels[2]},
+                new float[] {channels[3], channels[4], channels[5]},
+                weight / 1000.0,
+                start,
+                end);
+    }
+
+    /** A canonical decimal integer in 0..max. */
+    private static long bounded(String text, long max) {
+        if (!text.matches("0|[1-9][0-9]{0,6}")) {
+            throw new IllegalArgumentException("Invalid sky number");
+        }
+        long value = Long.parseLong(text);
+        if (value > max) {
+            throw new IllegalArgumentException("Sky number out of range");
+        }
+        return value;
+    }
 
     static byte[] encode(Command command) {
         Objects.requireNonNull(command);
@@ -143,7 +228,8 @@ final class WorldStreamControl {
                                     + " "
                                     + c.camera().yaw()
                                     + " "
-                                    + c.camera().pitch();
+                                    + c.camera().pitch()
+                                    + sky(c.sky());
                     case Offer c ->
                             "OFFER "
                                     + c.transaction()
@@ -192,6 +278,8 @@ final class WorldStreamControl {
                                     + c.length()
                                     + " "
                                     + c.sha256();
+                    case Horizon c ->
+                            "HORIZON 1 " + Horizon.BASENAME + " " + c.length() + " " + c.sha256();
                     case Close ignored -> "CLOSE";
                 };
         byte[] line = (prefix + tail + "\n").getBytes(StandardCharsets.US_ASCII);
@@ -250,7 +338,13 @@ final class WorldStreamControl {
             Command result =
                     switch (parts[2]) {
                         case "CAM" -> {
-                            arity(parts, 12);
+                            // An optional sky tail: SKY colours weight start end.
+                            if (parts.length != 12) {
+                                arity(parts, 17);
+                                if (!parts[12].equals("SKY")) {
+                                    throw new IllegalArgumentException("Invalid camera sky");
+                                }
+                            }
                             yield new Camera(
                                     nonce,
                                     number(parts[3]),
@@ -262,7 +356,8 @@ final class WorldStreamControl {
                                             decimal(parts[8]),
                                             decimal(parts[9]),
                                             decimal(parts[10]),
-                                            decimal(parts[11])));
+                                            decimal(parts[11])),
+                                    parts.length == 12 ? null : sky(parts));
                         }
                         case "OFFER" -> {
                             arity(parts, 10);
@@ -306,6 +401,12 @@ final class WorldStreamControl {
                                             integer(parts[5]), number(parts[6]), number(parts[4])),
                                     integer(parts[8]),
                                     parts[9]);
+                        }
+                        case "HORIZON" -> {
+                            arity(parts, 7);
+                            basename(parts[3], "1");
+                            basename(parts[4], Horizon.BASENAME);
+                            yield new Horizon(nonce, integer(parts[5]), parts[6]);
                         }
                         case "CLOSE" -> {
                             arity(parts, 3);

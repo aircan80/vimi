@@ -84,24 +84,55 @@ public final class WorldTerrainTextureSource {
         }
     }
 
+    /** Why a diffuse was refused as {@link Reason#DIFFUSE_PROFILE}. */
+    public enum DiffuseRefusal {
+        NONE,
+        /** The BLP decoder does not support the container, encoding, alpha or mip flags. */
+        UNSUPPORTED,
+        /** The BLP's header or mip descriptors are malformed. */
+        INVALID,
+        /** A decoder byte or pixel bound refused it. */
+        LIMIT,
+        /** No declared, non-compact mip is 4 pixels or smaller. */
+        MIP_UNAVAILABLE,
+        /** The base image is not square. */
+        NON_SQUARE,
+        /** The selected small mip is not 4 x 4. */
+        MIP_SHAPE,
+        /** A decoder refusal with a code this source does not name. */
+        OTHER
+    }
+
     public record Issue(
             Reason reason,
             int ordinal,
             long fileId,
             TerrainAtlasComposer.Reason chunkReason,
-            WorldTextureFormats.ChunkIssue maskIssue) {
+            WorldTextureFormats.ChunkIssue maskIssue,
+            DiffuseRefusal diffuseRefusal) {
         public Issue(Reason reason, int ordinal, long fileId) {
             this(reason, ordinal, fileId, null, WorldTextureFormats.ChunkIssue.NONE);
+        }
+
+        public Issue(
+                Reason reason,
+                int ordinal,
+                long fileId,
+                TerrainAtlasComposer.Reason chunkReason,
+                WorldTextureFormats.ChunkIssue maskIssue) {
+            this(reason, ordinal, fileId, chunkReason, maskIssue, DiffuseRefusal.NONE);
         }
 
         public Issue {
             Objects.requireNonNull(reason);
             Objects.requireNonNull(maskIssue);
+            Objects.requireNonNull(diffuseRefusal);
             if (ordinal < -1
                     || ordinal >= 256
                     || fileId < 0
                     || fileId > 0xffff_ffffL
-                    || (reason == Reason.CHUNK) != (chunkReason != null)) {
+                    || (reason == Reason.CHUNK) != (chunkReason != null)
+                    || diffuseRefusal != DiffuseRefusal.NONE && reason != Reason.DIFFUSE_PROFILE) {
                 throw new IllegalArgumentException("Invalid texture issue bounds");
             }
         }
@@ -245,12 +276,26 @@ public final class WorldTerrainTextureSource {
         }
     }
 
+    /**
+     * {@code emptyChunks} have no texture layers, so nothing to draw. READY means every chunk is
+     * drawn or empty, with at least one drawn.
+     */
     public record TileResult(
             WorldFormats.Tile tile,
             State state,
             Receipt receipt,
             int supportedChunks,
+            int emptyChunks,
             List<Issue> issues) {
+        public TileResult(
+                WorldFormats.Tile tile,
+                State state,
+                Receipt receipt,
+                int supportedChunks,
+                List<Issue> issues) {
+            this(tile, state, receipt, supportedChunks, 0, issues);
+        }
+
         public TileResult {
             Objects.requireNonNull(tile);
             Objects.requireNonNull(state);
@@ -258,9 +303,13 @@ public final class WorldTerrainTextureSource {
             if (issues.size() > 320
                     || supportedChunks < 0
                     || supportedChunks > 256
+                    || emptyChunks < 0
+                    || supportedChunks + emptyChunks > 256
                     || ((state == State.READY || state == State.PARTIAL) != (receipt != null))
-                    || (state == State.READY && supportedChunks != 256)
-                    || (state == State.PARTIAL && (supportedChunks == 0 || supportedChunks == 256))
+                    || (state == State.READY
+                            && (supportedChunks == 0 || supportedChunks + emptyChunks != 256))
+                    || (state == State.PARTIAL
+                            && (supportedChunks == 0 || supportedChunks + emptyChunks == 256))
                     || ((state == State.UNAVAILABLE || state == State.POOL_BUSY)
                             && supportedChunks != 0)) {
                 throw new IllegalArgumentException("Invalid texture tile result");
@@ -660,11 +709,38 @@ public final class WorldTerrainTextureSource {
     private static final class SourceFailure extends RuntimeException {
         private static final long serialVersionUID = 1L;
         final Reason reason;
+        final DiffuseRefusal diffuse;
 
         SourceFailure(Reason reason) {
+            this(reason, DiffuseRefusal.NONE);
+        }
+
+        SourceFailure(Reason reason, DiffuseRefusal diffuse) {
             super(reason.name(), null, false, false);
             this.reason = reason;
+            this.diffuse = diffuse;
         }
+    }
+
+    /** The specific refusal behind a diffuse decode failure reported as DIFFUSE_PROFILE. */
+    static DiffuseRefusal diffuseRefusal(Throwable failure) {
+        Throwable value = failure;
+        for (int i = 0; i < 16 && value != null; i++) {
+            if (value instanceof SourceFailure known) {
+                return known.diffuse;
+            }
+            if (value instanceof BlpFormatException blp) {
+                return switch (String.valueOf(blp.code())) {
+                    case "BLP_UNSUPPORTED" -> DiffuseRefusal.UNSUPPORTED;
+                    case "BLP_INVALID" -> DiffuseRefusal.INVALID;
+                    case "BLP_LIMIT" -> DiffuseRefusal.LIMIT;
+                    case "BLP_MIP_UNAVAILABLE" -> DiffuseRefusal.MIP_UNAVAILABLE;
+                    default -> DiffuseRefusal.OTHER;
+                };
+            }
+            value = value.getCause();
+        }
+        return DiffuseRefusal.NONE;
     }
 
     private final BuildFiles files;
@@ -1005,8 +1081,30 @@ public final class WorldTerrainTextureSource {
                         hit.lease().close();
                         throw changed;
                     }
+                    int[] counts = {0, 0};
+                    hit.lease()
+                            .withAtlas(
+                                    atlas -> {
+                                        counts[0] = atlas.supportedChunks();
+                                        counts[1] = atlas.emptyChunks();
+                                    });
+                    // A complete cached atlas has no refusals, only chunks with no layers; name
+                    // them again from this read's tex0 so diagnostics match a fresh composition.
+                    var empty = new ArrayList<Issue>();
+                    for (var chunk : data.chunks()) {
+                        if (chunk.issue() == WorldTextureFormats.ChunkIssue.NO_LAYERS) {
+                            empty.add(
+                                    new Issue(
+                                            Reason.CHUNK,
+                                            chunk.ordinal(),
+                                            0,
+                                            TerrainAtlasComposer.Reason.TEXTURE_METADATA,
+                                            WorldTextureFormats.ChunkIssue.NO_LAYERS));
+                        }
+                    }
                     return new Outcome(
-                            new TileResult(tile, State.READY, hit.receipt(), 256, List.of()),
+                            new TileResult(
+                                    tile, State.READY, hit.receipt(), counts[0], counts[1], empty),
                             hit.lease());
                 }
             }
@@ -1033,11 +1131,17 @@ public final class WorldTerrainTextureSource {
                         mipBindings.add(mip.binding());
                     } catch (RuntimeException missing) {
                         propagateCancellation(request, missing);
+                        var reason = reason(request, missing, Reason.DIFFUSE_PROFILE);
                         issues.add(
                                 new Issue(
-                                        reason(request, missing, Reason.DIFFUSE_PROFILE),
+                                        reason,
                                         -1,
-                                        binding.fileId()));
+                                        binding.fileId(),
+                                        null,
+                                        WorldTextureFormats.ChunkIssue.NONE,
+                                        reason == Reason.DIFFUSE_PROFILE
+                                                ? diffuseRefusal(missing)
+                                                : DiffuseRefusal.NONE));
                     }
                 }
                 request.report(Stage.COMPOSING, tileIndex, 0);
@@ -1075,7 +1179,7 @@ public final class WorldTerrainTextureSource {
                 // decodes no longer revalidate one by one.
                 revalidate(receipt.bindings(), request);
                 request.check();
-                boolean complete = composition.supportedChunks() == 256;
+                boolean complete = composition.atlas().complete();
                 var lease =
                         reserved.publish(
                                 composition.atlas(),
@@ -1087,6 +1191,7 @@ public final class WorldTerrainTextureSource {
                                 complete ? State.READY : State.PARTIAL,
                                 receipt,
                                 composition.supportedChunks(),
+                                composition.atlas().emptyChunks(),
                                 issues),
                         lease);
             }
@@ -1148,10 +1253,11 @@ public final class WorldTerrainTextureSource {
                                     Blp2Types.MipProfile.DECLARED_HANDMADE_V1)
                             .join();
             request.check();
-            if (image.width() != 4
-                    || image.height() != 4
-                    || image.baseWidth() != image.baseHeight()) {
-                throw new SourceFailure(Reason.DIFFUSE_PROFILE);
+            if (image.baseWidth() != image.baseHeight()) {
+                throw new SourceFailure(Reason.DIFFUSE_PROFILE, DiffuseRefusal.NON_SQUARE);
+            }
+            if (image.width() != 4 || image.height() != 4) {
+                throw new SourceFailure(Reason.DIFFUSE_PROFILE, DiffuseRefusal.MIP_SHAPE);
             }
             // Revalidated with the tile's other sources before publication.
             FileBinding actual =
@@ -1453,7 +1559,8 @@ public final class WorldTerrainTextureSource {
         if (id <= 0 || id > 0xffff_ffffL) {
             throw new SourceFailure(Reason.UNBOUND);
         }
-        var result = files.stat(FileTypes.FileRef.id(id), request.token).join();
+        // Index facts only (state, id, size, content key): no listfile names or format sniff.
+        var result = files.statContent(FileTypes.FileRef.id(id), request.token).join();
         request.check();
         request.observeLookup(id, limit, result);
         if (result.state() != FileTypes.FileLookupState.FOUND || result.file() == null) {

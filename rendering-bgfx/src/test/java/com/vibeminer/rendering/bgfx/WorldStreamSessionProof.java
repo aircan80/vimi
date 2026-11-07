@@ -22,22 +22,22 @@ import java.util.concurrent.atomic.AtomicReference;
 /** Authored owned-child protocol/pipe proof. No GUI, application stores or network. */
 @SuppressWarnings("try")
 public final class WorldStreamSessionProof {
-    private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(123, -456);
-    private static final String SCOPE = "cd".repeat(32);
-    private static final WorldStreamEnvelope.Session SESSION =
+    static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(123, -456);
+    static final String SCOPE = "cd".repeat(32);
+    static final WorldStreamEnvelope.Session SESSION =
             new WorldStreamEnvelope.Session(NONCE, SCOPE, 1);
-    private static final TerrainCamera CAMERA = new TerrainCamera(-100, -10, 50, 0, -.6);
+    static final TerrainCamera CAMERA = new TerrainCamera(-100, -10, 50, 0, -.6);
     private static long frameSequence;
 
     private WorldStreamSessionProof() {}
 
-    private static void require(boolean valid, String message) {
+    static void require(boolean valid, String message) {
         if (!valid) {
             throw new AssertionError(message);
         }
     }
 
-    private static String sha(Path file) throws Exception {
+    static String sha(Path file) throws Exception {
         var digest = MessageDigest.getInstance("SHA-256");
         try (var input = Files.newInputStream(file)) {
             var scratch = new byte[8192];
@@ -48,7 +48,7 @@ public final class WorldStreamSessionProof {
         return HexFormat.of().formatHex(digest.digest());
     }
 
-    private static Process launch(Path directory, boolean blocked) throws Exception {
+    static Process launch(Path directory, boolean blocked) throws Exception {
         String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
         if (blocked) {
             return new ProcessBuilder(
@@ -123,12 +123,12 @@ public final class WorldStreamSessionProof {
         }
     }
 
-    private static void send(Process child, WorldStreamControl.Command command) throws Exception {
+    static void send(Process child, WorldStreamControl.Command command) throws Exception {
         child.getOutputStream().write(WorldStreamControl.encode(command));
         child.getOutputStream().flush();
     }
 
-    private static final class Statuses {
+    static final class Statuses {
         final ArrayBlockingQueue<String> lines = new ArrayBlockingQueue<>(64);
         final AtomicReference<WorldStreamState.Lease> credit = new AtomicReference<>();
         final StringBuilder observed = new StringBuilder();
@@ -187,7 +187,7 @@ public final class WorldStreamSessionProof {
         }
     }
 
-    private static void packet(Path directory, long tx, WorldStreamState.Lease lease, int red)
+    static void packet(Path directory, long tx, WorldStreamState.Lease lease, int red)
             throws Exception {
         var thread =
                 Thread.ofVirtual()
@@ -209,7 +209,7 @@ public final class WorldStreamSessionProof {
                 "Fixture packet missing");
     }
 
-    private static void offer(Process child, Path directory, long tx, WorldStreamState.Lease lease)
+    static void offer(Process child, Path directory, long tx, WorldStreamState.Lease lease)
             throws Exception {
         Path path = directory.resolve("tile-" + tx + ".wst");
         send(
@@ -218,7 +218,7 @@ public final class WorldStreamSessionProof {
                         NONCE, tx, lease, Math.toIntExact(Files.size(path)), sha(path)));
     }
 
-    private static void commit(
+    static void commit(
             Process child, Path directory, long tx, long expected, WorldStreamState.Lease lease)
             throws Exception {
         var descriptor =
@@ -473,8 +473,38 @@ public final class WorldStreamSessionProof {
                         (sky >>> 8 & 255) == (int) Math.floor(analytical[1])
                                 && (sky & 255) == (int) Math.floor(analytical[2]),
                         "Changed view did not expose analytical sky");
-                send(child, new WorldStreamControl.Camera(NONCE, 15, 2, 800, 500, CAMERA));
-                frame(reader, 3, 15, 2, 800, 500, 100);
+                // The same view with a recorded sky (#177): the frame shows the recorded colours.
+                var recorded =
+                        new WorldStreamTransport.Sky(
+                                new float[] {200, 40, 20}, new float[] {20, 40, 200}, 0, 0, 0);
+                send(
+                        child,
+                        new WorldStreamControl.Camera(
+                                NONCE,
+                                15,
+                                2,
+                                800,
+                                500,
+                                new TerrainCamera(-100, -10, 50, 0, 1),
+                                recorded));
+                var expected =
+                        WorldFog.sky(recorded, Float.NaN)
+                                .skyPixel(
+                                        1,
+                                        com.vibeminer.rendering.world.TerrainCamera.focalPixels(
+                                                800),
+                                        800,
+                                        500,
+                                        400,
+                                        250);
+                int recordedSky = frame(reader, 3, 15, 2, 800, 500, (int) Math.floor(expected[0]));
+                require(
+                        (recordedSky >>> 8 & 255) == (int) Math.floor(expected[1])
+                                && (recordedSky & 255) == (int) Math.floor(expected[2]),
+                        "A recorded sky did not reach the frame: "
+                                + Integer.toHexString(recordedSky));
+                send(child, new WorldStreamControl.Camera(NONCE, 16, 2, 800, 500, CAMERA));
+                frame(reader, 3, 16, 2, 800, 500, 100);
                 require(child.pid() == pid && child.isAlive(), "Child replaced unexpectedly");
                 // Issue #365: a packet whose bytes match its offer but fail decoding is one
                 // rejected transaction (REJECTED INVALID_PACKET, through completeDecode); the
@@ -506,7 +536,7 @@ public final class WorldStreamSessionProof {
                 System.out.println(
                         "WORLD_SESSION_PASS pid="
                                 + pid
-                                + " content=3 cameras=15 canceled=2 resize=800x500");
+                                + " content=3 cameras=16 canceled=2 resize=800x500 recordedSky");
             } finally {
                 if (child.isAlive()) {
                     child.destroyForcibly();

@@ -49,9 +49,22 @@ final class WorldStreamSession {
             Executors.newSingleThreadExecutor(
                     Thread.ofVirtual().name("world-v2-objects-decoder").factory());
     private CompletableFuture<LateDecoded> objectsDecoding;
+    // The horizon WDL (#372): read and parsed on its own worker, never on the tile decoder.
+    private final AtomicBoolean horizonCanceled = new AtomicBoolean();
+    private final java.util.concurrent.ExecutorService horizonDecoder =
+            Executors.newSingleThreadExecutor(
+                    Thread.ofVirtual().name("world-v2-horizon-decoder").factory());
+    private CompletableFuture<HorizonDecoded> horizonDecoding;
+
+    private record HorizonDecoded(
+            com.vibeminer.formats.world.WorldLowRes.LowRes lowRes, Throwable error) {}
+
     private WorldStreamControl.LateObjects objectsCommand;
     private BgfxWorldStreamRenderer.LateUpload lateUpload;
     private volatile boolean failed;
+
+    // Compressed object formats the renderer samples (bit per code), set before any decode.
+    private volatile int objectFormats;
     private volatile long closeStarted;
     private CompletableFuture<Decoded> decoding;
     private WorldStreamControl.Command decodedCommand, deferred;
@@ -138,6 +151,7 @@ final class WorldStreamSession {
     // #381 spike: native presentation (null: the readback loop, unchanged).
     private WorldWindowPresentation window;
     private final WorldPresentBudget budget = new WorldPresentBudget();
+    private long announcedCamera, announcedContent = -1;
 
     private void runOwner(
             InputStream input, WorldFrameFileV2 frames, int backend, Runnable terminate)
@@ -146,10 +160,14 @@ final class WorldStreamSession {
         Thread.ofVirtual().name("world-v2-independent-watchdog").start(() -> watch(terminate));
         try (var owner = new WorldStreamNativeOwner(session, frames, backend, window)) {
             try {
+                // The profile, then the compressed object texture formats sampled as blocks: the
+                // parent charges those images their compressed bytes (#374).
+                objectFormats = owner.objectFormatMask();
                 send(
-                        session.exteriorObjects()
-                                ? "SESSION TERRAIN_EXTERIOR_V1"
-                                : "SESSION TERRAIN_BASIC_V1");
+                        (session.exteriorObjects()
+                                        ? "SESSION TERRAIN_EXTERIOR_V1 "
+                                        : "SESSION TERRAIN_BASIC_V1 ")
+                                + objectFormats);
                 advertiseCredit();
                 while (!closing.get()) {
                     if (mailbox.closing() || status.failure() != null) {
@@ -181,6 +199,8 @@ final class WorldStreamSession {
                         execute(owner, command);
                     }
                     takeObjects();
+                    takeHorizon();
+                    completeHorizon(owner);
                     reconcile();
                     if (window != null) {
                         stepWithinFrameBudget(owner); // #381 spike
@@ -194,6 +214,9 @@ final class WorldStreamSession {
                         long stepping = WorldStageTimings.start();
                         owner.stepLate(lateUpload);
                         WorldStageTimings.stop("child.objects.uploadStep", stepping);
+                    } else if (owner.horizonUploading()) {
+                        // The horizon uploads after terrain and late objects, in bounded steps.
+                        owner.stepHorizon();
                     }
                     // GPU mutations must precede draw submission in the same bgfx frame.
                     long now = System.nanoTime();
@@ -207,6 +230,15 @@ final class WorldStreamSession {
                     if (owner.advance()) {
                         // Wake the parent's frame reader; the mapping write already completed.
                         status.framePublished(owner.publishedSequence());
+                    }
+                    if (window != null
+                            && owner.presentedCamera() > 0
+                            && (owner.presentedCamera() != announcedCamera
+                                    || owner.presentedContent() != announcedContent)) {
+                        // #381: tell the parent which camera and content the window now shows.
+                        announcedCamera = owner.presentedCamera();
+                        announcedContent = owner.presentedContent();
+                        status.presented(announcedCamera, announcedContent);
                     }
                     reconcile();
                     finishUpload();
@@ -231,6 +263,7 @@ final class WorldStreamSession {
                 requestClose();
                 decoderCanceled.set(true);
                 objectsCanceled.set(true);
+                horizonCanceled.set(true);
                 // Keep the owner advancing while the actual input/packing worker relinquishes
                 // ownership.
                 while (decoding != null || objectsDecoding != null) {
@@ -258,11 +291,14 @@ final class WorldStreamSession {
             requestClose();
             decoderCanceled.set(true);
             objectsCanceled.set(true);
+            horizonCanceled.set(true);
             decoder.shutdown();
             objectsDecoder.shutdown();
+            horizonDecoder.shutdown();
             // This is a child-only drain. The independent watchdog remains armed throughout it.
             while (!decoder.awaitTermination(100, TimeUnit.MILLISECONDS)
-                    || !objectsDecoder.awaitTermination(100, TimeUnit.MILLISECONDS)) {
+                    || !objectsDecoder.awaitTermination(100, TimeUnit.MILLISECONDS)
+                    || !horizonDecoder.awaitTermination(100, TimeUnit.MILLISECONDS)) {
                 // Do not close a stream under another thread's IO monitor.
             }
             if (decoding != null) {
@@ -474,7 +510,13 @@ final class WorldStreamSession {
     private Decoded decodeOffer(WorldStreamControl.Offer offer) {
         try {
             var tile =
-                    decodeTile(session, directory, offer, decoderCanceled::get, objectsRejections);
+                    decodeTile(
+                            session,
+                            directory,
+                            offer,
+                            decoderCanceled::get,
+                            objectFormats,
+                            objectsRejections);
             return new Decoded(tile, tile.header(), null, null);
         } catch (Throwable error) {
             return new Decoded(null, null, null, error);
@@ -492,14 +534,16 @@ final class WorldStreamSession {
             WorldStreamControl.Offer offer,
             java.util.function.BooleanSupplier canceled)
             throws IOException {
-        return decodeTile(session, directory, offer, canceled, new ObjectsRejections());
+        return decodeTile(session, directory, offer, canceled, 0xE, new ObjectsRejections());
     }
 
+    /** As above, packing objects for a renderer that samples {@code objectFormats} (#374). */
     static WorldStreamPackedTile decodeTile(
             WorldStreamEnvelope.Session session,
             Path directory,
             WorldStreamControl.Offer offer,
             java.util.function.BooleanSupplier canceled,
+            int objectFormats,
             ObjectsRejections rejections)
             throws IOException {
         var expected =
@@ -532,7 +576,7 @@ final class WorldStreamSession {
                                 header.objects(),
                                 canceled);
                 long packing = WorldStageTimings.start();
-                objects = WorldStreamPackedObjects.pack(data, canceled);
+                objects = WorldStreamPackedObjects.pack(data, canceled, objectFormats);
                 WorldStageTimings.stop("child.objects.pack", packing);
                 state = 1;
             } catch (java.util.concurrent.CancellationException stopped) {
@@ -632,13 +676,113 @@ final class WorldStreamSession {
                                                 command,
                                                 coordinate % 64,
                                                 coordinate / 64,
-                                                objectsCanceled::get),
+                                                objectsCanceled::get,
+                                                objectFormats),
                                         null);
                             } catch (Throwable error) {
                                 return new LateDecoded(null, error);
                             }
                         },
                         objectsDecoder);
+    }
+
+    private void takeHorizon() {
+        if (closing.get() || horizonDecoding != null) {
+            return;
+        }
+        var command = mailbox.takeHorizon();
+        if (command == null) {
+            return;
+        }
+        horizonDecoding =
+                CompletableFuture.supplyAsync(
+                        () -> {
+                            try {
+                                return new HorizonDecoded(
+                                        decodeHorizon(directory, command, horizonCanceled::get),
+                                        null);
+                            } catch (Throwable error) {
+                                return new HorizonDecoded(null, error);
+                            }
+                        },
+                        horizonDecoder);
+    }
+
+    /**
+     * Horizon-decoder read of the session's one WDL file: a private regular file of exactly the
+     * announced length and digest, parsed with the WDL reader's own bounds.
+     */
+    static com.vibeminer.formats.world.WorldLowRes.LowRes decodeHorizon(
+            Path directory,
+            WorldStreamControl.Horizon command,
+            java.util.function.BooleanSupplier canceled)
+            throws IOException {
+        Path path = directory.resolve(WorldStreamControl.Horizon.BASENAME);
+        if (!java.nio.file.Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Horizon is not a regular file (links are not followed)");
+        }
+        byte[] bytes;
+        try (var channel =
+                FileChannel.open(path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+            if (channel.size() != command.length()) {
+                throw new IOException("Horizon length differs from its command");
+            }
+            var buffer = java.nio.ByteBuffer.allocate(command.length());
+            while (buffer.hasRemaining()) {
+                if (canceled.getAsBoolean()) {
+                    throw new java.util.concurrent.CancellationException();
+                }
+                if (channel.read(buffer) < 0) {
+                    throw new IOException("Truncated horizon file");
+                }
+            }
+            bytes = buffer.array();
+        }
+        try {
+            String digest =
+                    java.util.HexFormat.of()
+                            .formatHex(
+                                    java.security.MessageDigest.getInstance("SHA-256")
+                                            .digest(bytes));
+            if (!digest.equals(command.sha256())) {
+                throw new IOException("Horizon digest differs from its command");
+            }
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
+        try {
+            return com.vibeminer.formats.world.WorldLowRes.read(bytes, canceled);
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException("Malformed horizon WDL", malformed);
+        }
+    }
+
+    /** Attaches a decoded horizon on the owner thread and answers its one HORIZON_DONE. */
+    private void completeHorizon(WorldStreamNativeOwner owner) {
+        if (horizonDecoding == null || !horizonDecoding.isDone()) {
+            return;
+        }
+        var result = horizonDecoding.join();
+        horizonDecoding = null;
+        if (closing.get()) {
+            return;
+        }
+        WorldStreamStatus.HorizonOutcome outcome;
+        if (result.error() != null) {
+            outcome = WorldStreamStatus.HorizonOutcome.FAILED;
+            System.err.println("World horizon unavailable: " + result.error());
+        } else if (result.lowRes().tiles().isEmpty()) {
+            outcome = WorldStreamStatus.HorizonOutcome.NONE;
+        } else {
+            try {
+                owner.attachHorizon(result.lowRes());
+                outcome = WorldStreamStatus.HorizonOutcome.DRAWN;
+            } catch (IOException | RuntimeException failed) {
+                outcome = WorldStreamStatus.HorizonOutcome.FAILED;
+                System.err.println("World horizon unavailable: " + failed);
+            }
+        }
+        send("HORIZON_DONE 1 " + outcome.name());
     }
 
     /**
@@ -652,6 +796,19 @@ final class WorldStreamSession {
             int tileX,
             int tileY,
             java.util.function.BooleanSupplier canceled)
+            throws IOException {
+        return decodeLateObjects(session, directory, command, tileX, tileY, canceled, 0xE);
+    }
+
+    /** As above, packing for a renderer that samples {@code objectFormats} (#374). */
+    static WorldStreamPackedObjects decodeLateObjects(
+            WorldStreamEnvelope.Session session,
+            Path directory,
+            WorldStreamControl.LateObjects command,
+            int tileX,
+            int tileY,
+            java.util.function.BooleanSupplier canceled,
+            int objectFormats)
             throws IOException {
         if (!session.exteriorObjects()) {
             throw new IOException("Late objects outside the session profile");
@@ -669,7 +826,7 @@ final class WorldStreamSession {
                         new WorldStreamObjectsFile.Reference(command.length(), command.sha256()),
                         canceled);
         long packing = WorldStageTimings.start();
-        var packed = WorldStreamPackedObjects.pack(data, canceled);
+        var packed = WorldStreamPackedObjects.pack(data, canceled, objectFormats);
         WorldStageTimings.stop("child.objects.pack", packing);
         return packed;
     }

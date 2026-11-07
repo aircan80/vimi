@@ -47,13 +47,17 @@ final class WorldStreamMaterialClassProof {
         var builder = WorldStreamTileWriter.Exterior.builder();
         builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(2, 2, 200, 100, 50, 255)));
         builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(2, 2, 0, 0, 200, 128)));
+        // #449: an additive red quad listed before an opaque-alpha blended green quad over the
+        // same pixels, right of the additive blue one.
+        builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(2, 2, 200, 0, 0, 128)));
+        builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(2, 2, 0, 200, 0, 255)));
         builder.model();
-        double[][] spans = {{-1.8, -0.6}, {0.6, 1.8}, {-0.4, 0.4}};
-        var vertices = FloatBuffer.allocate(12 * 8);
-        var indices = IntBuffer.allocate(18);
-        var colours = IntBuffer.allocate(12);
+        double[][] spans = {{-1.8, -0.6}, {0.6, 1.8}, {-0.4, 0.4}, {2.0, 2.8}, {2.0, 2.8}};
+        var vertices = FloatBuffer.allocate(20 * 8);
+        var indices = IntBuffer.allocate(30);
+        var colours = IntBuffer.allocate(20);
         double cp = Math.cos(VIEW.pitch()), sp = Math.sin(VIEW.pitch());
-        for (int q = 0; q < 3; q++) {
+        for (int q = 0; q < 5; q++) {
             for (int corner = 0; corner < 4; corner++) {
                 double right = spans[q][corner == 1 || corner == 2 ? 1 : 0];
                 double up = corner < 2 ? -1 : 1, depth = 5;
@@ -74,12 +78,14 @@ final class WorldStreamMaterialClassProof {
         builder.mesh(
                 vertices,
                 indices,
-                new int[] {0, 6, 0, 6, 6, 1, 12, 6, 0},
+                new int[] {0, 6, 0, 6, 6, 1, 12, 6, 0, 18, 6, 2, 24, 6, 3},
                 new int[] {
                     WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT,
                     // Unlit too, so its full blue is added.
                     WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT,
-                    WorldStreamObjectsFile.OPAQUE
+                    WorldStreamObjectsFile.OPAQUE,
+                    WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT,
+                    WorldStreamObjectsFile.BLENDED | WorldStreamObjectsFile.UNLIT
                 },
                 colours);
         builder.placement(
@@ -96,8 +102,8 @@ final class WorldStreamMaterialClassProof {
     }
 
     /**
-     * Returns "unlit=<argb> additive=<before>-><after> coloured=<argb> colouredOff=<argb>" for the
-     * pass line.
+     * Returns "unlit=<argb> blendedThenAdditive=<argb> additive=<before>-><after> coloured=<argb>
+     * colouredOff=<argb>" for the pass line.
      */
     @SuppressWarnings("try")
     static String run(Path base) throws Exception {
@@ -171,6 +177,15 @@ final class WorldStreamMaterialClassProof {
                             + Integer.toHexString(was)
                             + " -> "
                             + Integer.toHexString(now));
+            // #449: the blended green covers what is behind it, then the additive red adds on top,
+            // although the additive range comes first in the file.
+            int overX = (int) (WIDTH / 2.0 + focal * 2.4 / 5);
+            int over = after[row * WIDTH + overX];
+            require(
+                    Math.abs((over >>> red & 255) - added) <= 2
+                            && Math.abs((over >>> 8 & 255) - 200) <= 2
+                            && (over >>> blue & 255) <= 2,
+                    "Additive after blended: " + Integer.toHexString(over));
             // Lit at a third (facing away from the light) plus the vertex colour, per channel.
             int coloured = after[row * WIDTH + WIDTH / 2];
             int[] texel = {200, 100, 50}, colour = {128, 64, 0}, shift = {red, 8, blue};
@@ -193,13 +208,15 @@ final class WorldStreamMaterialClassProof {
                         Math.abs((plain >>> shift[c] & 255) - expected) <= 1,
                         "Vertex colours off draw the light alone: " + Integer.toHexString(plain));
             }
-            for (int x : new int[] {unlitX, additiveX}) {
+            for (int x : new int[] {unlitX, additiveX, overX}) {
                 require(
                         off[row * WIDTH + x] == after[row * WIDTH + x],
                         "Vertex colours off change only the coloured surface");
             }
             return "unlit="
                     + Integer.toHexString(unlit)
+                    + " blendedThenAdditive="
+                    + Integer.toHexString(over)
                     + " additive="
                     + Integer.toHexString(was)
                     + "->"
