@@ -2185,10 +2185,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /**
      * Bits of a blend key holding its entry: the tile's position in the active (producer) order
-     * above the placement's bits. Five position bits hold FAR's 26 slots (#276); #440 widens the
-     * placement bits when tiles may carry more placements.
+     * above the placement's bits: 13 placement bits for the #308 tile ceiling of 4,160 placements
+     * and 5 position bits for the 26 slots of a far session (#276).
      */
-    static final int BLEND_ENTRY_BITS = 15, BLEND_PLACEMENT_BITS = 10;
+    static final int BLEND_ENTRY_BITS = 18, BLEND_PLACEMENT_BITS = 13;
 
     static {
         // The key's entry bits must hold every active position and every placement of a tile.
@@ -2203,7 +2203,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * the lowest {@link #BLEND_ENTRY_BITS} replaced by the inverted entry. Non-negative doubles
      * order like their bits, so an ascending sort read backwards is farthest first, and equal
      * distances keep active-order-then-placement order, as the stable sort this replaced did. The
-     * dropped mantissa bits are 2^-37 relative.
+     * dropped mantissa bits are 2^-34 relative.
      */
     static long blendKey(double squaredDistance, int position, int placement) {
         if (!(squaredDistance >= 0)

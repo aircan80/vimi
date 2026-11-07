@@ -15,6 +15,7 @@ import com.vibeminer.formats.world.WmoGroupSpans;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldPlacements;
 import com.vibeminer.formats.world.WorldStageTimings;
+import com.vibeminer.rendering.world.ExteriorObjectLimits;
 import com.vibeminer.rendering.world.ObjectTextureFormats;
 import com.vibeminer.rendering.world.ObjectTextureMips;
 import com.vibeminer.rendering.world.TerrainScene;
@@ -47,29 +48,41 @@ import java.util.concurrent.CompletionException;
  */
 public final class WorldExteriorObjects {
     public static final String RECIPE = "BASIC_EXTERIOR_V1";
-    static final int MAX_PLACEMENTS = 64, MAX_ROOTS = 24, MAX_GROUPS = 256, MAX_IMAGES = 64;
-    static final int MAX_VERTICES = 98_304, MAX_INDICES = 294_912;
-    static final int MAX_RANGES = 1024, MAX_MESHES = 256, MAX_PIXELS = 1 << 20;
+    // Pool bounds come from ExteriorObjectLimits, which the objects file sums into its tables.
+    static final int MAX_PLACEMENTS = ExteriorObjectLimits.BUILDING_PLACEMENTS;
+    static final int MAX_ROOTS = ExteriorObjectLimits.BUILDING_ROOTS, MAX_GROUPS = 256;
+    static final int MAX_IMAGES = ExteriorObjectLimits.BUILDING_IMAGES;
+    static final int MAX_VERTICES = ExteriorObjectLimits.BUILDING_VERTICES;
+    static final int MAX_INDICES = ExteriorObjectLimits.BUILDING_INDICES;
+    static final int MAX_RANGES = ExteriorObjectLimits.BUILDING_RANGES;
+    static final int MAX_MESHES = ExteriorObjectLimits.BUILDING_MESHES, MAX_PIXELS = 1 << 20;
 
     /**
-     * BASIC doodad caps, separate from the building caps so buildings are never displaced. Distinct
-     * models are the binding cap on dense tiles: Zephras Isle read 48 models per tile and capped
-     * 791 set doodads at 48, while no tile came near 512 doodad placements, so 96 models (and 96
-     * model images) are read.
+     * BASIC doodad caps, separate from the building caps so buildings are never displaced. The
+     * measured reasons for each bound are on {@link ExteriorObjectLimits} (#308): placements were
+     * the only cap that bound on Elwynn; a placement is 112 bytes in the objects file and draws its
+     * model's ranges, which {@link #MAX_DRAWS} bounds.
      */
-    static final int MAX_DOODADS = 512, MAX_MODELS = 96, MAX_MODEL_IMAGES = 96;
+    static final int MAX_DOODADS = ExteriorObjectLimits.DOODAD_PLACEMENTS;
 
-    static final int MAX_DOODAD_VERTICES = 65_536, MAX_DOODAD_INDICES = 196_608;
-    static final int MAX_DOODAD_RANGES = 512, MAX_DOODAD_PIXELS = 1 << 19;
+    static final int MAX_MODELS = ExteriorObjectLimits.DOODAD_MODELS;
+    static final int MAX_MODEL_IMAGES = ExteriorObjectLimits.DOODAD_IMAGES;
+    static final int MAX_DOODAD_VERTICES = ExteriorObjectLimits.DOODAD_VERTICES;
+    static final int MAX_DOODAD_INDICES = ExteriorObjectLimits.DOODAD_INDICES;
+    static final int MAX_DOODAD_RANGES = ExteriorObjectLimits.DOODAD_RANGES;
+    static final int MAX_DOODAD_PIXELS = 1 << 19;
 
     /**
      * Cutout and blended building surfaces have their own budget on top of the opaque building
      * caps, so admitting them never caps, displaces or fails a surface the opaque profile draws.
      */
-    static final int MAX_MATERIAL_IMAGES = 32, MAX_MATERIAL_PIXELS = 1 << 18;
+    static final int MAX_MATERIAL_IMAGES = ExteriorObjectLimits.MATERIAL_IMAGES;
 
-    static final int MAX_MATERIAL_VERTICES = 32_768, MAX_MATERIAL_INDICES = 98_304;
-    static final int MAX_MATERIAL_RANGES = 256;
+    static final int MAX_MATERIAL_PIXELS = 1 << 18;
+
+    static final int MAX_MATERIAL_VERTICES = ExteriorObjectLimits.MATERIAL_VERTICES;
+    static final int MAX_MATERIAL_INDICES = ExteriorObjectLimits.MATERIAL_INDICES;
+    static final int MAX_MATERIAL_RANGES = ExteriorObjectLimits.MATERIAL_RANGES;
 
     /**
      * Per-tile object texture budgets (#267). STANDARD keeps the original pixel budgets; HIGH
@@ -118,8 +131,8 @@ public final class WorldExteriorObjects {
      */
     static final long RETAINED_SOURCE_BYTES = 32L << 20;
 
-    /** Per-tile draw budget: the sum over all placements of their model's ranges. */
-    static final int MAX_DRAWS = 4096;
+    /** Per-tile draw budget: the sum over all placements of their model's ranges (#308). */
+    static final int MAX_DRAWS = ExteriorObjectLimits.DRAWS;
 
     /** Largest admitted placement scale (building scale times doodad scale). */
     static final double MAX_SCALE = 64;
@@ -498,6 +511,17 @@ public final class WorldExteriorObjects {
          * also count in IMAGE_MIPS_FILE.
          */
         IMAGE_BLOCKS,
+        /**
+         * Why capped doodads were left out (#308), over MDDF and set doodads together: these four
+         * sum to DOODAD_CAPPED + SET_DOODAD_CAPPED. The tile's doodad placements were full
+         * (MAX_DOODADS), its distinct doodad models were all read (MAX_MODELS), the doodad's model
+         * was over the remaining doodad vertex, index or range budget (MODEL_CAPPED), or its draws
+         * were over the tile's remaining draw budget (MAX_DRAWS).
+         */
+        DOODAD_CAP_PLACEMENTS,
+        DOODAD_CAP_MODELS,
+        DOODAD_CAP_MODEL_SIZE,
+        DOODAD_CAP_DRAWS,
         /**
          * Chains allotted as sampled blocks whose blocks were not usable (issue #374): decoded to
          * RGBA8 instead, at the largest level costing no more than the blocks were charged.
@@ -1989,21 +2013,27 @@ public final class WorldExteriorObjects {
                 double sin,
                 Rotation rotation) {
             if (doodads >= MAX_DOODADS) {
+                count(Count.DOODAD_CAP_PLACEMENTS);
                 return RootState.CAPPED;
             }
             var state = doodadStates.get(modelId);
             if (state == null) {
                 if (modelsRead >= MAX_MODELS) {
+                    count(Count.DOODAD_CAP_MODELS);
                     return RootState.CAPPED;
                 }
                 state = readModel(modelId);
                 doodadStates.put(modelId, state);
             }
             if (state != RootState.DRAWN) {
+                if (state == RootState.CAPPED) {
+                    count(Count.DOODAD_CAP_MODEL_SIZE);
+                }
                 return state;
             }
             int model = doodadSlots.get(modelId), cost = modelDraws(model);
             if (cost > MAX_DRAWS - draws) {
+                count(Count.DOODAD_CAP_DRAWS);
                 return RootState.CAPPED;
             }
             draws += cost;

@@ -294,10 +294,11 @@ public final class WorldStreamObjectsMaterialProof {
                 0, VIEW.x(), VIEW.y(), VIEW.z(), 1, new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1});
         builder.placement(
                 1, VIEW.x(), VIEW.y(), VIEW.z(), 1, new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1});
-        // Fill the tile to the placement cap behind the camera (looking along +x), so every frame
-        // tests all of them in the opaque/cutout pass and again in the sorted blended pass; the
-        // CPU cull skips them (WorldStreamObjectsCullProof compares it with culling off).
-        while (builder.placementRoom() > 0) {
+        // Fill the tile to the placement or draw cap, whichever binds first, behind the camera
+        // (looking along +x), so every frame tests all of them in the opaque/cutout pass and again
+        // in the sorted blended pass; the CPU cull skips them (WorldStreamObjectsCullProof compares
+        // it with culling off).
+        while (builder.placementRoom() > 0 && builder.drawCost(0) <= builder.drawRoom()) {
             int i = builder.placementCount();
             builder.placement(
                     0,

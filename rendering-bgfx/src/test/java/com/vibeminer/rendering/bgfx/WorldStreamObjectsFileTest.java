@@ -479,7 +479,8 @@ final class WorldStreamObjectsFileTest {
         assertEquals(24 * chain * 4, read.imageBytes());
         // The pixel cap is the HIGH tier's chain budgets: 2,796,203 + 699,051 + 1,398,101.
         assertEquals(4_893_355, WorldStreamObjectsFile.MAX_PIXELS);
-        // Every table at its cap needs about 27 MB, under the 28 MiB ceiling with headroom.
+        // Every table at its cap fits the ceiling, which is derived from them (#308): 28 MiB with
+        // the vertex colours of #375.
         long caps =
                 WorldStreamObjectsFile.length(
                         WorldStreamObjectsFile.MAX_MODELS,
@@ -515,7 +516,8 @@ final class WorldStreamObjectsFileTest {
             indices[r * 3 + 2] = 2;
         }
         draws.mesh(FloatBuffer.wrap(new float[24]), IntBuffer.wrap(indices), ranges);
-        for (int p = 0; p < 5; p++) {
+        // 1,024 ranges per placement: one more placement than the draw budget allows.
+        for (int p = 0; p <= WorldStreamObjectsFile.MAX_DRAWS / 1024; p++) {
             draws.placement(0, 0, 0, 0, 1, 1, 0);
         }
         var budget = assertThrows(IllegalArgumentException.class, draws::build);
