@@ -10,6 +10,7 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.tables.AuthoredNativeMap;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldPlacements;
+import com.vibeminer.formats.world.WorldStageTimings;
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -288,6 +289,18 @@ class WorldExteriorObjectsTest {
                     detail);
         }
 
+        /** A dungeon or raid map: interior WMO groups are drawn too (#280). */
+        WorldExteriorObjects.TileObjects runInstance() {
+            return WorldExteriorObjects.prepare(
+                    engine,
+                    scope,
+                    TILE,
+                    Cancellation.NONE,
+                    WorldExteriorObjects.ModelReader.STANDARD,
+                    WorldExteriorObjects.ImageDetail.STANDARD,
+                    true);
+        }
+
         WorldExteriorObjects.TileObjects run(WorldExteriorObjects.ModelReader reader) {
             return WorldExteriorObjects.prepare(engine, scope, TILE, Cancellation.NONE, reader);
         }
@@ -332,6 +345,40 @@ class WorldExteriorObjectsTest {
     }
 
     // ---- tests ------------------------------------------------------------------------------
+
+    @Test
+    void stageTimingsTallyEveryCountAndTimeTheTileWhenEnabled() {
+        WorldStageTimings.reset();
+        WorldStageTimings.enable(true);
+        try (var f = new Fixture(List.of(new Modf(ROOT, 77, 0, 100, 20, 300, 0, 90, 0, 1024)));
+                var set = f.run()) {
+            set.tallyCounts();
+            var snapshot = WorldStageTimings.snapshot();
+            assertEquals(1, snapshot.get("objects.count.tiles").sum());
+            for (var count : WorldExteriorObjects.Count.values()) {
+                var series = snapshot.get("objects.count." + count.name());
+                assertEquals(set.count(count), series == null ? 0 : series.sum(), count.name());
+            }
+            assertEquals(set.vertices(), snapshot.get("objects.count.vertices").sum());
+            assertEquals(1, snapshot.get("objects.tile.total").count());
+            assertTrue(snapshot.get("source.read.BASIC_EXTERIOR").count() > 0);
+            assertTrue(snapshot.get("objects.phase.buildings").count() == 1);
+        } finally {
+            WorldStageTimings.enable(false);
+            WorldStageTimings.reset();
+        }
+    }
+
+    @Test
+    void stageTimingsStayEmptyWhenDisabled() {
+        WorldStageTimings.reset();
+        WorldStageTimings.enable(false);
+        try (var f = new Fixture(List.of(new Modf(ROOT, 77, 0, 100, 20, 300, 0, 90, 0, 1024)));
+                var set = f.run()) {
+            set.tallyCounts();
+            assertTrue(WorldStageTimings.snapshot().series().isEmpty());
+        }
+    }
 
     @Test
     void multiPlacementMultiGroupExteriorSetSharesOneModelAndKeepsAdtTransforms() {
@@ -515,6 +562,235 @@ class WorldExteriorObjectsTest {
                 assertPlacementsAccounted(set, records.size());
                 assertEquals(1, f.files.opens.get(101L).get());
                 assertEquals(null, f.files.opens.get(106L), "oversize declined before opening");
+            }
+        }
+    }
+
+    @Test
+    void instanceMapsDrawInteriorGroupsAfterTheExterior() {
+        // One root: an interior group recorded first, then an exterior group, then a group with
+        // neither flag. On an open-world map the interior is omitted; on a dungeon or raid map it
+        // draws, and the flagless group stays unsupported either way.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(INTERIOR, GROUP, 210));
+            f.files.sources.put(210L, group(0x1));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+            }
+            try (var set = f.runInstance()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_UNSUPPORTED));
+                assertEquals(2, set.models().getFirst().meshes().size());
+            }
+        }
+        // An interior-only root (a dungeon's own building) draws on an instance map.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(INTERIOR));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_EMPTY));
+            }
+            try (var set = f.runInstance()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+            }
+        }
+    }
+
+    @Test
+    void anInteriorOnlyRootNeedsAFreeBuildingSlot() {
+        // A larger interior-only root is admitted first without taking a slot (it has no opaque
+        // draws yet); 64 exterior placements then fill every slot. Its interior must not make
+        // it a 65th building: it is capped, not drawn.
+        long interiorRoot = 120;
+        var records = new ArrayList<Modf>();
+        for (int i = 0; i < 64; i++) {
+            records.add(Modf.of(ROOT, 1 + i, 0x8));
+        }
+        records.add(Modf.of(interiorRoot, 100, 0x8).sized(50));
+        try (var f = new Fixture(records)) {
+            f.files.sources.put(interiorRoot, root(INTERIOR));
+            try (var set = f.runInstance()) {
+                assertEquals(64, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(64, set.placements().size());
+                assertTrue(set.placements().stream().noneMatch(p -> p.rootId() == interiorRoot));
+            }
+            // With a free slot the same interior-only root draws.
+            records.removeFirst();
+        }
+        try (var f = new Fixture(records)) {
+            f.files.sources.put(interiorRoot, root(INTERIOR));
+            try (var set = f.runInstance()) {
+                assertEquals(64, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertTrue(set.placements().stream().anyMatch(p -> p.rootId() == interiorRoot));
+            }
+        }
+    }
+
+    @Test
+    void doodadsKeepTheirDrawsAheadOfInstanceInteriors() {
+        // One exterior building (1 draw), an interior-only root placed 60 times and 300 MDDF
+        // doodads (1 draw each). The interior group's batch count is derived from MAX_DRAWS so
+        // that the interior alone fits but not after the doodads: the doodads and the exterior are
+        // spent first, and the interior is what is capped, never a doodad.
+        long interiorRoot = 120;
+        int batchCount = (WorldExteriorObjects.MAX_DRAWS - 1 - 300) / 60 + 1;
+        var batches = new ArrayList<Batch>();
+        for (int b = 0; b < batchCount; b++) {
+            batches.add(new Batch(b * 3, 3, 0, 0));
+        }
+        var records = new ArrayList<Modf>();
+        records.add(Modf.of(ROOT, 1, 0x8));
+        for (int i = 0; i < 60; i++) {
+            records.add(Modf.of(interiorRoot, 100 + i, 0x8));
+        }
+        var doodads = new ArrayList<Mddf>();
+        for (int i = 0; i < 300; i++) {
+            doodads.add(Mddf.of(MODEL, 1000 + i, 0x40));
+        }
+        try (var f = new Fixture(records)) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(interiorRoot, root(INTERIOR));
+            f.files.sources.put(INTERIOR, group(INT, 3, batchCount, batches));
+            f.files.sources.put(4L, obj0(records, doodads));
+            assertTrue(1 + 60 * batchCount + 300 > WorldExteriorObjects.MAX_DRAWS);
+            assertTrue(1 + 60 * batchCount <= WorldExteriorObjects.MAX_DRAWS);
+            try (var set = f.runInstance()) {
+                assertEquals(300, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertTrue(set.placements().stream().noneMatch(p -> p.rootId() == interiorRoot));
+                assertTrue(set.placements().stream().anyMatch(p -> p.rootId() == ROOT));
+            }
+        }
+        // With only the doodads that fit (no more than MAX_DRAWS leaves), the interior fits after
+        // them and draws too.
+        try (var f = new Fixture(records)) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(interiorRoot, root(INTERIOR));
+            f.files.sources.put(INTERIOR, group(INT, 3, batchCount, batches));
+            int fitting = WorldExteriorObjects.MAX_DRAWS - 1 - 60 * batchCount;
+            f.files.sources.put(4L, obj0(records, doodads.subList(0, fitting)));
+            try (var set = f.runInstance()) {
+                assertEquals(fitting, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(
+                        60,
+                        set.placements().stream().filter(p -> p.rootId() == interiorRoot).count());
+            }
+        }
+    }
+
+    @Test
+    void interiorsNeverCostExteriorCutoutOrBlendedDraws() {
+        // 64 placements of a building with 32 opaque and 31 cutout batches draw 4,032 of the
+        // 4,096-draw budget. A 2-range interior would need 128 more: it is capped, and the
+        // exterior's cutout batches are all still drawn, exactly as without interiors.
+        var batches = new ArrayList<Batch>();
+        for (int i = 0; i < 63; i++) {
+            batches.add(new Batch(i * 3, 3, 0, i < 32 ? 0 : 1));
+        }
+        var records = new ArrayList<Modf>();
+        for (int i = 0; i < 64; i++) {
+            records.add(Modf.of(ROOT, 1 + i, 0x8));
+        }
+        java.util.function.Function<Boolean, Map<WorldExteriorObjects.Count, Integer>> run =
+                interiors -> {
+                    try (var f = new Fixture(records)) {
+                        f.files.sources.put(
+                                ROOT,
+                                root(
+                                        2,
+                                        new long[] {GROUP, INTERIOR},
+                                        List.of(
+                                                new Material(0, IMAGE, 0),
+                                                new Material(1, IMAGE2, 0))));
+                        f.files.sources.put(GROUP, group(EXT, 3, 63, batches));
+                        f.files.sources.put(
+                                INTERIOR,
+                                group(
+                                        INT,
+                                        3,
+                                        2,
+                                        List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 0))));
+                        try (var set = interiors ? f.runInstance() : f.run()) {
+                            return counts(set);
+                        }
+                    }
+                };
+        var without = run.apply(false);
+        var with = run.apply(true);
+        assertEquals(31, with.get(WorldExteriorObjects.Count.BATCH_CUTOUT));
+        assertEquals(
+                without.get(WorldExteriorObjects.Count.BATCH_CUTOUT),
+                with.get(WorldExteriorObjects.Count.BATCH_CUTOUT));
+        assertEquals(
+                without.get(WorldExteriorObjects.Count.BATCH_DRAWN),
+                with.get(WorldExteriorObjects.Count.BATCH_DRAWN));
+        assertNull(with.get(WorldExteriorObjects.Count.BATCH_CAPPED));
+        assertEquals(1, with.get(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+    }
+
+    @Test
+    void anInteriorOnlyRootWhoseGroupsAllFailIsRemovedWithItsDoodads() {
+        // The held interior group's image is missing, so nothing draws: the root and its
+        // placement are EMPTY, and its doodad set is not placed.
+        var chunks =
+                doodadChunks(
+                        new int[][] {{0, 1}},
+                        new long[] {MODEL},
+                        List.of(new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 1}, 1)));
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT,
+                    root(1, new long[] {INTERIOR}, List.of(new Material(0, 4444, 0)), chunks));
+            try (var set = f.runInstance()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_EMPTY));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_EMPTY));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertTrue(set.placements().isEmpty());
+                assertTrue(set.models().isEmpty());
+            }
+        }
+    }
+
+    @Test
+    void heldInteriorCopiesAreBoundedWhileReading() {
+        // Three 65,536-vertex interior groups: two fit the held bound (both budgets together,
+        // 131,072 vertices); the third is counted capped as it is read. Of the two held, one fits
+        // the vertex budget left after the exterior.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(GROUP, 211, 212, 213));
+            for (long id = 211; id <= 213; id++) {
+                f.files.sources.put(id, group(INT, 65536, 1, List.of(new Batch(0, 3, 0, 0))));
+            }
+            try (var set = f.runInstance()) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(3 + 65536, set.vertices());
+            }
+        }
+    }
+
+    @Test
+    void anInteriorThatDoesNotFitIsSkippedWithoutCappingTheExterior() {
+        // A 65,536-vertex exterior group leaves 32,768 opaque vertices; a 40,000-vertex interior
+        // group recorded before it is skipped alone, and the building keeps its exterior.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(INTERIOR, GROUP));
+            f.files.sources.put(GROUP, group(EXT, 65536, 1, List.of(new Batch(0, 3, 0, 0))));
+            f.files.sources.put(INTERIOR, group(INT, 40000, 1, List.of(new Batch(0, 3, 0, 0))));
+            try (var set = f.runInstance()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(65536, set.vertices());
             }
         }
     }
@@ -1061,7 +1337,7 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
-    void imageReadCapCountsMissingImagesDeterministically() {
+    void imageReadCapCountsCappedImagesDeterministically() {
         // WmoGroupSpans admits at most 64 batches per group, so two groups carry 66 materials.
         var materials = new ArrayList<Material>();
         var first = new ArrayList<Batch>();
@@ -1080,7 +1356,9 @@ class WorldExteriorObjectsTest {
             try (var set = f.run()) {
                 assertEquals(64, set.images().size());
                 assertEquals(64, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
-                assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
+                // Over the image count cap: a budget, reported as such (#280 review).
+                assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_IMAGE_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
                 assertEquals(2, set.count(WorldExteriorObjects.Count.IMAGE_CAPPED));
                 assertEquals(null, f.files.opens.get(3064L));
                 assertEquals(3063L, set.images().getLast().id());

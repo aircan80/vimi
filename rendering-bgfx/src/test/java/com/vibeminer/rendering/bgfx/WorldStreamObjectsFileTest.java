@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.vibeminer.rendering.world.ObjectTextureFormats;
 import com.vibeminer.rendering.world.ObjectTextureMips;
 import com.vibeminer.rendering.world.TerrainScene;
 import java.io.IOException;
@@ -161,7 +162,166 @@ final class WorldStreamObjectsFileTest {
         assertTrue(maximum.bytes() <= WorldStreamObjectsFile.MAX_BYTES);
         var reference = write(maximum);
         var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
-        assertEquals(WorldStreamObjectsFile.MAX_PIXELS, read.pixelCount());
+        assertEquals(WorldStreamObjectsFile.MAX_IMAGE_BYTES, read.imageBytes());
+    }
+
+    @Test
+    void compressedChainsRoundTripByteForByteWithTheirFormat() throws Exception {
+        // Distinct bytes per image, so any reordering or re-encoding would show.
+        int bc1 = ObjectTextureFormats.chainBytes(ObjectTextureFormats.BC1, 256, 64);
+        int bc3 = ObjectTextureFormats.chainBytes(ObjectTextureFormats.BC3, 16, 16);
+        var blocks1 = new byte[bc1];
+        var blocks3 = new byte[bc3];
+        for (int i = 0; i < bc1; i++) {
+            blocks1[i] = (byte) (i * 7 + 1);
+        }
+        for (int i = 0; i < bc3; i++) {
+            blocks3[i] = (byte) (i * 13 + 5);
+        }
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        assertEquals(0, builder.image(256, 64, ObjectTextureFormats.BC1, ByteBuffer.wrap(blocks1)));
+        assertEquals(1, builder.image(2, 2, chain(2, 2, rgba(4, 1))));
+        assertEquals(2, builder.image(16, 16, ObjectTextureFormats.BC3, ByteBuffer.wrap(blocks3)));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> builder.image(16, 16, ObjectTextureFormats.BC1, ByteBuffer.wrap(blocks3)),
+                "a BC1 chain is half the BC3 size");
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> builder.image(16, 16, 4, ByteBuffer.wrap(blocks3)),
+                "unknown format");
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        builder.image(
+                                2,
+                                2,
+                                ObjectTextureFormats.BC3,
+                                ByteBuffer.allocate(
+                                        ObjectTextureFormats.chainBytes(
+                                                ObjectTextureFormats.BC3, 2, 2))),
+                "a compressed top level is at least one block");
+        builder.model();
+        builder.mesh(
+                FloatBuffer.wrap(new float[24]),
+                IntBuffer.wrap(new int[] {0, 1, 2}),
+                new int[] {0, 3, 2});
+        builder.placement(0, 0, 0, 0, 1, 1, 0);
+        var exterior = builder.build();
+        var reference = write(exterior);
+        var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
+        assertArrayEquals(
+                new int[] {
+                    256, 64, ObjectTextureFormats.BC1,
+                    2, 2, ObjectTextureFormats.RGBA8,
+                    16, 16, ObjectTextureFormats.BC3
+                },
+                read.images);
+        int rgba = ObjectTextureMips.chainPixels(2, 2) * 4;
+        assertEquals(bc1 + rgba + bc3, read.imageBytes());
+        assertArrayEquals(blocks1, java.util.Arrays.copyOfRange(read.pixels, 0, bc1));
+        assertArrayEquals(
+                blocks3, java.util.Arrays.copyOfRange(read.pixels, bc1 + rgba, bc1 + rgba + bc3));
+        try (var packed = WorldStreamPackedObjects.pack(read, () -> false)) {
+            assertEquals(3, packed.imageCount());
+            assertEquals(ObjectTextureFormats.BC3, packed.format(2));
+            assertEquals(bc1 + rgba, packed.imageOffset(2));
+            assertEquals(blocks3[0], packed.pixels.get(packed.imageOffset(2)));
+        }
+        // A file whose image table names an unknown format never validates.
+        var table = read.images.clone();
+        table[2] = 7;
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new WorldStreamObjectsFile.Data(
+                                read.models,
+                                read.meshes,
+                                read.ranges,
+                                read.placementModels,
+                                read.placements,
+                                table,
+                                read.vertices,
+                                read.colours,
+                                read.indices,
+                                read.pixels));
+        // A BC1 image drawn by a cutout or blended range is refused: its alpha is not sampled
+        // on every backend.
+        // The check reads the kind, so the unlit flag and the additive kind (#367) count too.
+        for (int kind :
+                new int[] {
+                    WorldStreamObjectsFile.CUTOUT,
+                    WorldStreamObjectsFile.BLENDED,
+                    WorldStreamObjectsFile.ADDITIVE,
+                    WorldStreamObjectsFile.CUTOUT | WorldStreamObjectsFile.UNLIT
+                }) {
+            var alpha = WorldStreamTileWriter.Exterior.builder();
+            alpha.image(256, 64, ObjectTextureFormats.BC1, ByteBuffer.wrap(blocks1));
+            alpha.model();
+            alpha.mesh(
+                    FloatBuffer.wrap(new float[24]),
+                    IntBuffer.wrap(new int[] {0, 1, 2}),
+                    new int[] {0, 3, 0},
+                    new int[] {kind});
+            alpha.placement(0, 0, 0, 0, 1, 1, 0);
+            assertEquals(
+                    "BC1 image sampled with alpha",
+                    assertThrows(IllegalArgumentException.class, alpha::build).getMessage());
+        }
+        // An unlit opaque range ignores alpha too, so it may sample BC1: the flag does not change
+        // the kind.
+        var unlit = WorldStreamTileWriter.Exterior.builder();
+        unlit.image(256, 64, ObjectTextureFormats.BC1, ByteBuffer.wrap(blocks1));
+        unlit.model();
+        unlit.mesh(
+                FloatBuffer.wrap(new float[24]),
+                IntBuffer.wrap(new int[] {0, 1, 2}),
+                new int[] {0, 3, 0},
+                new int[] {WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT});
+        unlit.placement(0, 0, 0, 0, 1, 1, 0);
+        assertEquals(
+                WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT,
+                unlit.build().data().ranges[3]);
+        // The file carries version 6: the reader accepts no other. A version 3 file (two-int
+        // RGBA8-only image table) or a stale version 4 file (#420, before the additive and unlit
+        // classes of #367) fails its header check instead of being misread.
+        var clean = Files.readAllBytes(objectsPath());
+        assertEquals(WorldStreamObjectsFile.VERSION, clean[8]);
+        assertEquals(6, WorldStreamObjectsFile.VERSION);
+        // A version 5 file (#367, before the vertex colours of #375) is stale as well.
+        for (byte stale : new byte[] {3, 4, 5}) {
+            var bytes = clean.clone();
+            bytes[8] = stale;
+            Files.write(objectsPath(), bytes);
+            var refused =
+                    assertThrows(
+                            IOException.class,
+                            () ->
+                                    WorldStreamObjectsFile.read(
+                                            objectsPath(), IDENTITY, reference, () -> false));
+            assertEquals("Objects header identity", refused.getCause().getMessage());
+        }
+    }
+
+    @Test
+    void compressedImagesAreChargedTheirDecodedSizeToo() {
+        // 56 BC1 256^2 chains take 2.4 MB stored but 19.6 MB decoded, the RGBA8 profile a
+        // backend without BC sampling must stay within; a 57th is refused although its 43,704
+        // stored bytes would fit.
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        int stored = ObjectTextureFormats.chainBytes(ObjectTextureFormats.BC1, 256, 256);
+        long decoded = 4L * ObjectTextureMips.chainPixels(256, 256);
+        assertEquals(56, WorldStreamObjectsFile.MAX_DECODED_BYTES / decoded);
+        for (int i = 0; i < 56; i++) {
+            builder.image(256, 256, ObjectTextureFormats.BC1, ByteBuffer.allocate(stored));
+        }
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        builder.image(
+                                256, 256, ObjectTextureFormats.BC1, ByteBuffer.allocate(stored)));
+        assertFalse(builder.fits(1, ObjectTextureMips.chainPixels(256, 256), 1, 3, 3, 1));
+        assertTrue(56L * stored < WorldStreamObjectsFile.MAX_IMAGE_BYTES);
     }
 
     @Test
@@ -187,7 +347,7 @@ final class WorldStreamObjectsFileTest {
         var maximum = builder.build();
         assertTrue(maximum.bytes() <= WorldStreamObjectsFile.MAX_BYTES);
         assertEquals(
-                WorldStreamObjectsFile.length(1, 10, 10, 1, 24, 163_840, 491_520, 24 * chain),
+                WorldStreamObjectsFile.length(1, 10, 10, 1, 24, 163_840, 491_520, 24 * chain * 4),
                 maximum.bytes());
         // Every table at its cap still fits the ceiling.
         assertTrue(
@@ -199,13 +359,13 @@ final class WorldStreamObjectsFileTest {
                                 WorldStreamObjectsFile.MAX_IMAGES,
                                 WorldStreamObjectsFile.MAX_VERTICES,
                                 WorldStreamObjectsFile.MAX_INDICES,
-                                WorldStreamObjectsFile.MAX_PIXELS)
+                                WorldStreamObjectsFile.MAX_IMAGE_BYTES)
                         <= WorldStreamObjectsFile.MAX_BYTES);
         var reference = write(maximum);
         var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
         assertEquals(163_840, read.vertexCount());
         assertEquals(491_520, read.indexCount());
-        assertEquals(24 * chain, read.pixelCount());
+        assertEquals(24 * chain * 4, read.imageBytes());
         // The pixel cap is the HIGH tier's chain budgets: 2,796,203 + 699,051 + 1,398,101.
         assertEquals(4_893_355, WorldStreamObjectsFile.MAX_PIXELS);
         // Every table at its cap needs about 27 MB, under the 28 MiB ceiling with headroom.
@@ -218,7 +378,7 @@ final class WorldStreamObjectsFileTest {
                         WorldStreamObjectsFile.MAX_IMAGES,
                         WorldStreamObjectsFile.MAX_VERTICES,
                         WorldStreamObjectsFile.MAX_INDICES,
-                        WorldStreamObjectsFile.MAX_PIXELS);
+                        WorldStreamObjectsFile.MAX_IMAGE_BYTES);
         assertTrue(caps > (25 << 20) && caps <= WorldStreamObjectsFile.MAX_BYTES, "caps " + caps);
         // The ceiling itself is enforced by the reference and by the tile header.
         assertThrows(
@@ -646,7 +806,7 @@ final class WorldStreamObjectsFileTest {
                     // Version 6 (#375): the two-sided flag round-trips.
                     WorldStreamObjectsFile.CUTOUT | WorldStreamObjectsFile.TWO_SIDED,
                     WorldStreamObjectsFile.BLENDED,
-                    // Version 4 (#367): additive and the unlit flag round-trip.
+                    // Version 5 (#367): additive and the unlit flag round-trip.
                     WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT,
                     WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT
                 });
@@ -665,8 +825,9 @@ final class WorldStreamObjectsFileTest {
         assertEquals(6, WorldStreamObjectsFile.VERSION);
         assertEquals(h, read.placements[8], 0);
         // An unknown class, a scaled matrix or a reflection is refused.
-        // Modulate (4) and unknown flags stay refused.
-        for (int unknown : new int[] {4, WorldStreamObjectsFile.OPAQUE | 0x400}) {
+        // Modulate (4) and unknown flag bits stay refused: 0x400 alone and beside a known kind
+        // (0x200 is TWO_SIDED since version 6).
+        for (int unknown : new int[] {4, 0x400, WorldStreamObjectsFile.OPAQUE | 0x400}) {
             var badClass = WorldStreamTileWriter.Exterior.builder();
             badClass.image(1, 1, ByteBuffer.allocate(4));
             badClass.model();
@@ -678,7 +839,8 @@ final class WorldStreamObjectsFileTest {
             badClass.placement(0, 0, 0, 0, 1, 1, 0);
             assertEquals(
                     "Draw range",
-                    assertThrows(IllegalArgumentException.class, badClass::build).getMessage());
+                    assertThrows(IllegalArgumentException.class, badClass::build).getMessage(),
+                    "Class " + Integer.toHexString(unknown));
         }
         for (double[] rotation :
                 new double[][] {

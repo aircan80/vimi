@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit;
 /** Uses the actual native Map preparation and actual checked WDT/ADT/BLP source factory. */
 public final class WorldStreamSourceBridgeTest {
     private WorldStreamSourceBridgeTest() {}
-    private static final WorldFormats.Tile TILE =
+    static final WorldFormats.Tile TILE =
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
     public static void main(String[] args) throws Exception {
@@ -34,6 +34,113 @@ public final class WorldStreamSourceBridgeTest {
         pickSourcesFollowCopiedPlacements();
         terrainProducerNeverWaitsForObjects();
         objectsStatusShowsDrawnAndOmittedCounts();
+        waterCopyMergesFullFlatChunksOnly();
+        waterCopyCapsWholeLayersAtThePacketBound();
+    }
+
+    /**
+     * Authored source water: each layer is (width, height, mask, planar); every cell emits NW, NE,
+     * SW, SE with north = row (+1 for the south corners), west = column (+1 for the east ones)
+     * and up = layer + corner / 10 when the layer is not planar.
+     */
+    private record AuthoredWater(int[][] shape, long[] masks, boolean[] planar)
+            implements WorldStreamSourceBridge.WaterCopy.Cells {
+        int cells(int layer) { return Long.bitCount(masks[layer]); }
+        int total() {
+            int n = 0;
+            for (int l = 0; l < masks.length; l++) n += cells(l);
+            return n;
+        }
+        /** Layer, cell ordinal (Y-major among set bits), corner of a vertex. */
+        int[] locate(int vertex) {
+            int cell = vertex / 4;
+            for (int l = 0; l < masks.length; l++) {
+                if (cell < cells(l)) {
+                    int seen = -1;
+                    for (int bit = 0; bit < 64; bit++) {
+                        if ((masks[l] & (1L << bit)) != 0 && ++seen == cell)
+                            return new int[] {l, bit, vertex % 4};
+                    }
+                }
+                cell -= cells(l);
+            }
+            throw new IndexOutOfBoundsException(vertex);
+        }
+        @Override public int vertices() { return total() * 4; }
+        @Override public int indices() { return total() * 6; }
+        @Override public int layers() { return masks.length; }
+        @Override public int width(int layer) { return shape[layer][0]; }
+        @Override public int height(int layer) { return shape[layer][1]; }
+        @Override public long mask(int layer) { return masks[layer]; }
+        @Override public boolean planar(int layer) { return planar[layer]; }
+        @Override public float north(int vertex) {
+            var at = locate(vertex);
+            return at[1] / width(at[0]) + at[2] / 2;
+        }
+        @Override public float west(int vertex) {
+            var at = locate(vertex);
+            return at[1] % width(at[0]) + at[2] % 2;
+        }
+        @Override public float up(int vertex) {
+            var at = locate(vertex);
+            return planar[at[0]] ? 5 : 5 + at[2] / 10f;
+        }
+        @Override public int depth(int vertex) { return locate(vertex)[2] + 10; }
+    }
+
+    /**
+     * Open sea is whole flat chunks: one quad each draws the same plane as 64 cells. A sloped
+     * full chunk or a partial one keeps every cell.
+     */
+    private static void waterCopyMergesFullFlatChunksOnly() {
+        var source = new AuthoredWater(new int[][] {{8, 8}, {8, 8}, {4, 2}},
+                new long[] {-1L, -1L, 0b1011}, new boolean[] {true, false, true});
+        var copy = WorldStreamSourceBridge.WaterCopy.of(source, Cancellation.NONE);
+        var water = copy.water();
+        check(water.cells() == 1 + 64 + 3 && copy.sourceCells() == 64 + 64 + 3
+                        && copy.layers() == 3 && !copy.capped(),
+                "One quad for the flat full chunk, every cell otherwise: " + water.cells());
+        var p = water.positions();
+        // The merged quad spans the chunk: NW (0,0), NE (0,8), SW (8,0), SE (8,8).
+        float[] corners = {0, 0, 0, 8, 8, 0, 8, 8};
+        for (int c = 0; c < 4; c++) {
+            check(p[c * 3] == corners[c * 2] && p[c * 3 + 1] == corners[c * 2 + 1]
+                            && p[c * 3 + 2] == 5 && water.depths()[c] == 10 + c,
+                    "Merged corner " + c + " comes from the chunk's corner cell");
+        }
+        // The sloped chunk's first cell keeps its own corner heights.
+        check(p[4 * 3 + 2] == 5f && p[5 * 3 + 2] == 5.1f && p[7 * 3 + 2] == 5.3f,
+                "Sloped cells keep their heights");
+        var indices = water.indices();
+        for (int q = 0; q < water.cells(); q++) {
+            int b = q * 4;
+            check(indices[q * 6] == b && indices[q * 6 + 1] == b + 2 && indices[q * 6 + 2] == b + 1
+                            && indices[q * 6 + 3] == b + 1 && indices[q * 6 + 4] == b + 2
+                            && indices[q * 6 + 5] == b + 3,
+                    "Every quad keeps the NE-SW diagonal");
+        }
+    }
+
+    /** Layers are copied whole in source order; the first one past 8192 quads stops the copy. */
+    private static void waterCopyCapsWholeLayersAtThePacketBound() {
+        int layers = 129;
+        var shape = new int[layers][];
+        var masks = new long[layers];
+        var planar = new boolean[layers];
+        for (int l = 0; l < layers; l++) {
+            shape[l] = new int[] {8, 8};
+            masks[l] = -1L;
+        }
+        var copy = WorldStreamSourceBridge.WaterCopy.of(
+                new AuthoredWater(shape, masks, planar), Cancellation.NONE);
+        check(copy.capped() && copy.layers() == 128 && copy.water().cells() == 8192,
+                "128 sloped full chunks fill the bound and the 129th is left out: "
+                        + copy.layers() + " " + copy.water().cells());
+        planar[0] = planar[1] = true;
+        var merged = WorldStreamSourceBridge.WaterCopy.of(
+                new AuthoredWater(shape, masks, planar), Cancellation.NONE);
+        check(!merged.capped() && merged.layers() == 129 && merged.water().cells() == 2 + 127 * 64,
+                "Merged flat chunks make room for every layer");
     }
 
     private static void objectsStatusShowsDrawnAndOmittedCounts() {
@@ -70,6 +177,17 @@ public final class WorldStreamSourceBridgeTest {
         // Budgets are mip-chain texels (#265): the chain of a twice-as-large texture is double
         // within one texel, the 1 x 1 level.
         check(Math.abs(high.totalPixels() - 2 * standard.totalPixels()) <= 3, "High doubles every pool");
+        // #280: dungeon (InstanceType 1) and raid (2) maps draw WMO interiors; others do not.
+        check(WorldView.instanceInteriors(new com.vibeminer.concepts.world.WorldService.MapInfo(
+                36, "Dungeon", "D", 1, 1L)), "Dungeon maps draw interiors");
+        check(WorldView.instanceInteriors(new com.vibeminer.concepts.world.WorldService.MapInfo(
+                249, "Raid", "R", 2, 1L)), "Raid maps draw interiors");
+        check(!WorldView.instanceInteriors(new com.vibeminer.concepts.world.WorldService.MapInfo(
+                0, "Continent", "C", 0, 1L)), "Open-world maps keep exteriors only");
+        check(!WorldView.instanceInteriors(new com.vibeminer.concepts.world.WorldService.MapInfo(
+                30, "Battleground", "B", 3, 1L)), "Battlegrounds keep exteriors only");
+        check(!WorldView.instanceInteriors(new com.vibeminer.concepts.world.WorldService.MapInfo(
+                7, "Unknown", "U", null, 1L)), "An unreadable instance type keeps exteriors only");
         check(WorldStreamGpuOwner.exteriorsEnabled(null), "Exteriors are on without the property");
         check(WorldStreamGpuOwner.exteriorsEnabled("true"), "true keeps exteriors on");
         check(WorldStreamGpuOwner.exteriorsEnabled(""), "An empty value keeps exteriors on");
@@ -566,7 +684,7 @@ public final class WorldStreamSourceBridgeTest {
     }
 
     @SuppressWarnings("try")
-    private static final class Fixture implements AutoCloseable {
+    static final class Fixture implements AutoCloseable {
         final AuthoredTerrainSource.Files files;
         final TerrainAtlasPool pool = new TerrainAtlasPool();
         final AuthoredNativeMap tables;
