@@ -210,6 +210,7 @@ SHA and the IPC round trips together cost under 100 ms per tile. Two conclusions
 | `objects.phase.imageBudget` p50 | 4 ms | 3 ms |
 | `source.read.BASIC_EXTERIOR` count | 1,702 | 1,817 |
 | `source.read.BASIC_EXTERIOR` p50 / mean / max | 27 / 34 / 2,093 ms | 20 / 31 / 2,555 ms |
+| `source.prefetchWait.BASIC_EXTERIOR` count / p50 (WMO group read-ahead hits; waits only, not in `source.read.*` or `source.readBytes.*`) | not in this baseline | not in this baseline |
 | **Sum of exterior reads** | **58.0 s of 69.0 s** | **56.0 s of 64.9 s** |
 | All BLP decodes (`objects.blp.*`), total | 0.17 s | |
 | M2 model and skin parse, total | 0.12 s | |

@@ -119,6 +119,11 @@ final class WorldStreamScopes {
     private final String locale;
     private final long owner;
     private final AtomicBoolean working = new AtomicBoolean();
+
+    /** Largest read-ahead bytes any operation held unconsumed (#371); diagnostics and tests. */
+    final java.util.concurrent.atomic.AtomicLong prefetchPeakHeldBytes =
+            new java.util.concurrent.atomic.AtomicLong();
+
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
     private boolean closed;
     private long generation;
@@ -718,6 +723,7 @@ final class WorldStreamScopes {
         private final long threadId = Thread.currentThread().threadId();
         private boolean reserved;
         private final int[] derivedReads = new int[DerivedKind.values().length];
+        private Prefetcher prefetcher;
 
         private TileAdmission(
                 WorldStreamScopes engine,
@@ -920,18 +926,55 @@ final class WorldStreamScopes {
             }
             derivedReads[ordinal]++;
             int limit = profile.derivedLimit(kind);
-            return readCandidate(id, limit, profile == UseProfile.BASIC_EXTERIOR);
+            return readCandidate(id, limit, profile == UseProfile.BASIC_EXTERIOR, kind);
+        }
+
+        /**
+         * Hints that this operation will soon consume {@code id} as {@code kind}, so its read may
+         * start now on a bounded pool (#371). A hint only moves I/O earlier: limits are rechecked,
+         * bindings and counts are recorded only at consumption, and a hint never consumed is closed
+         * unread-by-anyone when the operation ends. Callers hint only reads they will make next, in
+         * order; hints beyond the kind's remaining reads or the queue bound are ignored.
+         */
+        void prefetch(long id, DerivedKind kind) {
+            check();
+            Objects.requireNonNull(kind);
+            if (!Prefetcher.enabled || !profile.derivedWmo() || id <= 0 || id > 0xffff_ffffL) {
+                return;
+            }
+            if (prefetcher == null) {
+                prefetcher = new Prefetcher(engine, token, profile == UseProfile.BASIC_EXTERIOR);
+            }
+            prefetcher.hint(
+                    id,
+                    kind,
+                    profile.derivedLimit(kind),
+                    profile.derivedReads(kind) - derivedReads[kind.ordinal()]);
+        }
+
+        /**
+         * Withdraws every outstanding hint and cancels its read: the caller stopped before
+         * consuming them (a capped or failed root), and a source it will not use is never fetched
+         * on its behalf.
+         */
+        void cancelPrefetch() {
+            check();
+            if (prefetcher != null) {
+                prefetcher.cancelAll();
+            }
         }
 
         private Input readCandidate(long id, int limit) {
-            return readCandidate(id, limit, false);
+            return readCandidate(id, limit, false, null);
         }
 
         /**
          * With {@code classifyUnavailable}, only a missing, protected or over-limit source is
-         * refused at SOURCE_UNAVAILABLE; every other refusal keeps its original site.
+         * refused at SOURCE_UNAVAILABLE; every other refusal keeps its original site. A derived
+         * {@code kind} may take its bytes from an earlier {@link #prefetch} of the same read.
          */
-        private Input readCandidate(long id, int limit, boolean classifyUnavailable) {
+        private Input readCandidate(
+                long id, int limit, boolean classifyUnavailable, DerivedKind kind) {
             if (id <= 0 || id > 0xffff_ffffL) {
                 throw new IllegalArgumentException("Missing or invalid input ID");
             }
@@ -945,12 +988,26 @@ final class WorldStreamScopes {
             reserved = true;
             Source source = null;
             try {
-                long started = WorldStageTimings.start();
-                source = engine.read(id, limit, token, classifyUnavailable);
-                if (started != 0L) {
-                    WorldStageTimings.stop("source.read." + profile.name(), started);
-                    WorldStageTimings.add(
-                            "source.readBytes." + profile.name(), source.bytes().length);
+                var prefetched =
+                        kind == null || prefetcher == null ? null : prefetcher.take(id, kind);
+                if (prefetched != null) {
+                    // A read-ahead hit is timed apart: source.read.* stays a full read only, so
+                    // its numbers compare with runs without read-ahead. The series count is the
+                    // number of hits. A miss falls through to an ordinary, timed read.
+                    long waiting = WorldStageTimings.start();
+                    source = Prefetcher.await(prefetched);
+                    if (source != null && waiting != 0L) {
+                        WorldStageTimings.stop("source.prefetchWait." + profile.name(), waiting);
+                    }
+                }
+                if (source == null) {
+                    long started = WorldStageTimings.start();
+                    source = engine.read(id, limit, token, classifyUnavailable);
+                    if (started != 0L) {
+                        WorldStageTimings.stop("source.read." + profile.name(), started);
+                        WorldStageTimings.add(
+                                "source.readBytes." + profile.name(), source.bytes().length);
+                    }
                 }
                 var binding = new Binding(id, source.key(), source.bytes().length);
                 for (var prior : bindings) {
@@ -976,10 +1033,261 @@ final class WorldStreamScopes {
             if (input != null) {
                 input.close();
             }
+            if (prefetcher != null) {
+                // Stops and drains every unconsumed read before the operation can end.
+                prefetcher.close();
+                engine.prefetchPeakHeldBytes.accumulateAndGet(
+                        prefetcher.peakHeldBytes(), Math::max);
+                prefetcher = null;
+            }
             bindings.clear();
             materialObservations = List.of();
             token = null;
             engine = null;
+        }
+    }
+
+    /**
+     * One operation's read-ahead (#371). Hinted derived reads run on virtual threads, at most
+     * {@link #READS} at once and at most {@link #WINDOW} started and not yet consumed.
+     *
+     * <p>Memory: once finished, unconsumed reads hold {@link #HELD_BYTES}, no new read starts, so
+     * the bytes held outside the operation's single input credit stay below HELD_BYTES plus the
+     * in-flight reads, each within its kind's existing limit. {@link #peakHeldBytes} records the
+     * observed peak.
+     *
+     * <p>Order: hints are consumed in the order given. Taking a hint drops every earlier hint the
+     * consumer passed (it will not come back for them), and nothing else is ever dropped, so the
+     * read the consumer needs next is never evicted. {@link #cancelAll} withdraws every hint and
+     * cancels every started read, for a root that stops early. Each read has its own cancellation,
+     * also canceled with the operation's; {@link #close} cancels, joins and drops everything before
+     * the operation ends.
+     */
+    static final class Prefetcher {
+        static final int READS = 4, WINDOW = 8, QUEUE = 256, HELD_BYTES = 8 << 20;
+
+        /** Read-ahead on or off for new hints; off reads serially as before. Tests compare both. */
+        static volatile boolean enabled = true;
+
+        private record Key(long id, DerivedKind kind) {}
+
+        private record Hint(Key key, int limit, long order) {}
+
+        private static final class Started {
+            final long order;
+            final CompletableFuture<Source> future = new CompletableFuture<>();
+            final Cancellation cancel = new Cancellation();
+            long held;
+
+            Started(long order) {
+                this.order = order;
+            }
+        }
+
+        private final WorldStreamScopes engine;
+        private final Cancellation.Registration link;
+        private final boolean classifyUnavailable;
+        private final java.util.ArrayDeque<Hint> queue = new java.util.ArrayDeque<>();
+        private final java.util.LinkedHashMap<Key, Started> started =
+                new java.util.LinkedHashMap<>();
+        private long nextOrder, heldBytes, peakHeldBytes;
+        private int running;
+        private boolean closed;
+
+        private Prefetcher(
+                WorldStreamScopes engine, Cancellation operation, boolean classifyUnavailable) {
+            this.engine = engine;
+            this.classifyUnavailable = classifyUnavailable;
+            this.link = operation.onCancel(this::cancelReads);
+        }
+
+        synchronized void hint(long id, DerivedKind kind, int limit, int remaining) {
+            var key = new Key(id, kind);
+            if (closed || started.containsKey(key) || queue.size() >= QUEUE) {
+                return;
+            }
+            int pending = 0;
+            for (var hint : queue) {
+                if (hint.key().equals(key)) {
+                    return;
+                }
+                if (hint.key().kind() == kind) {
+                    pending++;
+                }
+            }
+            for (var other : started.keySet()) {
+                if (other.kind() == kind) {
+                    pending++;
+                }
+            }
+            // Never read ahead more of a kind than the operation may still consume.
+            if (pending >= remaining) {
+                return;
+            }
+            queue.add(new Hint(key, limit, nextOrder++));
+            pump();
+        }
+
+        /**
+         * The started read of exactly this hint, now owned by the caller, or null when the caller
+         * reads it itself (never hinted, or hinted and not yet started). Every earlier hint is
+         * dropped: the consumer has passed it.
+         */
+        CompletableFuture<Source> take(long id, DerivedKind kind) {
+            var key = new Key(id, kind);
+            var dropped = new ArrayList<Started>();
+            CompletableFuture<Source> result = null;
+            synchronized (this) {
+                long order = -1;
+                var mine = started.get(key);
+                if (mine != null) {
+                    order = mine.order;
+                } else {
+                    for (var hint : queue) {
+                        if (hint.key().equals(key)) {
+                            order = hint.order();
+                            break;
+                        }
+                    }
+                }
+                if (order < 0) {
+                    return null;
+                }
+                long passed = order;
+                queue.removeIf(hint -> hint.order() <= passed);
+                for (var entry = started.entrySet().iterator(); entry.hasNext(); ) {
+                    var next = entry.next().getValue();
+                    if (next.order < passed) {
+                        dropped.add(next);
+                        heldBytes -= next.held;
+                        entry.remove();
+                    }
+                }
+                if (mine != null) {
+                    started.remove(key);
+                    heldBytes -= mine.held;
+                    result = mine.future;
+                }
+                pump();
+            }
+            drop(dropped);
+            return result;
+        }
+
+        /** Withdraws every hint and cancels and drops every started read (a root stopped early). */
+        void cancelAll() {
+            List<Started> dropped;
+            synchronized (this) {
+                queue.clear();
+                dropped = new ArrayList<>(started.values());
+                started.clear();
+                heldBytes = 0;
+            }
+            drop(dropped);
+        }
+
+        synchronized long peakHeldBytes() {
+            return peakHeldBytes;
+        }
+
+        private void pump() {
+            while (!closed
+                    && running < READS
+                    && started.size() < WINDOW
+                    && heldBytes < HELD_BYTES
+                    && !queue.isEmpty()) {
+                var hint = queue.poll();
+                running++;
+                var read = new Started(hint.order());
+                started.put(hint.key(), read);
+                Thread.ofVirtual()
+                        .name("world-source-prefetch")
+                        .start(
+                                () -> {
+                                    Source source = null;
+                                    Throwable failure = null;
+                                    try {
+                                        source =
+                                                engine.read(
+                                                        hint.key().id(),
+                                                        hint.limit(),
+                                                        read.cancel,
+                                                        classifyUnavailable);
+                                    } catch (Throwable thrown) {
+                                        failure = thrown;
+                                    }
+                                    finished(hint.key(), read, source);
+                                    if (failure != null) {
+                                        read.future.completeExceptionally(failure);
+                                    } else {
+                                        read.future.complete(source);
+                                    }
+                                });
+            }
+        }
+
+        private synchronized void finished(Key key, Started read, Source source) {
+            running--;
+            if (source != null && started.get(key) == read) {
+                read.held = source.bytes().length;
+                heldBytes += read.held;
+                peakHeldBytes = Math.max(peakHeldBytes, heldBytes);
+            }
+            pump();
+        }
+
+        private synchronized void cancelReads() {
+            for (var read : started.values()) {
+                read.cancel.cancel();
+            }
+        }
+
+        /**
+         * The read's own source, or null when it failed for a reason of the read rather than of the
+         * source (store queue pressure, cancellation of the read-ahead): the caller then reads it
+         * itself, so its own read decides the outcome exactly as without read-ahead. A source that
+         * changed under the read (SOURCE_BINDING) is the source's own outcome and is rethrown,
+         * never masked by a second read.
+         */
+        static Source await(CompletableFuture<Source> future) {
+            try {
+                return future.join();
+            } catch (java.util.concurrent.CompletionException wrapped) {
+                if (wrapped.getCause() instanceof WorldTerrainStreaming.Refusal refusal
+                        && WorldSourceRefusals.Site.SOURCE_BINDING.name().equals(refusal.site())) {
+                    throw refusal;
+                }
+                return null;
+            } catch (RuntimeException missed) {
+                return null;
+            }
+        }
+
+        void close() {
+            List<Started> dropped;
+            synchronized (this) {
+                closed = true;
+                queue.clear();
+                dropped = new ArrayList<>(started.values());
+                started.clear();
+                heldBytes = 0;
+            }
+            drop(dropped);
+            link.close();
+        }
+
+        /** Cancels, waits for and empties reads nobody will consume; never under the lock. */
+        private static void drop(List<Started> reads) {
+            for (var read : reads) {
+                read.cancel.cancel();
+            }
+            for (var read : reads) {
+                try {
+                    read.future.join().close();
+                } catch (RuntimeException ignored) {
+                    // A canceled or failed read that nobody consumed holds no bytes.
+                }
+            }
         }
     }
 
