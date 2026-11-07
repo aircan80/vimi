@@ -43,31 +43,6 @@ final class WorldStreamTileSplatTest {
     }
 
     @Test
-    void aChunkWithAMissingLayerKeepsTheAtlasWhole() {
-        int none = WorldStreamTileFile.SPLAT_NONE;
-        byte[] source = new byte[WorldStreamTileFile.SPLAT_TABLE_BYTES];
-        java.util.Arrays.fill(source, (byte) none);
-        // Chunk 0 uses diffuses 0, 1, 2; chunk 1 uses 0 and 3; chunk 2 uses 1 only.
-        byte[][] chunks = {{0, 1, 2, (byte) none}, {0, 3, (byte) none, (byte) none}, {1}};
-        for (int c = 0; c < chunks.length; c++) {
-            System.arraycopy(chunks[c], 0, source, c * 4, chunks[c].length);
-        }
-        // Diffuse 3 has no array layer (its decode failed, or past the per-packet cap).
-        byte[] table =
-                WorldStreamTileWriter.PacketFile.gpuTable(source, new int[] {40, 41, 42, -1});
-        assertArrayEquals(
-                new byte[] {40, 41, 42, (byte) none}, java.util.Arrays.copyOfRange(table, 0, 4));
-        assertArrayEquals(
-                new byte[] {(byte) none, (byte) none, (byte) none, (byte) none},
-                java.util.Arrays.copyOfRange(table, 4, 8),
-                "a chunk with a missing layer keeps the atlas, not a partial blend");
-        assertArrayEquals(
-                new byte[] {41, (byte) none, (byte) none, (byte) none},
-                java.util.Arrays.copyOfRange(table, 8, 12));
-        assertEquals((byte) none, table[12]);
-    }
-
-    @Test
     void aWaterRemainderShorterThanItsHeaderIsRefused() {
         var tile = WorldStreamTileFileTest.full(false);
         assertThrows(
@@ -158,6 +133,61 @@ final class WorldStreamTileSplatTest {
         try (var payload = WorldStreamTileFile.read(path(), full, () -> false)) {
             assertEquals(3, payload.water().indices().length / 6);
         }
+    }
+
+    @Test
+    void splatBeforeSlopedManyLayerWaterRoundTrips() throws Exception {
+        // #463's water: corner heights differ per quad and a tile may carry many layers; the splat
+        // trailer still comes first and both read back exactly from one packet.
+        var tile = WorldStreamTileFileTest.full(false);
+        var header = WorldStreamTileFileTest.header(tile, true);
+        var terrain =
+                WorldStreamTileFile.write(
+                        directory, header, tile, WorldStreamTileFileTest.atlas(), () -> false);
+        var base = WorldStreamTileWaterTest.water(5, 0);
+        float[] positions = base.positions().clone();
+        for (int vertex = 0; vertex < positions.length / 3; vertex++) {
+            positions[vertex * 3 + 2] = 11 + vertex * .25f;
+        }
+        var water = new WorldStreamTileFile.Water(positions, base.depths(), base.indices(), 5);
+        var splat = splat(4, 201, 7);
+        var withSplat =
+                WorldStreamTileFile.appendSplat(path(), terrain, header, splat, () -> false);
+        var full = WorldStreamTileFile.appendWater(path(), withSplat, header, water, () -> false);
+        assertEquals(
+                terrain.length() + splat.bytes() + WorldStreamTileFile.waterBytes(20, 30),
+                full.length());
+        try (var payload = WorldStreamTileFile.read(path(), full, () -> false)) {
+            assertArrayEquals(new int[] {4, 201, 7}, payload.splat().layers());
+            assertArrayEquals(positions, payload.water().positions());
+            assertArrayEquals(base.indices(), payload.water().indices());
+            assertEquals(5, payload.water().layers(), "one layer per quad, as #463 allows");
+        }
+    }
+
+    @Test
+    void aChunkWithAMissingLayerKeepsTheAtlasWhole() {
+        int none = WorldStreamTileFile.SPLAT_NONE;
+        byte[] source = new byte[WorldStreamTileFile.SPLAT_TABLE_BYTES];
+        java.util.Arrays.fill(source, (byte) none);
+        // Chunk 0 uses diffuses 0, 1, 2; chunk 1 uses 0 and 3; chunk 2 uses 1 only.
+        byte[][] chunks = {{0, 1, 2, (byte) none}, {0, 3, (byte) none, (byte) none}, {1}};
+        for (int c = 0; c < chunks.length; c++) {
+            System.arraycopy(chunks[c], 0, source, c * 4, chunks[c].length);
+        }
+        // Diffuse 3 has no array layer (its decode failed, or past the per-packet cap).
+        byte[] table =
+                WorldStreamTileWriter.PacketFile.gpuTable(source, new int[] {40, 41, 42, -1});
+        assertArrayEquals(
+                new byte[] {40, 41, 42, (byte) none}, java.util.Arrays.copyOfRange(table, 0, 4));
+        assertArrayEquals(
+                new byte[] {(byte) none, (byte) none, (byte) none, (byte) none},
+                java.util.Arrays.copyOfRange(table, 4, 8),
+                "a chunk with a missing layer keeps the atlas, not a partial blend");
+        assertArrayEquals(
+                new byte[] {41, (byte) none, (byte) none, (byte) none},
+                java.util.Arrays.copyOfRange(table, 8, 12));
+        assertEquals((byte) none, table[12]);
     }
 
     @Test

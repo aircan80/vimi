@@ -62,6 +62,7 @@ import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_end;
 import com.vibeminer.rendering.world.ObjectTextureFormats;
 import com.vibeminer.rendering.world.TerrainCamera;
 import com.vibeminer.rendering.world.TerrainScene;
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -409,8 +410,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                             r < meshes[mesh * 6 + 4] + meshes[mesh * 6 + 5];
                             r++) {
                         blendedModels[m] |=
-                                ranges[r * WorldStreamObjectsFile.RANGE_INTS + 3]
-                                        == WorldStreamObjectsFile.BLENDED;
+                                WorldStreamObjectsFile.sorted(
+                                        ranges[r * WorldStreamObjectsFile.RANGE_INTS + 3]);
                     }
                 }
             }
@@ -1548,14 +1549,43 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     Ticket draw(TerrainCamera camera, long cameraRevision, long policy, int width, int height) {
         requireOwner();
         requireOpen();
+        if (cameraRevision <= 0 || policy <= 0 || !WorldFrameLimits.fits(width, height)) {
+            throw new IllegalArgumentException("Frame ticket bounds");
+        }
+        return drawView(camera, cameraRevision, policy, width, height, width, height);
+    }
+
+    /**
+     * #381 spike: draw into a window's backbuffer at its own size (up to 8192 per side). The
+     * projection keeps the window's aspect; its matrix depends on the ratio only.
+     */
+    Ticket drawWindow(
+            TerrainCamera camera, long cameraRevision, long policy, int width, int height) {
+        requireOwner();
+        requireOpen();
         if (cameraRevision <= 0
                 || policy <= 0
                 || width < 1
-                || width > 800
+                || width > 8192
                 || height < 1
-                || height > 500) {
-            throw new IllegalArgumentException("Frame ticket bounds");
+                || height > 8192) {
+            throw new IllegalArgumentException("Window frame bounds");
         }
+        double fit = Math.min(1, Math.min(1280.0 / width, 960.0 / height));
+        int projectionWidth = Math.max(1, (int) Math.round(width * fit));
+        int projectionHeight = Math.max(1, (int) Math.round(height * fit));
+        return drawView(
+                camera, cameraRevision, policy, width, height, projectionWidth, projectionHeight);
+    }
+
+    private Ticket drawView(
+            TerrainCamera camera,
+            long cameraRevision,
+            long policy,
+            int width,
+            int height,
+            int projectionWidth,
+            int projectionHeight) {
         bgfx_set_view_rect(0, 0, 0, width, height);
         bgfx_set_view_mode(0, BGFX_VIEW_MODE_SEQUENTIAL);
         bgfx_set_view_clear(0, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x000000ff, 0, 0);
@@ -1566,7 +1596,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             var matrix = stack.mallocFloat(16).put(camera.modelToEye(origin)).flip();
             var project =
                     stack.mallocFloat(16)
-                            .put(TerrainCamera.reversedProjection(width, height))
+                            .put(
+                                    TerrainCamera.reversedProjection(
+                                            projectionWidth, projectionHeight))
                             .flip();
             var shift =
                     stack.mallocFloat(4)
@@ -1642,9 +1674,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             bgfx_set_vertex_buffer(0, template, 0, 3);
             bgfx_set_state(SKY_STATE, 0);
             bgfx_submit(0, skyProgram, 0, BGFX_DISCARD_ALL);
-            // Static diagnostic water after ALL opaque terrain: nearest flat surface wins under
-            // strict reversed depth, so coincident duplicates cannot blend twice. RGB only keeps
-            // the opaque output alpha.
+            // Static diagnostic water after ALL opaque terrain: the nearest surface wins under
+            // strict reversed depth, so coincident duplicates (shared chunk edges, or two source
+            // layers at one height) cannot blend twice. RGB only keeps the opaque output alpha.
             for (var lease : active) {
                 var slot = slots[lease.slot()];
                 if (slot.water == 0) {
@@ -1850,6 +1882,38 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 : BgfxWorldWmoPass.DRAW_STATE;
     }
 
+    /**
+     * The u_wmoMaterial value of a range class: x the alpha-test reference (cutouts), y 1 to output
+     * sampled alpha (blended and additive), z 1 for the alpha-to-coverage ramp (cutouts on a
+     * multisampled target), w 1 for unlit plus 2 for additive (its fog fades it out instead of
+     * adding the fog colour).
+     */
+    static float[] materialUniform(int rangeClass, boolean coverage) {
+        int kind = WorldStreamObjectsFile.kind(rangeClass);
+        float unlit = (rangeClass & WorldStreamObjectsFile.UNLIT) != 0 ? 1 : 0;
+        float[] value =
+                switch (kind) {
+                    case WorldStreamObjectsFile.OPAQUE -> new float[] {0, 0, 0, 0};
+                    case WorldStreamObjectsFile.CUTOUT -> cutoutMaterial(coverage);
+                    case WorldStreamObjectsFile.BLENDED -> new float[] {0, 1, 0, 0};
+                    case WorldStreamObjectsFile.ADDITIVE -> new float[] {0, 1, 0, 2};
+                    default -> throw new IllegalArgumentException("Range class");
+                };
+        value[3] += unlit;
+        return value;
+    }
+
+    /**
+     * Additive state (MOMT blend mode 3, #367): depth tested, no depth or alpha write, source
+     * colour times its alpha added to the destination (GxBlend_Add: SrcAlpha, One).
+     */
+    static final long ADDITIVE_STATE =
+            BGFX_STATE_WRITE_RGB
+                    | BGFX_STATE_DEPTH_TEST_GREATER
+                    | org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_FUNC(
+                            org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_SRC_ALPHA,
+                            org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_ONE);
+
     /** Blend state: depth tested, no depth or alpha write, source-alpha over. */
     static final long BLENDED_STATE =
             BGFX_STATE_WRITE_RGB
@@ -1969,16 +2033,23 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * placement rewrites them in place, so drawing allocates nothing per placement.
      */
     static final class ObjectFrame {
-        final java.nio.FloatBuffer model, normal, opaque, cutout, blend;
+        final java.nio.FloatBuffer model, normal;
+
+        /** u_wmoMaterial per kind (opaque, cutout, blended, additive) and lit/unlit. */
+        private final java.nio.FloatBuffer[] materials = new java.nio.FloatBuffer[8];
 
         final long cutoutState;
 
         private ObjectFrame(MemoryStack stack, boolean coverage) {
             model = stack.mallocFloat(16);
             normal = stack.mallocFloat(16);
-            opaque = stack.floats(0, 0, 0, 0);
-            cutout = stack.floats(cutoutMaterial(coverage));
-            blend = stack.floats(0, 1, 0, 0);
+            for (int kind = 0; kind <= WorldStreamObjectsFile.ADDITIVE; kind++) {
+                for (int unlit = 0; unlit < 2; unlit++) {
+                    int rangeClass = kind | (unlit == 1 ? WorldStreamObjectsFile.UNLIT : 0);
+                    materials[kind * 2 + unlit] =
+                            stack.floats(materialUniform(rangeClass, coverage));
+                }
+            }
             cutoutState = cutoutState(coverage);
         }
 
@@ -1988,8 +2059,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
 
         /** The draw state of one range class outside the blended pass. */
-        long state(int kind) {
-            return kind == WorldStreamObjectsFile.CUTOUT
+        long state(int rangeClass) {
+            return WorldStreamObjectsFile.kind(rangeClass) == WorldStreamObjectsFile.CUTOUT
                     ? cutoutState
                     : BgfxWorldWmoPass.DRAW_STATE;
         }
@@ -2000,10 +2071,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
 
         /** The u_wmoMaterial value of one range class. */
-        java.nio.FloatBuffer material(int kind) {
-            return kind == WorldStreamObjectsFile.OPAQUE
-                    ? opaque
-                    : kind == WorldStreamObjectsFile.CUTOUT ? cutout : blend;
+        java.nio.FloatBuffer material(int rangeClass) {
+            int unlit = (rangeClass & WorldStreamObjectsFile.UNLIT) != 0 ? 1 : 0;
+            return materials[WorldStreamObjectsFile.kind(rangeClass) * 2 + unlit];
         }
     }
 
@@ -2029,7 +2099,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     r < objects.meshes[at + 4] + objects.meshes[at + 5];
                     r++) {
                 int kind = objects.ranges[r * stride + 3];
-                if ((kind == WorldStreamObjectsFile.BLENDED) != blendedPass) {
+                if (WorldStreamObjectsFile.sorted(kind) != blendedPass) {
                     continue;
                 }
                 if (kind != frameMaterial) {
@@ -2047,7 +2117,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         wmoSampler,
                         objects.textures[objects.ranges[r * stride + 2]],
                         OBJECT_SAMPLER_FLAGS);
-                bgfx_set_state(blendedPass ? BLENDED_STATE : frame.state(kind), 0);
+                bgfx_set_state(
+                        blendedPass
+                                ? WorldStreamObjectsFile.kind(kind)
+                                                == WorldStreamObjectsFile.ADDITIVE
+                                        ? ADDITIVE_STATE
+                                        : BLENDED_STATE
+                                : frame.state(kind),
+                        0);
                 bgfx_submit(0, wmoProgram, 0, BGFX_DISCARD_ALL);
                 frameObjectSubmits++;
             }

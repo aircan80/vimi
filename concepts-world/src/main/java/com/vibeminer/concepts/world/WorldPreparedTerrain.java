@@ -524,6 +524,14 @@ final class WorldPreparedTerrain {
         return scopes.create(comparison, cancel);
     }
 
+    long geometryReleaseRevision() {
+        return world.geometryReleaseRevision();
+    }
+
+    AutoCloseable onGeometryRelease(Runnable listener) {
+        return world.onGeometryRelease(listener);
+    }
+
     void activate(WorldStreamScopes.Scope scope) {
         checkOpen();
         scopes.activate(scope);
@@ -534,9 +542,17 @@ final class WorldPreparedTerrain {
             WorldStreamScopes.Scope scope,
             WorldFormats.Tile tile,
             Cancellation cancel,
-            WorldExteriorObjects.ImageDetail detail) {
+            WorldExteriorObjects.ImageDetail detail,
+            boolean interiors) {
         checkOpen();
-        return WorldExteriorObjects.prepare(scopes, scope, tile, cancel, detail);
+        return WorldExteriorObjects.prepare(
+                scopes,
+                scope,
+                tile,
+                cancel,
+                WorldExteriorObjects.ModelReader.STANDARD,
+                detail,
+                interiors);
     }
 
     void invalidate() {

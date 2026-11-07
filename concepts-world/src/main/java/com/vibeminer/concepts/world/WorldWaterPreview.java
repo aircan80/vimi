@@ -8,9 +8,12 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
-/** Actual single-root flat water Source. Resource callbacks and close belong off FX. */
+/**
+ * Actual single-root water Source: qualified height+depth layers with their actual vertex heights,
+ * flat or sloped. Resource callbacks and close belong off FX.
+ */
 public final class WorldWaterPreview {
-    public static final String REVISION = "source-flat-water-root-v1";
+    public static final String REVISION = "source-water-root-v2";
 
     public enum State {
         ABSENT,
@@ -29,11 +32,13 @@ public final class WorldWaterPreview {
         private final WorldStreamScopes.AdmissionMetadata metadata;
         private final List<TableObservation> tables;
         private final int tileX, tileY;
+        private final List<String> issues;
         private final Long rootDeclaredLength;
         private final int rootSourceLimit;
 
         private Facts(WorldTerrainLiquids.Borrow borrow, int tileX, int tileY) {
             summary = borrow.facts();
+            issues = List.copyOf(borrow.issues());
             rootDeclaredLength = borrow.rootBinding().declaredSize();
             rootSourceLimit = borrow.rootBinding().sourceLimit();
             metadata = borrow.metadata();
@@ -50,6 +55,14 @@ public final class WorldWaterPreview {
 
         public State state() {
             return State.valueOf(summary.state().name());
+        }
+
+        /**
+         * Where this tile's source disagrees with a convention the water followed (for example a
+         * LiquidType row that resolves another vertex format); descriptive, never fatal.
+         */
+        public List<String> issues() {
+            return issues;
         }
 
         public String reason() {
@@ -239,8 +252,14 @@ public final class WorldWaterPreview {
             return checked().mask(layer);
         }
 
-        public float usedHeight(int layer) {
-            return checked().actualUsedHeight(layer);
+        /** True when every used height sample of the layer is the same value. */
+        public boolean planar(int layer) {
+            return checked().planar(layer);
+        }
+
+        /** Actual height at one sample of the layer's (width + 1) x (height + 1) grid. */
+        public float usedHeight(int layer, int vertex) {
+            return checked().actualUsedHeight(layer, vertex);
         }
 
         private void expire() {
