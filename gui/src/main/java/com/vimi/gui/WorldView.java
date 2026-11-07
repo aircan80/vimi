@@ -3501,11 +3501,22 @@ final class WorldView extends BorderPane implements AutoCloseable {
         refreshIcons();
     }
 
+    private final WorldStreamNeighborhood.Motion motion = new WorldStreamNeighborhood.Motion();
+
     private void streamNeighborhood() {
         if (streaming == null || camera == null || inventory == null) return;
         int x = tileX(), y = tileY();
+        var distance = WorldStreamGpuOwner.VIEW_DISTANCE;
+        // Fractional tile position, same axes as tileX/tileY; tiles ahead of a moving camera
+        // load first (#366).
+        var ahead =
+                motion.ahead(
+                        origin.x() + (originX - camera.x()) / WorldFormats.TILE_SIZE,
+                        origin.y() + (originY - camera.y()) / WorldFormats.TILE_SIZE,
+                        System.nanoTime(),
+                        distance.radius());
         streaming.neighborhood(WorldStreamNeighborhood.select(
-                inventory.world().tiles(), x, y, camera.yaw(), WorldStreamGpuOwner.VIEW_DISTANCE));
+                inventory.world().tiles(), x, y, camera.yaw(), distance, ahead[0], ahead[1]));
     }
 
     private void retireGpu() {

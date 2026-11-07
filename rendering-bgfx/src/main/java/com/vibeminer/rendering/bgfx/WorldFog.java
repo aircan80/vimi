@@ -140,7 +140,11 @@ record WorldFog(
         return new float[] {horizon[0], horizon[1], horizon[2], topElevation};
     }
 
-    /** The sky top uniform (u_worldSkyTop, u_wmoSkyTop, u_skyTop). */
+    /**
+     * The sky top uniform (u_worldSkyTop, u_wmoSkyTop, u_skyTop), with w zero. The renderer sets
+     * u_wmoSkyTop.w itself: it is the WMO vertex colour switch (#375), so no other value may use
+     * it.
+     */
     float[] topUniform() {
         return new float[] {top[0], top[1], top[2], 0};
     }

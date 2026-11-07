@@ -1,6 +1,18 @@
-# World terrain splat layers (#174 step 2b-1)
+# World terrain splat layers (#174 steps 2b-1 and 2b-2)
 
-Shader-side splatting inputs are carried and uploaded next to the baked atlas. They are off by default; `-Dvimi.world.splat=true` turns them on in the app. The shader that samples them is step 2b-2. Until then the atlas is still what you see on screen.
+Shader-side splatting inputs are carried and uploaded next to the baked atlas, and the terrain shader blends them on near ground. They are off by default; `-Dvimi.world.splat=true` turns them on in the app. Without them, or for a chunk that has none, the atlas is what you see on screen.
+
+## Shader blend (step 2b-2)
+
+`world-stream/splat.sh` is included by the terrain fragment shader. It binds stage 1 (the layer array: repeat, anisotropic), stage 2 (the slot's mask map: clamp, trilinear), stage 3 (the chunk table: point) and `u_worldSplat` (x: on for this tile, y: mask side).
+
+- **Weights:** the same as the atlas composer's. The base layer takes `max(0, 1 - (a1 + a2 + a3))`, and overlays summing past one are normalized, never saturated (#397). The MCCV brightness in mask A multiplies the result, with 128 = 1.0.
+- **Tiling:** eight repeats per chunk (`atlasUV * 128`), continuous across chunk borders, so mips and anisotropy stay smooth.
+- **Mask lookups** stay inside the pixel's chunk. A neighbour chunk's channels weigh other layers, so filtering never crosses a chunk border.
+- **Fade to the atlas:** `smoothstep(0.5, 1.0, atlas texels per pixel)`. The splat shows where the 512 atlas is magnified at least two times, and the atlas shows from one texel per pixel on. It's resolution-driven, so it follows FOV and window size.
+- **Missing layers:** a chunk keeps the atlas when its table says 255 for layer 0. The parent writes all four entries as 255 when any layer the chunk uses has no array layer (past the per-packet cap, or a failed decode), so a chunk is never blended with a layer missing.
+- **No discard and no gradients in divergent branches.** The splat samples are taken under uniform branches only, and terrain keeps early depth testing.
+- **Stand-ins:** a tile without splat inputs still binds every stage (the shared array, or a 2-layer stand-in, plus its atlas), so no backend sees an unbound sampler.
 
 ## Layer format (owner decision, 2026-11-06)
 
@@ -55,4 +67,9 @@ The hot child creates one shared 2D array of 255 layers (255 is the table's "no 
 - The child reports the chosen format once on stderr (`World splat layers: …`).
 - BC1 layers are uploaded in block rows with the object texture planner. Each layer is one bounded step.
 
-`nativeGpuWorldStreamSplatUploadProof -PsplatProofBackend=vulkan|d3d11 [-PsplatProofRgba8=true]` checks the array format, the bounded steps and that the tile still renders. It cannot check layer contents until 2b-2 samples the array. The BC upload layout itself is proven on both backends by the object layout ladders (#420).
+`nativeGpuWorldStreamSplatUploadProof -PsplatProofBackend=vulkan|d3d11 [-PsplatProofRgba8=true] [-PsplatProofMask=high]` checks the array format, the bounded steps and the per-slot mask bytes. It also checks three actual pixels:
+- near ground shows the composer's blend of four solid layers under the mask, with its MCCV applied;
+- a chunk without layers keeps the atlas;
+- ground the atlas no longer magnifies fades to the atlas.
+
+The BC upload layout itself is proven on both backends by the object layout ladders (#420).
