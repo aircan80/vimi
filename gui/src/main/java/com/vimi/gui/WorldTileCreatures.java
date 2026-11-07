@@ -172,15 +172,19 @@ final class WorldTileCreatures implements AutoCloseable {
     }
 
     /**
-     * Drawn humanoid NPC placements, the item records left out of their appearances and the item
-     * models (helms, shoulders, held items) not drawn on them, summed per placement.
+     * Drawn humanoid NPC placements, the item records left out of their appearances, the item
+     * models (helms, shoulders, held items) not drawn on them, the placements drawn with visible
+     * sections left out (not plain diffuse opaque or alpha-keyed, such as blended hair) and those
+     * sections, summed per placement.
      */
-    record NpcCounts(int drawn, int omittedItems, int attachments) {
-        static final NpcCounts NONE = new NpcCounts(0, 0, 0);
+    record NpcCounts(int drawn, int omittedItems, int attachments, int withOmittedSurfaces,
+            int omittedSurfaces) {
+        static final NpcCounts NONE = new NpcCounts(0, 0, 0, 0, 0);
 
         NpcCounts plus(NpcCounts other) {
             return new NpcCounts(drawn + other.drawn, omittedItems + other.omittedItems,
-                    attachments + other.attachments);
+                    attachments + other.attachments, withOmittedSurfaces + other.withOmittedSurfaces,
+                    omittedSurfaces + other.omittedSurfaces);
         }
     }
 
@@ -264,7 +268,7 @@ final class WorldTileCreatures implements AutoCloseable {
         /** The same model as one humanoid NPC's, with what each placement leaves undrawn. */
         Model withNpc(int omittedItems, int attachments) {
             return new Model(vertices, indices, ranges, blends, images, omittedSurfaces, restPose,
-                    new NpcCounts(1, omittedItems, attachments));
+                    new NpcCounts(1, omittedItems, attachments, omittedSurfaces > 0 ? 1 : 0, omittedSurfaces));
         }
 
         Model {

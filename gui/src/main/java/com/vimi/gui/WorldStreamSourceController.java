@@ -1372,10 +1372,15 @@ final class WorldStreamSourceController {
         if (npcs.drawn() > 0) {
             // Humanoid NPCs (#385): their item models and item records left out are disclosed.
             text.append(", of which ").append(plural(npcs.drawn(), "humanoid NPC"));
+            var notes = new java.util.ArrayList<String>();
+            // Drawn with visible sections it cannot draw (such as blended hair): disclosed.
+            if (npcs.withOmittedSurfaces() > 0)
+                notes.add(npcs.withOmittedSurfaces() + " with " + plural(npcs.omittedSurfaces(), "surface") + " left out");
             var undrawn = new java.util.ArrayList<String>();
             if (npcs.attachments() > 0) undrawn.add(plural(npcs.attachments(), "item model"));
             if (npcs.omittedItems() > 0) undrawn.add(plural(npcs.omittedItems(), "item record"));
-            if (!undrawn.isEmpty()) text.append(" (").append(String.join(" and ", undrawn)).append(" not drawn)");
+            if (!undrawn.isEmpty()) notes.add(String.join(" and ", undrawn) + " not drawn");
+            if (!notes.isEmpty()) text.append(" (").append(String.join("; ", notes)).append(")");
         }
         if (creatures.omitted() > 0) {
             text.append("; spawns not drawn: ");
