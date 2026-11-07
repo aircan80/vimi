@@ -1,5 +1,6 @@
 package com.vibeminer.concepts.world;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -220,6 +221,107 @@ class WorldExteriorObjectsTest {
         return group(flags, 3, 1, List.of(new Batch(0, 3, 0, 0)));
     }
 
+    /** BC3 (DXT5) BLP2 with {@code levels} recorded levels, colour {@code color}, alpha 128. */
+    private static byte[] blp3(int width, int height, int levels, int color) {
+        var data = new ByteArrayOutputStream();
+        var header = buffer(148);
+        header.put(new byte[] {'B', 'L', 'P', '2'}).putInt(1);
+        header.put((byte) 2).put((byte) 8).put((byte) 7).put((byte) 1);
+        header.putInt(width).putInt(height);
+        int offset = 148;
+        for (int level = 0; level < levels; level++) {
+            int w = Math.max(1, width >> level), h = Math.max(1, height >> level);
+            int blocks = ((w + 3) / 4) * ((h + 3) / 4);
+            header.putInt(20 + level * 4, offset).putInt(84 + level * 4, blocks * 16);
+            var b = buffer(blocks * 16);
+            for (int i = 0; i < blocks; i++) {
+                b.put((byte) 128).put((byte) 128).put(new byte[6]);
+                b.putShort((short) color).putShort((short) 0).putInt(0);
+            }
+            data.writeBytes(b.array());
+            offset += blocks * 16;
+        }
+        return join(header.array(), data.toByteArray());
+    }
+
+    /** One building image of {@code materialClass} from {@code file}, through a full run. */
+    private static WorldExteriorObjects.Image single(int materialClass, byte[] file) {
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(1, new long[] {GROUP}, List.of(new Material(materialClass, IMAGE, 0))));
+            f.files.sources.put(GROUP, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+            f.files.sources.put(IMAGE, file);
+            try (var set = f.run()) {
+                return set.images().getFirst();
+            }
+        }
+    }
+
+    @Test
+    void opaqueDxtWithItsWholeChainIsCarriedAsTheFilesOwnBlocks() {
+        byte[] file = blp(256, 256, 9, 0x07e0);
+        var image = single(0, file);
+        assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.BC1, image.format());
+        var data = image.data();
+        assertEquals(
+                com.vibeminer.rendering.world.ObjectTextureFormats.chainBytes(
+                        com.vibeminer.rendering.world.ObjectTextureFormats.BC1, 256, 256),
+                data.remaining());
+        // Byte for byte the file's level blocks, in level order.
+        byte[] expected = java.util.Arrays.copyOfRange(file, 148, file.length);
+        byte[] actual = new byte[data.remaining()];
+        data.get(actual);
+        assertArrayEquals(expected, actual);
+        // The RGBA8 view decodes it: green.
+        assertEquals(255, image.rgba().get(1) & 255);
+    }
+
+    @Test
+    void blendedTakesBc3BlocksButNotBc1AndCutoutStaysRgba() {
+        var bc3 = single(2, blp3(64, 64, 7, 0x001f));
+        assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.BC3, bc3.format());
+        assertEquals(128, bc3.rgba().get(3) & 255, "BC3 alpha carried");
+        // BC1 alpha is not sampled on every backend: a blended BC1 surface stays RGBA8.
+        assertEquals(
+                com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8,
+                single(2, blp(64, 64, 7, 0x001f)).format());
+        // Cutout chains rescale alpha coverage per level (#265): always RGBA8.
+        assertEquals(
+                com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8,
+                single(1, blp3(64, 64, 7, 0x001f)).format());
+    }
+
+    @Test
+    void levelsInsideTheHeaderOrOverlappingAreNeverCarriedAsBlocks() {
+        // 64 x 64 BC1, seven levels; the 1 x 1 level (6) is one 8-byte block.
+        byte[] header = blp(64, 64, 7, 0x07e0);
+        var h = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
+        h.putInt(20 + 6 * 4, 100); // inside the 148-byte header
+        var inside = single(0, header);
+        assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, inside.format());
+        byte[] overlap = blp(64, 64, 7, 0x07e0);
+        var o = ByteBuffer.wrap(overlap).order(ByteOrder.LITTLE_ENDIAN);
+        o.putInt(20 + 6 * 4, o.getInt(20 + 5 * 4)); // the 1 x 1 level reuses the 2 x 2 bytes
+        var shared = single(0, overlap);
+        assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, shared.format());
+        // Both still draw, from the RGBA8 path.
+        assertEquals(64, inside.width());
+        assertEquals(64, shared.width());
+    }
+
+    @Test
+    void filesWithoutAWholeChainOrUnderOneBlockStayRgba() {
+        // Three recorded levels of seven: the chain would need generated levels.
+        assertEquals(
+                com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8,
+                single(0, blp(64, 64, 3, 0x07e0)).format());
+        // A 2 x 2 image is under one block; D3D11 refuses such compressed textures.
+        assertEquals(
+                com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8,
+                single(0, blp(2, 2, 2, 0x07e0)).format());
+    }
+
     /** BC1 BLP2 with the given declared mip chain (base width/height halved per level). */
     private static byte[] blp(int width, int height, int levels, int color) {
         var data = new ByteArrayOutputStream();
@@ -360,12 +462,45 @@ class WorldExteriorObjectsTest {
             }
             assertEquals(set.vertices(), snapshot.get("objects.count.vertices").sum());
             assertEquals(1, snapshot.get("objects.tile.total").count());
+            int buildingModels = 0, doodadModels = 0;
+            for (var model : set.models()) {
+                if (model.doodad()) {
+                    doodadModels++;
+                } else {
+                    buildingModels++;
+                }
+            }
+            assertEquals(buildingModels, snapshot.get("objects.models.buildingsPerTile").sum());
+            assertEquals(doodadModels, snapshot.get("objects.models.doodadsPerTile").sum());
+            var perModel = snapshot.get("objects.models.placementsPerModel");
+            assertEquals(set.placements().size(), perModel == null ? 0 : perModel.sum());
             assertTrue(snapshot.get("source.read.BASIC_EXTERIOR").count() > 0);
             assertTrue(snapshot.get("objects.phase.buildings").count() == 1);
         } finally {
             WorldStageTimings.enable(false);
             WorldStageTimings.reset();
         }
+    }
+
+    @Test
+    void modelUseCountsDistinctModelsDrawsAndPlacementsLargestFirst() {
+        // Models: 0 building (3 ranges), 1 doodad (2 ranges), 2 doodad (1 range, unused).
+        var use =
+                WorldExteriorObjects.ModelUse.of(
+                        new int[] {3, 2, 1},
+                        new boolean[] {false, true, true},
+                        new int[] {1, 0, 1, 1, 0, 1});
+        assertEquals(1, use.buildingModels());
+        assertEquals(1, use.doodadModels());
+        assertEquals(2 * 3 + 4 * 2, use.draws());
+        assertEquals(3 + 2, use.instancedDraws());
+        assertTrue(Arrays.equals(new int[] {4, 2}, use.placementsPerModel()));
+        var empty = WorldExteriorObjects.ModelUse.of(new int[0], new boolean[0], new int[0]);
+        assertEquals(0, empty.draws());
+        assertEquals(0, empty.placementsPerModel().length);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldExteriorObjects.ModelUse.of(new int[1], new boolean[0], new int[0]));
     }
 
     @Test
@@ -920,6 +1055,67 @@ class WorldExteriorObjectsTest {
                                 new WorldExteriorObjects.DrawRange(
                                         9, 3, 1, 1, WorldExteriorObjects.BLENDED)),
                         set.models().getFirst().meshes().getFirst().ranges());
+            }
+        }
+    }
+
+    /**
+     * Issue #374 with #367's range classes: one DXT file drawn by every kind, lit and unlit, takes
+     * the format the objects file admits for that class. BC1 only for opaque ranges (unlit too);
+     * blended and additive ones carry BC2/BC3 or fall back to RGBA8; cutout ones always RGBA8.
+     */
+    @Test
+    void eachRangeClassCarriesTheBlockFormatItsClassAdmits() {
+        int bc1 = com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        int bc3 = com.vibeminer.rendering.world.ObjectTextureFormats.BC3;
+        int rgba = com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8;
+        int o = WorldExteriorObjects.OPAQUE, c = WorldExteriorObjects.CUTOUT;
+        int b = WorldExteriorObjects.BLENDED, a = WorldExteriorObjects.ADDITIVE;
+        int u = WorldExteriorObjects.UNLIT;
+        int[] classes = {o, o | u, c, c | u, b, b | u, a, a | u};
+        // Per class: the format from a DXT1 file, then from a DXT5 file.
+        int[][] expected = {
+            {bc1, bc3}, {bc1, bc3}, {rgba, rgba}, {rgba, rgba},
+            {rgba, bc3}, {rgba, bc3}, {rgba, bc3}, {rgba, bc3}
+        };
+        for (int file = 0; file < 2; file++) {
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+                var materials = new ArrayList<Material>();
+                var batches = new ArrayList<Batch>();
+                for (int i = 0; i < classes.length; i++) {
+                    materials.add(new Material(WorldExteriorObjects.kind(classes[i]), IMAGE, 0));
+                    batches.add(new Batch(i * 3, 3, 0, i));
+                }
+                byte[] root = root(1, new long[] {GROUP}, materials);
+                int momt = indexOf(root, "MOMT") + 8;
+                var data = ByteBuffer.wrap(root).order(ByteOrder.LITTLE_ENDIAN);
+                for (int i = 0; i < classes.length; i++) {
+                    if ((classes[i] & u) != 0) {
+                        data.putInt(momt + i * 64, 0x1); // MOMT F_UNLIT
+                    }
+                }
+                f.files.sources.put(ROOT, root);
+                f.files.sources.put(GROUP, group(EXT, 3, classes.length, batches));
+                f.files.sources.put(
+                        IMAGE, file == 0 ? blp(256, 256, 9, 0x07e0) : blp3(256, 256, 9, 0x07e0));
+                try (var set = f.run()) {
+                    var ranges = set.models().getFirst().meshes().getFirst().ranges();
+                    assertEquals(classes.length, ranges.size());
+                    for (int i = 0; i < classes.length; i++) {
+                        var range = ranges.get(i);
+                        assertEquals(classes[i], range.blend(), "range " + i);
+                        int format = set.images().get(range.image()).format();
+                        assertEquals(
+                                expected[i][file],
+                                format,
+                                "class 0x" + Integer.toHexString(classes[i]) + " file " + file);
+                        // The rule the producer applies, exactly as the objects file reads it.
+                        int rule =
+                                WorldExteriorObjects.blockFormatFor(
+                                        file == 0 ? bc1 : bc3, classes[i]);
+                        assertEquals(rule < 0 ? rgba : rule, format);
+                    }
+                }
             }
         }
     }
@@ -1626,7 +1822,13 @@ class WorldExteriorObjectsTest {
                     var image = set.images().getFirst();
                     assertEquals(256, image.width(), "allotted level, class " + materialClass);
                     assertEquals(2, image.mipLevel());
-                    assertEquals(9, set.levelDecodes, "class " + materialClass);
+                    // An opaque BC1 file recording its whole chain is carried as its own blocks
+                    // (#374): only the registration and the allotted level are decoded.
+                    assertEquals(
+                            materialClass == 0 ? 2 : 9, set.levelDecodes, "class " + materialClass);
+                    assertEquals(
+                            materialClass == 0 ? 1 : 0,
+                            set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS));
                     assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_MIPS_FILE));
                     assertEquals(1, f.files.opens.get(IMAGE).get(), "the kept bytes serve");
                     // Level 1 of the chain (the reused 128^2) is the file's green.

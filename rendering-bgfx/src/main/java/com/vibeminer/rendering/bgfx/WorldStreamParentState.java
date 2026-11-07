@@ -105,12 +105,20 @@ final class WorldStreamParentState {
     // The session's one HORIZON (#372): sent, then answered once.
     private boolean horizonSent, horizonAnswered;
     private Ticket ticket;
+    // The ticket whose lease the latest CREDIT returned (null for the first credit); read by the
+    // status reader right after that CREDIT, before any later status replaces it.
+    private Ticket creditedTicket;
     private Commit commit;
     private List<Resident> active = List.of();
     private Resident objectsTarget;
 
     WorldStreamParentState(WorldStreamEnvelope.Session session) {
         this.session = Objects.requireNonNull(session);
+    }
+
+    /** The ticket the latest CREDIT returned the lease of, or null when it had none. */
+    synchronized Ticket creditedTicket() {
+        return creditedTicket;
     }
 
     synchronized Ticket reserve(int x, int y) {
@@ -435,6 +443,7 @@ final class WorldStreamParentState {
                         "Credit before old owners drain");
                 ticket.credited = true;
             }
+            creditedTicket = ticket;
             credit = value.lease();
             serial = credit.serial();
             generations[credit.slot()] = credit.generation();

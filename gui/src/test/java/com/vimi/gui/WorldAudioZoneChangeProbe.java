@@ -119,6 +119,11 @@ public final class WorldAudioZoneChangeProbe {
             @Override public int sampleRate() { return rate; }
             @Override public int channels() { return channels; }
 
+            /** Like a real decoder process: done once only its buffered tail (0.75 s) is left. */
+            @Override public boolean nearEnd() {
+                return total - position <= (long) (rate * channels * 2 * 0.75);
+            }
+
             @Override
             public int read(byte[] buffer, int offset, int length,
                     java.util.function.BooleanSupplier c) {
@@ -141,8 +146,26 @@ public final class WorldAudioZoneChangeProbe {
                 new WorldAreaAudio.AudioFile(id, WorldAreaAudio.FileState.READ, tone, null));
         int runs = args.length > 0 ? Integer.parseInt(args[0]) : 5;
         String mode = args.length > 1 ? args[1] : "change";
-        if (mode.equals("loop")) {
-            loop(source, runs);
+        if (mode.equals("loop") || mode.equals("loop-busy")) {
+            // "loop-busy" keeps half the cores busy, as when the game client runs alongside;
+            // short and bounded, since the machine is shared.
+            var burners = new ArrayList<Thread>();
+            var stop = new java.util.concurrent.atomic.AtomicBoolean();
+            if (mode.equals("loop-busy")) {
+                for (int i = 0; i < Math.max(1, Runtime.getRuntime().availableProcessors() / 2); i++) {
+                    burners.add(Thread.ofPlatform().daemon().start(() -> {
+                        long x = 0;
+                        while (!stop.get()) x += System.nanoTime() % 7;
+                        if (x == 42) System.out.print("");
+                    }));
+                }
+            }
+            try {
+                loop(source, runs);
+            } finally {
+                stop.set(true);
+                for (var burner : burners) burner.join();
+            }
             return;
         }
         if (mode.equals("music")) {

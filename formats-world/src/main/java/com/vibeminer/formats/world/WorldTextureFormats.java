@@ -79,6 +79,8 @@ public final class WorldTextureFormats {
 
     public enum ChunkIssue {
         NONE,
+        /** An empty MCLY: the chunk declares no texture layers, so there is nothing to draw. */
+        NO_LAYERS,
         CHUNK_SHAPE,
         LAYER_SHAPE,
         LAYER_FLAGS,
@@ -502,6 +504,13 @@ public final class WorldTextureFormats {
         if (alpha == null && layers != null && layers.length() == 16) {
             // A lone base layer needs no alpha maps, so MCAL may be omitted.
             alpha = new Slice(layers.end(), layers.end());
+        }
+        if (layers != null && layers.length() == 0 && issue == ChunkIssue.NONE) {
+            return new ChunkSlice(
+                    new ChunkTexture(ordinal, entries, ChunkIssue.NO_LAYERS),
+                    new Slice(layers.end(), layers.end()),
+                    shadow,
+                    shadowBits);
         }
         if (layers == null
                 || alpha == null
