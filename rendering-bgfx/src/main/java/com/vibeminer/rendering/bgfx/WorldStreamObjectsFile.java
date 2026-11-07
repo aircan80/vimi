@@ -4,6 +4,8 @@ import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.world.ExteriorObjectLimits;
 import com.vibeminer.rendering.world.ObjectTextureFormats;
 import com.vibeminer.rendering.world.ObjectTextureMips;
+import com.vibeminer.rendering.world.WmoPortalSet;
+import com.vibeminer.rendering.world.WmoPortalTraversal;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
@@ -31,7 +33,7 @@ import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
 /**
- * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 6. Structural
+ * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 7. Structural
  * only: the application's closed source bridge is its sole producer, and the OBJECTS command (or
  * the terrain tile header) names its exact length and SHA-256.
  *
@@ -41,15 +43,21 @@ import java.util.function.BooleanSupplier;
  * 4-byte vertex colour per vertex (R, G, B, then a zero byte), u16 mesh-relative indices padded to
  * four bytes, and image data. Each image's data is its full mip chain, top level down to 1 x 1 and
  * tightly packed, in its format: RGBA8 texels ({@link ObjectTextureMips}, issue #265) or BC1, BC2
- * or BC3 blocks ({@link ObjectTextureFormats}, issue #374). Every count, offset, index and float is
- * validated; reserved bytes must be zero.
+ * or BC3 blocks ({@link ObjectTextureFormats}, issue #374). Then one group ordinal per mesh (-1 for
+ * a mesh of a model without portals), and the portal tables of #383: per set (model, groups,
+ * portals, vertices, references), per group (MOGP flags, first reference, reference count), the
+ * group boxes (six floats), per portal its vertex count, the portal planes (four floats), the
+ * portal vertices (three floats) and per reference (portal, group, side), every index relative to
+ * its set. Every count, offset, index and float is validated; reserved bytes must be zero.
  */
 final class WorldStreamObjectsFile {
     // Version 5 (#367): range classes add ADDITIVE and the UNLIT flag, on #420's version 4.
     // Version 6 (#375): vertex colours and the TWO_SIDED range flag. Header int 148 carries the
     // compressed formats the file charges at their stored size, those its session's child samples
-    // as blocks (#374); a reader before #374 refuses a nonzero mask there.
-    static final int VERSION = 6, HEADER_BYTES = 256;
+    // as blocks (#374); a reader before #374 refuses a nonzero mask there. Version 7 (#383 step
+    // 3a): mesh group ordinals and the portal tables of building roots on instance maps, whose
+    // counts follow at header bytes 152-171.
+    static final int VERSION = 7, HEADER_BYTES = 256;
     // The tables are the sums of the producer's pools (ExteriorObjectLimits): opaque buildings,
     // their cutout and blended surfaces, and doodads. Creature models share whatever room remains.
     static final int MAX_MODELS = ExteriorObjectLimits.MODELS;
@@ -121,27 +129,45 @@ final class WorldStreamObjectsFile {
 
     static final int RANGE_INTS = 4, PLACEMENT_DOUBLES = 13;
 
+    /** Portal tables (#383): ints per set, group, portal and reference; floats per box, plane. */
+    static final int PORTAL_SET_INTS = 5, PORTAL_GROUP_INTS = 3, PORTAL_REF_INTS = 3;
+
+    static final int PORTAL_BOX_FLOATS = 6, PORTAL_PLANE_FLOATS = 4;
+
+    static final int MAX_PORTAL_SETS = WmoPortalSet.MAX_TILE_SETS;
+    static final int MAX_PORTAL_GROUPS = WmoPortalSet.MAX_TILE_GROUPS;
+    static final int MAX_PORTALS = WmoPortalSet.MAX_TILE_PORTALS;
+    static final int MAX_PORTAL_VERTICES = WmoPortalSet.MAX_TILE_VERTICES;
+    static final int MAX_PORTAL_REFS = WmoPortalSet.MAX_TILE_REFS;
+
     /** Draw calls per tile (sum over placements of their model's ranges); bounds a frame. */
     static final int MAX_DRAWS = ExteriorObjectLimits.DRAWS;
 
     static final int VERTEX_FLOATS = 8, VERTEX_BYTES = 32, COLOUR_BYTES = 4;
 
     /**
-     * The file ceiling: every table at its cap ({@link #length}), rounded up to the next MiB. With
-     * the #308 pools and #375's vertex colours that is 28 MiB; it is derived so a raised pool can
-     * never outgrow the file.
+     * The file ceiling: every table at its cap ({@link #length}, with the mesh group column) plus
+     * the portal tables at theirs ({@link #portalLength}), rounded up to the next MiB. With the
+     * #308 pools, #375's vertex colours and #383's portal tables that is 28 MiB; it is derived so a
+     * raised pool can never outgrow the file.
      */
     static final int MAX_BYTES =
             ceilingMiB(
                     length(
-                            MAX_MODELS,
-                            MAX_MESHES,
-                            MAX_RANGES,
-                            MAX_PLACEMENTS,
-                            MAX_IMAGES,
-                            MAX_VERTICES,
-                            MAX_INDICES,
-                            MAX_IMAGE_BYTES));
+                                    MAX_MODELS,
+                                    MAX_MESHES,
+                                    MAX_RANGES,
+                                    MAX_PLACEMENTS,
+                                    MAX_IMAGES,
+                                    MAX_VERTICES,
+                                    MAX_INDICES,
+                                    MAX_IMAGE_BYTES)
+                            + portalLength(
+                                    WmoPortalSet.MAX_TILE_SETS,
+                                    WmoPortalSet.MAX_TILE_GROUPS,
+                                    WmoPortalSet.MAX_TILE_PORTALS,
+                                    WmoPortalSet.MAX_TILE_VERTICES,
+                                    WmoPortalSet.MAX_TILE_REFS));
 
     private static int ceilingMiB(int bytes) {
         return (bytes + (1 << 20) - 1) >>> 20 << 20;
@@ -186,6 +212,30 @@ final class WorldStreamObjectsFile {
 
         /** Every image's packed chain in its format, in image order. */
         final byte[] pixels;
+
+        /** Per mesh: its group ordinal in its model's portal set, or -1 without a set (#383). */
+        final int[] meshGroups;
+
+        /** Per portal set: model, groups, portals, vertices, references (#383). */
+        final int[] portalSets;
+
+        /** Per portal group: MOGP flags, first reference and reference count within its set. */
+        final int[] portalGroups;
+
+        /** Per portal group: min x, y, z, max x, y, z. */
+        final float[] portalBoxes;
+
+        /** Per portal: its vertex count; its vertices follow the previous portal's. */
+        final int[] portalVertexCounts;
+
+        /** Per portal: its MOPT plane normal x, y, z and distance. */
+        final float[] portalPlanes;
+
+        /** Per portal vertex: x, y, z. */
+        final float[] portalVertices;
+
+        /** Per reference: portal, group (both within its set) and the raw side. */
+        final int[] portalRefs;
 
         final int draws;
 
@@ -232,6 +282,48 @@ final class WorldStreamObjectsFile {
                 short[] indices,
                 byte[] pixels,
                 int compressedFormats) {
+            this(
+                    models,
+                    meshes,
+                    ranges,
+                    placementModels,
+                    placements,
+                    images,
+                    vertices,
+                    colours,
+                    indices,
+                    pixels,
+                    compressedFormats,
+                    unset(meshes.length / 6),
+                    new int[0],
+                    new int[0],
+                    new float[0],
+                    new int[0],
+                    new float[0],
+                    new float[0],
+                    new int[0]);
+        }
+
+        Data(
+                int[] models,
+                int[] meshes,
+                int[] ranges,
+                int[] placementModels,
+                double[] placements,
+                int[] images,
+                float[] vertices,
+                int[] colours,
+                short[] indices,
+                byte[] pixels,
+                int compressedFormats,
+                int[] meshGroups,
+                int[] portalSets,
+                int[] portalGroups,
+                float[] portalBoxes,
+                int[] portalVertexCounts,
+                float[] portalPlanes,
+                float[] portalVertices,
+                int[] portalRefs) {
             require((compressedFormats & ~0xE) == 0, "Compressed format mask");
             this.compressedFormats = compressedFormats;
             this.models = Objects.requireNonNull(models);
@@ -244,7 +336,103 @@ final class WorldStreamObjectsFile {
             this.colours = Objects.requireNonNull(colours);
             this.indices = Objects.requireNonNull(indices);
             this.pixels = Objects.requireNonNull(pixels);
+            this.meshGroups = Objects.requireNonNull(meshGroups);
+            this.portalSets = Objects.requireNonNull(portalSets);
+            this.portalGroups = Objects.requireNonNull(portalGroups);
+            this.portalBoxes = Objects.requireNonNull(portalBoxes);
+            this.portalVertexCounts = Objects.requireNonNull(portalVertexCounts);
+            this.portalPlanes = Objects.requireNonNull(portalPlanes);
+            this.portalVertices = Objects.requireNonNull(portalVertices);
+            this.portalRefs = Objects.requireNonNull(portalRefs);
             draws = validate();
+        }
+
+        private static int[] unset(int meshes) {
+            var groups = new int[meshes];
+            Arrays.fill(groups, -1);
+            return groups;
+        }
+
+        int portalSetCount() {
+            return portalSets.length / PORTAL_SET_INTS;
+        }
+
+        int portalGroupCount() {
+            return portalGroups.length / PORTAL_GROUP_INTS;
+        }
+
+        int portalCount() {
+            return portalVertexCounts.length;
+        }
+
+        int portalVertexCount() {
+            return portalVertices.length / 3;
+        }
+
+        int portalRefCount() {
+            return portalRefs.length / PORTAL_REF_INTS;
+        }
+
+        /** The model portal set {@code set} belongs to. */
+        int portalModel(int set) {
+            return portalSets[set * PORTAL_SET_INTS];
+        }
+
+        /** Portal set {@code set} as the traversal takes it; values are the file's floats. */
+        WmoPortalSet portalSet(int set) {
+            int group = 0, portal = 0, vertex = 0, ref = 0;
+            for (int s = 0; s < set; s++) {
+                group += portalSets[s * PORTAL_SET_INTS + 1];
+                portal += portalSets[s * PORTAL_SET_INTS + 2];
+                vertex += portalSets[s * PORTAL_SET_INTS + 3];
+                ref += portalSets[s * PORTAL_SET_INTS + 4];
+            }
+            int at = set * PORTAL_SET_INTS;
+            int groupCount = portalSets[at + 1], portals = portalSets[at + 2];
+            int refCount = portalSets[at + 4];
+            var groups = new java.util.ArrayList<WmoPortalTraversal.Group>(groupCount);
+            for (int g = group; g < group + groupCount; g++) {
+                int b = g * PORTAL_BOX_FLOATS;
+                groups.add(
+                        new WmoPortalTraversal.Group(
+                                Integer.toUnsignedLong(portalGroups[g * PORTAL_GROUP_INTS]),
+                                portalBoxes[b],
+                                portalBoxes[b + 1],
+                                portalBoxes[b + 2],
+                                portalBoxes[b + 3],
+                                portalBoxes[b + 4],
+                                portalBoxes[b + 5],
+                                portalGroups[g * PORTAL_GROUP_INTS + 1],
+                                portalGroups[g * PORTAL_GROUP_INTS + 2]));
+            }
+            var list = new java.util.ArrayList<WmoPortalTraversal.Portal>(portals);
+            for (int p = portal; p < portal + portals; p++) {
+                int count = portalVertexCounts[p];
+                if (count < 3 || count > portalVertexCount() - vertex) {
+                    throw new IllegalArgumentException("Portal vertices");
+                }
+                var v = new double[count * 3];
+                for (int i = 0; i < v.length; i++) {
+                    v[i] = portalVertices[vertex * 3 + i];
+                }
+                vertex += count;
+                int q = p * PORTAL_PLANE_FLOATS;
+                list.add(
+                        new WmoPortalTraversal.Portal(
+                                v,
+                                portalPlanes[q],
+                                portalPlanes[q + 1],
+                                portalPlanes[q + 2],
+                                portalPlanes[q + 3]));
+            }
+            var refs = new java.util.ArrayList<WmoPortalTraversal.Ref>(refCount);
+            for (int r = ref; r < ref + refCount; r++) {
+                int q = r * PORTAL_REF_INTS;
+                refs.add(
+                        new WmoPortalTraversal.Ref(
+                                portalRefs[q], portalRefs[q + 1], portalRefs[q + 2]));
+            }
+            return new WmoPortalSet(groups, list, refs);
         }
 
         int modelCount() {
@@ -280,15 +468,24 @@ final class WorldStreamObjectsFile {
         }
 
         int bytes() {
-            return length(
-                    modelCount(),
-                    meshCount(),
-                    rangeCount(),
-                    placementCount(),
-                    imageCount(),
-                    vertexCount(),
-                    indexCount(),
-                    imageBytes());
+            long bytes =
+                    (long)
+                                    length(
+                                            modelCount(),
+                                            meshCount(),
+                                            rangeCount(),
+                                            placementCount(),
+                                            imageCount(),
+                                            vertexCount(),
+                                            indexCount(),
+                                            imageBytes())
+                            + portalLength(
+                                    portalSetCount(),
+                                    portalGroupCount(),
+                                    portalCount(),
+                                    portalVertexCount(),
+                                    portalRefCount());
+            return bytes > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) bytes;
         }
 
         private int validate() {
@@ -438,8 +635,93 @@ final class WorldStreamObjectsFile {
                                         != ObjectTextureFormats.BC1,
                         "BC1 image sampled with alpha");
             }
+            validatePortals(modelCount, meshCount);
             require(bytes() <= MAX_BYTES, "Objects file ceiling");
             return (int) draws;
+        }
+
+        /**
+         * Portal tables (#383): sets in increasing model order, each a valid {@link WmoPortalSet},
+         * the tables used exactly, and one group ordinal per mesh that names a group of its model's
+         * set, or -1 for a model without one.
+         */
+        private void validatePortals(int modelCount, int meshCount) {
+            int sets = portalSetCount(), groups = portalGroupCount(), portals = portalCount();
+            int vertices = portalVertexCount(), refs = portalRefCount();
+            require(
+                    portalSets.length % PORTAL_SET_INTS == 0
+                            && portalGroups.length % PORTAL_GROUP_INTS == 0
+                            && portalBoxes.length == groups * PORTAL_BOX_FLOATS
+                            && portalPlanes.length == portals * PORTAL_PLANE_FLOATS
+                            && portalVertices.length % 3 == 0
+                            && portalRefs.length % PORTAL_REF_INTS == 0
+                            && meshGroups.length == meshCount
+                            && sets <= MAX_PORTAL_SETS
+                            && groups <= MAX_PORTAL_GROUPS
+                            && portals <= MAX_PORTALS
+                            && vertices <= MAX_PORTAL_VERTICES
+                            && refs <= MAX_PORTAL_REFS,
+                    "Portal counts");
+            for (float[] table : new float[][] {portalBoxes, portalPlanes, portalVertices}) {
+                for (float value : table) {
+                    require(
+                            Float.isFinite(value) && Math.abs(value) <= WmoPortalSet.MAX_VALUE,
+                            "Portal value");
+                }
+            }
+            int[] setGroups = new int[modelCount];
+            Arrays.fill(setGroups, -1);
+            long groupSum = 0, portalSum = 0, vertexSum = 0, refSum = 0;
+            int previous = -1;
+            for (int set = 0; set < sets; set++) {
+                int at = set * PORTAL_SET_INTS, model = portalSets[at];
+                require(
+                        model > previous
+                                && model < modelCount
+                                && portalSets[at + 1] >= 1
+                                && portalSets[at + 2] >= 0
+                                && portalSets[at + 3] >= 0
+                                && portalSets[at + 4] >= 0,
+                        "Portal sets");
+                previous = model;
+                long vertexAt = vertexSum;
+                for (int p = (int) portalSum;
+                        p < portalSum + portalSets[at + 2] && p < portals;
+                        p++) {
+                    vertexAt += portalVertexCounts[p];
+                }
+                groupSum += portalSets[at + 1];
+                portalSum += portalSets[at + 2];
+                vertexSum += portalSets[at + 3];
+                refSum += portalSets[at + 4];
+                require(
+                        groupSum <= groups
+                                && portalSum <= portals
+                                && vertexSum <= vertices
+                                && refSum <= refs
+                                && vertexAt == vertexSum,
+                        "Portal sets");
+                try {
+                    portalSet(set);
+                } catch (IllegalArgumentException invalid) {
+                    throw new IllegalArgumentException("Portal set", invalid);
+                }
+                setGroups[model] = portalSets[at + 1];
+            }
+            require(
+                    groupSum == groups
+                            && portalSum == portals
+                            && vertexSum == vertices
+                            && refSum == refs,
+                    "Portal sets");
+            for (int m = 0; m < modelCount; m++) {
+                for (int mesh = models[m * 2]; mesh < models[m * 2] + models[m * 2 + 1]; mesh++) {
+                    int group = meshGroups[mesh];
+                    require(
+                            setGroups[m] < 0 ? group == -1 : group >= 0 && group < setGroups[m],
+                            "Mesh groups");
+                }
+            }
         }
     }
 
@@ -538,7 +820,19 @@ final class WorldStreamObjectsFile {
                         + images * (IMAGE_INTS * 4L)
                         + vertices * (long) (VERTEX_BYTES + COLOUR_BYTES)
                         + (indices * 2L + 3) / 4 * 4
-                        + imageBytes;
+                        + imageBytes
+                        + meshes * 4L;
+        return bytes > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) bytes;
+    }
+
+    /** Bytes of the portal tables (#383); {@link #length} counts the mesh group column. */
+    static int portalLength(int sets, int groups, int portals, int vertices, int refs) {
+        long bytes =
+                sets * (PORTAL_SET_INTS * 4L)
+                        + groups * (PORTAL_GROUP_INTS * 4L + PORTAL_BOX_FLOATS * 4L)
+                        + portals * (4L + PORTAL_PLANE_FLOATS * 4L)
+                        + vertices * 12L
+                        + refs * (PORTAL_REF_INTS * 4L);
         return bytes > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) bytes;
     }
 
@@ -628,6 +922,16 @@ final class WorldStreamObjectsFile {
                     check(canceled);
                     output.write(data.pixels, at, Math.min(SCRATCH, data.pixels.length - at));
                 }
+                check(canceled);
+                for (int[] table :
+                        new int[][] {data.meshGroups, data.portalSets, data.portalGroups}) {
+                    writeInts(output, table);
+                }
+                writeFloats(output, data.portalBoxes);
+                writeInts(output, data.portalVertexCounts);
+                writeFloats(output, data.portalPlanes);
+                writeFloats(output, data.portalVertices);
+                writeInts(output, data.portalRefs);
                 output.flush();
                 if (channel.size() != data.bytes()) {
                     throw new IOException("Objects file length differs");
@@ -707,9 +1011,24 @@ final class WorldStreamObjectsFile {
                             && in.getInt(100) == 0
                             && in.getLong(104) == identity.lease().serial(),
                     "Objects header identity");
-            for (int i = 152; i < HEADER_BYTES; i++) {
+            for (int i = 172; i < HEADER_BYTES; i++) {
                 require(head[i] == 0, "Reserved objects bytes");
             }
+            int portalSets = in.getInt(152), portalGroups = in.getInt(156);
+            int portals = in.getInt(160), portalVertices = in.getInt(164);
+            int portalRefs = in.getInt(168);
+            require(
+                    portalSets >= 0
+                            && portalSets <= MAX_PORTAL_SETS
+                            && portalGroups >= 0
+                            && portalGroups <= MAX_PORTAL_GROUPS
+                            && portals >= 0
+                            && portals <= MAX_PORTALS
+                            && portalVertices >= 0
+                            && portalVertices <= MAX_PORTAL_VERTICES
+                            && portalRefs >= 0
+                            && portalRefs <= MAX_PORTAL_REFS,
+                    "Objects portal counts");
             int models = in.getInt(112), meshes = in.getInt(116), ranges = in.getInt(120);
             int placements = in.getInt(124), images = in.getInt(128), vertices = in.getInt(132);
             int indices = in.getInt(136), imageBytes = in.getInt(140), draws = in.getInt(144);
@@ -732,15 +1051,22 @@ final class WorldStreamObjectsFile {
                             && imageBytes <= MAX_IMAGE_BYTES
                             && imageBytes % 4 == 0
                             && (in.getInt(148) & ~0xE) == 0
-                            && length(
-                                            models,
-                                            meshes,
-                                            ranges,
-                                            placements,
-                                            images,
-                                            vertices,
-                                            indices,
-                                            imageBytes)
+                            && (long)
+                                                    length(
+                                                            models,
+                                                            meshes,
+                                                            ranges,
+                                                            placements,
+                                                            images,
+                                                            vertices,
+                                                            indices,
+                                                            imageBytes)
+                                            + portalLength(
+                                                    portalSets,
+                                                    portalGroups,
+                                                    portals,
+                                                    portalVertices,
+                                                    portalRefs)
                                     == reference.length(),
                     "Objects header counts");
             // Bounded by the counts above before any body allocation.
@@ -788,6 +1114,15 @@ final class WorldStreamObjectsFile {
                 input.readFully(pixelData, at, Math.min(SCRATCH, pixelData.length - at));
             }
             check(canceled);
+            int[] meshGroupData = ints(input, meshes);
+            int[] portalSetData = ints(input, portalSets * PORTAL_SET_INTS);
+            int[] portalGroupData = ints(input, portalGroups * PORTAL_GROUP_INTS);
+            float[] portalBoxData = floats(input, portalGroups * PORTAL_BOX_FLOATS);
+            int[] portalVertexCountData = ints(input, portals);
+            float[] portalPlaneData = floats(input, portals * PORTAL_PLANE_FLOATS);
+            float[] portalVertexData = floats(input, portalVertices * 3);
+            int[] portalRefData = ints(input, portalRefs * PORTAL_REF_INTS);
+            check(canceled);
             if (input.read() != -1
                     || channel.size() != reference.length()
                     || !HexFormat.of().formatHex(digest.digest()).equals(reference.sha256())) {
@@ -805,7 +1140,15 @@ final class WorldStreamObjectsFile {
                             colourData,
                             indexData,
                             pixelData,
-                            in.getInt(148));
+                            in.getInt(148),
+                            meshGroupData,
+                            portalSetData,
+                            portalGroupData,
+                            portalBoxData,
+                            portalVertexCountData,
+                            portalPlaneData,
+                            portalVertexData,
+                            portalRefData);
             require(data.draws == draws, "Object draw count");
             return data;
         } catch (EOFException truncated) {
@@ -826,7 +1169,30 @@ final class WorldStreamObjectsFile {
         out.putInt(data.placementCount()).putInt(data.imageCount()).putInt(data.vertexCount());
         out.putInt(data.indexCount()).putInt(data.imageBytes()).putInt(data.draws);
         out.putInt(data.compressedFormats);
+        out.putInt(data.portalSetCount()).putInt(data.portalGroupCount());
+        out.putInt(data.portalCount()).putInt(data.portalVertexCount());
+        out.putInt(data.portalRefCount());
         return out.array();
+    }
+
+    private static void writeInts(DataOutputStream output, int[] values) throws IOException {
+        for (int value : values) {
+            output.writeInt(Integer.reverseBytes(value));
+        }
+    }
+
+    private static void writeFloats(DataOutputStream output, float[] values) throws IOException {
+        for (float value : values) {
+            output.writeInt(Integer.reverseBytes(Float.floatToRawIntBits(value)));
+        }
+    }
+
+    private static float[] floats(DataInputStream input, int count) throws IOException {
+        float[] values = new float[count];
+        for (int i = 0; i < count; i++) {
+            values[i] = Float.intBitsToFloat(Integer.reverseBytes(input.readInt()));
+        }
+        return values;
     }
 
     private static int[] ints(DataInputStream input, int count) throws IOException {

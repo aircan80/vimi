@@ -873,7 +873,7 @@ final class WorldStreamSourceBridge {
             builder.image(image.width(), image.height(), image.format(), image.data());
         }
         for (var model : set.models()) {
-            builder.model();
+            boolean portals = startModel(builder, model.portals());
             for (var mesh : model.meshes()) {
                 cancellation.check();
                 var ranges = new int[mesh.ranges().size() * 3];
@@ -885,9 +885,24 @@ final class WorldStreamSourceBridge {
                     ranges[r * 3 + 2] = range.image();
                     blends[r] = range.blend();
                 }
-                builder.mesh(mesh.vertices(), mesh.indices(), ranges, blends, mesh.colours());
+                builder.mesh(mesh.vertices(), mesh.indices(), ranges, blends, mesh.colours(),
+                        portals ? mesh.groupOrdinal() : -1);
             }
         }
+    }
+
+    /**
+     * Starts one copied model, with its portal set (#383 step 3a) when it has one and it still fits
+     * the tile's portal tables; returns whether it was carried, so the meshes name their groups. A
+     * set left out costs nothing else: the model draws exactly as before.
+     */
+    static boolean startModel(
+            WorldStreamTileWriter.Exterior.Builder builder,
+            com.vibeminer.rendering.world.WmoPortalSet portals) {
+        builder.model();
+        if (portals == null || !builder.portalsFit(portals)) return false;
+        builder.portals(portals);
+        return true;
     }
 
     /** capped receives the buildings and doodads dropped by the bridge's draw-budget check. */

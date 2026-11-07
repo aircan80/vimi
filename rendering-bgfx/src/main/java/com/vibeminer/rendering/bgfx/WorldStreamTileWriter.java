@@ -249,6 +249,13 @@ public final class WorldStreamTileWriter {
             private final java.util.ArrayList<int[]> colourBlocks = new java.util.ArrayList<>();
             private final java.util.ArrayList<short[]> indexBlocks = new java.util.ArrayList<>();
             private final java.util.ArrayList<byte[]> pixelBlocks = new java.util.ArrayList<>();
+            private final java.util.ArrayList<Integer> meshGroups = new java.util.ArrayList<>();
+
+            /** Portal sets by model, in model order (#383). */
+            private final java.util.TreeMap<Integer, com.vibeminer.rendering.world.WmoPortalSet>
+                    portalSets = new java.util.TreeMap<>();
+
+            private int portalGroups, portals, portalVertices, portalRefs;
             private int vertices, indices, imageBytes, draws;
 
             /**
@@ -292,6 +299,41 @@ public final class WorldStreamTileWriter {
                         && vertexCount <= WorldStreamObjectsFile.MAX_VERTICES - vertices
                         && indexCount <= WorldStreamObjectsFile.MAX_INDICES - indices
                         && rangeCount <= WorldStreamObjectsFile.MAX_RANGES - ranges.size();
+            }
+
+            /** Whether {@code set} still fits the tile's portal tables (#383). */
+            public boolean portalsFit(com.vibeminer.rendering.world.WmoPortalSet set) {
+                open();
+                Objects.requireNonNull(set);
+                return portalSets.size() < WorldStreamObjectsFile.MAX_PORTAL_SETS
+                        && set.groups().size()
+                                <= WorldStreamObjectsFile.MAX_PORTAL_GROUPS - portalGroups
+                        && set.portals().size() <= WorldStreamObjectsFile.MAX_PORTALS - portals
+                        && set.vertexCount()
+                                <= WorldStreamObjectsFile.MAX_PORTAL_VERTICES - portalVertices
+                        && set.refs().size() <= WorldStreamObjectsFile.MAX_PORTAL_REFS - portalRefs;
+            }
+
+            /**
+             * The current model's portal set (#383 step 3a): once per model, before its meshes,
+             * which then name their group ordinal in it. Carried for the renderer; drawing is
+             * unchanged.
+             */
+            public void portals(com.vibeminer.rendering.world.WmoPortalSet set) {
+                open();
+                Objects.requireNonNull(set);
+                int model = models.size() - 1;
+                if (model < 0
+                        || models.get(model)[1] != 0
+                        || portalSets.containsKey(model)
+                        || !portalsFit(set)) {
+                    throw new IllegalArgumentException("Exterior portals exceed file profile");
+                }
+                portalSets.put(model, set);
+                portalGroups += set.groups().size();
+                portals += set.portals().size();
+                portalVertices += set.vertexCount();
+                portalRefs += set.refs().size();
             }
 
             /** Placements that can still be added. */
@@ -422,6 +464,21 @@ public final class WorldStreamTileWriter {
                     int[] drawRanges,
                     int[] blends,
                     java.nio.IntBuffer colourData) {
+                mesh(vertexData, indexData, drawRanges, blends, colourData, -1);
+            }
+
+            /**
+             * As {@link #mesh(java.nio.FloatBuffer, java.nio.IntBuffer, int[], int[],
+             * java.nio.IntBuffer)}, as group {@code group} of the current model's portal set
+             * (#383), or -1 for a model without one.
+             */
+            public void mesh(
+                    java.nio.FloatBuffer vertexData,
+                    java.nio.IntBuffer indexData,
+                    int[] drawRanges,
+                    int[] blends,
+                    java.nio.IntBuffer colourData,
+                    int group) {
                 open();
                 Objects.requireNonNull(vertexData);
                 Objects.requireNonNull(indexData);
@@ -478,6 +535,7 @@ public final class WorldStreamTileWriter {
                 vertexBlocks.add(floats);
                 colourBlocks.add(colours);
                 indexBlocks.add(shorts);
+                meshGroups.add(group);
                 vertices += count;
                 indices += indexCount;
                 models.get(models.size() - 1)[1]++;
@@ -569,6 +627,58 @@ public final class WorldStreamTileWriter {
                     System.arraycopy(block, 0, pixelData, at, block.length);
                     at += block.length;
                 }
+                var meshGroupData = new int[meshGroups.size()];
+                for (int i = 0; i < meshGroupData.length; i++) {
+                    meshGroupData[i] = meshGroups.get(i);
+                }
+                var setData = new int[portalSets.size() * WorldStreamObjectsFile.PORTAL_SET_INTS];
+                var groupData = new int[portalGroups * WorldStreamObjectsFile.PORTAL_GROUP_INTS];
+                var boxData = new float[portalGroups * WorldStreamObjectsFile.PORTAL_BOX_FLOATS];
+                var vertexCountData = new int[portals];
+                var planeData = new float[portals * WorldStreamObjectsFile.PORTAL_PLANE_FLOATS];
+                var portalVertexData = new float[portalVertices * 3];
+                var refData = new int[portalRefs * WorldStreamObjectsFile.PORTAL_REF_INTS];
+                int set = 0, group = 0, portal = 0, vertex = 0, ref = 0;
+                for (var entry : portalSets.entrySet()) {
+                    var value = entry.getValue();
+                    int row = set++ * WorldStreamObjectsFile.PORTAL_SET_INTS;
+                    setData[row] = entry.getKey();
+                    setData[row + 1] = value.groups().size();
+                    setData[row + 2] = value.portals().size();
+                    setData[row + 3] = value.vertexCount();
+                    setData[row + 4] = value.refs().size();
+                    for (var g : value.groups()) {
+                        int i = group * WorldStreamObjectsFile.PORTAL_GROUP_INTS;
+                        groupData[i] = (int) g.flags();
+                        groupData[i + 1] = g.firstRef();
+                        groupData[i + 2] = g.refCount();
+                        int b = group++ * WorldStreamObjectsFile.PORTAL_BOX_FLOATS;
+                        boxData[b] = (float) g.minX();
+                        boxData[b + 1] = (float) g.minY();
+                        boxData[b + 2] = (float) g.minZ();
+                        boxData[b + 3] = (float) g.maxX();
+                        boxData[b + 4] = (float) g.maxY();
+                        boxData[b + 5] = (float) g.maxZ();
+                    }
+                    for (var p : value.portals()) {
+                        var v = p.vertices();
+                        vertexCountData[portal] = v.length / 3;
+                        int q = portal++ * WorldStreamObjectsFile.PORTAL_PLANE_FLOATS;
+                        planeData[q] = (float) p.nx();
+                        planeData[q + 1] = (float) p.ny();
+                        planeData[q + 2] = (float) p.nz();
+                        planeData[q + 3] = (float) p.distance();
+                        for (double c : v) {
+                            portalVertexData[vertex++] = (float) c;
+                        }
+                    }
+                    for (var r : value.refs()) {
+                        int i = ref++ * WorldStreamObjectsFile.PORTAL_REF_INTS;
+                        refData[i] = r.portal();
+                        refData[i + 1] = r.group();
+                        refData[i + 2] = r.side();
+                    }
+                }
                 return new Exterior(
                         new WorldStreamObjectsFile.Data(
                                 modelTable,
@@ -581,7 +691,15 @@ public final class WorldStreamTileWriter {
                                 colourData,
                                 indexData,
                                 pixelData,
-                                compressedFormats));
+                                compressedFormats,
+                                meshGroupData,
+                                setData,
+                                groupData,
+                                boxData,
+                                vertexCountData,
+                                planeData,
+                                portalVertexData,
+                                refData));
             }
 
             private void open() {

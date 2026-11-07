@@ -2,6 +2,7 @@ package com.vibeminer.concepts.world;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -11,6 +12,8 @@ import com.vibeminer.formats.tables.AuthoredNativeMap;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldPlacements;
 import com.vibeminer.formats.world.WorldStageTimings;
+import com.vibeminer.rendering.world.WmoPortalSet;
+import com.vibeminer.rendering.world.WmoPortalTraversal;
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -1578,6 +1581,188 @@ class WorldExteriorObjectsTest {
                         1,
                         set.count(WorldExteriorObjects.Count.TRIANGLE_WINDING_AGREES)
                                 + set.count(WorldExteriorObjects.Count.TRIANGLE_WINDING_OPPOSES));
+            }
+        }
+    }
+
+    /**
+     * Root portal chunks (#383): {@code portals} triangles in the plane x = 1, the first leading
+     * from group 0 to group 1 and back when {@code door}.
+     */
+    private static byte[] portalChunks(int portals, boolean door) {
+        var v = buffer(portals * 36);
+        var t = buffer(portals * 20);
+        for (int i = 0; i < portals; i++) {
+            v.put(floats(1, 0, 0, 1, 1, 0, 1, 1, 1));
+            t.putShort((short) (i * 3)).putShort((short) 3).put(floats(1, 0, 0, -1));
+        }
+        var r = buffer(door ? 16 : 0);
+        if (door) {
+            r.putShort((short) 0).putShort((short) 1).putShort((short) -1).putShort((short) 0);
+            r.putShort((short) 0).putShort((short) 0).putShort((short) 1).putShort((short) 0);
+        }
+        return join(chunk("MOPV", v.array()), chunk("MOPT", t.array()), chunk("MOPR", r.array()));
+    }
+
+    /** A group file with its MOGP portal range set. */
+    private static byte[] portalRange(byte[] group, int first, int count) {
+        var bytes = group.clone();
+        int header = indexOf(bytes, "MOGP") + 8;
+        ByteBuffer.wrap(bytes)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .putShort(header + 36, (short) first)
+                .putShort(header + 38, (short) count);
+        return bytes;
+    }
+
+    /**
+     * Issue #383 step 3a: on a dungeon or raid map a drawn root carries its retained portals and
+     * every LOD0 group's header (flags, box, MOPR range), and each mesh names its group; nothing
+     * else changes. Open-world maps carry none.
+     */
+    @Test
+    void instanceRootsCarryTheirPortalsAndGroupHeaders() {
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            2,
+                            new long[] {GROUP, INTERIOR},
+                            List.of(new Material(0, IMAGE, 0)),
+                            portalChunks(1, true)));
+            f.files.sources.put(GROUP, portalRange(group(EXT), 0, 1));
+            f.files.sources.put(INTERIOR, portalRange(group(INT), 1, 1));
+            try (var set = f.runInstance()) {
+                var model = set.models().getFirst();
+                var portals = model.portals();
+                assertNotNull(portals);
+                assertEquals(
+                        List.of(
+                                new WmoPortalTraversal.Group(EXT, -1, -1, -1, 2, 2, 2, 0, 1),
+                                new WmoPortalTraversal.Group(INT, -1, -1, -1, 2, 2, 2, 1, 1)),
+                        portals.groups());
+                assertEquals(1, portals.portals().size());
+                assertArrayEquals(
+                        new double[] {1, 0, 0, 1, 1, 0, 1, 1, 1},
+                        portals.portals().getFirst().vertices());
+                assertEquals(
+                        List.of(
+                                new WmoPortalTraversal.Ref(0, 1, -1),
+                                new WmoPortalTraversal.Ref(0, 0, 1)),
+                        portals.refs());
+                assertEquals(
+                        List.of(0, 1),
+                        model.meshes().stream()
+                                .map(WorldExteriorObjects.Mesh::groupOrdinal)
+                                .toList());
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_PORTALS));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_PORTALS_DROPPED));
+            }
+            try (var set = f.run()) {
+                assertNull(set.models().getFirst().portals());
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_PORTALS));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_PORTALS_DROPPED));
+            }
+        }
+    }
+
+    /**
+     * A set that cannot be carried whole is dropped and counted, and its root still draws: here a
+     * group whose file is missing (no header), and portals the root did not retain (a reference to
+     * a group outside MOHD).
+     */
+    @Test
+    void portalsWithoutEveryGroupHeaderOrNotRetainedAreDropped() {
+        long missing = 260;
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            assertNull(f.files.sources.get(missing));
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            2,
+                            new long[] {GROUP, missing},
+                            List.of(new Material(0, IMAGE, 0)),
+                            portalChunks(1, true)));
+            f.files.sources.put(GROUP, portalRange(group(EXT), 0, 1));
+            try (var set = f.runInstance()) {
+                assertNull(set.models().getFirst().portals());
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_PORTALS_DROPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+            }
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            // A single-group root whose door names group 1.
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            1,
+                            new long[] {GROUP},
+                            List.of(new Material(0, IMAGE, 0)),
+                            portalChunks(1, true)));
+            f.files.sources.put(GROUP, portalRange(group(EXT), 0, 1));
+            try (var set = f.runInstance()) {
+                assertNull(set.models().getFirst().portals());
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_PORTALS_DROPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+            }
+        }
+    }
+
+    /**
+     * A portal vertex past the objects file's value bound (WmoPortalSet.MAX_VALUE) drops only the
+     * root's set: the root and the tile's other objects still draw.
+     */
+    @Test
+    void aPortalValuePastTheFileBoundDropsOnlyTheSet() {
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            var chunks = portalChunks(1, true);
+            int mopv = indexOf(chunks, "MOPV") + 8;
+            ByteBuffer.wrap(chunks).order(ByteOrder.LITTLE_ENDIAN).putFloat(mopv + 8 * 4, 2e6f);
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            2,
+                            new long[] {GROUP, INTERIOR},
+                            List.of(new Material(0, IMAGE, 0)),
+                            chunks));
+            f.files.sources.put(GROUP, portalRange(group(EXT), 0, 1));
+            f.files.sources.put(INTERIOR, portalRange(group(INT), 1, 1));
+            try (var set = f.runInstance()) {
+                assertNull(set.models().getFirst().portals());
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_PORTALS_DROPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+            }
+        }
+    }
+
+    /**
+     * The carried sets share the tile's portal tables (WmoPortalSet.MAX_TILE_PORTALS): two roots of
+     * 1,100 portals each, the second no longer fits and is dropped while it still draws.
+     */
+    @Test
+    void portalSetsPastTheTileBoundsAreDropped() {
+        long secondRoot = 150, secondGroup = 250;
+        assertTrue(2 * 1100 > WmoPortalSet.MAX_TILE_PORTALS);
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8), Modf.of(secondRoot, 2, 0x8)))) {
+            for (long[] ids : new long[][] {{ROOT, GROUP}, {secondRoot, secondGroup}}) {
+                f.files.sources.put(
+                        ids[0],
+                        root(
+                                1,
+                                new long[] {ids[1]},
+                                List.of(new Material(0, IMAGE, 0)),
+                                portalChunks(1100, false)));
+                f.files.sources.put(ids[1], group(EXT));
+            }
+            try (var set = f.runInstance()) {
+                assertEquals(2, set.models().size());
+                assertNotNull(set.models().get(0).portals());
+                assertEquals(1100, set.models().get(0).portals().portals().size());
+                assertNull(set.models().get(1).portals());
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_PORTALS));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_PORTALS_DROPPED));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
             }
         }
     }

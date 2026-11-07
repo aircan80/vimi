@@ -34,6 +34,7 @@ public final class WorldStreamSourceBridgeTest {
         pickSourcesFollowCopiedPlacements();
         terrainProducerNeverWaitsForObjects();
         objectsStatusShowsDrawnAndOmittedCounts();
+        portalSetsAreCopiedWhileTheyFit();
         waterCopyMergesFullFlatChunksOnly();
         waterCopyCapsWholeLayersAtThePacketBound();
     }
@@ -141,6 +142,26 @@ public final class WorldStreamSourceBridgeTest {
                 new AuthoredWater(shape, masks, planar), Cancellation.NONE);
         check(!merged.capped() && merged.layers() == 129 && merged.water().cells() == 2 + 127 * 64,
                 "Merged flat chunks make room for every layer");
+    }
+
+    /**
+     * Issue #383 step 3a: a model's portal set is copied with it while the tile's portal tables
+     * have room, and its meshes then name their groups; past that the model is still copied, without
+     * its set.
+     */
+    private static void portalSetsAreCopiedWhileTheyFit() {
+        var set = new com.vibeminer.rendering.world.WmoPortalSet(
+                java.util.List.of(new com.vibeminer.rendering.world.WmoPortalTraversal.Group(
+                        0x2000, 0, 0, 0, 1, 1, 1, 0, 0)),
+                java.util.List.of(), java.util.List.of());
+        var builder = com.vibeminer.rendering.bgfx.WorldStreamTileWriter.Exterior.builder();
+        check(!WorldStreamSourceBridge.startModel(builder, null), "A model without a set carries none");
+        for (int m = 0; m < com.vibeminer.rendering.world.WmoPortalSet.MAX_TILE_SETS; m++) {
+            check(WorldStreamSourceBridge.startModel(builder, set), "A set is carried while it fits");
+        }
+        check(!WorldStreamSourceBridge.startModel(builder, set),
+                "Past the tile's portal tables the model is copied without its set");
+        check(!builder.portalsFit(set), "The tile's portal tables are full");
     }
 
     private static void objectsStatusShowsDrawnAndOmittedCounts() {

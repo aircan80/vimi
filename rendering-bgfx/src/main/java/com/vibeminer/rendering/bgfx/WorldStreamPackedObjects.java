@@ -1,6 +1,7 @@
 package com.vibeminer.rendering.bgfx;
 
 import com.vibeminer.rendering.world.ObjectTextureFormats;
+import com.vibeminer.rendering.world.WmoPortalTraversal;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Objects;
@@ -33,6 +34,17 @@ final class WorldStreamPackedObjects implements AutoCloseable {
      */
     final int decodedImages, compressedImages;
 
+    /** Per mesh: its group in its model's portal set, or -1 (#383). */
+    final int[] meshGroups;
+
+    /**
+     * Per model: the traversal of its portal set, or null without one (#383 step 3a). Built here on
+     * the decoder worker from the validated tables; the renderer does not cull with it yet.
+     */
+    private final WmoPortalTraversal[] portals;
+
+    private final int portalSets;
+
     ByteBuffer vertices, indices, pixels;
 
     private WorldStreamPackedObjects(
@@ -59,6 +71,13 @@ final class WorldStreamPackedObjects implements AutoCloseable {
                         WorldStreamObjectCulling.modelSpheres(
                                 models, meshes, ranges, data.vertices, data.indices, canceled));
         draws = data.draws;
+        meshGroups = data.meshGroups.clone();
+        portals = new WmoPortalTraversal[data.modelCount()];
+        portalSets = data.portalSetCount();
+        for (int set = 0; set < portalSets; set++) {
+            check(canceled);
+            portals[data.portalModel(set)] = data.portalSet(set).traversal();
+        }
         this.vertices = vertices;
         this.indices = indices;
         this.pixels = pixels;
@@ -175,6 +194,15 @@ final class WorldStreamPackedObjects implements AutoCloseable {
 
     int meshCount() {
         return meshes.length / 6;
+    }
+
+    /** The traversal of model {@code model}'s portal set, or null when it carries none. */
+    WmoPortalTraversal portals(int model) {
+        return portals[model];
+    }
+
+    int portalSetCount() {
+        return portalSets;
     }
 
     int imageCount() {
