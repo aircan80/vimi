@@ -28,10 +28,11 @@ final class WorldSkyTables {
         "SkyBand1Color",
         "SkyBand2Color",
         "SkySmogColor",
-        "SkyFogColor",
-        "DirectColor",
-        "AmbientColor"
+        "SkyFogColor"
     };
+
+    /** Optional: without them the sky and fog still load, with no recorded light. */
+    private static final String[] LIGHT = {"DirectColor", "AmbientColor"};
 
     /** The light tables cannot be used at all; the message names the table and why. */
     static final class Unavailable extends IllegalStateException {
@@ -73,6 +74,15 @@ final class WorldSkyTables {
         data.requireInteger("Time", -1);
         data.requireDecimal("FogEnd", -1);
         data.requireDecimal("FogScaler", -1);
+        boolean lit = true;
+        try {
+            for (String colour : LIGHT) {
+                data.requireInteger(colour, -1);
+            }
+        } catch (Unavailable failure) {
+            issues.add("Direct and ambient light are unavailable: " + failure.getMessage());
+            lit = false;
+        }
         if (map != null) {
             try {
                 map.requireInteger("TimeOfDayOverride", -1);
@@ -115,16 +125,12 @@ final class WorldSkyTables {
 
         var keys = new ArrayList<WorldSky.Key>();
         unreadable = 0;
-        int orphan = 0;
+        int orphan = 0, unlit = 0;
         for (var row : data.rows(tables, WorldSky.MAX_KEYS, token)) {
             try {
                 int[] colours = new int[COLOURS.length];
                 for (int i = 0; i < COLOURS.length; i++) {
-                    long value = data.integer(row, COLOURS[i], -1);
-                    if (value < 0 || value > 0xff_ffff) {
-                        throw new Unreadable();
-                    }
-                    colours[i] = (int) value;
+                    colours[i] = colour(data, row, COLOURS[i]);
                 }
                 long paramId = data.integer(row, "LightParamID", -1);
                 if (!paramIds.contains(paramId)) {
@@ -134,6 +140,19 @@ final class WorldSkyTables {
                 long time = data.integer(row, "Time", -1);
                 if (time < 0 || time >= WorldSky.DAY) {
                     throw new Unreadable();
+                }
+                double fogEnd = data.decimal(row, "FogEnd", -1);
+                double fogScaler = data.decimal(row, "FogScaler", -1);
+                WorldSky.Lighting lighting = null;
+                if (lit) {
+                    try {
+                        lighting =
+                                new WorldSky.Lighting(
+                                        colour(data, row, LIGHT[0]), colour(data, row, LIGHT[1]));
+                    } catch (Unreadable failure) {
+                        // Only this key's light is lost; its sky colours and fog are kept.
+                        unlit++;
+                    }
                 }
                 keys.add(
                         new WorldSky.Key(
@@ -147,16 +166,20 @@ final class WorldSkyTables {
                                         colours[3],
                                         colours[4],
                                         colours[5],
-                                        colours[6],
-                                        colours[7],
-                                        data.decimal(row, "FogEnd", -1),
-                                        data.decimal(row, "FogScaler", -1))));
+                                        lighting,
+                                        fogEnd,
+                                        fogScaler)));
             } catch (Unreadable | IllegalArgumentException failure) {
                 unreadable++;
             }
         }
         count(issues, unreadable, "LightData rows are unreadable and skipped.");
         count(issues, orphan, "LightData rows name a LightParams row that is absent.");
+        count(
+                issues,
+                unlit,
+                "LightData rows have unreadable direct or ambient light; their sky and fog are"
+                        + " kept.");
 
         var mapTimes = new HashMap<Long, Integer>();
         if (map != null) {
@@ -181,6 +204,14 @@ final class WorldSkyTables {
             }
         }
         return WorldSky.Index.of(lights, keys, mapTimes, issues);
+    }
+
+    private static int colour(Table table, Db2Types.Row row, String field) {
+        long value = table.integer(row, field, -1);
+        if (value < 0 || value > 0xff_ffff) {
+            throw new Unreadable();
+        }
+        return (int) value;
     }
 
     private static void count(List<String> issues, int count, String text) {

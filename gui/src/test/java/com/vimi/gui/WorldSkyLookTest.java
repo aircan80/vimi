@@ -24,7 +24,7 @@ public final class WorldSkyLookTest {
 
     private static WorldSky.Result result(double coverage, double fogEnd, double scaler,
             double fogShare) {
-        var sample = new WorldSky.Sample(0x0a141e, 0, 0, 0, 0, 0x324664, 0, 0, fogEnd, scaler,
+        var sample = new WorldSky.Sample(0x0a141e, 0, 0, 0, 0, 0x324664, fogEnd, scaler,
                 fogShare);
         return new WorldSky.Result(WorldSky.State.READY, 0, 0, false, sample, coverage,
                 List.of(), List.of());
@@ -109,9 +109,9 @@ public final class WorldSkyLookTest {
                 List.of(new WorldSky.Light(1, 7, 0, 0, 0, 0, 0, 100)),
                 List.of(
                         new WorldSky.Key(1, 100, 0,
-                                new WorldSky.Sample(0x101010, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
+                                new WorldSky.Sample(0x101010, 0, 0, 0, 0, 0, 0, 0)),
                         new WorldSky.Key(2, 100, 1440,
-                                new WorldSky.Sample(0xf0f0f0, 0, 0, 0, 0, 0, 0, 0, 900, 0.5))),
+                                new WorldSky.Sample(0xf0f0f0, 0, 0, 0, 0, 0, 900, 0.5))),
                 Map.of(), List.of());
     }
 
@@ -163,9 +163,9 @@ public final class WorldSkyLookTest {
                 List.of(new WorldSky.Light(1, 7, 0, 0, 0, 0, 0, 100)),
                 List.of(
                         new WorldSky.Key(1, 100, 0,
-                                new WorldSky.Sample(0x101010, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
+                                new WorldSky.Sample(0x101010, 0, 0, 0, 0, 0, 0, 0)),
                         new WorldSky.Key(2, 100, 1440,
-                                new WorldSky.Sample(0xf0f0f0, 0, 0, 0, 0, 0, 0, 0, 0, 0))),
+                                new WorldSky.Sample(0xf0f0f0, 0, 0, 0, 0, 0, 0, 0))),
                 Map.of(7L, 0), List.of());
         var still = new WorldSkyFeed(CompletableFuture.completedFuture(fixed), 7, time::get,
                 nanos::get);

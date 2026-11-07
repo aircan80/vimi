@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
 final class WorldSkyTest {
     private static WorldSky.Sample grey(int level, double fogEnd) {
         int c = level << 16 | level << 8 | level;
-        return new WorldSky.Sample(c, c, c, c, c, c, c, c, fogEnd, 0.5);
+        return new WorldSky.Sample(c, c, c, c, c, c, new WorldSky.Lighting(c, c), fogEnd, 0.5);
     }
 
     private static WorldSky.Light defaultLight(long id, long map, long param) {
@@ -89,7 +89,18 @@ final class WorldSkyTest {
         assertEquals(1.0, half.coverage(), 1e-12);
         int mid = 100 << 16 | 100 << 8 | 100;
         assertEquals(
-                new WorldSky.Sample(mid, mid, mid, mid, mid, mid, mid, mid, 1000, 0.5, 0.5),
+                new WorldSky.Sample(
+                        mid,
+                        mid,
+                        mid,
+                        mid,
+                        mid,
+                        mid,
+                        1000,
+                        0.5,
+                        0.5,
+                        new WorldSky.Lighting(mid, mid),
+                        1),
                 half.sample());
 
         // The radius is 3D: the same horizontal spot 300 above is outside.
@@ -180,26 +191,61 @@ final class WorldSkyTest {
         assertFalse(sky.at(0, 0, 0, 0, 100).issues().isEmpty());
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new WorldSky.Sample(0x0100_0000, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+                () -> new WorldSky.Sample(0x0100_0000, 0, 0, 0, 0, 0, 0, 0));
+    }
+
+    private static WorldSky.Sample lit(int direct, int ambient) {
+        return new WorldSky.Sample(0, 0, 0, 0, 0, 0, new WorldSky.Lighting(direct, ambient), 0, 0);
     }
 
     @Test
     void directAndAmbientLightAreTheirOwnChannels() {
-        var sun = new WorldSky.Sample(0, 0, 0, 0, 0, 0, 0xFF8000, 0x002040, 0, 0);
-        var moon = new WorldSky.Sample(0, 0, 0, 0, 0, 0, 0x0000FF, 0x604020, 0, 0);
+        var sun = lit(0xFF8000, 0x002040);
+        var moon = lit(0x0000FF, 0x604020);
 
         var half = WorldSky.Sample.mix(sun, moon, 0.5);
-        assertEquals(0x804080, half.direct());
-        assertEquals(0x303030, half.ambient());
+        assertEquals(new WorldSky.Lighting(0x804080, 0x303030), half.lighting());
+        assertEquals(1, half.lightShare(), 0);
         assertEquals(0, half.skyTop());
 
         var quarter = WorldSky.Sample.blend(List.of(sun, moon), new double[] {0.75, 0.25});
-        assertEquals(0xBF6040, quarter.direct());
-        assertEquals(0x182838, quarter.ambient());
+        assertEquals(new WorldSky.Lighting(0xBF6040, 0x182838), quarter.lighting());
 
+        assertThrows(IllegalArgumentException.class, () -> lit(0, 0x0100_0000));
+        assertThrows(IllegalArgumentException.class, () -> lit(0x0100_0000, 0));
+        // Light and its share go together.
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new WorldSky.Sample(0, 0, 0, 0, 0, 0, 0, 0x0100_0000, 0, 0));
+                () -> new WorldSky.Sample(0, 0, 0, 0, 0, 0, 0, 0, 0, null, 0.5));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new WorldSky.Sample(
+                                0, 0, 0, 0, 0, 0, 0, 0, 0, new WorldSky.Lighting(0, 0), 0));
+    }
+
+    @Test
+    void keysWithoutLightNeverPullTheLightTowardBlack() {
+        var sun = lit(0xFF8000, 0x002040);
+        var unlit = new WorldSky.Sample(0xFFFFFF, 0, 0, 0, 0, 0, 0, 0);
+        assertFalse(unlit.hasLight());
+        assertNull(unlit.lighting());
+
+        // Halfway to a key without light: the sun's own light, over half the share.
+        var half = WorldSky.Sample.mix(sun, unlit, 0.5);
+        assertEquals(sun.lighting(), half.lighting());
+        assertEquals(0.5, half.lightShare(), 1e-12);
+        assertEquals(0x808080, half.skyTop());
+
+        var quarter = WorldSky.Sample.blend(List.of(sun, unlit), new double[] {0.25, 0.75});
+        assertEquals(sun.lighting(), quarter.lighting());
+        assertEquals(0.25, quarter.lightShare(), 1e-12);
+
+        // No key with light: none in the result.
+        var none = WorldSky.Sample.blend(List.of(unlit, unlit), new double[] {0.5, 0.5});
+        assertFalse(none.hasLight());
+        assertNull(none.lighting());
+        assertFalse(WorldSky.Sample.mix(unlit, unlit, 0.3).hasLight());
     }
 
     @Test
