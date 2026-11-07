@@ -558,8 +558,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private boolean terrainLighting = TERRAIN_LIGHTING;
     private short skyTop = INVALID, skyHorizon = INVALID, skyView = INVALID;
     private short wmoFog = INVALID, wmoFogRange = INVALID, wmoSkyTop = INVALID;
-    // Read once per frame; #177 sets it from the light tables (fog(WorldFog)).
-    private WorldFog fog = WorldFog.STREAM;
+    // Read once per frame; #177 sets it from the light tables (sky(Sky)).
+    private WorldStreamTransport.Sky recordedSky = WorldStreamTransport.Sky.EXPLORER;
     // Optional WDL horizon (#372): built on its own worker, uploaded and drawn here.
     private WorldStreamHorizon horizon;
     // Two buffer sets: [front] is drawn while the next build uploads into the other.
@@ -1609,22 +1609,25 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     }
 
     /**
-     * The fog and sky of the next frames; #177 feeds it from the light tables. It is kept at full
-     * strength by its end ({@link WorldFog#fullAtCut()}), whatever maximum it arrives with.
+     * The sky of the next frames, recorded fog included; #177 feeds it from the light tables and
+     * null is the explorer's own. Each frame turns it into its fog ({@link #frameFog}), with or
+     * without the horizon.
      */
-    void fog(WorldFog value) {
+    void sky(WorldStreamTransport.Sky value) {
         requireOwner();
-        fog = java.util.Objects.requireNonNull(value).fullAtCut();
+        recordedSky = value == null ? WorldStreamTransport.Sky.EXPLORER : value;
     }
 
     /**
-     * A frame's fog: the set fog at full strength by its end, reaching out to the horizon only when
-     * the horizon is drawn this frame (#372, option (a)). Before the first upload and after the
-     * horizon has failed, streamed terrain and objects keep their own fog range.
+     * A frame's fog from its sky ({@link WorldFog#sky}). When the horizon is drawn this frame
+     * (#372, option (a)) the cut moves out to it; a recorded fog end below the horizon is kept, so
+     * foggy zones stay foggy and fog is full from that end to the cut, and with no recorded fog the
+     * end moves out to the horizon too (#547). Before the first upload and after the horizon has
+     * failed, streamed terrain and objects keep the stream cut. The maximum is 1 on every path:
+     * nothing past the cut is discarded, so fog alone must hide it.
      */
-    static WorldFog frameFog(WorldFog fog, boolean horizonDrawn) {
-        var full = fog.fullAtCut();
-        return horizonDrawn ? full.withHorizon(WorldStreamHorizon.FOG_END) : full;
+    static WorldFog frameFog(WorldStreamTransport.Sky sky, boolean horizonDrawn) {
+        return WorldFog.sky(sky, horizonDrawn ? WorldStreamHorizon.FOG_END : Float.NaN);
     }
 
     /**
@@ -1967,7 +1970,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             refreshHorizon(camera);
         }
         // With a drawn horizon, one fog range reaches out to it for every pass (#372, option (a)).
-        var fog = frameFog(this.fog, horizonDrawn());
+        var fog = frameFog(recordedSky, horizonDrawn());
         try (var stack = MemoryStack.stackPush()) {
             var origin =
                     new TerrainScene.Origin(

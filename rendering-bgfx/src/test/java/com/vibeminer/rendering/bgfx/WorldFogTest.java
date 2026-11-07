@@ -147,96 +147,90 @@ class WorldFogTest {
         assertEquals(BgfxWorldWmoPass.DRAW_STATE, BgfxWorldStreamRenderer.cutoutState(false));
     }
 
-    @org.junit.jupiter.api.Test
-    void theStreamRendererAlwaysFogsFullyByTheCutWhateverTheMaximum() {
-        // LEGACY's 0.85 would leave geometry past the cut (the horizon ring, straddling chunks)
-        // showing at 15 % against the sky; the renderer raises it to 1, with or without a horizon.
-        var weak = WorldFog.LEGACY;
-        org.junit.jupiter.api.Assertions.assertEquals(0.85f, weak.maximum());
-        var full = weak.fullAtCut();
-        org.junit.jupiter.api.Assertions.assertEquals(1f, full.maximum());
-        org.junit.jupiter.api.Assertions.assertEquals(weak.start(), full.start());
-        org.junit.jupiter.api.Assertions.assertEquals(weak.end(), full.end());
-        org.junit.jupiter.api.Assertions.assertEquals(weak.cut(), full.cut());
-        org.junit.jupiter.api.Assertions.assertArrayEquals(weak.horizon(), full.horizon());
-        org.junit.jupiter.api.Assertions.assertEquals(1f, full.factor(full.cut()));
-        org.junit.jupiter.api.Assertions.assertSame(WorldFog.STREAM, WorldFog.STREAM.fullAtCut());
-        for (boolean drawn : new boolean[] {false, true}) {
-            var frame = BgfxWorldStreamRenderer.frameFog(weak, drawn);
-            org.junit.jupiter.api.Assertions.assertEquals(1f, frame.maximum(), "drawn " + drawn);
-            org.junit.jupiter.api.Assertions.assertEquals(1f, frame.factor(frame.cut()));
+    /** A recorded sky with fog fully recorded (weight 1) from 250 yd to {@code end}. */
+    private static WorldStreamTransport.Sky recorded(float end) {
+        return new WorldStreamTransport.Sky(
+                new float[] {50, 70, 100}, new float[] {10, 20, 30}, 1, 250, end);
+    }
+
+    @Test
+    void aRecordedEndBelowTheHorizonIsKeptAndOnlyTheCutMovesOut() {
+        var sky = recorded(1000);
+        var drawn = BgfxWorldStreamRenderer.frameFog(sky, true);
+        assertEquals(1000, drawn.end(), "the recorded end is kept with the horizon drawn (#547)");
+        assertEquals(WorldStreamHorizon.FOG_END, drawn.cut(), "the cut moves out to the horizon");
+        assertEquals(250, drawn.start());
+        assertEquals(1, drawn.factor(2000), 0, "full fog from the recorded end to the cut");
+        var own = BgfxWorldStreamRenderer.frameFog(sky, false);
+        assertEquals(1000, own.end());
+        assertEquals(WorldFog.STREAM.cut(), own.cut(), "without the horizon the stream cut stays");
+        assertArrayEquals(sky.horizon(), drawn.horizon());
+        assertArrayEquals(sky.top(), drawn.top());
+    }
+
+    @Test
+    void aRecordedEndBeyondTheHorizonStopsAtTheCut() {
+        var sky = recorded(WorldStreamHorizon.FOG_END + 900);
+        var drawn = BgfxWorldStreamRenderer.frameFog(sky, true);
+        assertEquals(WorldStreamHorizon.FOG_END, drawn.end());
+        assertEquals(WorldStreamHorizon.FOG_END, drawn.cut());
+        var own = BgfxWorldStreamRenderer.frameFog(sky, false);
+        assertEquals(WorldFog.STREAM.cut(), own.end());
+        assertEquals(WorldFog.STREAM.cut(), own.cut());
+    }
+
+    @Test
+    void withoutRecordedFogTheEndMovesOutToTheHorizon() {
+        for (var sky :
+                new WorldStreamTransport.Sky[] {
+                    null,
+                    WorldStreamTransport.Sky.EXPLORER,
+                    new WorldStreamTransport.Sky(
+                            new float[] {50, 70, 100}, new float[] {10, 20, 30}, 0, 250, 1000)
+                }) {
+            var drawn = BgfxWorldStreamRenderer.frameFog(sky, true);
+            assertEquals(WorldStreamHorizon.FOG_END, drawn.end(), "sky " + sky);
+            assertEquals(WorldStreamHorizon.FOG_END, drawn.cut(), "sky " + sky);
+            assertEquals(WorldFog.STREAM.start(), drawn.start(), "sky " + sky);
+            var own = BgfxWorldStreamRenderer.frameFog(sky, false);
+            assertEquals(WorldFog.STREAM.end(), own.end(), "sky " + sky);
+            assertEquals(WorldFog.STREAM.cut(), own.cut(), "sky " + sky);
         }
-        org.junit.jupiter.api.Assertions.assertEquals(
-                1f, weak.withHorizon(WorldStreamHorizon.FOG_END).maximum());
+        // The explorer's own sky without the horizon is exactly the stream fog.
+        assertSameFog(WorldFog.STREAM, BgfxWorldStreamRenderer.frameFog(null, false));
     }
 
-    @org.junit.jupiter.api.Test
-    void theFogReachesOutToTheHorizonOnlyWhenTheHorizonIsDrawn() {
-        // Before the first upload, or after its rebuilds failed, nothing covers the far ring, so
-        // streamed terrain and objects keep their own fog range.
-        var own = BgfxWorldStreamRenderer.frameFog(WorldFog.STREAM, false);
-        org.junit.jupiter.api.Assertions.assertEquals(WorldFog.STREAM.end(), own.end());
-        org.junit.jupiter.api.Assertions.assertEquals(WorldFog.STREAM.cut(), own.cut());
-        var far = BgfxWorldStreamRenderer.frameFog(WorldFog.STREAM, true);
-        org.junit.jupiter.api.Assertions.assertEquals(WorldStreamHorizon.FOG_END, far.end());
-        org.junit.jupiter.api.Assertions.assertEquals(WorldStreamHorizon.FOG_END, far.cut());
+    @Test
+    void theFrameFogIsFullAtItsCutOnEveryPath() {
+        for (var sky :
+                new WorldStreamTransport.Sky[] {
+                    null,
+                    recorded(1000),
+                    recorded(WorldStreamHorizon.FOG_END + 900),
+                    new WorldStreamTransport.Sky(
+                            new float[] {50, 70, 100}, new float[] {10, 20, 30}, 0.5, 250, 1000),
+                    // A recorded start at or past the horizon still leaves a ramp before the cut.
+                    new WorldStreamTransport.Sky(
+                            new float[] {50, 70, 100},
+                            new float[] {10, 20, 30},
+                            1,
+                            WorldStreamHorizon.FOG_END + 100,
+                            WorldStreamHorizon.FOG_END + 900)
+                }) {
+            for (boolean drawn : new boolean[] {false, true}) {
+                var fog = BgfxWorldStreamRenderer.frameFog(sky, drawn);
+                String label = sky + " drawn " + drawn;
+                assertEquals(1f, fog.maximum(), label);
+                assertEquals(1f, fog.factor(fog.cut()), label);
+                assertTrue(fog.start() < fog.end() && fog.end() <= fog.cut(), label);
+                assertEquals(
+                        drawn ? WorldStreamHorizon.FOG_END : WorldFog.STREAM.cut(),
+                        fog.cut(),
+                        label);
+            }
+        }
     }
 
-    @org.junit.jupiter.api.Test
-    void withHorizonMovesTheEndAndCutOutAndKeepsColoursAndStart() {
-        var base = WorldFog.STREAM;
-        var far = base.withHorizon(WorldStreamHorizon.FOG_END);
-        org.junit.jupiter.api.Assertions.assertEquals(WorldStreamHorizon.FOG_END, far.end());
-        org.junit.jupiter.api.Assertions.assertEquals(WorldStreamHorizon.FOG_END, far.cut());
-        org.junit.jupiter.api.Assertions.assertEquals(base.start(), far.start());
-        // Always full fog at the horizon cut: nothing past it is discarded.
-        org.junit.jupiter.api.Assertions.assertEquals(1f, far.maximum());
-        org.junit.jupiter.api.Assertions.assertArrayEquals(base.horizon(), far.horizon());
-        org.junit.jupiter.api.Assertions.assertArrayEquals(base.top(), far.top());
-        org.junit.jupiter.api.Assertions.assertEquals(base.topElevation(), far.topElevation());
-        // Full fog is reached at the horizon distance, not at the old stream cut.
-        org.junit.jupiter.api.Assertions.assertTrue(far.factor(base.cut()) < base.maximum());
-        org.junit.jupiter.api.Assertions.assertEquals(
-                base.maximum(), far.factor(WorldStreamHorizon.FOG_END));
-        org.junit.jupiter.api.Assertions.assertArrayEquals(
-                new float[] {
-                    base.start(),
-                    WorldStreamHorizon.FOG_END,
-                    base.maximum(),
-                    WorldStreamHorizon.FOG_END
-                },
-                far.rangeUniform());
-        // The same end is allowed, and a shorter horizon pulls the end and cut in.
-        org.junit.jupiter.api.Assertions.assertEquals(
-                base.end(), base.withHorizon(base.end()).end());
-        var shorter = base.withHorizon(base.end() - 1);
-        org.junit.jupiter.api.Assertions.assertEquals(base.end() - 1, shorter.end());
-        org.junit.jupiter.api.Assertions.assertEquals(base.end() - 1, shorter.cut());
-    }
-
-    @org.junit.jupiter.api.Test
-    void withHorizonClampsALongerRecordedFogInsteadOfThrowing() {
-        float horizonEnd = WorldStreamHorizon.FOG_END;
-        // A recorded fog (#177) that ends, and even starts, beyond the horizon.
-        var recorded =
-                new WorldFog(
-                        WorldFog.STREAM.horizon(),
-                        WorldFog.STREAM.top(),
-                        horizonEnd + 100,
-                        horizonEnd + 900,
-                        1,
-                        horizonEnd + 900,
-                        WorldFog.STREAM.topElevation());
-        var clamped = recorded.withHorizon(horizonEnd);
-        org.junit.jupiter.api.Assertions.assertEquals(horizonEnd, clamped.end());
-        org.junit.jupiter.api.Assertions.assertEquals(horizonEnd, clamped.cut());
-        org.junit.jupiter.api.Assertions.assertTrue(clamped.start() < clamped.end());
-        org.junit.jupiter.api.Assertions.assertEquals(1, clamped.factor(horizonEnd));
-        org.junit.jupiter.api.Assertions.assertThrows(
-                IllegalArgumentException.class, () -> recorded.withHorizon(Float.NaN));
-    }
-
-    /** The recorded sky composed with the stream fog and, when drawn, the WDL horizon (#177). */
     @Test
     void recordedSkyComposesWithTheStreamFogAndTheHorizon() {
         float cut = WorldFog.STREAM.cut();
