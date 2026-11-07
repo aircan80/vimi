@@ -2434,9 +2434,13 @@ public final class WorldExteriorObjects {
                 vertices[at + 7] = uv.get(v * 2 + 1);
             }
             // MOGP 0x4 declares the first MOCV: B, G, R, A per vertex, its count already checked.
+            // Only exterior groups carry it (#375): an instance interior's MOCV is its main light,
+            // not an addition to the world light, so interiors (#280) carry none and are not
+            // counted in the colour or winding evidence.
+            boolean exterior = (flags & INTERIOR) == 0;
             int[] colours = new int[0];
             var mocv = borrow.colors();
-            if ((flags & VERTEX_COLOURS) != 0 && mocv != null) {
+            if (exterior && (flags & VERTEX_COLOURS) != 0 && mocv != null) {
                 colours = new int[count];
                 for (int v = 0; v < count; v++) {
                     colours[v] =
@@ -2462,7 +2466,9 @@ public final class WorldExteriorObjects {
                                 candidate.blend()));
                 used += candidate.indexCount();
             }
-            winding(vertices, indices, local);
+            if (exterior) {
+                winding(vertices, indices, local);
+            }
             local[Count.BATCH_UNSUPPORTED.ordinal()] += unsupported;
             local[Count.BATCH_FLAGS_IGNORED.ordinal()] += ignoredFlags;
             if (colours.length > 0) {
