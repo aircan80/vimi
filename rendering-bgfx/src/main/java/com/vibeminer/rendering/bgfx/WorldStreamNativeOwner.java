@@ -632,6 +632,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         if (size == null) {
             return false; // No area (minimised, hidden): nothing to draw into.
         }
+        // The recorded sky and fog travel with the camera here too, as in readback (#555).
+        renderer.sky(command.sky());
         renderer.drawWindow(command.camera(), cameraRevision, policy, size[0], size[1]);
         window.drew();
         renderedThisFrame = true;
