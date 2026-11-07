@@ -565,6 +565,11 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         if (order == WorldFrameFileV2.MAX_SEQUENCE) {
             throw new IllegalStateException("Frame order exhausted");
         }
+        // The frame's sky travels with its camera, so a coalesced camera never loses it.
+        // TODO(#479): with the WDL horizon drawn, pass its end here (WorldStreamHorizon.FOG_END)
+        // instead of NaN and drop draw()'s withHorizon, so a recorded fog end below the horizon
+        // is kept; whichever of #479 and #486 lands second makes this one-line change.
+        renderer.fog(WorldFog.sky(command.sky(), Float.NaN));
         long drawing = WorldStageTimings.start();
         var ticket = renderer.draw(command.camera(), cameraRevision, policy, width, height);
         bgfx_blit(1, available.texture, 0, 0, 0, 0, color, 0, 0, 0, 0, width, height, 1);
@@ -580,7 +585,10 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         available.ticket = ticket;
         available.order = ++order;
         available.ready = bgfx_read_texture(available.texture, available.pixels, 0, 0);
-        WorldStageTimings.stop("child.frame.submitCpu", drawing);
+        if (drawing != 0L) {
+            WorldStageTimings.stop("child.frame.submitCpu", drawing);
+            cullCounts(renderer.frameCounts());
+        }
         renderedThisFrame = true;
         submittedCamera = cameraRevision;
         submittedContent = ticket.content();
@@ -731,6 +739,21 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return published;
     }
 
+    /**
+     * What the CPU cull kept and skipped in the frame just submitted (opt-in only), so a change in
+     * {@code child.frame.draws} can be told apart from a change in what was resident: exterior
+     * placements tested and culled, object submits, terrain chunk runs tested and culled, and
+     * terrain submits.
+     */
+    static void cullCounts(BgfxWorldStreamRenderer.FrameCounts counts) {
+        WorldStageTimings.value("child.frame.placements", counts.placements());
+        WorldStageTimings.value("child.frame.placementsCulled", counts.culled());
+        WorldStageTimings.value("child.frame.objectSubmits", counts.objectSubmits());
+        WorldStageTimings.value("child.frame.terrainChunks", counts.chunks());
+        WorldStageTimings.value("child.frame.terrainChunksCulled", counts.chunksCulled());
+        WorldStageTimings.value("child.frame.terrainSubmits", counts.terrainSubmits());
+    }
+
     /** bgfx's statistics of the frame just rendered, after a frame that drew (opt-in only). */
     private static void frameStats() {
         var stats = bgfx_get_stats();
@@ -816,6 +839,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     BgfxWorldStreamRenderer.FrameCounts frameCounts() {
         requireOpen();
         return renderer.frameCounts();
+    }
+
+    /** Proof seam only: see {@link BgfxWorldStreamRenderer#vertexColours}. */
+    void vertexColours(boolean enabled) {
+        requireOpen();
+        renderer.vertexColours(enabled);
     }
 
     /** Proof seam only: see {@link BgfxWorldStreamRenderer#objectCulling}. */

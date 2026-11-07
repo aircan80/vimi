@@ -1356,6 +1356,11 @@ final class GpuPreviewService {
      */
     static final List<String> HELPER_JVM_OPTIONS = List.of("-XX:+UseZGC", "-Xmx1g");
 
+    /** Application switches the helper reads itself, forwarded as system properties. */
+    static List<String> forwardedProperties(boolean wmoVertexColours) {
+        return wmoVertexColours ? List.of("-Dvimi.world.wmoVertexColours=true") : List.of();
+    }
+
     static ArrayList<String> nativeCommand() { // package-private for tests
         var command = new ArrayList<String>();
         boolean windows =
@@ -1366,6 +1371,7 @@ final class GpuPreviewService {
         if (System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT).contains("mac"))
             command.add("-XstartOnFirstThread");
         command.addAll(HELPER_JVM_OPTIONS);
+        command.addAll(forwardedProperties(WorldStreamGpuOwner.WMO_VERTEX_COLOURS));
         command.add("--enable-native-access=ALL-UNNAMED");
         command.addAll(
                 measurementArguments(
