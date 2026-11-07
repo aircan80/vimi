@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -24,7 +25,7 @@ final class WorldStreamEnvelope {
     static final int VERSION = 3;
 
     // Terrain 2,284,544B plus the optional 622,720B static water trailer.
-    static final int MAX_PACKET_BYTES = 2_907_264;
+    static final int MAX_PACKET_BYTES = 2_907_264 + WorldStreamTileFile.MAX_SPLAT_BYTES;
     private static final byte[] SESSION_MAGIC = "VIMIWSS2".getBytes(StandardCharsets.US_ASCII);
     private static final byte[] COMMIT_MAGIC = "VIMIWSC2".getBytes(StandardCharsets.US_ASCII);
 
@@ -140,7 +141,9 @@ final class WorldStreamEnvelope {
         nonce(out, session.nonce());
         out.put(HexFormat.of().parseHex(session.scope()));
         out.putInt(1).putInt(1).putInt(1).putInt(session.exteriorObjects() ? 2 : 1);
-        out.putLong(session.policy()).putInt(800).putInt(500);
+        out.putLong(session.policy())
+                .putInt(WorldFrameLimits.MAX_WIDTH)
+                .putInt(WorldFrameLimits.MAX_HEIGHT);
         out.putInt(session.slots()).putInt(session.maxActive());
         out.putInt(MAX_PACKET_BYTES).putInt(session.objectTextures());
         return out.array();
@@ -158,7 +161,10 @@ final class WorldStreamEnvelope {
             int objects = in.getInt();
             require(objects == 1 || objects == 2, "Unsupported session profile");
             long policy = in.getLong();
-            require(in.getInt() == 800 && in.getInt() == 500, "Invalid session caps");
+            require(
+                    in.getInt() == WorldFrameLimits.MAX_WIDTH
+                            && in.getInt() == WorldFrameLimits.MAX_HEIGHT,
+                    "Invalid session caps");
             int slots = in.getInt(), active = in.getInt();
             require(
                     (active == Session.NEAR_ACTIVE || active == WorldStreamState.MAX_ACTIVE)

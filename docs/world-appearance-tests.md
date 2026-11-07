@@ -10,7 +10,9 @@ the real World helper on the native GPU and compares every frame with a stored r
 | Scene | What it covers |
 |---|---|
 | `terrain` | The authored tile 7,19, flat, with all 256 chunks triangulated as the client does (four triangles per cell around its inner vertex). Seen from above: terrain atlas sampling, shading and the sky around it. |
-| `objects` | The exterior object material quads over the authored terrain (`WorldStreamObjectsMaterialProof.quads`): a fully transparent cutout (discarded), an opaque quad at full light, and an alpha-blended quad. The tile is filled to the placement cap behind the camera, so culling and both object passes run at the cap. |
+| `water` | A strip of authored water (16 x 64 cells, 2.5 above the terrain, depths rising across each cell) on the same tile, seen from above: the water pass over terrain. |
+| `fog` | The tile from 400 beyond its edge, looking back and down: the fog rising across the tile toward its far edge. |
+| `objects` | Three exterior object quads over the authored terrain (`WorldAppearanceProof.objects`): a fully transparent cutout (discarded), an opaque quad at full light, and an alpha-blended quad. The scene is frozen in the appearance proof, so a change to another proof's scene (the material proof's grew mip ladders in #420) cannot move this reference. |
 
 ## Running
 
@@ -24,15 +26,25 @@ The proof needs a GPU, so it is a `nativeGpu*` task, not a unit test:
 `-PappearanceBackend` selects `VULKAN` (the default) or `D3D11`. Each backend has its own
 references under
 `rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/appearance/<backend>/`, because a
-backend's frame read-back is compared as the raw 32-bit values it returns.
+backend's frame read-back is compared as the raw 32-bit values it returns. The references are
+recorded with the World's render target multisampled (MSAA x4) and anisotropic texture filtering
+(#389); the proof prints `WORLD_APPEARANCE_SAMPLES <n>` for the mode the helper ran. A device that
+cannot multisample (`WORLD_APPEARANCE_SAMPLES 1`) draws harder silhouettes and differs from the
+references at edges.
 
-A passing run prints one line per scene, then a pass line:
+A passing run prints the renderer and sample count, one line per scene, then a pass line:
 
 ```
+WORLD_APPEARANCE_RENDERER Vulkan
+WORLD_APPEARANCE_SAMPLES 4
 WORLD_APPEARANCE terrain mean 0.000, outliers 0.0000%, max 0
+WORLD_APPEARANCE water mean 0.000, outliers 0.0000%, max 0
+WORLD_APPEARANCE fog mean 0.000, outliers 0.0000%, max 0
 WORLD_APPEARANCE objects mean 0.000, outliers 0.0000%, max 0
-WORLD_APPEARANCE_PASS backend=VULKAN scenes=[terrain, objects]
+WORLD_APPEARANCE_PASS backend=VULKAN scenes=[terrain, water, fog, objects]
 ```
+
+The helper must also close cleanly after the last frame: a drain failure fails the proof.
 
 ## Tolerance
 
@@ -64,12 +76,15 @@ When a change is **meant** to alter the image (a new shading model, fog, a mater
 3. Run both again without the flag (they must pass), and commit the new PNGs with the change.
    Say in the PR which scenes changed and why.
 
-On the Windows development machine, both backends currently produce byte-identical frames for
-these scenes.
+The proof checks that the helper really used the requested backend: the helper reports the
+renderer bgfx created on stderr (`World v2 renderer: <name>`), the proof prints it as
+`WORLD_APPEARANCE_RENDERER <name>` and fails if it is not the requested one ("Vulkan",
+"Direct3D 11"). On the Windows development machine both backends report their own renderer and
+still produce byte-identical frames for these flat, untextured-light scenes.
 
 ## Not covered yet
 
 - A frame-rate and camera-to-pixel latency check on a fixed real route. It builds on the
   read-only measurement probe (#353, #423) and will fail on a deliberate regression such as a
   30 fps cap.
-- Fog at the view cut, water, and cross-tile objects drawn once (with #380).
+- Cross-tile objects drawn once (with #380).

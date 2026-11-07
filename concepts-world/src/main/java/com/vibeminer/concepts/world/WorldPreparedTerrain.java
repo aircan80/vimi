@@ -2,6 +2,7 @@ package com.vibeminer.concepts.world;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.world.WorldFormats;
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.world.TerrainScene;
 import com.vibeminer.rendering.world.TerrainTextureBinding;
 import java.util.ArrayList;
@@ -46,15 +47,55 @@ final class WorldPreparedTerrain {
     static final class Borrow {
         private TerrainScene.Tile tile;
         private TerrainTextureBinding texture;
+        private com.vibeminer.rendering.world.TerrainTileSplat splat;
         private WrittenTile<?> owner;
         private final long worker = Thread.currentThread().threadId();
         private boolean active = true;
 
         private Borrow(
-                WrittenTile<?> owner, TerrainScene.Tile tile, TerrainTextureBinding texture) {
+                WrittenTile<?> owner,
+                TerrainScene.Tile tile,
+                TerrainTextureBinding texture,
+                com.vibeminer.rendering.world.TerrainTileSplat splat) {
             this.owner = owner;
             this.tile = tile;
             this.texture = texture;
+            this.splat = splat;
+        }
+
+        /** The atlas's splatting inputs, when composed (issue #174 step 2); null otherwise. */
+        com.vibeminer.rendering.world.TerrainTileSplat splat() {
+            check();
+            return splat;
+        }
+
+        /** Splat layers this source prepared from file blocks and with the lossy encoder. */
+        long[] splatLayerCounts() {
+            check();
+            var details = owner.source.materials.details;
+            return new long[] {details.fileBlockLayers(), details.encodedLayers()};
+        }
+
+        /**
+         * Decodes (or reuses) one of this tile's layer diffuses for splatting, bound to the exact
+         * source tuple the atlas was composed from; null if that diffuse is not in its receipt.
+         */
+        TerrainDiffuseDetails.Detail detail(long fileId, com.vibeminer.access.Cancellation token) {
+            check();
+            var receipt = owner.receipt;
+            if (receipt == null) {
+                return null;
+            }
+            for (var mip : receipt.diffuse()) {
+                if (mip.file().fileId() == fileId) {
+                    var materials = owner.source.materials;
+                    return materials.detail(
+                            mip.file(),
+                            new WorldTerrainTextureSource.Request(
+                                    materials, null, List.of(), token, progress -> {}, false));
+                }
+            }
+            return null;
         }
 
         private void check() {
@@ -132,6 +173,7 @@ final class WorldPreparedTerrain {
             active = false;
             tile = null;
             texture = null;
+            splat = null;
             owner = null;
         }
     }
@@ -313,7 +355,7 @@ final class WorldPreparedTerrain {
                 pinnedGeometry.withTile(
                         tile -> {
                             if (pinnedAtlas == null) {
-                                useBorrow(tile, null, use);
+                                useBorrow(tile, null, null, use);
                             } else {
                                 pinnedAtlas.withAtlas(
                                         pixels ->
@@ -321,6 +363,7 @@ final class WorldPreparedTerrain {
                                                         tile,
                                                         TerrainTextureBinding.borrow(
                                                                 texture, pixels.pixels()),
+                                                        pixels.splat().orElse(null),
                                                         use));
                             }
                         });
@@ -345,8 +388,11 @@ final class WorldPreparedTerrain {
         }
 
         private void useBorrow(
-                TerrainScene.Tile tile, TerrainTextureBinding pixels, Consumer<Borrow> use) {
-            var borrowed = new Borrow(this, tile, pixels);
+                TerrainScene.Tile tile,
+                TerrainTextureBinding pixels,
+                com.vibeminer.rendering.world.TerrainTileSplat splat,
+                Consumer<Borrow> use) {
+            var borrowed = new Borrow(this, tile, pixels, splat);
             try {
                 use.accept(borrowed);
             } finally {
@@ -479,6 +525,14 @@ final class WorldPreparedTerrain {
         return scopes.create(comparison, cancel);
     }
 
+    long geometryReleaseRevision() {
+        return world.geometryReleaseRevision();
+    }
+
+    AutoCloseable onGeometryRelease(Runnable listener) {
+        return world.onGeometryRelease(listener);
+    }
+
     void activate(WorldStreamScopes.Scope scope) {
         checkOpen();
         scopes.activate(scope);
@@ -489,9 +543,17 @@ final class WorldPreparedTerrain {
             WorldStreamScopes.Scope scope,
             WorldFormats.Tile tile,
             Cancellation cancel,
-            WorldExteriorObjects.ImageDetail detail) {
+            WorldExteriorObjects.ImageDetail detail,
+            boolean interiors) {
         checkOpen();
-        return WorldExteriorObjects.prepare(scopes, scope, tile, cancel, detail);
+        return WorldExteriorObjects.prepare(
+                scopes,
+                scope,
+                tile,
+                cancel,
+                WorldExteriorObjects.ModelReader.STANDARD,
+                detail,
+                interiors);
     }
 
     void invalidate() {
@@ -524,6 +586,7 @@ final class WorldPreparedTerrain {
         var owned = this.<R>reserve(scope);
         boolean transferred = false;
         Throwable primary = null;
+        long started = WorldStageTimings.start();
         try {
             var result =
                     scopes.withRecordedTile(
@@ -539,6 +602,8 @@ final class WorldPreparedTerrain {
             primary = failure;
             throw failure;
         } finally {
+            WorldStageTimings.stop(
+                    transferred ? "terrain.tile.total" : "terrain.tile.totalFailed", started);
             if (!transferred) {
                 owned.close();
             }
@@ -562,11 +627,16 @@ final class WorldPreparedTerrain {
         try {
             owned.check();
             owned.metadata = admission.metadata();
+            long geometry = WorldStageTimings.start();
             owned.attachGeometry(world.prepareGeometry(admission));
+            WorldStageTimings.stop("terrain.tile.geometry", geometry);
             owned.root = owned.geometry.rootBinding();
             owned.areas = owned.geometry.areas();
             owned.geometrySha256 = owned.geometry.fingerprint();
+            long material = WorldStageTimings.start();
             prepareMaterial(admission, owned);
+            WorldStageTimings.stop("terrain.tile.material", material);
+            long written = WorldStageTimings.start();
             owned.withPayload(
                     borrow ->
                             owned.attachWritten(
@@ -574,6 +644,7 @@ final class WorldPreparedTerrain {
                                             writer.writeUnadvertised(
                                                     borrow, admission.cancellation()),
                                             "Missing unadvertised output")));
+            WorldStageTimings.stop("terrain.tile.write", written);
             var result = new AdmissionResult<>(owned);
             returned = true;
             return result;
