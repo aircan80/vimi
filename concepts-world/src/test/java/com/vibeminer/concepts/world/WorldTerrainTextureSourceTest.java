@@ -2006,4 +2006,40 @@ class WorldTerrainTextureSourceTest {
                 new WorldTerrainTextureSource.Issue(WorldTerrainTextureSource.Reason.LIMIT, -1, 10)
                         .diffuseRefusal());
     }
+
+    @Test
+    void aTileWithAnEmptyTextureListIsReadAsChunksWithNoLayers() throws Exception {
+        // An empty MDID and MHID with every MCLY empty: nothing to draw, but not a refusal.
+        var out = new ByteArrayOutputStream();
+        out.writeBytes(part("MVER", ints(18)));
+        out.writeBytes(part("MAMP", ints(0)));
+        out.writeBytes(part("MDID", new byte[0]));
+        out.writeBytes(part("MHID", new byte[0]));
+        for (int i = 0; i < 256; i++) {
+            out.writeBytes(part("MCNK", part("MCLY", new byte[0])));
+        }
+        var files = new Files();
+        files.sources.put(3L, out.toByteArray());
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try (var result = read(source)) {
+            var tile = result.tiles().getFirst();
+            assertEquals(256, tile.issues().size());
+            assertTrue(
+                    tile.issues().stream()
+                            .allMatch(
+                                    issue ->
+                                            issue.reason() == WorldTerrainTextureSource.Reason.CHUNK
+                                                    && issue.maskIssue()
+                                                            == com.vibeminer.formats.world
+                                                                    .WorldTextureFormats.ChunkIssue
+                                                                    .NO_LAYERS));
+            // No chunk is drawn, so the tile keeps the untextured fallback, as before.
+            assertEquals(WorldTerrainTextureSource.State.UNAVAILABLE, tile.state());
+            assertEquals(0, tile.supportedChunks());
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
 }
