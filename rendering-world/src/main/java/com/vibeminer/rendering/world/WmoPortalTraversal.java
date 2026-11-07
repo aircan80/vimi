@@ -29,6 +29,13 @@ import java.util.List;
  *   <li>The caller's frustum must not include its near plane: a portal the camera is about to pass
  *       through lies closer than the near plane and would be culled with the room behind it. Side
  *       and far planes are fine.
+ *   <li>Inconsistent references: a reference whose group's bounding-box centre lies on the other
+ *       side of the portal plane from its recorded side, or within {@link #PLANE_EPSILON} of it,
+ *       cannot be trusted (real data has exterior groups nested under a room whose portal planes do
+ *       not separate them). From that group the portal is always passable: the side test is
+ *       skipped, and the frustum is narrowed to the portal's edges only when the camera is on the
+ *       recorded side and off the plane; otherwise it passes unchanged. {@link
+ *       #inconsistentReferences()} counts them.
  *   <li>Near a portal plane ({@code |dot| <= }{@link #PLANE_EPSILON}) the edge planes degenerate,
  *       so the portal is passed with the current frustum unchanged, whichever side the camera is on
  *       (as WebWowViewerCpp's near-portal case).
@@ -150,6 +157,9 @@ public final class WmoPortalTraversal {
     private final double[][] portalVertices;
     private final double[][] portalPlanes;
     private final double[][] centroids;
+    // Per group, per reference in its range: true when the reference is inconsistent.
+    private final boolean[][] inconsistent;
+    private final int inconsistentCount;
     // Scratch reused by every walk.
     private final int[] entries;
     private final boolean[] widened;
@@ -177,6 +187,33 @@ public final class WmoPortalTraversal {
             }
             centroids[p] = c;
         }
+        inconsistent = new boolean[groups.size()][];
+        int count = 0;
+        for (int g = 0; g < groups.size(); g++) {
+            var group = groups.get(g);
+            double cx = (group.minX() + group.maxX()) / 2;
+            double cy = (group.minY() + group.maxY()) / 2;
+            double cz = (group.minZ() + group.maxZ()) / 2;
+            var flags = new boolean[Math.max(0, group.refCount())];
+            for (int i = 0; i < flags.length; i++) {
+                int r = group.firstRef() + i;
+                if (r < 0 || r >= refs.size()) {
+                    continue; // Refused by of() before any walk.
+                }
+                var ref = refs.get(r);
+                if (ref.portal() < 0 || ref.portal() >= portals.size()) {
+                    continue;
+                }
+                double dot = portals.get(ref.portal()).dot(cx, cy, cz);
+                boolean agrees = ref.side() < 0 ? dot < -PLANE_EPSILON : dot > PLANE_EPSILON;
+                if (!agrees) {
+                    flags[i] = true;
+                    count++;
+                }
+            }
+            inconsistent[g] = flags;
+        }
+        inconsistentCount = count;
         entries = new int[groups.size()];
         widened = new boolean[groups.size()];
         // Each group enters at most MAX_ENTRIES_PER_GROUP + 1 times.
@@ -266,6 +303,14 @@ public final class WmoPortalTraversal {
         return groups.size();
     }
 
+    /**
+     * References whose group's box centre is not on their recorded side of the portal plane; each
+     * is always passable from its group.
+     */
+    public int inconsistentReferences() {
+        return inconsistentCount;
+    }
+
     /** As {@link #visible(double, double, double, List, BitSet)}, into a new result. */
     public Result visible(double x, double y, double z, List<Plane> frustum) {
         var visible = new BitSet(groups.size());
@@ -306,7 +351,8 @@ public final class WmoPortalTraversal {
         }
         while (head < tail) {
             int at = head++;
-            var from = groups.get(queueGroups[at]);
+            int fromGroup = queueGroups[at];
+            var from = groups.get(fromGroup);
             var planes = queuePlanes.get(at);
             queuePlanes.set(at, List.of());
             for (int r = from.firstRef(); r < from.firstRef() + from.refCount(); r++) {
@@ -316,13 +362,15 @@ public final class WmoPortalTraversal {
                 double dot = plane[0] * x + plane[1] * y + plane[2] * z + plane[3];
                 boolean near = Math.abs(dot) <= PLANE_EPSILON;
                 boolean facing = ref.side() < 0 ? dot <= 0 : dot >= 0;
-                if (!facing && !near) {
+                boolean trusted = !inconsistent[fromGroup][r - from.firstRef()];
+                if (trusted && !facing && !near) {
                     continue;
                 }
                 if (outside(portalVertices[p], frustum) || outside(portalVertices[p], planes)) {
                     continue;
                 }
-                var narrowed = near ? planes : narrow(planes, p, x, y, z);
+                // The edge planes bound the view through the portal only from its recorded side.
+                var narrowed = near || !facing ? planes : narrow(planes, p, x, y, z);
                 tail = enter(ref.group(), narrowed, visible, tail);
             }
         }
