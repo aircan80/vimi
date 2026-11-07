@@ -90,7 +90,8 @@ class WorldStreamTransportReplyCorrelationTest {
                             return process;
                         },
                         WorldStreamTestChildren.STARTUP_GUARD_MILLIS,
-                        5000);
+                        5000,
+                        WorldStreamTestChildren.EXIT_GRACE_MILLIS);
         try {
             session.initialized()
                     .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);

@@ -215,6 +215,17 @@ final class WorldStreamSourceController {
                     Thread.ofPlatform().daemon().name("world-source-controller").factory());
     private final AtomicBoolean scheduled = new AtomicBoolean(), wake = new AtomicBoolean();
     private final AtomicBoolean frameWake = new AtomicBoolean();
+    // The earliest timed wait's due time on the step clock, valid only while armed: an FX tick
+    // wakes the worker once it is due. Compared by subtraction, so the clock may wrap.
+    private volatile long pulseAt;
+    private volatile boolean pulseArmed;
+    // Diagnostics and tests: steps run and ground/area recomputations (#366).
+    final java.util.concurrent.atomic.AtomicLong steps = new java.util.concurrent.atomic.AtomicLong(),
+            skyWakeAtStep = new java.util.concurrent.atomic.AtomicLong(-1),
+            areaScans = new java.util.concurrent.atomic.AtomicLong();
+    // Worker-only: the camera and table the ground and area were last computed for.
+    private WorldStreamTransport.Camera areaCamera;
+    private List<Entry> areaTable;
     private final AtomicBoolean fxQueued = new AtomicBoolean();
     private final Cancellation qualificationCancellation = new Cancellation();
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
@@ -228,6 +239,9 @@ final class WorldStreamSourceController {
     private Presentation queued, borrowed;
     // Opt-in measurement only: when the current receipt was applied, 0 while timings are off.
     private long committedAt;
+    // Opt-in hand-off stamps (worker-owned); 0 while timings are off.
+    private volatile long resultAt;
+    private long resultSeenAt, commitDoneAt;
     private boolean validated;
     // Worker owns every source/transport owner below. FX sees only immutable table aliases under
     // lock.
@@ -276,7 +290,9 @@ final class WorldStreamSourceController {
     /** Wakes the controller when the source's geometry lane releases (#304). */
     private AutoCloseable geometryWake;
     private long sourceRetirementRevision, blockedSourceRetirement;
-    private long blockedCapacity = -1, blockedPresentation = -1, blockedDemand = -1;
+    private long blockedPresentation = -1, blockedDemand = -1;
+    /** Whether capacity moved for a reason other than the refused reservation (#283, #366). */
+    private java.util.function.BooleanSupplier blockedCapacityMoved = () -> true;
     /** Presentation and demand revisions as of this step's own reads (worker thread only). */
     private long stepPresentation, stepDemand;
     private volatile Throwable terminal;
@@ -424,8 +440,19 @@ final class WorldStreamSourceController {
         return open == null ? residents : Math.min(residents, open.viewDistance().residents());
     }
 
+    /**
+     * The FX timer's tick. Steps are event-driven (#366): camera, demand, frames, presentation,
+     * transport capacity and every async completion kick the worker themselves, so a tick only
+     * wakes a step whose timed wait (a retry timeout) has come due.
+     */
     void pulse() {
-        kick();
+        if (pulseArmed && clock.getAsLong() - pulseAt >= 0) kick();
+    }
+
+    /** Worker-only: the step returns waiting until {@code deadline}; a tick then wakes it. */
+    private void wakeAt(long deadline) {
+        if (!pulseArmed || deadline - pulseAt < 0) pulseAt = deadline;
+        pulseArmed = true;
     }
 
     Snapshot snapshot() {
@@ -690,12 +717,17 @@ final class WorldStreamSourceController {
     }
 
     private void step() {
+        steps.incrementAndGet();
+        pulseArmed = false; // no timed wait until this step returns on one
         synchronized (lock) {
             // Pixels this step decides from; a later FX acceptance must still wake a refusal.
             stepPresentation = presentationRevision;
         }
         if (!initialized) {
-            if (initialBlocked && clock.getAsLong() - initialRetryAt < RETRY_NANOS) return;
+            if (initialBlocked && clock.getAsLong() - initialRetryAt < RETRY_NANOS) {
+                wakeAt(initialRetryAt + RETRY_NANOS);
+                return;
+            }
             if(source==null) {
                 var capability=request.world().terrainStreaming();
                 if(capability.isEmpty()) {
@@ -738,6 +770,8 @@ final class WorldStreamSourceController {
                 initialBlocked = true;
                 initialRetryAt = clock.getAsLong();
                 publish(Phase.WAITING_CAPACITY, "Waiting for source capacity: " + refusal.site());
+                // Re-run the guard now (#366 review): it arms its deadline; nothing else wakes it.
+                wake.set(true);
                 return;
             }
             initialized = true;
@@ -762,6 +796,8 @@ final class WorldStreamSourceController {
                 if(camera!=null && !closing) opened.camera(camera);
             }
             session.onFrame(this::frameArrived);
+            // Credits, retirements and releases wake a step waiting on capacity (#366).
+            session.onCapacity(this::kick);
             session.initialized().whenComplete((ignored, failure) -> kick());
             session.completion()
                     .whenComplete(
@@ -818,6 +854,8 @@ final class WorldStreamSourceController {
                     helperRetryAt.remove(key(pending.tile));
                     if(creditTarget!=null && same(creditTarget,pending.tile)) creditTarget=null;
                     staged = new Entry(resident, prepared);
+                    resultSeenAt = WorldStageTimings.lap(
+                            "handoff.controller.resultToSeen", resultAt);
                     entries.put(resident, staged);
                     seed(prepared);
                 } catch (CompletionException failure) {
@@ -830,8 +868,8 @@ final class WorldStreamSourceController {
                     var origin = pending.producer.sourceRefusal();
                     int failedTile = key(pending.tile);
                     var refusedTile = pending.tile;
-                    // Read while the refused reservation is still at hand (#283).
-                    long refusedCapacity = pending.reservation.capacityBaseline();
+                    // Kept while the refused reservation is still at hand (#283).
+                    var refusedReservation = pending.reservation;
                     // Revisions as of issue, read before the pending reservation is dropped (#305).
                     long issuedPresentation = pending.issuedPresentation, issuedDemand = pending.issuedDemand;
                     long issuedSourceRetirement = pending.issuedSourceRetirement;
@@ -883,19 +921,23 @@ final class WorldStreamSourceController {
                     var seam = tileRefusalSeam;
                     if (seam != null) seam.run();
                     blockedAt = clock.getAsLong();
-                    // The revision the refused reservation itself accounts for, not the current
-                    // one: a retirement or credit that landed after it was issued (even between
-                    // the refusal and this step) must still wake the retry (#283). The
-                    // reservation's own drain and retirement are excluded; its unused-credit
-                    // CREDIT arrives as an ordinary capacity change and wakes one retry per
-                    // refusal. A GEOMETRY_CREDIT refusal ignores capacity and instead waits on
-                    // the source's geometry release revision, so a busy lane is not polled (#304).
+                    // Capacity is judged against what the refused reservation itself accounts
+                    // for, read live: a retirement or credit from anything else that landed after
+                    // it was issued (even between the refusal and this step) still wakes the retry
+                    // (#283). The reservation's own drain, retirement and unused-credit CREDIT are
+                    // excluded, so a refusal never wakes itself (#366 review); with nothing else
+                    // moving, only the RETRY_NANOS deadline retries it. A GEOMETRY_CREDIT refusal
+                    // ignores capacity and instead waits on the source's geometry release
+                    // revision, so a busy lane is not polled (#304).
                     // Likewise presentation and demand: both are bumped on the FX thread, so the
                     // values sampled at issue are compared, never the ones current now (#305).
-                    blockedCapacity = refusedCapacity;
+                    blockedCapacityMoved = refusedReservation::capacityChangedElsewhere;
                     blockedPresentation = issuedPresentation;
                     blockedDemand = issuedDemand;
                     publish(Phase.WAITING_CAPACITY, "Waiting for streaming resource capacity");
+                    // Re-run the guard now (#366 review): it proceeds if capacity, demand or the pool
+                    // already moved in a coalesced kick, or arms its own deadline.
+                    wake.set(true);
                     return;
                 }
                 pending.producer.close();
@@ -903,7 +945,10 @@ final class WorldStreamSourceController {
             }
         }
         if(retryCommit) {
-            if(session.capacityRevision()==commitRetryCapacity && clock.getAsLong()-commitRetryAt<RETRY_NANOS) return;
+            if(session.capacityRevision()==commitRetryCapacity && clock.getAsLong()-commitRetryAt<RETRY_NANOS) {
+                wakeAt(commitRetryAt + RETRY_NANOS);
+                return;
+            }
             commit=issueCommit(camera.policy(),committing.stream().map(Entry::resident)
                     .toArray(WorldStreamTransport.Resident[]::new));
             retryCommit=false;
@@ -934,8 +979,12 @@ final class WorldStreamSourceController {
                 // frozen clock (and in production, 500 ms) waits for a revision already seen.
                 commitRetryCapacity=commitIssuedCapacity;
                 publish(Phase.WAITING_CAPACITY,"Waiting for commit input retirement");
+                // Re-run the guard now (#366 review): it proceeds if the retirement already landed
+                // in a coalesced kick, or arms its own deadline. Nothing else would wake it.
+                wake.set(true);
                 return;
             }
+            commitDoneAt = WorldStageTimings.start();
             synchronized (lock) {
                 current = committing;
                 currentReceipt = receipt;
@@ -968,6 +1017,11 @@ final class WorldStreamSourceController {
             }
             target.add(staged);
             staged = null;
+            if (resultSeenAt != 0L) {
+                WorldStageTimings.lap(
+                        "handoff.controller.resultSeenToCommitIssued", resultSeenAt);
+                resultSeenAt = 0L;
+            }
             committing = List.copyOf(target);
             commit =
                     issueCommit(
@@ -1000,19 +1054,28 @@ final class WorldStreamSourceController {
                 geometry = blockedGeometry + 1;
             }
         }
+        // Read outside the lock: it takes the transport's lock, under which capacity listeners run.
+        boolean capacityMoved = blockedCapacityMoved.getAsBoolean();
         synchronized (lock) {
             // The geometry lane frees only on its own release; capacity and pixels don't help.
             if (blockedOnGeometry
                     && blockedGeometry == geometry
                     && blockedDemand == demandRevision
-                    && clock.getAsLong() - blockedAt < RETRY_NANOS) return;
+                    && clock.getAsLong() - blockedAt < RETRY_NANOS) {
+                // The release listener normally wakes it; the timeout stays the fallback.
+                wakeAt(blockedAt + RETRY_NANOS);
+                return;
+            }
             if (!blockedOnGeometry
-                    && (blockedOnMaterialPool || blockedCapacity == session.capacityRevision())
+                    && (blockedOnMaterialPool || !capacityMoved)
                     && (blockedOnMaterialPool
                             ? blockedSourceRetirement == sourceRetirementRevision
                             : blockedPresentation == presentationRevision)
                     && blockedDemand == demandRevision
-                    && clock.getAsLong() - blockedAt < RETRY_NANOS) return;
+                    && clock.getAsLong() - blockedAt < RETRY_NANOS) {
+                wakeAt(blockedAt + RETRY_NANOS);
+                return;
+            }
         }
         boolean needsSource=wanted.stream().anyMatch(tile->!unavailable.containsKey(key(tile))
                 && current.stream().noneMatch(entry->same(tile,entry.resident())));
@@ -1025,13 +1088,19 @@ final class WorldStreamSourceController {
                     entry->containsResident(wanted,entry.resident())).toList());
             // A tile the borrowed frame shows is kept like a presented one (#366): dropping it frees
             // nothing until the borrow ends, so it is never the release a shrink commit counts on.
-            boolean releases=current.stream().anyMatch(entry->!subset.contains(entry) && !presented.contains(entry)
-                    && !borrowedTable.contains(entry));
+            // Both are written by the FX side under the lock: read one consistent pair.
+            List<Entry> shown, borrowing;
+            synchronized (lock) {
+                shown = presented;
+                borrowing = borrowedTable;
+            }
+            boolean releases=current.stream().anyMatch(entry->!subset.contains(entry) && !shown.contains(entry)
+                    && !borrowing.contains(entry));
             if(needsUsefulFrame && !releases) {
                 Entry victim=null;
                 int farthest=-1;
                 for(var entry:current) {
-                    if(presented.contains(entry) || borrowedTable.contains(entry)
+                    if(shown.contains(entry) || borrowing.contains(entry)
                             || !wanted.isEmpty() && same(wanted.getFirst(),entry.resident())) continue;
                     int rank=wanted.size();
                     for(int i=0;i<wanted.size();i++) if(same(wanted.get(i),entry.resident())) { rank=i; break; }
@@ -1062,6 +1131,7 @@ final class WorldStreamSourceController {
         if(waterTables!=null && !waterTables.isDone()
                 && clock.getAsLong()-waterTablesStarted<WATER_TABLE_WAIT_NANOS) {
             // Bounded wait so the first tiles can carry water; terrain proceeds after timeout.
+            wakeAt(waterTablesStarted + WATER_TABLE_WAIT_NANOS);
             publish(Phase.PREPARING, "Preparing water tables");
             return;
         }
@@ -1077,7 +1147,12 @@ final class WorldStreamSourceController {
         for (var tile : admissionOrder) {
             if (unavailable.containsKey(key(tile))) continue;
             var retryAt = helperRetryAt.get(key(tile));
-            if (retryAt != null && clock.getAsLong() - retryAt < 0) continue;
+            if (retryAt != null && clock.getAsLong() - retryAt < 0) {
+                // Event-driven steps (#366): the back-off arms its own deadline, so an FX tick
+                // on the controller clock retries the tile even if nothing else happens.
+                wakeAt(retryAt);
+                continue;
+            }
             boolean found = false;
             for (var entry : current)
                 if (same(tile, entry.resident())) {
@@ -1103,9 +1178,15 @@ final class WorldStreamSourceController {
             pending.issuedGeometry = source.geometryReleaseRevision();
             long producing = WorldStageTimings.start();
             pending.result = pending.reservation.produce(pending.producer);
+            if (commitDoneAt != 0L) {
+                WorldStageTimings.lap(
+                        "handoff.controller.commitDoneToNextReserve", commitDoneAt);
+                commitDoneAt = 0L;
+            }
             pending.result.whenComplete((ignored, failure) -> {
                 WorldStageTimings.stop(failure == null ? "parent.tile.produceToStaged"
                         : "parent.tile.produceFailed", producing);
+                resultAt = WorldStageTimings.start();
                 kick();
             });
             publish(Phase.PREPARING, "Preparing terrain, textures and upload");
@@ -1429,6 +1510,7 @@ final class WorldStreamSourceController {
                             candidate.height(),()->closing)) {
                 // Terrain in the viewing direction is still loading: present the live sky frame
                 // rather than freezing on the previous one, and keep asking for useful terrain.
+                boolean changed=!skyPending;
                 skyPending=true;
                 synchronized(lock) {
                     if(!closing && borrowed==null && queued==null && entries.size()>=maxEntries
@@ -1437,10 +1519,18 @@ final class WorldStreamSourceController {
                         // current), the old pixels stay a historical raster, not a live borrow.
                         presented=List.of();
                         historicalRaster=true;
+                        changed=true;
                     }
                 }
                 publish(Phase.PREPARING,LOADING_IN_VIEW);
                 queue(candidate,true);
+                // This may run on the frame-only path, which runs no full step: a newly pending
+                // sky or released pins must still reach one, which may now make room or retire
+                // the old sources (#366).
+                if(changed) {
+                    skyWakeAtStep.set(steps.get()); // diagnostics and tests: the step count at this wake
+                    wake.set(true);
+                }
                 return;
             }
             skyPending=false;
@@ -1542,8 +1632,15 @@ final class WorldStreamSourceController {
     }
 
     private void updateArea() {
-        updateGround();
         var latest = camera;
+        var table = current;
+        // Ground and area depend only on the camera and the current table, each replaced (never
+        // mutated) when it changes: skip the per-chunk scan while neither did (#366).
+        if (latest == areaCamera && table == areaTable) return;
+        areaCamera = latest;
+        areaTable = table;
+        areaScans.incrementAndGet();
+        updateGround();
         if (latest == null) return;
         long[] selected = {0};
         int[] count = {0};
@@ -1737,6 +1834,10 @@ final class WorldStreamSourceController {
         waterTables = null;
         scope = null;
         opening = null;
+        if (session != null) {
+            // Stop the transport calling back into a retired controller (#366 review).
+            session.onCapacity(null);
+        }
         session = null;
         gpu = null;
         if (pending != null) {

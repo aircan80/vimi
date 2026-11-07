@@ -142,6 +142,22 @@ class WorldStageTimingsTest {
     }
 
     @Test
+    void lapChainsRecordEachLegAndStaySilentFromAZeroStamp() {
+        WorldStageTimings.enable(true);
+        long first = WorldStageTimings.start();
+        long second = WorldStageTimings.lap("leg.one", first);
+        long third = WorldStageTimings.lap("leg.two", second);
+        assertTrue(second != 0L && third != 0L);
+        assertEquals(1, WorldStageTimings.snapshot().get("leg.one").count());
+        assertEquals(1, WorldStageTimings.snapshot().get("leg.two").count());
+        assertEquals(0L, WorldStageTimings.lap("leg.silent", 0L));
+        assertNull(WorldStageTimings.snapshot().get("leg.silent"));
+        WorldStageTimings.enable(false);
+        assertEquals(0L, WorldStageTimings.lap("leg.off", third));
+        assertNull(WorldStageTimings.snapshot().get("leg.off"));
+    }
+
+    @Test
     void propertyNameIsStable() {
         assertEquals("vimi.world.stageTimings", WorldStageTimings.PROPERTY);
     }

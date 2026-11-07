@@ -28,6 +28,13 @@ public final class TerrainAtlasPool {
                 WorldTerrainTextureSource.splat ? WorldTerrainTextureSource.splatMask : 0);
     }
 
+    /**
+     * A snapshot of the pool. {@code leaseClaims} counts every open lease, so one atlas counts
+     * several times while a retained copy and its original are both open (a texture batch hands a
+     * tile's atlas to its consumer that way). {@code claimedEntries} counts the atlases with at
+     * least one open lease, and {@code reservedEntries} the slots reserved but not yet published:
+     * together they are the slots owners hold.
+     */
     public record Stats(
             int entries,
             int reservedEntries,
@@ -35,7 +42,8 @@ public final class TerrainAtlasPool {
             int leaseClaims,
             int borrowPins,
             long chargedBytes,
-            long receiptMetadataBytes) {}
+            long receiptMetadataBytes,
+            int claimedEntries) {}
 
     private static final class Entry {
         final int slot;
@@ -236,7 +244,7 @@ public final class TerrainAtlasPool {
     }
 
     public synchronized Stats stats() {
-        int entries = 0, reserved = 0, claims = 0, borrows = 0;
+        int entries = 0, reserved = 0, claims = 0, borrows = 0, claimed = 0;
         long metadata = 0, charged = 0;
         for (Entry entry : slots) {
             if (entry != null) {
@@ -244,13 +252,15 @@ public final class TerrainAtlasPool {
                 charged += entry.charge;
                 reserved += entry.reserved ? 1 : 0;
                 claims += entry.claims;
+                claimed += entry.claims > 0 ? 1 : 0;
                 borrows += entry.borrows;
                 if (entry.receipt != null) {
                     metadata += entry.receipt.metadataBytes();
                 }
             }
         }
-        return new Stats(entries, reserved, cache.size(), claims, borrows, charged, metadata);
+        return new Stats(
+                entries, reserved, cache.size(), claims, borrows, charged, metadata, claimed);
     }
 
     public CompletableFuture<Void> closeAsync() {

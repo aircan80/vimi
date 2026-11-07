@@ -119,6 +119,140 @@ public final class RacesService implements BuildRaces {
     }
 
     @Override
+    public CompletableFuture<RaceNpcs.Appearance> npcAppearance(
+            long extendedDisplayInfoId, Cancellation token) {
+        if (extendedDisplayInfoId <= 0 || extendedDisplayInfoId > 0xffffffffL) {
+            throw new IllegalArgumentException("Invalid extended display info ID");
+        }
+        record Planned(
+                RaceAppearance.Prepared prepared,
+                int omittedItems,
+                int attachments,
+                RaceNpcs.Appearance answer) {}
+        return submit(
+                        token,
+                        request -> {
+                            if (!appearance.available()) {
+                                return new Planned(
+                                        null,
+                                        0,
+                                        0,
+                                        RaceNpcs.Appearance.refused(
+                                                "Appearance preparation is unavailable for this"
+                                                        + " workspace."));
+                            }
+                            var issues = new ArrayList<String>();
+                            try {
+                                var resolution =
+                                        RaceNpcs.resolve(
+                                                this,
+                                                relations,
+                                                extendedDisplayInfoId,
+                                                race -> media.variants(race, request).variants(),
+                                                request,
+                                                issues);
+                                if (resolution.refusal() != null) {
+                                    return new Planned(
+                                            null,
+                                            0,
+                                            0,
+                                            RaceNpcs.Appearance.refused(resolution.refusal()));
+                                }
+                                var spec = resolution.spec();
+                                var omissions = appearance.npcOmissions(spec, request);
+                                var prepared = appearance.prepareNpc(spec, request);
+                                return new Planned(
+                                        prepared,
+                                        spec.omittedItems()
+                                                + omissions.missing()
+                                                + omissions.undrawn(),
+                                        omissions.attachments(),
+                                        null);
+                            } catch (Unreadable unreadable) {
+                                return new Planned(
+                                        null,
+                                        0,
+                                        0,
+                                        RaceNpcs.Appearance.unreadable(unreadable.getMessage()));
+                            } catch (Projection unsupported) {
+                                return new Planned(
+                                        null,
+                                        0,
+                                        0,
+                                        RaceNpcs.Appearance.refused(unsupported.getMessage()));
+                            }
+                        })
+                .thenCompose(
+                        planned -> {
+                            if (planned.answer() != null) {
+                                return CompletableFuture.completedFuture(planned.answer());
+                            }
+                            var prepared = planned.prepared();
+                            var finished =
+                                    prepared.finished() != null
+                                            ? CompletableFuture.completedFuture(prepared.finished())
+                                            : submit(
+                                                    appearanceWorker,
+                                                    token,
+                                                    request ->
+                                                            appearance.render(prepared, request));
+                            return finished.thenApply(
+                                    result ->
+                                            result.appearance() == null
+                                                    ? RaceNpcs.Appearance.refused(
+                                                            result.message() == null
+                                                                    ? "the NPC appearance could not"
+                                                                            + " be built"
+                                                                    : result.message())
+                                                    : new RaceNpcs.Appearance(
+                                                            result,
+                                                            planned.omittedItems(),
+                                                            planned.attachments(),
+                                                            null,
+                                                            false));
+                        })
+                .exceptionally(RacesService::npcRetry);
+    }
+
+    /**
+     * Resolves a failed NPC appearance to one of its three answers. Data that cannot be read now
+     * ({@link Unreadable}), a model file that changed while it was read and any other unexpected
+     * runtime failure are asked for again (retry, with the reason). A lasting fact of the model
+     * file (a {@link com.vibeminer.formats.models.ModelFormatException} that is invalid, over the
+     * reviewed limits or unsupported) or of the tables ({@link Projection}) is a stated refusal, so
+     * the NPC is not asked for again on every tile. Cancellation and {@link Error}s propagate.
+     */
+    static RaceNpcs.Appearance npcRetry(Throwable failure) {
+        var cause = failure;
+        while ((cause instanceof java.util.concurrent.CompletionException
+                        || cause instanceof java.util.concurrent.ExecutionException)
+                && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        if (cause instanceof java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        }
+        if (cause instanceof Error error) {
+            throw error;
+        }
+        if (cause instanceof Unreadable unreadable) {
+            return RaceNpcs.Appearance.unreadable(unreadable.getMessage());
+        }
+        if (cause instanceof Projection lasting) {
+            return RaceNpcs.Appearance.refused(lasting.getMessage());
+        }
+        if (cause instanceof com.vibeminer.formats.models.ModelFormatException model
+                && !"MODEL_SOURCE_CHANGED".equals(model.code())) {
+            return RaceNpcs.Appearance.refused(
+                    "the NPC model is " + model.code() + ": " + model.getMessage());
+        }
+        return RaceNpcs.Appearance.unreadable(
+                "the NPC appearance could not be built now ("
+                        + cause.getClass().getSimpleName()
+                        + ")");
+    }
+
+    @Override
     public CompletableFuture<RaceCustomizationTypes.Catalog> customizations(
             long raceId, long classId, long modelId, Cancellation token) {
         return submit(

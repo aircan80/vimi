@@ -686,7 +686,10 @@ public final class WorldTerrainTextureSource {
     /**
      * Whole-file bound of a layer diffuse. The decoder reads only the header and the selected mip's
      * byte range (each mip read is bounded by {@code maxMipBytes}), so a large diffuse with a full
-     * mip chain (a 1024 x 1024 BC3 chain is about 1.4 MB) no longer fails a 1 MiB file cap.
+     * mip chain (a 1024 x 1024 BC3 chain is about 1.4 MB) no longer fails a 1 MiB file cap. The
+     * decoded stream holds the BLTE chunk the selected mip lies in, so the transient cost per
+     * diffuse is one decoded chunk: at most the file size, so at most this bound. Diffuses are
+     * decoded one at a time.
      */
     static final int DIFFUSE_SOURCE_LIMIT = 8 << 20;
 
