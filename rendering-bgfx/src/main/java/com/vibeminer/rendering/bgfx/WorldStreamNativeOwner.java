@@ -470,6 +470,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.finishLate(upload, live);
     }
 
+    /** The compressed object texture formats the renderer samples as blocks (bit per code). */
+    int objectFormatMask() {
+        requireOpen();
+        return renderer.objectFormatMask();
+    }
+
     /** Proof observation of the renderer's splat state. */
     boolean splatted(int slot) {
         requireOpen();
