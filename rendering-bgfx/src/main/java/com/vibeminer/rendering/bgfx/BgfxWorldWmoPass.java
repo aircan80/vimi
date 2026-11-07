@@ -48,6 +48,7 @@ import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_end;
 import com.vibeminer.rendering.world.BasicWmoData;
 import com.vibeminer.rendering.world.TerrainCamera;
 import com.vibeminer.rendering.world.TerrainScene;
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -291,7 +292,7 @@ final class BgfxWorldWmoPass implements AutoCloseable {
         if (closed) {
             throw new IllegalStateException("WMO pass closed");
         }
-        if (width < 1 || height < 1 || width > 800 || height > 500) {
+        if (!WorldFrameLimits.fits(width, height)) {
             throw new IllegalArgumentException("WMO frame exceeds world budget");
         }
         Objects.requireNonNull(camera);

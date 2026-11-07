@@ -103,7 +103,13 @@ public final class TerrainAtlasComposer {
         }
     }
 
-    public record Composition(TerrainTileAtlas atlas, List<Diagnostic> diagnostics) {
+    /** {@code splat} is null unless requested; it covers exactly the atlas's supported chunks. */
+    public record Composition(
+            TerrainTileAtlas atlas, List<Diagnostic> diagnostics, TerrainTileSplat splat) {
+        public Composition(TerrainTileAtlas atlas, List<Diagnostic> diagnostics) {
+            this(atlas, diagnostics, null);
+        }
+
         public Composition {
             Objects.requireNonNull(atlas);
             Objects.requireNonNull(diagnostics);
@@ -128,6 +134,38 @@ public final class TerrainAtlasComposer {
             WorldTextureFormats.TextureData textures,
             Map<Long, DiffuseMip> diffuse,
             BooleanSupplier canceled) {
+        return compose(tile, grid, textures, diffuse, false, canceled);
+    }
+
+    /**
+     * Also returns the shader-side splatting inputs when {@code splat} is set (issue #174 step 2):
+     * the same supported chunks, their layer diffuse ids and masks, and MCCV brightness.
+     */
+    public static Composition compose(
+            WorldFormats.Tile tile,
+            TerrainGrid grid,
+            WorldTextureFormats.TextureData textures,
+            Map<Long, DiffuseMip> diffuse,
+            boolean splat,
+            BooleanSupplier canceled) {
+        return compose(
+                tile, grid, textures, diffuse, splat, TerrainTileSplat.STANDARD_MASK, canceled);
+    }
+
+    /**
+     * As {@link #compose(WorldFormats.Tile, TerrainGrid, WorldTextureFormats.TextureData, Map,
+     * boolean, BooleanSupplier)}, with the splat mask map at {@code maskSide}: {@link
+     * TerrainTileSplat#STANDARD_MASK} or {@link TerrainTileSplat#HIGH_MASK} (issue #174 step 2b-2).
+     */
+    public static Composition compose(
+            WorldFormats.Tile tile,
+            TerrainGrid grid,
+            WorldTextureFormats.TextureData textures,
+            Map<Long, DiffuseMip> diffuse,
+            boolean splat,
+            int maskSide,
+            BooleanSupplier canceled) {
+        TerrainTileSplat.alphaBytes(maskSide);
         Objects.requireNonNull(tile);
         Objects.requireNonNull(grid);
         Objects.requireNonNull(textures);
@@ -153,6 +191,13 @@ public final class TerrainAtlasComposer {
         var mappings = new ArrayList<TerrainTileAtlas.Mapping>(256);
         var diagnostics = new ArrayList<Diagnostic>();
         var masks = ByteBuffer.allocate(WorldTextureFormats.MAX_MASK_SCRATCH);
+        var splatIds = new ArrayList<Long>();
+        byte[] splatLayers = null, splatAlpha = null;
+        if (splat) {
+            splatLayers = new byte[TerrainTileSplat.LAYER_BYTES];
+            java.util.Arrays.fill(splatLayers, (byte) TerrainTileSplat.NONE);
+            splatAlpha = new byte[TerrainTileSplat.alphaBytes(maskSide)];
+        }
         for (int ordinal = 0; ordinal < 256; ordinal++) {
             check(canceled);
             var chunk = grid.chunks().get(ordinal);
@@ -198,10 +243,48 @@ public final class TerrainAtlasComposer {
                 continue;
             }
             renderChunk(chunk, mips, masks, colors, pixels, canceled);
+            // Splatting draws at most four layers (three masks); wider chunks keep the atlas, and
+            // so does a chunk whose new diffuses would pass the tile's MAX_DIFFUSES list.
+            long added =
+                    splat
+                            ? layers.stream()
+                                    .mapToLong(
+                                            layer ->
+                                                    textures.diffuseIds()
+                                                            .get((int) layer.textureIndex()))
+                                    .distinct()
+                                    .filter(id -> !splatIds.contains(id))
+                                    .count()
+                            : 0;
+            if (splat
+                    && layers.size() <= 4
+                    && splatIds.size() + added <= TerrainTileSplat.MAX_DIFFUSES) {
+                int base = (chunk.y() * 16 + chunk.x()) * 4;
+                for (int i = 0; i < layers.size(); i++) {
+                    long id = textures.diffuseIds().get((int) layers.get(i).textureIndex());
+                    int index = splatIds.indexOf(id);
+                    if (index < 0) {
+                        index = splatIds.size();
+                        splatIds.add(id);
+                    }
+                    splatLayers[base + i] = (byte) index;
+                }
+                splatChunk(chunk, layers.size(), masks, colors, splatAlpha, maskSide, canceled);
+            }
             coverage[ordinal / 64] |= 1L << (ordinal % 64);
         }
         check(canceled);
-        return new Composition(new TerrainTileAtlas(tile, pixels, coverage, mappings), diagnostics);
+        var outputSplat =
+                splat
+                        ? new TerrainTileSplat(
+                                splatIds.stream().mapToLong(Long::longValue).toArray(),
+                                splatLayers,
+                                splatAlpha)
+                        : null;
+        return new Composition(
+                new TerrainTileAtlas(tile, pixels, coverage, mappings, outputSplat),
+                diagnostics,
+                outputSplat);
     }
 
     private static void renderChunk(
@@ -257,10 +340,49 @@ public final class TerrainAtlasComposer {
         }
     }
 
+    /** Layer 1 to 3 masks at the atlas's sampling points, and the MCCV brightness, per texel. */
+    private static void splatChunk(
+            TerrainGrid.Chunk chunk,
+            int layers,
+            ByteBuffer masks,
+            ByteBuffer colors,
+            byte[] alpha,
+            int maskSide,
+            BooleanSupplier canceled) {
+        // Texels per chunk side: 32 (every other alpha-map texel) or 64 (each one).
+        int per = maskSide / 16, step = 64 / per;
+        for (int py = 0; py < per; py++) {
+            check(canceled);
+            for (int px = 0; px < per; px++) {
+                int maskPixel = (step * py + step / 2) * 64 + step * px + step / 2;
+                int output = ((chunk.y() * per + py) * maskSide + chunk.x() * per + px) * 4;
+                for (int layer = 1; layer < 4; layer++) {
+                    alpha[output + layer - 1] =
+                            layer < layers ? masks.get((layer - 1) * 4096 + maskPixel) : 0;
+                }
+                double brightness = 1;
+                if (colors.hasRemaining()) {
+                    // The texel centre in vertex-grid units (8 cells per chunk side).
+                    double gx = (px + .5) * 8 / per, gy = (py + .5) * 8 / per;
+                    brightness =
+                            (tint(colors, gx, gy, 0)
+                                            + tint(colors, gx, gy, 1)
+                                            + tint(colors, gx, gy, 2))
+                                    / 3;
+                }
+                alpha[output + 3] = (byte) Math.max(0, Math.min(255, Math.round(brightness * 128)));
+            }
+        }
+    }
+
     // Fine source fan triangles a-m-b, b-m-e, e-m-d, d-m-a; holes do not erase texture facts.
     private static double tint(ByteBuffer colors, int px, int py, int channel) {
-        double x = (px + .5) / 4, y = (py + .5) / 4;
-        int col = (int) x, row = (int) y;
+        return tint(colors, (px + .5) / 4, (py + .5) / 4, channel);
+    }
+
+    /** MCCV tint at vertex-grid position (x, y), 8 cells per chunk side. */
+    private static double tint(ByteBuffer colors, double x, double y, int channel) {
+        int col = Math.min(7, (int) x), row = Math.min(7, (int) y);
         double dx = x - col, dy = y - row;
         int a = row * 17 + col, b = a + 1, d = a + 17, e = d + 1, m = a + 9;
         int first, second;

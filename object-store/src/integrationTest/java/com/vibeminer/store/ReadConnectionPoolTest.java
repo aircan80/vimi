@@ -208,12 +208,14 @@ final class ReadConnectionPoolTest {
         now[0] = 200;
         assertNull(pool.take(first), "an expired connection was reused");
         assertEquals(0, pool.idle());
+        assertEquals(0, pool.held(), "the expired connection is still open");
         var b = new ReadConnections.Pooled(store.openReader(), pool.generation(), first);
         var c = new ReadConnections.Pooled(store.openReader(), pool.generation(), first);
         pool.give(b, true);
         pool.give(c, true);
         assertNull(pool.take(second), "a connection on a replaced index file was reused");
         assertEquals(0, pool.idle());
+        assertEquals(0, pool.held(), "a stale connection is still open");
         var d = new ReadConnections.Pooled(store.openReader(), pool.generation(), null);
         pool.give(d, true);
         assertSame(d, pool.take(null), "no identity reported: not compared");
@@ -221,10 +223,13 @@ final class ReadConnectionPoolTest {
         now[0] = 1000;
         pool.sweep();
         assertEquals(0, pool.idle());
+        assertEquals(0, pool.held(), "a swept connection is still open");
         pool.close();
+        assertEquals(0, pool.held());
         var late = new ReadConnections.Pooled(store.openReader(), pool.generation(), null);
         pool.give(late, true);
         assertEquals(0, pool.idle());
+        assertEquals(0, pool.held(), "a connection returned after close is still open");
     }
 
     @Test
@@ -321,7 +326,9 @@ final class ReadConnectionPoolTest {
 
     private static void waitForNoIdle(ObjectStore target) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        while (target.readConnections.idle() > 0) {
+        // held(), not idle(): an expired connection leaves the idle list before its close
+        // finishes, and until then its handle still blocks a delete on Windows (#458).
+        while (target.readConnections.held() > 0) {
             if (System.nanoTime() > deadline) {
                 throw new AssertionError("Idle connections never expired");
             }
