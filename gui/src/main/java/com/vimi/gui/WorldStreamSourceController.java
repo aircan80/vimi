@@ -510,7 +510,9 @@ final class WorldStreamSourceController {
                 borrowed = null;
                 validated = false;
                 if (accepted) {
-                    if (acceptedReceipt != currentReceipt) {
+                    // The first accepted frame drawn from the committed receipt; a borrowed frame
+                    // of an older table, accepted later, does not end the measurement.
+                    if (borrowedReceipt == currentReceipt && acceptedReceipt != currentReceipt) {
                         WorldStageTimings.stop("parent.commit.toAcceptedFrame", committedAt);
                         committedAt = 0L;
                     }
