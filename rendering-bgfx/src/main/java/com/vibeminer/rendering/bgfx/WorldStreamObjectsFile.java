@@ -576,7 +576,9 @@ final class WorldStreamObjectsFile {
                     "Portal counts");
             for (float[] table : new float[][] {portalBoxes, portalPlanes, portalVertices}) {
                 for (float value : table) {
-                    require(Float.isFinite(value) && Math.abs(value) <= 1_000_000, "Portal value");
+                    require(
+                            Float.isFinite(value) && Math.abs(value) <= WmoPortalSet.MAX_VALUE,
+                            "Portal value");
                 }
             }
             int[] setGroups = new int[modelCount];

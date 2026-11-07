@@ -1484,6 +1484,34 @@ class WorldExteriorObjectsTest {
     }
 
     /**
+     * A portal vertex past the objects file's value bound (WmoPortalSet.MAX_VALUE) drops only the
+     * root's set: the root and the tile's other objects still draw.
+     */
+    @Test
+    void aPortalValuePastTheFileBoundDropsOnlyTheSet() {
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            var chunks = portalChunks(1, true);
+            int mopv = indexOf(chunks, "MOPV") + 8;
+            ByteBuffer.wrap(chunks).order(ByteOrder.LITTLE_ENDIAN).putFloat(mopv + 8 * 4, 2e6f);
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            2,
+                            new long[] {GROUP, INTERIOR},
+                            List.of(new Material(0, IMAGE, 0)),
+                            chunks));
+            f.files.sources.put(GROUP, portalRange(group(EXT), 0, 1));
+            f.files.sources.put(INTERIOR, portalRange(group(INT), 1, 1));
+            try (var set = f.runInstance()) {
+                assertNull(set.models().getFirst().portals());
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_PORTALS_DROPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+            }
+        }
+    }
+
+    /**
      * The carried sets share the tile's portal tables (WmoPortalSet.MAX_TILE_PORTALS): two roots of
      * 1,100 portals each, the second no longer fits and is dropped while it still draws.
      */

@@ -128,6 +128,56 @@ class WmoPortalSetTest {
     }
 
     @Test
+    void valuesPastTheObjectsFileBoundAreRefused() {
+        // The objects file refuses any portal value past 1e6, so a set carrying one is refused
+        // here, where its root's set is dropped, not later, where the tile's buildings would be.
+        assertEquals(1_000_000, WmoPortalSet.MAX_VALUE);
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new WmoPortalSet(
+                                List.of(new Group(0, 0, 0, 0, 2e6, 1, 1, 0, 0)),
+                                List.of(),
+                                List.of()));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new WmoPortalSet(
+                                List.of(room(0, 0)),
+                                List.of(
+                                        new Portal(
+                                                new double[] {10, -1, 0, 10, 1, 0, 10, 1, 2e6},
+                                                1,
+                                                0,
+                                                0,
+                                                -10)),
+                                List.of(new Ref(0, 0, 1))));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new WmoPortalSet(
+                                List.of(room(0, 0)),
+                                List.of(
+                                        new Portal(
+                                                new double[] {10, -1, 0, 10, 1, 0, 10, 1, 2},
+                                                1,
+                                                0,
+                                                0,
+                                                -2e6)),
+                                List.of(new Ref(0, 0, 1))));
+        // Doubles past float range would become infinite in the file.
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new WmoPortalSet(
+                                List.of(new Group(0, 0, 0, -1e300, 1, 1, 1, 0, 0)),
+                                List.of(),
+                                List.of()));
+        // Exactly at the bound is accepted.
+        new WmoPortalSet(List.of(new Group(0, -1e6, 0, 0, 1e6, 1, 1, 0, 0)), List.of(), List.of());
+    }
+
+    @Test
     void theTileBoundsHoldTheLargestCarriedSets() {
         // One root's portal tables may use a whole tile's bounds, and the bounds hold the roots and
         // groups a tile reads.

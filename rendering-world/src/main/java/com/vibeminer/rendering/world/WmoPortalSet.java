@@ -11,7 +11,8 @@ import java.util.List;
  * One WMO root's retained portals (MOPV, MOPT, MOPR) and its LOD0 group headers, in group order, as
  * the World objects carry them to the renderer (#383 step 3a). Values come from the files' 32-bit
  * floats, so carrying them as floats is exact. Validated as {@link WmoPortalTraversal#of} validates
- * them, plus finite values, ordered boxes, unsigned 32-bit group flags and signed 16-bit sides.
+ * them, plus finite values within {@link #MAX_VALUE}, ordered boxes, unsigned 32-bit group flags
+ * and signed 16-bit sides.
  */
 public record WmoPortalSet(List<Group> groups, List<Portal> portals, List<Ref> refs) {
     /**
@@ -23,6 +24,12 @@ public record WmoPortalSet(List<Group> groups, List<Portal> portals, List<Ref> r
 
     public static final int MAX_TILE_PORTALS = 2048, MAX_TILE_VERTICES = 8192;
     public static final int MAX_TILE_REFS = 4096;
+
+    /**
+     * Largest magnitude of a box, plane or vertex value, the objects file's own bound: a set
+     * outside it is refused here, where only its root's set is dropped.
+     */
+    public static final int MAX_VALUE = 1_000_000;
 
     public WmoPortalSet {
         groups = List.copyOf(groups);
@@ -116,9 +123,10 @@ public record WmoPortalSet(List<Group> groups, List<Portal> portals, List<Ref> r
         return new WmoPortalSet(groups, portals, refs);
     }
 
+    /** Finite and within {@link #MAX_VALUE}. */
     private static boolean finite(double... values) {
         for (double value : values) {
-            if (!Double.isFinite(value)) {
+            if (!Double.isFinite(value) || Math.abs(value) > MAX_VALUE) {
                 return false;
             }
         }

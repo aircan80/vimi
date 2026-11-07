@@ -710,6 +710,11 @@ public final class WorldExteriorObjects {
     /**
      * Shared geometry; several placements may reference one model. A doodad model's rootId is its
      * M2 FileDataID and its single mesh's groupId is its SKIN FileDataID.
+     *
+     * @param portals the root's retained portals and LOD0 group headers (#383 step 3a), carried for
+     *     drawn roots on dungeon and raid maps; each mesh's {@link Mesh#groupOrdinal} is its group
+     *     in them. Null for doodads, on open-world maps, and for a root whose set is not carried
+     *     whole ({@link Count#ROOT_PORTALS_DROPPED}).
      */
     public record Model(long rootId, boolean doodad, List<Mesh> meshes, WmoPortalSet portals) {
         public Model {
@@ -718,17 +723,6 @@ public final class WorldExteriorObjects {
 
         public Model(long rootId, boolean doodad, List<Mesh> meshes) {
             this(rootId, doodad, meshes, null);
-        }
-
-        /**
-         * The root's retained portals and LOD0 group headers (#383 step 3a), carried for drawn
-         * roots on dungeon and raid maps; each mesh's {@link Mesh#groupOrdinal} is its group in
-         * them. Null for doodads, on open-world maps, and for a root whose set is not carried whole
-         * ({@link Count#ROOT_PORTALS_DROPPED}).
-         */
-        @Override
-        public WmoPortalSet portals() {
-            return portals;
         }
     }
 
@@ -2472,7 +2466,8 @@ public final class WorldExteriorObjects {
             if (recorded.retained() && Arrays.stream(headers).allMatch(Objects::nonNull)) {
                 try {
                     set = WmoPortalSet.of(recorded, Arrays.asList(headers));
-                } catch (IllegalArgumentException outsideMopr) {
+                } catch (IllegalArgumentException refused) {
+                    // A MOGP range outside MOPR, or a value past the objects file's bound.
                     set = null;
                 }
             }
