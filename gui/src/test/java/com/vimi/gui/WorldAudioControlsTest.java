@@ -43,7 +43,7 @@ public final class WorldAudioControlsTest {
     }
 
     private record Request(long areaId, WorldAreaAudio.Variant variant,
-            CompletableFuture<WorldAreaAudio.Plan> result) {}
+            CompletableFuture<WorldAreaAudio.Plan> result, Cancellation token) {}
 
     /** Plans are answered by the test; every request is recorded. */
     private static final class World implements BuildWorld {
@@ -54,7 +54,7 @@ public final class WorldAudioControlsTest {
                 WorldCurrentArea.Result area, WorldAreaAudio.Variant variant,
                 Cancellation token) {
             var result = new CompletableFuture<WorldAreaAudio.Plan>();
-            requests.add(new Request(area.areaId(), variant, result));
+            requests.add(new Request(area.areaId(), variant, result, token));
             return result;
         }
 
@@ -320,13 +320,120 @@ public final class WorldAudioControlsTest {
         check(world.requests.size() == 1 && rig.music() == null, "closed director acted");
     }
 
+    /**
+     * Turning audio on resolves the current area at once instead of waiting for the settle
+     * delay; area changes while it plays are still debounced.
+     */
+    private static void toggleOnResolvesAtOnce() throws Exception {
+        var rig = new Rig(LocalTime.NOON);
+        var world = new World();
+        rig.director.area(world, 0, area(10));
+        rig.director.settled();
+        check(world.requests.isEmpty(), "audio that is off resolved an area");
+        int debounces = rig.debounces;
+        rig.director.toggle(WorldAreaAudio.Kind.MUSIC, true);
+        check(world.requests.size() == 1 && world.last().areaId() == 10,
+                "toggle-on waited for the settle delay: " + world.requests);
+        check(rig.debounces == debounces, "toggle-on restarted the settle delay");
+        world.last().result().complete(plan(10, WorldAreaAudio.Variant.DAY, 100));
+        rig.drain();
+        check(rig.music() != null && rig.music().soundKitId() == 100, "plan was not published");
+        rig.director.settled();
+        check(world.requests.size() == 1, "a later settle resolved the same area again");
+
+        // Turning ambience on as well resolves again at once; the music kit is unchanged.
+        var playing = rig.music();
+        rig.director.toggle(WorldAreaAudio.Kind.AMBIENCE, true);
+        check(world.requests.size() == 2, "second toggle-on waited");
+        world.last().result().complete(plan(10, WorldAreaAudio.Variant.DAY, 100));
+        rig.drain();
+        check(rig.music() == playing, "toggle-on restarted the playing music kit");
+
+        // An area change while playing still waits for the settle delay.
+        rig.director.area(world, 0, area(11));
+        check(world.requests.size() == 2, "an area change skipped the settle delay");
+        rig.director.settled();
+        check(world.requests.size() == 3, "the settled area did not resolve");
+
+        // Turning on before any area is known resolves nothing until one is reported; the
+        // reported area then waits for the settle delay like any area change.
+        var empty = new Rig(LocalTime.NOON);
+        var later = new World();
+        empty.director.toggle(WorldAreaAudio.Kind.MUSIC, true);
+        empty.director.settled();
+        check(later.requests.isEmpty(), "an unknown area resolved");
+        int waiting = empty.debounces;
+        empty.director.area(later, 0, area(10));
+        check(later.requests.isEmpty() && empty.debounces == waiting + 1,
+                "the first reported area skipped the settle delay");
+        empty.director.settled();
+        check(later.requests.size() == 1 && later.last().areaId() == 10,
+                "the first reported area did not resolve: " + later.requests);
+        rig.close();
+        empty.close();
+    }
+
+    /**
+     * Off, on and off again quickly: turning both channels off cancels the pending plan, and a
+     * plan that completes after that is ignored; the next toggle-on resolves afresh.
+     */
+    private static void rapidTogglesDropStalePlans() throws Exception {
+        var rig = new Rig(LocalTime.NOON);
+        var world = new World();
+        rig.director.area(world, 0, area(10));
+        rig.director.toggle(WorldAreaAudio.Kind.MUSIC, true);
+        var first = world.last();
+        rig.director.toggle(WorldAreaAudio.Kind.MUSIC, false);
+        check(first.token().isCanceled(), "turning everything off kept the plan request");
+        rig.director.toggle(WorldAreaAudio.Kind.MUSIC, true);
+        check(world.requests.size() == 2, "toggle-on after off did not resolve again");
+        var second = world.last();
+        first.result().complete(plan(10, WorldAreaAudio.Variant.DAY, 100));
+        rig.drain();
+        check(rig.music() == null, "a plan from before the off was published");
+        second.result().complete(plan(10, WorldAreaAudio.Variant.DAY, 200));
+        rig.drain();
+        check(rig.music() != null && rig.music().soundKitId() == 200, "current plan lost");
+        // Off with a plan already published, then a late duplicate completion: ignored too.
+        rig.director.toggle(WorldAreaAudio.Kind.MUSIC, false);
+        second.result().complete(plan(10, WorldAreaAudio.Variant.DAY, 300));
+        rig.drain();
+        check(rig.music() == null || rig.music().soundKitId() != 300, "late plan published");
+        rig.close();
+    }
+
+    /**
+     * Turning a channel on while an area change waits for its settle delay resolves the newest
+     * area at once; the delay then finds nothing new to resolve.
+     */
+    private static void toggleOnDuringAPendingAreaChangeResolvesTheNewArea() throws Exception {
+        var rig = new Rig(LocalTime.NOON);
+        var world = new World();
+        rig.director.area(world, 0, area(10));
+        rig.director.toggle(WorldAreaAudio.Kind.MUSIC, true);
+        world.last().result().complete(plan(10, WorldAreaAudio.Variant.DAY, 100));
+        rig.drain();
+        rig.director.area(world, 0, area(11));
+        check(world.requests.size() == 1, "the area change skipped its delay");
+        rig.director.toggle(WorldAreaAudio.Kind.AMBIENCE, true);
+        check(world.requests.size() == 2 && world.last().areaId() == 11,
+                "toggle-on did not resolve the pending area: " + world.requests);
+        rig.director.settled();
+        check(world.requests.size() == 2, "the pending delay resolved the same area again");
+        rig.close();
+    }
+
     public static void main(String[] args) throws Exception {
         debounceResolvesOnlyTheSettledArea();
         unchangedAreasAndRepeatedSettlesAreDeduplicated();
         dayAndNightFollowTheClockUnlessChosen();
         failedPlansKeepPlayingAndRetry();
         closedDirectorIgnoresEverything();
+        toggleOnResolvesAtOnce();
+        rapidTogglesDropStalePlans();
+        toggleOnDuringAPendingAreaChangeResolvesTheNewArea();
         System.out.println("World audio controls: debounce, dedup, clock day/night with manual"
-                + " override, failed-plan retry, stale plans and close passed");
+                + " override, failed-plan retry, stale plans, immediate toggle-on, rapid toggles, toggle"
+                + " during a pending change and close passed");
     }
 }

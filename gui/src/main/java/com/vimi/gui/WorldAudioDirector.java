@@ -134,9 +134,16 @@ final class WorldAudioDirector {
         if (on) channel.track(null, null);
         channel.enabled(on);
         if (on) {
+            // The current area resolves at once; only area changes wait for the settle delay.
             resolved = null;
             failures = 0;
-            schedule();
+            settled();
+        } else if (!musicOn && !ambienceOn) {
+            // Nothing plays: a pending plan is dropped, and a late completion is ignored.
+            generation++;
+            if (request != null) request.cancel();
+            request = null;
+            resolved = null;
         }
         refresh();
     }

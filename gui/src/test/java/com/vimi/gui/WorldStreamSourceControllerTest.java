@@ -8,6 +8,7 @@ import com.vibeminer.concepts.world.WorldService;
 import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.tables.AuthoredNativeMap;
 import com.vibeminer.formats.world.WorldFormats;
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.bgfx.WorldStreamTransport;
 import com.vibeminer.rendering.world.TerrainCamera;
 
@@ -79,6 +80,7 @@ public final class WorldStreamSourceControllerTest {
         lateObjectsCompletingAfterRetirementAreIgnored();
         borrowedTilesAreNeverDroppedToMakeRoom();
         tilesKeepStreamingWhileAFrameIsBorrowed();
+        commitTimingStopsOnlyOnAFrameOfTheNewReceipt();
         aBorrowedFrameKeepsTheSourcesOfTheTableItShows();
         fiveByFiveNeighborhoodHoldsTwentyFiveResidentsWithinTheSourceUnion();
     }
@@ -111,6 +113,45 @@ public final class WorldStreamSourceControllerTest {
                     && fixture.controller.snapshot().prepared() == 4);
         } finally {
             fixture.close();
+        }
+    }
+
+    /**
+     * Opt-in timings: parent.commit.toAcceptedFrame ends at the first accepted frame drawn from
+     * the committed receipt. A borrowed frame of an older table, accepted after the commit, is
+     * not that frame and must not end the measurement early.
+     */
+    private static void commitTimingStopsOnlyOnAFrameOfTheNewReceipt() throws Exception {
+        boolean wasEnabled = WorldStageTimings.enabled();
+        WorldStageTimings.enable(true);
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 4);
+        fixture.residents = 4;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+            int before = fixture.commitLines().size();
+            fixture.camera(2);
+            var borrowed = fixture.nextFrame(); // drawn from the table accepted before
+            WorldStageTimings.reset();
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 4));
+            fixture.until(() -> fixture.commitLines().size() >= before + 1);
+            check(fixture.controller.mayPresent(borrowed) && fixture.controller.presented(borrowed),
+                    "The borrowed old-table frame is accepted");
+            check(WorldStageTimings.snapshot().get("parent.commit.toAcceptedFrame") == null,
+                    "An old-receipt frame does not end the commit-to-frame timing");
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 4);
+            var series = WorldStageTimings.snapshot().get("parent.commit.toAcceptedFrame");
+            check(series != null && series.count() >= 1,
+                    "A frame of the committed receipt ends the commit-to-frame timing");
+        } finally {
+            fixture.close();
+            WorldStageTimings.reset();
+            WorldStageTimings.enable(wasEnabled);
         }
     }
 
