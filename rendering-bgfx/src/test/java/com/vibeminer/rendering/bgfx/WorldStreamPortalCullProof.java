@@ -137,10 +137,31 @@ final class WorldStreamPortalCullProof {
             int centre = HEIGHT / 2 * WIDTH + WIDTH / 2;
             var ahead = new TerrainCamera(X, Y, Z, 0, 0);
             var turned = new TerrainCamera(X, Y, Z, Math.toRadians(-20), 0);
-            int seen = frame(owner, reader, ahead).get(centre);
+            var aheadFrame = frame(owner, reader, ahead);
+            int seen = aheadFrame.get(centre);
             var seenCounts = owner.frameCounts();
-            int hidden = frame(owner, reader, turned).get(centre);
+            var turnedFrame = frame(owner, reader, turned);
+            int hidden = turnedFrame.get(centre);
             var hiddenCounts = owner.frameCounts();
+            // Instancing (#382) off: a portal root is its own one-instance draw either way, so the
+            // frames, walks and culled meshes are identical.
+            owner.objectInstancing(false);
+            var aheadSingle = frame(owner, reader, ahead);
+            var aheadSingleCounts = owner.frameCounts();
+            var turnedSingle = frame(owner, reader, turned);
+            var turnedSingleCounts = owner.frameCounts();
+            owner.objectInstancing(true);
+            require(
+                    aheadSingle.equals(aheadFrame) && turnedSingle.equals(turnedFrame),
+                    "Instancing changes no pixel of the portal scene");
+            require(
+                    aheadSingleCounts.portalWalks() == seenCounts.portalWalks()
+                            && aheadSingleCounts.portalMeshesCulled()
+                                    == seenCounts.portalMeshesCulled()
+                            && turnedSingleCounts.portalWalks() == hiddenCounts.portalWalks()
+                            && turnedSingleCounts.portalMeshesCulled()
+                                    == hiddenCounts.portalMeshesCulled(),
+                    "Instancing changes no walk " + aheadSingleCounts + " " + turnedSingleCounts);
             owner.objectCulling(false);
             int unculled = frame(owner, reader, turned).get(centre);
             var unculledCounts = owner.frameCounts();
@@ -189,7 +210,8 @@ final class WorldStreamPortalCullProof {
                     + "/"
                     + hiddenCounts.objectSubmits()
                     + "/"
-                    + unculledCounts.objectSubmits();
+                    + unculledCounts.objectSubmits()
+                    + " instancingOffIdentical=true";
         }
     }
 
