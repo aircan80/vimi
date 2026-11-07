@@ -9,6 +9,7 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.tables.AuthoredNativeMap;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldPlacements;
+import com.vibeminer.formats.world.WorldStageTimings;
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -343,6 +344,40 @@ class WorldExteriorObjectsTest {
     }
 
     // ---- tests ------------------------------------------------------------------------------
+
+    @Test
+    void stageTimingsTallyEveryCountAndTimeTheTileWhenEnabled() {
+        WorldStageTimings.reset();
+        WorldStageTimings.enable(true);
+        try (var f = new Fixture(List.of(new Modf(ROOT, 77, 0, 100, 20, 300, 0, 90, 0, 1024)));
+                var set = f.run()) {
+            set.tallyCounts();
+            var snapshot = WorldStageTimings.snapshot();
+            assertEquals(1, snapshot.get("objects.count.tiles").sum());
+            for (var count : WorldExteriorObjects.Count.values()) {
+                var series = snapshot.get("objects.count." + count.name());
+                assertEquals(set.count(count), series == null ? 0 : series.sum(), count.name());
+            }
+            assertEquals(set.vertices(), snapshot.get("objects.count.vertices").sum());
+            assertEquals(1, snapshot.get("objects.tile.total").count());
+            assertTrue(snapshot.get("source.read.BASIC_EXTERIOR").count() > 0);
+            assertTrue(snapshot.get("objects.phase.buildings").count() == 1);
+        } finally {
+            WorldStageTimings.enable(false);
+            WorldStageTimings.reset();
+        }
+    }
+
+    @Test
+    void stageTimingsStayEmptyWhenDisabled() {
+        WorldStageTimings.reset();
+        WorldStageTimings.enable(false);
+        try (var f = new Fixture(List.of(new Modf(ROOT, 77, 0, 100, 20, 300, 0, 90, 0, 1024)));
+                var set = f.run()) {
+            set.tallyCounts();
+            assertTrue(WorldStageTimings.snapshot().series().isEmpty());
+        }
+    }
 
     @Test
     void multiPlacementMultiGroupExteriorSetSharesOneModelAndKeepsAdtTransforms() {

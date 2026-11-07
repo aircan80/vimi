@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.formats.world.WorldStageTimings;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -66,6 +67,9 @@ final class WorldStreamSession {
     private WorldStreamControl.Command decodedCommand, deferred;
     private WorldStreamControl.Camera camera;
     private BgfxWorldStreamRenderer.Upload upload;
+    // Opt-in measurement only (-Dvimi.world.stageTimings); stamps are 0 while it is off.
+    private final WorldStageTimingsDump timingsDump = WorldStageTimingsDump.configured();
+    private long uploadStarted, lateStarted;
     private WorldStreamTileFile.Header uploadHeader;
     private int issued, released;
     private boolean staged, cancelAcknowledgement;
@@ -191,11 +195,15 @@ final class WorldStreamSession {
                     if (window != null) {
                         stepWithinFrameBudget(owner); // #381 spike
                     } else if (upload != null && !upload.finished()) {
+                        long stepping = WorldStageTimings.start();
                         owner.step(upload);
+                        WorldStageTimings.stop("child.tile.uploadStep", stepping);
                         reconcile();
                     } else if (lateUpload != null && !lateUpload.ready()) {
                         // Terrain keeps priority: late object slices use only idle iterations.
+                        long stepping = WorldStageTimings.start();
                         owner.stepLate(lateUpload);
+                        WorldStageTimings.stop("child.objects.uploadStep", stepping);
                     } else if (owner.horizonUploading()) {
                         // The horizon uploads after terrain and late objects, in bounded steps.
                         owner.stepHorizon();
@@ -217,6 +225,7 @@ final class WorldStreamSession {
                     finishUpload();
                     finishLate(owner);
                     advertiseCredit();
+                    timingsDump.maybeWrite(now);
                     if (window == null) {
                         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
                     } // Native presentation: advance() paces itself on the display.
@@ -259,6 +268,7 @@ final class WorldStreamSession {
             requestClose();
             throw error;
         } finally {
+            timingsDump.write();
             requestClose();
             decoderCanceled.set(true);
             objectsCanceled.set(true);
@@ -523,7 +533,9 @@ final class WorldStreamSession {
                                 WorldStreamObjectsFile.Identity.of(header),
                                 header.objects(),
                                 canceled);
+                long packing = WorldStageTimings.start();
                 objects = WorldStreamPackedObjects.pack(data, canceled);
+                WorldStageTimings.stop("child.objects.pack", packing);
                 state = 1;
             } catch (java.util.concurrent.CancellationException stopped) {
                 payload.close();
@@ -538,7 +550,10 @@ final class WorldStreamSession {
                 state = 2;
             }
         }
-        return WorldStreamPackedTile.prepare(payload, objects, state, canceled);
+        long packing = WorldStageTimings.start();
+        var packed = WorldStreamPackedTile.prepare(payload, objects, state, canceled);
+        WorldStageTimings.stop("child.tile.pack", packing);
+        return packed;
     }
 
     /**
@@ -754,7 +769,10 @@ final class WorldStreamSession {
                                 tileY),
                         new WorldStreamObjectsFile.Reference(command.length(), command.sha256()),
                         canceled);
-        return WorldStreamPackedObjects.pack(data, canceled);
+        long packing = WorldStageTimings.start();
+        var packed = WorldStreamPackedObjects.pack(data, canceled);
+        WorldStageTimings.stop("child.objects.pack", packing);
+        return packed;
     }
 
     private void completeObjectsDecode(WorldStreamNativeOwner owner) {
@@ -785,6 +803,7 @@ final class WorldStreamSession {
         }
         // The renderer takes the packed input; a generation it no longer holds is born dropped.
         lateUpload = owner.beginLate(command.lease(), result.objects());
+        lateStarted = WorldStageTimings.start();
     }
 
     private void finishLate(WorldStreamNativeOwner owner) {
@@ -793,6 +812,7 @@ final class WorldStreamSession {
         }
         var command = objectsCommand;
         var outcome = owner.finishLate(lateUpload, state.objectsLive(command.lease()));
+        WorldStageTimings.stop("child.objects.uploadWall", lateStarted);
         lateUpload = null;
         retireObjects(command, outcome == WorldStreamStatus.LateOutcome.ATTACHED);
         sendObjects(command, outcome);
@@ -888,6 +908,7 @@ final class WorldStreamSession {
                     } else {
                         uploadHeader = result.header();
                         upload = admitted.upload();
+                        uploadStarted = WorldStageTimings.start();
                         issued = released = 0;
                         staged = false;
                     }
@@ -1059,6 +1080,7 @@ final class WorldStreamSession {
                 throw new IllegalStateException("Native upload staged outside its credit");
             }
             staged = true;
+            WorldStageTimings.stop("child.tile.uploadWall", uploadStarted);
             int covered = 0;
             for (long word : uploadHeader.coverage()) {
                 covered += Long.bitCount(word);
