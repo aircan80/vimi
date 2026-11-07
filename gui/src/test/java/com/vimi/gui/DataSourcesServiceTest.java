@@ -196,6 +196,14 @@ public final class DataSourcesServiceTest {
                 service.setChecks(DataSourcesService.Id.TACT_KEYS, DataSourcesService.Checks.DAILY).join();
             } finally { service.closeAsync().join(); }
             new SourcePreferences(library.databasePath()).put("attempt.TACT_KEYS", java.time.Instant.EPOCH.toString());
+            // Measurement opens schedule no provider check, even one that is overdue.
+            service = DataSourcesService.open(library.databasePath(), directory.resolve("questie"), names, catalog, client, owner, owner,
+                    null, null, com.vibeminer.activity.TransferObserver.NONE, false);
+            try {
+                int before = calls.get();
+                Thread.sleep(1_500);
+                require(calls.get() == before, "No scheduled check without scheduled checks");
+            } finally { service.closeAsync().join(); }
             service = DataSourcesService.open(library.databasePath(), directory.resolve("questie"), names, catalog, client, owner, owner);
             try {
                 int before = calls.get();
