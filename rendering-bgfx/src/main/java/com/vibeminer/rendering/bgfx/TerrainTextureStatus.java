@@ -1,6 +1,10 @@
 package com.vibeminer.rendering.bgfx;
 
-/** Fixed, bounded acknowledgement of optional native terrain atlas upload, before first READY. */
+/**
+ * Fixed, bounded acknowledgement of optional native terrain atlas upload, before first READY.
+ * {@code totalRects} counts drawable rectangles: every scene rectangle except those an uploaded
+ * atlas marks as having nothing to draw (no texture layers).
+ */
 public record TerrainTextureStatus(
         State state,
         int activeAtlases,
@@ -31,24 +35,33 @@ public record TerrainTextureStatus(
                 || sceneTiles > 9
                 || activeAtlases < 0
                 || activeAtlases > sceneTiles
-                || totalRects != sceneTiles * 256
+                || totalRects > sceneTiles * 256
+                || totalRects < sceneTiles * 256 - activeAtlases * 255
                 || coveredRects < activeAtlases
                 || coveredRects > activeAtlases * 256
-                || state != state(activeAtlases, sceneTiles, coveredRects)
+                || coveredRects > totalRects
+                || state != state(activeAtlases, sceneTiles, coveredRects, totalRects)
                 || state == State.READY && code != Code.NONE) {
             throw new IllegalArgumentException("Invalid terrain texture acknowledgement");
         }
     }
 
     public static TerrainTextureStatus of(int active, int tiles, int covered, Code code) {
-        return new TerrainTextureStatus(
-                state(active, tiles, covered), active, tiles, covered, tiles * 256, code);
+        return of(active, tiles, covered, 0, code);
     }
 
-    private static State state(int active, int tiles, int covered) {
+    /** {@code empty}: rectangles of uploaded atlases that have nothing to draw. */
+    public static TerrainTextureStatus of(
+            int active, int tiles, int covered, int empty, Code code) {
+        int total = tiles * 256 - empty;
+        return new TerrainTextureStatus(
+                state(active, tiles, covered, total), active, tiles, covered, total, code);
+    }
+
+    private static State state(int active, int tiles, int covered, int total) {
         return active == 0
                 ? State.UNAVAILABLE
-                : active == tiles && covered == tiles * 256 ? State.READY : State.PARTIAL;
+                : active == tiles && covered == total ? State.READY : State.PARTIAL;
     }
 
     public String protocolLine() {
