@@ -1,6 +1,7 @@
 package com.vibeminer.concepts.world;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -243,6 +244,47 @@ final class WorldSkyTablesTest {
             var sky = WorldSky.load(tables, Cancellation.NONE);
             assertTrue(sky.sourceIssues().stream().anyMatch(i -> i.startsWith("Map fixed times")));
             assertEquals(0, sky.at(1, 0, 0, 0, 0).time());
+        }
+    }
+
+    @Test
+    void aWorkspaceSharesOneSkyLoadAndRetriesAFailedOne() throws Exception {
+        var good = open(tables(TableTypes.State.READY));
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        // The first table read fails; every later one is the authored tables'.
+        var flaky =
+                (BuildTables)
+                        java.lang.reflect.Proxy.newProxyInstance(
+                                WorldSkyTablesTest.class.getClassLoader(),
+                                new Class<?>[] {BuildTables.class},
+                                (proxy, method, args) ->
+                                        method.getName().equals("schema")
+                                                        && calls.getAndIncrement() == 0
+                                                ? java.util.concurrent.CompletableFuture
+                                                        .failedFuture(
+                                                                new IllegalStateException("busy"))
+                                                : method.invoke(good, args));
+        var world = new WorldService(flaky, null);
+        try {
+            var failed = world.skyIndex(new Cancellation());
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> failed.get(10, java.util.concurrent.TimeUnit.SECONDS));
+            // The failure is not cached, and a caller that is already cancelled cannot fail the
+            // shared load: it belongs to the workspace.
+            var caller = new Cancellation();
+            caller.cancel();
+            var loaded = world.skyIndex(caller).get(10, java.util.concurrent.TimeUnit.SECONDS);
+            // The authored tables are partial by design; the load itself succeeded.
+            assertTrue(loaded.at(0, 0, 0, 0, 0).state() != WorldSky.State.UNAVAILABLE);
+            assertSame(
+                    loaded,
+                    world.skyIndex(new Cancellation())
+                            .get(10, java.util.concurrent.TimeUnit.SECONDS),
+                    "a successful load is shared");
+        } finally {
+            world.closeAsync().get(10, java.util.concurrent.TimeUnit.SECONDS);
+            good.closeAsync().join();
         }
     }
 }

@@ -1301,6 +1301,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                             }
                             if (streaming != null) streaming.pulse();
                             streamingSizePulse();
+                            // The recorded sky follows the clock even with a still camera.
+                            if (streaming != null && streaming.skyStale()) streamCamera();
                             if (nativeSurface.attached() && nativeSurface.pulse(viewportActive(), now)
                                     == WorldNativeSurface.Pulse.FAILED) {
                                 nativeFallback("the presentation window could not be placed");

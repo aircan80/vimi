@@ -1016,3 +1016,11 @@ tasks.register('worldAudioZoneChangeProbe', JavaExec) {
     systemProperty 'vimi.audioFixture',
             rootProject.file('formats-audio/src/test/resources/audio/authored-tone.ogg').path
 }
+
+// Recorded sky and fog mixed into the World look (#177-2a); pure, no display.
+tasks.register('worldSkyLookTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldSkyLookTest'
+}
+tasks.named('check') { dependsOn tasks.named('worldSkyLookTest') }
