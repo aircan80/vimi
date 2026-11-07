@@ -948,15 +948,20 @@ final class WorldStreamObjectsFileTest {
         var origin = new TerrainScene.Origin(0, 0, 0);
         try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
             var frame = BgfxWorldStreamRenderer.ObjectFrame.on(stack, false);
+            // Instance rows go to bgfx's transient instance data (#382); a reused buffer stands in.
+            var rows =
+                    java.nio.ByteBuffer.allocateDirect(WorldObjectInstances.STRIDE)
+                            .order(java.nio.ByteOrder.nativeOrder());
             long pointer = stack.getPointer();
             for (int pass = 0; pass < 2; pass++) {
                 for (int p = 0; p < placements; p++) {
-                    frame.placement(table, p, origin);
+                    rows.clear();
+                    WorldObjectInstances.put(table, p, origin, rows);
                     frame.material(p % 3);
                     assertEquals(pointer, stack.getPointer(), "placement " + p);
                 }
             }
-            assertEquals((float) p(table, placements - 1), frame.model.get(12));
+            assertEquals((float) p(table, placements - 1), rows.getFloat(12));
             assertEquals(0.5f, frame.material(WorldStreamObjectsFile.CUTOUT).get(0));
             assertEquals(1f, frame.material(WorldStreamObjectsFile.BLENDED).get(1));
         }

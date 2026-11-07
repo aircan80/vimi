@@ -45,6 +45,26 @@ final class Dx11InstanceInputSignatureTest {
                         "/com/vibeminer/rendering/bgfx/shaders/world-stream/dx11/vs_model.bin"));
     }
 
+    /**
+     * The World object shader (world-wmo, hot and cold passes) reads its per-instance transform
+     * (#382) from bgfx's D3D11 instance semantics, next to the per-vertex position, normal, UV and
+     * MOCV colour.
+     */
+    @org.junit.jupiter.api.Test
+    void worldObjectsReadInstanceTransformsFromBgfxD3dSemantics() throws IOException {
+        assertEquals(
+                Set.of(
+                        "POSITION0",
+                        "NORMAL0",
+                        "TEXCOORD0",
+                        "COLOR0",
+                        "TEXCOORD31",
+                        "TEXCOORD30",
+                        "TEXCOORD29"),
+                dx11VertexInputs(
+                        "/com/vibeminer/rendering/bgfx/shaders/world-wmo/dx11/vs_model.bin"));
+    }
+
     static Set<String> dx11VertexInputs(String resource) throws IOException {
         byte[] bytes;
         try (var input = Dx11InstanceInputSignatureTest.class.getResourceAsStream(resource)) {

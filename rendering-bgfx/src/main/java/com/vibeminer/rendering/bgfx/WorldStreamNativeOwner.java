@@ -89,6 +89,20 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     /** Reset flags: no back buffer; anisotropic samplers use the device maximum (issue #357). */
     static final int RESET_FLAGS = org.lwjgl.bgfx.BGFX.BGFX_RESET_MAXANISOTROPY;
 
+    /**
+     * The transient vertex budget (#382): bgfx's default, raised when needed to hold a whole frame
+     * of object instance data at the caps ({@link
+     * BgfxWorldStreamRenderer#MAX_FRAME_INSTANCE_BYTES}) plus 1 MiB for anything else that uses
+     * transient vertices.
+     */
+    static int transientVertexBytes(int bgfxDefault) {
+        return transientVertexBytes(bgfxDefault, BgfxWorldStreamRenderer.MAX_FRAME_INSTANCE_BYTES);
+    }
+
+    static int transientVertexBytes(int bgfxDefault, int frameInstanceBytes) {
+        return Math.max(bgfxDefault, Math.addExact(frameInstanceBytes, 1 << 20));
+    }
+
     /** Samples of the World render target when the device can multisample it. */
     static final int MSAA_SAMPLES = 4;
 
@@ -186,6 +200,11 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 var init = BGFXInit.calloc(stack);
                 bgfx_init_ctor(init);
                 init.type(backend).fallback(false);
+                // Room for a frame of object instance data at the caps (#382), on top of bgfx's
+                // default transient budget, whichever way the context presents.
+                init.limits()
+                        .maxTransientVbSize(
+                                transientVertexBytes(init.limits().maxTransientVbSize()));
                 // Offscreen context only; one-frame command latency is explicitly qualified by
                 // proof.
                 if (window != null) {
@@ -742,8 +761,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     /**
      * What the CPU cull kept and skipped in the frame just submitted (opt-in only), so a change in
      * {@code child.frame.draws} can be told apart from a change in what was resident: exterior
-     * placements tested and culled, object submits, terrain chunk runs tested and culled, and
-     * terrain submits.
+     * placements tested and culled, object submits, terrain chunk runs tested and culled, terrain
+     * submits, and object instances drawn and dropped (#382).
      */
     static void cullCounts(BgfxWorldStreamRenderer.FrameCounts counts) {
         WorldStageTimings.value("child.frame.placements", counts.placements());
@@ -752,6 +771,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         WorldStageTimings.value("child.frame.terrainChunks", counts.chunks());
         WorldStageTimings.value("child.frame.terrainChunksCulled", counts.chunksCulled());
         WorldStageTimings.value("child.frame.terrainSubmits", counts.terrainSubmits());
+        WorldStageTimings.value("child.frame.instances", counts.instances());
+        WorldStageTimings.value("child.frame.instancesDropped", counts.instancesDropped());
     }
 
     /** bgfx's statistics of the frame just rendered, after a frame that drew (opt-in only). */
@@ -851,6 +872,18 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     void objectCulling(boolean enabled) {
         requireOpen();
         renderer.objectCulling(enabled);
+    }
+
+    /** Proof seam only: see {@link BgfxWorldStreamRenderer#objectInstancing}. */
+    void objectInstancing(boolean enabled) {
+        requireOpen();
+        renderer.objectInstancing(enabled);
+    }
+
+    /** Proof seam only: see {@link BgfxWorldStreamRenderer#instanceLimit}. */
+    void instanceLimit(int limit) {
+        requireOpen();
+        renderer.instanceLimit(limit);
     }
 
     Stats stats() {
