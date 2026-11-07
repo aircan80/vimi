@@ -15,8 +15,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * worker whenever the camera tile or the set of resident full-detail tiles changes. The render
  * thread only asks for a rebuild and takes a finished one, so it never waits for a build.
  *
- * <p>Vertices use the terrain mesh layout (float position, RGBA8 colour; 16 bytes). Colour is a
- * plain earth tone lit by the surface slope; the shared fog does the rest.
+ * <p>Vertices use the terrain mesh layout and its shared program ({@link #VERTEX_BYTES}, the stride
+ * of {@link WorldStreamPackedTile#VERTEX_BYTES}): float position, then the RGBA8 colour, a plain
+ * earth tone lit here by the surface slope; no MCCV (all zero); and the unlit normal marker, so the
+ * terrain light (#373) leaves the colour as it is. The shared fog does the rest.
  */
 final class WorldStreamHorizon implements AutoCloseable {
     /** Tiles around the camera tile: a 13 x 13 window, at most 169 tiles. */
@@ -31,10 +33,17 @@ final class WorldStreamHorizon implements AutoCloseable {
     static final int MAX_INDICES = (2 * RADIUS + 1) * (2 * RADIUS + 1) * (1024 + 128) * 3;
 
     /**
+     * Bytes per horizon vertex: the terrain mesh layout's stride (#560). The horizon's buffers are
+     * created with that layout, so a vertex of any other size would be read at the wrong stride.
+     */
+    static final int VERTEX_BYTES = 24;
+
+    /**
      * The horizon's fixed GPU budget: two buffer sets, one drawn while the next build uploads in
      * bounded steps into the other.
      */
-    static final long GPU_BUDGET_BYTES = 2 * (MAX_VERTICES * 16L + MAX_INDICES * 4L);
+    static final long GPU_BUDGET_BYTES =
+            2 * ((long) MAX_VERTICES * VERTEX_BYTES + MAX_INDICES * 4L);
 
     /** Most bytes one upload step issues, so a rebuild never takes a frame's upload budget. */
     static final int STEP_BYTES = 512 << 10;
@@ -243,7 +252,8 @@ final class WorldStreamHorizon implements AutoCloseable {
                 normals[v * 3 + 2] += nz;
             }
         }
-        var vertexBytes = ByteBuffer.allocateDirect(vertices * 16).order(ByteOrder.nativeOrder());
+        var vertexBytes =
+                ByteBuffer.allocateDirect(vertices * VERTEX_BYTES).order(ByteOrder.nativeOrder());
         for (int v = 0; v < vertices; v++) {
             float nx = normals[v * 3], ny = normals[v * 3 + 1], nz = normals[v * 3 + 2];
             double length = Math.sqrt(nx * nx + ny * ny + nz * nz);
@@ -260,6 +270,13 @@ final class WorldStreamHorizon implements AutoCloseable {
                 vertexBytes.put((byte) Math.min(255, Math.round(channel * light)));
             }
             vertexBytes.put((byte) 255);
+            // No MCCV, and the unlit marker: the slope light above is the horizon's only light.
+            vertexBytes.putInt(0);
+            vertexBytes
+                    .put(WorldStreamPackedTile.UNLIT_NORMAL)
+                    .put(WorldStreamPackedTile.UNLIT_NORMAL)
+                    .put(WorldStreamPackedTile.UNLIT_NORMAL)
+                    .put((byte) 255);
         }
         var indexBytes = ByteBuffer.allocateDirect(indexCount * 4).order(ByteOrder.nativeOrder());
         for (int i = 0; i < indexCount; i++) {

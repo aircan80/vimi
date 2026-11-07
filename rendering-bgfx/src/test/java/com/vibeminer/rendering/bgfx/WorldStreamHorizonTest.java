@@ -81,11 +81,13 @@ class WorldStreamHorizonTest {
             // The whole window: which tiles are drawn at full detail is chosen per frame.
             assertEquals(169, first.tiles());
             assertEquals(169 * (1024 + 128), first.indexCount() / 3);
-            assertEquals(first.vertexCount() * 16, first.vertices().remaining());
+            assertEquals(
+                    first.vertexCount() * WorldStreamHorizon.VERTEX_BYTES,
+                    first.vertices().remaining());
             assertEquals(first.indexCount() * 4, first.indices().remaining());
             assertTrue(first.vertexCount() <= WorldStreamHorizon.MAX_VERTICES);
             assertTrue(first.indexCount() <= WorldStreamHorizon.MAX_INDICES);
-            assertTrue(WorldStreamHorizon.GPU_BUDGET_BYTES < 8 << 20);
+            assertTrue(WorldStreamHorizon.GPU_BUDGET_BYTES < 10 << 20);
             System.out.printf(
                     "Horizon rebuild: %d tiles, %d vertices, %d triangles, %.1f ms%n",
                     first.tiles(),
@@ -103,10 +105,20 @@ class WorldStreamHorizonTest {
         }
     }
 
+    /**
+     * #560: the horizon is uploaded into buffers made with the terrain mesh layout, so its vertices
+     * must be exactly that layout's size. A layout change fails here, not only in a GPU proof.
+     */
+    @Test
+    void horizonVerticesAreTheTerrainMeshLayoutsStride() {
+        assertEquals(WorldStreamPackedTile.VERTEX_BYTES, WorldStreamHorizon.VERTEX_BYTES);
+    }
+
     @Test
     void theHorizonIsOneFixedBudgetLineBesideThePerSlotTerrainBudgets() {
-        // One double-buffered allocation for the session, whatever the view distance: 7.6 MiB.
-        assertEquals(7_987_616, WorldStreamHorizon.GPU_BUDGET_BYTES);
+        // One double-buffered allocation for the session, whatever the view distance: 9.2 MiB
+        // with the terrain mesh's 24-byte vertices (#560).
+        assertEquals(9_645_168, WorldStreamHorizon.GPU_BUDGET_BYTES);
         long perSlot = WorldStreamPackedTile.MAX_GEOMETRY_BYTES + WorldStreamAtlasMips.CHAIN_BYTES;
         long far = WorldStreamTransport.ViewDistance.FAR.slots() * perSlot;
         // Under three terrain slots, and about a tenth of the FAR terrain total (78.2 MB).
@@ -181,11 +193,19 @@ class WorldStreamHorizonTest {
             // The kept build is centred on the last request: every vertex within the window.
             var vertices = last.vertices().duplicate().order(ByteOrder.nativeOrder());
             double limit = (WorldStreamHorizon.RADIUS + 1) * WorldFormats.TILE_SIZE;
+            int stride = WorldStreamHorizon.VERTEX_BYTES;
             for (int v = 0; v < last.vertexCount(); v++) {
-                float x = vertices.getFloat(v * 16), y = vertices.getFloat(v * 16 + 4);
+                float x = vertices.getFloat(v * stride), y = vertices.getFloat(v * stride + 4);
                 assertTrue(Math.abs(x - centre(36)) <= limit, "x " + x);
                 assertTrue(Math.abs(y - centre(32)) <= limit, "y " + y);
-                assertEquals((byte) 255, vertices.get(v * 16 + 15));
+                assertEquals((byte) 255, vertices.get(v * stride + 15));
+                // No MCCV, and the unlit normal marker: terrain lighting leaves the horizon as is.
+                assertEquals(0, vertices.getInt(v * stride + 16), "MCCV of vertex " + v);
+                for (int n = 0; n < 3; n++) {
+                    assertEquals(
+                            WorldStreamPackedTile.UNLIT_NORMAL, vertices.get(v * stride + 20 + n));
+                }
+                assertEquals((byte) 255, vertices.get(v * stride + 23));
             }
         }
         assertEquals(32, WorldStreamHorizon.tileOf(centre(32)));
