@@ -362,8 +362,11 @@ class WorldExteriorObjectsTest {
             assertEquals(1, snapshot.get("objects.tile.total").count());
             int buildingModels = 0, doodadModels = 0;
             for (var model : set.models()) {
-                if (model.doodad()) doodadModels++;
-                else buildingModels++;
+                if (model.doodad()) {
+                    doodadModels++;
+                } else {
+                    buildingModels++;
+                }
             }
             assertEquals(buildingModels, snapshot.get("objects.models.buildingsPerTile").sum());
             assertEquals(doodadModels, snapshot.get("objects.models.doodadsPerTile").sum());
