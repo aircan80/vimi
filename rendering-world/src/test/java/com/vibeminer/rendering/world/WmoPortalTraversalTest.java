@@ -243,6 +243,27 @@ class WmoPortalTraversalTest {
     }
 
     @Test
+    void anAllInteriorWmoSeenFromOutsideEveryBoxShowsEveryGroup() {
+        // Two interior rooms and one door, no exterior group (the usual instance WMO), the camera
+        // outside both boxes: nothing would start the walk, so every group is visible rather than
+        // none, and the caller's own culling decides what is drawn.
+        var groups =
+                List.of(
+                        room(0, WmoPortalTraversal.INTERIOR, 0, 1),
+                        room(10, WmoPortalTraversal.INTERIOR, 1, 1));
+        var t =
+                WmoPortalTraversal.of(
+                        groups,
+                        List.of(door(10, -1, 1)),
+                        List.of(new Ref(0, B, -1), new Ref(0, A, 1)));
+        var result = t.visible(-5, 0, 1, looking(1, -5, 0, 1));
+        assertFalse(result.inside());
+        assertEquals(List.of(A, B), visible(t, 1, -5, 0, 1));
+        // Above the building, looking away from it: still every group.
+        assertEquals(List.of(A, B), visible(t, -1, 5, 0, 50));
+    }
+
+    @Test
     void rangesOutsideTheRecordedPortalsAreRefused() {
         var portals = List.of(door(10, -1, 1));
         assertThrows(

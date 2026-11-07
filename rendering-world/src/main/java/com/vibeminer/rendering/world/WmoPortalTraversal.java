@@ -11,11 +11,12 @@ import java.util.List;
  * in WMO-local axes; the caller transforms the camera and its frustum into them.
  *
  * <p>The walk starts from every interior group whose bounding box holds the camera, or, when there
- * is none, from every exterior group; the start groups are visible. From each group it follows that
- * group's MOPR references: a portal is passable when the camera is on the referencing group's side
- * of it and the portal polygon is not outside the current frustum; the group behind it is visible
- * and is walked with the frustum narrowed to the portal's edges. Groups reached by no portal are
- * not visible.
+ * is none, from every exterior group; the start groups are visible. When neither exists (an
+ * all-interior WMO seen from outside every group box) every group is visible. From each group it
+ * follows that group's MOPR references: a portal is passable when the camera is on the referencing
+ * group's side of it and the portal polygon is not outside the current frustum; the group behind it
+ * is visible and is walked with the frustum narrowed to the portal's edges. Groups reached by no
+ * portal are not visible.
  *
  * <p>Every approximation errs toward drawing more, never toward hiding a room the camera is in or
  * looks into. Pinned conventions and approximations (no per-WMO cases):
@@ -284,6 +285,12 @@ public final class WmoPortalTraversal {
                     tail = enter(g, List.of(), visible, tail);
                 }
             }
+        }
+        if (tail == 0) {
+            // No interior box holds the camera and there is no exterior group (an all-interior
+            // WMO seen from outside every box): every group is visible, never none.
+            visible.set(0, groups.size());
+            return false;
         }
         while (head < tail) {
             int at = head++;
