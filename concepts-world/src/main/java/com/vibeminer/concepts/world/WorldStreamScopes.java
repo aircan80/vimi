@@ -958,7 +958,9 @@ final class WorldStreamScopes {
          * on its behalf.
          */
         void cancelPrefetch() {
-            check();
+            // Only the thread check: this runs in a finally after the root read, and a canceled
+            // lane must neither replace that read's own exception nor skip the withdrawal.
+            checkThread();
             if (prefetcher != null) {
                 prefetcher.cancelAll();
             }
@@ -995,7 +997,15 @@ final class WorldStreamScopes {
                     // its numbers compare with runs without read-ahead. The series count is the
                     // number of hits. A miss falls through to an ordinary, timed read.
                     long waiting = WorldStageTimings.start();
-                    source = Prefetcher.await(prefetched);
+                    // The taken read has left the set the operation's cancel hook reaches, so
+                    // link it to the operation here: a cancel interrupts the wait as it would the
+                    // serial read, and the fallback read below then refuses at once.
+                    var linked = token.onCancel(prefetched.cancel::cancel);
+                    try {
+                        source = Prefetcher.await(prefetched.future);
+                    } finally {
+                        linked.close();
+                    }
                     if (source != null && waiting != 0L) {
                         WorldStageTimings.stop("source.prefetchWait." + profile.name(), waiting);
                     }
@@ -1131,12 +1141,13 @@ final class WorldStreamScopes {
         /**
          * The started read of exactly this hint, now owned by the caller, or null when the caller
          * reads it itself (never hinted, or hinted and not yet started). Every earlier hint is
-         * dropped: the consumer has passed it.
+         * dropped: the consumer has passed it. The operation's cancel hook no longer reaches the
+         * returned read, so the caller links its cancellation for as long as it waits.
          */
-        CompletableFuture<Source> take(long id, DerivedKind kind) {
+        Started take(long id, DerivedKind kind) {
             var key = new Key(id, kind);
             var dropped = new ArrayList<Started>();
-            CompletableFuture<Source> result = null;
+            Started result = null;
             synchronized (this) {
                 long order = -1;
                 var mine = started.get(key);
@@ -1166,7 +1177,7 @@ final class WorldStreamScopes {
                 if (mine != null) {
                     started.remove(key);
                     heldBytes -= mine.held;
-                    result = mine.future;
+                    result = mine;
                 }
                 pump();
             }

@@ -3443,6 +3443,9 @@ class WorldExteriorObjectsTest {
         final AtomicInteger open = new AtomicInteger(), peak = new AtomicInteger();
         final AtomicInteger groupOpens = new AtomicInteger();
         volatile java.util.function.IntConsumer onGroupOpen = ignored -> {};
+        // Sees each group open with the cancellation its read was given.
+        volatile java.util.function.BiConsumer<Integer, Cancellation> onGroupOpenWith =
+                (opened, cancel) -> {};
         volatile long delay = 20;
 
         @Override
@@ -3453,6 +3456,7 @@ class WorldExteriorObjectsTest {
             }
             int opened = groupOpens.incrementAndGet();
             onGroupOpen.accept(opened);
+            onGroupOpenWith.accept(opened, cancel);
             peak.accumulateAndGet(open.incrementAndGet(), Math::max);
             try {
                 Thread.sleep(delay);
@@ -3573,6 +3577,66 @@ class WorldExteriorObjectsTest {
                 WorldStageTimings.reset();
             }
         }
+    }
+
+    @Test
+    void cancelingTheOperationInterruptsAReadAheadItIsWaitingOnAsFastAsASerialRead() {
+        long[] elapsed = new long[2];
+        for (boolean ahead : new boolean[] {false, true}) {
+            var files = new SlowGroups();
+            var token = new Cancellation();
+            var canceler = new java.util.concurrent.atomic.AtomicReference<Thread>();
+            // The first group's open stalls until its own read is canceled (3 s safety cap); the
+            // operation is canceled 200 ms after that open starts.
+            files.onGroupOpenWith =
+                    (opened, cancel) -> {
+                        if (opened != 1) {
+                            return;
+                        }
+                        canceler.set(
+                                Thread.ofVirtual()
+                                        .start(
+                                                () -> {
+                                                    try {
+                                                        Thread.sleep(200);
+                                                    } catch (InterruptedException interrupted) {
+                                                        return;
+                                                    }
+                                                    token.cancel();
+                                                }));
+                        long cap = System.nanoTime() + 3_000_000_000L;
+                        while (!cancel.isCanceled() && System.nanoTime() < cap) {
+                            try {
+                                Thread.sleep(2);
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                return;
+                            }
+                        }
+                    };
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+                f.files.sources.put(ROOT, root(manyGroups(files, 12)));
+                WorldStreamScopes.Prefetcher.enabled = ahead;
+                long started = System.nanoTime();
+                try {
+                    assertThrows(
+                            CancellationException.class,
+                            () -> WorldExteriorObjects.prepare(f.engine, f.scope, TILE, token));
+                } finally {
+                    WorldStreamScopes.Prefetcher.enabled = true;
+                }
+                elapsed[ahead ? 1 : 0] = (System.nanoTime() - started) / 1_000_000;
+                assertEquals(0, files.open.get(), "no read is left open");
+            } finally {
+                var thread = canceler.get();
+                if (thread != null) {
+                    thread.interrupt();
+                }
+            }
+        }
+        // Without the link a taken read-ahead waits out its stalled open (the 3 s cap).
+        assertTrue(elapsed[0] < 1500, "serial cancel took " + elapsed[0] + " ms");
+        assertTrue(elapsed[1] < 1500, "read-ahead cancel took " + elapsed[1] + " ms");
     }
 
     @Test

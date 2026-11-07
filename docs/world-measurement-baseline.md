@@ -219,6 +219,11 @@ SHA and the IPC round trips together cost under 100 ms per tile. Two conclusions
 | `child.objects.uploadWall` p50 | 201 ms | 200 ms |
 | `parent.objects.attachRoundTrip` p50 | 239 ms | 235 ms |
 
+With read-ahead on, `source.read.*` no longer covers all exterior source time: a read-ahead
+hit is recorded under `source.prefetchWait.*` instead. To compare with the sum above, add
+`source.prefetchWait.BASIC_EXTERIOR` to `source.read.BASIC_EXTERIOR`. Even then a hit counts
+only the wait, not the overlapped read.
+
 **Reading:** 84-86% of objects prep is waiting on about 190 source reads per tile, one at a time.
 Decode, parse, mips and assembly add up to under 0.5 s for nine tiles. Two consequences:
 - Decode-once BLP changes will barely move prep time.
