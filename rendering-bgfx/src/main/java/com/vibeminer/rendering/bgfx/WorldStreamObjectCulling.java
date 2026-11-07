@@ -102,6 +102,53 @@ final class WorldStreamObjectCulling {
     }
 
     /**
+     * Per range: the model-space centre x, y, z of the box around the vertices a blended range
+     * references (#552), the point its placement's blended ranges are depth sorted by. Other
+     * ranges, and a blended range with no indices, keep 0.
+     */
+    static float[] rangeCentres(
+            int[] meshes,
+            int[] ranges,
+            float[] vertices,
+            short[] indices,
+            java.util.function.BooleanSupplier canceled) {
+        int stride = WorldStreamObjectsFile.RANGE_INTS;
+        int floats = WorldStreamObjectsFile.VERTEX_FLOATS;
+        var result = new float[ranges.length / stride * 3];
+        for (int at = 0; at < meshes.length; at += 6) {
+            if (canceled.getAsBoolean()) {
+                throw new java.util.concurrent.CancellationException();
+            }
+            int vertexBase = meshes[at], indexBase = meshes[at + 2];
+            for (int r = meshes[at + 4]; r < meshes[at + 4] + meshes[at + 5]; r++) {
+                if (WorldStreamObjectsFile.kind(ranges[r * stride + 3])
+                        != WorldStreamObjectsFile.BLENDED) {
+                    continue;
+                }
+                double minX = Double.POSITIVE_INFINITY, minY = minX, minZ = minX;
+                double maxX = Double.NEGATIVE_INFINITY, maxY = maxX, maxZ = maxX;
+                int start = indexBase + ranges[r * stride];
+                int end = start + ranges[r * stride + 1];
+                for (int i = start; i < end; i++) {
+                    int v = (vertexBase + (indices[i] & 0xffff)) * floats;
+                    minX = Math.min(minX, vertices[v]);
+                    maxX = Math.max(maxX, vertices[v]);
+                    minY = Math.min(minY, vertices[v + 1]);
+                    maxY = Math.max(maxY, vertices[v + 1]);
+                    minZ = Math.min(minZ, vertices[v + 2]);
+                    maxZ = Math.max(maxZ, vertices[v + 2]);
+                }
+                if (minX <= maxX) {
+                    result[r * 3] = (float) ((minX + maxX) / 2);
+                    result[r * 3 + 1] = (float) ((minY + maxY) / 2);
+                    result[r * 3 + 2] = (float) ((minZ + maxZ) / 2);
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
      * Per placement: world center x, y, z and radius, applying its position, uniform scale and
      * row-major rotation (the same transform {@link BgfxWorldStreamRenderer#objectMatrices} draws)
      * to its model's sphere. A model without a sphere gives radius -1.
