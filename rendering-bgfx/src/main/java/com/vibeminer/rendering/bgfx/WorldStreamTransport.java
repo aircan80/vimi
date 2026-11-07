@@ -548,13 +548,13 @@ public final class WorldStreamTransport {
         }
 
         /**
-         * The capacity revision this reservation alone accounts for: the revision when it was
-         * issued plus its own retirement and drain changes up to its result. Once the result has
-         * completed, a session revision above this means capacity changed for some other reason
-         * since the reservation was issued, so a caller blocked by its refusal should retry.
+         * Whether capacity changed since this reservation was issued for a reason other than the
+         * reservation itself: its own drain and retirement and the CREDIT that returns its lease
+         * (which may land after its result) do not count. Read live, atomically with the session
+         * revision. A caller blocked by its refusal retries when this is true.
          */
-        public long capacityBaseline() {
-            return session.baseline(this);
+        public boolean capacityChangedElsewhere() {
+            return session.changedElsewhere(this);
         }
 
         public CompletableFuture<Resident> produce(PacketProducer producer) {
@@ -1547,9 +1547,10 @@ public final class WorldStreamTransport {
             }
         }
 
-        private long baseline(TileReservation reservation) {
+        private boolean changedElsewhere(TileReservation reservation) {
             synchronized (lock) {
-                return reservation.issuedCapacity + reservation.ownCapacityChanges;
+                return capacityRevision
+                        != reservation.issuedCapacity + reservation.ownCapacityChanges;
             }
         }
 
@@ -2281,7 +2282,26 @@ public final class WorldStreamTransport {
                                 rendererObjectsBudget();
                             }
                         }
-                        case CREDIT -> capacityChanged();
+                        case CREDIT -> {
+                            // The returned lease belongs to a reservation: count the change as its
+                            // own, so a refused reservation's unused credit is in its baseline
+                            // and cannot wake the retry it refused (#366 review).
+                            var credited = state.creditedTicket();
+                            TileReservation owner = null;
+                            synchronized (lock) {
+                                if (tile != null && tile.ticket == credited) {
+                                    owner = tile;
+                                } else if (previousTile != null
+                                        && previousTile.ticket == credited) {
+                                    owner = previousTile;
+                                }
+                            }
+                            if (owner == null) {
+                                capacityChanged();
+                            } else {
+                                capacityChanged(owner);
+                            }
+                        }
                         case IGNORED -> {}
                         default ->
                                 throw new IOException(

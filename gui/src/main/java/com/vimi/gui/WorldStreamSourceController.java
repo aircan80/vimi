@@ -290,7 +290,9 @@ final class WorldStreamSourceController {
     /** Wakes the controller when the source's geometry lane releases (#304). */
     private AutoCloseable geometryWake;
     private long sourceRetirementRevision, blockedSourceRetirement;
-    private long blockedCapacity = -1, blockedPresentation = -1, blockedDemand = -1;
+    private long blockedPresentation = -1, blockedDemand = -1;
+    /** Whether capacity moved for a reason other than the refused reservation (#283, #366). */
+    private java.util.function.BooleanSupplier blockedCapacityMoved = () -> true;
     /** Presentation and demand revisions as of this step's own reads (worker thread only). */
     private long stepPresentation, stepDemand;
     private volatile Throwable terminal;
@@ -871,8 +873,8 @@ final class WorldStreamSourceController {
                     var origin = pending.producer.sourceRefusal();
                     int failedTile = key(pending.tile);
                     var refusedTile = pending.tile;
-                    // Read while the refused reservation is still at hand (#283).
-                    long refusedCapacity = pending.reservation.capacityBaseline();
+                    // Kept while the refused reservation is still at hand (#283).
+                    var refusedReservation = pending.reservation;
                     // Revisions as of issue, read before the pending reservation is dropped (#305).
                     long issuedPresentation = pending.issuedPresentation, issuedDemand = pending.issuedDemand;
                     long issuedSourceRetirement = pending.issuedSourceRetirement;
@@ -924,16 +926,17 @@ final class WorldStreamSourceController {
                     var seam = tileRefusalSeam;
                     if (seam != null) seam.run();
                     blockedAt = clock.getAsLong();
-                    // The revision the refused reservation itself accounts for, not the current
-                    // one: a retirement or credit that landed after it was issued (even between
-                    // the refusal and this step) must still wake the retry (#283). The
-                    // reservation's own drain and retirement are excluded; its unused-credit
-                    // CREDIT arrives as an ordinary capacity change and wakes one retry per
-                    // refusal. A GEOMETRY_CREDIT refusal ignores capacity and instead waits on
-                    // the source's geometry release revision, so a busy lane is not polled (#304).
+                    // Capacity is judged against what the refused reservation itself accounts
+                    // for, read live: a retirement or credit from anything else that landed after
+                    // it was issued (even between the refusal and this step) still wakes the retry
+                    // (#283). The reservation's own drain, retirement and unused-credit CREDIT are
+                    // excluded, so a refusal never wakes itself (#366 review); with nothing else
+                    // moving, only the RETRY_NANOS deadline retries it. A GEOMETRY_CREDIT refusal
+                    // ignores capacity and instead waits on the source's geometry release
+                    // revision, so a busy lane is not polled (#304).
                     // Likewise presentation and demand: both are bumped on the FX thread, so the
                     // values sampled at issue are compared, never the ones current now (#305).
-                    blockedCapacity = refusedCapacity;
+                    blockedCapacityMoved = refusedReservation::capacityChangedElsewhere;
                     blockedPresentation = issuedPresentation;
                     blockedDemand = issuedDemand;
                     publish(Phase.WAITING_CAPACITY, "Waiting for streaming resource capacity");
@@ -1069,6 +1072,8 @@ final class WorldStreamSourceController {
                 geometry = blockedGeometry + 1;
             }
         }
+        // Read outside the lock: it takes the transport's lock, under which capacity listeners run.
+        boolean capacityMoved = blockedCapacityMoved.getAsBoolean();
         synchronized (lock) {
             // The geometry lane frees only on its own release; capacity and pixels don't help.
             if (blockedOnGeometry
@@ -1080,7 +1085,7 @@ final class WorldStreamSourceController {
                 return;
             }
             if (!blockedOnGeometry
-                    && (blockedOnMaterialPool || blockedCapacity == session.capacityRevision())
+                    && (blockedOnMaterialPool || !capacityMoved)
                     && (blockedOnMaterialPool
                             ? blockedSourceRetirement == sourceRetirementRevision
                             : blockedPresentation == presentationRevision)
