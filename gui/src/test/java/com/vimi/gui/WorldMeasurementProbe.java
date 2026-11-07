@@ -186,7 +186,8 @@ public final class WorldMeasurementProbe {
                                         System.getProperty("probe.build", "70790"),
                                         null,
                                         issue -> say("PROBE " + issue),
-                                        DEADLINE - System.nanoTime()));
+                                        DEADLINE - System.nanoTime(),
+                                        "creatures".equals(System.getProperty("probe.mode"))));
         try {
             BuildWorld handle = opened.world();
             var catalog =
@@ -416,6 +417,8 @@ public final class WorldMeasurementProbe {
                         + " spawns; issues "
                         + spawns.issues());
         try (var measured = busy(() -> opened.openCreatures(Cancellation.NONE))) {
+            say("PROBE creatures: lookup warmup issues " + measured.warmup());
+
             var npcs = new NpcAnswers(WorldTileCreatures.npcs(measured::races));
             var choices = new ChoiceReasons(WorldTileCreatures.chooser(measured::creatures));
             var tiles =
@@ -474,6 +477,29 @@ public final class WorldMeasurementProbe {
                         say(creatureLine(scenario, pass, done, area.size(), sum, began));
                     }
                 }
+                    // The Creature table as the chooser reads it: its state and row counts, through the
+                    // lookup of one NPC that was not qualified, so an all-absent result can be told apart
+                    // from an unreadable table.
+                    var first = choices.reasons.keySet().stream().sorted().findFirst();
+                    if (first.isPresent()) {
+                        var probeRow =
+                                measured.creatures()
+                                        .getData(
+                                                first.get(),
+                                                com.vibeminer.formats.tables.TableTypes.Priority.BACKGROUND,
+                                                Cancellation.NONE)
+                                        .join();
+                        var table = probeRow.creature();
+                        say(
+                                "PROBE creatures: Creature table "
+                                        + (table == null
+                                                ? "not resolved"
+                                                : table.state() + ", counts " + table.counts())
+                                        + "; NPC "
+                                        + first.get()
+                                        + " "
+                                        + probeRow.state());
+                    }
                 say("PROBE creatures: distinct NPC IDs not qualified " + choices.reasons.size());
                 for (var entry : choices.tally().entrySet())
                     say(

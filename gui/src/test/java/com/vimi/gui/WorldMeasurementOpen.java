@@ -162,6 +162,23 @@ final class WorldMeasurementOpen implements AutoCloseable {
             Consumer<String> say,
             long openNanos)
             throws Exception {
+        return open(directory, wanted, keys, say, openNanos, false);
+    }
+
+    /**
+     * As above; with {@code communityKeys} the work also uses the library's already-loaded
+     * community TACT keys (no refresh, no network), as a local build comparison does. The creature
+     * counts need them for the encrypted sections of the Creature table (#553); the other modes
+     * keep their baselines without them.
+     */
+    static WorldMeasurementOpen open(
+            Path directory,
+            String wanted,
+            com.vibeminer.network.TactKeyClient keys,
+            Consumer<String> say,
+            long openNanos,
+            boolean communityKeys)
+            throws Exception {
         long until = System.nanoTime() + Math.max(1, openNanos);
         var settled = new java.util.concurrent.CompletableFuture<Void>();
         var opening = BuildApplication.openWithoutBackgroundWork(directory, keys, settled);
@@ -193,13 +210,14 @@ final class WorldMeasurementOpen implements AutoCloseable {
                     new BuildInfo.RegionEvidence(
                             receipt.region(), receipt.cdnConfig(), false, null, null);
             var contexts = (NativePreparationContexts) service.preparation().factory();
+            var sources = service.dataSources();
+            var pinned =
+                    communityKeys && sources != null
+                            ? sources.tactKeys()
+                            : com.vibeminer.files.keys.TactKeys.EMPTY;
             work =
                     contexts.createLocalComparison(
-                            selection.build(),
-                            evidence,
-                            receipt.locale(),
-                            true,
-                            com.vibeminer.files.keys.TactKeys.EMPTY);
+                            selection.build(), evidence, receipt.locale(), true, pinned);
             var token = Cancellation.NONE;
             work.metadata(token);
             work.openFilesForMeasurement(token);

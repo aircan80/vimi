@@ -757,7 +757,13 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         if (open.creatures() == null)
             throw new IllegalStateException("Creatures " + open.code());
         try {
+            // As the workspace does before publishing: the creature lookups need their warmup.
+            var issues = new ArrayList<String>();
+            appendWarm(
+                    issues,
+                    open.creatures().warmup(TableTypes.Priority.BACKGROUND, token).join());
             return new MeasurementCreatures(
+                    issues,
                     open.creatures(),
                     new com.vibeminer.concepts.races.RacesService(tables, fileHandle, generated));
         } catch (RuntimeException | Error failure) {
@@ -768,7 +774,9 @@ public final class NativePreparationWork implements BuildPreparation.Work {
 
     /** Measurement creature and race handles; both close before the World's tables. */
     record MeasurementCreatures(
-            BuildCreatures creatures, com.vibeminer.concepts.races.BuildRaces races)
+            List<String> warmup,
+            BuildCreatures creatures,
+            com.vibeminer.concepts.races.BuildRaces races)
             implements AutoCloseable {
         @Override
         public void close() {
