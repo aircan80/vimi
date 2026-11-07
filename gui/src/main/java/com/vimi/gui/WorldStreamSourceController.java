@@ -65,6 +65,53 @@ final class WorldStreamSourceController {
         void changed();
     }
 
+    private volatile java.util.function.LongConsumer presentedListener;
+    private final java.util.concurrent.atomic.AtomicLong latestNative = new java.util.concurrent.atomic.AtomicLong();
+    // #381: the content the helper last reported presenting natively; -1 before any (lock).
+    private long nativeContent = -1;
+    private final java.util.concurrent.atomic.AtomicBoolean nativePosted = new java.util.concurrent.atomic.AtomicBoolean();
+
+    /**
+     * #381: a frame the helper presented into its child window for {@code camera} over content
+     * {@code content}. When that is the current committed content, it is accepted exactly like a
+     * presented readback frame (the current table becomes the presented one), so the phase
+     * reaches READY and capacity waiting on accepted pixels is relieved. The FX listener is told
+     * the latest camera, coalesced to one posted task at a time.
+     */
+    void presentedNatively(long camera, long content) {
+        boolean accepted;
+        synchronized (lock) {
+            // Kept: the helper presents one interval after COMMITTED and may report it before the
+            // worker has recorded the receipt; it never repeats it for a still camera.
+            nativeContent = content;
+            accepted = acceptNativeLocked();
+        }
+        if (accepted) kick();
+        latestNative.set(camera);
+        if (presentedListener != null && nativePosted.compareAndSet(false, true)) {
+            fxPost.accept(() -> {
+                nativePosted.set(false);
+                var listener = presentedListener;
+                if (listener != null) listener.accept(latestNative.get());
+            });
+        }
+    }
+
+    /** The current committed content revision, or -1 before the first commit; for tests. */
+    long currentContentRevision() {
+        synchronized (lock) {
+            return currentReceipt == null ? -1 : currentReceipt.contentRevision();
+        }
+    }
+
+    /**
+     * #381, native presentation: {@code listener} runs on the FX thread with the camera revision
+     * of each frame the helper presented into its window.
+     */
+    void onPresented(java.util.function.LongConsumer listener) {
+        presentedListener = listener;
+    }
+
     enum Phase {
         QUALIFYING,
         STARTING,
@@ -545,6 +592,25 @@ final class WorldStreamSourceController {
         kick();
     }
 
+    /**
+     * Under the lock: accepts the content the helper last reported presenting natively once it is
+     * the current receipt and drawable as readback pixels must be (see {@link #drawableLocked}).
+     * Rechecked when the report arrives, when a receipt is recorded and on every worker step.
+     */
+    private boolean acceptNativeLocked() {
+        if (closing || nativeContent < 0 || currentReceipt == null
+                || currentReceipt.contentRevision() != nativeContent) return false;
+        if (acceptedReceipt == currentReceipt && !historicalRaster && presented.equals(current))
+            return false;
+        if (!drawableLocked(current)) return false;
+        historicalRaster = false;
+        acceptedSequence++;
+        acceptedReceipt = currentReceipt;
+        presented = List.copyOf(current);
+        presentationRevision++;
+        return true;
+    }
+
     private boolean validPresentation(Presentation value) {
         if (closing
                 || borrowed != value
@@ -555,14 +621,22 @@ final class WorldStreamSourceController {
                 || camera.width() != value.width()
                 || camera.height() != value.height()
                 || borrowedReceipt != value.frame.content()) return false;
+        return drawableLocked(borrowedTable);
+    }
+
+    /**
+     * Under the lock: {@code table} (the one a frame shows) draws terrain where the camera is,
+     * from open sources. Readback judges the borrowed frame's table; native acceptance the current.
+     */
+    private boolean drawableLocked(List<Entry> table) {
         // A valid receipt can still draw only sky after motion beyond its resident neighborhood.
         // Keep the last readable pixels until the nearest requested recorded tile is GPU-current.
         // Judged on the table the frame shows, which a later commit does not change. A nearest
         // tile the helper keeps rejecting will not become current (#365): show the neighbours
         // instead of holding the last pixels forever.
-        if(!desired.isEmpty() && borrowedTable.stream().noneMatch(entry->same(desired.getFirst(),entry.resident()))
+        if(!desired.isEmpty() && table.stream().noneMatch(entry->same(desired.getFirst(),entry.resident()))
                 && helperRejections.getOrDefault(key(desired.getFirst()),0) < MAX_HELPER_REJECTIONS) return false;
-        for (var entry : borrowedTable) if (!entry.source().isOpen()) return false;
+        for (var entry : table) if (!entry.source().isOpen()) return false;
         return true;
     }
 
@@ -667,10 +741,13 @@ final class WorldStreamSourceController {
     }
 
     private void step() {
+        boolean nativeAccepted;
         synchronized (lock) {
+            nativeAccepted = acceptNativeLocked();
             // Pixels this step decides from; a later FX acceptance must still wake a refusal.
             stepPresentation = presentationRevision;
         }
+        if (nativeAccepted) kick();
         if (!initialized) {
             if (initialBlocked && clock.getAsLong() - initialRetryAt < RETRY_NANOS) return;
             if(source==null) {
@@ -739,6 +816,8 @@ final class WorldStreamSourceController {
                 if(camera!=null && !closing) opened.camera(camera);
             }
             session.onFrame(this::frameArrived);
+            // #381: native presentation reports presented frames instead of mapping frames.
+            session.onPresented(this::presentedNatively);
             session.initialized().whenComplete((ignored, failure) -> kick());
             session.completion()
                     .whenComplete(
@@ -924,7 +1003,9 @@ final class WorldStreamSourceController {
                     drop(queued.frame, "superseded");
                     queued = null;
                 }
+                nativeAccepted = acceptNativeLocked();
             }
+            if (nativeAccepted) kick();
             commit = null;
             pollFrame();
         }

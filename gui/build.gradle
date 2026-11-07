@@ -360,6 +360,30 @@ tasks.register('worldPickTest', JavaExec) {
 }
 check.dependsOn worldPickTest
 
+// #381: native-present gating, placement and user32 binding; no display.
+tasks.register('worldNativePresenterTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldNativePresenterTest'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+check.dependsOn worldNativePresenterTest
+
+// #381: the native-presentation surface on a real window, recording user32; requires a display.
+tasks.register('worldNativeSurfaceUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldNativeSurfaceUiTest'
+}
+
+// The World view and native presentation share the viewport with full screen and instance
+// switches; display, any OS.
+tasks.register('worldNativeViewportUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldNativeViewportUiTest'
+}
+
 // Streamed frame size debounce over authored pulses; no display.
 tasks.register('worldResizeDebounceTest', JavaExec) {
     dependsOn testClasses
@@ -367,6 +391,7 @@ tasks.register('worldResizeDebounceTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldResizeDebounceTest'
 }
 check.dependsOn worldResizeDebounceTest
+
 // Stream camera revisions and presented-frame overlay projection; no display.
 tasks.register('worldCameraRingTest', JavaExec) {
     dependsOn testClasses

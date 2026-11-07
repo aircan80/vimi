@@ -90,9 +90,24 @@ public final class WorldStreamWindowProof {
                 throw new AssertionError("No child tile credit");
             }
             var resident = WorldStreamTransportProof.produce(reserved).get(8, TimeUnit.SECONDS);
+            // PRESENTED through the public transport: camera revision -> presented latency.
+            var sentAt = new java.util.concurrent.ConcurrentHashMap<Long, Long>();
+            var presentedLatency = new java.util.concurrent.ConcurrentLinkedQueue<Long>();
+            var presentedCount = new AtomicLong();
+            var presentedContent = new AtomicLong(-1);
+            session.onPresented(
+                    (camera, content) -> {
+                        presentedCount.incrementAndGet();
+                        presentedContent.set(content);
+                        var at = sentAt.remove(camera);
+                        if (at != null) {
+                            presentedLatency.add(System.nanoTime() - at);
+                        }
+                    });
+            sentAt.put(1L, System.nanoTime());
             session.camera(new WorldStreamTransport.Camera(1, 1, 800, 500, view(1)));
             long commitStart = System.nanoTime();
-            session.commit(1, resident).get(10, TimeUnit.SECONDS);
+            var receipt = session.commit(1, resident).get(10, TimeUnit.SECONDS);
             double commitMs = (System.nanoTime() - commitStart) / 1e6;
             var running = new AtomicBoolean(true);
             var revision = new AtomicLong(1);
@@ -103,6 +118,7 @@ public final class WorldStreamWindowProof {
                                     () -> {
                                         while (running.get()) {
                                             long r = revision.incrementAndGet();
+                                            sentAt.put(r, System.nanoTime());
                                             session.camera(
                                                     new WorldStreamTransport.Camera(
                                                             r, 1, 800, 500, view(r)));
@@ -124,6 +140,32 @@ public final class WorldStreamWindowProof {
                     Files.exists(probe)
                             ? Files.readString(probe)
                             : "CHILD_SHOWS_FRAMES FAIL no probe file%n".formatted();
+            if (!readback) {
+                var sorted = new ArrayList<>(presentedLatency);
+                sorted.sort(null);
+                System.out.printf(
+                        Locale.ROOT,
+                        "PRESENTED_STATUS count=%d camera->presented p50Ms %.2f p95Ms %.2f (n=%d)%n",
+                        presentedCount.get(),
+                        sorted.isEmpty() ? 0 : sorted.get(sorted.size() / 2) / 1e6,
+                        sorted.isEmpty() ? 0 : sorted.get((int) (sorted.size() * .95)) / 1e6,
+                        sorted.size());
+                if (presentedCount.get() == 0) {
+                    throw new AssertionError("No PRESENTED status reached the parent");
+                }
+                System.out.println(
+                        "PRESENTED_CONTENT "
+                                + (presentedContent.get() == receipt.contentRevision()
+                                        ? "PASS"
+                                        : "FAIL")
+                                + " last="
+                                + presentedContent.get()
+                                + " receipt="
+                                + receipt.contentRevision());
+                if (presentedContent.get() != receipt.contentRevision()) {
+                    throw new AssertionError("PRESENTED content does not match the commit receipt");
+                }
+            }
             System.out.printf(
                     Locale.ROOT,
                     "WORLD_STREAM_WINDOW mode=%s cameras=%d tileCommitMs=%.1f%n%s",
@@ -217,7 +259,17 @@ public final class WorldStreamWindowProof {
                 .start(
                         () -> {
                             try (var stack = MemoryStack.stackPush()) {
-                                var proc = WindowProc.create(User32::DefWindowProc);
+                                // A destroyed parent ends its thread (WM_QUIT), so tests leave no
+                                // pumping thread.
+                                var proc =
+                                        WindowProc.create(
+                                                (window, message, w, l) -> {
+                                                    if (message == User32.WM_DESTROY) {
+                                                        WorldChildWindow.postQuitMessage();
+                                                    }
+                                                    return User32.DefWindowProc(
+                                                            window, message, w, l);
+                                                });
                                 var cls =
                                         WNDCLASSEX
                                                 .calloc(stack)

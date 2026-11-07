@@ -141,7 +141,10 @@ final class WorldChildWindow implements WorldWindowPresentation.Surface {
                                         }
                                         // Also when it went with its parent before it was
                                         // recorded: a loop that ended has no window left.
-                                        WINDOWS.remove(window);
+                                        WINDOWS.remove(
+                                                window,
+                                                destroyed); // Not a newer child that reused the
+                                        // handle.
                                         destroyed.set(true);
                                     } catch (Throwable failure) {
                                         created.completeExceptionally(failure);
@@ -163,7 +166,7 @@ final class WorldChildWindow implements WorldWindowPresentation.Surface {
 
     /** user32 PostQuitMessage(0), which LWJGL does not bind; through java.lang.foreign. */
     @SuppressWarnings("restricted")
-    private static void postQuitMessage() {
+    static void postQuitMessage() {
         try {
             var linker = java.lang.foreign.Linker.nativeLinker();
             var user32 =

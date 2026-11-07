@@ -194,7 +194,8 @@ final class GpuPreviewService {
         }
     }
 
-    private record Streaming(WorldStreamTransport.Spec spec,
+    /** {@code presentParent}: #381, the window to present into natively (0: readback). */
+    private record Streaming(WorldStreamTransport.Spec spec, long presentParent,
             Consumer<WorldStreamTransport.Session> opened) {}
 
     private static final class Request {
@@ -421,11 +422,18 @@ final class GpuPreviewService {
     /** Same application GPU owner; the callback posts small controller metadata only. */
     CompletableFuture<Void> openStreaming(Object owner, WorldStreamTransport.Spec spec,
             Consumer<WorldStreamTransport.Session> opened, Consumer<Status> listener) {
+        return openStreaming(owner, spec, 0, opened, listener);
+    }
+
+    /** #381: with a non-zero {@code presentParent} the helper presents into that window. */
+    CompletableFuture<Void> openStreaming(Object owner, WorldStreamTransport.Spec spec,
+            long presentParent, Consumer<WorldStreamTransport.Session> opened,
+            Consumer<Status> listener) {
         Objects.requireNonNull(owner);
         Objects.requireNonNull(spec);
         Objects.requireNonNull(opened);
         Objects.requireNonNull(listener);
-        return enqueue(new Request(owner, new Streaming(spec, opened), listener));
+        return enqueue(new Request(owner, new Streaming(spec, presentParent, opened), listener));
     }
 
     /** Same application GPU owner and gate; metadata enqueue only, no IO on the caller. */
@@ -629,7 +637,14 @@ final class GpuPreviewService {
             if (!request.stopping) {
                 request.publish(State.STARTING, "Starting persistent GPU World renderer…");
                 launchAttempted = true;
-                session = prepared.launch(streamingStarter);
+                long presentParent = request.streaming.presentParent();
+                session = prepared.launch(presentParent == 0 ? streamingStarter : arguments -> {
+                    // #381: native presentation into the application window's child.
+                    var withParent = new ArrayList<>(arguments);
+                    withParent.add("--present-parent");
+                    withParent.add(Long.toString(presentParent));
+                    return streamingStarter.start(withParent);
+                });
                 var initialized = session.initialized();
                 var protocol = session.completion();
                 var drainedSession = session.terminatedAndDrained();
