@@ -863,7 +863,10 @@ check.dependsOn preparedBuildReaderTest
 // of check: runs only on a measurement copy of the library (-PdataDirectory=<copy> with a
 // MEASUREMENT_COPY marker; it refuses the app's own library), opens it without background work
 // and a build already prepared there, never a preparation job; starts the GPU helper and a
-// JavaFX toolkit, and ends within ten minutes. -Pprobe.mode=refusals
+// JavaFX toolkit, and ends within ten minutes. -Pprobe.mode=creatures counts creature and humanoid
+// NPC outcomes per scenario through the production bridge, without a helper (#553); it uses the
+// copy's loaded community keys and may add decoded images or previews to the copy's generated
+// store, so a second run starts warm; -Pprobe.mode=refusals
 // counts terrain texture refusals over whole maps; -Pprobe.mode=prep times tile prep alone (#422).
 tasks.register('worldMeasurementProbe', JavaExec) {
     group = 'verification'

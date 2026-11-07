@@ -186,7 +186,8 @@ public final class WorldMeasurementProbe {
                                         System.getProperty("probe.build", "70790"),
                                         null,
                                         issue -> say("PROBE " + issue),
-                                        DEADLINE - System.nanoTime()));
+                                        DEADLINE - System.nanoTime(),
+                                        "creatures".equals(System.getProperty("probe.mode"))));
         try {
             BuildWorld handle = opened.world();
             var catalog =
@@ -211,6 +212,7 @@ public final class WorldMeasurementProbe {
                         switch (System.getProperty("probe.mode", "stream")) {
                             case "refusals" -> refusals(handle, catalog);
                             case "prep" -> prep(handle, catalog);
+                            case "creatures" -> creatures(opened, handle, catalog);
                             default -> stream(handle, catalog);
                         }
                         return null;
@@ -307,6 +309,254 @@ public final class WorldMeasurementProbe {
                 if (objects && pass == 1) usage.print(scenario.name());
             }
         }
+    }
+
+    // ---- Creature and humanoid NPC counts (#553): opt-in, no helper, GPU or FX --------------
+
+    /**
+     * The production NPC source, recording each distinct humanoid display's latest answer: an
+     * appearance, a stated refusal, or a retry (data not readable yet).
+     */
+    static final class NpcAnswers implements WorldTileCreatures.Npcs {
+        final WorldTileCreatures.Npcs inner;
+        final Map<Long, String> outcomes = new ConcurrentHashMap<>();
+
+        NpcAnswers(WorldTileCreatures.Npcs inner) {
+            this.inner = inner;
+        }
+
+        @Override
+        public com.vibeminer.concepts.races.RaceNpcs.Appearance appearance(
+                long extendedDisplayInfoId, Cancellation token) throws Exception {
+            var answer = inner.appearance(extendedDisplayInfoId, token);
+            outcomes.put(extendedDisplayInfoId, outcome(answer));
+            return answer;
+        }
+
+        static String outcome(com.vibeminer.concepts.races.RaceNpcs.Appearance answer) {
+            if (answer == null) return "refused: no NPC appearance";
+            if (answer.refusal() != null)
+                return (answer.retry() ? "not readable yet: " : "refused: ") + answer.refusal();
+            if (answer.result().appearance() == null)
+                return "refused: "
+                        + (answer.result().message() == null
+                                ? "no NPC appearance"
+                                : answer.result().message());
+            return "appearance built";
+        }
+
+        /** Distinct displays per outcome, sorted by outcome. */
+        Map<String, Integer> tally() {
+            var counts = new TreeMap<String, Integer>();
+            outcomes.values().forEach(o -> counts.merge(o, 1, Integer::sum));
+            return counts;
+        }
+    }
+
+    /**
+     * The production creature chooser, counting why spawns are not qualified (distinct NPC IDs per
+     * reason, with one example detail), so a refusal on real data names its cause.
+     */
+    static final class ChoiceReasons implements WorldTileCreatures.Chooser {
+        final WorldTileCreatures.Chooser inner;
+        final Map<Long, String> reasons = new ConcurrentHashMap<>();
+        final Map<String, String> examples = new ConcurrentHashMap<>();
+
+        ChoiceReasons(WorldTileCreatures.Chooser inner) {
+            this.inner = inner;
+        }
+
+        @Override
+        public WorldTileCreatures.Chosen choose(long npcId, Cancellation token) throws Exception {
+            var chosen = inner.choose(npcId, token);
+            var choice = chosen.choice();
+            if (choice.state()
+                    != com.vibeminer.concepts.creatures.CreatureModelPolicy.State.QUALIFIED) {
+                String key = choice.state() + " " + choice.reason();
+                reasons.put(npcId, key);
+                examples.putIfAbsent(key, choice.detail());
+            }
+            return chosen;
+        }
+
+        Map<String, Integer> tally() {
+            var counts = new TreeMap<String, Integer>();
+            reasons.values().forEach(r -> counts.merge(r, 1, Integer::sum));
+            return counts;
+        }
+    }
+
+    /**
+     * Prepares each scenario's tiles as the World does, buildings and doodads first and then
+     * creatures in what they leave (the production bridge and caps), with the production creature
+     * chooser, display previews and humanoid NPC appearances, and counts what is drawn and why the
+     * rest is not. {@code -Pprobe.passes} (default 2) repeats the tiles so appearances that could
+     * not be read on the first pass are asked again, as the World asks on a later tile.
+     *
+     * <p>Unlike the other modes, this one may add derived entries (decoded images, model
+     * previews, race appearances) to the measurement copy's generated store, as the application
+     * does: nothing is staged, published or downloaded, but a second run starts warm.
+     */
+    private static void creatures(
+            WorldMeasurementOpen opened, BuildWorld handle, WorldService.Catalog catalog)
+            throws Exception {
+        var scenarios =
+                Scenario.parse(
+                        System.getProperty("probe.scenarios", "elwynn:0:49:31,stormwind:0:48:30"));
+        int size = Integer.getInteger("probe.size", 3);
+        int passes = Integer.getInteger("probe.passes", 2);
+        var sources = opened.sources();
+        if (sources == null) throw new IllegalStateException("No data sources in this open");
+        var detail = WorldStreamGpuOwner.IMAGE_DETAIL;
+        var source =
+                handle.terrainStreaming()
+                        .orElseThrow(() -> new IllegalStateException("No terrain streaming"));
+        var build = opened.build;
+        var spawns = sources.worldSpawns(build, Cancellation.NONE);
+        say(
+                "PROBE creatures: world spawns "
+                        + spawns.state()
+                        + ", "
+                        + spawns.spawns()
+                        + " spawns; issues "
+                        + spawns.issues());
+        try (var measured = busy(() -> opened.openCreatures(Cancellation.NONE))) {
+            say("PROBE creatures: lookup warmup issues " + measured.warmup());
+
+            var npcs = new NpcAnswers(WorldTileCreatures.npcs(measured::races));
+            var choices = new ChoiceReasons(WorldTileCreatures.chooser(measured::creatures));
+            var tiles =
+                    new WorldTileCreatures(
+                            token -> sources.worldSpawns(build, token),
+                            () -> "probe",
+                            choices,
+                            new WorldTileCreatures.DisplayPreviews(opened::displays, () -> "probe"),
+                            npcs);
+            try {
+                for (var scenario : scenarios) {
+                    if (!beforeDeadline()) {
+                        say("PROBE skipped " + scenario.name() + ": deadline");
+                        incomplete = true;
+                        continue;
+                    }
+                    var map =
+                            catalog.maps().stream()
+                                    .filter(m -> m.id() == scenario.map())
+                                    .findFirst()
+                                    .orElseThrow();
+                    var inventory = handle.inventory(map, Cancellation.NONE).get(5, TimeUnit.MINUTES);
+                    var area = new ArrayList<WorldFormats.Tile>();
+                    int half = size / 2;
+                    for (var tile : inventory.world().tiles()) {
+                        if (Math.abs(tile.x() - scenario.x()) <= half
+                                && Math.abs(tile.y() - scenario.y()) <= half) area.add(tile);
+                    }
+                    var scope = source.createScope(map, Cancellation.NONE);
+                    source.activate(scope);
+                    for (int pass = 1; pass <= passes && beforeDeadline(); pass++) {
+                        long began = System.nanoTime();
+                        var sum = WorldTileCreatures.Summary.NONE;
+                        int done = 0;
+                        for (var tile : area) {
+                            if (!beforeDeadline()) break;
+                            source.prepareAndWrite(
+                                            scope,
+                                            tile,
+                                            Cancellation.NONE,
+                                            (borrow, token) -> () -> {})
+                                    .close();
+                            var copy =
+                                    WorldStreamSourceBridge.prepareExterior(
+                                            source,
+                                            scope,
+                                            tile,
+                                            Cancellation.NONE,
+                                            (builder, owned, token) ->
+                                                    tiles.append(builder, map.id(), owned, token),
+                                            detail);
+                            if (copy.creatures() != null) sum = sum.plus(copy.creatures());
+                            done++;
+                        }
+                        if (done < area.size()) incomplete = true;
+                        say(creatureLine(scenario, pass, done, area.size(), sum, began));
+                    }
+                }
+                // The Creature table as the chooser reads it: its state and row counts, through the
+                // lookup of one NPC that was not qualified, so an all-absent result can be told apart
+                // from an unreadable table.
+                var first = choices.reasons.keySet().stream().sorted().findFirst();
+                if (first.isPresent()) {
+                    var probeRow =
+                            measured.creatures()
+                                    .getData(
+                                            first.get(),
+                                            com.vibeminer.formats.tables.TableTypes.Priority.BACKGROUND,
+                                            Cancellation.NONE)
+                                    .join();
+                    var table = probeRow.creature();
+                    say(
+                            "PROBE creatures: Creature table "
+                                    + (table == null
+                                            ? "not resolved"
+                                            : table.state() + ", counts " + table.counts())
+                                    + "; NPC "
+                                    + first.get()
+                                    + " "
+                                    + probeRow.state());
+                }
+                say("PROBE creatures: distinct NPC IDs not qualified " + choices.reasons.size());
+                for (var entry : choices.tally().entrySet())
+                    say(
+                            String.format(
+                                    Locale.ROOT,
+                                    "PROBE   %4d  %s (for example: %s)",
+                                    entry.getValue(),
+                                    entry.getKey(),
+                                    choices.examples.get(entry.getKey())));
+                say("PROBE creatures: distinct humanoid NPC displays asked " + npcs.outcomes.size());
+                for (var entry : npcs.tally().entrySet())
+                    say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+            } finally {
+                tiles.close();
+            }
+        }
+    }
+
+    private static String creatureLine(
+            Scenario scenario,
+            int pass,
+            int done,
+            int tiles,
+            WorldTileCreatures.Summary sum,
+            long began) {
+        var npc = sum.npcs();
+        var refused = new StringBuilder();
+        for (var count : WorldTileCreatures.Count.values()) {
+            if (count == WorldTileCreatures.Count.DRAWN || sum.count(count) == 0) continue;
+            refused.append(refused.isEmpty() ? "" : ", ")
+                    .append(count.name())
+                    .append(' ')
+                    .append(sum.count(count));
+        }
+        return String.format(
+                Locale.ROOT,
+                "PROBE creatures %s pass %d: %d of %d tiles in %.1f s; spawns drawn %d in %d models"
+                        + " (humanoid NPCs %d: %d with %d surfaces left out, %d item models and %d"
+                        + " item records not drawn); not drawn: %s%nPROBE   status line:%s",
+                scenario.name(),
+                pass,
+                done,
+                tiles,
+                seconds(System.nanoTime() - began),
+                sum.drawn(),
+                sum.models(),
+                npc.drawn(),
+                npc.withOmittedSurfaces(),
+                npc.omittedSurfaces(),
+                npc.attachments(),
+                npc.omittedItems(),
+                refused.isEmpty() ? "none" : refused,
+                WorldStreamSourceController.creatureDetail(sum, done));
     }
 
     // ---- Streaming measurement -------------------------------------------------------------
