@@ -192,11 +192,84 @@ class WmoPortalTraversalTest {
         assertTrue(all.visible(1));
         assertTrue(all.visible(0));
         assertTrue(t.visible(10, 10, 4, looking(1, 10, 10, 4)).visible(0));
-        // Consistent references keep the side test: from R's centre X is reached through the
-        // portals, R's references are untouched.
+        // From R's centre the walk starts in R (an interior box holds the camera) and reaches X
+        // through the portals over R's own, consistent references.
         var fromRoom = t.visible(10, 10, 20, List.of());
         assertTrue(fromRoom.inside());
         assertTrue(fromRoom.visible(0));
+    }
+
+    /**
+     * The side planes of a frustum looking straight up (+z) from {@code x, y, z} with a full
+     * opening angle of {@code degrees}, without a near plane.
+     */
+    private static List<Plane> lookingUp(double degrees, double x, double y, double z) {
+        double t = Math.tan(Math.toRadians(degrees / 2));
+        return List.of(
+                new Plane(-1, 0, t, x - t * z),
+                new Plane(1, 0, t, -x - t * z),
+                new Plane(0, -1, t, y - t * z),
+                new Plane(0, 1, t, -y - t * z));
+    }
+
+    @Test
+    void fromTheWrongSideTheDestinationBoxDecidesNotThePortal() {
+        // In X looking straight up at R's floor with a 60-degree frustum: at z = 10 the view
+        // spans x, y 6.5..13.5, inside R's box, while all four portals are more than 30 degrees
+        // off axis. R must still be visible.
+        var t = nestedExterior(false);
+        assertTrue(t.visible(10, 10, 4, lookingUp(60, 10, 10, 4)).visible(0));
+        assertTrue(t.visible(10, 10, 4, lookingUp(90, 10, 10, 4)).visible(0));
+    }
+
+    @Test
+    void aPortalPassedFromTheWrongSideHandsOnTheFrustumUnnarrowed() {
+        // nestedExterior(false) plus room Q (interior, x 20..30) behind a high door in R's wall
+        // at x = 20 (y 9..11, z 20..22). From X at (10, 10, 4) every cone through one of the four
+        // low portals misses that door, so Q is reached only if R is walked with the caller's
+        // frustum rather than one narrowed from the wrong side. R records only its door to Q (a
+        // portal may be referenced from one side), so no cycle widens R's entries to the caller's
+        // frustum anyway.
+        var portals =
+                List.of(
+                        new Portal(
+                                new double[] {5, 5, 8, 5, 15, 8, 5, 15, 10, 5, 5, 10}, 1, 0, 0, -5),
+                        new Portal(
+                                new double[] {15, 5, 8, 15, 15, 8, 15, 15, 10, 15, 5, 10},
+                                -1,
+                                0,
+                                0,
+                                15),
+                        new Portal(
+                                new double[] {5, 5, 8, 15, 5, 8, 15, 5, 10, 5, 5, 10}, 0, 1, 0, -5),
+                        new Portal(
+                                new double[] {5, 15, 8, 15, 15, 8, 15, 15, 10, 5, 15, 10},
+                                0,
+                                -1,
+                                0,
+                                15),
+                        new Portal(
+                                new double[] {20, 9, 20, 20, 11, 20, 20, 11, 22, 20, 9, 22},
+                                1,
+                                0,
+                                0,
+                                -20));
+        var refs = new ArrayList<Ref>();
+        refs.add(new Ref(4, 2, -1));
+        for (int p = 0; p < 4; p++) {
+            refs.add(new Ref(p, 0, -1));
+        }
+        refs.add(new Ref(4, 0, 1));
+        var groups =
+                List.of(
+                        new Group(WmoPortalTraversal.INTERIOR, 0, 0, 10, 20, 20, 30, 0, 1),
+                        new Group(WmoPortalTraversal.EXTERIOR, 6, 6, 0, 14, 14, 8, 1, 4),
+                        new Group(WmoPortalTraversal.INTERIOR, 20, 0, 10, 30, 20, 30, 5, 1));
+        var t = WmoPortalTraversal.of(groups, portals, refs);
+        assertEquals(4, t.inconsistentReferences());
+        var result = t.visible(10, 10, 4, List.of());
+        assertTrue(result.visible(0));
+        assertTrue(result.visible(2));
     }
 
     @Test

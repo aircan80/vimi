@@ -34,7 +34,8 @@ import java.util.List;
  *       cannot be trusted (real data has exterior groups nested under a room whose portal planes do
  *       not separate them). From that group the portal is always passable: the side test is
  *       skipped, and the frustum is narrowed to the portal's edges only when the camera is on the
- *       recorded side and off the plane; otherwise it passes unchanged. {@link
+ *       recorded side and off the plane; otherwise it passes unchanged. From the wrong side the
+ *       destination group's box, not the portal polygon, is tested against the frustum. {@link
  *       #inconsistentReferences()} counts them.
  *   <li>Near a portal plane ({@code |dot| <= }{@link #PLANE_EPSILON}) the edge planes degenerate,
  *       so the portal is passed with the current frustum unchanged, whichever side the camera is on
@@ -366,7 +367,16 @@ public final class WmoPortalTraversal {
                 if (trusted && !facing && !near) {
                     continue;
                 }
-                if (outside(portalVertices[p], frustum) || outside(portalVertices[p], planes)) {
+                if (!trusted && !facing && !near) {
+                    // From the wrong side the destination is on the camera's side of the portal,
+                    // so the portal polygon says nothing about whether it is in view: test the
+                    // destination group's box instead (and pass the frustum on unnarrowed).
+                    var to = groups.get(ref.group());
+                    if (outside(to, frustum) || outside(to, planes)) {
+                        continue;
+                    }
+                } else if (outside(portalVertices[p], frustum)
+                        || outside(portalVertices[p], planes)) {
                     continue;
                 }
                 // The edge planes bound the view through the portal only from its recorded side.
@@ -391,6 +401,23 @@ public final class WmoPortalTraversal {
         queueGroups[tail] = group;
         queuePlanes.set(tail, planes);
         return tail + 1;
+    }
+
+    /** Whether all eight corners of {@code group}'s box are outside one of {@code planes}. */
+    private static boolean outside(Group group, List<Plane> planes) {
+        for (var plane : planes) {
+            boolean all = true;
+            for (int corner = 0; corner < 8 && all; corner++) {
+                double x = (corner & 1) == 0 ? group.minX() : group.maxX();
+                double y = (corner & 2) == 0 ? group.minY() : group.maxY();
+                double z = (corner & 4) == 0 ? group.minZ() : group.maxZ();
+                all = plane.value(x, y, z) < -1e-6;
+            }
+            if (all) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean outside(double[] v, List<Plane> planes) {
