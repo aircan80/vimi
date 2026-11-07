@@ -220,6 +220,8 @@ final class WorldStreamSourceController {
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
     private volatile boolean closing;
     private volatile WorldStreamTransport.Camera camera;
+    // The recorded sky (#177-2a), behind -Dvimi.world.sky=recorded; null when off.
+    private volatile WorldSkyFeed sky;
     private volatile WorldStreamTransport.Session session;
     private List<WorldFormats.Tile> desired;
     private long demandRevision, presentationRevision, acceptedSequence;
@@ -358,6 +360,15 @@ final class WorldStreamSourceController {
 
     void camera(WorldStreamTransport.Camera next) {
         Objects.requireNonNull(next);
+        // The sky lookup runs outside the lock, and a failing one only leaves the camera's sky
+        // unchanged: camera() must not fail every frame because of it.
+        var feed=sky;
+        if(feed!=null) {
+            try { next=feed.attach(next); }
+            catch(RuntimeException failure) {
+                WorldDiagnostics.degraded("sky", "World sky lookup failed; the explorer's sky stays", failure);
+            }
+        }
         RuntimeException problem=null;
         synchronized (lock) {
             if (closing) return;
@@ -419,6 +430,12 @@ final class WorldStreamSourceController {
     private int residentLimit() {
         var open = session;
         return open == null ? residents : Math.min(residents, open.viewDistance().residents());
+    }
+
+    /** True when the recorded sky has moved on with the clock and the camera should be resent. */
+    boolean skyStale() {
+        var feed = sky;
+        return feed != null && feed.stale();
     }
 
     void pulse() {
@@ -708,6 +725,9 @@ final class WorldStreamSourceController {
                 // drop a release landing between issue and the refusal being recorded, and kicks
                 // coalesce in schedule(), so an unneeded one costs a gate check.
                 geometryWake=source.onGeometryRelease(this::kick);
+                if(WorldSkyFeed.enabled())
+                    sky=new WorldSkyFeed(request.world().skyIndex(qualificationCancellation),
+                            request.map().id(),WorldSkyFeed.clock(),System::nanoTime);
                 // Static diagnostic water joins each actual terrain tile; disable with
                 // -Dvimi.world.water=false.
                 if(!"false".equals(System.getProperty("vimi.world.water")))
@@ -1374,6 +1394,7 @@ final class WorldStreamSourceController {
                 + (watered == 0 ? "" : "; static diagnostic water on " + watered)
                 + (waterNoted == 0 ? "" : "; water source notes on " + plural(waterNoted, "tile")
                         + " (" + waterIssue + ")")
+                + (sky == null || sky.label() == null ? "" : "; " + sky.label())
                 + (buildingTiles == 0 ? "" : objectsDetail(objects, buildingTiles))
                 + (buildingFailures == 0 ? "" : "; building objects failed on " + buildingFailures)
                 + creatureDetail(creatures, creatureTiles)

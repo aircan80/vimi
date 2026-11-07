@@ -147,10 +147,101 @@ public final class WorldStreamTransport {
         }
     }
 
-    public record Camera(long revision, long policy, int width, int height, TerrainCamera view) {
+    /**
+     * The recorded sky for a frame (#177): the horizon colour the fog fades into, the sky top
+     * colour (0..255 gamma), and the recorded distance fog with {@code fogWeight}, how much of the
+     * position records fog (0..1). The renderer composes it with its own fog distances and the WDL
+     * horizon ({@link WorldFog#sky}).
+     */
+    public record Sky(
+            float[] horizon,
+            float[] top,
+            double fogWeight,
+            float recordedStart,
+            float recordedEnd) {
+        /** The explorer's own sky, with no recorded fog. */
+        public static final Sky EXPLORER = new Sky(WorldFog.FOG_COLOUR, WorldFog.SKY_TOP, 0, 0, 0);
+
+        /** Recorded fog distances are whole yards up to this bound. */
+        public static final int MAX_YARDS = 1_000_000;
+
+        /**
+         * Values are quantized as the control line carries them, so every Sky round-trips exactly:
+         * colours to whole 0..255 steps, the weight to thousandths, distances to whole yards. Every
+         * value must be finite and in range, whatever the weight.
+         */
+        public Sky {
+            if (horizon.length != 3 || top.length != 3) {
+                throw new IllegalArgumentException("Invalid sky colours");
+            }
+            horizon = horizon.clone();
+            top = top.clone();
+            for (int i = 0; i < 3; i++) {
+                if (!(horizon[i] >= 0 && horizon[i] <= 255 && top[i] >= 0 && top[i] <= 255)) {
+                    throw new IllegalArgumentException("Invalid sky colours");
+                }
+                horizon[i] = Math.round(horizon[i]);
+                top[i] = Math.round(top[i]);
+            }
+            if (!(fogWeight >= 0 && fogWeight <= 1)
+                    || !(recordedStart >= 0 && recordedStart <= MAX_YARDS)
+                    || !(recordedEnd >= 0 && recordedEnd <= MAX_YARDS)) {
+                throw new IllegalArgumentException("Invalid recorded fog");
+            }
+            fogWeight = Math.round(fogWeight * 1000) / 1000.0;
+            recordedStart = Math.round(recordedStart);
+            recordedEnd = Math.round(recordedEnd);
+            if (fogWeight > 0 && !(recordedEnd > recordedStart)) {
+                throw new IllegalArgumentException("Invalid recorded fog");
+            }
+        }
+
+        @Override
+        public float[] horizon() {
+            return horizon.clone();
+        }
+
+        @Override
+        public float[] top() {
+            return top.clone();
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof Sky o
+                    && java.util.Arrays.equals(horizon, o.horizon)
+                    && java.util.Arrays.equals(top, o.top)
+                    && Double.compare(fogWeight, o.fogWeight) == 0
+                    && Float.compare(recordedStart, o.recordedStart) == 0
+                    && Float.compare(recordedEnd, o.recordedEnd) == 0;
+        }
+
+        @Override
+        public int hashCode() {
+            return java.util.Objects.hash(
+                    java.util.Arrays.hashCode(horizon),
+                    java.util.Arrays.hashCode(top),
+                    fogWeight,
+                    recordedStart,
+                    recordedEnd);
+        }
+    }
+
+    /** {@code sky} is the recorded sky for this frame, or null for the explorer's own. */
+    public record Camera(
+            long revision, long policy, int width, int height, TerrainCamera view, Sky sky) {
         public Camera {
             new WorldStreamControl.Camera(
-                    new WorldStreamState.Nonce(1, 1), revision, policy, width, height, view);
+                    new WorldStreamState.Nonce(1, 1), revision, policy, width, height, view, sky);
+        }
+
+        public Camera(long revision, long policy, int width, int height, TerrainCamera view) {
+            this(revision, policy, width, height, view, null);
+        }
+
+        /** This camera with another sky. */
+        public Camera withSky(Sky value) {
+            return new Camera(revision, policy, width, height, view, value);
         }
     }
 
@@ -1889,7 +1980,8 @@ public final class WorldStreamTransport {
                             camera.policy(),
                             camera.width(),
                             camera.height(),
-                            camera.view());
+                            camera.view(),
+                            camera.sky());
             synchronized (lock) {
                 if (closing || owner != null && owner.stopping()) {
                     throw new IllegalStateException("World session is stopping");
