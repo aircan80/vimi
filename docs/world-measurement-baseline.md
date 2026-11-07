@@ -1,0 +1,387 @@
+# World measurement baseline (Phase 0, #353)
+
+What the World explorer actually spends its time on, measured on the real pipeline with the
+local build. These numbers set the Phase 2 priorities. They come from one machine and are
+single observations, not guarantees.
+
+**Measured 2026-11-06 on main at `0bbe365c` (#352) plus this instrumentation.** That is before
+#397, #416 and #418. Rerun on the same scenarios to compare later changes.
+
+## How to reproduce
+
+Everything is opt-in. The instrumentation is a process-wide table,
+`formats-world` `WorldStageTimings`, that does nothing until `-Dvimi.world.stageTimings=true`.
+While off, each call site costs one volatile read. BLTE inflate has its own totals in `files`
+`FileDecodeTimings`, behind the same property. When the property is set, the GPU helper
+inherits it and writes its own table (`WorldStageTimingsDump`) to
+`-Dvimi.world.stageTimings.file`.
+
+### What the probe touches
+
+**It only runs on a measurement copy of the library.** It refuses to start without
+`-PdataDirectory=<copy>`. It also refuses a directory that:
+- has no `MEASUREMENT_COPY` file at its root. A real library never has one, so a real library
+  at a custom location is refused too;
+- is, or resolves to, the application's own data directory, whether through a junction, a
+  different case or a short name;
+- has a `library` folder that is a link, junction or reparse point, or the same folder as the
+  application's own `library`;
+- has no `library` folder at all.
+
+To make the copy, close the application and copy its whole data directory (it holds `library`,
+`derived`, `questie` and so on) to a scratch folder. Do not link it. Then mark it. On Windows the
+data directory is `%LOCALAPPDATA%\vimi`:
+
+```bat
+robocopy "%LOCALAPPDATA%\vimi" <scratch>\vimi-copy /E
+type nul > <scratch>\vimi-copy\MEASUREMENT_COPY
+```
+
+The copy must contain the build already prepared to Tables-ready.
+
+**It never prepares anything.** It opens the library with
+`BuildApplication.openWithoutBackgroundWork`, which is the application's open with two
+differences:
+- persisted downloads are not resumed;
+- no startup or daily provider check (Questie, listfile, keys, EG link, Polestar) is scheduled.
+
+It then needs a Tables-ready preparation receipt for the build, which supplies the region, CDN
+configuration and locale. It refuses a build without one. It starts no preparation job. It opens
+one local-only work, with no network sources, and uses only:
+- the build metadata;
+- the resolution indexes and file handle, without the file catalog pass;
+- the build's cached key graphs;
+- a World over its own workspace tables, with no known-table pass or warmup.
+
+That is why it starts within seconds (#422).
+
+**Every write it can make, all inside the copy or the probe's build folder:**
+- **Opening the library:** the store's writer lock, the library's idempotent migration check, and
+  provider owner retention in the library catalog. These are the same as an application start.
+- **Creating the work:** the work registers its expected build owner (`ownership.expect`).
+- **Opening the build:** if the build's resolution projection is missing for the receipt's region,
+  opening it may store that projection.
+- **Reading tables:** a workspace table with no cached generated form is generated and stored on
+  first read.
+- **Streaming:** the helper's private packet files go under `gui/build/world-measurement/tmp`,
+  which is cleared at task start.
+- **Reports:** `report.txt`, `gc.log` and `helper-timings.txt` go under
+  `gui/build/world-measurement`.
+
+`worldMeasurementLibraryTest` checks this over an authored offline library. It refuses an
+unprepared build, and the open adds no stored object and changes no payload file.
+
+**Bounds.** The deadline is at most 400 s. It also bounds the library open: an open that overruns
+is canceled, and the probe waits up to 60 s for it to close what it opened. After the deadline
+the run closes everything normally, each step with its own timeout:
+- the controller, 45 s;
+- the helper, 20 s;
+- the library, 60 s.
+
+Deadline plus every close timeout, 525 s, stays inside the task's 10-minute timeout.
+
+The main thread holds the watchdog off at all times except while it measures. The watchdog acts
+only 150 s after the deadline, so it can end a stuck measurement but never an open or a close.
+Even then it exits normally with `System.exit`; nothing is halted.
+
+**Exit codes:** 0 complete, 2 failed (including a refusal), 3 deadline or incomplete.
+
+### Commands
+
+Take the shared real-data lock. Remove it only if your own `mkdir` succeeded:
+
+```sh
+mkdir ../.realdata-lock && {    # shared real-data lock, next to the worktrees
+  trap 'rmdir ../.realdata-lock' EXIT
+  ./gradlew :gui:worldMeasurementProbe --max-workers=2 "-PsqliteLibrary=<sqlite3.dll>" \
+      -PdataDirectory=<copy> -Pprobe.scenarios=elwynn:0:49:31,stormwind:0:48:30   # about 4 min
+  ./gradlew :gui:worldMeasurementProbe --max-workers=2 "-PsqliteLibrary=<sqlite3.dll>" \
+      -PdataDirectory=<copy> -Pprobe.mode=prep                                     # about 3 min
+  ./gradlew :gui:worldMeasurementProbe --max-workers=2 "-PsqliteLibrary=<sqlite3.dll>" \
+      -PdataDirectory=<copy> -Pprobe.mode=refusals -Pprobe.maps=0,1
+}
+```
+
+The report goes to stdout and to
+`gui/build/world-measurement/report.txt`. The task also writes
+`gui/build/world-measurement/gc.log` (`-Xlog:gc*`) and the helper's table.
+
+**Prep mode** (#422) times the real source path one tile at a time, for a `probe.size` square
+(default 3) around each scenario centre. Per tile it runs:
+- `WorldTerrainStreaming.prepareAndWrite`, with a no-op output (`prep.terrain`);
+- the production `WorldStreamSourceBridge.prepareExterior` (`prep.objects`).
+
+It runs `probe.passes` passes (default 2): the first in a fresh process, the second a repeat. It
+skips the helper, the GPU, FX and the packet files: in stream mode the terrain packet write is
+about 25 ms per tile. Use `-Pprobe.objects=false` for terrain alone. It reports the same series
+as stream mode, so before and after runs compare directly.
+
+**Stream mode** builds the production `WorldStreamSourceController` exactly as `WorldView` does:
+- the real `WorldStreamGpuOwner` and helper, on the default backend (D3D11 here);
+- the real exterior preparer;
+- `WorldStreamImagePresentation` on the JavaFX thread, pulsed by an `AnimationTimer`.
+
+The camera follows a fixed script:
+1. Stationary at the seed until every tile and its late objects are done (budget 150 s).
+2. Rotating in place at 1 rad/s for 12 s.
+3. Flying one tile along native -x in 10 s.
+4. Settling (budget 60 s).
+
+The vimi tile coordinate is (x, y) = (filename second, filename first). Goldshire is tile
+`49,31`, and Stormwind City is `48,30`.
+
+**Refusals mode** calls the real `BuildWorld.terrainTextures` over every recorded tile of each
+map, in batches of 9. It counts:
+- tile states;
+- textured chunks;
+- `WorldTerrainTextureSource.Issue` reasons;
+- chunk refusals, as `TerrainAtlasComposer.Reason` / `WorldTextureFormats.ChunkIssue`.
+
+### Run environment
+
+| | |
+| --- | --- |
+| Build | wowf 1.60.1.70790 |
+| JVM | 25.0.5, default G1, 16 GiB max heap |
+| Machine | 24 hardware threads, Windows 11 |
+| Helper backend | D3D11 (default) |
+| Objects | STANDARD object textures, creatures off (the app defaults) |
+| Neighbourhood | 3x3 |
+
+## Headline numbers
+
+### 1. Fill time (stationary camera, 3x3)
+
+| | Elwynn (Goldshire) | Stormwind |
+| --- | ---: | ---: |
+| First accepted frame | 2.7 s | 2.2 s |
+| All 9 terrain tiles resident | 12.1 s | 9.3 s |
+| All 9 tiles' objects attached | 83 s | 76 s |
+
+### 2. Terrain tile: per-stage time (parent and helper, 9 tiles)
+
+| Stage (series) | Elwynn p50 | Stormwind p50 | Notes |
+| --- | ---: | ---: | --- |
+| `parent.tile.produceToStaged` | 1,179 ms | 881 ms | Reserve, then source, file, helper decode and upload, then STAGED. Strictly one at a time. |
+| `terrain.tile.total` (source side) | 742 ms | 522 ms | |
+| `terrain.tile.material` | 520 ms | 376 ms | Texture source: reads, diffuse decode, compose |
+| `terrain.material.read` (root, tex0) | ~24-30 ms each | | Three per tile |
+| `terrain.material.diffuseReadDecode` (4x4 mip) | ~13 ms each | | ~9 per tile |
+| `terrain.material.atlasCompose` | ~22 ms | | |
+| `terrain.tile.geometry` | 42 ms | 28 ms | |
+| `source.read.TERRAIN_BASIC` (root ADT) | 33 ms | 26 ms | |
+| `source.read.LIQUID_INSPECTION` (same root ADT, again) | 24 ms | 18 ms | Same bytes as above: the double read is confirmed |
+| `terrain.tile.write` | 25 ms | 23 ms | |
+| └ `tileFile.write.encodeDigestWrite` | ~8-9 ms | | SHA-256 is interleaved with the write |
+| └ `tileFile.write.geometryFingerprint` | ~5 ms | | |
+| └ `tileFile.write.fsync` | ~1.3 ms | | |
+| └ `tileFile.write.rename` | ~0.7 ms | | |
+| `child.tileFile.read` (read and verify SHA) | 21 ms | 21 ms | |
+| `child.tile.pack` | 3.4 ms | 2.7 ms | |
+| `child.tile.uploadWall` (begin to STAGED) | 33 ms | 31 ms | Steps p50 0.07 ms |
+| `parent.commit.roundTrip` | 3.9 ms | 3.5 ms | |
+| `parent.commit.toAcceptedFrame` | 37 ms | 31 ms | Receipt to the first accepted frame drawn from that receipt |
+
+About 400 ms of `produceToStaged` (Elwynn p50 1,179 ms) is not attributed to any timed stage:
+- source total 742 ms;
+- child read, pack and upload about 57 ms.
+
+The rest is the producer and transport hand-offs between them: the reservation and credit, the
+offer, and decode scheduling on the single decoder. None of those are timed separately here.
+
+BLTE zlib inflate for the whole Elwynn fill took 0.45 s for 109 MiB out (3,803 chunks).
+
+**Reading:** of each terrain tile's ~1.2 s, about 0.5 s is texture-source work, mostly per-file
+read latency. Each file read costs 20-35 ms regardless of size. A further 0.2 s goes on the other
+timed source stages, and about 0.4 s is unattributed hand-off time (above). All of it is serial. File write, fsync,
+SHA and the IPC round trips together cost under 100 ms per tile. Two conclusions follow:
+- Dropping fsync or swapping SHA-256 for CRC32C is worth a few percent at most.
+- Parallel source preparation (N tiles in flight), together with cheaper reads, is the lever.
+
+### 3. Exterior objects: per-tile prep (9 tiles each)
+
+| Series | Elwynn | Stormwind |
+| --- | ---: | ---: |
+| `objects.tile.total` mean / p50 / max | 7.7 / 6.6 / 14.9 s | 7.2 / 4.3 / 17.2 s |
+| `objects.phase.buildings` (WMO roots, groups, images) p50 | 1.9 s | 1.0 s |
+| `objects.phase.doodads` (MDDF M2) p50 | 3.2 s | 2.4 s |
+| `objects.phase.setDoodads` max | 6.5 s | 7.0 s |
+| `objects.phase.interiors` (interior groups, then the set doodads of interior-only roots, which the `setDoodads` figure above still includes) | not in this baseline | not in this baseline |
+| `objects.phase.mipChains` p50 | 8 ms | 7 ms |
+| `objects.phase.imageBudget` p50 | 4 ms | 3 ms |
+| `source.read.BASIC_EXTERIOR` count | 1,702 | 1,817 |
+| `source.read.BASIC_EXTERIOR` p50 / mean / max | 27 / 34 / 2,093 ms | 20 / 31 / 2,555 ms |
+| **Sum of exterior reads** | **58.0 s of 69.0 s** | **56.0 s of 64.9 s** |
+| All BLP decodes (`objects.blp.*`), total | 0.17 s | |
+| M2 model and skin parse, total | 0.12 s | |
+| `objects.bridge.copyAndCreatures` p50 | 6 ms | |
+| `child.objectsFile.read` p50 | 12 ms | 12 ms |
+| `child.objects.uploadWall` p50 | 201 ms | 200 ms |
+| `parent.objects.attachRoundTrip` p50 | 239 ms | 235 ms |
+
+**Reading:** 84-86% of objects prep is waiting on about 190 source reads per tile, one at a time.
+Decode, parse, mips and assembly add up to under 0.5 s for nine tiles. Two consequences:
+- Decode-once BLP changes will barely move prep time.
+- Parallel reads, a cheaper read path, and a cross-tile (session) asset library are the levers.
+
+### 4. Exterior object counts (Count buckets summed over the 3x3)
+
+| Bucket | Elwynn | Stormwind |
+| --- | ---: | ---: |
+| PLACEMENT_DRAWN (buildings) | 46 | 47 |
+| PLACEMENT_FAILED_ROOT | 6 | 9 |
+| PLACEMENT_UNSUPPORTED | 1 | 0 |
+| ROOT_DRAWN / ROOT_FAILED | 40 / 6 | 32 / 9 |
+| GROUP_DRAWN / GROUP_INTERIOR (skipped) | 43 / 169 | 33 / 52 |
+| BATCH_DRAWN / CUTOUT / MISSING_IMAGE | 345 / 22 / 2 | 273 / 16 / 2 |
+| **DOODAD_DRAWN / DOODAD_CAPPED** | **3,585 / 4,001** | **2,254 / 780** |
+| DOODAD_FAILED_MODEL | 14 | 14 |
+| **SET_DOODAD_DRAWN / SET_DOODAD_CAPPED** | **318 / 4,248** | **609 / 1,068** |
+| SET_DOODAD_FAILED_MODEL / UNSUPPORTED | 40 / 30 | 81 / 15 |
+| SET_UNSUPPORTED | 14 | 25 |
+| MODEL_DRAWN | 332 | 436 |
+| MODEL_UNSUPPORTED, of which billboard bones | 9, 9 | 19, 18 |
+| MODEL_FAILED / MODEL_EMPTY | 0 / 1 | 1 / 9 |
+| IMAGE_DECODED / MODEL_IMAGE_DECODED | 257 / 499 | 206 / 559 |
+| MODEL_IMAGE_CAPPED | 1 | 14 |
+
+`MODEL_UNSUPPORTED_BILLBOARD` is a measurement-only sub-count of MODEL_UNSUPPORTED: models
+whose first SKIN was present but which carry a billboard bone. It counts distinct models per
+tile, not placements.
+
+**Reading:** the per-tile doodad caps are the biggest visible loss:
+- Elwynn draws 3,903 of 12,152 qualified doodads (32%).
+- Stormwind draws 2,863 of 4,711 (61%).
+- In Elwynn, 93% of the doodads in WMO doodad sets are capped.
+
+Some building and model counts are small by comparison:
+- Failed WMO roots: 6 and 9.
+- Billboard models: 9 and 18.
+- Interior groups skipped on exterior maps: 169 and 52. These matter for walking into towns, not
+  for the outdoor view.
+
+### 5. Frame cost and delivery (rotating in place, all objects resident)
+
+| | Elwynn | Stormwind |
+| --- | ---: | ---: |
+| `child.frame.draws` per drawn frame | 6,508 | 4,872 |
+| `child.frame.triangles` per drawn frame | 0.94 M | 1.01 M |
+| `child.frame.bgfxCpuRender` p50 / p95 | 3.7 / 4.2 ms | 2.9 / 3.3 ms |
+| `child.frame.submitCpu` (draw recording, blit, readback request) p50 | 1.5 ms | 1.1 ms |
+| `child.frame.cropAndPublish` | ~0.5 ms | |
+| `child.gpu.textureMemoryMiB` | 82 | 70 |
+| GPU time (`bgfx` timer queries) | not reported on this backend | |
+| `child.frame.publishInterval` p50 / p95 | 34 / 40 ms | 34 / 38 ms |
+| `fx.frame.acceptInterval` p50 / p95 / max | 32 / 49 ms / 3.2 s | 32 / 48 ms / 3.2 s |
+| `fx.frame.cameraToAccepted` p50 / p95 / max | 49 / 66 / 83 ms | 49 / 65 / 66 ms |
+| `fx.frame.revisionLag` (camera revisions) | ~3 | ~3 |
+| `fx.frame.present` (FX setPixels and swap) p50 | 1.0 ms | 0.9 ms |
+| `parent.frame.takeLatest` (mmap read, copy, CRC) p50 | 0.01 ms | 0.003 ms |
+
+`child.frame.cropAndPublish` now starts before the staging crop, so on the staging path it
+includes the crop. Staging-path numbers measured after that change are not comparable with the
+~0.5 ms above.
+
+**Reading:**
+- The helper's own per-frame CPU work is about 5 ms, at 800x500, for ~5-6.5k draws and ~1 M
+  triangles. Delivery is paced at ~30 fps by the 33 ms draw interval and the 33 ms parent poll,
+  not by rendering. Camera-to-pixel latency is ~49 ms p50.
+- Lifting DRAW_INTERVAL and the poll (Phase 1 frame path) should reach 60 fps before draw count
+  matters. At a larger viewport or a longer view distance, the 5-6.5k draws (one submit per
+  placement and range, no culling) will become the next cost.
+- The 3.2 s maxima are single gaps right after the stationary phase. They coincide with late
+  object attaches.
+
+### 6. GUI JVM garbage collection (whole run, `-Xlog:gc`)
+
+Allocation rate:
+- ~46 MiB/s while only rotating.
+- ~55 MiB/s averaged over a scenario: 5.9 GiB in 109 s for Elwynn, including object prep.
+
+| Pause kind | n | p50 | p95 | max |
+| --- | ---: | ---: | ---: | ---: |
+| Young (Concurrent Start) (G1 Humongous Allocation) | 13 | 3.6 ms | 24.6 ms | 24.6 ms |
+| Young (Normal) | 9 | 3.9 ms | 4.9 ms | 4.9 ms |
+| Young (Prepare Mixed) | 1 | | | 39.3 ms |
+| Young (Concurrent Start) (Metadata GC Threshold) | 1 | | | 173.3 ms |
+| Remark / Cleanup | 1 / 1 | | | 3.1 / 0.1 ms |
+
+An earlier, shorter run on the same machine had one humongous-allocation pause of 171 ms.
+
+**Reading:**
+- Humongous allocations trigger concurrent cycles: whole-file byte arrays and multi-MiB tile and
+  image buffers. They cause the occasional 25-170 ms pause, which is visible as a dropped frame
+  or two.
+- The steady young pauses are small.
+- Pooling the big buffers, or moving them off-heap, removes most of these. The per-frame
+  1.6 MiB `int[]` is a humongous object at the default region size.
+
+### 7. Terrain texture refusals per map
+
+This is the real `terrainTextures` source, the same reader and composer the streaming material
+path uses. A tile counts 256 chunks, whether or not it is mostly ocean.
+
+| | Eastern Kingdoms (0) | Kalimdor (1) |
+| --- | ---: | ---: |
+| Tiles surveyed | 736 of 736 (198 s) | 486 of 988 (stopped at the 240 s budget) |
+| READY / PARTIAL / UNAVAILABLE tiles | 184 / 392 / 160 | 124 / 238 / 124 |
+| Textured chunks | 116,492 of 188,416 (61.8%) | 71,265 of 124,416 (57.3%) |
+
+Chunks lost, ranked:
+
+| Chunks lost | Eastern Kingdoms | Kalimdor | Rule |
+| --- | ---: | ---: | --- |
+| TEXTURE_METADATA / LAYER_SHAPE | 65,586 | 48,188 | MCNK tex0 must be exactly MCLY+MCAL (MCSH, MCMT and others refuse the chunk) |
+| TEXTURE_METADATA / CHUNK_SHAPE | 0 | 4,192 | |
+| TEXTURE_METADATA / LAYER_FLAGS | 194 | 3 | Layer flags other than 0 / 0x100 / 0x300 |
+| MASK_SUM, MASK_DATA, COLOR_ALPHA | 0 | 0 | |
+| Whole tile TEXTURE_PROFILE (MPHD, unknown chunks, MHID) | 24 tiles | 1 tile | |
+| ABSENT | 0 | 2 | |
+
+**Reading:** LAYER_SHAPE accounts for most of the refused chunks:
+- **Eastern Kingdoms:** 99.7% of refused chunks, over every tile.
+- **Kalimdor:** about 92%, from a partial sample. The survey stopped at the time budget after the
+  first 486 of 988 tiles in inventory order, so the sample is not uniform. CHUNK_SHAPE is most of
+  the rest.
+
+Accepting the extra MCSH/MCMT sub-chunks raises textured terrain from ~60% to ~96% of chunks.
+**That is fixed by #397.** A probe on the #397 branch found only 29 LAYER_SHAPE chunks remaining;
+that residual is tracked in #398. The alpha-sum and MCCV-alpha refusals the review suspected do
+not occur on these maps.
+
+## What this means for Phase 2
+
+0. **Terrain texture LAYER_SHAPE** brings textured chunks from ~60% to ~96%. Fixed by #397;
+   the residual is tracked in #398.
+1. **Source read latency and the serial lane** are the main cost of both terrain (~1 s/tile) and
+   objects (~7 s/tile, 85% reads). The candidate fixes:
+   - parallel reads or N in-flight tiles;
+   - a cheaper stat/open/read path;
+   - one root read instead of two;
+   - a session asset library keyed by FileDataID, so that overlapping city WMOs and shared doodad
+     models are read once.
+
+   Decode-side work (BLP once, CRC32C, no fsync) is worth a few percent.
+2. **Doodad caps:** 39-68% of qualified doodads are not drawn. Raising the caps grows prep time
+   roughly in proportion to the extra reads. Since this baseline, #416 and #418 cut per-read cost
+   about 5x on real data (19.3 to 3.6 ms), so #308 goes ahead before #380. #308 must report prep
+   time with the raised caps. #380, the session asset library, is what removes the per-tile
+   duplication of shared models and city WMOs.
+3. **Frame path**: 30 fps and 49 ms latency come from pacing, not from GPU work, so the Phase 1
+   frame quick wins apply as planned. Per-placement culling becomes necessary when caps rise or
+   the view distance grows.
+4. **GC**: pool or avoid humongous arrays (frame `int[]`, whole-file `byte[]`). Consider ZGC
+   after that.
+
+## Not measured, and limits
+
+- **GPU time:** the bgfx timer queries report 0 on the headless D3D11 helper. GPU cost is an
+  upper bound from frame pacing only. Use PIX or RenderDoc for the real figure.
+- **Presentation and refresh:** the FX side is the production image presentation without a
+  visible window, so compositor and display scanout are not included. Live-app fps and latency
+  with a window are for the owner to confirm visually.
+- **5x5 fill:** not run here. #276's macOS WAITING_CAPACITY hypothesis (serial pipeline) is
+  consistent with ~1 s/tile serial terrain plus objects taking the lane, but this doc does not
+  prove it. A follow-up run on the #276 branch with this probe would.
+- **Scope:** one build, one machine, one run per scenario. Creatures are off. HIGH object
+  textures are not measured.

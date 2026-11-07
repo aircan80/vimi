@@ -1469,6 +1469,156 @@ public final class WorldAudioPlaybackTest {
             throw new AssertionError("Fade-in at half volume lasted " + rising + " frames");
     }
 
+    /**
+     * An authored file whose decoder has finished once {@code nearAt} frames are left, as a real
+     * decoder process exits with only its buffered tail unread. Samples are {@code high} << 8.
+     */
+    private static final class EndingPcm extends FakePcm {
+        final long nearAt;
+        final int high;
+        volatile long endedAt;
+
+        EndingPcm(long frames, long nearAt, int high) {
+            super(frames);
+            this.nearAt = nearAt;
+            this.high = high;
+        }
+
+        @Override public boolean nearEnd() { return frames - sent <= nearAt; }
+
+        @Override
+        public int read(byte[] buffer, int offset, int length, BooleanSupplier canceled)
+                throws IOException {
+            if (closed) throw new java.util.concurrent.CancellationException();
+            if (sent >= frames) {
+                if (endedAt == 0) endedAt = System.nanoTime();
+                return -1;
+            }
+            int count = (int) Math.min(length / 2, frames - sent);
+            for (int i = 0; i < count; i++) {
+                buffer[offset + 2 * i] = (byte) high;
+                buffer[offset + 2 * i + 1] = 0;
+            }
+            sent += count;
+            return count * 2;
+        }
+    }
+
+    /** The first write of the second file: a half-level block right after a full one, or -1. */
+    private static int switchAt(java.util.List<Timed> writes) {
+        for (int i = 1; i < writes.size(); i++)
+            if (writes.get(i - 1).peak() >= 16000 && writes.get(i).peak() < 9000) return i;
+        return -1;
+    }
+
+    /**
+     * Near the end of a multi-file ambience file the next file opens ahead, so a slow open (200 ms
+     * here, as on a loaded machine) is off the critical path: the next file starts within about a
+     * block of the last one.
+     */
+    private static void lookAheadOpensNearTheEndAndHandsOverWithoutAGap() throws Exception {
+        var lines = new Timeline();
+        var decodes = new AtomicInteger();
+        var opened = new ConcurrentLinkedQueue<Long>();
+        var files = new ConcurrentLinkedQueue<EndingPcm>();
+        var playback = new WorldAudioPlayback(lines::open, (bytes, canceled) -> {
+            int n = decodes.incrementAndGet();
+            opened.add(System.nanoTime());
+            if (n >= 2) nap(200);
+            // 10 s files that finish decoding with 6 s left; files alternate sample levels.
+            var pcm = new EndingPcm(80_000, 48_000, n % 2 == 1 ? 0x40 : 0x20);
+            files.add(pcm);
+            return pcm;
+        }, status -> {});
+        playback.ambience.volume(1);
+        playback.ambience.track(weighted(WorldAreaAudio.Kind.AMBIENCE, 100, List.of(1L, 2L),
+                List.of(1, 1), 1, 0), FILES);
+        playback.ambience.enabled(true);
+        await(() -> switchAt(lines.line(0)) > 0, "second file did not play");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        var first = files.peek();
+        var times = opened.toArray(Long[]::new);
+        if (times.length < 2 || first.endedAt == 0 || times[1] >= first.endedAt)
+            throw new AssertionError("The next file was not opened before the first ended");
+        var writes = lines.line(0);
+        int switchAt = switchAt(writes);
+        long gap = TimeUnit.NANOSECONDS.toMillis(
+                writes.get(switchAt).nanos() - writes.get(switchAt - 1).nanos());
+        if (gap > 120)
+            throw new AssertionError("The 200 ms open was on the critical path: " + gap + " ms");
+    }
+
+    /**
+     * A look-ahead in flight is cancelled by a zone change; one already open but unused is
+     * closed when the track changes or the playback closes. No decoder is left open.
+     */
+    private static void lookAheadsAreCancelledOrClosedWhenNotUsed() throws Exception {
+        var lines = new Timeline();
+        var decodes = new AtomicInteger();
+        var aheadCanceled = new java.util.concurrent.CountDownLatch(1);
+        var playback = new WorldAudioPlayback(lines::open, (bytes, canceled) -> {
+            int n = decodes.incrementAndGet();
+            if (n == 2) {
+                try {
+                    return stalled(canceled);
+                } finally {
+                    aheadCanceled.countDown();
+                }
+            }
+            return n == 1 ? new EndingPcm(80_000, 80_000, 0x40) : new FakePcm(Long.MAX_VALUE);
+        }, status -> {});
+        playback.ambience.volume(1);
+        playback.ambience.track(weighted(WorldAreaAudio.Kind.AMBIENCE, 100, List.of(1L, 2L),
+                List.of(1, 1), 1, 0), FILES);
+        playback.ambience.enabled(true);
+        await(() -> decodes.get() == 2, "no look-ahead started");
+        playback.ambience.track(weighted(WorldAreaAudio.Kind.AMBIENCE, 200, List.of(3L, 4L),
+                List.of(1, 1), 1, 0), FILES);
+        if (!aheadCanceled.await(10, TimeUnit.SECONDS))
+            throw new AssertionError("A zone change left the look-ahead running");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+
+        var streams = new ConcurrentLinkedQueue<FakePcm>();
+        var unused = new WorldAudioPlayback(lines::open, (bytes, canceled) -> {
+            var pcm = streams.isEmpty() ? new EndingPcm(80_000, 80_000, 0x40)
+                    : new FakePcm(Long.MAX_VALUE);
+            streams.add(pcm);
+            return pcm;
+        }, status -> {});
+        unused.ambience.track(weighted(WorldAreaAudio.Kind.AMBIENCE, 100, List.of(1L, 2L),
+                List.of(1, 1), 1, 0), FILES);
+        unused.ambience.enabled(true);
+        await(() -> streams.size() == 2, "no look-ahead opened");
+        unused.closeAsync().get(10, TimeUnit.SECONDS);
+        await(() -> streams.stream().allMatch(s -> s.closed), "an unused look-ahead leaked");
+    }
+
+    /** A failed look-ahead falls back to opening at the end of the file; the status recovers. */
+    private static void failedLookAheadFallsBackToOpenAtTheEnd() throws Exception {
+        var lines = new Timeline();
+        var reads = new AtomicInteger();
+        var decodes = new AtomicInteger();
+        var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        WorldAudioPlayback.Source flaky = (id, token) -> reads.incrementAndGet() == 2
+                ? CompletableFuture.completedFuture(new WorldAreaAudio.AudioFile(id,
+                        WorldAreaAudio.FileState.UNAVAILABLE, null,
+                        "Audio file #" + id + " is NOT_FOUND."))
+                : FILES.file(id, token);
+        var playback = new WorldAudioPlayback(lines::open, (bytes, canceled) -> {
+            decodes.incrementAndGet();
+            return new EndingPcm(4000, 4000, 0x40);
+        }, statuses::add);
+        playback.ambience.track(weighted(WorldAreaAudio.Kind.AMBIENCE, 100, List.of(1L, 2L),
+                List.of(1, 1), 1, 0), flaky);
+        playback.ambience.enabled(true);
+        await(() -> decodes.get() >= 3, "playback stopped after the failed look-ahead");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        if (statuses.stream().anyMatch(s -> s.message().contains("NOT_FOUND")))
+            throw new AssertionError("A quiet look-ahead failure was shown: " + statuses);
+        if (statuses.stream().filter(WorldAudioPlayback.Status::playing).count() < 2)
+            throw new AssertionError("Playback did not report playing again: " + statuses);
+    }
+
     public static void main(String[] args) throws Exception {
         probeMatchesWindowsLinuxAndMonoMixerFormats();
         downmixAveragesStereoFrames();
@@ -1503,6 +1653,9 @@ public final class WorldAudioPlaybackTest {
         failuresAfterTheFirstWriteReleaseTheOldTrack();
         closeDuringAHoldWithAStalledNextTrack();
         fadesLastTheSameAtAnyVolume();
+        lookAheadOpensNearTheEndAndHandsOverWithoutAGap();
+        lookAheadsAreCancelledOrClosedWhenNotUsed();
+        failedLookAheadFallsBackToOpenAtTheEnd();
         System.out.println("World audio playback: fades, kit continuity, ambience loops,"
                 + " recorded silence, mute, missing sources, missing device, dead lines,"
                 + " path-free status, mono downmix, recorded weights and kit volume, reopen status,"
@@ -1510,6 +1663,6 @@ public final class WorldAudioPlaybackTest {
                 + ", crossfade hold, curves, mute, hold bound, failure, superseded loads, single-line"
                 + " devices, looping fade-out, yield of every tail, format refusal, heard ends,"
                 + " mid-fade replacement, several tails, failures after audio, equal-power"
-                + " fixed-time fades and owned close passed");
+                + " fixed-time fades, near-end look-ahead and owned close passed");
     }
 }
