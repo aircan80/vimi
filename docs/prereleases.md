@@ -108,8 +108,10 @@ ALSA, Pango/Cairo, fontconfig/freetype/HarfBuzz, the C++ runtime, xdg-utils), wi
 `dlopen`. Left alone, jpackage derives `Depends` from the whole shared-library closure
 using the build runner's Ubuntu 24.04 package names, which do not install on Debian or
 Ubuntu 22.04. Before building the deb, the packager reads the `NEEDED` libraries of
-every ELF file in the app image and in its JARs, and fails naming any library that is
-neither bundled in the image nor mapped to a package in `DEB_SONAME_PACKAGES`. It also
+every ELF file in the app image and in its JARs that loads on the target (ELF class,
+CPU and Linux OS ABI; JARs such as zstd-jni also carry FreeBSD and other-CPU natives,
+which are skipped and counted), and fails naming any library that is neither bundled
+in the image nor mapped to a package in `DEB_SONAME_PACKAGES`. It also
 fails if the built deb's `Depends`/`Recommends` or the rpm's `Requires` differ from
 their allowlists. The original pinned set was checked with `apt-get install -s` on
 Debian 12, Debian 13, Ubuntu 22.04 and Ubuntu 24.04 for amd64 and arm64.

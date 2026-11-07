@@ -262,12 +262,32 @@ def check_deb_depends(deb):
 
 
 ELF_MAGIC = b"\x7fELF"
+# ELF class, byte order and e_machine of each Linux packaging arch: EM_X86_64, EM_AARCH64.
+ELF_TARGETS = {"x64": (2, 1, 62), "arm64": (2, 1, 183)}
+# EI_OSABI values a Linux loader accepts: System V and GNU/Linux.
+ELF_LINUX_ABIS = (0, 3)
+
+
+def elf_target(data):
+    """(class, byte order, OS ABI, e_machine) from an ELF header."""
+    if len(data) < 0x14 or data[:4] != ELF_MAGIC:
+        raise ValueError("truncated or not an ELF header")
+    machine, = struct.unpack_from("<H" if data[5] == 1 else ">H", data, 0x12)
+    return data[4], data[5], data[7], machine
+
+
+def loads_on(data, arch):
+    """Whether a Linux loader for this packaging arch would load the ELF (not FreeBSD, not another CPU)."""
+    wide, order, abi, machine = elf_target(data)
+    return (wide, order, machine) == ELF_TARGETS[arch] and abi in ELF_LINUX_ABIS
 
 
 def elf_dynamic(data):
     """(SONAME or None, [NEEDED...]) of an ELF shared object or executable; None if not a dynamic ELF."""
-    if data[:4] != ELF_MAGIC or data[4] not in (1, 2) or data[5] not in (1, 2):
+    if data[:4] != ELF_MAGIC:
         return None
+    if len(data) < 0x40 or data[4] not in (1, 2) or data[5] not in (1, 2):
+        raise ValueError("truncated ELF header or unknown ELF class/byte order")
     wide = data[4] == 2
     order = "<" if data[5] == 1 else ">"
     if wide:
@@ -297,7 +317,11 @@ def elf_dynamic(data):
         if tag == 5:
             strtab = value
         entries.append((tag, value))
-    file_offset = next((offset + strtab - vaddr for vaddr, offset, size in loads if vaddr <= (strtab or 0) < vaddr + size), None)
+    if not any(tag in (1, 14) for tag, _ in entries):
+        return None, []
+    if strtab is None:
+        raise ValueError("ELF dynamic section has NEEDED or SONAME entries but no string table")
+    file_offset = next((offset + strtab - vaddr for vaddr, offset, size in loads if vaddr <= strtab < vaddr + size), None)
     if file_offset is None:
         raise ValueError("ELF dynamic section has no loadable string table")
 
@@ -329,11 +353,22 @@ def image_elves(root):
                     yield f"{path.relative_to(root).as_posix()}!/{entry.filename}", archive.read(entry)
 
 
-def required_deb_packages(elves):
-    """Deb packages the NEEDED sonames of these ELFs require; fails naming any unmapped library."""
-    provided, needed = set(), {}
+def required_deb_packages(elves, arch):
+    """(deb packages, skipped count) for the NEEDED sonames of the ELFs that load on this arch.
+
+    JARs such as zstd-jni carry natives for other operating systems and CPUs; those are skipped
+    so they neither add foreign sonames (FreeBSD's libc.so.7) nor provide a library by name.
+    Fails naming any unmapped library or unreadable ELF.
+    """
+    provided, needed, skipped = set(), {}, 0
     for location, data in elves:
-        dynamic = elf_dynamic(data)
+        try:
+            if not loads_on(data, arch):
+                skipped += 1
+                continue
+            dynamic = elf_dynamic(data)
+        except (ValueError, struct.error, IndexError, OverflowError, TypeError) as error:
+            raise ValueError(f"Cannot read ELF {location}: {error}") from error
         if dynamic is None:
             continue
         soname, libraries = dynamic
@@ -349,7 +384,7 @@ def required_deb_packages(elves):
     missing = sorted(packages - set(DEB_DEPENDS))
     if missing:
         raise ValueError(f"deb Depends lacks packages the image needs: {missing}")
-    return packages
+    return packages, skipped
 
 
 def check_rpm_requires(rpm):
@@ -445,8 +480,9 @@ def main():
     stem = f"VibeMiner-{args.tag}-{system}-{arch}"
     assets = []
     if system == "linux":
-        packages = required_deb_packages(image_elves(image))
-        print(f"Image NEEDED sonames map to {len(packages)} declared deb packages")
+        packages, skipped = required_deb_packages(image_elves(image), arch)
+        print(f"Image NEEDED sonames map to {len(packages)} declared deb packages "
+              f"({skipped} ELFs for other operating systems or CPUs skipped)")
         portable = output / f"{stem}.tar.gz"
         with tarfile.open(portable, "w:gz") as archive:
             archive.add(image, arcname="VibeMiner")

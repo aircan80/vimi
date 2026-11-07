@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 import package_app
@@ -122,7 +123,7 @@ class LinuxPackageMetadataTest(unittest.TestCase):
         self.assertEqual(('libc6', 'libasound2t64 | libasound2'), package_app.parse_depends('libc6,  libasound2t64|libasound2 '))
 
 
-def elf(needed, soname=None, wide=True, order='<', base=0x400000):
+def elf(needed, soname=None, wide=True, order='<', base=0x400000, machine=None, abi=0):
     """Minimal dynamic ELF: one PT_LOAD mapping the file at base, one PT_DYNAMIC."""
     strings, offsets = b'\0', {}
     for name in [soname, *needed]:
@@ -136,13 +137,14 @@ def elf(needed, soname=None, wide=True, order='<', base=0x400000):
     dyn = order + ('qQ' if wide else 'iI')
     body = b''.join(struct.pack(dyn, tag, value) for tag, value in entries)
     size = dynamic + len(body)
-    ident = b'\x7fELF' + bytes([2 if wide else 1, 1 if order == '<' else 2, 1]) + bytes(9)
+    ident = b'\x7fELF' + bytes([2 if wide else 1, 1 if order == '<' else 2, 1, abi]) + bytes(8)
+    machine = machine if machine is not None else (62 if wide else 40)
     if wide:
-        head = ident + struct.pack(order + 'HHIQQQIHHHHHH', 3, 62, 1, 0, header_size, 0, 0, header_size, phentsize, 2, 0, 0, 0)
+        head = ident + struct.pack(order + 'HHIQQQIHHHHHH', 3, machine, 1, 0, header_size, 0, 0, header_size, phentsize, 2, 0, 0, 0)
         phdrs = struct.pack(order + 'IIQQQQQQ', 1, 5, 0, base, base, size, size, 0x1000)
         phdrs += struct.pack(order + 'IIQQQQQQ', 2, 6, dynamic, base + dynamic, base + dynamic, len(body), len(body), 8)
     else:
-        head = ident + struct.pack(order + 'HHIIIIIHHHHHH', 3, 40, 1, 0, header_size, 0, 0, header_size, phentsize, 2, 0, 0, 0)
+        head = ident + struct.pack(order + 'HHIIIIIHHHHHH', 3, machine, 1, 0, header_size, 0, 0, header_size, phentsize, 2, 0, 0, 0)
         phdrs = struct.pack(order + 'IIIIIIII', 1, 0, base, base, size, size, 5, 0x1000)
         phdrs += struct.pack(order + 'IIIIIIII', 2, dynamic, base + dynamic, base + dynamic, len(body), len(body), 6, 4)
     data = head + phdrs + strings
@@ -178,12 +180,12 @@ class DebSonameMappingTest(unittest.TestCase):
                  ('lib/libfreetype.so', elf(['libc.so.6'], 'libfreetype.so')),
                  ('lib/libjava.so', elf(['libc.so.6'])),
                  ('lib/app/native/javafx/libglass.so', elf(['libharfbuzz.so.0', 'libX11.so.6'], 'libglass.so'))]
-        self.assertEqual({'libc6', 'libharfbuzz0b', 'libx11-6'}, package_app.required_deb_packages(elves))
+        self.assertEqual(({'libc6', 'libharfbuzz0b', 'libx11-6'}, 0), package_app.required_deb_packages(elves, 'x64'))
 
     def test_unmapped_soname_fails_naming_library_and_file(self):
         elves = [('lib/app/native/javafx/libglass.so', elf(['libwayland-client.so.0', 'libc.so.6'], 'libglass.so'))]
         with self.assertRaisesRegex(ValueError, r'libwayland-client\.so\.0 \(needed by lib/app/native/javafx/libglass\.so\)'):
-            package_app.required_deb_packages(elves)
+            package_app.required_deb_packages(elves, 'x64')
 
     def test_every_mapped_package_is_declared(self):
         self.assertLessEqual(set(package_app.DEB_SONAME_PACKAGES.values()), set(package_app.DEB_DEPENDS))
@@ -201,7 +203,45 @@ class DebSonameMappingTest(unittest.TestCase):
                 jar.writestr('org/lwjgl/bgfx/BGFX.class', b'\xca\xfe\xba\xbe')
             locations = [location for location, _ in package_app.image_elves(image)]
             self.assertEqual(['lib/app/lwjgl-bgfx-natives-linux.jar!/linux/x64/org/lwjgl/bgfx/libbgfx.so', 'lib/libjava.so'], locations)
-            self.assertEqual({'libc6', 'libstdc++6', 'libgcc-s1'}, package_app.required_deb_packages(package_app.image_elves(image)))
+            self.assertEqual(({'libc6', 'libstdc++6', 'libgcc-s1'}, 0), package_app.required_deb_packages(package_app.image_elves(image), 'x64'))
+
+    def test_natives_for_other_systems_and_cpus_in_a_jar_are_skipped(self):
+        with tempfile.TemporaryDirectory() as temp:
+            image = Path(temp) / 'VibeMiner'
+            (image / 'lib/app').mkdir(parents=True)
+            with zipfile.ZipFile(image / 'lib/app/zstd-jni-1.5.7-6.jar', 'w') as jar:
+                jar.writestr('linux/amd64/libzstd-jni.so', elf(['libpthread.so.0', 'libc.so.6']))
+                jar.writestr('linux/aarch64/libzstd-jni.so', elf(['libc.so.6', 'libaarch64-only.so.1'], machine=183))
+                jar.writestr('linux/i386/libzstd-jni.so', elf(['libc.so.6', 'libi386-only.so.1'], wide=False, machine=3))
+                jar.writestr('linux/s390x/libzstd-jni.so', elf(['libs390x-only.so.1'], order='>', machine=22))
+                jar.writestr('freebsd/amd64/libzstd-jni.so', elf(['libthr.so.3', 'libc.so.7'], abi=9))
+                # A foreign-arch library must not hide a real dependency by name.
+                jar.writestr('linux/aarch64/libwayland-client.so.0', elf(['libc.so.6'], 'libwayland-client.so.0', machine=183))
+            elves = list(package_app.image_elves(image))
+            self.assertEqual(({'libc6'}, 5), package_app.required_deb_packages(elves, 'x64'))
+            with self.assertRaisesRegex(ValueError, 'libaarch64-only'):
+                package_app.required_deb_packages(elves, 'arm64')
+            (image / 'lib/libglass.so').write_bytes(elf(['libwayland-client.so.0']))
+            with self.assertRaisesRegex(ValueError, r'libwayland-client\.so\.0 \(needed by lib/libglass\.so\)'):
+                package_app.required_deb_packages(package_app.image_elves(image), 'x64')
+
+    def test_gnu_linux_os_abi_loads(self):
+        self.assertEqual(({'libc6'}, 0), package_app.required_deb_packages([('lib/libx.so', elf(['libc.so.6'], abi=3))], 'x64'))
+
+    def test_malformed_elf_fails_naming_the_location(self):
+        valid = elf(['libc.so.6'], 'libx.so')
+        no_strtab = elf(['libc.so.6'], base=0)
+        no_strtab = no_strtab[:-32] + struct.pack('<qQ', 0, 0) + struct.pack('<qQ', 0, 0)
+        for name, data in (('header', b'\x7fELF\x02'), ('phdrs', valid[:70]), ('strtab', no_strtab),
+                           ('dynamic', valid[:valid.index(b'libx.so') + 3])):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, f'Cannot read ELF app/{name}.jar!/lib.so: '):
+                package_app.required_deb_packages([(f'app/{name}.jar!/lib.so', data)], 'x64')
+
+    def test_mapped_package_missing_from_depends_fails(self):
+        mapping = dict(package_app.DEB_SONAME_PACKAGES, **{'libvulkan.so.1': 'libvulkan1'})
+        with mock.patch.object(package_app, 'DEB_SONAME_PACKAGES', mapping), \
+                self.assertRaisesRegex(ValueError, r"deb Depends lacks packages the image needs: \['libvulkan1'\]"):
+            package_app.required_deb_packages([('lib/libbgfx.so', elf(['libvulkan.so.1']))], 'x64')
 
 
 class JvmOptionsTest(unittest.TestCase):
