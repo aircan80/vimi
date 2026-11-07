@@ -87,7 +87,19 @@ final class WorldStreamObjectsCullProof {
             var allFrame = frame(owner, reader, NONCE, WorldStreamObjectsMaterialProof.VIEW);
             int drawsAll = allFrame.draws;
             var all = owner.frameCounts();
+            // The submit pattern before instancing (#382): every placement its own draw.
+            owner.objectInstancing(false);
+            var perPlacementFrame =
+                    frame(owner, reader, NONCE, WorldStreamObjectsMaterialProof.VIEW);
+            var perPlacement = owner.frameCounts();
+            owner.objectInstancing(true);
             owner.objectCulling(true);
+            // No instance data left this frame: nothing visible is drawn, in either pass, and
+            // both visible placements are counted as dropped.
+            owner.instanceLimit(0);
+            frame(owner, reader, NONCE, WorldStreamObjectsMaterialProof.VIEW);
+            var starved = owner.frameCounts();
+            owner.instanceLimit(Integer.MAX_VALUE);
             int placements = exterior.placements();
             require(
                     culled.placements() == placements && all.placements() == placements,
@@ -99,9 +111,26 @@ final class WorldStreamObjectsCullProof {
             require(
                     culled.culled() == placements - 2 && culled.objectSubmits() == 3 + ladders,
                     "Culled counts " + culled);
+            // Instanced (#382): model 0's cutout and opaque ranges draw once for all its
+            // placements, the ladders once; blended ranges stay one placement per draw.
             require(
-                    all.culled() == 0 && all.objectSubmits() == 3 * (placements - 1) + ladders,
+                    culled.instances() == 3 && culled.instancesDropped() == 0,
+                    "Culled instances " + culled);
+            require(
+                    all.culled() == 0
+                            && all.objectSubmits() == 2 + ladders + (placements - 1)
+                            && all.instances() == 2 * placements - 1
+                            && all.instancesDropped() == 0,
                     "Unculled counts " + all);
+            require(
+                    perPlacement.objectSubmits() == 3 * (placements - 1) + ladders
+                            && perPlacement.instances() == all.instances(),
+                    "Per-placement counts " + perPlacement);
+            require(
+                    starved.objectSubmits() == 0
+                            && starved.instances() == 0
+                            && starved.instancesDropped() == 2,
+                    "Starved counts " + starved);
             // Terrain eye, projection and rebase plus object eye and projection: once per frame,
             // whatever the number of slots and placements drawn.
             require(
@@ -132,6 +161,15 @@ final class WorldStreamObjectsCullProof {
                 }
             }
             require(differing == 0, "Culling changed " + differing + " pixels");
+            var instanced = allFrame.pixels;
+            var separate = perPlacementFrame.pixels;
+            int changed = 0;
+            for (int i = 0; i < WIDTH * HEIGHT; i++) {
+                if (instanced.get(i) != separate.get(i)) {
+                    changed++;
+                }
+            }
+            require(changed == 0, "Instancing changed " + changed + " pixels");
             // The opaque quad in the middle is drawn (material proof colour), so the comparison is
             // not of two empty frames.
             int middle = a.get(HEIGHT / 2 * WIDTH + 400);
@@ -203,6 +241,14 @@ final class WorldStreamObjectsCullProof {
                             + culled.objectSubmits()
                             + "/"
                             + all.objectSubmits()
+                            + "/"
+                            + perPlacement.objectSubmits()
+                            + " instances="
+                            + all.instances()
+                            + " starvedDropped="
+                            + starved.instancesDropped()
+                            + " instancedPixelsChanged="
+                            + changed
                             + " cameraUniforms="
                             + all.cameraUniforms()
                             + " terrainChunks="

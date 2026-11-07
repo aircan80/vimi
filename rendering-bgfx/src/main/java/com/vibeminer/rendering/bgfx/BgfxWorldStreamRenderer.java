@@ -113,7 +113,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     static final int MAX_TICKETS = 64;
 
     /** One geometry upload slice in bytes: whole vertices and whole indices. */
-    static final int GEOMETRY_CHUNK = 6144 * WorldStreamPackedTile.VERTEX_BYTES;
+    static final int GEOMETRY_CHUNK = 4096 * WorldStreamPackedTile.VERTEX_BYTES;
 
     private static final short INVALID = -1;
 
@@ -168,9 +168,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     /**
      * Exterior objects of the last drawn frame: placements tested in the opaque/cutout pass, how
      * many of them the CPU cull skipped, object draw submits over both passes, and how many times a
-     * camera uniform (eye, projection, rebase, for terrain and objects) was set; terrain chunks
-     * tested and culled and terrain submits; and portal walks of placed roots with a portal set
-     * with the interior meshes they culled (#383 step 3b), per placement.
+     * camera uniform (eye, projection, rebase, for terrain and objects) was set; terrain chunk runs
+     * tested, culled and submitted; object instances drawn over both passes, and placements not
+     * drawn because the frame's transient instance data ran out (#382); and portal walks of placed
+     * roots with a portal set with the interior meshes they culled (#383 step 3b), per placement.
      */
     record FrameCounts(
             int placements,
@@ -180,8 +181,23 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             int chunks,
             int chunksCulled,
             int terrainSubmits,
+            int instances,
+            int instancesDropped,
             int portalWalks,
             int portalMeshesCulled) {}
+
+    /**
+     * Object instance data of one frame at the caps (#382): every placement of every resident slot
+     * (all may be in view), once in the opaque/cutout pass and once in the sorted pass.
+     */
+    static final int MAX_FRAME_INSTANCE_BYTES =
+            frameInstanceBytes(SLOT_COUNT, WorldStreamObjectsFile.MAX_PLACEMENTS);
+
+    /** Instance bytes of one frame for {@code tiles} resident tiles of {@code placements} each. */
+    static int frameInstanceBytes(int tiles, int placements) {
+        return Math.multiplyExact(
+                Math.multiplyExact(tiles, placements), WorldObjectInstances.STRIDE * 2);
+    }
 
     /**
      * Most bytes one step call may issue: two geometry chunks plus one atlas step for terrain, or
@@ -406,6 +422,18 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         /** Whether any model is blended. */
         final boolean anyBlended;
 
+        /** Per model: whether any of its ranges is drawn in the opaque/cutout pass. */
+        final boolean[] unsortedModels;
+
+        /**
+         * Per-frame grouping scratch (#382), sized once per tile generation: visibility, placements
+         * dropped this frame for lack of instance data (so the sorted pass skips them too), visible
+         * placements by model, and each model's start in that order.
+         */
+        final boolean[] visible, dropped;
+
+        final int[] order, starts;
+
         /** Per model: its portal traversal (#383), or null for a model without a portal set. */
         final com.vibeminer.rendering.world.WmoPortalTraversal[] portals;
 
@@ -451,6 +479,22 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 any |= blended;
             }
             anyBlended = any;
+            unsortedModels = new boolean[models.length / 2];
+            for (int m = 0; m < unsortedModels.length; m++) {
+                for (int mesh = models[m * 2]; mesh < models[m * 2] + models[m * 2 + 1]; mesh++) {
+                    for (int r = meshes[mesh * 6 + 4];
+                            r < meshes[mesh * 6 + 4] + meshes[mesh * 6 + 5];
+                            r++) {
+                        unsortedModels[m] |=
+                                !WorldStreamObjectsFile.sorted(
+                                        ranges[r * WorldStreamObjectsFile.RANGE_INTS + 3]);
+                    }
+                }
+            }
+            visible = new boolean[placementModels.length];
+            dropped = new boolean[placementModels.length];
+            order = new int[placementModels.length];
+            starts = new int[models.length / 2 + 1];
             portals = new com.vibeminer.rendering.world.WmoPortalTraversal[blendedModels.length];
             for (int m = 0; m < portals.length; m++) {
                 portals[m] = source.portals(m);
@@ -509,6 +553,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private short splatDummyArray = INVALID;
     // Fog shared by terrain, objects and the sky's horizon (WorldFog).
     private short worldFog = INVALID, worldFogRange = INVALID, worldSkyTop = INVALID;
+    private short worldLight = INVALID;
+    private WorldLight light = WorldLight.FIXED;
+    private boolean terrainLighting = TERRAIN_LIGHTING;
     private short skyTop = INVALID, skyHorizon = INVALID, skyView = INVALID;
     private short wmoFog = INVALID, wmoFogRange = INVALID, wmoSkyTop = INVALID;
     // Read once per frame; #177 sets it from the light tables (fog(WorldFog)).
@@ -529,7 +576,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private int targetSamples = 1;
     // Optional exterior objects pass (existing world-wmo shaders); INVALID program disables it.
     private short wmoProgram = INVALID, wmoEye = INVALID, wmoProjection = INVALID;
-    private short wmoModel = INVALID, wmoNormal = INVALID, wmoSampler = INVALID;
+    private short wmoSampler = INVALID;
     private short wmoMaterial = INVALID;
     // Relative shader family and profile of the objects pass, named in its stderr diagnostics.
     private String wmoFamily = "world-wmo/";
@@ -548,9 +595,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private LateUpload late;
     private long content, nextTag, liveBytes, peakBytes, maximumStepNanos, objectsRevision;
     private int peakStepBytes;
-    private boolean closed, callbackFreed, objectCulling = true;
+    private boolean closed, callbackFreed, objectCulling = true, objectInstancing = true;
     private boolean vertexColours = VERTEX_COLOURS;
-    private FrameCounts lastFrame = new FrameCounts(0, 0, 0, 0, 0, 0, 0, 0, 0);
+    private FrameCounts lastFrame = new FrameCounts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    private int frameInstances, frameInstancesDropped;
+    // Proof seam: at most this many instances per frame (bgfx's own budget still applies).
+    private int instanceLimit = Integer.MAX_VALUE;
 
     /** Portal culling of instance interiors (#383 step 3b); its arrays are reused per frame. */
     private final WorldStreamPortalCulling portalCulling = new WorldStreamPortalCulling();
@@ -646,6 +696,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             worldSkyTop = valid(bgfx_create_uniform("u_worldSkyTop", BGFX_UNIFORM_TYPE_VEC4, 1));
             worldFogRange =
                     valid(bgfx_create_uniform("u_worldFogRange", BGFX_UNIFORM_TYPE_VEC4, 1));
+            worldLight = valid(bgfx_create_uniform("u_worldLight", BGFX_UNIFORM_TYPE_VEC4, 3));
             skyTop = valid(bgfx_create_uniform("u_skyTop", BGFX_UNIFORM_TYPE_VEC4, 1));
             skyHorizon = valid(bgfx_create_uniform("u_skyHorizon", BGFX_UNIFORM_TYPE_VEC4, 1));
             skyView = valid(bgfx_create_uniform("u_skyView", BGFX_UNIFORM_TYPE_VEC4, 1));
@@ -681,8 +732,6 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             wmoEye = valid(bgfx_create_uniform("u_wmoEye", BGFX_UNIFORM_TYPE_MAT4, 1));
             wmoProjection =
                     valid(bgfx_create_uniform("u_wmoProjection", BGFX_UNIFORM_TYPE_MAT4, 1));
-            wmoModel = valid(bgfx_create_uniform("u_wmoModel", BGFX_UNIFORM_TYPE_MAT4, 1));
-            wmoNormal = valid(bgfx_create_uniform("u_wmoNormal", BGFX_UNIFORM_TYPE_MAT4, 1));
             wmoSampler = valid(bgfx_create_uniform("s_wmoDiffuse", BGFX_UNIFORM_TYPE_SAMPLER, 1));
             wmoMaterial = valid(bgfx_create_uniform("u_wmoMaterial", BGFX_UNIFORM_TYPE_VEC4, 1));
             wmoFog = valid(bgfx_create_uniform("u_wmoFog", BGFX_UNIFORM_TYPE_VEC4, 1));
@@ -702,21 +751,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
         for (short uniform :
                 new short[] {
-                    wmoEye,
-                    wmoProjection,
-                    wmoModel,
-                    wmoNormal,
-                    wmoSampler,
-                    wmoMaterial,
-                    wmoFog,
-                    wmoSkyTop,
-                    wmoFogRange
+                    wmoEye, wmoProjection, wmoSampler, wmoMaterial, wmoFog, wmoSkyTop, wmoFogRange
                 }) {
             if (uniform != INVALID) {
                 bgfx_destroy_uniform(uniform);
             }
         }
-        wmoProgram = wmoEye = wmoProjection = wmoModel = wmoNormal = wmoSampler = INVALID;
+        wmoProgram = wmoEye = wmoProjection = wmoSampler = INVALID;
         wmoMaterial = wmoFog = wmoFogRange = wmoSkyTop = INVALID;
     }
 
@@ -1579,6 +1620,31 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         return horizonDrawn ? full.withHorizon(WorldStreamHorizon.FOG_END) : full;
     }
 
+    /**
+     * Terrain lighting (#373) from MCNR normals and the World light: on by default, as the client
+     * draws; {@code -Dvimi.world.terrainLighting=false}, forwarded by the application to this
+     * helper, draws terrain at its albedo for comparison.
+     */
+    static final boolean TERRAIN_LIGHTING =
+            terrainLightingEnabled(System.getProperty("vimi.world.terrainLighting"));
+
+    /** Only {@code false} (any letter case) turns terrain lighting off. */
+    static boolean terrainLightingEnabled(String property) {
+        return !"false".equalsIgnoreCase(property);
+    }
+
+    /** The light of the next frames; #177 feeds it from the light tables. */
+    void light(WorldLight value) {
+        requireOwner();
+        light = java.util.Objects.requireNonNull(value);
+    }
+
+    /** Proof seam: overrides {@link #TERRAIN_LIGHTING} for this renderer. */
+    void terrainLighting(boolean enabled) {
+        requireOwner();
+        terrainLighting = enabled;
+    }
+
     /** The sample count of the target the owner created; above 1 enables alpha to coverage. */
     void targetSamples(int samples) {
         requireOwner();
@@ -1602,6 +1668,22 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     void objectCulling(boolean enabled) {
         requireOwner();
         objectCulling = enabled;
+    }
+
+    /**
+     * Proof seam: false draws every placement as its own one-instance draw, the submit pattern
+     * before instancing (#382), so a proof can compare draw counts and pixels. Production never
+     * turns it off.
+     */
+    void objectInstancing(boolean enabled) {
+        requireOwner();
+        objectInstancing = enabled;
+    }
+
+    /** Proof seam: caps the instances drawn per frame, to exercise the overflow path. */
+    void instanceLimit(int limit) {
+        requireOwner();
+        instanceLimit = limit;
     }
 
     /**
@@ -1916,6 +1998,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             bgfx_set_uniform(worldFog, stack.floats(fog.fogUniform()), 1);
             bgfx_set_uniform(worldSkyTop, stack.floats(fog.topUniform()), 1);
             bgfx_set_uniform(worldFogRange, stack.floats(fog.rangeUniform()), 1);
+            bgfx_set_uniform(worldLight, stack.floats(light.uniform(terrainLighting)), 3);
             var view =
                     objectCulling
                             ? WorldStreamObjectCulling.View.of(camera, width, height, fog.cut())
@@ -1945,6 +2028,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             // nothing on the frame's MemoryStack, whatever the number of placements.
             var frame = wmoProgram == INVALID ? null : ObjectFrame.on(stack, targetSamples > 1);
             framePlacements = frameCulled = frameObjectSubmits = 0;
+            frameInstances = frameInstancesDropped = 0;
             framePortalWalks = framePortalCulled = 0;
             portalCulling.frame(view);
             frameMaterial = -1;
@@ -2011,6 +2095,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         frameChunks,
                         frameChunksCulled,
                         frameTerrainSubmits,
+                        frameInstances,
+                        frameInstancesDropped,
                         framePortalWalks,
                         framePortalCulled);
         return new Ticket(cameraRevision, content, policy, width, height);
@@ -2285,8 +2371,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 continue;
             }
             for (int p = 0; p < objects.placementModels.length; p++) {
-                if (!objects.blendedModels[objects.placementModels[p]]
-                        || view != null && !view.visible(objects.spheres, p)) {
+                int m = objects.placementModels[p];
+                // A placement the opaque/cutout pass dropped for lack of instance data is skipped
+                // here too, so it never draws its glass without its walls (#382).
+                if (!objects.blendedModels[m]
+                        || view != null && !view.visible(objects.spheres, p)
+                        || objects.unsortedModels[m] && objects.dropped[p]) {
                     continue;
                 }
                 int at = p * WorldStreamObjectsFile.PLACEMENT_DOUBLES;
@@ -2304,12 +2394,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             long key = blendKeys[i];
             var objects = slots[active.get(blendPosition(key)).slot()].objects;
             int p = blendPlacement(key);
-            // The opaque pass walked this placement's portals this frame.
-            drawPlacement(
+            // Still one placement at a time, back to front: a one-instance draw. A portal root
+            // (#383) reuses the groups its opaque pass walked this frame.
+            frame.single[0] = p;
+            int drawn = instances(frame, objects, frame.single, 0, 1, origin);
+            drawRanges(
                     frame,
                     objects,
-                    p,
-                    origin,
+                    objects.placementModels[p],
+                    drawn,
                     true,
                     view == null ? null : objects.portalVisible[p]);
         }
@@ -2317,43 +2410,118 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /**
      * Opaque and cutout BASIC exterior objects after all terrain and before water, sharing
-     * terrain's camera, reversed depth and float origin. Each model matrix is the double placement
-     * position minus that origin, cast to float once.
+     * terrain's camera, reversed depth and float origin. The visible placements are grouped by
+     * model (#382) and each model's opaque and cutout ranges are drawn once, with all its visible
+     * placements as instances. With instancing off (a proof seam) every placement is its own
+     * one-instance draw, as before.
      */
     private void drawObjects(
             ObjectFrame frame,
             WorldStreamObjectCulling.View view,
             SlotObjects objects,
             TerrainScene.Origin origin) {
-        for (int p = 0; p < objects.placementModels.length; p++) {
+        int placements = objects.placementModels.length;
+        for (int p = 0; p < placements; p++) {
             framePlacements++;
-            if (view != null && !view.visible(objects.spheres, p)) {
+            objects.visible[p] = view == null || view.visible(objects.spheres, p);
+            objects.dropped[p] = false;
+            if (!objects.visible[p]) {
                 frameCulled++;
+            }
+        }
+        // Portal roots (#383 step 3b) walk their portals from the camera first. Each has its own
+        // visible set, so it leaves the model groups and draws as its own one-instance draw that
+        // skips the interior meshes of groups the walk does not reach; the sorted pass reuses the
+        // set, and a root dropped for lack of instance data is skipped there too.
+        if (view != null) {
+            for (int p = 0; p < placements; p++) {
+                var groups = objects.portalVisible[p];
+                if (groups == null || !objects.visible[p]) {
+                    continue;
+                }
+                objects.visible[p] = false;
+                int m = objects.placementModels[p];
+                if (portalCulling.walk(objects.portals[m], objects.placements, p, groups)) {
+                    framePortalWalks++;
+                }
+                if (objects.unsortedModels[m]) {
+                    frame.single[0] = p;
+                    int drawn = instances(frame, objects, frame.single, 0, 1, origin);
+                    drawRanges(frame, objects, m, drawn, false, groups);
+                }
+            }
+        }
+        int models = objects.models.length / 2;
+        WorldObjectInstances.groupByModel(
+                objects.placementModels, objects.visible, models, objects.starts, objects.order);
+        for (int m = 0; m < models; m++) {
+            int first = objects.starts[m], count = objects.starts[m + 1] - first;
+            if (count == 0 || !objects.unsortedModels[m]) {
                 continue;
             }
-            // A root with a portal set walks its portals from the camera (#383 step 3b); the
-            // interior meshes of groups it does not reach are skipped in both passes.
-            var groups = objects.portalVisible[p];
-            if (groups != null
-                    && portalCulling.walk(
-                            objects.portals[objects.placementModels[p]],
-                            objects.placements,
-                            p,
-                            groups)) {
-                framePortalWalks++;
+            if (objectInstancing) {
+                int drawn = instances(frame, objects, objects.order, first, count, origin);
+                drawRanges(frame, objects, m, drawn, false, null);
             } else {
-                groups = null;
+                for (int i = 0; i < count; i++) {
+                    int drawn = instances(frame, objects, objects.order, first + i, 1, origin);
+                    drawRanges(frame, objects, m, drawn, false, null);
+                }
             }
-            drawPlacement(frame, objects, p, origin, false, groups);
         }
     }
 
     /**
-     * The object uniform buffers of one frame, allocated once from the frame's MemoryStack. Every
-     * placement rewrites them in place, so drawing allocates nothing per placement.
+     * Allocates this frame's transient instance data for placements {@code order[first..first +
+     * count)} and writes their rows into {@code frame.instances}. bgfx's transient instance data is
+     * bounded per frame: placements beyond what is available are not drawn, are marked dropped (so
+     * the sorted pass skips them too) and counted. Returns how many instances were written; their
+     * data stays valid until the next allocation.
+     */
+    private int instances(
+            ObjectFrame frame,
+            SlotObjects objects,
+            int[] order,
+            int first,
+            int count,
+            TerrainScene.Origin origin) {
+        int available =
+                Math.min(
+                        org.lwjgl.bgfx.BGFX.bgfx_get_avail_instance_data_buffer(
+                                count, WorldObjectInstances.STRIDE),
+                        Math.max(0, instanceLimit - frameInstances));
+        if (available < count) {
+            for (int i = available; i < count; i++) {
+                objects.dropped[order[first + i]] = true;
+            }
+            frameInstancesDropped += count - available;
+            count = available;
+        }
+        if (count == 0) {
+            return 0;
+        }
+        var instances = frame.instances;
+        org.lwjgl.bgfx.BGFX.bgfx_alloc_instance_data_buffer(
+                instances, count, WorldObjectInstances.STRIDE);
+        var data = instances.data().order(java.nio.ByteOrder.nativeOrder());
+        for (int i = 0; i < count; i++) {
+            WorldObjectInstances.put(objects.placements, order[first + i], origin, data);
+        }
+        frameInstances += count;
+        return count;
+    }
+
+    /**
+     * The object uniform buffers of one frame, allocated once from the frame's MemoryStack, plus
+     * the instance data descriptor every model's draws reuse, so drawing allocates nothing per
+     * placement or per model.
      */
     static final class ObjectFrame {
-        final java.nio.FloatBuffer model, normal;
+        /** The current allocation's instance data, valid until the next allocation. */
+        final org.lwjgl.bgfx.BGFXInstanceDataBuffer instances;
+
+        /** One placement index, for a one-instance draw. */
+        final int[] single = new int[1];
 
         /** u_wmoMaterial per kind (opaque, cutout, blended, additive) and lit/unlit. */
         private final java.nio.FloatBuffer[] materials = new java.nio.FloatBuffer[8];
@@ -2361,8 +2529,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         final long cutoutState;
 
         private ObjectFrame(MemoryStack stack, boolean coverage) {
-            model = stack.mallocFloat(16);
-            normal = stack.mallocFloat(16);
+            instances = org.lwjgl.bgfx.BGFXInstanceDataBuffer.malloc(stack);
             for (int kind = 0; kind <= WorldStreamObjectsFile.ADDITIVE; kind++) {
                 for (int unlit = 0; unlit < 2; unlit++) {
                     int rangeClass = kind | (unlit == 1 ? WorldStreamObjectsFile.UNLIT : 0);
@@ -2385,11 +2552,6 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     : BgfxWorldWmoPass.DRAW_STATE;
         }
 
-        /** Writes placement p's matrices into this frame's buffers. */
-        void placement(double[] placements, int p, TerrainScene.Origin origin) {
-            objectMatrices(placements, p, origin, model, normal);
-        }
-
         /** The u_wmoMaterial value of one range class. */
         java.nio.FloatBuffer material(int rangeClass) {
             int unlit = (rangeClass & WorldStreamObjectsFile.UNLIT) != 0 ? 1 : 0;
@@ -2398,29 +2560,29 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     }
 
     /**
-     * One placement's ranges of one pass: opaque and cutout, or blended only. With {@code groups}
-     * (a root with a portal set), interior meshes of groups not in it are skipped.
+     * Model m's ranges of one pass (opaque and cutout, or the sorted classes only), drawn for the
+     * {@code count} instances just written to {@code frame.instances}. With {@code groups} (one
+     * portal root's walk, #383), interior meshes of groups not in it are skipped.
      */
-    private void drawPlacement(
+    private void drawRanges(
             ObjectFrame frame,
             SlotObjects objects,
-            int p,
-            TerrainScene.Origin origin,
+            int m,
+            int count,
             boolean blendedPass,
             java.util.BitSet groups) {
-        frame.placement(objects.placements, p, origin);
-        // bgfx uniforms persist across submits: the camera is set once per frame, the matrices
-        // once per placement and the material only when its class changes.
-        bgfx_set_uniform(wmoModel, frame.model, 1);
-        bgfx_set_uniform(wmoNormal, frame.normal, 1);
+        if (count == 0) {
+            return;
+        }
+        // bgfx uniforms persist across submits: the camera is set once per frame and the material
+        // only when its class changes; transforms are per instance.
         int stride = WorldStreamObjectsFile.RANGE_INTS;
-        int m = objects.placementModels[p];
         // The sorted pass draws a placement's blended ranges before its additive ones (#449):
         // additive light is order-independent, but a blended range drawn after it would cover it.
         for (int step = blendedPass ? STEP_BLENDED : STEP_UNSORTED;
                 step <= (blendedPass ? STEP_ADDITIVE : STEP_UNSORTED);
                 step++) {
-            drawPlacementStep(frame, objects, m, step, blendedPass, stride, groups);
+            drawRangesStep(frame, objects, m, count, step, blendedPass, stride, groups);
         }
     }
 
@@ -2435,10 +2597,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 : kind == WorldStreamObjectsFile.BLENDED ? STEP_BLENDED : STEP_UNSORTED;
     }
 
-    private void drawPlacementStep(
+    private void drawRangesStep(
             ObjectFrame frame,
             SlotObjects objects,
             int m,
+            int count,
             int step,
             boolean blendedPass,
             int stride,
@@ -2474,6 +2637,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         objects.indices,
                         objects.meshes[at + 2] + objects.ranges[r * stride],
                         objects.ranges[r * stride + 1]);
+                org.lwjgl.bgfx.BGFX.bgfx_set_instance_data_buffer(frame.instances, 0, count);
                 bgfx_set_texture(
                         0,
                         wmoSampler,
@@ -2744,6 +2908,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     worldFog,
                     worldFogRange,
                     worldSkyTop,
+                    worldLight,
                     skyTop,
                     skyHorizon,
                     skyView
@@ -2783,19 +2948,24 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
     }
 
-    /** Terrain and water mesh vertices: float position, normalized RGBA8 colour (16 bytes). */
+    /**
+     * Terrain and water mesh vertices (24 bytes): float position, then normalized RGBA8 fallback
+     * colour, MCCV colour and normal ({@link WorldStreamPackedTile#VERTEX_BYTES}).
+     */
     private static BGFXVertexLayout meshLayout() {
         var layout = BGFXVertexLayout.calloc();
         bgfx_vertex_layout_begin(layout, bgfx_get_caps().rendererType());
         bgfx_vertex_layout_add(
                 layout, BGFX_ATTRIB_POSITION, 3, BGFX_ATTRIB_TYPE_FLOAT, false, false);
-        bgfx_vertex_layout_add(
-                layout,
-                org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_COLOR0,
-                4,
-                org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TYPE_UINT8,
-                true,
-                false);
+        for (int attribute :
+                new int[] {
+                    org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_COLOR0,
+                    org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_COLOR1,
+                    BGFX_ATTRIB_NORMAL
+                }) {
+            bgfx_vertex_layout_add(
+                    layout, attribute, 4, org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TYPE_UINT8, true, false);
+        }
         bgfx_vertex_layout_end(layout);
         if (layout.stride() != WorldStreamPackedTile.VERTEX_BYTES) {
             layout.free();

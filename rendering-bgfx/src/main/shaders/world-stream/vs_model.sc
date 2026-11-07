@@ -1,5 +1,5 @@
-$input a_position, a_color0
-$output v_color, v_uvFog, v_fogColor
+$input a_position, a_color0, a_color1, a_normal
+$output v_color, v_uvFog, v_fogColor, v_normal, v_mccv
 #include <bgfx_shader.sh>
 uniform mat4 u_worldEye;
 uniform mat4 u_worldProjection;
@@ -23,6 +23,10 @@ void main()
     vec3 sky = mix(u_worldFog.xyz, u_worldSkyTop.xyz, clamp(elevation / u_worldFog.w, 0.0, 1.0));
     float fog = clamp((depth - u_worldFogRange.x) / (u_worldFogRange.y - u_worldFogRange.x), 0.0, u_worldFogRange.z);
     v_color = a_color0;
+    // Unsigned normalized normal bytes back to -1..1; (128, 128, 128) decodes to about zero, unlit.
+    v_normal = a_normal.xyz * 2.0 - 1.0;
+    // MCCV (#373): rgb, and a 1 when the vertex has one.
+    v_mccv = a_color1;
     vec2 uv = vec2(u_worldAtlas.y - a_position.y, u_worldAtlas.x - a_position.x) * u_worldAtlas.z;
     v_uvFog = vec3(uv, fog);
     v_fogColor = sky;

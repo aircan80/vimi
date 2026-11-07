@@ -53,6 +53,7 @@ public final class WorldStreamSplatUploadProof {
                             ? com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK
                             : com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK;
             WorldStreamNativeProof.splatForNextPrepare = blendSplat(maskSide);
+            WorldStreamNativeProof.mccvForNextPrepare = MCCV;
             var packed =
                     worker.submit(
                                     () ->
@@ -160,8 +161,17 @@ public final class WorldStreamSplatUploadProof {
     /** Solid layer colours, each exact as a BC1 565 endpoint: red, green, blue, yellow. */
     private static final int[] LAYER_565 = {0xf800, 0x07e0, 0x001f, 0xffe0};
 
-    /** Mask texel of every splatted chunk: layers 1 to 3 weights and the MCCV brightness. */
+    /**
+     * Mask texel of every splatted chunk: layers 1 to 3 weights; A (the old MCCV brightness) is no
+     * longer read (#373).
+     */
     private static final int MASK_R = 64, MASK_G = 32, MASK_B = 0, MASK_A = 192;
+
+    /**
+     * Every vertex's MCCV (#373): the splat takes the vertex colour, 2 x colour / 255 per channel,
+     * where the atlas keeps its baked tint.
+     */
+    private static final int[] MCCV = {192, 96, 160};
 
     /**
      * A trailer whose chunks in even atlas columns draw array layers 0 to 3 under one uniform mask,
@@ -208,7 +218,7 @@ public final class WorldStreamSplatUploadProof {
             for (int layer = 0; layer < 4; layer++) {
                 value += weights[layer] * expand(LAYER_565[layer], channel);
             }
-            result[channel] = (int) Math.min(255, value / total * MASK_A / 128.0);
+            result[channel] = (int) Math.min(255, value / total * 2 * MCCV[channel] / 255.0);
         }
         return result;
     }

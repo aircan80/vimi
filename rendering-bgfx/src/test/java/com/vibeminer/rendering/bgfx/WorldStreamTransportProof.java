@@ -36,6 +36,9 @@ public final class WorldStreamTransportProof {
                                                                     "java")
                                                             .toString(),
                                                     "--enable-native-access=ALL-UNNAMED",
+                                                    // This proves transport, not lighting: the
+                                                    // textured centre is the unlit atlas colour.
+                                                    "-Dvimi.world.terrainLighting=false",
                                                     "-cp",
                                                     System.getProperty("java.class.path"),
                                                     GpuViewerMain.class.getName()));

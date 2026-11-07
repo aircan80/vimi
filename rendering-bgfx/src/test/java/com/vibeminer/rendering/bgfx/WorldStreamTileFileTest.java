@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -137,6 +138,43 @@ final class WorldStreamTileFileTest {
                 HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)));
     }
 
+    /**
+     * Issue #373: the header binds the vertex attributes' SHA-256, so a changed normal or colour
+     * byte is refused even when the file digest is re-signed over it.
+     */
+    @Test
+    void vertexAttributesAreBoundByTheirHeaderDigest() throws Exception {
+        byte[] attributes = {
+            0, 0, 127, 0, 10, 20, 30, (byte) 255, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 127, 0, 0, 0, 0, 0
+        };
+        var tile =
+                TerrainScene.Tile.copyOf(
+                        7,
+                        19,
+                        new float[] {1, 2, 3, 4, 5, 6, 7, 8, 9},
+                        new int[] {0, 1, 2},
+                        1,
+                        attributes);
+        var expected =
+                WorldStreamTileFile.write(directory, header(tile, false), tile, null, () -> false);
+        byte[] bytes = Files.readAllBytes(path());
+        assertEquals(
+                WorldStreamTileFile.attributeSha256(attributes),
+                HexFormat.of().formatHex(bytes, 260, 292));
+        try (var read = WorldStreamTileFile.read(path(), expected, () -> false)) {
+            var carried = read.tile().attributes();
+            byte[] copy = new byte[carried.remaining()];
+            carried.get(copy);
+            assertArrayEquals(attributes, copy);
+        }
+        int at = 4096 + 3 * 12 + 3 * 4;
+        bytes[at + 8] = 5; // vertex 1's normal x: still a valid attribute, but not the bound one
+        Files.write(path(), bytes);
+        assertThrows(
+                java.io.IOException.class,
+                () -> WorldStreamTileFile.read(path(), signed(bytes), () -> false));
+    }
+
     @Test
     void handmadeBc3DiffuseTupleSurvivesTexturedPacketRoundtrip() throws Exception {
         var tile = full(false);
@@ -206,7 +244,7 @@ final class WorldStreamTileFileTest {
                 WorldStreamTileFile.write(directory, header(tile, false), tile, null, () -> false);
         byte[] bytes = Files.readAllBytes(path());
         var input = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
-        assertEquals(4096 + 48, bytes.length);
+        assertEquals(4096 + 48 + 3 * 8, bytes.length);
         assertEquals(7, input.getInt(92));
         assertEquals(19, input.getInt(96));
         assertEquals(2, input.getInt(200));
@@ -240,7 +278,7 @@ final class WorldStreamTileFileTest {
         var pixels = atlas();
         var expected =
                 WorldStreamTileFile.write(directory, header(tile, true), tile, pixels, () -> false);
-        assertEquals(2_284_544, Files.size(path()));
+        assertEquals(2_581_504, Files.size(path()));
         assertEquals(0, pixels.position());
         var decoded = WorldStreamTileFile.read(path(), expected, () -> false);
         assertEquals(37120, decoded.tile().vertexCount());
@@ -555,7 +593,13 @@ final class WorldStreamTileFileTest {
     private static byte[] legacyLayout(
             WorldStreamTileFile.Header header, TerrainScene.Tile tile, ByteBuffer atlas) {
         var out = ByteBuffer.allocate(header.totalBytes()).order(ByteOrder.LITTLE_ENDIAN);
-        out.put(WorldStreamTileFile.encodeHeader(header));
+        // Packet version 4 (#373): the tile's attributes (zeros when it has none) after the
+        // indices, bound in the header.
+        byte[] attributes = new byte[tile.vertexCount() * WorldStreamTileFile.ATTRIBUTE_BYTES];
+        tile.attributes().get(0, attributes, 0, tile.attributes().remaining());
+        out.put(
+                WorldStreamTileFile.encodeHeader(
+                        header, WorldStreamTileFile.attributeSha256(attributes)));
         var vertices = tile.vertices();
         while (vertices.hasRemaining()) {
             out.putInt(Float.floatToRawIntBits(vertices.get()));
@@ -564,6 +608,7 @@ final class WorldStreamTileFileTest {
         while (indices.hasRemaining()) {
             out.putInt(indices.get());
         }
+        out.put(attributes);
         if (atlas != null) {
             out.put(atlas.duplicate());
         }
@@ -581,7 +626,22 @@ final class WorldStreamTileFileTest {
         for (int i = 0; i < indices.length; i++) {
             indices[i] = (i * 7919) % 37120;
         }
-        return TerrainScene.Tile.copyOf(7, 19, vertices, indices, 256);
+        // Distinct non-zero attributes per vertex, so an attribute offset slip is caught: a
+        // tilted normal, and MCCV on every other vertex.
+        byte[] attributes = new byte[base.vertexCount() * WorldStreamTileFile.ATTRIBUTE_BYTES];
+        for (int v = 0; v < base.vertexCount(); v++) {
+            int at = v * WorldStreamTileFile.ATTRIBUTE_BYTES;
+            attributes[at] = (byte) (v % 7 - 3);
+            attributes[at + 1] = (byte) (v % 5 - 2);
+            attributes[at + 2] = (byte) (100 + v % 27);
+            if (v % 2 == 0) {
+                attributes[at + 4] = (byte) v;
+                attributes[at + 5] = (byte) (v >> 8);
+                attributes[at + 6] = (byte) (v * 3);
+                attributes[at + 7] = (byte) 255;
+            }
+        }
+        return TerrainScene.Tile.copyOf(7, 19, vertices, indices, 256, attributes);
     }
 
     @Test
@@ -605,6 +665,11 @@ final class WorldStreamTileFileTest {
             tile.indices().get(wantIndices);
             decoded.tile().indices().get(gotIndices);
             assertTrue(Arrays.equals(wantIndices, gotIndices));
+            byte[] wantAttributes = new byte[tile.attributes().remaining()],
+                    gotAttributes = new byte[decoded.tile().attributes().remaining()];
+            tile.attributes().get(wantAttributes);
+            decoded.tile().attributes().get(gotAttributes);
+            assertTrue(Arrays.equals(wantAttributes, gotAttributes));
             byte[] atlas = new byte[WorldStreamTileFile.ATLAS_BYTES];
             decoded.atlas().get(atlas);
             byte[] source = new byte[atlas.length];
@@ -620,11 +685,22 @@ final class WorldStreamTileFileTest {
                 WorldStreamTileFile.write(
                         directory, header(tile, true), tile, atlas(), () -> false);
         byte[] clean = Files.readAllBytes(path());
-        // Header, first vertex, last vertex, first index, last index, first and last atlas byte.
+        // Header, first and last vertex, first and last index, first and last attribute byte,
+        // first and last atlas byte.
         int vertexEnd = 4096 + tile.vertexCount() * 12, indexEnd = vertexEnd + 196608 * 4;
+        int attributeEnd = indexEnd + tile.vertexCount() * WorldStreamTileFile.ATTRIBUTE_BYTES;
         for (int offset :
                 new int[] {
-                    0, 100, 4096, vertexEnd - 1, vertexEnd, indexEnd - 1, indexEnd, clean.length - 1
+                    0,
+                    100,
+                    4096,
+                    vertexEnd - 1,
+                    vertexEnd,
+                    indexEnd - 1,
+                    indexEnd,
+                    attributeEnd - 1,
+                    attributeEnd,
+                    clean.length - 1
                 }) {
             byte[] bad = clean.clone();
             bad[offset] ^= 0x10;
@@ -663,6 +739,25 @@ final class WorldStreamTileFileTest {
                         NONCE, SCOPE, 42, LEASE, clean.length - 4, expected.sha256());
         assertThrows(
                 IOException.class, () -> WorldStreamTileFile.read(path(), shorter, () -> false));
+    }
+
+    /**
+     * Issue #373: a version 3 packet (the #435 layout: positions and indices, no attributes, no
+     * attribute digest) is refused, even with a consistent length and a re-signed digest.
+     */
+    @Test
+    void aVersionThreePacketWithoutAttributesIsRefused() throws Exception {
+        var tile = triangle();
+        WorldStreamTileFile.write(directory, header(tile, false), tile, null, () -> false);
+        byte[] clean = Files.readAllBytes(path());
+        int geometry = 3 * 12 + 3 * 4;
+        byte[] v3 = Arrays.copyOf(clean, 4096 + geometry);
+        var view = ByteBuffer.wrap(v3).order(ByteOrder.LITTLE_ENDIAN);
+        view.putInt(8, 3).putLong(16, v3.length).putInt(120, geometry);
+        Arrays.fill(v3, 260, 292, (byte) 0);
+        Files.write(path(), v3);
+        assertThrows(
+                IOException.class, () -> WorldStreamTileFile.read(path(), signed(v3), () -> false));
     }
 
     @Test

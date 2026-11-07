@@ -36,13 +36,36 @@ final class Dx11InstanceInputSignatureTest {
                 "D3D11 vertex inputs for " + resource);
     }
 
-    /** The production World stream terrain is an indexed mesh (issue #373): no instance data. */
+    /**
+     * The production World stream terrain is an indexed mesh (issue #373): no instance data; per
+     * vertex its position, fallback colour, MCCV colour and normal.
+     */
     @org.junit.jupiter.api.Test
-    void worldStreamTerrainReadsPerVertexPositionAndColour() throws IOException {
+    void worldStreamTerrainReadsPerVertexPositionColoursAndNormal() throws IOException {
         assertEquals(
-                Set.of("POSITION0", "COLOR0"),
+                Set.of("POSITION0", "COLOR0", "COLOR1", "NORMAL0"),
                 dx11VertexInputs(
                         "/com/vibeminer/rendering/bgfx/shaders/world-stream/dx11/vs_model.bin"));
+    }
+
+    /**
+     * The World object shader (world-wmo, hot and cold passes) reads its per-instance transform
+     * (#382) from bgfx's D3D11 instance semantics, next to the per-vertex position, normal, UV and
+     * MOCV colour.
+     */
+    @org.junit.jupiter.api.Test
+    void worldObjectsReadInstanceTransformsFromBgfxD3dSemantics() throws IOException {
+        assertEquals(
+                Set.of(
+                        "POSITION0",
+                        "NORMAL0",
+                        "TEXCOORD0",
+                        "COLOR0",
+                        "TEXCOORD31",
+                        "TEXCOORD30",
+                        "TEXCOORD29"),
+                dx11VertexInputs(
+                        "/com/vibeminer/rendering/bgfx/shaders/world-wmo/dx11/vs_model.bin"));
     }
 
     static Set<String> dx11VertexInputs(String resource) throws IOException {

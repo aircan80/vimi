@@ -1371,6 +1371,21 @@ final class GpuPreviewService {
      */
     static final List<String> HELPER_JVM_OPTIONS = List.of("-XX:+UseZGC", "-Xmx1g");
 
+    /** Renderer switches the World helper reads itself; forwarded when the application sets them. */
+    static final List<String> HELPER_PROPERTIES = List.of("vimi.world.terrainLighting");
+
+    /** {@code -Dname=value} for each set helper property, in {@link #HELPER_PROPERTIES} order. */
+    static List<String> forwardedProperties(java.util.function.UnaryOperator<String> lookup) {
+        var result = new ArrayList<String>();
+        for (String name : HELPER_PROPERTIES) {
+            String value = lookup.apply(name);
+            if (value != null) {
+                result.add("-D" + name + "=" + value);
+            }
+        }
+        return List.copyOf(result);
+    }
+
     /** Application switches the helper reads itself, forwarded as system properties. */
     static List<String> forwardedProperties(boolean wmoVertexColours) {
         return wmoVertexColours ? List.of("-Dvimi.world.wmoVertexColours=true") : List.of();
@@ -1386,6 +1401,7 @@ final class GpuPreviewService {
         if (System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT).contains("mac"))
             command.add("-XstartOnFirstThread");
         command.addAll(HELPER_JVM_OPTIONS);
+        command.addAll(forwardedProperties(System::getProperty));
         command.addAll(forwardedProperties(WorldStreamGpuOwner.WMO_VERTEX_COLOURS));
         command.add("--enable-native-access=ALL-UNNAMED");
         command.addAll(

@@ -175,7 +175,7 @@ public final class GpuTerrainSceneFile {
                 integer(output, tile.indexCount());
                 integer(output, tile.chunks());
                 integer(output, 0);
-                number(output, tile.payloadBytes());
+                number(output, tile.geometryBytes());
             }
             for (var tile : scene.tiles()) {
                 check(canceled);
