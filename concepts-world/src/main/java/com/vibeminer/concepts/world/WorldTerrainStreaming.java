@@ -13,6 +13,27 @@ import java.util.function.Consumer;
  * belong off FX. Generic writer output and descriptive facts never authenticate packet bytes.
  */
 public final class WorldTerrainStreaming {
+    /**
+     * Selects the splat mask resolution of newly composed tiles from the texture quality tier
+     * (issue #174 step 2b-2): HIGH carries the native 64 x 64 alpha map per chunk (1024 per tile),
+     * STANDARD every other texel (512).
+     */
+    public static void splatMasks(WorldExteriorObjects.ImageDetail detail) {
+        splatMasks(detail, false);
+    }
+
+    /**
+     * As {@link #splatMasks(WorldExteriorObjects.ImageDetail)} for a session's view distance: the
+     * FAR view distance uses STANDARD masks on any tier ({@link
+     * com.vibeminer.rendering.world.TerrainTileSplat#maskSide}).
+     */
+    public static void splatMasks(WorldExteriorObjects.ImageDetail detail, boolean far) {
+        WorldTerrainTextureSource.splatMask =
+                com.vibeminer.rendering.world.TerrainTileSplat.maskSide(
+                        Objects.requireNonNull(detail) == WorldExteriorObjects.ImageDetail.HIGH,
+                        far);
+    }
+
     public enum Outcome {
         TEXTURED,
         HEIGHT_FALLBACK
@@ -374,6 +395,33 @@ public final class WorldTerrainStreaming {
         }
     }
 
+    /**
+     * A layer diffuse for splatting as its 256 x 256 BC1 chain ({@link
+     * com.vibeminer.rendering.world.TerrainLayerBlocks}); {@code chain} is a read-only view, and
+     * {@code fileBlocks} says whether it is the file's own blocks or an encoding of its pixels;
+     * {@code sourceEncoding} is the file's encoding (BC1, BC2, BC3, PALETTED or BGRA8), whose alpha
+     * the opaque layer drops.
+     */
+    public record DiffuseDetail(
+            long fileId,
+            String contentKey,
+            java.nio.ByteBuffer chain,
+            boolean fileBlocks,
+            String sourceEncoding) {
+        public DiffuseDetail {
+            Objects.requireNonNull(contentKey);
+            Objects.requireNonNull(chain);
+            if (!chain.isReadOnly()
+                    || chain.remaining()
+                            != com.vibeminer.rendering.world.TerrainLayerBlocks.CHAIN_BYTES) {
+                throw new IllegalArgumentException("Invalid diffuse detail");
+            }
+        }
+    }
+
+    /** Splat layers prepared from file blocks, and with the lossy BC1 encoder. */
+    public record SplatLayerCounts(long fileBlocks, long encoded) {}
+
     /** Same-thread, synchronous view. Geometry, pixels and area graphs must not escape. */
     public static final class CheckedBorrow {
         private WorldPreparedTerrain.Borrow borrow;
@@ -407,6 +455,39 @@ public final class WorldTerrainStreaming {
 
         public TerrainTextureBinding texture() {
             return live().texture();
+        }
+
+        /** Splatting inputs of this tile's atlas, if composed (issue #174 step 2). */
+        public java.util.Optional<com.vibeminer.rendering.world.TerrainTileSplat> splat() {
+            return java.util.Optional.ofNullable(live().splat());
+        }
+
+        /**
+         * How this source's splat layers were prepared so far (issue #174): from the file's own
+         * blocks, and with the lossy encoder; for measuring how often real data needs the encoder.
+         */
+        public SplatLayerCounts splatLayerCounts() {
+            long[] counts = live().splatLayerCounts();
+            return new SplatLayerCounts(counts[0], counts[1]);
+        }
+
+        /**
+         * One layer diffuse of this tile for splatting, as its 256 x 256 BC1 layer chain, read
+         * through the same bounds and revalidation as the atlas's own mips, and cached by content.
+         * Empty when the diffuse is not part of this tile's material.
+         */
+        public java.util.Optional<DiffuseDetail> diffuseDetail(
+                long fileId, com.vibeminer.access.Cancellation token) {
+            var detail = live().detail(fileId, token);
+            return detail == null
+                    ? java.util.Optional.empty()
+                    : java.util.Optional.of(
+                            new DiffuseDetail(
+                                    detail.fileId(),
+                                    detail.contentKey(),
+                                    detail.blocks(),
+                                    detail.fileBlocks(),
+                                    detail.sourceEncoding()));
         }
 
         public WorldFormats.AreaMetadata areas() {
@@ -529,6 +610,30 @@ public final class WorldTerrainStreaming {
         }
         try {
             return new Scope(source().createScope(comparison, cancel));
+        } catch (RuntimeException failure) {
+            throw WorldSourceRefusals.boundary(failure);
+        }
+    }
+
+    /**
+     * Revision of the shared terrain geometry lane's releases. A tile refused at {@code
+     * GEOMETRY_CREDIT} can only succeed after it moves, so wait on it instead of retrying (#304).
+     */
+    public long geometryReleaseRevision() {
+        try {
+            return source().geometryReleaseRevision();
+        } catch (RuntimeException failure) {
+            throw WorldSourceRefusals.boundary(failure);
+        }
+    }
+
+    /**
+     * Runs {@code listener} after each geometry lane or output release, on the releasing thread and
+     * outside any source lock. The listener must only signal; close the result to remove it.
+     */
+    public AutoCloseable onGeometryRelease(Runnable listener) {
+        try {
+            return source().onGeometryRelease(Objects.requireNonNull(listener));
         } catch (RuntimeException failure) {
             throw WorldSourceRefusals.boundary(failure);
         }

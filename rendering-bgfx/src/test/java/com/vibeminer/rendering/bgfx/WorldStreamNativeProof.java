@@ -51,6 +51,10 @@ public final class WorldStreamNativeProof {
     }
 
     static long camera = 1, sequence;
+
+    /** A splat trailer the next textured {@link #prepare} appends (splat upload proof). */
+    static volatile WorldStreamTileFile.Splat splatForNextPrepare;
+
     private static int framesDuringUploads;
 
     /**
@@ -170,6 +174,17 @@ public final class WorldStreamNativeProof {
             atlas = atlas.asReadOnlyBuffer();
         }
         var receipt = WorldStreamTileFile.write(directory, header, tile, atlas, () -> false);
+        var splat = splatForNextPrepare;
+        splatForNextPrepare = null;
+        if (splat != null && textured) {
+            receipt =
+                    WorldStreamTileFile.appendSplat(
+                            directory.resolve("tile-" + tx + ".wst"),
+                            receipt,
+                            header,
+                            splat,
+                            () -> false);
+        }
         var input =
                 WorldStreamTileFile.read(
                         directory.resolve("tile-" + tx + ".wst"), receipt, () -> false);
@@ -282,8 +297,12 @@ public final class WorldStreamNativeProof {
             WorldStreamNativeOwner owner, WorldFrameFileV2 reader, long content) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         // Reuse the same camera revision after COMMIT: standing-still content must produce a frame.
-        owner.submit(command(camera, WIDTH, HEIGHT, 1));
+        // A draw may be deferred (no free readback slot yet), like the session loop, retry it.
+        boolean submitted = owner.submit(command(camera, WIDTH, HEIGHT, 1));
         while (System.nanoTime() < deadline) {
+            if (!submitted) {
+                submitted = owner.submit(command(camera, WIDTH, HEIGHT, 1));
+            }
             owner.advance();
             var frame = read(reader, content, content);
             if (frame != null) {
@@ -546,12 +565,24 @@ public final class WorldStreamNativeProof {
                                 "Edge pixel is drawn, not the cleared allocation: "
                                         + Integer.toHexString(edge));
                     }
-                    // First row is the sky shader's top colour, last row the terrain.
+                    // First row is the sky gradient at that row's elevation (#407), last row the
+                    // terrain.
+                    float[] sky =
+                            WorldFog.STREAM.skyPixel(
+                                    CAMERA.pitch(),
+                                    TerrainCamera.focalPixels(size[0]),
+                                    size[0],
+                                    size[1],
+                                    size[0] / 2,
+                                    0);
                     require(
-                            Math.abs((top >>> 16 & 255) - 91) <= 1
-                                    && Math.abs((top >>> 8 & 255) - 141) <= 1
-                                    && Math.abs((top & 255) - 177) <= 1,
-                            "Top row is the frame's own first row: " + Integer.toHexString(top));
+                            Math.abs((top >>> 16 & 255) - Math.round(sky[0])) <= 1
+                                    && Math.abs((top >>> 8 & 255) - Math.round(sky[1])) <= 1
+                                    && Math.abs((top & 255) - Math.round(sky[2])) <= 1,
+                            "Top row is the frame's own first row: "
+                                    + Integer.toHexString(top)
+                                    + " sky "
+                                    + java.util.Arrays.toString(sky));
                     require(
                             Math.abs((bottom >>> 16 & 255) - 83) <= 1,
                             "Bottom row is the frame's own last row: "
@@ -629,6 +660,10 @@ public final class WorldStreamNativeProof {
                                 + nativeSizes.toString().strip()
                                 + " edges="
                                 + edges.toString().strip()
+                                + " readback="
+                                + (owner.stagingReadback() ? "staging" : "direct")
+                                + " meanPublishMicros="
+                                + owner.meanPublishNanos() / 1000
                                 + " reallocations="
                                 + owner.reallocations()
                                 + " samples="

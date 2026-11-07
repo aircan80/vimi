@@ -48,17 +48,23 @@ public final class WorldStreamSourceControllerTest {
         supersededHeldSourceCancelsBeforeStalePredicateAndKeepsSession();
         missingRootIsFinitePerDemandAndDoesNotInvalidateCurrentScope();
         missingNearestIsFiniteUnavailableWithoutFillingOutputUnion();
+        helperRejectedTileRetriesWithBackoffThenBecomesUnavailable();
+        helperRejectionCrossingACancelIsTerminalNotAFailure();
+        helperRejectionOfATileOutOfDemandIsNotCounted();
+        rejectedNearestTileDoesNotStallItsNeighbours();
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         nativePresentationAcceptsCurrentContentAndRelievesTwelveOwners();
         nativePresentationWithAStillCameraAcceptsEachCommit();
         nativeReportBeforeTheReceiptIsStillAccepted();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
-        bumpBetweenIssueAndRefusalStillWakesRetry(false, false);
-        bumpBetweenIssueAndRefusalStillWakesRetry(false, true);
-        bumpBetweenIssueAndRefusalStillWakesRetry(true, false);
-        bumpBetweenIssueAndRefusalStillWakesRetry(false, false, true);
-        bumpBetweenIssueAndRefusalStillWakesRetry(false, true, true);
+        bumpBetweenIssueAndRefusalStillWakesRetry("geometry", false);
+        bumpBetweenIssueAndRefusalStillWakesRetry("output", false);
+        bumpBetweenIssueAndRefusalStillWakesRetry("output", true);
+        bumpBetweenIssueAndRefusalStillWakesRetry("pool", false);
+        bumpBetweenIssueAndRefusalStillWakesRetry("geometry", false, true);
+        bumpBetweenIssueAndRefusalStillWakesRetry("output", true, true);
+        busyGeometryLaneIsNotPolledAndItsReleaseWakesTheTile();
         sameResidentCameraFrameDoesNotRetryMaterialPool();
         transportFrameSignalQueuesPresentationWithoutAnyPulse();
         steadyCameraFramesReuseAFewPixelArrays();
@@ -573,7 +579,10 @@ public final class WorldStreamSourceControllerTest {
 
             fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY
                     && fixture.controller.snapshot().prepared()==9);
-            check(fixture.pool.stats().leaseClaims()==9,"Actual cleanup capacity eventually restores the requested neighborhood");
+            // leaseClaims counts atlas leases held now (not a running total). READY can be
+            // published before the worker's next step retires the previous presentation's
+            // pins, so the count settles to the nine residents a step later (#498).
+            awaitLeaseClaims(fixture,9,"Actual cleanup capacity eventually restores the requested neighborhood");
         } finally {
             Files.deleteIfExists(hold);
             firstRelease.countDown();
@@ -695,10 +704,13 @@ public final class WorldStreamSourceControllerTest {
      * #305: a presentation or demand bump that lands after a tile reservation was issued but
      * before its refusal is processed still wakes the retry. The clock never advances and the
      * refusal's own unused credit is held, so only the bump inside the window can wake it.
+     * Sites: "geometry" (GEOMETRY_CREDIT, wakes on demand or its own release, #304), "pool"
+     * (MATERIAL_POOL, wakes on demand or source retirement) and "output" (OUTPUT_CREDIT, the
+     * generic path that also wakes on presentation).
      */
     private static void bumpBetweenIssueAndRefusalStillWakesRetry(
-            boolean materialPool, boolean presentation) throws Exception {
-        bumpBetweenIssueAndRefusalStillWakesRetry(materialPool, presentation, false);
+            String site, boolean presentation) throws Exception {
+        bumpBetweenIssueAndRefusalStillWakesRetry(site, presentation, false);
     }
 
     /**
@@ -706,15 +718,19 @@ public final class WorldStreamSourceControllerTest {
      * but before it issued the reservation, so the tile was still chosen from the old ones.
      */
     private static void bumpBetweenIssueAndRefusalStillWakesRetry(
-            boolean materialPool, boolean presentation, boolean beforeIssue) throws Exception {
+            String site, boolean presentation, boolean beforeIssue) throws Exception {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
-        AutoCloseable held = materialPool
-                ? AuthoredTerrainPoolPressure.hold(fixture.pool)
-                : com.vibeminer.concepts.world.AuthoredGeometryPressure.hold(fixture.world);
+        var held = new java.util.concurrent.atomic.AtomicReference<AutoCloseable>(
+                switch (site) {
+                    case "pool" -> AuthoredTerrainPoolPressure.hold(fixture.pool);
+                    case "geometry" ->
+                            com.vibeminer.concepts.world.AuthoredGeometryPressure.hold(fixture.world);
+                    default -> null; // "output": held once the controller owns its source
+                });
+        boolean materialPool = site.equals("pool");
         Path holdCredit = fixture.directory.resolve("authored-hold-unused-credit");
         var refused = new java.util.concurrent.atomic.AtomicReference<Object>();
-        String label = (materialPool ? "material pool" : "geometry lane")
-                + (presentation ? ", presentation bump" : ", demand bump")
+        String label = site + (presentation ? ", presentation bump" : ", demand bump")
                 + (beforeIssue ? " before issue" : "");
         try {
             Files.writeString(holdCredit, "hold");
@@ -757,6 +773,17 @@ public final class WorldStreamSourceControllerTest {
                 while (fixture.controller == null && System.nanoTime() < deadline)
                     java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
                 fixture.controller.tileRefusalSeam = seam;
+                if (site.equals("output")) {
+                    try {
+                        var source = WorldStreamSourceController.class.getDeclaredField("source");
+                        source.setAccessible(true);
+                        held.set(com.vibeminer.concepts.world.AuthoredOutputPressure.hold(
+                                (com.vibeminer.concepts.world.WorldTerrainStreaming)
+                                        source.get(fixture.controller)));
+                    } catch (ReflectiveOperationException failure) {
+                        throw new AssertionError(failure);
+                    }
+                }
                 if (beforeIssue) fixture.controller.tileIssueSeam = bump;
                 return fixture.gpu.start(scope);
             });
@@ -771,7 +798,60 @@ public final class WorldStreamSourceControllerTest {
                     .equals("Waiting for GPU upload capacity"));
         } finally {
             Files.deleteIfExists(holdCredit);
-            held.close();
+            var hold = held.get();
+            if (hold != null) hold.close();
+            fixture.close();
+        }
+    }
+
+    /**
+     * #304: while another holder keeps the geometry lane busy, the refused tile waits on the
+     * source's geometry release instead of re-polling on every unused-credit CREDIT, and the
+     * release itself wakes it promptly. The controller clock is frozen, so the 500 ms timeout
+     * can never be what retries.
+     */
+    private static void busyGeometryLaneIsNotPolledAndItsReleaseWakesTheTile() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 1);
+        var geometry = com.vibeminer.concepts.world.AuthoredGeometryPressure.hold(fixture.world);
+        var refusals = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            fixture.start(scope -> {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (fixture.controller == null && System.nanoTime() < deadline)
+                    java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                fixture.controller.tileRefusalSeam = refusals::incrementAndGet;
+                return fixture.gpu.start(scope);
+            });
+            fixture.until(() -> refusals.get() >= 1);
+            // Let the refusal's own unused credit land and keep pulsing like the FX timer does.
+            long window = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500);
+            int first = refusals.get();
+            while (System.nanoTime() < window) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            int attempts = refusals.get() - first;
+            System.out.println("Busy geometry lane: " + attempts + " refused attempts in 500 ms");
+            check(attempts <= 1, "A busy geometry lane is waited on, not polled: " + attempts);
+            long released = System.nanoTime();
+            geometry.close();
+            // No pulse here: only the source's release listener may wake the waiting step.
+            long quiet = released + TimeUnit.SECONDS.toNanos(2);
+            while (fixture.controller.snapshot().detail()
+                            .equals("Waiting for streaming resource capacity")
+                    && System.nanoTime() < quiet) Thread.sleep(1);
+            check(!fixture.controller.snapshot().detail()
+                            .equals("Waiting for streaming resource capacity"),
+                    "The geometry release itself woke the controller, without any pulse");
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            long latency = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - released);
+            System.out.println("Geometry release to seeded tile: " + latency + " ms");
+            check(latency < 2_000, "The lane release woke the tile promptly: " + latency + " ms");
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+        } finally {
+            geometry.close();
             fixture.close();
         }
     }
@@ -856,7 +936,7 @@ public final class WorldStreamSourceControllerTest {
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
             check(sequence.getLong(fixture.controller)>previousSequence && receipt.get(fixture.controller)!=previousReceipt,
                     "Only actual full-ready sky upload advances presentation ACK");
-            check(fixture.pool.stats().leaseClaims()==9,"Old historical image holds no obsolete Source owners");
+            awaitLeaseClaims(fixture,9,"Old historical image holds no obsolete Source owners");
         } finally { fixture.close(); }
     }
 
@@ -875,7 +955,7 @@ public final class WorldStreamSourceControllerTest {
             check(fixture.pool.stats().leaseClaims()<=12,"Sky-blocked relief keeps source owner limit");
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
             check(fixture.controller.snapshot().prepared()==9,"Useful lookahead pixels unblock victim reacquisition");
-            check(fixture.pool.stats().leaseClaims()==9,"Final useful frame retires old presentation pins");
+            awaitLeaseClaims(fixture,9,"Final useful frame retires old presentation pins");
         } finally { fixture.close(); }
     }
 
@@ -928,7 +1008,7 @@ public final class WorldStreamSourceControllerTest {
             Files.write(fixture.directory.resolve("authored-sky"),new byte[0]);
             release.complete(null);
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
-            check(fixture.pool.stats().leaseClaims()==2,"All-wanted-ready sky does not suppress valid final receipt");
+            awaitLeaseClaims(fixture,2,"All-wanted-ready sky does not suppress valid final receipt");
         } finally { release.complete(null); fixture.close(); }
     }
 
@@ -1367,11 +1447,234 @@ public final class WorldStreamSourceControllerTest {
             for(int i=0;i<30;i++) { fixture.pump(); Thread.sleep(2); }
             check(fixture.files.opens(1020)==0 && fixture.files.opens(1022)==0 &&fixture.files.opens(1024)==0,
                     "Known missing center does not fill twelve-owner union with unpresentable neighbors");
-            check(fixture.pool.stats().leaseClaims()==9,"Last readable table stays owned with finite unavailable state");
+            awaitLeaseClaims(fixture,9,"Last readable table stays owned with finite unavailable state");
             fixture.controller.neighborhood(fixture.tiles.subList(0,9));
             fixture.camera(3);
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
         } finally { fixture.close(); }
+    }
+
+    /**
+     * Issue #365: the helper rejects every packet of one neighbour tile (REJECTED INVALID_PACKET,
+     * through the real transport). The session keeps streaming: the nearest tile is presented,
+     * the rejected tile is retried after a back-off on the controller clock, and after three
+     * rejections it is unavailable with a visible reason and no further retries.
+     */
+    private static void helperRejectedTileRetriesWithBackoffThenBecomesUnavailable()
+            throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        Path reject = fixture.directory.resolve("authored-reject-tile");
+        Path log = fixture.directory.resolve("authored-rejections.log");
+        try {
+            Files.writeString(reject, Integer.toString(fixture.tiles.get(1).y()));
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(
+                    () -> fixture.controller.snapshot().phase()
+                            == WorldStreamSourceController.Phase.READY);
+            fixture.controller.neighborhood(fixture.tiles);
+            int key = fixture.tiles.get(1).x() * 64 + fixture.tiles.get(1).y();
+            for (int rejection = 1; rejection <= WorldStreamSourceController.MAX_HELPER_REJECTIONS;
+                    rejection++) {
+                int expected = rejection;
+                fixture.until(() -> fixture.controller.helperRejections(key) == expected);
+                if (rejection < WorldStreamSourceController.MAX_HELPER_REJECTIONS) {
+                    // Before the back-off ends the tile is not offered again.
+                    for (int i = 0; i < 20; i++) {
+                        fixture.pump();
+                        Thread.sleep(2);
+                    }
+                    check(lines(log) == rejection, "No retry before the back-off ends");
+                    fixture.clock.addAndGet(500_000_000L << (rejection - 1));
+                    fixture.controller.pulse();
+                }
+            }
+            fixture.untilPresented(
+                    () -> fixture.controller.snapshot().phase()
+                                    == WorldStreamSourceController.Phase.READY
+                            && fixture.controller.snapshot().detail().contains("1 unavailable"));
+            check(
+                    fixture.controller.snapshot().detail().contains("HELPER_REJECTED"),
+                    "The rejected tile's reason is visible");
+            fixture.clock.addAndGet(60_000_000_000L);
+            for (int i = 0; i < 30; i++) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            check(
+                    lines(log) == WorldStreamSourceController.MAX_HELPER_REJECTIONS,
+                    "An unavailable rejected tile is not retried while it stays wanted");
+            check(
+                    fixture.controller.snapshot().phase()
+                            != WorldStreamSourceController.Phase.FAILED,
+                    "A rejected tile never ends the World session");
+        } finally {
+            Files.deleteIfExists(reject);
+            fixture.close();
+        }
+    }
+
+    /**
+     * Issue #365: the rejected tile leaves demand while its rejection is in flight, so the
+     * controller cancels a reservation the helper has already rejected (the cancel is refused as
+     * PACKET_REJECTED). That is terminal, not a session failure.
+     */
+    private static void helperRejectionCrossingACancelIsTerminalNotAFailure() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        Path reject = fixture.directory.resolve("authored-reject-tile");
+        Path hold = fixture.directory.resolve("authored-hold-reject");
+        Path held = fixture.directory.resolve("authored-held-reject");
+        try {
+            Files.writeString(reject, Integer.toString(fixture.tiles.get(1).y()));
+            Files.writeString(hold, "hold");
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(
+                    () -> fixture.controller.snapshot().phase()
+                            == WorldStreamSourceController.Phase.READY);
+            fixture.controller.neighborhood(fixture.tiles);
+            fixture.until(() -> Files.exists(held));
+            // The rejected tile leaves demand before its rejection arrives: the controller
+            // cancels it, then the helper rejects the packet and refuses the stale cancel.
+            fixture.controller.neighborhood(List.of(fixture.tiles.get(0)));
+            for (int i = 0; i < 20; i++) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            Files.delete(hold);
+            fixture.until(
+                    () -> lines(fixture.directory.resolve("authored-rejections.log")) == 1);
+            fixture.untilPresented(
+                    () -> fixture.controller.snapshot().phase()
+                            == WorldStreamSourceController.Phase.READY);
+            for (int i = 0; i < 30; i++) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            check(
+                    fixture.controller.snapshot().phase()
+                            != WorldStreamSourceController.Phase.FAILED,
+                    "A rejection crossing a cancel never ends the World session");
+            int key = fixture.tiles.get(1).x() * 64 + fixture.tiles.get(1).y();
+            check(
+                    fixture.controller.helperRejections(key) == 0,
+                    "A tile that left demand keeps no rejection count");
+        } finally {
+            Files.deleteIfExists(hold);
+            Files.deleteIfExists(reject);
+            fixture.close();
+        }
+    }
+
+    /**
+     * Issue #365: the helper's rejection has already completed when the controller first sees
+     * that the tile left demand. Nothing is canceled, the rejection is not counted, and no
+     * UNAVAILABLE status is published for terrain nobody wants.
+     */
+    private static void helperRejectionOfATileOutOfDemandIsNotCounted() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        Path reject = fixture.directory.resolve("authored-reject-tile");
+        Path hold = fixture.directory.resolve("authored-hold-reject");
+        Path held = fixture.directory.resolve("authored-held-reject");
+        var switched = new java.util.concurrent.atomic.AtomicBoolean();
+        try {
+            Files.writeString(reject, Integer.toString(fixture.tiles.get(1).y()));
+            Files.writeString(hold, "hold");
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(
+                    () -> fixture.controller.snapshot().phase()
+                            == WorldStreamSourceController.Phase.READY);
+            fixture.controller.neighborhood(fixture.tiles);
+            fixture.until(() -> Files.exists(held));
+            // The step that handles the completed rejection is the first to see the tile gone.
+            // The seam asks the pending preparation itself: the transport completes the result
+            // (which wakes this step) before it counts the rejection, so a seam keyed on the
+            // transport's counter could miss that step under load (Linux CI).
+            fixture.controller.demandSeam =
+                    () -> {
+                        if (fixture.controller.pendingRejectedByHelper()
+                                && switched.compareAndSet(false, true)) {
+                            fixture.controller.neighborhood(List.of(fixture.tiles.get(0)));
+                        }
+                    };
+            Files.delete(hold);
+            fixture.until(() -> fixture.controller.rejectionsOutOfDemand() == 1);
+            int key = fixture.tiles.get(1).x() * 64 + fixture.tiles.get(1).y();
+            check(fixture.controller.helperRejections(key) == 0,
+                    "A rejection for a tile out of demand is not counted");
+            fixture.untilPresented(
+                    () -> fixture.controller.snapshot().phase()
+                            == WorldStreamSourceController.Phase.READY);
+            check(
+                    !fixture.controller.snapshot().detail().contains("HELPER_REJECTED"),
+                    "No unavailable status for a tile out of demand");
+        } finally {
+            fixture.controller.demandSeam = null;
+            Files.deleteIfExists(hold);
+            Files.deleteIfExists(reject);
+            fixture.close();
+        }
+    }
+
+    /**
+     * Issue #365: the nearest tile is the one the helper keeps rejecting. Its neighbour still
+     * streams and commits, and the status names HELPER_REJECTED.
+     */
+    private static void rejectedNearestTileDoesNotStallItsNeighbours() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        Path reject = fixture.directory.resolve("authored-reject-tile");
+        Path log = fixture.directory.resolve("authored-rejections.log");
+        try {
+            Files.writeString(reject, Integer.toString(fixture.tiles.get(0).y()));
+            fixture.start();
+            // No camera yet: the first staged tile seeds it, and the nearest never stages.
+            fixture.controller.neighborhood(fixture.tiles);
+            int key = fixture.tiles.get(0).x() * 64 + fixture.tiles.get(0).y();
+            // With the controller clock frozen, the nearest tile waits out its first back-off
+            // while its neighbour is prepared and staged; that staged tile seeds the camera.
+            fixture.until(() -> fixture.controller.helperRejections(key) >= 1);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            // Only a camera lets the staged neighbour commit and free its upload credit, so the
+            // nearest tile's retries come after it: advance the clock through its back-offs
+            // until it is given up.
+            fixture.camera(1);
+            fixture.until(
+                    () -> {
+                        fixture.clock.addAndGet(250_000_000L);
+                        return fixture.controller.helperRejections(key)
+                                >= WorldStreamSourceController.MAX_HELPER_REJECTIONS;
+                    });
+            fixture.untilPresented(
+                    () -> fixture.commitLines().stream()
+                                    .anyMatch(line -> !line.endsWith(" 0"))
+                            && fixture.controller.snapshot().phase()
+                                    == WorldStreamSourceController.Phase.READY);
+            check(
+                    fixture.controller.snapshot().detail().contains("HELPER_REJECTED"),
+                    "The rejected nearest tile's reason is visible: "
+                            + fixture.controller.snapshot().detail());
+            check(lines(log) == WorldStreamSourceController.MAX_HELPER_REJECTIONS,
+                    "The nearest tile is given up after its rejections");
+            check(
+                    fixture.controller.snapshot().phase()
+                            != WorldStreamSourceController.Phase.FAILED,
+                    "A rejected nearest tile never ends the World session");
+        } finally {
+            Files.deleteIfExists(reject);
+            fixture.close();
+        }
+    }
+
+    private static int lines(Path log) {
+        try {
+            return Files.exists(log) ? Files.readAllLines(log).size() : 0;
+        } catch (java.io.IOException error) {
+            throw new java.io.UncheckedIOException(error);
+        }
     }
 
     private static void missingRootIsFinitePerDemandAndDoesNotInvalidateCurrentScope()
@@ -1704,6 +2007,19 @@ public final class WorldStreamSourceControllerTest {
                 fixture.controller=null;
             }
         } finally { fixture.close(); }
+    }
+
+    /**
+     * Waits for the pool's live lease count (claims held now, not a running total) to settle.
+     * Pins are retired on the worker step after an accepted presentation, which can follow the
+     * READY publication, so a single read right after READY can still see old pins (#498).
+     */
+    private static void awaitLeaseClaims(Fixture fixture, int expected, String message) throws Exception {
+        try {
+            fixture.until(() -> fixture.pool.stats().leaseClaims()==expected);
+        } catch(AssertionError timeout) {
+            throw new AssertionError(message+": leaseClaims="+fixture.pool.stats().leaseClaims(), timeout);
+        }
     }
 
     private static Object receiptOf(WorldStreamSourceController.Presentation presentation) throws Exception {
