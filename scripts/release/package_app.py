@@ -4,10 +4,11 @@ import ctypes
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -184,7 +185,41 @@ DEB_DEPENDS = (
     "libpango-1.0-0",
     "libpangocairo-1.0-0",
     "libpangoft2-1.0-0",
+    "libharfbuzz0b",
+    "libstdc++6",
+    "libgcc-s1",
 )
+# bgfx dlopens the Vulkan loader, so no ELF lists it as NEEDED; it falls back without it.
+DEB_RECOMMENDS = ("libvulkan1",)
+# The deb package providing each shared library an image ELF may list as NEEDED. Libraries
+# bundled in the image itself (the JDK's libjvm.so, libfreetype.so, ...) need no package.
+DEB_SONAME_PACKAGES = {
+    **dict.fromkeys(("libc.so.6", "libm.so.6", "libdl.so.2", "libpthread.so.0", "librt.so.1",
+                     "ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1"), "libc6"),
+    "libstdc++.so.6": "libstdc++6",
+    "libgcc_s.so.1": "libgcc-s1",
+    "libasound.so.2": "libasound2t64 | libasound2",
+    "libX11.so.6": "libx11-6",
+    "libXext.so.6": "libxext6",
+    "libXi.so.6": "libxi6",
+    "libXrender.so.1": "libxrender1",
+    "libXtst.so.6": "libxtst6",
+    "libXxf86vm.so.1": "libxxf86vm1",
+    "libGL.so.1": "libgl1",
+    "libfreetype.so.6": "libfreetype6",
+    "libfontconfig.so.1": "libfontconfig1",
+    "libharfbuzz.so.0": "libharfbuzz0b",
+    **dict.fromkeys(("libglib-2.0.so.0", "libgobject-2.0.so.0", "libgio-2.0.so.0", "libgthread-2.0.so.0",
+                     "libgmodule-2.0.so.0"), "libglib2.0-0t64 | libglib2.0-0"),
+    **dict.fromkeys(("libgtk-3.so.0", "libgdk-3.so.0"), "libgtk-3-0t64 | libgtk-3-0"),
+    "libatk-1.0.so.0": "libatk1.0-0t64 | libatk1.0-0",
+    "libcairo.so.2": "libcairo2",
+    "libcairo-gobject.so.2": "libcairo-gobject2",
+    "libgdk_pixbuf-2.0.so.0": "libgdk-pixbuf-2.0-0",
+    "libpango-1.0.so.0": "libpango-1.0-0",
+    "libpangocairo-1.0.so.0": "libpangocairo-1.0-0",
+    "libpangoft2-1.0.so.0": "libpangoft2-1.0-0",
+}
 # jpackage's RPM Requires come from its scriptlets and shortcut handling only.
 RPM_REQUIRES = {"/bin/sh", "xdg-utils"}
 
@@ -204,6 +239,7 @@ def write_deb_control_template(resources):
         "Provides: APPLICATION_PACKAGE",
         "Description: APPLICATION_DESCRIPTION",
         "Depends: " + ", ".join(DEB_DEPENDS),
+        "Recommends: " + ", ".join(DEB_RECOMMENDS),
         "Installed-Size: APPLICATION_INSTALLED_SIZE",
         "APPLICATION_HOMEPAGE",
     ]) + "\n", encoding="utf-8")
@@ -219,6 +255,101 @@ def check_deb_depends(deb):
     if depends != DEB_DEPENDS:
         raise ValueError(f"deb Depends differs from the allowlist: {field}")
     print(f"deb Depends ({len(depends)}): {field}")
+    recommends = subprocess.check_output(["dpkg-deb", "--field", str(deb), "Recommends"], text=True).strip()
+    if parse_depends(recommends) != DEB_RECOMMENDS:
+        raise ValueError(f"deb Recommends differs from the allowlist: {recommends}")
+    print(f"deb Recommends: {recommends}")
+
+
+ELF_MAGIC = b"\x7fELF"
+
+
+def elf_dynamic(data):
+    """(SONAME or None, [NEEDED...]) of an ELF shared object or executable; None if not a dynamic ELF."""
+    if data[:4] != ELF_MAGIC or data[4] not in (1, 2) or data[5] not in (1, 2):
+        return None
+    wide = data[4] == 2
+    order = "<" if data[5] == 1 else ">"
+    if wide:
+        phoff, = struct.unpack_from(order + "Q", data, 0x20)
+        phentsize, phnum = struct.unpack_from(order + "HH", data, 0x36)
+        header, dyn = order + "IIQQQQQQ", order + "qQ"
+    else:
+        phoff, = struct.unpack_from(order + "I", data, 0x1C)
+        phentsize, phnum = struct.unpack_from(order + "HH", data, 0x2A)
+        header, dyn = order + "IIIIIIII", order + "iI"
+    loads, dynamic = [], None
+    for index in range(phnum):
+        fields = struct.unpack_from(header, data, phoff + index * phentsize)
+        # ELF64 orders (type, flags, offset, vaddr, paddr, filesz, ...); ELF32 (type, offset, vaddr, paddr, filesz, ...).
+        kind, offset, vaddr, size = (fields[0], fields[2], fields[3], fields[5]) if wide else fields[:3] + (fields[4],)
+        if kind == 1:
+            loads.append((vaddr, offset, size))
+        elif kind == 2:
+            dynamic = (offset, size)
+    if dynamic is None:
+        return None
+    entries, strtab = [], None
+    for position in range(dynamic[0], dynamic[0] + dynamic[1], struct.calcsize(dyn)):
+        tag, value = struct.unpack_from(dyn, data, position)
+        if tag == 0:
+            break
+        if tag == 5:
+            strtab = value
+        entries.append((tag, value))
+    file_offset = next((offset + strtab - vaddr for vaddr, offset, size in loads if vaddr <= (strtab or 0) < vaddr + size), None)
+    if file_offset is None:
+        raise ValueError("ELF dynamic section has no loadable string table")
+
+    def string(value):
+        start = file_offset + value
+        return data[start:data.index(b"\0", start)].decode("utf-8")
+
+    soname = next((string(value) for tag, value in entries if tag == 14), None)
+    return soname, [string(value) for tag, value in entries if tag == 1]
+
+
+def image_elves(root):
+    """(location, data) of every ELF file in the image and every ELF entry in its JARs."""
+    for path in sorted(Path(root).rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        with path.open("rb") as stream:
+            magic = stream.read(4)
+        if magic == ELF_MAGIC:
+            yield path.relative_to(root).as_posix(), path.read_bytes()
+        elif path.suffix == ".jar":
+            with zipfile.ZipFile(path) as archive:
+                for entry in archive.infolist():
+                    if entry.is_dir():
+                        continue
+                    with archive.open(entry) as stream:
+                        if stream.read(4) != ELF_MAGIC:
+                            continue
+                    yield f"{path.relative_to(root).as_posix()}!/{entry.filename}", archive.read(entry)
+
+
+def required_deb_packages(elves):
+    """Deb packages the NEEDED sonames of these ELFs require; fails naming any unmapped library."""
+    provided, needed = set(), {}
+    for location, data in elves:
+        dynamic = elf_dynamic(data)
+        if dynamic is None:
+            continue
+        soname, libraries = dynamic
+        provided.add(soname or PurePosixPath(location).name)
+        for library in libraries:
+            needed.setdefault(library, location)
+    unmapped = sorted((library, location) for library, location in needed.items()
+                      if library not in provided and library not in DEB_SONAME_PACKAGES)
+    if unmapped:
+        raise ValueError("No deb package is mapped for " + ", ".join(f"{library} (needed by {location})" for library, location in unmapped)
+                         + "; add it to DEB_SONAME_PACKAGES and DEB_DEPENDS")
+    packages = {DEB_SONAME_PACKAGES[library] for library in needed if library not in provided}
+    missing = sorted(packages - set(DEB_DEPENDS))
+    if missing:
+        raise ValueError(f"deb Depends lacks packages the image needs: {missing}")
+    return packages
 
 
 def check_rpm_requires(rpm):
@@ -314,6 +445,8 @@ def main():
     stem = f"VibeMiner-{args.tag}-{system}-{arch}"
     assets = []
     if system == "linux":
+        packages = required_deb_packages(image_elves(image))
+        print(f"Image NEEDED sonames map to {len(packages)} declared deb packages")
         portable = output / f"{stem}.tar.gz"
         with tarfile.open(portable, "w:gz") as archive:
             archive.add(image, arcname="VibeMiner")
