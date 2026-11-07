@@ -136,8 +136,13 @@ public final class WorldStreamSourceControllerTest {
             fixture.camera(2);
             var borrowed = fixture.nextFrame(); // drawn from the table accepted before
             WorldStageTimings.reset();
+            Object committedBefore = fixture.currentReceipt();
             fixture.controller.neighborhood(fixture.tiles.subList(0, 4));
             fixture.until(() -> fixture.commitLines().size() >= before + 1);
+            // The helper logs the commit before it sends COMMITTED, so the log line alone does not
+            // prove the controller applied the receipt. Wait for the receipt itself, read under the
+            // controller's lock, so the old-table frame below is judged after the commit landed.
+            fixture.until(() -> fixture.currentReceipt() != committedBefore);
             check(fixture.controller.mayPresent(borrowed) && fixture.controller.presented(borrowed),
                     "The borrowed old-table frame is accepted");
             check(WorldStageTimings.snapshot().get("parent.commit.toAcceptedFrame") == null,
@@ -2428,6 +2433,21 @@ public final class WorldStreamSourceControllerTest {
                 return Files.exists(path) ? Files.readAllLines(path) : List.of();
             } catch (java.io.IOException error) {
                 throw new java.io.UncheckedIOException(error);
+            }
+        }
+
+        /** The controller's current commit receipt, read under its lock. */
+        Object currentReceipt() {
+            try {
+                var lock = WorldStreamSourceController.class.getDeclaredField("lock");
+                var receipt = WorldStreamSourceController.class.getDeclaredField("currentReceipt");
+                lock.setAccessible(true);
+                receipt.setAccessible(true);
+                synchronized (lock.get(controller)) {
+                    return receipt.get(controller);
+                }
+            } catch (ReflectiveOperationException error) {
+                throw new AssertionError(error);
             }
         }
 
