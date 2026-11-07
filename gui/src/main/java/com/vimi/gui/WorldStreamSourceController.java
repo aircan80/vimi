@@ -282,6 +282,8 @@ final class WorldStreamSourceController {
     private volatile WorldSkyFeed sky;
     private volatile WorldStreamTransport.Session session;
     private List<WorldFormats.Tile> desired;
+    // Tiles one ring beyond the demand (#366): a pending tile there is kept, not canceled.
+    private List<WorldFormats.Tile> keep = List.of();
     private long demandRevision, presentationRevision, acceptedSequence;
     private Snapshot snapshot =
             new Snapshot(Phase.QUALIFYING, "Qualifying world sources", 0, 1, null, null);
@@ -323,6 +325,10 @@ final class WorldStreamSourceController {
     private List<Entry> borrowedTable = List.of();
     private WorldStreamTransport.CommitReceipt borrowedReceipt;
     private Entry staged;
+    // The staged entry's reservation, kept so an unwanted staged tile can be canceled instead of
+    // committed over a wanted resident (#366), and that cancellation while it drains.
+    private WorldStreamTransport.TileReservation stagedReservation;
+    private CompletableFuture<Void> stagedCancellation;
     private final LinkedHashMap<Integer, WorldStreamSourceBridge.RefusalMetadata> unavailable =
             new LinkedHashMap<>();
     private boolean initialBlocked;
@@ -453,7 +459,16 @@ final class WorldStreamSourceController {
     }
 
     void neighborhood(List<WorldFormats.Tile> ordered) {
+        neighborhood(ordered, List.of());
+    }
+
+    /**
+     * The demand in load order, plus the tiles one ring beyond it whose preparation, once
+     * started, is kept rather than canceled (#366).
+     */
+    void neighborhood(List<WorldFormats.Tile> ordered, List<WorldFormats.Tile> beyond) {
         Objects.requireNonNull(ordered);
+        var kept = List.copyOf(beyond);
         if (ordered.size() > residents)
             throw new IllegalArgumentException("Neighborhood bounds");
         var copy = List.copyOf(ordered);
@@ -464,9 +479,17 @@ final class WorldStreamSourceController {
             }
         }
         synchronized (lock) {
-            if (closing || desired.equals(copy)) return;
-            desired = copy;
-            demandRevision++;
+            if (closing) return;
+            // Published only once the demand is validated (#366 review). A changed keep set alone
+            // still kicks: a pending tile it no longer covers must be canceled.
+            boolean keepChanged = !keep.equals(kept);
+            keep = kept;
+            if (desired.equals(copy)) {
+                if (!keepChanged) return;
+            } else {
+                desired = copy;
+                demandRevision++;
+            }
         }
         kick();
     }
@@ -933,8 +956,17 @@ final class WorldStreamSourceController {
         helperRejections.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
         helperRetryAt.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
         if (pending != null) {
+            List<WorldFormats.Tile> kept;
+            synchronized (lock) {
+                kept = keep;
+            }
+            // Hysteresis (#366): a tile one ring beyond the demand keeps its preparation, unless
+            // the camera tile or a wanted tile around it is still missing: the single lane then
+            // goes to what the view needs now (#366 review).
             // A preparation that already ended in a helper rejection is terminal: nothing to cancel.
-            if (!contains(wanted, pending.tile) && pending.cancellation == null
+            if (!contains(wanted, pending.tile)
+                    && (!contains(kept, pending.tile) || nearestMissing(wanted))
+                    && pending.cancellation == null
                     && !rejectedByHelper(pending.result)) {
                 // Parent's explicit stop MUST precede the bridge's latest=false cancellation.
                 pending.cancellation = pending.reservation.cancel();
@@ -964,6 +996,7 @@ final class WorldStreamSourceController {
                     helperRetryAt.remove(key(pending.tile));
                     if(creditTarget!=null && same(creditTarget,pending.tile)) creditTarget=null;
                     staged = new Entry(resident, prepared);
+                    stagedReservation = pending.reservation;
                     resultSeenAt = WorldStageTimings.lap(
                             "handoff.controller.resultToSeen", resultAt);
                     entries.put(resident, staged);
@@ -1007,6 +1040,13 @@ final class WorldStreamSourceController {
                             && origin != null
                             && origin.reason().name().equals(refusal.reason().name())
                             && tileUnavailable(origin)) {
+                        // As for a helper rejection: a tile kept one ring beyond, whose demand has
+                        // already left, publishes no UNAVAILABLE for terrain nobody asked for.
+                        if (!contains(wanted, refusedTile)) {
+                            rejectionsOutOfDemand.incrementAndGet();
+                            wake.set(true);
+                            return;
+                        }
                         unavailable.put(failedTile, origin);
                         publish(Phase.UNAVAILABLE, "Terrain unavailable: " + origin.site());
                         wake.set(true);
@@ -1113,22 +1153,42 @@ final class WorldStreamSourceController {
             commit = null;
             pollFrame();
         }
+        if (stagedCancellation != null) {
+            // An unwanted staged tile is being canceled: drop it once the child has let it go.
+            if (!stagedCancellation.isDone()) return;
+            stagedCancellation.join();
+            stagedCancellation = null;
+            entries.remove(staged.resident());
+            staged.source().close();
+            sourceRetirementRevision++;
+            staged = null;
+            stagedReservation = null;
+        }
         if (staged != null) {
             var latest = camera;
             if (latest == null) return;
             var target = new ArrayList<>(current);
             if (target.size() >= residentLimit()) {
-                int outgoing = target.size() - 1;
+                int outgoing = -1;
                 for (int i = target.size() - 1; i >= 0; i--) {
                     if (!containsResident(wanted, target.get(i).resident())) {
                         outgoing = i;
                         break;
                     }
                 }
-                target.remove(outgoing);
+                if (outgoing < 0 && !containsResident(wanted, staged.resident())) {
+                    // A tile kept by hysteresis that is no longer wanted never displaces a
+                    // wanted resident (#366): cancel it instead of committing it.
+                    stagedCancellation = stagedReservation.cancel();
+                    stagedCancellation.whenComplete((ignored, failure) -> kick());
+                    publish(Phase.PREPARING, "Releasing a tile the camera left");
+                    return;
+                }
+                target.remove(outgoing < 0 ? target.size() - 1 : outgoing);
             }
             target.add(staged);
             staged = null;
+            stagedReservation = null;
             if (resultSeenAt != 0L) {
                 WorldStageTimings.lap(
                         "handoff.controller.resultSeenToCommitIssued", resultSeenAt);
@@ -1798,6 +1858,21 @@ final class WorldStreamSourceController {
         }
     }
 
+    /**
+     * Whether the first wanted tile (the camera tile) or a wanted tile within one ring of it is
+     * neither current nor known unavailable.
+     */
+    private boolean nearestMissing(List<WorldFormats.Tile> wanted) {
+        if (wanted.isEmpty()) return false;
+        var first = wanted.getFirst();
+        for (var tile : wanted) {
+            if (Math.max(Math.abs(tile.x() - first.x()), Math.abs(tile.y() - first.y())) > 1) continue;
+            if (unavailable.containsKey(key(tile))) continue;
+            if (current.stream().noneMatch(entry -> same(tile, entry.resident()))) return true;
+        }
+        return false;
+    }
+
     private void retireUnused() {
         var remove = new ArrayList<Entry>();
         synchronized (lock) {
@@ -2029,7 +2104,10 @@ final class WorldStreamSourceController {
         return current != null && rejectedByHelper(current.result);
     }
 
-    /** Test observation: helper rejections that arrived for tiles out of demand. */
+    /**
+     * Test observation: helper rejections and unavailable-terrain refusals that arrived for tiles
+     * out of demand.
+     */
     int rejectionsOutOfDemand() {
         return rejectionsOutOfDemand.get();
     }

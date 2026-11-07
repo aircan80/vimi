@@ -51,6 +51,17 @@ final class WorldStreamNeighborhood {
                 .limit(distance.residents()).toList();
     }
 
+    /**
+     * The recorded tiles one ring beyond the view distance (#366): not demanded, but a tile already
+     * being prepared there is kept rather than canceled, so a camera crossing a tile border back
+     * and forth does not restart it.
+     */
+    static List<WorldFormats.Tile> keep(List<WorldFormats.Tile> recorded,
+            int cameraX, int cameraY, WorldStreamTransport.ViewDistance distance) {
+        int radius = distance.radius() + 1;
+        return recorded.stream().filter(tile -> ring(tile, cameraX, cameraY) == radius).toList();
+    }
+
     /** Chebyshev tile distance: 0 for the camera tile, 1 for the inner ring, 2 for the outer. */
     static int ring(WorldFormats.Tile tile, int cameraX, int cameraY) {
         return Math.max(Math.abs(tile.x() - cameraX), Math.abs(tile.y() - cameraY));

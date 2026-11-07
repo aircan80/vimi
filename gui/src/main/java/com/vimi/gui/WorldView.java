@@ -3609,8 +3609,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         origin.y() + (originY - camera.y()) / WorldFormats.TILE_SIZE,
                         System.nanoTime(),
                         distance.radius());
-        streaming.neighborhood(WorldStreamNeighborhood.select(
-                inventory.world().tiles(), x, y, camera.yaw(), distance, ahead[0], ahead[1]));
+        var tiles = inventory.world().tiles();
+        streaming.neighborhood(
+                WorldStreamNeighborhood.select(tiles, x, y, camera.yaw(), distance, ahead[0], ahead[1]),
+                WorldStreamNeighborhood.keep(tiles, x, y, distance));
     }
 
     private void retireGpu() {
