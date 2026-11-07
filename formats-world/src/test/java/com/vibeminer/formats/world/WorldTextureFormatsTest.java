@@ -2,6 +2,7 @@ package com.vibeminer.formats.world;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -673,5 +674,22 @@ class WorldTextureFormatsTest {
                 () ->
                         WorldTextureFormats.adopt(
                                 source, WorldTextureFormats.AlphaFormat.BIG_8BIT, () -> true));
+    }
+
+    @Test
+    void anEmptyLayerListIsNamedAndAMissingOneIsStillMalformed() {
+        assertEquals(
+                WorldTextureFormats.ChunkIssue.NO_LAYERS,
+                decode(texture(part("MCLY", new byte[0])), ByteBuffer.allocate(0)).issue());
+        assertEquals(
+                WorldTextureFormats.ChunkIssue.LAYER_SHAPE,
+                decode(texture(part("MCAL", new byte[0])), ByteBuffer.allocate(0)).issue());
+        // A duplicate empty MCLY is still malformed, not "no layers".
+        var duplicate =
+                decode(
+                        texture(join(part("MCLY", new byte[0]), part("MCLY", new byte[0]))),
+                        ByteBuffer.allocate(0));
+        assertFalse(duplicate.admitted());
+        assertNotEquals(WorldTextureFormats.ChunkIssue.NO_LAYERS, duplicate.issue());
     }
 }

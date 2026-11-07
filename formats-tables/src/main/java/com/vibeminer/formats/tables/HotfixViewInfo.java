@@ -24,6 +24,13 @@ public record HotfixViewInfo(
             OPERATION_TABLES = "OPERATION_TABLES",
             BASE_UNAVAILABLE = "BASE_UNAVAILABLE";
 
+    /**
+     * Fixed row reason when a cache row needs a raw-physical column whose base check stayed
+     * inconclusive after {@code HotfixBuildTables.FIT_SCANS_MAX} scans and was given up on: the row
+     * stays unresolved, with no stale base substitution, until the base changes.
+     */
+    public static final String RAW_SCAN_GAVE_UP = "RAW_SCAN_GAVE_UP";
+
     public HotfixViewInfo(
             String inputFingerprint,
             String identity,

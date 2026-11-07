@@ -24,6 +24,15 @@ public final class WorldStreamTestChildren {
      */
     static final long STARTUP_GUARD_MILLIS = 60_000;
 
+    /**
+     * Exit grace after CLOSED for a real child JVM: how long close waits for it to exit on its own
+     * before signalling it. The product's 250 ms suits the helper, but a JVM's own shutdown on a
+     * loaded Windows runner can take longer, and the signal ends it with exit 1 there, so the
+     * session reports "exited without successful CLOSED" (#498). It only bounds a child that never
+     * exits.
+     */
+    static final long EXIT_GRACE_MILLIS = 2_000;
+
     /** Class timeout for tests that start real child JVMs: one startup guard plus the test body. */
     static final long TEST_TIMEOUT_SECONDS = 120;
 
