@@ -528,6 +528,7 @@ public final class WorldTerrainTextureSource {
         final CompletableFuture<List<Observation>> observations = new CompletableFuture<>();
         private final ArrayList<Observation> observing;
         final boolean strictFailures;
+        final PreparedRoot preparedRoot;
         Cancellation.Registration registration;
         volatile boolean canceled;
         volatile Throwable cancellationFailure;
@@ -541,12 +542,24 @@ public final class WorldTerrainTextureSource {
                 Cancellation caller,
                 Consumer<Progress> progress,
                 boolean strictFailures) {
+            this(source, map, tiles, caller, progress, strictFailures, null);
+        }
+
+        Request(
+                WorldTerrainTextureSource source,
+                WorldService.MapInfo map,
+                List<WorldFormats.Tile> tiles,
+                Cancellation caller,
+                Consumer<Progress> progress,
+                boolean strictFailures,
+                PreparedRoot preparedRoot) {
             this.source = source;
             this.map = map;
             this.tiles = tiles;
             this.caller = caller;
             this.progress = progress;
             this.strictFailures = strictFailures;
+            this.preparedRoot = preparedRoot;
             observing = strictFailures ? new ArrayList<>() : null;
         }
 
@@ -611,6 +624,36 @@ public final class WorldTerrainTextureSource {
 
     private record ReadSource(FileBinding binding, byte[] bytes) {}
 
+    /**
+     * A root ADT the caller already read, parsed and fingerprinted from one checked admission. The
+     * material read uses it instead of reading, parsing and hashing the same root again; the root
+     * binding is still revalidated with every other source before publication.
+     */
+    record PreparedRoot(FileBinding binding, TerrainGrid grid, String geometrySha256) {
+        PreparedRoot {
+            Objects.requireNonNull(binding);
+            Objects.requireNonNull(grid);
+            Objects.requireNonNull(geometrySha256);
+            if (grid.chunks().size() != 256 || !geometrySha256.matches("[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("Invalid prepared root");
+            }
+        }
+    }
+
+    /**
+     * Largest root ADT accepted, the same as the streaming geometry admission, so a root the
+     * geometry draws is never refused for textures only because the material read it itself.
+     */
+    static final int ROOT_SOURCE_LIMIT = 8 << 20;
+
+    private record CachedInventory(FileBinding binding, WorldTextureFormats.Inventory inventory) {}
+
+    private static final int INVENTORY_CACHE = 4;
+
+    // WDT inventories by map and WDT file, reused while the WDT's content key is unchanged.
+    private final java.util.LinkedHashMap<String, CachedInventory> inventories =
+            new java.util.LinkedHashMap<>(8, .75f, true);
+
     private record Outcome(TileResult metadata, TerrainAtlasPool.Lease lease) {}
 
     private static final class SourceFailure extends RuntimeException {
@@ -625,6 +668,27 @@ public final class WorldTerrainTextureSource {
 
     private final BuildFiles files;
     private final TerrainAtlasPool pool;
+
+    /**
+     * Shader-side terrain splatting (issue #174 step 2), off until its renderer path ships: only
+     * {@code -Dvimi.world.splat=true} composes the splatting inputs beside each atlas.
+     */
+    static volatile boolean splat = Boolean.getBoolean("vimi.world.splat");
+
+    /**
+     * Side of each tile's splat mask map, from the texture quality tier (issue #174 step 2b-2):
+     * STANDARD 512 (every other alpha-map texel), HIGH 1024 (the native 64 x 64 per chunk). It
+     * applies to tiles composed after it changes; each tile carries its own side.
+     */
+    static volatile int splatMask = com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK;
+
+    /**
+     * Whole-file bound of a layer diffuse. The decoder reads only the header and the selected mip's
+     * byte range (each mip read is bounded by {@code maxMipBytes}), so a large diffuse with a full
+     * mip chain (a 1024 x 1024 BC3 chain is about 1.4 MB) no longer fails a 1 MiB file cap.
+     */
+    static final int DIFFUSE_SOURCE_LIMIT = 8 << 20;
+
     // Layer diffuses decoded for shader-side splatting, shared by every tile of this source.
     final TerrainDiffuseDetails details = new TerrainDiffuseDetails();
     private final TerrainTextureTasks tasks;
@@ -698,7 +762,22 @@ public final class WorldTerrainTextureSource {
         if (tiles.size() != 1) {
             throw new IllegalArgumentException("Owned material operation requires one tile");
         }
-        return beginRead(map, tiles, token, progress, true);
+        return beginRead(map, tiles, token, progress, true, null);
+    }
+
+    /** As above, reusing the caller's checked root parse and fingerprint for this tile. */
+    Operation readOwned(
+            WorldService.MapInfo map,
+            List<WorldFormats.Tile> tiles,
+            Cancellation token,
+            Consumer<Progress> progress,
+            PreparedRoot root) {
+        Objects.requireNonNull(tiles);
+        Objects.requireNonNull(root);
+        if (tiles.size() != 1 || tiles.getFirst().rootId() != root.binding().fileId()) {
+            throw new IllegalArgumentException("Owned material operation requires its one root");
+        }
+        return beginRead(map, tiles, token, progress, true, root);
     }
 
     public CompletableFuture<BatchResult> read(
@@ -706,7 +785,7 @@ public final class WorldTerrainTextureSource {
             List<WorldFormats.Tile> tiles,
             Cancellation token,
             Consumer<Progress> progress) {
-        return beginRead(map, tiles, token, progress, false).result();
+        return beginRead(map, tiles, token, progress, false, null).result();
     }
 
     private Operation beginRead(
@@ -714,7 +793,8 @@ public final class WorldTerrainTextureSource {
             List<WorldFormats.Tile> tiles,
             Cancellation token,
             Consumer<Progress> progress,
-            boolean strictFailures) {
+            boolean strictFailures,
+            PreparedRoot preparedRoot) {
         Objects.requireNonNull(map);
         Objects.requireNonNull(tiles);
         Objects.requireNonNull(token);
@@ -731,7 +811,8 @@ public final class WorldTerrainTextureSource {
             }
             seen[key] = true;
         }
-        var request = new Request(this, map, snapshot, token, progress, strictFailures);
+        var request =
+                new Request(this, map, snapshot, token, progress, strictFailures, preparedRoot);
         request.registration = token.onCancel(() -> tasks.cancel(request));
         request.future.whenComplete(
                 (result, failure) -> {
@@ -764,18 +845,15 @@ public final class WorldTerrainTextureSource {
         boolean transferred = false;
         try {
             request.report(Stage.INVENTORY, 0, 0);
-            ReadSource wdt;
+            FileBinding wdt;
             WorldTextureFormats.Inventory inventory;
             try {
                 if (request.map.wdtId() == null || request.map.wdtId() <= 0) {
                     throw new SourceFailure(Reason.ABSENT);
                 }
-                wdt = readBytes(request.map.wdtId(), 1 << 20, request);
-                try {
-                    inventory = WorldTextureFormats.inventory(wdt.bytes(), request::canceled);
-                } catch (IllegalArgumentException invalid) {
-                    throw new SourceFailure(Reason.INVENTORY_PROFILE);
-                }
+                var cached = inventory(request);
+                wdt = cached.binding();
+                inventory = cached.inventory();
             } catch (RuntimeException unavailable) {
                 propagateCancellation(request, unavailable);
                 Reason reason = reason(request, unavailable, Reason.INVENTORY_PROFILE);
@@ -797,7 +875,7 @@ public final class WorldTerrainTextureSource {
                 }
                 Outcome loaded;
                 try {
-                    loaded = loadTile(request, i, tile, wdt.binding());
+                    loaded = loadTile(request, i, tile, wdt, inventory.alphaFormat());
                 } catch (RuntimeException unavailable) {
                     propagateCancellation(request, unavailable);
                     loaded =
@@ -845,23 +923,36 @@ public final class WorldTerrainTextureSource {
     }
 
     private Outcome loadTile(
-            Request request, int tileIndex, WorldFormats.Tile tile, FileBinding wdt) {
+            Request request,
+            int tileIndex,
+            WorldFormats.Tile tile,
+            FileBinding wdt,
+            WorldTextureFormats.AlphaFormat alphaFormat) {
         if (tile.rootId() <= 0 || tile.tex0Id() <= 0) {
             throw new SourceFailure(Reason.ABSENT);
         }
         request.report(Stage.GRID, tileIndex, 0);
-        var root = readBytes(tile.rootId(), 2 << 20, request);
+        FileBinding root;
         TerrainGrid grid;
         String geometry;
-        try {
-            grid = WorldFormats.adtGrid(root.bytes(), request::canceled);
-            geometry = TerrainGeometryFingerprint.sha256(tile.x(), tile.y(), grid);
-        } catch (IllegalArgumentException invalid) {
-            throw new SourceFailure(Reason.ROOT_PROFILE);
+        var prepared = request.preparedRoot;
+        if (prepared != null && prepared.binding().fileId() == tile.rootId()) {
+            root = prepared.binding();
+            grid = prepared.grid();
+            geometry = prepared.geometrySha256();
+        } else {
+            var read = readBytes(tile.rootId(), ROOT_SOURCE_LIMIT, request);
+            root = read.binding();
+            try {
+                grid = WorldFormats.adtGrid(read.bytes(), request::canceled);
+                geometry = TerrainGeometryFingerprint.sha256(tile.x(), tile.y(), grid);
+            } catch (IllegalArgumentException invalid) {
+                throw profileFailure(root, Reason.ROOT_PROFILE, request);
+            }
         }
         request.report(Stage.TEXTURES, tileIndex, 0);
         var texture = readBytes(tile.tex0Id(), WorldTextureFormats.MAX_SOURCE_BYTES, request);
-        try (var data = readTextureData(texture.bytes(), request)) {
+        try (var data = readTextureData(texture, alphaFormat, request)) {
             boolean[] used = new boolean[data.diffuseIds().size()];
             for (var chunk : data.chunks()) {
                 if (chunk.issue() == WorldTextureFormats.ChunkIssue.NONE) {
@@ -879,7 +970,7 @@ public final class WorldTerrainTextureSource {
                         continue;
                     }
                     try {
-                        stats.put(id, stat(id, 1 << 20, request));
+                        stats.put(id, stat(id, DIFFUSE_SOURCE_LIMIT, request));
                     } catch (RuntimeException missing) {
                         propagateCancellation(request, missing);
                         issues.add(
@@ -894,7 +985,7 @@ public final class WorldTerrainTextureSource {
                                     request.map.id(),
                                     tile,
                                     wdt,
-                                    root.binding(),
+                                    root,
                                     texture.binding(),
                                     stats.values().stream().toList(),
                                     geometry)
@@ -946,7 +1037,8 @@ public final class WorldTerrainTextureSource {
                 }
                 request.report(Stage.COMPOSING, tileIndex, 0);
                 var composition =
-                        TerrainAtlasComposer.compose(tile, grid, data, diffuse, request::canceled);
+                        TerrainAtlasComposer.compose(
+                                tile, grid, data, diffuse, splat, splatMask, request::canceled);
                 for (var issue : composition.diagnostics()) {
                     issues.add(
                             new Issue(
@@ -967,11 +1059,13 @@ public final class WorldTerrainTextureSource {
                                 request.map.id(),
                                 tile,
                                 wdt,
-                                root.binding(),
+                                root,
                                 texture.binding(),
                                 mipBindings,
                                 geometry,
                                 key);
+                // Every source this tile read, checked once before publication; reads and
+                // decodes no longer revalidate one by one.
                 revalidate(receipt.bindings(), request);
                 request.check();
                 boolean complete = composition.supportedChunks() == 256;
@@ -992,12 +1086,22 @@ public final class WorldTerrainTextureSource {
         }
     }
 
-    private static WorldTextureFormats.TextureData readTextureData(byte[] bytes, Request request) {
+    private WorldTextureFormats.TextureData readTextureData(
+            ReadSource texture, WorldTextureFormats.AlphaFormat alphaFormat, Request request) {
         try {
-            return WorldTextureFormats.read(bytes, request::canceled);
+            return WorldTextureFormats.adopt(texture.bytes(), alphaFormat, request::canceled);
         } catch (IllegalArgumentException invalid) {
-            throw new SourceFailure(Reason.TEXTURE_PROFILE);
+            throw profileFailure(texture.binding(), Reason.TEXTURE_PROFILE, request);
         }
+    }
+
+    /**
+     * Reads no longer revalidate one by one, so bytes that fail to parse may come from a source
+     * that changed after its stat. Report that as CHANGED, not as a profile refusal.
+     */
+    private SourceFailure profileFailure(FileBinding binding, Reason profile, Request request) {
+        revalidate(List.of(binding), request);
+        return new SourceFailure(profile);
     }
 
     private record Decoded(TerrainAtlasComposer.DiffuseMip pixels, MipBinding binding) {}
@@ -1009,12 +1113,18 @@ public final class WorldTerrainTextureSource {
             if (stream == null) {
                 throw new SourceFailure(Reason.ABSENT);
             }
-            validateStream(opened, stream.length(), before, 1 << 20, !stream.holes().isEmpty());
+            validateStream(
+                    opened,
+                    stream.length(),
+                    before,
+                    DIFFUSE_SOURCE_LIMIT,
+                    !stream.holes().isEmpty());
             var image =
                     Blp2Decoder.decodeLargestWithin(
                                     AssetSources.file(stream),
                                     4,
-                                    new Blp2Types.Limits(1 << 20, 16384, 16, 1 << 20, 64),
+                                    new Blp2Types.Limits(
+                                            DIFFUSE_SOURCE_LIMIT, 16384, 16, 1 << 20, 64),
                                     request.token,
                                     Blp2Types.MipProfile.DECLARED_HANDMADE_V1)
                             .join();
@@ -1024,6 +1134,7 @@ public final class WorldTerrainTextureSource {
                     || image.baseWidth() != image.baseHeight()) {
                 throw new SourceFailure(Reason.DIFFUSE_PROFILE);
             }
+            // Revalidated with the tile's other sources before publication.
             FileBinding actual =
                     new FileBinding(
                             before.fileId(),
@@ -1031,7 +1142,6 @@ public final class WorldTerrainTextureSource {
                             stream.length(),
                             before.declaredSize(),
                             before.sourceLimit());
-            revalidate(List.of(actual), request);
             var profile =
                     image.mipFlags() == 2
                             ? TerrainAtlasComposer.MipProfile.DECLARED_HANDMADE_V1
@@ -1056,9 +1166,11 @@ public final class WorldTerrainTextureSource {
     }
 
     /**
-     * The largest declared mip of one layer diffuse within {@link TerrainDiffuseDetails#MAX_SIDE},
-     * for shader-side splatting (issue #174 step 2). Same file bounds and revalidation as the
-     * coverage preview's 4 x 4 mip; a decoded detail is cached by file id and content key.
+     * One layer diffuse as its {@link com.vibeminer.rendering.world.TerrainLayerBlocks} BC1 chain,
+     * for shader-side splatting (issue #174 step 2). A DXT file of side at least 256 that records
+     * its levels from 256 down to 4 x 4 is carried as its own blocks; any other diffuse is decoded
+     * at its largest declared mip within 256 and encoded. Same file bounds and revalidation as the
+     * coverage preview's 4 x 4 mip; the result is cached by file id and content key.
      */
     TerrainDiffuseDetails.Detail detail(FileBinding before, Request request) {
         var cached = details.get(before.fileId(), before.contentKey());
@@ -1071,33 +1183,47 @@ public final class WorldTerrainTextureSource {
             if (stream == null) {
                 throw new SourceFailure(Reason.ABSENT);
             }
-            validateStream(opened, stream.length(), before, 1 << 20, !stream.holes().isEmpty());
-            var image =
-                    Blp2Decoder.decodeLargestWithin(
-                                    AssetSources.file(stream),
-                                    TerrainDiffuseDetails.MAX_SIDE,
-                                    // Decoded pixels and bytes bounded by one 128 x 128 layer.
-                                    new Blp2Types.Limits(
-                                            1 << 20,
-                                            16384,
-                                            TerrainDiffuseDetails.MAX_SIDE
-                                                    * TerrainDiffuseDetails.MAX_SIDE,
-                                            1 << 20,
-                                            TerrainDiffuseDetails.MAX_SIDE
-                                                    * TerrainDiffuseDetails.MAX_SIDE
-                                                    * 4L),
-                                    request.token,
-                                    Blp2Types.MipProfile.DECLARED_HANDMADE_V1)
-                            .join();
-            request.check();
-            int side = image.width();
-            if (side != image.height()
-                    || side > TerrainDiffuseDetails.MAX_SIDE
-                    || Integer.bitCount(side) != 1
-                    || image.baseWidth() != image.baseHeight()
-                    || image.rowStride() != side * 4) {
-                throw new SourceFailure(Reason.DIFFUSE_PROFILE);
+            validateStream(
+                    opened,
+                    stream.length(),
+                    before,
+                    DIFFUSE_SOURCE_LIMIT,
+                    !stream.holes().isEmpty());
+            var source = AssetSources.file(stream);
+            String[] encoding = new String[1];
+            byte[] chain = layerBlocks(source, request, encoding);
+            boolean fileBlocks = chain != null;
+            if (chain == null) {
+                int side = com.vibeminer.rendering.world.TerrainLayerBlocks.SIDE;
+                var image =
+                        Blp2Decoder.decodeLargestWithin(
+                                        source,
+                                        side,
+                                        // Decoded pixels and bytes bounded by one 256 x 256 layer.
+                                        new Blp2Types.Limits(
+                                                DIFFUSE_SOURCE_LIMIT,
+                                                16384,
+                                                side * side,
+                                                1 << 20,
+                                                side * side * 4L),
+                                        request.token,
+                                        Blp2Types.MipProfile.DECLARED_HANDMADE_V1)
+                                .join();
+                request.check();
+                int decoded = image.width();
+                if (decoded != image.height()
+                        || decoded > side
+                        || Integer.bitCount(decoded) != 1
+                        || image.baseWidth() != image.baseHeight()
+                        || image.rowStride() != decoded * 4) {
+                    throw new SourceFailure(Reason.DIFFUSE_PROFILE);
+                }
+                chain =
+                        com.vibeminer.rendering.world.TerrainLayerBlocks.encode(
+                                java.nio.ByteBuffer.wrap(image.rgba()), decoded);
+                encoding[0] = image.encoding().name();
             }
+            request.check();
             revalidate(
                     List.of(
                             new FileBinding(
@@ -1109,12 +1235,102 @@ public final class WorldTerrainTextureSource {
                     request);
             return details.put(
                     new TerrainDiffuseDetails.Detail(
-                            before.fileId(), before.contentKey(), side, image.rgba()));
+                            before.fileId(), before.contentKey(), chain, fileBlocks, encoding[0]));
+        }
+    }
+
+    /**
+     * The layer chain from the file's own DXT blocks, or null when the file has none to carry: not
+     * DXT, not square, smaller than 256, or not recording every level from 256 down to 4 x 4 in
+     * exact storage. Reads only the header, the mip table and those levels' byte ranges.
+     */
+    private static byte[] layerBlocks(
+            com.vibeminer.formats.AssetSource source, Request request, String[] encoding) {
+        int side = com.vibeminer.rendering.world.TerrainLayerBlocks.SIDE;
+        try {
+            byte[] head = source.readAt(0, Blp2Decoder.HEADER_BYTES, request.token).join();
+            request.check();
+            var header = java.nio.ByteBuffer.wrap(head).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            if (head.length != Blp2Decoder.HEADER_BYTES
+                    || header.getInt(0) != 0x32504c42
+                    || header.getInt(4) != 1
+                    || (head[8] & 255) != 2) {
+                return null;
+            }
+            int format =
+                    switch (head[10] & 255) {
+                        case 0 -> com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+                        case 1 -> com.vibeminer.rendering.world.ObjectTextureFormats.BC2;
+                        case 7 -> com.vibeminer.rendering.world.ObjectTextureFormats.BC3;
+                        default -> -1;
+                    };
+            long width = Integer.toUnsignedLong(header.getInt(12));
+            long height = Integer.toUnsignedLong(header.getInt(16));
+            if (format < 0
+                    || width != height
+                    || width < side
+                    || width > 16384
+                    || Long.bitCount(width) != 1) {
+                return null;
+            }
+            int top = Long.numberOfTrailingZeros(width / side);
+            var mips =
+                    Blp2Decoder.readMipsSynchronous(
+                            source,
+                            new Blp2Types.Limits(
+                                    DIFFUSE_SOURCE_LIMIT, 16384, 16384L * 16384, 1 << 20, 64),
+                            request.token,
+                            Blp2Types.MipProfile.DECLARED_HANDMADE_V1);
+            var levels = new java.util.ArrayList<byte[]>();
+            for (int k = 0; k < com.vibeminer.rendering.world.TerrainLayerBlocks.LEVELS; k++) {
+                int levelSide = com.vibeminer.rendering.world.TerrainLayerBlocks.side(k);
+                int bytes =
+                        com.vibeminer.rendering.world.ObjectTextureFormats.levelBytes(
+                                format, levelSide, levelSide, 0);
+                Blp2Types.Mip mip = null;
+                for (var candidate : mips) {
+                    if (candidate.level() == top + k) {
+                        mip = candidate;
+                    }
+                }
+                if (mip == null
+                        || mip.width() != levelSide
+                        || mip.height() != levelSide
+                        || mip.storage() != Blp2Types.MipStorage.EXACT
+                        || mip.byteLength() != bytes) {
+                    if (k < 7) {
+                        return null;
+                    }
+                    break;
+                }
+                request.check();
+                byte[] level = source.readAt(mip.offset(), bytes, request.token).join();
+                if (level.length != bytes) {
+                    return null;
+                }
+                levels.add(level);
+            }
+            var chain =
+                    com.vibeminer.rendering.world.TerrainLayerBlocks.fromBlocks(
+                            format, levels.toArray(byte[][]::new));
+            encoding[0] = new String[] {"RGBA8", "BC1", "BC2", "BC3"}[format];
+            return chain;
+        } catch (com.vibeminer.formats.images.BlpFormatException
+                | IllegalArgumentException
+                | java.util.concurrent.CompletionException unusable) {
+            propagateCancellation(request, unusable);
+            return null;
         }
     }
 
     private ReadSource readBytes(long id, int limit, Request request) {
-        var before = stat(id, limit, request);
+        return readBytes(stat(id, limit, request), request);
+    }
+
+    /** Reads one stat'ed source; the caller revalidates it with the tile's other sources. */
+    private ReadSource readBytes(FileBinding before, Request request) {
+        long id = before.fileId();
+        int limit = before.sourceLimit();
         var opened = files.openRead(FileTypes.FileRef.id(id), request.token).join();
         try (var stream = opened.stream()) {
             request.observeOpen(id, opened);
@@ -1138,9 +1354,45 @@ public final class WorldTerrainTextureSource {
                             stream.length(),
                             before.declaredSize(),
                             before.sourceLimit());
-            revalidate(List.of(binding), request);
             return new ReadSource(binding, target.array());
         }
+    }
+
+    /**
+     * The map's WDT inventory. A cached inventory is reused only while a fresh stat reports the
+     * same content key and declared size; otherwise the WDT is read and parsed again.
+     */
+    private CachedInventory inventory(Request request) {
+        long id = request.map.wdtId();
+        String key = request.map.id() + ":" + id;
+        var before = stat(id, 1 << 20, request);
+        synchronized (inventories) {
+            var cached = inventories.get(key);
+            if (cached != null
+                    && cached.binding().contentKey().equals(before.contentKey())
+                    && Objects.equals(cached.binding().declaredSize(), before.declaredSize())) {
+                return cached;
+            }
+        }
+        var wdt = readBytes(before, request);
+        WorldTextureFormats.Inventory parsed;
+        try {
+            parsed = WorldTextureFormats.inventory(wdt.bytes(), request::canceled);
+        } catch (IllegalArgumentException invalid) {
+            throw profileFailure(wdt.binding(), Reason.INVENTORY_PROFILE, request);
+        }
+        // Checked like every other source before this request uses or caches it.
+        revalidate(List.of(wdt.binding()), request);
+        var fresh = new CachedInventory(wdt.binding(), parsed);
+        synchronized (inventories) {
+            inventories.put(key, fresh);
+            if (inventories.size() > INVENTORY_CACHE) {
+                var eldest = inventories.keySet().iterator();
+                eldest.next();
+                eldest.remove();
+            }
+        }
+        return fresh;
     }
 
     private static void validateStream(

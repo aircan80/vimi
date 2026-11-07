@@ -28,6 +28,7 @@ import static org.lwjgl.bgfx.BGFX.bgfx_set_view_mode;
 import static org.lwjgl.bgfx.BGFX.bgfx_set_view_rect;
 import static org.lwjgl.bgfx.BGFX.bgfx_shutdown;
 
+import com.vibeminer.rendering.world.TerrainCamera;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -125,8 +126,8 @@ public final class GlobalWmoNativeProof {
                                                 GlobalWmoAuthoredData.solid(255, 0, 0))),
                                 () -> false)) {
                     int[] image = gpu.render(scene, CAMERA);
-                    rgb(image[128 * SIDE + 210], 255, 0, 0, 0, "D/handedness east landmark");
-                    rgb(image[128 * SIDE + 46], 17, 34, 51, 0, "West stays background");
+                    rgb(image[128 * SIDE + at(.4)], 255, 0, 0, 0, "D/handedness east landmark");
+                    rgb(image[128 * SIDE + at(-.4)], 17, 34, 51, 0, "West stays background");
                     rgb(
                             gpu.render(scene, CAMERA.move(0, 4, 0))[128 * SIDE + 128],
                             255,
@@ -333,12 +334,27 @@ public final class GlobalWmoNativeProof {
                             decoded(scratch, "max", GlobalWmoAuthoredData.maximum()),
                             () -> false)) {
                 var stats = scene.stats();
+                // Expected sizes follow the layout constants: position and UV floats per vertex,
+                // WorldGlobalLayout.INDEX_BYTES per index (32-bit since #281), RGBA8 texels.
+                var counts = GlobalWmoAuthoredData.maximum().counts();
+                long mesh =
+                        counts.vertices() * 20L
+                                + (long) counts.indices() * WorldGlobalLayout.INDEX_BYTES;
+                long image = counts.pixels() * 4L;
                 require(
-                        stats.meshBytes() == 851968 && stats.imageBytes() == 4718592,
-                        "Exact maximum uploaded bytes");
+                        stats.meshBytes() == mesh && stats.imageBytes() == image,
+                        "Exact maximum uploaded bytes: mesh="
+                                + stats.meshBytes()
+                                + " expected "
+                                + mesh
+                                + ", image="
+                                + stats.imageBytes()
+                                + " expected "
+                                + image);
                 require(
-                        stats.peakMeshStagingBytes() == 851968
-                                && stats.peakImageStagingBytes() == 262144
+                        stats.peakMeshStagingBytes() == mesh
+                                && stats.peakImageStagingBytes()
+                                        == GlobalWmoNativeScene.DIRECT_IMAGE
                                 && stats.liveStagingBytes() == 0,
                         "Actual maximum staging ownership");
                 require(
@@ -432,6 +448,11 @@ public final class GlobalWmoNativeProof {
         if (!value) {
             throw new AssertionError(message);
         }
+    }
+
+    /** Pixel {@code offset} focal lengths from the frame center (the authored rays). */
+    private static int at(double offset) {
+        return (int) Math.round(SIDE * .5 + offset * TerrainCamera.focalPixels(SIDE));
     }
 
     private static void rgb(int value, int r, int g, int b, int tolerance, String why) {

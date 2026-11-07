@@ -43,8 +43,14 @@ import java.util.concurrent.TimeUnit;
  */
 @SuppressWarnings("try")
 public final class DisplayModelService implements BuildDisplayModels {
-    public static final String POLICY = "display-static-materials-env-unlit-bindcards-v4";
+    /**
+     * Saved-preview policy. v5 (#361): an absent CreatureGeosetDataID column now resolves to 0
+     * rather than null, which changes the recorded reference of those displays.
+     */
+    public static final String POLICY = "display-static-materials-env-unlit-bindcards-v5";
+
     private final TableProjection tables;
+    private final BuildTables rawTables;
     private final BuildFiles files;
     private final GeneratedStore generated;
     private final DisplayPreviewCache cache;
@@ -60,8 +66,26 @@ public final class DisplayModelService implements BuildDisplayModels {
                     new ThreadPoolExecutor.AbortPolicy());
     private CompletableFuture<Void> closing;
 
+    /** Bound on CreatureDisplayInfoGeosetData rows read once per component. */
+    static final int GEOSET_ROWS = 262_144;
+
+    /** Displays with CreatureDisplayInfoGeosetData rows; read once on the worker, then reused. */
+    private Map<Long, Map<Integer, Integer>> geosetDisplays;
+
+    /** Why geosetDisplays could not be read, once tried; null when read or not yet tried. */
+    private String geosetDisplaysUnavailable;
+
+    /** Transient (busy or closed) failures of that read so far; bounded by GEOSET_RETRIES. */
+    private int geosetDisplaysTransient;
+
+    /** Transient failures of the geoset-table read tolerated before it is refused for good. */
+    static final int GEOSET_RETRIES = 3;
+
+    static final String GEOSET_TABLE = "CreatureDisplayInfoGeosetData";
+
     public DisplayModelService(BuildTables tables, BuildFiles files, GeneratedStore generated) {
         this.tables = new TableProjection(tables);
+        this.rawTables = tables;
         this.files = Objects.requireNonNull(files);
         this.generated = generated;
         cache = new DisplayPreviewCache(generated, files);
@@ -92,7 +116,8 @@ public final class DisplayModelService implements BuildDisplayModels {
         synchronized (this) {
             if (closing != null) {
                 return CompletableFuture.failedFuture(
-                        new IllegalStateException("Display previews closed"));
+                        new DisplayModelTypes.ServiceUnavailable(
+                                "Display previews closed", true, null));
             }
             try {
                 worker.execute(
@@ -108,7 +133,8 @@ public final class DisplayModelService implements BuildDisplayModels {
                         });
             } catch (java.util.concurrent.RejectedExecutionException full) {
                 result.completeExceptionally(
-                        new IllegalStateException("Display previews busy", full));
+                        new DisplayModelTypes.ServiceUnavailable(
+                                "Display previews busy", false, full));
             }
         }
         var published = new CompletableFuture<T>();
@@ -292,7 +318,8 @@ public final class DisplayModelService implements BuildDisplayModels {
                                     + "\n"
                                     + files.locale()
                                     + "\n"
-                                    + reference
+                                    // The geoset-row answer is not part of the saved preview.
+                                    + withoutDisplayGeosets(reference)
                                     + "\n"
                                     + content);
             for (long fid : reference.textureVariations()) {
@@ -504,7 +531,26 @@ public final class DisplayModelService implements BuildDisplayModels {
         }
     }
 
-    private DisplayModelTypes.Reference resolve(long id, Cancellation token, List<String> issues) {
+    /**
+     * The display's model and texture references. A table shape outside the reviewed profile is a
+     * stated refusal ({@link IllegalArgumentException}, which every caller turns into an
+     * unavailable result with the reason). A busy table queue or a closed table handle is
+     * transient: it is raised as {@link DisplayModelTypes.ServiceUnavailable} so callers neither
+     * cache it nor count it as a failure. Any other exception propagates unchanged.
+     */
+    // Package-private for tests: resolves without reading any model file.
+    DisplayModelTypes.Reference resolve(long id, Cancellation token, List<String> issues) {
+        try {
+            return resolveReviewed(id, token, issues);
+        } catch (java.util.concurrent.CompletionException | IllegalStateException failed) {
+            throw tableFailure(failed);
+        } catch (java.util.NoSuchElementException unreviewed) {
+            throw new IllegalArgumentException("Unreviewed display table shape", unreviewed);
+        }
+    }
+
+    private DisplayModelTypes.Reference resolveReviewed(
+            long id, Cancellation token, List<String> issues) {
         var displays = tables.schema("CreatureDisplayInfo", token, issues);
         displays.reference("ModelID", "CreatureModelData");
         var display = tables.get(displays, id, token, issues);
@@ -552,7 +598,146 @@ public final class DisplayModelService implements BuildDisplayModels {
                 fid,
                 textures,
                 optional(displays, display, "ExtendedDisplayInfoID", issues),
-                optional(models, model, "CreatureGeosetDataID", issues));
+                // Only a truly absent column means no geoset data; an unreadable one stays null.
+                models.has("CreatureGeosetDataID")
+                        ? optional(models, model, "CreatureGeosetDataID", issues)
+                        : Long.valueOf(0),
+                displayGeosets(id, token, issues));
+    }
+
+    /**
+     * Whether the display has CreatureDisplayInfoGeosetData rows (its own geoset selections); null
+     * when that is not known. The table is read once per component, on the worker thread:
+     *
+     * <ul>
+     *   <li>a table the build does not have (NOT_IN_BUILD, as in older builds) means no rows for
+     *       any display, like an absent column;
+     *   <li>a table that is present but partial, over {@link #GEOSET_ROWS}, without the reviewed
+     *       {@code CreatureDisplayInfoID -> CreatureDisplayInfo} relationship, or failing in an
+     *       unexpected way is refused for the component, with the reason noted on every display;
+     *   <li>a busy queue or closed handle is not cached; after {@link #GEOSET_RETRIES} of them the
+     *       read is refused too, so a stuck table never costs a full read per display;
+     *   <li>a cancelled read is never cached.
+     * </ul>
+     */
+    private Map<Integer, Integer> displayGeosets(long id, Cancellation token, List<String> issues) {
+        if (geosetDisplays == null && geosetDisplaysUnavailable == null) {
+            try {
+                geosetDisplays = readGeosetDisplays(token, issues);
+            } catch (java.util.concurrent.CancellationException canceled) {
+                throw canceled;
+            } catch (RuntimeException failed) {
+                token.check();
+                var classified = tableFailure(failed);
+                if (classified instanceof java.util.concurrent.CancellationException canceled) {
+                    throw canceled;
+                }
+                if (classified instanceof DisplayModelTypes.ServiceUnavailable transientFailure
+                        && ++geosetDisplaysTransient < GEOSET_RETRIES) {
+                    TableProjection.note(
+                            issues,
+                            "Display geoset selections are unknown for now: "
+                                    + transientFailure.getMessage());
+                    return null;
+                }
+                geosetDisplaysUnavailable =
+                        classified instanceof IllegalArgumentException refused
+                                ? refused.getMessage()
+                                : GEOSET_TABLE
+                                        + " could not be read: "
+                                        + failed.getClass().getSimpleName();
+            }
+        }
+        if (geosetDisplays == null) {
+            TableProjection.note(
+                    issues, "Display geoset selections are unknown: " + geosetDisplaysUnavailable);
+            return null;
+        }
+        return geosetDisplays.getOrDefault(id, Map.of());
+    }
+
+    private Map<Long, Map<Integer, Integer>> readGeosetDisplays(
+            Cancellation token, List<String> issues) {
+        var present =
+                rawTables
+                        .schema(
+                                com.vibeminer.formats.tables.TableTypes.Ref.forName(GEOSET_TABLE),
+                                com.vibeminer.formats.tables.TableTypes.Priority.INTERACTIVE,
+                                token)
+                        .join();
+        if (present.table() != null
+                && present.table().state()
+                        == com.vibeminer.formats.tables.TableTypes.State.NOT_IN_BUILD) {
+            return Map.of();
+        }
+        var data = tables.read(GEOSET_TABLE, GEOSET_ROWS, token, issues);
+        if (data.entry().state() != com.vibeminer.formats.tables.TableTypes.State.READY) {
+            throw new IllegalArgumentException(GEOSET_TABLE + " is partial");
+        }
+        data.reference("CreatureDisplayInfoID", "CreatureDisplayInfo");
+        var found = new HashMap<Long, Map<Integer, Integer>>();
+        for (var row : data.rows()) {
+            long display = data.number(row, "CreatureDisplayInfoID");
+            long index = data.number(row, "GeosetIndex"), value = data.number(row, "GeosetValue");
+            if (index < 0 || index > 254 || value < 0 || value > 99) {
+                throw new IllegalArgumentException(
+                        GEOSET_TABLE + " records a geoset outside the reviewed profile");
+            }
+            // GeosetIndex + 1 is the group (wowdev: meshId = (geosetIndex + 1) * 100 + value).
+            found.computeIfAbsent(display, d -> new HashMap<>())
+                    .merge(
+                            (int) index + 1,
+                            (int) value,
+                            (a, b) ->
+                                    a.equals(b)
+                                            ? a
+                                            : DisplayModelTypes.Reference.CONFLICTING_GEOSET);
+        }
+        var result = new HashMap<Long, Map<Integer, Integer>>();
+        for (var entry : found.entrySet()) {
+            result.put(entry.getKey(), Map.copyOf(entry.getValue()));
+        }
+        return Map.copyOf(result);
+    }
+
+    /**
+     * Classifies a table call's failure: cancellation and stated refusals unwrapped, a busy queue
+     * or closed handle as {@link DisplayModelTypes.ServiceUnavailable}, anything else unchanged.
+     */
+    static RuntimeException tableFailure(RuntimeException failure) {
+        Throwable cause =
+                failure instanceof java.util.concurrent.CompletionException
+                                && failure.getCause() != null
+                        ? failure.getCause()
+                        : failure;
+        if (cause instanceof java.util.concurrent.CancellationException canceled) {
+            return canceled;
+        }
+        if (cause instanceof IllegalArgumentException refused) {
+            return refused;
+        }
+        if (cause instanceof com.vibeminer.formats.tables.TableWorkScheduler.BusyException) {
+            return new DisplayModelTypes.ServiceUnavailable("Display tables busy", false, cause);
+        }
+        if (cause instanceof IllegalStateException
+                && "Table handle closed".equals(cause.getMessage())) {
+            return new DisplayModelTypes.ServiceUnavailable("Display tables closed", true, cause);
+        }
+        if (cause instanceof DisplayModelTypes.ServiceUnavailable unavailable) {
+            return unavailable;
+        }
+        return failure;
+    }
+
+    private static DisplayModelTypes.Reference withoutDisplayGeosets(
+            DisplayModelTypes.Reference reference) {
+        return new DisplayModelTypes.Reference(
+                reference.displayId(),
+                reference.modelId(),
+                reference.modelFileDataId(),
+                reference.textureVariations(),
+                reference.extendedDisplayInfoId(),
+                reference.creatureGeosetDataId());
     }
 
     private static Long optional(
@@ -699,7 +884,7 @@ public final class DisplayModelService implements BuildDisplayModels {
             }
             pixels += count;
             int index = textures.size();
-            textures.add(new MeshAppearance.Texture(image.width(), image.height(), argb));
+            textures.add(MeshAppearance.Texture.adopt(image.width(), image.height(), argb));
             decoded.put(fid, index);
             receipts.put(fid, stat.file().contentKey());
             return index;
@@ -748,7 +933,11 @@ public final class DisplayModelService implements BuildDisplayModels {
         }
         if (reference.creatureGeosetDataId() == null
                 || reference.creatureGeosetDataId() != 0
+                || reference.displayGeosets() == null
+                || !reference.displayGeosets().isEmpty()
                 || mesh.parts().stream().anyMatch(p -> p.id() != 0)) {
+            // The World explorer differs: it draws one variant per geoset group (the display's own
+            // geoset rows, otherwise x00) and refuses what it cannot decide (WorldTileCreatures).
             TableProjection.note(
                     issues,
                     "Surface visibility is unresolved; all recorded model surfaces are shown.");
