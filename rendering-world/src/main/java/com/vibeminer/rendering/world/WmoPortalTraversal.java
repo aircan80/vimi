@@ -1,7 +1,6 @@
 package com.vibeminer.rendering.world;
 
 import com.vibeminer.formats.world.WmoFormats;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
 import java.util.List;
@@ -161,11 +160,14 @@ public final class WmoPortalTraversal {
     // Per group, per reference in its range: true when the reference is inconsistent.
     private final boolean[][] inconsistent;
     private final int inconsistentCount;
-    // Scratch reused by every walk.
+    // Groups and references as primitives, so a walk reads no records.
+    private final double[] boxes;
+    private final long[] flags;
+    private final int[] firstRefs, refCounts, refPortals, refGroups, refSides;
+    // Walk state reused by every walk.
     private final int[] entries;
     private final boolean[] widened;
     private final int[] queueGroups;
-    private final List<List<Plane>> queuePlanes;
 
     private WmoPortalTraversal(List<Group> groups, List<Portal> portals, List<Ref> refs) {
         this.groups = groups;
@@ -219,9 +221,29 @@ public final class WmoPortalTraversal {
         widened = new boolean[groups.size()];
         // Each group enters at most MAX_ENTRIES_PER_GROUP + 1 times.
         queueGroups = new int[groups.size() * (MAX_ENTRIES_PER_GROUP + 1)];
-        queuePlanes = new ArrayList<>(queueGroups.length);
-        for (int i = 0; i < queueGroups.length; i++) {
-            queuePlanes.add(List.of());
+        boxes = new double[groups.size() * 6];
+        flags = new long[groups.size()];
+        firstRefs = new int[groups.size()];
+        refCounts = new int[groups.size()];
+        for (int g = 0; g < groups.size(); g++) {
+            var group = groups.get(g);
+            boxes[g * 6] = group.minX();
+            boxes[g * 6 + 1] = group.minY();
+            boxes[g * 6 + 2] = group.minZ();
+            boxes[g * 6 + 3] = group.maxX();
+            boxes[g * 6 + 4] = group.maxY();
+            boxes[g * 6 + 5] = group.maxZ();
+            flags[g] = group.flags();
+            firstRefs[g] = group.firstRef();
+            refCounts[g] = group.refCount();
+        }
+        refPortals = new int[refs.size()];
+        refGroups = new int[refs.size()];
+        refSides = new int[refs.size()];
+        for (int r = 0; r < refs.size(); r++) {
+            refPortals[r] = refs.get(r).portal();
+            refGroups[r] = refs.get(r).group();
+            refSides[r] = refs.get(r).side();
         }
     }
 
@@ -274,6 +296,38 @@ public final class WmoPortalTraversal {
         return inconsistentCount;
     }
 
+    /** Whether group {@code group} is an interior group (MOGP flag 0x2000). */
+    public boolean interior(int group) {
+        return (flags[group] & INTERIOR) != 0;
+    }
+
+    /**
+     * Storage for walks, reused across calls (#383 step 3b): it grows to the largest walk it has
+     * served and then allocates nothing. Not thread-safe; one per thread that walks.
+     */
+    public static final class Scratch {
+        private double[] planes = new double[0];
+        private int[] counts = new int[0];
+        private double[] edges = new double[0];
+
+        private void ensure(int entries) {
+            if (counts.length < entries) {
+                counts = new int[entries];
+                planes = new double[entries * BLOCK];
+            }
+        }
+
+        private double[] edges(int vertices) {
+            if (edges.length < vertices * 4) {
+                edges = new double[vertices * 4];
+            }
+            return edges;
+        }
+    }
+
+    /** Doubles one queued walk's planes may take: {@link #MAX_PORTAL_PLANES} planes. */
+    private static final int BLOCK = MAX_PORTAL_PLANES * 4;
+
     /** As {@link #visible(double, double, double, List, BitSet)}, into a new result. */
     public Result visible(double x, double y, double z, List<Plane> frustum) {
         var visible = new BitSet(groups.size());
@@ -287,124 +341,201 @@ public final class WmoPortalTraversal {
      * group.
      */
     public boolean visible(double x, double y, double z, List<Plane> frustum, BitSet visible) {
+        var planes = new double[frustum.size() * 4];
+        for (int i = 0; i < frustum.size(); i++) {
+            var plane = frustum.get(i);
+            planes[i * 4] = plane.a();
+            planes[i * 4 + 1] = plane.b();
+            planes[i * 4 + 2] = plane.c();
+            planes[i * 4 + 3] = plane.d();
+        }
+        return visible(x, y, z, planes, frustum.size(), visible, new Scratch());
+    }
+
+    /**
+     * As {@link #visible(double, double, double, List, BitSet)}, with the frustum as {@code
+     * frustumPlanes} planes {@code a, b, c, d} in {@code frustum} and walk storage from {@code
+     * scratch}: once the scratch has grown, a walk allocates nothing.
+     */
+    public boolean visible(
+            double x,
+            double y,
+            double z,
+            double[] frustum,
+            int frustumPlanes,
+            BitSet visible,
+            Scratch scratch) {
+        if (frustumPlanes < 0 || frustumPlanes * 4 > frustum.length) {
+            throw new IllegalArgumentException("Frustum planes");
+        }
         visible.clear();
         Arrays.fill(entries, 0);
         Arrays.fill(widened, false);
+        scratch.ensure(queueGroups.length);
+        double[] store = scratch.planes;
+        int[] counts = scratch.counts;
         int head = 0, tail = 0;
         boolean inside = false;
-        for (int g = 0; g < groups.size(); g++) {
-            var group = groups.get(g);
-            if (group.interior() && group.contains(x, y, z)) {
+        int groupCount = flags.length;
+        for (int g = 0; g < groupCount; g++) {
+            if ((flags[g] & INTERIOR) != 0 && contains(g, x, y, z)) {
                 inside = true;
-                tail = enter(g, List.of(), visible, tail);
+                tail = enter(g, store, counts, -1, 0, visible, tail);
             }
         }
         if (!inside) {
-            for (int g = 0; g < groups.size(); g++) {
-                if (groups.get(g).exterior()) {
-                    tail = enter(g, List.of(), visible, tail);
+            for (int g = 0; g < groupCount; g++) {
+                if ((flags[g] & EXTERIOR) != 0) {
+                    tail = enter(g, store, counts, -1, 0, visible, tail);
                 }
             }
         }
         if (tail == 0) {
             // No interior box holds the camera and there is no exterior group (an all-interior
             // WMO seen from outside every box): every group is visible, never none.
-            visible.set(0, groups.size());
+            visible.set(0, groupCount);
             return false;
         }
         while (head < tail) {
             int at = head++;
             int fromGroup = queueGroups[at];
-            var from = groups.get(fromGroup);
-            var planes = queuePlanes.get(at);
-            queuePlanes.set(at, List.of());
-            for (int r = from.firstRef(); r < from.firstRef() + from.refCount(); r++) {
-                var ref = refs.get(r);
-                int p = ref.portal();
+            int base = at * BLOCK, count = counts[at];
+            int first = firstRefs[fromGroup];
+            for (int r = first; r < first + refCounts[fromGroup]; r++) {
+                int p = refPortals[r];
                 var plane = portalPlanes[p];
                 double dot = plane[0] * x + plane[1] * y + plane[2] * z + plane[3];
                 boolean near = Math.abs(dot) <= PLANE_EPSILON;
-                boolean facing = ref.side() < 0 ? dot <= 0 : dot >= 0;
-                boolean trusted = !inconsistent[fromGroup][r - from.firstRef()];
+                boolean facing = refSides[r] < 0 ? dot <= 0 : dot >= 0;
+                boolean trusted = !inconsistent[fromGroup][r - first];
                 if (trusted && !facing && !near) {
                     continue;
                 }
+                var v = portalVertices[p];
+                boolean polygonOut =
+                        outside(v, frustum, 0, frustumPlanes) || outside(v, store, base, count);
                 if (!trusted && !facing && !near) {
-                    // From the wrong side the destination is on the camera's side of the portal,
-                    // so the portal polygon says nothing about whether it is in view: test the
-                    // destination group's box instead (and pass the frustum on unnarrowed).
-                    var to = groups.get(ref.group());
-                    if (outside(to, frustum) || outside(to, planes)) {
+                    // From the wrong side the destination may lie on the camera's side of the
+                    // portal, so the polygon alone does not say whether it is in view: pass when
+                    // either the polygon or the destination group's box is (frustum unnarrowed).
+                    int to = refGroups[r];
+                    if (polygonOut
+                            && (outsideBox(to, frustum, 0, frustumPlanes)
+                                    || outsideBox(to, store, base, count))) {
                         continue;
                     }
-                } else if (outside(portalVertices[p], frustum)
-                        || outside(portalVertices[p], planes)) {
+                } else if (polygonOut) {
                     continue;
                 }
                 // The edge planes bound the view through the portal only from its recorded side.
-                var narrowed = near || !facing ? planes : narrow(planes, p, x, y, z);
-                tail = enter(ref.group(), narrowed, visible, tail);
+                tail =
+                        near || !facing
+                                ? enter(refGroups[r], store, counts, base, count, visible, tail)
+                                : enterNarrowed(
+                                        refGroups[r],
+                                        p,
+                                        x,
+                                        y,
+                                        z,
+                                        base,
+                                        count,
+                                        scratch,
+                                        visible,
+                                        tail);
             }
         }
         return inside;
     }
 
-    private int enter(int group, List<Plane> planes, BitSet visible, int tail) {
+    private boolean contains(int g, double x, double y, double z) {
+        int b = g * 6;
+        return x >= boxes[b]
+                && x <= boxes[b + 3]
+                && y >= boxes[b + 1]
+                && y <= boxes[b + 4]
+                && z >= boxes[b + 2]
+                && z <= boxes[b + 5];
+    }
+
+    /**
+     * Queues {@code group} with {@code count} planes copied from {@code store} at {@code from}
+     * (none when {@code from} is negative); returns the new tail.
+     */
+    private int enter(
+            int group,
+            double[] store,
+            int[] counts,
+            int from,
+            int count,
+            BitSet visible,
+            int tail) {
+        int slot = admit(group, visible, tail);
+        if (slot < 0) {
+            return tail;
+        }
+        if (slot == widenedSlot || from < 0) {
+            count = 0;
+        } else if (count > 0) {
+            System.arraycopy(store, from, store, slot * BLOCK, count * 4);
+        }
+        counts[slot] = count;
+        return tail + 1;
+    }
+
+    private int widenedSlot = -1;
+
+    /**
+     * Marks {@code group} visible and decides whether it is walked again: the slot to queue it in
+     * ({@code tail}), or -1. Past {@link #MAX_ENTRIES_PER_GROUP} narrowed walks, a group is walked
+     * once more with the caller's frustum alone ({@link #widenedSlot} names that slot).
+     */
+    private int admit(int group, BitSet visible, int tail) {
         visible.set(group);
+        widenedSlot = -1;
         if (entries[group] < MAX_ENTRIES_PER_GROUP) {
             entries[group]++;
         } else if (!widened[group]) {
             // The caller's frustum alone holds every narrowed one this group could still get.
             widened[group] = true;
-            planes = List.of();
+            widenedSlot = tail;
         } else {
-            return tail;
+            return -1;
         }
         queueGroups[tail] = group;
-        queuePlanes.set(tail, planes);
-        return tail + 1;
-    }
-
-    /** Whether all eight corners of {@code group}'s box are outside one of {@code planes}. */
-    private static boolean outside(Group group, List<Plane> planes) {
-        for (var plane : planes) {
-            boolean all = true;
-            for (int corner = 0; corner < 8 && all; corner++) {
-                double x = (corner & 1) == 0 ? group.minX() : group.maxX();
-                double y = (corner & 2) == 0 ? group.minY() : group.maxY();
-                double z = (corner & 4) == 0 ? group.minZ() : group.maxZ();
-                all = plane.value(x, y, z) < -1e-6;
-            }
-            if (all) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean outside(double[] v, List<Plane> planes) {
-        for (var plane : planes) {
-            boolean all = true;
-            for (int i = 0; i < v.length && all; i += 3) {
-                all = plane.value(v[i], v[i + 1], v[i + 2]) < -1e-6;
-            }
-            if (all) {
-                return true;
-            }
-        }
-        return false;
+        return tail;
     }
 
     /**
-     * The portal planes plus one plane through the camera and each portal edge that keeps every
-     * vertex of the portal inside.
+     * Queues {@code group} with the parent's planes at {@code from} plus one plane through the
+     * camera and each edge of portal {@code portal} that keeps every vertex of the portal inside,
+     * keeping the newest {@link #MAX_PORTAL_PLANES}.
      */
-    private List<Plane> narrow(List<Plane> planes, int portal, double x, double y, double z) {
+    private int enterNarrowed(
+            int group,
+            int portal,
+            double x,
+            double y,
+            double z,
+            int from,
+            int count,
+            Scratch scratch,
+            BitSet visible,
+            int tail) {
+        int slot = admit(group, visible, tail);
+        if (slot < 0) {
+            return tail;
+        }
+        double[] store = scratch.planes;
+        int[] counts = scratch.counts;
+        if (slot == widenedSlot) {
+            counts[slot] = 0;
+            return tail + 1;
+        }
         var v = portalVertices[portal];
         var centroid = centroids[portal];
         int n = v.length / 3;
-        var result = new ArrayList<Plane>(planes.size() + n);
-        result.addAll(planes);
+        double[] edges = scratch.edges(n);
+        int found = 0;
         for (int i = 0; i < n; i++) {
             int j = (i + 1) % n;
             double ax = v[i * 3] - x, ay = v[i * 3 + 1] - y, az = v[i * 3 + 2] - z;
@@ -422,18 +553,73 @@ public final class WmoPortalTraversal {
             if (Math.abs(centre) <= 1e-9) {
                 continue;
             }
-            var edge = centre > 0 ? new Plane(a, b, c, d) : new Plane(-a, -b, -c, -d);
-            if (holdsEvery(edge, v)) {
-                result.add(edge);
+            if (centre < 0) {
+                a = -a;
+                b = -b;
+                c = -c;
+                d = -d;
+            }
+            if (holdsEvery(a, b, c, d, v)) {
+                edges[found * 4] = a;
+                edges[found * 4 + 1] = b;
+                edges[found * 4 + 2] = c;
+                edges[found * 4 + 3] = d;
+                found++;
             }
         }
-        int excess = result.size() - MAX_PORTAL_PLANES;
-        return excess > 0 ? List.copyOf(result.subList(excess, result.size())) : result;
+        // The newest MAX_PORTAL_PLANES of the parent's planes followed by the edges.
+        int keptEdges = Math.min(found, MAX_PORTAL_PLANES);
+        int keptParent = Math.min(count, MAX_PORTAL_PLANES - keptEdges);
+        int to = slot * BLOCK;
+        System.arraycopy(store, from + (count - keptParent) * 4, store, to, keptParent * 4);
+        System.arraycopy(edges, (found - keptEdges) * 4, store, to + keptParent * 4, keptEdges * 4);
+        counts[slot] = keptParent + keptEdges;
+        return tail + 1;
     }
 
-    private static boolean holdsEvery(Plane plane, double[] v) {
+    /** Whether all eight corners of group {@code g}'s box are outside one of the planes. */
+    private boolean outsideBox(int g, double[] planes, int from, int count) {
+        int b = g * 6;
+        for (int i = 0; i < count; i++) {
+            int at = from + i * 4;
+            boolean all = true;
+            for (int corner = 0; corner < 8 && all; corner++) {
+                double cx = boxes[b + ((corner & 1) == 0 ? 0 : 3)];
+                double cy = boxes[b + ((corner & 2) == 0 ? 1 : 4)];
+                double cz = boxes[b + ((corner & 4) == 0 ? 2 : 5)];
+                all =
+                        planes[at] * cx + planes[at + 1] * cy + planes[at + 2] * cz + planes[at + 3]
+                                < -1e-6;
+            }
+            if (all) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean outside(double[] v, double[] planes, int from, int count) {
+        for (int i = 0; i < count; i++) {
+            int at = from + i * 4;
+            boolean all = true;
+            for (int k = 0; k < v.length && all; k += 3) {
+                all =
+                        planes[at] * v[k]
+                                        + planes[at + 1] * v[k + 1]
+                                        + planes[at + 2] * v[k + 2]
+                                        + planes[at + 3]
+                                < -1e-6;
+            }
+            if (all) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean holdsEvery(double a, double b, double c, double d, double[] v) {
         for (int i = 0; i < v.length; i += 3) {
-            if (plane.value(v[i], v[i + 1], v[i + 2]) < -1e-6) {
+            if (a * v[i] + b * v[i + 1] + c * v[i + 2] + d < -1e-6) {
                 return false;
             }
         }
