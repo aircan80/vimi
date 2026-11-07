@@ -170,7 +170,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * many of them the CPU cull skipped, object draw submits over both passes, and how many times a
      * camera uniform (eye, projection, rebase, for terrain and objects) was set; terrain chunk runs
      * tested, culled and submitted; object instances drawn over both passes, and placements not
-     * drawn because the frame's transient instance data ran out (#382).
+     * drawn because the frame's transient instance data ran out (#382); and portal walks of placed
+     * roots with a portal set with the interior meshes they culled (#383 step 3b), per placement.
      */
     record FrameCounts(
             int placements,
@@ -181,7 +182,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             int chunksCulled,
             int terrainSubmits,
             int instances,
-            int instancesDropped) {}
+            int instancesDropped,
+            int portalWalks,
+            int portalMeshesCulled) {}
 
     /**
      * Object instance data of one frame at the caps (#382): every placement of every resident slot
@@ -430,6 +433,19 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         final boolean[] visible, dropped;
 
         final int[] order, starts;
+
+        /** Per model: its portal traversal (#383), or null for a model without a portal set. */
+        final com.vibeminer.rendering.world.WmoPortalTraversal[] portals;
+
+        /** Per mesh: its group in its model's portal set, or -1. */
+        final int[] meshGroups;
+
+        /**
+         * Per placement of a model with portals: the groups its last walk reached, reused every
+         * frame; null for other placements.
+         */
+        final java.util.BitSet[] portalVisible;
+
         short vertices = INVALID, indices = INVALID;
         long bytes;
 
@@ -479,6 +495,18 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             dropped = new boolean[placementModels.length];
             order = new int[placementModels.length];
             starts = new int[models.length / 2 + 1];
+            portals = new com.vibeminer.rendering.world.WmoPortalTraversal[blendedModels.length];
+            for (int m = 0; m < portals.length; m++) {
+                portals[m] = source.portals(m);
+            }
+            meshGroups = source.meshGroups;
+            portalVisible = new java.util.BitSet[placementModels.length];
+            for (int p = 0; p < portalVisible.length; p++) {
+                var traversal = portals[placementModels[p]];
+                if (traversal != null) {
+                    portalVisible[p] = new java.util.BitSet(traversal.groupCount());
+                }
+            }
         }
 
         void destroy() {
@@ -569,10 +597,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private int peakStepBytes;
     private boolean closed, callbackFreed, objectCulling = true, objectInstancing = true;
     private boolean vertexColours = VERTEX_COLOURS;
-    private FrameCounts lastFrame = new FrameCounts(0, 0, 0, 0, 0, 0, 0, 0, 0);
+    private FrameCounts lastFrame = new FrameCounts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     private int frameInstances, frameInstancesDropped;
     // Proof seam: at most this many instances per frame (bgfx's own budget still applies).
     private int instanceLimit = Integer.MAX_VALUE;
+
+    /** Portal culling of instance interiors (#383 step 3b); its arrays are reused per frame. */
+    private final WorldStreamPortalCulling portalCulling = new WorldStreamPortalCulling();
+
+    private int framePortalWalks, framePortalCulled;
     private int frameChunks, frameChunksCulled, frameTerrainSubmits;
     private int framePlacements, frameCulled, frameObjectSubmits, frameCameraUniforms;
     // The u_wmoMaterial class last set this frame, or -1.
@@ -1629,7 +1662,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /**
      * Proof seam: false draws every placement, as before CPU culling, so a proof can compare draw
-     * counts and pixels with culling on and off. Production never turns it off.
+     * counts and pixels with culling on and off. Portal culling (#383) uses the same view, so it is
+     * off too. Production never turns it off.
      */
     void objectCulling(boolean enabled) {
         requireOwner();
@@ -1995,6 +2029,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             var frame = wmoProgram == INVALID ? null : ObjectFrame.on(stack, targetSamples > 1);
             framePlacements = frameCulled = frameObjectSubmits = 0;
             frameInstances = frameInstancesDropped = 0;
+            framePortalWalks = framePortalCulled = 0;
+            portalCulling.frame(view);
             frameMaterial = -1;
             if (wmoProgram != INVALID) {
                 for (var lease : active) {
@@ -2060,7 +2096,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         frameChunksCulled,
                         frameTerrainSubmits,
                         frameInstances,
-                        frameInstancesDropped);
+                        frameInstancesDropped,
+                        framePortalWalks,
+                        framePortalCulled);
         return new Ticket(cameraRevision, content, policy, width, height);
     }
 
@@ -2356,10 +2394,17 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             long key = blendKeys[i];
             var objects = slots[active.get(blendPosition(key)).slot()].objects;
             int p = blendPlacement(key);
-            // Still one placement at a time, back to front: a one-instance draw.
+            // Still one placement at a time, back to front: a one-instance draw. A portal root
+            // (#383) reuses the groups its opaque pass walked this frame.
             frame.single[0] = p;
             int drawn = instances(frame, objects, frame.single, 0, 1, origin);
-            drawRanges(frame, objects, objects.placementModels[p], drawn, true);
+            drawRanges(
+                    frame,
+                    objects,
+                    objects.placementModels[p],
+                    drawn,
+                    true,
+                    view == null ? null : objects.portalVisible[p]);
         }
     }
 
@@ -2384,6 +2429,28 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 frameCulled++;
             }
         }
+        // Portal roots (#383 step 3b) walk their portals from the camera first. Each has its own
+        // visible set, so it leaves the model groups and draws as its own one-instance draw that
+        // skips the interior meshes of groups the walk does not reach; the sorted pass reuses the
+        // set, and a root dropped for lack of instance data is skipped there too.
+        if (view != null) {
+            for (int p = 0; p < placements; p++) {
+                var groups = objects.portalVisible[p];
+                if (groups == null || !objects.visible[p]) {
+                    continue;
+                }
+                objects.visible[p] = false;
+                int m = objects.placementModels[p];
+                if (portalCulling.walk(objects.portals[m], objects.placements, p, groups)) {
+                    framePortalWalks++;
+                }
+                if (objects.unsortedModels[m]) {
+                    frame.single[0] = p;
+                    int drawn = instances(frame, objects, frame.single, 0, 1, origin);
+                    drawRanges(frame, objects, m, drawn, false, groups);
+                }
+            }
+        }
         int models = objects.models.length / 2;
         WorldObjectInstances.groupByModel(
                 objects.placementModels, objects.visible, models, objects.starts, objects.order);
@@ -2394,11 +2461,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
             if (objectInstancing) {
                 int drawn = instances(frame, objects, objects.order, first, count, origin);
-                drawRanges(frame, objects, m, drawn, false);
+                drawRanges(frame, objects, m, drawn, false, null);
             } else {
                 for (int i = 0; i < count; i++) {
                     int drawn = instances(frame, objects, objects.order, first + i, 1, origin);
-                    drawRanges(frame, objects, m, drawn, false);
+                    drawRanges(frame, objects, m, drawn, false, null);
                 }
             }
         }
@@ -2494,10 +2561,16 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /**
      * Model m's ranges of one pass (opaque and cutout, or the sorted classes only), drawn for the
-     * {@code count} instances just written to {@code frame.instances}.
+     * {@code count} instances just written to {@code frame.instances}. With {@code groups} (one
+     * portal root's walk, #383), interior meshes of groups not in it are skipped.
      */
     private void drawRanges(
-            ObjectFrame frame, SlotObjects objects, int m, int count, boolean blendedPass) {
+            ObjectFrame frame,
+            SlotObjects objects,
+            int m,
+            int count,
+            boolean blendedPass,
+            java.util.BitSet groups) {
         if (count == 0) {
             return;
         }
@@ -2509,7 +2582,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         for (int step = blendedPass ? STEP_BLENDED : STEP_UNSORTED;
                 step <= (blendedPass ? STEP_ADDITIVE : STEP_UNSORTED);
                 step++) {
-            drawRangesStep(frame, objects, m, count, step, blendedPass, stride);
+            drawRangesStep(frame, objects, m, count, step, blendedPass, stride, groups);
         }
     }
 
@@ -2531,10 +2604,21 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             int count,
             int step,
             boolean blendedPass,
-            int stride) {
+            int stride,
+            java.util.BitSet groups) {
+        var portals = groups == null ? null : objects.portals[m];
         for (int mesh = objects.models[m * 2];
                 mesh < objects.models[m * 2] + objects.models[m * 2 + 1];
                 mesh++) {
+            if (portals != null) {
+                int group = objects.meshGroups[mesh];
+                if (group >= 0 && portals.interior(group) && !groups.get(group)) {
+                    if (!blendedPass) {
+                        framePortalCulled++;
+                    }
+                    continue;
+                }
+            }
             int at = mesh * 6;
             for (int r = objects.meshes[at + 4];
                     r < objects.meshes[at + 4] + objects.meshes[at + 5];

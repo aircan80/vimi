@@ -222,6 +222,64 @@ class WmoPortalTraversalTest {
         assertTrue(t.visible(10, 10, 4, lookingUp(90, 10, 10, 4)).visible(0));
     }
 
+    /**
+     * #383 step 3b (from the #483 review): from the wrong side of an inconsistent reference the
+     * walk passes when either the portal polygon or the destination box is in view. Yard X
+     * (exterior, x, y, z 0..10) holds the camera; room R (interior) lies off to the side at y
+     * 50..60; X's door to R is at x = 10 (y, z 4..6) with a recorded side that X's own box centre
+     * disagrees with.
+     */
+    @Test
+    void fromTheWrongSideThePortalOrTheDestinationBoxInViewPasses() {
+        var door = new Portal(new double[] {10, 4, 4, 10, 6, 4, 10, 6, 6, 10, 4, 6}, 1, 0, 0, -10);
+        var groups =
+                List.of(
+                        new Group(WmoPortalTraversal.EXTERIOR, 0, 0, 0, 10, 10, 10, 0, 1),
+                        new Group(WmoPortalTraversal.INTERIOR, 100, -500, 0, 110, -490, 10, 1, 0));
+        var t = WmoPortalTraversal.of(groups, List.of(door), List.of(new Ref(0, 1, 1)));
+        assertEquals(1, t.inconsistentReferences());
+        // Looking along +x at the door: the polygon is in view, R's box is not.
+        assertEquals(List.of(0, 1), visible(t, 1, 5, 5, 5));
+        // Looking away along -x: neither is in view, so R stays hidden.
+        assertEquals(List.of(0), visible(t, -1, 5, 5, 5));
+    }
+
+    /**
+     * #383 step 3b: with a reused {@link WmoPortalTraversal.Scratch} and visible set, a walk
+     * allocates nothing once the scratch has grown, and answers as the list form does.
+     */
+    @Test
+    void aWalkWithAReusedScratchAllocatesNothing() {
+        var t = building(false);
+        var scratch = new WmoPortalTraversal.Scratch();
+        var into = new java.util.BitSet();
+        var frustum = new double[16];
+        var planes = looking(1, 5, 0, 1);
+        for (int i = 0; i < 4; i++) {
+            var p = planes.get(i);
+            frustum[i * 4] = p.a();
+            frustum[i * 4 + 1] = p.b();
+            frustum[i * 4 + 2] = p.c();
+            frustum[i * 4 + 3] = p.d();
+        }
+        var threads =
+                (com.sun.management.ThreadMXBean)
+                        java.lang.management.ManagementFactory.getThreadMXBean();
+        for (int warm = 0; warm < 20_000; warm++) {
+            t.visible(5, 0, 1, frustum, 4, into, scratch);
+        }
+        assertEquals(t.visible(5, 0, 1, planes).visible(), into);
+        long before = threads.getCurrentThreadAllocatedBytes();
+        for (int i = 0; i < 10_000; i++) {
+            t.visible(5, 0, 1, frustum, 4, into, scratch);
+            t.visible(9, 0, 1, frustum, 4, into, scratch);
+        }
+        long allocated = threads.getCurrentThreadAllocatedBytes() - before;
+        // A few bytes of slack for the measurement itself; 20,000 walks that allocated would
+        // take megabytes.
+        assertTrue(allocated < 4096, "allocated " + allocated + " bytes over 20,000 walks");
+    }
+
     @Test
     void aPortalPassedFromTheWrongSideHandsOnTheFrustumUnnarrowed() {
         // nestedExterior(false) plus room Q (interior, x 20..30) behind a high door in R's wall

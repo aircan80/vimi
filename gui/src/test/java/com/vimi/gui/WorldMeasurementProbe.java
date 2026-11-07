@@ -616,7 +616,12 @@ public final class WorldMeasurementProbe {
                                                                         .map(t -> t.x() + "," + t.y())
                                                                         .toList()
                                                                 + " of "
-                                                                + inventory.world().tiles().size()));
+                                                                + inventory.world().tiles().size()
+                                                                + "; first recorded: "
+                                                                + inventory.world().tiles().stream()
+                                                                        .limit(24)
+                                                                        .map(t -> t.x() + "," + t.y())
+                                                                        .toList()));
                 new StreamRun(scenario, handle, catalog, map, inventory, origin, gpu).run();
             }
         } finally {
@@ -668,10 +673,20 @@ public final class WorldMeasurementProbe {
                     new WorldStreamSourceController.Request(
                             1, handle, map, inventory, origin, null, catalog.areaIndex());
             var detail = WorldStreamGpuOwner.IMAGE_DETAIL;
+            // As the World view: dungeon and raid maps draw their interiors (#280), and their
+            // roots carry portal sets the renderer culls with (#383).
+            boolean interiors = WorldView.instanceInteriors(map);
             WorldStreamSourceBridge.ExteriorPreparer preparer =
                     (source, scope, tile, cancellation, formats) ->
                             WorldStreamSourceBridge.prepareExterior(
-                                    source, scope, tile, cancellation, null, detail, false, formats);
+                                    source,
+                                    scope,
+                                    tile,
+                                    cancellation,
+                                    null,
+                                    detail,
+                                    interiors,
+                                    formats);
             var holder = new WorldStreamSourceController[1];
             controller =
                     new WorldStreamSourceController(
