@@ -62,6 +62,9 @@ final class WorldStreamSession {
     private WorldStreamControl.LateObjects objectsCommand;
     private BgfxWorldStreamRenderer.LateUpload lateUpload;
     private volatile boolean failed;
+
+    // Compressed object formats the renderer samples (bit per code), set before any decode.
+    private volatile int objectFormats;
     private volatile long closeStarted;
     private CompletableFuture<Decoded> decoding;
     private WorldStreamControl.Command decodedCommand, deferred;
@@ -148,6 +151,7 @@ final class WorldStreamSession {
     // #381 spike: native presentation (null: the readback loop, unchanged).
     private WorldWindowPresentation window;
     private final WorldPresentBudget budget = new WorldPresentBudget();
+    private long announcedCamera, announcedContent = -1;
 
     private void runOwner(
             InputStream input, WorldFrameFileV2 frames, int backend, Runnable terminate)
@@ -156,10 +160,14 @@ final class WorldStreamSession {
         Thread.ofVirtual().name("world-v2-independent-watchdog").start(() -> watch(terminate));
         try (var owner = new WorldStreamNativeOwner(session, frames, backend, window)) {
             try {
+                // The profile, then the compressed object texture formats sampled as blocks: the
+                // parent charges those images their compressed bytes (#374).
+                objectFormats = owner.objectFormatMask();
                 send(
-                        session.exteriorObjects()
-                                ? "SESSION TERRAIN_EXTERIOR_V1"
-                                : "SESSION TERRAIN_BASIC_V1");
+                        (session.exteriorObjects()
+                                        ? "SESSION TERRAIN_EXTERIOR_V1 "
+                                        : "SESSION TERRAIN_BASIC_V1 ")
+                                + objectFormats);
                 advertiseCredit();
                 while (!closing.get()) {
                     if (mailbox.closing() || status.failure() != null) {
@@ -222,6 +230,15 @@ final class WorldStreamSession {
                     if (owner.advance()) {
                         // Wake the parent's frame reader; the mapping write already completed.
                         status.framePublished(owner.publishedSequence());
+                    }
+                    if (window != null
+                            && owner.presentedCamera() > 0
+                            && (owner.presentedCamera() != announcedCamera
+                                    || owner.presentedContent() != announcedContent)) {
+                        // #381: tell the parent which camera and content the window now shows.
+                        announcedCamera = owner.presentedCamera();
+                        announcedContent = owner.presentedContent();
+                        status.presented(announcedCamera, announcedContent);
                     }
                     reconcile();
                     finishUpload();
@@ -493,7 +510,13 @@ final class WorldStreamSession {
     private Decoded decodeOffer(WorldStreamControl.Offer offer) {
         try {
             var tile =
-                    decodeTile(session, directory, offer, decoderCanceled::get, objectsRejections);
+                    decodeTile(
+                            session,
+                            directory,
+                            offer,
+                            decoderCanceled::get,
+                            objectFormats,
+                            objectsRejections);
             return new Decoded(tile, tile.header(), null, null);
         } catch (Throwable error) {
             return new Decoded(null, null, null, error);
@@ -511,14 +534,16 @@ final class WorldStreamSession {
             WorldStreamControl.Offer offer,
             java.util.function.BooleanSupplier canceled)
             throws IOException {
-        return decodeTile(session, directory, offer, canceled, new ObjectsRejections());
+        return decodeTile(session, directory, offer, canceled, 0xE, new ObjectsRejections());
     }
 
+    /** As above, packing objects for a renderer that samples {@code objectFormats} (#374). */
     static WorldStreamPackedTile decodeTile(
             WorldStreamEnvelope.Session session,
             Path directory,
             WorldStreamControl.Offer offer,
             java.util.function.BooleanSupplier canceled,
+            int objectFormats,
             ObjectsRejections rejections)
             throws IOException {
         var expected =
@@ -551,7 +576,7 @@ final class WorldStreamSession {
                                 header.objects(),
                                 canceled);
                 long packing = WorldStageTimings.start();
-                objects = WorldStreamPackedObjects.pack(data, canceled);
+                objects = WorldStreamPackedObjects.pack(data, canceled, objectFormats);
                 WorldStageTimings.stop("child.objects.pack", packing);
                 state = 1;
             } catch (java.util.concurrent.CancellationException stopped) {
@@ -651,7 +676,8 @@ final class WorldStreamSession {
                                                 command,
                                                 coordinate % 64,
                                                 coordinate / 64,
-                                                objectsCanceled::get),
+                                                objectsCanceled::get,
+                                                objectFormats),
                                         null);
                             } catch (Throwable error) {
                                 return new LateDecoded(null, error);
@@ -771,6 +797,19 @@ final class WorldStreamSession {
             int tileY,
             java.util.function.BooleanSupplier canceled)
             throws IOException {
+        return decodeLateObjects(session, directory, command, tileX, tileY, canceled, 0xE);
+    }
+
+    /** As above, packing for a renderer that samples {@code objectFormats} (#374). */
+    static WorldStreamPackedObjects decodeLateObjects(
+            WorldStreamEnvelope.Session session,
+            Path directory,
+            WorldStreamControl.LateObjects command,
+            int tileX,
+            int tileY,
+            java.util.function.BooleanSupplier canceled,
+            int objectFormats)
+            throws IOException {
         if (!session.exteriorObjects()) {
             throw new IOException("Late objects outside the session profile");
         }
@@ -787,7 +826,7 @@ final class WorldStreamSession {
                         new WorldStreamObjectsFile.Reference(command.length(), command.sha256()),
                         canceled);
         long packing = WorldStageTimings.start();
-        var packed = WorldStreamPackedObjects.pack(data, canceled);
+        var packed = WorldStreamPackedObjects.pack(data, canceled, objectFormats);
         WorldStageTimings.stop("child.objects.pack", packing);
         return packed;
     }

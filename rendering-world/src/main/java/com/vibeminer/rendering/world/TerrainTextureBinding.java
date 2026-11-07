@@ -37,6 +37,7 @@ public final class TerrainTextureBinding {
         private final int ordinal, x, y;
         private final float maxX, maxY;
         private final long[] coverage;
+        private final int emptyRectangles;
         private final String geometry;
         private final Sources sources;
         private final double error;
@@ -47,9 +48,18 @@ public final class TerrainTextureBinding {
                 float maxX,
                 float maxY,
                 long[] coverage,
+                int emptyRectangles,
                 String geometry,
                 Sources sources,
                 double error) {
+            int covered = 0;
+            for (long bits : coverage) {
+                covered += Long.bitCount(bits);
+            }
+            if (emptyRectangles < 0 || covered + emptyRectangles > 256) {
+                throw new IllegalArgumentException("Invalid empty atlas rectangle count");
+            }
+            this.emptyRectangles = emptyRectangles;
             this.ordinal = ordinal;
             this.x = tile.x();
             this.y = tile.y();
@@ -95,6 +105,11 @@ public final class TerrainTextureBinding {
 
         public LongBuffer rectangleCoverage() {
             return LongBuffer.wrap(coverage).asReadOnlyBuffer();
+        }
+
+        /** Rectangles whose chunk has no texture layers: nothing to draw, never covered. */
+        public int emptyRectangles() {
+            return emptyRectangles;
         }
 
         public boolean coveredHeaderRect(int x, int y) {
@@ -231,7 +246,8 @@ public final class TerrainTextureBinding {
                                     null));
         }
         requireError(error);
-        return new Metadata(ordinal, tile, maxX, maxY, coverage, actual, sources, error);
+        return new Metadata(
+                ordinal, tile, maxX, maxY, coverage, atlas.emptyChunks(), actual, sources, error);
     }
 
     /**
@@ -243,6 +259,19 @@ public final class TerrainTextureBinding {
             float maxX,
             float maxY,
             long[] coverage,
+            Sources sources,
+            BooleanSupplier canceled) {
+        return fromSnapshot(ordinal, tile, maxX, maxY, coverage, 0, sources, canceled);
+    }
+
+    /** As above, with the snapshot's count of rectangles that have nothing to draw. */
+    public static Metadata fromSnapshot(
+            int ordinal,
+            TerrainScene.Tile tile,
+            float maxX,
+            float maxY,
+            long[] coverage,
+            int emptyRectangles,
             Sources sources,
             BooleanSupplier canceled) {
         shape(ordinal, tile, canceled);
@@ -257,7 +286,8 @@ public final class TerrainTextureBinding {
         requireError(error);
         String actual = TerrainGeometryFingerprint.sha256(tile);
         check(canceled);
-        return new Metadata(ordinal, tile, maxX, maxY, coverage, actual, sources, error);
+        return new Metadata(
+                ordinal, tile, maxX, maxY, coverage, emptyRectangles, actual, sources, error);
     }
 
     /** Separate emulation of rebased float vertex UV arithmetic; not a hardware precision claim. */

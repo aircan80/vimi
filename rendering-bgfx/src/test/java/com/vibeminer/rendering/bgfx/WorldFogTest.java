@@ -242,8 +242,8 @@ class WorldFogTest {
         float cut = WorldFog.STREAM.cut();
         // No recorded sky: the explorer's own stream fog.
         var none = WorldFog.sky(null, Float.NaN);
-        assertEquals(WorldFog.STREAM.start(), none.start());
-        assertEquals(WorldFog.STREAM.end(), none.end());
+        assertSameFog(WorldFog.STREAM, none);
+        assertEquals(1, none.maximum());
         assertEquals(cut, none.cut());
         var sky =
                 new WorldStreamTransport.Sky(
@@ -252,12 +252,14 @@ class WorldFogTest {
         assertEquals(250, recorded.start());
         assertEquals(1000, recorded.end());
         assertEquals(cut, recorded.cut());
+        assertEquals(1, recorded.maximum());
         assertEquals(50, recorded.horizon()[0]);
         assertEquals(10, recorded.top()[0]);
         // With the WDL horizon the cut moves out, and a recorded end below it is kept.
         var foggy = WorldFog.sky(sky, 3200);
         assertEquals(1000, foggy.end());
         assertEquals(3200, foggy.cut());
+        assertEquals(1, foggy.maximum());
         assertEquals(1, foggy.factor(3000), 0, "full fog from the recorded end to the cut");
         // Without recorded fog the fog ends at the horizon.
         var plain =
@@ -290,5 +292,27 @@ class WorldFogTest {
                         Float.NaN);
         assertEquals(cut, far.end());
         assertEquals(cut, far.cut());
+        assertEquals(1, far.maximum());
+        assertEquals(1, far.factor(cut), 0, "full fog at the cut");
+    }
+
+    /** The horizon's end is positive and finite, or NaN when no horizon is drawn. */
+    @Test
+    void aHorizonEndIsPositiveOrAbsent() {
+        for (float bad : new float[] {0, -1, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY}) {
+            assertThrows(
+                    IllegalArgumentException.class, () -> WorldFog.sky(null, bad), "end " + bad);
+        }
+        assertEquals(3200, WorldFog.sky(null, 3200).cut());
+    }
+
+    private static void assertSameFog(WorldFog expected, WorldFog actual) {
+        assertArrayEquals(expected.horizon(), actual.horizon());
+        assertArrayEquals(expected.top(), actual.top());
+        assertEquals(expected.start(), actual.start());
+        assertEquals(expected.end(), actual.end());
+        assertEquals(expected.maximum(), actual.maximum());
+        assertEquals(expected.cut(), actual.cut());
+        assertEquals(expected.topElevation(), actual.topElevation());
     }
 }
