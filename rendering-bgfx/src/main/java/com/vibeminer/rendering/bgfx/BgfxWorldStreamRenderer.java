@@ -1493,16 +1493,23 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         int budget = WorldStreamHorizon.STEP_BYTES;
         while (budget > 0 && horizonStagedBytes < total) {
             if (horizonStagedBytes < vertexBytes) {
-                // Whole vertices only: 16 bytes each.
-                int count = Math.min(budget, vertexBytes - horizonStagedBytes) & ~15;
+                // Whole vertices only; the rest of this step's budget waits for the next call.
+                int stride = WorldStreamHorizon.VERTEX_BYTES;
+                int count = Math.min(budget, vertexBytes - horizonStagedBytes) / stride * stride;
+                if (count == 0) {
+                    break;
+                }
                 var slice = packed.vertices().slice(horizonStagedBytes, count);
                 bgfx_update_dynamic_vertex_buffer(
-                        horizonVertices[back], horizonStagedBytes / 16, bgfx_copy(slice));
+                        horizonVertices[back], horizonStagedBytes / stride, bgfx_copy(slice));
                 horizonStagedBytes += count;
                 budget -= count;
             } else {
                 int at = horizonStagedBytes - vertexBytes;
                 int count = Math.min(budget, packed.indices().remaining() - at) & ~3;
+                if (count == 0) {
+                    break;
+                }
                 var slice = packed.indices().slice(at, count);
                 bgfx_update_dynamic_index_buffer(horizonIndices[back], at / 4, bgfx_copy(slice));
                 horizonStagedBytes += count;
