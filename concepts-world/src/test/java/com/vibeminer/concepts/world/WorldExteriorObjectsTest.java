@@ -1,5 +1,6 @@
 package com.vibeminer.concepts.world;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -926,7 +927,8 @@ class WorldExteriorObjectsTest {
 
     /**
      * Issue #367: MOMT flags bit 0x1 (F_UNLIT) marks a range unlit, whatever its kind; blend mode 3
-     * is additive; modes above 3 (modulate and variants) stay unsupported.
+     * is additive; modes above 3 (modulate and variants) stay unsupported. Bit 0x4 (F_UNCULLED,
+     * #375) marks it two-sided.
      */
     @Test
     void unlitFlagAndAdditiveBlendMapToRangeClasses() {
@@ -969,7 +971,8 @@ class WorldExteriorObjectsTest {
                                         1,
                                         2,
                                         WorldExteriorObjects.ADDITIVE
-                                                | WorldExteriorObjects.UNLIT)),
+                                                | WorldExteriorObjects.UNLIT
+                                                | WorldExteriorObjects.TWO_SIDED)),
                         ranges);
                 assertEquals(2, counts(set).get(WorldExteriorObjects.Count.BATCH_UNSUPPORTED));
                 assertEquals(
@@ -1035,7 +1038,9 @@ class WorldExteriorObjectsTest {
                                 WorldExteriorObjects.Count.ROOT_DRAWN, 1,
                                 WorldExteriorObjects.Count.GROUP_DRAWN, 1,
                                 WorldExteriorObjects.Count.BATCH_DRAWN, 2,
-                                WorldExteriorObjects.Count.IMAGE_DECODED, 2),
+                                WorldExteriorObjects.Count.IMAGE_DECODED, 2,
+                                // MOGP 0x4 with a first MOCV: its colours are carried.
+                                WorldExteriorObjects.Count.GROUP_VERTEX_COLOURS, 1),
                         counts(set));
                 assertEquals(
                         List.of(
@@ -1044,6 +1049,135 @@ class WorldExteriorObjectsTest {
                                 new WorldExteriorObjects.DrawRange(
                                         3, 3, 1, 1, WorldExteriorObjects.OPAQUE)),
                         set.models().getFirst().meshes().getFirst().ranges());
+            }
+        }
+    }
+
+    /** One exterior group as {@link #group(int)}, with a first MOCV appended to its MOGP. */
+    private static byte[] groupWithColours(int flags, byte[] mocv) {
+        var classic = group(flags);
+        int body = indexOf(classic, "MOGP") + 8;
+        return join(
+                version(17),
+                chunk(
+                        "MOGP",
+                        join(
+                                Arrays.copyOfRange(classic, body, classic.length),
+                                chunk("MOCV", mocv))));
+    }
+
+    private static int[] colours(WorldExteriorObjects.TileObjects set) {
+        var buffer = set.models().getFirst().meshes().getFirst().colours();
+        var out = new int[buffer.remaining()];
+        buffer.get(out);
+        return out;
+    }
+
+    /**
+     * Issue #375: an exterior group's first MOCV (B, G, R, A per vertex) is carried as {@code r | g
+     * << 8 | b << 16} only under MOGP flag 0x4; the alpha byte is dropped. Without the flag, or
+     * without the chunk, the mesh has no colours.
+     */
+    @Test
+    void vertexColoursAreCarriedOnlyUnderTheirGroupFlag() {
+        byte[] mocv = {
+            0x10,
+            0x20,
+            0x30,
+            (byte) 0xff, // vertex 0: B, G, R, A
+            0x01,
+            0x02,
+            0x03,
+            0x00,
+            (byte) 0xff,
+            (byte) 0x80,
+            0x00,
+            0x7f
+        };
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(GROUP, groupWithColours(EXT | 0x4, mocv));
+            try (var set = f.run()) {
+                assertArrayEquals(new int[] {0x102030, 0x010203, 0xff8000}, colours(set));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_VERTEX_COLOURS));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+            }
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(GROUP, groupWithColours(EXT, mocv));
+            try (var set = f.run()) {
+                assertArrayEquals(new int[0], colours(set));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_VERTEX_COLOURS));
+            }
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(GROUP, group(EXT | 0x4));
+            try (var set = f.run()) {
+                assertArrayEquals(new int[0], colours(set));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_VERTEX_COLOURS));
+            }
+        }
+    }
+
+    /**
+     * Issue #375: each copied triangle's winding is compared with its vertex normals. Vertex 2 is
+     * moved off the line so both triangles have area; with normals along +z, 0-1-2 winds
+     * counter-clockwise (agrees) and 0-2-1 clockwise (opposes).
+     */
+    @Test
+    void triangleWindingIsCountedAgainstVertexNormals() {
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            var bytes = group(EXT, 3, 2, List.of(new Batch(0, 6, 0, 0)));
+            var data = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+            int movt = indexOf(bytes, "MOVT") + 8, movi = indexOf(bytes, "MOVI") + 8;
+            data.putFloat(movt + 2 * 12, 0).putFloat(movt + 2 * 12 + 4, 1);
+            data.putShort(movi + 8, (short) 2).putShort(movi + 10, (short) 1);
+            f.files.sources.put(GROUP, bytes);
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.TRIANGLE_WINDING_AGREES));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.TRIANGLE_WINDING_OPPOSES));
+            }
+        }
+    }
+
+    /**
+     * Issue #375: MOMT flags other than F_UNLIT and F_UNCULLED (here F_UNFOGGED 0x2, F_EXTLIGHT
+     * 0x8, F_SIDN 0x10, F_WINDOW 0x20 and an undocumented high bit) change nothing and are counted
+     * once per admitted batch.
+     */
+    @Test
+    void unappliedMaterialFlagsAreIgnoredAndCounted() {
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            byte[] root =
+                    root(
+                            1,
+                            new long[] {GROUP},
+                            List.of(
+                                    new Material(0, IMAGE, 0),
+                                    new Material(0, IMAGE, 0),
+                                    new Material(0, IMAGE, 0),
+                                    new Material(0, IMAGE, 0)));
+            int momt = indexOf(root, "MOMT") + 8;
+            var data = ByteBuffer.wrap(root).order(ByteOrder.LITTLE_ENDIAN);
+            data.putInt(momt + 64, 0x4); // F_UNCULLED alone: applied, not counted
+            data.putInt(momt + 2 * 64, 0x2 | 0x8 | 0x10 | 0x20);
+            data.putInt(momt + 3 * 64, 0x1 | 0x10000);
+            f.files.sources.put(ROOT, root);
+            var batches = new ArrayList<Batch>();
+            for (int material = 0; material < 4; material++) {
+                batches.add(new Batch(material * 3, 3, 0, material));
+            }
+            f.files.sources.put(GROUP, group(EXT, 3, 4, batches));
+            try (var set = f.run()) {
+                var ranges = set.models().getFirst().meshes().getFirst().ranges();
+                assertEquals(
+                        List.of(
+                                WorldExteriorObjects.OPAQUE,
+                                WorldExteriorObjects.OPAQUE | WorldExteriorObjects.TWO_SIDED,
+                                WorldExteriorObjects.OPAQUE,
+                                WorldExteriorObjects.OPAQUE | WorldExteriorObjects.UNLIT),
+                        ranges.stream().map(WorldExteriorObjects.DrawRange::blend).toList());
+                assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_FLAGS_IGNORED));
+                assertEquals(4, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
             }
         }
     }

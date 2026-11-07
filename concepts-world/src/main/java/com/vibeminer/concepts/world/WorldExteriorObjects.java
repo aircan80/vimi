@@ -140,6 +140,23 @@ public final class WorldExteriorObjects {
     /** MOMT flags bit 0x1, F_UNLIT: the material is not lit. */
     static final long MOMT_F_UNLIT = 0x1;
 
+    /**
+     * Flag on a range class (MOMT F_UNCULLED, flags bit 0x4, documented as "two-sided", issue
+     * #375): the surface is seen from both sides. The World pass culls no faces yet, so every
+     * surface is still drawn two-sided; the flag is carried for single-sided culling.
+     */
+    public static final int TWO_SIDED = 0x200;
+
+    /** MOMT flags bit 0x4, F_UNCULLED: two-sided. */
+    static final long MOMT_F_UNCULLED = 0x4;
+
+    /**
+     * MOMT flags this profile applies. Any other set bit (F_UNFOGGED, F_EXTLIGHT, F_SIDN, F_WINDOW,
+     * the clamp bits and the undocumented rest) is ignored and counted in {@link
+     * Count#BATCH_FLAGS_IGNORED}: their documented effects name no formula to apply.
+     */
+    static final long MOMT_APPLIED = MOMT_F_UNLIT | MOMT_F_UNCULLED;
+
     /** The kind of a range class, without its flags. */
     public static int kind(int rangeClass) {
         return rangeClass & 0xff;
@@ -153,6 +170,14 @@ public final class WorldExteriorObjects {
 
     /** Position xyz, unit normal xyz, texture1 uv: 32 bytes per vertex. */
     static final int VERTEX_FLOATS = 8;
+
+    /**
+     * Packs one MOCV vertex colour, stored B, G, R, A, as {@code r | g << 8 | b << 16}; the alpha
+     * byte is not carried.
+     */
+    static int packColour(int b, int g, int r) {
+        return r | g << 8 | b << 16;
+    }
 
     /**
      * Building image sides, largest first. Images are read when their surfaces are admitted, but
@@ -280,6 +305,9 @@ public final class WorldExteriorObjects {
 
     /** MOGP exterior and interior flags; interior wins when both are present. */
     private static final long EXTERIOR = 0x8, INTERIOR = 0x2000;
+
+    /** MOGP flag 0x4: the group has vertex colours (its first MOCV). */
+    private static final long VERTEX_COLOURS = 0x4;
 
     private static final WmoFormats.Limits ROOT_LIMITS =
             new WmoFormats.Limits(
@@ -433,7 +461,25 @@ public final class WorldExteriorObjects {
          */
         IMAGE_MIPS_FILE,
         IMAGE_MIPS_PARTIAL,
-        IMAGE_MIPS_GENERATED
+        IMAGE_MIPS_GENERATED,
+        /**
+         * Copied exterior groups whose vertex colours are carried: MOGP flag 0x4 with a first MOCV
+         * of one colour per vertex (issue #375). Not an outcome bucket.
+         */
+        GROUP_VERTEX_COLOURS,
+        /**
+         * Copied exterior triangles whose winding, read counter-clockwise in raw local axes, faces
+         * the same way as their vertex normals (issue #375): the evidence that decides which side
+         * single-sided surfaces may cull. Not an outcome bucket.
+         */
+        TRIANGLE_WINDING_AGREES,
+        /** Copied exterior triangles whose winding faces against their vertex normals. */
+        TRIANGLE_WINDING_OPPOSES,
+        /**
+         * Admitted batches whose MOMT flags set a bit this profile does not apply (anything but
+         * F_UNLIT 0x1 and F_UNCULLED 0x4). Not an outcome bucket; the batch is drawn without it.
+         */
+        BATCH_FLAGS_IGNORED
     }
 
     /** What a placement draws: an outdoor WMO, an MDDF doodad or a WMO doodad-set entry. */
@@ -567,6 +613,7 @@ public final class WorldExteriorObjects {
         private final int groupOrdinal;
         private final long groupId, groupFlags;
         private final float[] vertices;
+        private final int[] colours;
         private final int[] indices;
         private final List<DrawRange> ranges;
 
@@ -575,12 +622,14 @@ public final class WorldExteriorObjects {
                 long groupId,
                 long groupFlags,
                 float[] vertices,
+                int[] colours,
                 int[] indices,
                 List<DrawRange> ranges) {
             this.groupOrdinal = groupOrdinal;
             this.groupId = groupId;
             this.groupFlags = groupFlags;
             this.vertices = vertices;
+            this.colours = colours;
             this.indices = indices;
             this.ranges = List.copyOf(ranges);
         }
@@ -603,6 +652,14 @@ public final class WorldExteriorObjects {
 
         public FloatBuffer vertices() {
             return FloatBuffer.wrap(vertices).asReadOnlyBuffer();
+        }
+
+        /**
+         * Vertex colours, one {@code r | g << 8 | b << 16} (0..255 each) per vertex, or empty when
+         * the mesh has none (doodads, and groups without MOGP flag 0x4).
+         */
+        public IntBuffer colours() {
+            return IntBuffer.wrap(colours).asReadOnlyBuffer();
         }
 
         public IntBuffer indices() {
@@ -972,13 +1029,14 @@ public final class WorldExteriorObjects {
 
     /** copyModel's marker for a model whose every admitted triangle billboards. */
     private static final PendingMesh ALL_BILLBOARD =
-            new PendingMesh(0, 0, 0, new float[0], new int[0], List.of());
+            new PendingMesh(0, 0, 0, new float[0], new int[0], new int[0], List.of());
 
     private record PendingMesh(
             int ordinal,
             long id,
             long flags,
             float[] vertices,
+            int[] colours,
             int[] indices,
             List<Candidate> ranges) {}
 
@@ -1220,6 +1278,7 @@ public final class WorldExteriorObjects {
                                     mesh.groupId,
                                     mesh.groupFlags,
                                     mesh.vertices,
+                                    mesh.colours,
                                     Arrays.copyOf(mesh.indices, end),
                                     opaque));
                 }
@@ -1369,6 +1428,7 @@ public final class WorldExteriorObjects {
                                     mesh.groupId,
                                     mesh.groupFlags,
                                     mesh.vertices,
+                                    mesh.colours,
                                     mesh.indices,
                                     ranges));
                 }
@@ -2171,6 +2231,7 @@ public final class WorldExteriorObjects {
                     mesh.id(),
                     mesh.flags(),
                     mesh.vertices(),
+                    mesh.colours(),
                     Arrays.copyOf(compact, used),
                     kept);
         }
@@ -2202,6 +2263,7 @@ public final class WorldExteriorObjects {
                     mesh.id(),
                     mesh.flags(),
                     mesh.vertices(),
+                    mesh.colours(),
                     Arrays.copyOf(compact, used),
                     kept);
         }
@@ -2249,6 +2311,38 @@ public final class WorldExteriorObjects {
         }
 
         /**
+         * Counts copied triangles whose winding agrees or disagrees with their vertex normals
+         * (issue #375): the face normal (b - a) x (c - a) of raw local positions against the sum of
+         * the three unit vertex normals. Triangles where the dot product is zero count in neither.
+         */
+        static void winding(float[] vertices, int[] indices, int[] local) {
+            int agrees = 0, opposes = 0;
+            for (int t = 0; t + 2 < indices.length; t += 3) {
+                int a = indices[t] * VERTEX_FLOATS,
+                        b = indices[t + 1] * VERTEX_FLOATS,
+                        c = indices[t + 2] * VERTEX_FLOATS;
+                double ux = vertices[b] - vertices[a],
+                        uy = vertices[b + 1] - vertices[a + 1],
+                        uz = vertices[b + 2] - vertices[a + 2];
+                double vx = vertices[c] - vertices[a],
+                        vy = vertices[c + 1] - vertices[a + 1],
+                        vz = vertices[c + 2] - vertices[a + 2];
+                double fx = uy * vz - uz * vy, fy = uz * vx - ux * vz, fz = ux * vy - uy * vx;
+                double nx = vertices[a + 3] + vertices[b + 3] + vertices[c + 3];
+                double ny = vertices[a + 4] + vertices[b + 4] + vertices[c + 4];
+                double nz = vertices[a + 5] + vertices[b + 5] + vertices[c + 5];
+                double dot = fx * nx + fy * ny + fz * nz;
+                if (dot > 0) {
+                    agrees++;
+                } else if (dot < 0) {
+                    opposes++;
+                }
+            }
+            local[Count.TRIANGLE_WINDING_AGREES.ordinal()] += agrees;
+            local[Count.TRIANGLE_WINDING_OPPOSES.ordinal()] += opposes;
+        }
+
+        /**
          * Copies one exterior group; null (unsupported) for unusable normals or overlapping
          * batches.
          */
@@ -2270,7 +2364,7 @@ public final class WorldExteriorObjects {
                 end = batch.firstIndex() + batch.indexCount();
             }
             var candidates = new ArrayList<Candidate>();
-            int unsupported = 0, candidateIndices = 0;
+            int unsupported = 0, candidateIndices = 0, ignoredFlags = 0;
             var materials = root.materials();
             for (var batch : borrow.batches()) {
                 // Index ranges and vertex domains are already validated by WmoGroupSpans.
@@ -2288,9 +2382,16 @@ public final class WorldExteriorObjects {
                     unsupported++;
                     continue;
                 }
-                // MOMT flags word 0, bit 0x1 F_UNLIT: no lighting.
-                if ((material.word(0) & MOMT_F_UNLIT) != 0) {
+                // MOMT flags word 0: bit 0x1 F_UNLIT (no lighting), bit 0x4 F_UNCULLED (two-sided).
+                long momtFlags = material.word(0);
+                if ((momtFlags & MOMT_F_UNLIT) != 0) {
                     blend |= UNLIT;
+                }
+                if ((momtFlags & MOMT_F_UNCULLED) != 0) {
+                    blend |= TWO_SIDED;
+                }
+                if ((momtFlags & ~MOMT_APPLIED) != 0) {
+                    ignoredFlags++;
                 }
                 candidates.add(
                         new Candidate(
@@ -2304,7 +2405,8 @@ public final class WorldExteriorObjects {
             if (candidates.isEmpty()) {
                 // Nothing drawable: no vertex or index copy is made for this group.
                 local[Count.BATCH_UNSUPPORTED.ordinal()] += unsupported;
-                return new PendingMesh(ordinal, id, flags, new float[0], new int[0], List.of());
+                return new PendingMesh(
+                        ordinal, id, flags, new float[0], new int[0], new int[0], List.of());
             }
             var positions = borrow.positions();
             var normals = borrow.normals();
@@ -2331,6 +2433,16 @@ public final class WorldExteriorObjects {
                 vertices[at + 6] = uv.get(v * 2);
                 vertices[at + 7] = uv.get(v * 2 + 1);
             }
+            // MOGP 0x4 declares the first MOCV: B, G, R, A per vertex, its count already checked.
+            int[] colours = new int[0];
+            var mocv = borrow.colors();
+            if ((flags & VERTEX_COLOURS) != 0 && mocv != null) {
+                colours = new int[count];
+                for (int v = 0; v < count; v++) {
+                    colours[v] =
+                            packColour(mocv.get(v * 4), mocv.get(v * 4 + 1), mocv.get(v * 4 + 2));
+                }
+            }
             // Only candidate batch indices are copied, compacted in recorded batch order.
             var source = borrow.indices();
             int[] indices = new int[candidateIndices];
@@ -2350,8 +2462,13 @@ public final class WorldExteriorObjects {
                                 candidate.blend()));
                 used += candidate.indexCount();
             }
+            winding(vertices, indices, local);
             local[Count.BATCH_UNSUPPORTED.ordinal()] += unsupported;
-            return new PendingMesh(ordinal, id, flags, vertices, indices, rebased);
+            local[Count.BATCH_FLAGS_IGNORED.ordinal()] += ignoredFlags;
+            if (colours.length > 0) {
+                local[Count.GROUP_VERTEX_COLOURS.ordinal()]++;
+            }
+            return new PendingMesh(ordinal, id, flags, vertices, colours, indices, rebased);
         }
 
         /**
@@ -2533,7 +2650,8 @@ public final class WorldExteriorObjects {
                 candidateIndices += range.triangleCount();
             }
             if (candidates.isEmpty()) {
-                return new PendingMesh(0, skinId, 0, new float[0], new int[0], List.of());
+                return new PendingMesh(
+                        0, skinId, 0, new float[0], new int[0], new int[0], List.of());
             }
             var source = model.vertices();
             var billboard = billboardBones(model.bones());
@@ -2634,7 +2752,7 @@ public final class WorldExteriorObjects {
                 vertices[at + 6] = vertex.uv0().x();
                 vertices[at + 7] = vertex.uv0().y();
             }
-            return new PendingMesh(0, skinId, 0, vertices, indices, rebased);
+            return new PendingMesh(0, skinId, 0, vertices, new int[0], indices, rebased);
         }
 
         /**

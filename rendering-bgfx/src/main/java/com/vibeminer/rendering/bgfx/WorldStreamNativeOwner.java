@@ -818,6 +818,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.frameCounts();
     }
 
+    /** Proof seam only: see {@link BgfxWorldStreamRenderer#vertexColours}. */
+    void vertexColours(boolean enabled) {
+        requireOpen();
+        renderer.vertexColours(enabled);
+    }
+
     /** Proof seam only: see {@link BgfxWorldStreamRenderer#objectCulling}. */
     void objectCulling(boolean enabled) {
         requireOpen();
