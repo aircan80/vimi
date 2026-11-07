@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.world.TerrainCamera;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -521,6 +522,8 @@ public final class WorldStreamTransport {
         private volatile boolean stop;
         private volatile WorldStreamProducerCancellation.Producer cancellation;
         private boolean produced, offerOutstanding, cancelOutstanding;
+        // Opt-in hand-off stamps (-Dvimi.world.stageTimings); 0 while timings are off.
+        private volatile long reservedAt, producedAt, producerStartedAt, offeredAt, consumedAt;
         // Guarded by the session lock: the capacity revision when this reservation was issued and
         // the capacity changes it made itself before its result completed (#283).
         private long issuedCapacity;
@@ -548,13 +551,13 @@ public final class WorldStreamTransport {
         }
 
         /**
-         * The capacity revision this reservation alone accounts for: the revision when it was
-         * issued plus its own retirement and drain changes up to its result. Once the result has
-         * completed, a session revision above this means capacity changed for some other reason
-         * since the reservation was issued, so a caller blocked by its refusal should retry.
+         * Whether capacity changed since this reservation was issued for a reason other than the
+         * reservation itself: its own drain and retirement and the CREDIT that returns its lease
+         * (which may land after its result) do not count. Read live, atomically with the session
+         * revision. A caller blocked by its refusal retries when this is true.
          */
-        public long capacityBaseline() {
-            return session.baseline(this);
+        public boolean capacityChangedElsewhere() {
+            return session.changedElsewhere(this);
         }
 
         public CompletableFuture<Resident> produce(PacketProducer producer) {
@@ -772,6 +775,7 @@ public final class WorldStreamTransport {
         // so a lost or absent hint costs at most the old poll interval.
         private final WorldFrameSignal frameSignal = new WorldFrameSignal();
         private volatile Runnable frameListener;
+        private volatile Runnable capacityListener;
         // Test seams: the reader's fallback wait, and completion when the reader has returned.
         volatile long framePollMillis = FRAME_POLL_MILLIS;
         final CompletableFuture<Void> framesReaderDone = new CompletableFuture<>();
@@ -1514,6 +1518,28 @@ public final class WorldStreamTransport {
                 }
                 capacityRevision++;
             }
+            var listener = capacityListener;
+            if (listener != null) {
+                try {
+                    listener.run();
+                } catch (RuntimeException failure) {
+                    // A consumer's fault must not end the status reader or the session.
+                    System.getLogger(WorldStreamTransport.class.getName())
+                            .log(
+                                    System.Logger.Level.WARNING,
+                                    "World capacity listener failed",
+                                    failure);
+                }
+            }
+        }
+
+        /**
+         * Runs after every {@link #capacityRevision} change, possibly under the transport's own
+         * lock, so it must only signal (never block or call back in). Replaced by a later call.
+         * Lets a consumer wait on capacity without polling (#366).
+         */
+        public void onCapacity(Runnable listener) {
+            capacityListener = listener;
         }
 
         /** A capacity change caused by {@code reservation}'s own drain or retirement. */
@@ -1524,9 +1550,10 @@ public final class WorldStreamTransport {
             }
         }
 
-        private long baseline(TileReservation reservation) {
+        private boolean changedElsewhere(TileReservation reservation) {
             synchronized (lock) {
-                return reservation.issuedCapacity + reservation.ownCapacityChanges;
+                return capacityRevision
+                        != reservation.issuedCapacity + reservation.ownCapacityChanges;
             }
         }
 
@@ -1543,6 +1570,7 @@ public final class WorldStreamTransport {
                 previousTile = tile;
                 tile = new TileReservation(this, reserved);
                 tile.issuedCapacity = capacityRevision;
+                tile.reservedAt = WorldStageTimings.start();
                 return java.util.Optional.of(tile);
             }
         }
@@ -1555,6 +1583,9 @@ public final class WorldStreamTransport {
                 }
                 state.beginProducer(reservation.ticket);
                 reservation.produced = true;
+                reservation.producedAt =
+                        WorldStageTimings.lap(
+                                "handoff.parent.reserveToProduce", reservation.reservedAt);
                 enqueueFile(() -> produceFile(reservation, producer));
             }
             return reservation.settled.copy();
@@ -1692,6 +1723,9 @@ public final class WorldStreamTransport {
         }
 
         private void produceFile(TileReservation reservation, PacketProducer producer) {
+            reservation.producerStartedAt =
+                    WorldStageTimings.lap(
+                            "handoff.parent.produceToProducerStart", reservation.producedAt);
             WorldStreamProducerCancellation.Producer lower;
             try {
                 lower = cancellation.begin();
@@ -1800,6 +1834,10 @@ public final class WorldStreamTransport {
                                         packet.coverage,
                                         packet.objects);
                         enqueueCommand(command);
+                        reservation.offeredAt =
+                                WorldStageTimings.lap(
+                                        "handoff.parent.producerRunToOffer",
+                                        reservation.producerStartedAt);
                         packet = null;
                         published = true;
                     }
@@ -2111,6 +2149,10 @@ public final class WorldStreamTransport {
                         }
                         case INPUT_TILE -> {
                             var current = reservationFor(transaction(message));
+                            current.consumedAt =
+                                    WorldStageTimings.lap(
+                                            "handoff.parent.offerToInputConsumed",
+                                            current.offeredAt);
                             enqueueFile(
                                     () -> {
                                         WorldStreamPacketFile.Moved owned;
@@ -2133,6 +2175,8 @@ public final class WorldStreamTransport {
                         }
                         case STAGED -> {
                             TileReservation current = reservationFor(transaction(message));
+                            WorldStageTimings.lap(
+                                    "handoff.parent.inputConsumedToStaged", current.consumedAt);
                             synchronized (lock) {
                                 if (!current.offerOutstanding) {
                                     throw new IllegalStateException("Missing offer command credit");
@@ -2258,7 +2302,26 @@ public final class WorldStreamTransport {
                                 rendererObjectsBudget();
                             }
                         }
-                        case CREDIT -> capacityChanged();
+                        case CREDIT -> {
+                            // The returned lease belongs to a reservation: count the change as its
+                            // own, so a refused reservation's unused credit is in its baseline
+                            // and cannot wake the retry it refused (#366 review).
+                            var credited = state.creditedTicket();
+                            TileReservation owner = null;
+                            synchronized (lock) {
+                                if (tile != null && tile.ticket == credited) {
+                                    owner = tile;
+                                } else if (previousTile != null
+                                        && previousTile.ticket == credited) {
+                                    owner = previousTile;
+                                }
+                            }
+                            if (owner == null) {
+                                capacityChanged();
+                            } else {
+                                capacityChanged(owner);
+                            }
+                        }
                         case IGNORED -> {}
                         default ->
                                 throw new IOException(

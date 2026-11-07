@@ -14,10 +14,12 @@ import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.SourceDataLine;
 
 /**
- * Measures an ambience kit change through the real decoder: the authored tone plays as kit A,
- * then the desired kit becomes B. Each file is the real decoder's output repeated to 10 s. Lines are paced like a device with a 250 ms buffer, so each
- * write has a place on the device timeline, and closing a line discards what it still queues. Prints the longest audible gap after the change and
- * the time until kit B plays at full volume; asserts nothing.
+ * Measures World audio through the real decoder on lines paced like a device with a 250 ms
+ * buffer: each write has a place on the device timeline, and closing a line discards what it
+ * still queues. Each file is the real decoder's output repeated. Modes: {@code change} (default)
+ * plays the authored tone as ambience kit A, then switches to kit B, and prints the longest
+ * audible gap after the change and the time until kit B plays at full volume; {@code loop} and
+ * {@code music} are described on their methods. Asserts nothing.
  */
 public final class WorldAudioZoneChangeProbe {
     private WorldAudioZoneChangeProbe() {}
@@ -38,6 +40,8 @@ public final class WorldAudioZoneChangeProbe {
 
     private static final List<Write> WRITES = new ArrayList<>();
     private static int lines;
+    /** Length of each repeated file. */
+    private static int seconds = 10;
 
     /** A line that plays written frames in real time behind a 250 ms buffer. */
     private static SourceDataLine paced(AudioFormat format) {
@@ -108,12 +112,17 @@ public final class WorldAudioZoneChangeProbe {
                 all.write(block, 0, count);
         }
         byte[] once = all.toByteArray();
-        long total = (long) rate * channels * 2 * 10;
+        long total = (long) rate * channels * 2 * seconds;
         return new WorldAudioPlayback.Pcm() {
             long position;
 
             @Override public int sampleRate() { return rate; }
             @Override public int channels() { return channels; }
+
+            /** Like a real decoder process: done once only its buffered tail (0.75 s) is left. */
+            @Override public boolean nearEnd() {
+                return total - position <= (long) (rate * channels * 2 * 0.75);
+            }
 
             @Override
             public int read(byte[] buffer, int offset, int length,
@@ -136,6 +145,33 @@ public final class WorldAudioZoneChangeProbe {
         WorldAudioPlayback.Source source = (id, token) -> CompletableFuture.completedFuture(
                 new WorldAreaAudio.AudioFile(id, WorldAreaAudio.FileState.READ, tone, null));
         int runs = args.length > 0 ? Integer.parseInt(args[0]) : 5;
+        String mode = args.length > 1 ? args[1] : "change";
+        if (mode.equals("loop") || mode.equals("loop-busy")) {
+            // "loop-busy" keeps half the cores busy, as when the game client runs alongside;
+            // short and bounded, since the machine is shared.
+            var burners = new ArrayList<Thread>();
+            var stop = new java.util.concurrent.atomic.AtomicBoolean();
+            if (mode.equals("loop-busy")) {
+                for (int i = 0; i < Math.max(1, Runtime.getRuntime().availableProcessors() / 2); i++) {
+                    burners.add(Thread.ofPlatform().daemon().start(() -> {
+                        long x = 0;
+                        while (!stop.get()) x += System.nanoTime() % 7;
+                        if (x == 42) System.out.print("");
+                    }));
+                }
+            }
+            try {
+                loop(source, runs);
+            } finally {
+                stop.set(true);
+                for (var burner : burners) burner.join();
+            }
+            return;
+        }
+        if (mode.equals("music")) {
+            music(source, runs);
+            return;
+        }
         var gaps = new ArrayList<Double>();
         var fulls = new ArrayList<Double>();
         for (int run = 0; run < runs; run++) {
@@ -181,5 +217,94 @@ public final class WorldAudioZoneChangeProbe {
         }
         System.out.printf("World audio zone change over %d runs: longest audible gap %s ms;"
                 + " change to new kit at full volume %s ms%n", runs, gaps, fulls);
+    }
+
+    private static void reset() {
+        synchronized (WRITES) {
+            WRITES.clear();
+            lines = 0;
+        }
+    }
+
+    private static int opened() {
+        synchronized (WRITES) {
+            return lines;
+        }
+    }
+
+    private static List<Write> writes() {
+        synchronized (WRITES) {
+            return WRITES.stream().sorted(java.util.Comparator.comparingLong(Write::start))
+                    .toList();
+        }
+    }
+
+    /**
+     * A two-file ambience kit of 1 s files loops for 8 s after its fade-in: prints the longest
+     * audible gap between files.
+     */
+    private static void loop(WorldAudioPlayback.Source source, int runs) throws Exception {
+        seconds = 1;
+        var gaps = new ArrayList<Double>();
+        for (int run = 0; run < runs; run++) {
+            reset();
+            var playback = new WorldAudioPlayback(() -> 2, WorldAudioZoneChangeProbe::paced,
+                    WorldAudioZoneChangeProbe::repeated, status -> {});
+            playback.ambience.volume(1);
+            playback.ambience.track(new WorldAreaAudio.Track(WorldAreaAudio.Kind.AMBIENCE, 10,
+                    "Zone A", 5, 100, List.of(1000L, 1001L), 0, 0), source);
+            playback.ambience.enabled(true);
+            Thread.sleep(2000);
+            long from = System.nanoTime();
+            Thread.sleep(8000);
+            long to = System.nanoTime();
+            playback.closeAsync().get(10, TimeUnit.SECONDS);
+            var all = writes();
+            int full = all.stream().mapToInt(Write::peak).max().orElse(0);
+            long audibleUntil = from, gap = 0;
+            for (var w : all) {
+                if (!w.played() || w.end() < from || w.start() > to || w.peak() < full / 20)
+                    continue;
+                gap = Math.max(gap, w.start() - audibleUntil);
+                audibleUntil = Math.max(audibleUntil, w.end());
+            }
+            // Silence running to the end of the window counts as a gap too.
+            gap = Math.max(gap, to - audibleUntil);
+            gaps.add(gap / 1e6);
+        }
+        System.out.printf("World audio multi-file ambience loop over %d runs: longest audible gap"
+                + " %s ms%n", runs, gaps);
+    }
+
+    /**
+     * Music of 1 s files with a recorded 1000 ms silence: prints how much longer than the
+     * recorded silence each pause between tracks lasts on the device timeline.
+     */
+    private static void music(WorldAudioPlayback.Source source, int runs) throws Exception {
+        seconds = 1;
+        reset();
+        var playback = new WorldAudioPlayback(() -> 2, WorldAudioZoneChangeProbe::paced,
+                WorldAudioZoneChangeProbe::repeated, status -> {});
+        playback.music.volume(1);
+        playback.music.track(new WorldAreaAudio.Track(WorldAreaAudio.Kind.MUSIC, 10, "Zone A", 5,
+                100, List.of(1000L), 1000, 1000), source);
+        playback.music.enabled(true);
+        // Each track opens a line: wait for runs + 1 tracks, so exactly runs pauses are measured.
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos((runs + 1) * 10L);
+        while (opened() < runs + 1 && System.nanoTime() < deadline) Thread.sleep(50);
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        var all = writes();
+        var extra = new ArrayList<Double>();
+        int tracks = Math.min(opened(), runs + 1);
+        for (int line = 1; line < tracks; line++) {
+            int previous = line - 1, next = line;
+            long end = all.stream().filter(w -> w.line() == previous && w.played())
+                    .mapToLong(Write::end).max().orElse(-1);
+            long start = all.stream().filter(w -> w.line() == next).mapToLong(Write::start)
+                    .min().orElse(-1);
+            if (end > 0 && start > 0) extra.add((start - end) / 1e6 - 1000);
+        }
+        System.out.printf("World audio music: pause beyond the recorded 1000 ms silence %s ms%n",
+                extra);
     }
 }

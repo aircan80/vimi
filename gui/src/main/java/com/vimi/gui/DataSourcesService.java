@@ -149,6 +149,21 @@ public final class DataSourcesService {
             com.vibeminer.network.EgLinkClient egClient,
             com.vibeminer.network.PolestarClient polestarClient,
             com.vibeminer.activity.TransferObserver observer) throws Exception {
+        return open(database, directory, names, catalog, client, reader, writer, egClient,
+                polestarClient, observer, true);
+    }
+
+    /**
+     * With {@code scheduledChecks} false, no startup or daily provider check is ever scheduled;
+     * only explicit requests sync (measurement probes open the library this way).
+     */
+    static DataSourcesService open(Path database, Path directory, CommunityFileNames names,
+            LibraryCatalog catalog, com.vibeminer.network.TactKeyClient client,
+            com.vibeminer.store.ObjectReader reader, com.vibeminer.store.ObjectWriter writer,
+            com.vibeminer.network.EgLinkClient egClient,
+            com.vibeminer.network.PolestarClient polestarClient,
+            com.vibeminer.activity.TransferObserver observer, boolean scheduledChecks)
+            throws Exception {
         var settings = new SourcePreferences(database);
         var repository =
                 QuestieRepository.open(directory, com.vibeminer.generated.Cancellation.NONE, observer).join();
@@ -161,7 +176,8 @@ public final class DataSourcesService {
             service = new DataSourcesService(settings, repository, names, catalog, directory, client, reader, writer, egClient, polestarRepository);
             service.refreshLocal().join();
             var opened = service;
-            service.timer.scheduleWithFixedDelay(opened::checkDue, 1, 60, TimeUnit.SECONDS);
+            if (scheduledChecks)
+                service.timer.scheduleWithFixedDelay(opened::checkDue, 1, 60, TimeUnit.SECONDS);
             return service;
         } catch (Throwable error) {
             if (service == null) {
