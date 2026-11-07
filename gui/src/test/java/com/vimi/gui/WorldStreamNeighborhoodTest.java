@@ -56,6 +56,14 @@ public final class WorldStreamNeighborhoodTest {
         require(WorldStreamNeighborhood.select(recorded, 0, 0, 0).isEmpty(),
                 "No recorded neighbors is an empty demand");
         predictedTileRanksTilesAheadFirst(recorded);
+        for (var distance : WorldStreamTransport.ViewDistance.values()) {
+            var beyond = WorldStreamNeighborhood.keep(recorded, 32, 32, distance);
+            int side = 2 * distance.radius() + 3;
+            require(beyond.size() == side * side - (side - 2) * (side - 2)
+                            && beyond.stream().allMatch(tile ->
+                                    WorldStreamNeighborhood.ring(tile, 32, 32) == distance.radius() + 1),
+                    "Keep is exactly the recorded ring beyond the view distance");
+        }
         motionPredictsWithinTheRadiusAndRestartsAfterJumpsAndGaps();
         require(recorded.size() == 81, "Inventory is unchanged");
         System.out.println("World demand ordering: native headings, ring order, nearest tile, sparse inventory and bounds passed");
