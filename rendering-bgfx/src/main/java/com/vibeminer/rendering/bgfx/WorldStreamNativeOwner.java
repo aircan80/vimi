@@ -23,6 +23,7 @@ import static org.lwjgl.bgfx.BGFX.bgfx_read_texture;
 import static org.lwjgl.bgfx.BGFX.bgfx_set_view_frame_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_shutdown;
 
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -140,6 +141,9 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     private long cameraRevision, policy, submittedCamera, submittedContent = -1, submittedPolicy;
     private long submittedObjects;
     private long publishedCamera, publishedContent, sequence, order;
+    // Opt-in measurement only: the previous publication, 0 while timings are off.
+    private long lastPublished;
+    private boolean renderingSubmitted;
     private int width, height, currentFrame, contextBuffers, contextTextures, samples = 1;
     // The render target, readback textures and buffers, sized to the viewport (see targetSize).
     private int targetWidth, targetHeight, reallocations, failedWidth, failedHeight;
@@ -566,6 +570,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         // instead of NaN and drop draw()'s withHorizon, so a recorded fog end below the horizon
         // is kept; whichever of #479 and #486 lands second makes this one-line change.
         renderer.fog(WorldFog.sky(command.sky(), Float.NaN));
+        long drawing = WorldStageTimings.start();
         var ticket = renderer.draw(command.camera(), cameraRevision, policy, width, height);
         bgfx_blit(1, available.texture, 0, 0, 0, 0, color, 0, 0, 0, 0, width, height, 1);
         if (!staging) {
@@ -580,6 +585,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         available.ticket = ticket;
         available.order = ++order;
         available.ready = bgfx_read_texture(available.texture, available.pixels, 0, 0);
+        WorldStageTimings.stop("child.frame.submitCpu", drawing);
         renderedThisFrame = true;
         submittedCamera = cameraRevision;
         submittedContent = ticket.content();
@@ -631,7 +637,20 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             return false;
         }
         long advanceStart = System.nanoTime();
+        // Single-threaded bgfx renders the previously submitted frame inside bgfx_frame, so the
+        // call after a submission is the one that renders it and reports its statistics.
+        boolean rendering = renderingSubmitted;
+        renderingSubmitted = renderedThisFrame;
+        long framing = WorldStageTimings.start();
         currentFrame = bgfx_frame(BGFX_FRAME_NONE);
+        if (framing != 0L) {
+            WorldStageTimings.stop(
+                    rendering ? "child.frame.bgfxFrameRender" : "child.frame.bgfxFrameIdle",
+                    framing);
+            if (rendering) {
+                frameStats();
+            }
+        }
         renderedThisFrame = false;
         renderer.pollUploads();
         Readback newest = null;
@@ -664,6 +683,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                             ticket.policy(),
                             ticket.width(),
                             ticket.height());
+            long writing = WorldStageTimings.start();
             if (staging) {
                 cropped.clear();
                 int stride = targetWidth * 4, length = ticket.width() * 4;
@@ -680,6 +700,14 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             } else {
                 // The readback already wrote the rows into the slot: publish the header only.
                 frames.publishDirect(newest.index, frame, targetWidth * 4);
+            }
+            if (writing != 0L) {
+                WorldStageTimings.stop("child.frame.cropAndPublish", writing);
+                long now = System.nanoTime();
+                if (lastPublished != 0L) {
+                    WorldStageTimings.record("child.frame.publishInterval", now - lastPublished);
+                }
+                lastPublished = now;
             }
             long end = System.nanoTime();
             publishNanos += end - start;
@@ -706,6 +734,39 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             }
         }
         return published;
+    }
+
+    /** bgfx's statistics of the frame just rendered, after a frame that drew (opt-in only). */
+    private static void frameStats() {
+        var stats = bgfx_get_stats();
+        WorldStageTimings.value("child.frame.draws", Integer.toUnsignedLong(stats.numDraw()));
+        WorldStageTimings.value("child.frame.blits", Integer.toUnsignedLong(stats.numBlit()));
+        // Topology 0 and 1 are triangle lists and strips.
+        WorldStageTimings.value(
+                "child.frame.triangles",
+                Integer.toUnsignedLong(stats.numPrims(0))
+                        + Integer.toUnsignedLong(stats.numPrims(1)));
+        long cpuFrequency = stats.cpuTimerFreq(), gpuFrequency = stats.gpuTimerFreq();
+        if (cpuFrequency > 0) {
+            WorldStageTimings.record(
+                    "child.frame.bgfxCpuFrame",
+                    stats.cpuTimeFrame() * 1_000_000_000L / cpuFrequency);
+            WorldStageTimings.record(
+                    "child.frame.bgfxCpuRender",
+                    (stats.cpuTimeEnd() - stats.cpuTimeBegin()) * 1_000_000_000L / cpuFrequency);
+            WorldStageTimings.record(
+                    "child.frame.bgfxWaitRender",
+                    stats.waitRender() * 1_000_000_000L / cpuFrequency);
+        }
+        if (gpuFrequency > 0 && stats.gpuTimeEnd() > stats.gpuTimeBegin()) {
+            WorldStageTimings.record(
+                    "child.frame.bgfxGpu",
+                    (stats.gpuTimeEnd() - stats.gpuTimeBegin()) * 1_000_000_000L / gpuFrequency);
+        }
+        WorldStageTimings.value("child.gpu.textureMemoryMiB", stats.textureMemoryUsed() >> 20);
+        if (stats.gpuMemoryUsed() > 0) {
+            WorldStageTimings.value("child.gpu.memoryUsedMiB", stats.gpuMemoryUsed() >> 20);
+        }
     }
 
     /** Mean time to publish one frame, in nanoseconds; 0 before the first. Proofs. */
