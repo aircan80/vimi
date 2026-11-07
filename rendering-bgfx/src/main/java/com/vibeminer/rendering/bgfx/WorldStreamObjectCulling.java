@@ -173,6 +173,47 @@ final class WorldStreamObjectCulling {
             return new View(camera, width, height, cut);
         }
 
+        double x() {
+            return x;
+        }
+
+        double y() {
+            return y;
+        }
+
+        double z() {
+            return z;
+        }
+
+        /**
+         * Writes this view's four side planes and its far cut into {@code out} as {@code a, b, c,
+         * d} in world axes, each inside where its value is at least zero, and returns their count.
+         * There is no near plane: a portal the camera is about to pass through lies closer than it
+         * (#383). Same eye convention as {@link #visible}.
+         */
+        int portalPlanes(double[] out) {
+            // depth, right and up of a world offset (dx, dy, dz) from the camera, as in visible.
+            double fx = cp * cy, fy = cp * sy, fz = sp;
+            double rx = sy, ry = -cy, rz = 0;
+            double ux = -sp * cy, uy = -sp * sy, uz = cp;
+            plane(out, 0, kx * fx - rx, kx * fy - ry, kx * fz - rz);
+            plane(out, 1, kx * fx + rx, kx * fy + ry, kx * fz + rz);
+            plane(out, 2, ky * fx - ux, ky * fy - uy, ky * fz - uz);
+            plane(out, 3, ky * fx + ux, ky * fy + uy, ky * fz + uz);
+            // Far: cut - depth >= 0.
+            plane(out, 4, -fx, -fy, -fz);
+            out[19] += cut;
+            return 5;
+        }
+
+        /** Plane i through the camera with normal (a, b, c): value n · (w - camera). */
+        private void plane(double[] out, int i, double a, double b, double c) {
+            out[i * 4] = a;
+            out[i * 4 + 1] = b;
+            out[i * 4 + 2] = c;
+            out[i * 4 + 3] = -(a * x + b * y + c * z);
+        }
+
         /** Whether sphere i of {@code spheres} (x, y, z, radius per sphere) may draw a pixel. */
         boolean visible(double[] spheres, int i) {
             int at = i * 4;

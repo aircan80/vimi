@@ -768,8 +768,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     /**
      * What the CPU cull kept and skipped in the frame just submitted (opt-in only), so a change in
      * {@code child.frame.draws} can be told apart from a change in what was resident: exterior
-     * placements tested and culled, object submits, terrain chunk runs tested and culled, and
-     * terrain submits.
+     * placements tested and culled, object submits, terrain chunk runs tested and culled, terrain
+     * submits, and portal walks with the interior meshes they culled (#383).
      */
     static void cullCounts(BgfxWorldStreamRenderer.FrameCounts counts) {
         WorldStageTimings.value("child.frame.placements", counts.placements());
@@ -778,6 +778,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         WorldStageTimings.value("child.frame.terrainChunks", counts.chunks());
         WorldStageTimings.value("child.frame.terrainChunksCulled", counts.chunksCulled());
         WorldStageTimings.value("child.frame.terrainSubmits", counts.terrainSubmits());
+        WorldStageTimings.value("child.frame.portalWalks", counts.portalWalks());
+        WorldStageTimings.value("child.frame.portalMeshesCulled", counts.portalMeshesCulled());
     }
 
     /** bgfx's statistics of the frame just rendered, after a frame that drew (opt-in only). */

@@ -229,6 +229,7 @@ final class WorldStreamObjectsCullProof {
                         + Integer.toHexString(waterBlendPixel));
         System.out.println(
                 "WORLD_OBJECT_MATERIAL_CLASSES_PASS " + WorldStreamMaterialClassProof.run(base));
+        System.out.println("WORLD_PORTAL_CULL_PASS " + WorldStreamPortalCullProof.run(base));
         return result;
     }
 
