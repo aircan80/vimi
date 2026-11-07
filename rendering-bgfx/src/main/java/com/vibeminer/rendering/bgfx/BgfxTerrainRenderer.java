@@ -89,7 +89,7 @@ final class BgfxTerrainRenderer implements AutoCloseable {
     private final short[] textures = new short[9];
     private final TerrainTextureBinding.Metadata[] textureMetadata =
             new TerrainTextureBinding.Metadata[9];
-    private int activeAtlases, coveredRectangles;
+    private int activeAtlases, coveredRectangles, emptyRectangles;
     private int textureStagingBytes, textureStagingPeakBytes;
     private boolean textureUploadFailed, textureCapabilityFailed;
     private static final int SAMPLER_FLAGS =
@@ -331,7 +331,7 @@ final class BgfxTerrainRenderer implements AutoCloseable {
                                         ? TerrainTextureStatus.Code.UPLOAD
                                         : TerrainTextureStatus.Code.NONE;
         return TerrainTextureStatus.of(
-                activeAtlases, scene.tiles().size(), coveredRectangles, code);
+                activeAtlases, scene.tiles().size(), coveredRectangles, emptyRectangles, code);
     }
 
     int textureStagingBytes() {
@@ -379,6 +379,7 @@ final class BgfxTerrainRenderer implements AutoCloseable {
                 while (coverage.hasRemaining()) {
                     coveredRectangles += Long.bitCount(coverage.get());
                 }
+                emptyRectangles += binding.metadata().emptyRectangles();
             } finally {
                 if (handle != INVALID) {
                     bgfx_destroy_texture(handle);

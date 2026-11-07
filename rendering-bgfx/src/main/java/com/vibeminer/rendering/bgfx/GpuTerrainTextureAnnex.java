@@ -160,7 +160,8 @@ public final class GpuTerrainTextureAnnex {
                 output.write(HexFormat.of().parseHex(meta.sources().tex0ContentKey()));
                 integer(output, (int) meta.sources().rootFileDataId());
                 integer(output, (int) meta.sources().tex0FileDataId());
-                number(output, 0);
+                // The descriptor's last field: rectangles with nothing to draw (no layers).
+                number(output, meta.emptyRectangles());
                 offset += TerrainTextureBinding.PIXEL_BYTES;
             }
             byte[] buffer = new byte[64 << 10];
@@ -272,7 +273,7 @@ public final class GpuTerrainTextureAnnex {
                 byte[] root = input.readNBytes(16), tex0 = input.readNBytes(16);
                 long rootId = Integer.toUnsignedLong(integer(input)),
                         tex0Id = Integer.toUnsignedLong(integer(input));
-                long reserved = number(input);
+                long empty = number(input);
                 long requiredOffset =
                         HEADER_BYTES
                                 + (long) count * DESCRIPTOR_BYTES
@@ -284,7 +285,8 @@ public final class GpuTerrainTextureAnnex {
                         || denominator != 3
                         || offset != requiredOffset
                         || length != TerrainTextureBinding.PIXEL_BYTES
-                        || reserved != 0
+                        || empty < 0
+                        || empty > 255
                         || root.length != 16
                         || tex0.length != 16) {
                     throw new Invalid(
@@ -304,7 +306,14 @@ public final class GpuTerrainTextureAnnex {
                                 HexFormat.of().formatHex(tex0));
                 var meta =
                         TerrainTextureBinding.fromSnapshot(
-                                ordinal, tile, maxX, maxY, coverage, sources, canceled);
+                                ordinal,
+                                tile,
+                                maxX,
+                                maxY,
+                                coverage,
+                                (int) empty,
+                                sources,
+                                canceled);
                 TerrainTextureBinding.floatUvError(meta, tile, geometry.scene().origin(), canceled);
                 declarations.add(new Declaration(meta, offset));
                 previous = ordinal;

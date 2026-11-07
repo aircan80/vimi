@@ -128,14 +128,21 @@ final class WorldStreamGpuOwner {
     private CompletableFuture<Void> closing;
 
     WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256) {
-        this(service, scopeSha256, IMAGE_DETAIL);
+        this(service, scopeSha256, IMAGE_DETAIL, 0);
     }
 
     WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256,
             com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail) {
+        this(service, scopeSha256, detail, 0);
+    }
+
+    /** #381: {@code presentParent} non-zero asks for native presentation into that window. */
+    WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256,
+            com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail, long presentParent) {
         this.service = Objects.requireNonNull(service);
         lifetime = service.openStreaming(owner,
                 spec(scopeSha256, detail),
+                presentParent,
                 opened::complete,
                 status -> {
                     if (status.state() == GpuPreviewService.State.FAILED) {
