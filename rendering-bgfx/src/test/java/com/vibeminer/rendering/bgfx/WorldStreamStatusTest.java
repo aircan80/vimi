@@ -46,6 +46,10 @@ class WorldStreamStatusTest {
         assertEquals(9, ((WorldStreamStatus.Canceled) parse("CANCELED 9 12 9 18")).transaction());
         assertInstanceOf(WorldStreamStatus.Closed.class, parse("CLOSED"));
         assertEquals(7, ((WorldStreamStatus.FramePublished) parse("FRAME 7")).sequence());
+        var presented = (WorldStreamStatus.Presented) parse("PRESENTED 42 3");
+        assertEquals(42, presented.camera());
+        assertEquals(3, presented.content());
+        assertEquals(0, ((WorldStreamStatus.Presented) parse("PRESENTED 1 0")).content());
         assertEquals(
                 WorldFrameFileV2.MAX_SEQUENCE,
                 ((WorldStreamStatus.FramePublished) parse("FRAME " + WorldFrameFileV2.MAX_SEQUENCE))
@@ -80,6 +84,12 @@ class WorldStreamStatusTest {
                         "CAMERA_APPLIED 1 1 1601",
                         "CAMERA_APPLIED 1 0 1",
                         "CAMERA_APPLIED 1 1 -1",
+                        "PRESENTED",
+                        "PRESENTED 1",
+                        "PRESENTED 0 1",
+                        "PRESENTED 01 1",
+                        "PRESENTED 1 -1",
+                        "PRESENTED 1 2 3",
                         "FRAME",
                         "FRAME 0",
                         "FRAME 01",
@@ -146,5 +156,29 @@ class WorldStreamStatusTest {
         assertInstanceOf(WorldStreamStatus.Closed.class, WorldStreamStatus.read(stream));
         assertInstanceOf(WorldStreamStatus.Credit.class, WorldStreamStatus.read(stream));
         assertNull(WorldStreamStatus.read(stream));
+    }
+
+    @Test
+    void sessionCarriesTheSampledObjectFormats() throws IOException {
+        var none = (WorldStreamStatus.Session) parse("SESSION TERRAIN_EXTERIOR_V1");
+        org.junit.jupiter.api.Assertions.assertEquals(0, none.objectFormats(), "no mask: RGBA8");
+        var all = (WorldStreamStatus.Session) parse("SESSION TERRAIN_EXTERIOR_V1 14");
+        org.junit.jupiter.api.Assertions.assertEquals(14, all.objectFormats());
+        org.junit.jupiter.api.Assertions.assertTrue(
+                all.samples(com.vibeminer.rendering.world.ObjectTextureFormats.BC1)
+                        && all.samples(com.vibeminer.rendering.world.ObjectTextureFormats.BC3));
+        var bc3 = (WorldStreamStatus.Session) parse("SESSION TERRAIN_BASIC_V1 8");
+        org.junit.jupiter.api.Assertions.assertFalse(
+                bc3.samples(com.vibeminer.rendering.world.ObjectTextureFormats.BC1));
+        // RGBA8 is not a mask bit; unknown bits and extra fields are refused.
+        for (String bad :
+                new String[] {
+                    "SESSION TERRAIN_BASIC_V1 1",
+                    "SESSION TERRAIN_BASIC_V1 16",
+                    "SESSION TERRAIN_BASIC_V1 -2",
+                    "SESSION TERRAIN_BASIC_V1 8 8"
+                }) {
+            assertThrows(IOException.class, () -> parse(bad), bad);
+        }
     }
 }

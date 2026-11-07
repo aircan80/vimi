@@ -175,6 +175,62 @@ public final class WorldSkyLookTest {
         check(!still.stale(), "a fixed map time never asks for a resend");
     }
 
+    /**
+     * A failing lookup never escapes the pulse's stale check, and costs at most one lookup (and
+     * no resend) per half-minute: not one on every pulse.
+     */
+    private static void aFailingLookupNeitherBreaksNorFloodsThePulse() {
+        var time = new java.util.concurrent.atomic.AtomicReference<>(LocalTime.NOON);
+        var nanos = new AtomicLong();
+        var fail = new java.util.concurrent.atomic.AtomicBoolean();
+        var lookups = new java.util.concurrent.atomic.AtomicInteger();
+        var sky = index();
+        WorldSkyFeed.Lookup lookup = (map, x, y, z, at) -> {
+            lookups.incrementAndGet();
+            if (fail.get()) throw new IllegalStateException("authored sky failure");
+            return sky.at(map, x, y, z, at);
+        };
+        var feed = WorldSkyFeed.of(CompletableFuture.completedFuture(lookup), 7, time::get,
+                nanos::get);
+        var noon = feed.attach(camera(1, 0)).sky();
+        check(noon != null && lookups.get() == 1, "the first camera looks the sky up");
+
+        fail.set(true);
+        time.set(LocalTime.of(18, 0));
+        check(!WorldStreamSourceController.skyStale(feed), "a failing lookup is not stale");
+        for (int pulse = 0; pulse < 100; pulse++) {
+            check(!WorldStreamSourceController.skyStale(feed), "still not stale on pulse " + pulse);
+        }
+        check(lookups.get() == 2, "one failed lookup per half-minute, not one per pulse: "
+                + lookups.get());
+        check(!WorldStreamSourceController.skyStale(null), "no feed is never stale");
+
+        // A camera sent meanwhile (the user moved) fails its lookup once; camera() logs that.
+        nanos.addAndGet(WorldSkyFeed.NANOS);
+        try {
+            feed.attach(camera(2, 100));
+            check(false, "the failing lookup is reported to camera()");
+        } catch (IllegalStateException expected) {
+            check(lookups.get() == 3, "one lookup for the moved camera");
+        }
+        var kept = feed.attach(camera(3, 100));
+        check(noon.equals(kept.sky()), "the next camera keeps the last sky");
+        check(lookups.get() == 3, "and is not retried within the same half-minute and place");
+
+        // The next half-minute tries once more; once the lookup works the sky follows the clock.
+        fail.set(false);
+        time.set(LocalTime.of(18, 1));
+        check(WorldStreamSourceController.skyStale(feed), "a working lookup is stale again");
+        check(lookups.get() == 4, "one lookup for the new half-minute");
+        // The resend never reached attach (streamCamera returned early): no resend every pulse.
+        for (int pulse = 0; pulse < 100; pulse++) {
+            check(!WorldStreamSourceController.skyStale(feed), "asked once per half-minute");
+        }
+        check(lookups.get() == 4, "no lookups while the half-minute lasts");
+        var evening = feed.attach(camera(4, 100)).sky();
+        check(!evening.equals(noon), "the resent camera carries the evening sky");
+    }
+
     private static void pinsTheClockForOwnerChecks() {
         System.setProperty(WorldSkyFeed.TIME_PROPERTY, "21:30");
         try {
@@ -193,8 +249,9 @@ public final class WorldSkyLookTest {
         throttlesLookups();
         feedsTheSkyOnCamerasOnceTheTablesAreLoaded();
         aStillCameraFollowsTheClock();
+        aFailingLookupNeitherBreaksNorFloodsThePulse();
         pinsTheClockForOwnerChecks();
         System.out.println("World sky look: recorded channels, coverage and fog share, scaler"
-                + " clamp, clock, throttle, camera feed, still-camera clock and pinned time passed");
+                + " clamp, clock, throttle, camera feed, still-camera clock, failing lookups and pinned time passed");
     }
 }

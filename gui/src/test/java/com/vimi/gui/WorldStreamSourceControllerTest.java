@@ -54,6 +54,9 @@ public final class WorldStreamSourceControllerTest {
         helperRejectionOfATileOutOfDemandIsNotCounted();
         rejectedNearestTileDoesNotStallItsNeighbours();
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
+        nativePresentationAcceptsCurrentContentAndRelievesTwelveOwners();
+        nativePresentationWithAStillCameraAcceptsEachCommit();
+        nativeReportBeforeTheReceiptIsStillAccepted();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
         bumpBetweenIssueAndRefusalStillWakesRetry("geometry", false);
@@ -86,6 +89,10 @@ public final class WorldStreamSourceControllerTest {
         aHelperRejectedTileRetriesOnItsBackoffDeadline();
         aSkyFrameThatChangesTheStepsInputsStartsAStep();
         borrowedTilesAreNeverDroppedToMakeRoom();
+        aTileOneRingBeyondKeepsItsPreparation();
+        aKeptTileUnavailableAfterDemandLeftIsNotPublished();
+        aKeptTileNeverDisplacesAWantedResident();
+        aKeptTileYieldsTheLaneWhenTheCameraTileIsMissing();
         tilesKeepStreamingWhileAFrameIsBorrowed();
         commitTimingStopsOnlyOnAFrameOfTheNewReceipt();
         aBorrowedFrameKeepsTheSourcesOfTheTableItShows();
@@ -554,6 +561,172 @@ public final class WorldStreamSourceControllerTest {
         }
     }
 
+    /** Files whose root {@code held} preparation waits for {@code release}, noting cancellation. */
+    private static AuthoredTerrainSource.Files holding(long held,
+            CompletableFuture<Void> entered, CompletableFuture<Void> release,
+            CompletableFuture<Void> canceled) {
+        return new AuthoredTerrainSource.Files() {
+            @Override @SuppressWarnings("try")
+            FileTypes.FileStat stat(long id, Cancellation token) {
+                if (id == held && !entered.isDone()) {
+                    try (var registration = token.onCancel(() -> canceled.complete(null))) {
+                        entered.complete(null);
+                        release.join();
+                        token.check();
+                    }
+                }
+                return super.stat(id, token);
+            }
+        };
+    }
+
+    /** #366: a tile whose demand leaves for the next ring and comes back is never canceled. */
+    private static void aTileOneRingBeyondKeepsItsPreparation() throws Exception {
+        var entered = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var canceled = new CompletableFuture<Void>();
+        var fixture = new Fixture(holding(1002, entered, release, canceled), 4);
+        fixture.residents = 2;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+            var t = fixture.tiles;
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(1)), List.of(t.get(2)));
+            fixture.until(entered::isDone);
+            // The camera crosses a border: tile 1 is one ring beyond the new demand.
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(2)), List.of(t.get(1)));
+            for (int i = 0; i < 50; i++) {
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            check(!canceled.isDone(), "A tile one ring beyond keeps its preparation");
+            // And crosses back before tile 1 is ready.
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(1)), List.of(t.get(2)));
+            release.complete(null);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2);
+            check(!canceled.isDone(), "Crossing back and forth never restarted tile 1");
+            check(fixture.files.opens(1002) == fixture.files.opens(2),
+                    "Tile 1 was prepared once, as tile 0: " + fixture.files.opens(1002));
+        } finally {
+            release.complete(null);
+            fixture.close();
+        }
+    }
+
+    /**
+     * #366 review: a kept tile whose source turns out missing (CAPABILITY_UNAVAILABLE) after the
+     * demand left it publishes no UNAVAILABLE status, as for a helper rejection out of demand, and
+     * the wanted tiles still load.
+     */
+    private static void aKeptTileUnavailableAfterDemandLeftIsNotPublished() throws Exception {
+        var entered = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var canceled = new CompletableFuture<Void>();
+        var fixture = new Fixture(holding(1002, entered, release, canceled), 4);
+        fixture.residents = 2;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+            var t = fixture.tiles;
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(1)), List.of(t.get(2)));
+            fixture.until(entered::isDone);
+            // Tile 1 goes one ring beyond, then its held source read finds the source missing.
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(2)), List.of(t.get(1)));
+            fixture.files.sources.remove(1002L);
+            release.complete(null);
+            fixture.until(() -> fixture.controller.rejectionsOutOfDemand() == 1);
+            check(!canceled.isDone(), "The kept tile was not canceled; its refusal arrived");
+            check(fixture.controller.snapshot().phase() != WorldStreamSourceController.Phase.UNAVAILABLE
+                            && !fixture.controller.snapshot().detail().contains("SOURCE_INPUT"),
+                    "No unavailable status for a tile out of demand: "
+                            + fixture.controller.snapshot().detail());
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2);
+        } finally {
+            release.complete(null);
+            fixture.close();
+        }
+    }
+
+    /**
+     * #366: a kept tile that stages after the demand left it never displaces a wanted resident.
+     * With the table full of wanted tiles it is canceled instead of committed.
+     */
+    private static void aKeptTileNeverDisplacesAWantedResident() throws Exception {
+        var entered = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var canceled = new CompletableFuture<Void>();
+        var fixture = new Fixture(holding(1004, entered, release, canceled), 4);
+        fixture.residents = 2;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            var t = fixture.tiles;
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(1)), List.of(t.get(2)));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2);
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(2)), List.of(t.get(1)));
+            fixture.until(entered::isDone); // tile 2 is being prepared
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(1)), List.of(t.get(2)));
+            int commits = fixture.commitLines().size();
+            release.complete(null);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2
+                    && fixture.pool.stats().leaseClaims() == 2);
+            check(fixture.commitLines().size() == commits,
+                    "Staged tile 2 was canceled, not committed over wanted tile 1");
+            check(fixture.files.opens(1002) == fixture.files.opens(2),
+                    "Wanted tile 1 was never evicted and reloaded: " + fixture.files.opens(1002));
+        } finally {
+            release.complete(null);
+            fixture.close();
+        }
+    }
+
+    /**
+     * #366 review: hysteresis never holds the single preparation lane while the camera tile is
+     * missing. Tile 1 is being prepared and is in the keep ring, but the camera moved to tile 3,
+     * which is not resident: tile 1 is canceled so tile 3 can load.
+     */
+    private static void aKeptTileYieldsTheLaneWhenTheCameraTileIsMissing() throws Exception {
+        var entered = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var canceled = new CompletableFuture<Void>();
+        var fixture = new Fixture(holding(1002, entered, release, canceled), 4);
+        fixture.residents = 2;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+            var t = fixture.tiles;
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(1)), List.of(t.get(2)));
+            fixture.until(entered::isDone);
+            fixture.controller.neighborhood(List.of(t.get(3), t.get(0)), List.of(t.get(1)));
+            fixture.until(canceled::isDone);
+            release.complete(null); // the held read now sees its cancellation and drains
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2);
+        } finally {
+            release.complete(null);
+            fixture.close();
+        }
+    }
+
     /** Production bound (#173): 25 residents, and moving on replaces only the leaving tiles. */
     private static void fiveByFiveNeighborhoodHoldsTwentyFiveResidentsWithinTheSourceUnion()
             throws Exception {
@@ -619,7 +792,7 @@ public final class WorldStreamSourceControllerTest {
         var preempted = new java.util.concurrent.atomic.AtomicInteger();
         var blocked = new java.util.concurrent.atomic.AtomicBoolean();
         var early = new java.util.concurrent.atomic.AtomicBoolean();
-        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) -> {
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats) -> {
             // The child logs each commit before acknowledging it.
             if (fixture.commitLines().isEmpty()) early.set(true);
             entered.incrementAndGet();
@@ -663,7 +836,7 @@ public final class WorldStreamSourceControllerTest {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 3);
         fixture.exteriors = true;
         var prepared = new java.util.concurrent.ConcurrentLinkedQueue<Integer>();
-        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) -> {
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats) -> {
             prepared.add(tile.y());
             return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored")
                     .withPicks(tile, java.util.List.of(WorldObjectPicksTest.building(
@@ -705,7 +878,7 @@ public final class WorldStreamSourceControllerTest {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 6);
         fixture.exteriors = true;
         fixture.residents = 4;
-        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) ->
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats) ->
                 new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
         Path budget = fixture.directory.resolve("authored-budget-objects");
         int refusedY = fixture.tiles.get(3).y();
@@ -755,7 +928,7 @@ public final class WorldStreamSourceControllerTest {
     private static void lateObjectFailuresStayIsolatedFromTerrain() throws Exception {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
         fixture.exteriors = true;
-        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) -> {
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats) -> {
             if (tile.y() == 19) throw new IllegalStateException("authored preparation failure");
             return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
         };
@@ -786,7 +959,7 @@ public final class WorldStreamSourceControllerTest {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 10);
         fixture.exteriors = true;
         // Only the first tile has buildings, so the only delivery is the one that goes stale.
-        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation) ->
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats) ->
                 tile.y() == 19
                         ? new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored")
                         : new WorldStreamSourceBridge.ExteriorCopy(null, 0, false, "none");
@@ -2161,6 +2334,105 @@ public final class WorldStreamSourceControllerTest {
         }
     }
 
+    /**
+     * #381: the helper presents one interval after COMMITTED and its report can reach the
+     * controller before the worker records the receipt. With a still camera it is never repeated,
+     * so it must still be accepted once the receipt is recorded. The report is sent exactly once,
+     * before the first commit exists.
+     */
+    private static void nativeReportBeforeTheReceiptIsStillAccepted() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 9);
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            check(fixture.controller.currentContentRevision() < 0, "No receipt yet");
+            // Content revisions count commits from 1; the first commit is content 1.
+            fixture.controller.presentedNatively(1, 1);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 1));
+            fixture.until(() -> fixture.controller.currentContentRevision() == 1
+                    && fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY);
+            check(fixture.controller.snapshot().prepared() == 1, "The one tile is presented natively");
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * #381: a held camera never sends a new revision, and the helper announces the same camera
+     * with each new content. Every commit is still accepted, so the stream returns to READY (which
+     * owes no frame) instead of staying PRESENTING until the stall watchdog falls back.
+     */
+    private static void nativePresentationWithAStillCameraAcceptsEachCommit() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 13);
+        var presentedCameras = new java.util.concurrent.CopyOnWriteArrayList<Long>();
+        try {
+            fixture.start();
+            fixture.controller.onPresented(presentedCameras::add);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 9));
+            fixture.untilNativePresented(1, () -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY && fixture.controller.snapshot().prepared() == 9);
+            long first = fixture.controller.currentContentRevision();
+            fixture.controller.neighborhood(fixture.tiles.subList(4, 13));
+            fixture.untilNativePresented(1, () -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.currentContentRevision() > first
+                    && fixture.controller.snapshot().prepared() == 9);
+            fixture.until(() -> !presentedCameras.isEmpty());
+            check(presentedCameras.stream().allMatch(camera -> camera == 1),
+                    "Only the held camera was presented: " + presentedCameras);
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * #381, window mode: no mapping frames are taken; PRESENTED for the current content is the
+     * acceptance. READY is reached, and with thirteen owners capacity waits only until the window
+     * presents the current content, as with accepted readback pixels.
+     */
+    private static void nativePresentationAcceptsCurrentContentAndRelievesTwelveOwners()
+            throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 13);
+        var presentedCameras = new java.util.ArrayList<Long>();
+        try {
+            fixture.start();
+            fixture.controller.onPresented(presentedCameras::add);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 9));
+            fixture.untilNativePresented(
+                    () ->
+                            fixture.controller.snapshot().phase()
+                                            == WorldStreamSourceController.Phase.READY
+                                    && fixture.controller.snapshot().prepared() == 9);
+            check(!presentedCameras.isEmpty(), "Presented cameras reach the FX listener");
+            fixture.controller.presentedNatively(1, 999_999);
+            check(fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY,
+                    "Presenting other content accepts nothing");
+            fixture.controller.neighborhood(fixture.tiles.subList(4, 13));
+            fixture.until(
+                    () ->
+                            fixture.controller.snapshot().phase()
+                                            == WorldStreamSourceController.Phase.WAITING_CAPACITY
+                                    && fixture.pool.stats().leaseClaims() == 12);
+            check(fixture.files.opens(1024) == 0,
+                    "No thirteenth owner while the window still shows the old content");
+            fixture.untilNativePresented(
+                    () ->
+                            fixture.controller.snapshot().phase()
+                                    == WorldStreamSourceController.Phase.READY);
+            check(fixture.files.opens(1024) > 0,
+                    "The window presenting current content unblocks the remaining sources");
+            check(fixture.pool.stats().leaseClaims() == 9,
+                    "The presented table retires outgoing sources");
+        } finally {
+            fixture.close();
+        }
+    }
+
     private static void sameResidentCameraFrameDoesNotRetryMaterialPool() throws Exception {
         var fixture=new Fixture(new AuthoredTerrainSource.Files(),2);
         AutoCloseable held=null;
@@ -2666,7 +2938,7 @@ public final class WorldStreamSourceControllerTest {
         }
 
         void start(WorldStreamSourceController.GpuStarter starter, Runnable beforeController) {
-            start(starter, beforeController, WorldStreamSourceBridge::prepareExterior);
+            start(starter, beforeController, (source, scope, tile, cancellation, formats) -> WorldStreamSourceBridge.prepareExterior(source, scope, tile, cancellation));
         }
 
         void start(WorldStreamSourceController.GpuStarter starter, Runnable beforeController,
@@ -2771,6 +3043,27 @@ public final class WorldStreamSourceControllerTest {
                                                 controller.discard(frame);
                                             }
                                         });
+                        return condition.getAsBoolean();
+                    });
+        }
+
+        /** Presents every committed content natively for the one, held {@code camera}. */
+        void untilNativePresented(long camera, BooleanSupplier condition) throws Exception {
+            until(
+                    () -> {
+                        long content = controller.currentContentRevision();
+                        if (content >= 0) controller.presentedNatively(camera, content);
+                        return condition.getAsBoolean();
+                    });
+        }
+
+        /** #381 window mode: the helper reports PRESENTED for the current content each poll. */
+        void untilNativePresented(BooleanSupplier condition) throws Exception {
+            var camera = new AtomicLong();
+            until(
+                    () -> {
+                        long content = controller.currentContentRevision();
+                        if (content >= 0) controller.presentedNatively(camera.incrementAndGet(), content);
                         return condition.getAsBoolean();
                     });
         }

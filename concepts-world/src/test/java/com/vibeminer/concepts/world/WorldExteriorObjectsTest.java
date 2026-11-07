@@ -258,6 +258,192 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    /** One opaque building image from {@code file}, for a session sampling {@code formats}. */
+    private static WorldExteriorObjects.TileObjects sampling(int formats, byte[] file) {
+        var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)));
+        f.files.sources.put(ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0))));
+        f.files.sources.put(GROUP, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+        f.files.sources.put(IMAGE, file);
+        try {
+            return f.runSampling(formats);
+        } finally {
+            f.close();
+        }
+    }
+
+    @Test
+    void aSessionSamplingBc1TakesTheLargerSideAtItsCompressedCost() {
+        int bc1 = 1 << com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        byte[] file = blp(1024, 1024, 11, 0x07e0);
+        try (var set = sampling(bc1, file)) {
+            var image = set.images().getFirst();
+            assertEquals(512, image.width(), "a sampled BC1 chain reaches the 512 side");
+            assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.BC1, image.format());
+            assertEquals(bc1, set.compressedFormats());
+            // Charged as uploaded: its stored bytes in RGBA8 texel units, not 512 x 512.
+            assertEquals(
+                    com.vibeminer.rendering.world.ObjectTextureFormats.chainBytes(
+                                    com.vibeminer.rendering.world.ObjectTextureFormats.BC1,
+                                    512,
+                                    512)
+                            / 4,
+                    set.pixels());
+            // The 512 level is never decoded to RGBA8: only the registration decode ran.
+            assertEquals(1, set.levelDecodes);
+            assertEquals(255, image.rgba().get(1) & 255, "green");
+        }
+        try (var set = sampling(0, file)) {
+            // A session that decodes BC1 keeps the RGBA8 cap and charge: 256 at most.
+            assertEquals(256, set.images().getFirst().width());
+            assertEquals(0, set.compressedFormats());
+        }
+    }
+
+    @Test
+    void unusableBlocksAtALargerSideFallBackToRgbaWithinItsCharge() {
+        int bc3 = com.vibeminer.rendering.world.ObjectTextureFormats.BC3;
+        // A blended BC3 512^2 allotted 512 (87,388 texel units); nothing retained and its
+        // blocks' re-read refused (a blended image keeps what its first read gave). RGBA8 512 would
+        // cost 4x: the fallback may take at most 256^2 (87,381), within the charge and cap.
+        try (var f = blocksUnreadable(blp3(512, 512, 10, 0x07e0), 2);
+                var set = sampling(f, 0, 1 << bc3)) {
+            var image = set.images().getFirst();
+            assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, image.format());
+            // The charge admits 256^2 (rgbaLevelWithin, WorldImageBudgetTest), but with the re-read
+            // refused the largest level at hand is the 128 registration.
+            assertEquals(128, image.width());
+            assertTrue(
+                    WorldImageBudget.cost(256, 256, 0)
+                            <= com.vibeminer.rendering.world.ObjectTextureFormats.chainBytes(
+                                            bc3, 512, 512)
+                                    / 4);
+            assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS_FALLBACK));
+            assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS));
+        }
+    }
+
+    /** One building image of material {@code blend} whose second read is refused. */
+    private static Fixture blocksUnreadable(byte[] file, int blend) {
+        var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), refusingSecondRead(IMAGE));
+        f.files.sources.put(
+                ROOT, root(1, new long[] {GROUP}, List.of(new Material(blend, IMAGE, 0))));
+        f.files.sources.put(GROUP, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+        f.files.sources.put(IMAGE, file);
+        return f;
+    }
+
+    @Test
+    void sampledRegistrationPixelsCountAsRetainedUntilTheirBlocksAreRead() {
+        int bc1 = 1 << com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        // Nothing else retained: the only retained bytes are the 128^2 registration pixels the
+        // sampled chain kept for its fallback, dropped once its blocks were read.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0))));
+            f.files.sources.put(GROUP, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+            f.files.sources.put(IMAGE, blp(1024, 1024, 11, 0x07e0));
+            try (var set = sampling(f, 0, bc1)) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS));
+                assertEquals(128 * 128 * 4, set.retainedSourceBytes);
+            }
+            try (var set = sampling(f, 0, 0)) {
+                assertEquals(0, set.retainedSourceBytes, "an RGBA8 plan keeps none of them");
+            }
+        }
+    }
+
+    @Test
+    void blocksWhoseLevelsOverlapTheHeaderAreNeverPlanned() {
+        int bc1 = 1 << com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        byte[] file = blp(1024, 1024, 11, 0x07e0);
+        // Level 2 (the 256 side) points inside the header: blockFormat refuses the file up
+        // front, so it is planned as RGBA8 within its cap and never needs the fallback.
+        ByteBuffer.wrap(file).order(ByteOrder.LITTLE_ENDIAN).putInt(20 + 2 * 4, 100);
+        try (var set = sampling(bc1, file)) {
+            var image = set.images().getFirst();
+            assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, image.format());
+            assertTrue(image.width() <= 256);
+            assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS_FALLBACK));
+            assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS));
+        }
+    }
+
+    @Test
+    void sampledChainsUnderOneBlockAreNotCountedAsBlockFallbacks() {
+        int bc1 = 1 << com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        // A 2 x 2 DXT1 source in a session that samples BC1: its allotted level is under one 4 x 4
+        // block, so it is planned and decoded as RGBA8 from the start. The blocks were never
+        // planned, so it is no fallback and is not decoded a second time.
+        int rgbaDecodes;
+        try (var set = sampling(0, blp(2, 2, 2, 0x07e0))) {
+            rgbaDecodes = set.levelDecodes;
+        }
+        try (var set = sampling(bc1, blp(2, 2, 2, 0x07e0))) {
+            var image = set.images().getFirst();
+            assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, image.format());
+            assertEquals(2, image.width());
+            assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS_FALLBACK));
+            assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS));
+            // The same decodes as a session that samples no blocks: none is redone.
+            assertEquals(rgbaDecodes, set.levelDecodes);
+        }
+    }
+
+    @Test
+    void unusableBlocksAt256FallBackWithinTheirCharge() {
+        int bc3 = com.vibeminer.rendering.world.ObjectTextureFormats.BC3;
+        // A blended BC3 256^2 registered at 128 and allotted 256 (21,852 texel units), its re-read
+        // refused: RGBA8 256 would cost 4x, so it draws its 128 registration level (21,845).
+        try (var f = blocksUnreadable(blp3(256, 256, 9, 0x07e0), 2);
+                var set = sampling(f, 0, 1 << bc3)) {
+            var image = set.images().getFirst();
+            assertEquals(com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, image.format());
+            assertEquals(128, image.width());
+            assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_BLOCKS_FALLBACK));
+        }
+    }
+
+    @Test
+    void unusableBlocksBelowTheRegistrationLevelStillFallBack() {
+        int bc3 = com.vibeminer.rendering.world.ObjectTextureFormats.BC3;
+        // The material pool holds 3 cutout 256^2 and 28 cutout 256x128 RGBA8 chains ahead of one
+        // blended 256^2 BC3 chain; by the 128 round the pool has too little left to raise the
+        // BC3 chain past 64, below its 128 registration level. Its 32 x 32 level points inside
+        // the header, so the blocks are unusable and the RGBA8 fallback needs the registration
+        // pixels, which the release step must keep for a sampled chain.
+        var materials = new ArrayList<Material>();
+        var batches = new ArrayList<Batch>();
+        materials.add(new Material(0, IMAGE, 0));
+        batches.add(new Batch(0, 3, 0, 0));
+        for (int i = 0; i < 32; i++) {
+            materials.add(new Material(i < 31 ? 1 : 2, 6000 + i, 0));
+            batches.add(new Batch((i + 1) * 3, 3, 0, i + 1));
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), refusingSecondRead(6031L))) {
+            f.files.sources.put(ROOT, root(1, new long[] {GROUP}, materials));
+            f.files.sources.put(GROUP, group(EXT, 3, 33, batches));
+            f.files.sources.put(IMAGE, blp(64, 64, 7, 0x07e0));
+            for (int i = 0; i < 31; i++) {
+                f.files.sources.put(6000L + i, blp(256, i < 3 ? 256 : 128, 3, i));
+            }
+            f.files.sources.put(6031L, blp3(256, 256, 9, 0x07e0));
+            try (var set = sampling(f, 0, 1 << bc3)) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
+                var image =
+                        set.images().stream()
+                                .filter(i -> i.id() == 6031L)
+                                .findFirst()
+                                .orElseThrow();
+                // Allotted 64 as BC3 (1,372 texel units): a 64^2 RGBA8 chain (5,461) would
+                // overspend, so the fallback takes 32^2 (1,365).
+                assertEquals(32, image.width(), "within what its blocks were charged");
+                assertEquals(
+                        com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8, image.format());
+                assertEquals(255, image.rgba().get(1) & 255, "green");
+            }
+        }
+    }
+
     @Test
     void opaqueDxtWithItsWholeChainIsCarriedAsTheFilesOwnBlocks() {
         byte[] file = blp(256, 256, 9, 0x07e0);
@@ -388,6 +574,20 @@ class WorldExteriorObjectsTest {
                     Cancellation.NONE,
                     WorldExteriorObjects.ModelReader.STANDARD,
                     detail);
+        }
+
+        /** A run for a GPU session that samples {@code formats} as blocks (#374). */
+        WorldExteriorObjects.TileObjects runSampling(int formats) {
+            return WorldExteriorObjects.prepare(
+                    engine,
+                    scope,
+                    TILE,
+                    Cancellation.NONE,
+                    WorldExteriorObjects.ModelReader.STANDARD,
+                    WorldExteriorObjects.ImageDetail.STANDARD,
+                    WorldExteriorObjects.RETAINED_SOURCE_BYTES,
+                    false,
+                    formats);
         }
 
         /** A dungeon or raid map: interior WMO groups are drawn too (#280). */
@@ -1895,46 +2095,64 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    /** Files whose second and later opens of {@code target} read nothing (a refused re-read). */
+    private static WorldTerrainTextureSourceTest.Files refusingSecondRead(long target) {
+        return new WorldTerrainTextureSourceTest.Files() {
+            @Override
+            com.vibeminer.files.FileReadStream open(long id, Cancellation cancel) {
+                var actual = super.open(id, cancel);
+                if (id != target || opens.get(id).get() < 2) {
+                    return actual;
+                }
+                return new com.vibeminer.files.FileReadStream() {
+                    public long length() {
+                        return actual.length();
+                    }
+
+                    public long position() {
+                        return actual.position();
+                    }
+
+                    public void seek(long position) {
+                        actual.seek(position);
+                    }
+
+                    public List<com.vibeminer.files.FileTypes.FileHole> holes() {
+                        return actual.holes();
+                    }
+
+                    public java.util.concurrent.CompletableFuture<Integer> read(
+                            ByteBuffer destination, Cancellation token) {
+                        return java.util.concurrent.CompletableFuture.completedFuture(-1);
+                    }
+
+                    public void close() {
+                        actual.close();
+                    }
+                };
+            }
+        };
+    }
+
+    /** A sampling run retaining at most {@code limit} source bytes. */
+    private static WorldExteriorObjects.TileObjects sampling(Fixture f, long limit, int formats) {
+        return WorldExteriorObjects.prepare(
+                f.engine,
+                f.scope,
+                TILE,
+                Cancellation.NONE,
+                WorldExteriorObjects.ModelReader.STANDARD,
+                WorldExteriorObjects.ImageDetail.STANDARD,
+                limit,
+                false,
+                formats);
+    }
+
     @Test
     void aRefusedSecondReadOfACutoutImageKeepsItsRegisteredLevel() {
         // The cutout image registers at 128 (level 1) and is allotted 256 (level 0); its second
         // read is refused at SOURCE_INPUT. The tile keeps the registered level instead of failing.
-        var files =
-                new WorldTerrainTextureSourceTest.Files() {
-                    @Override
-                    com.vibeminer.files.FileReadStream open(long id, Cancellation cancel) {
-                        var actual = super.open(id, cancel);
-                        if (id != IMAGE2 || opens.get(id).get() < 2) {
-                            return actual;
-                        }
-                        return new com.vibeminer.files.FileReadStream() {
-                            public long length() {
-                                return actual.length();
-                            }
-
-                            public long position() {
-                                return actual.position();
-                            }
-
-                            public void seek(long position) {
-                                actual.seek(position);
-                            }
-
-                            public List<com.vibeminer.files.FileTypes.FileHole> holes() {
-                                return actual.holes();
-                            }
-
-                            public java.util.concurrent.CompletableFuture<Integer> read(
-                                    ByteBuffer destination, Cancellation token) {
-                                return java.util.concurrent.CompletableFuture.completedFuture(-1);
-                            }
-
-                            public void close() {
-                                actual.close();
-                            }
-                        };
-                    }
-                };
+        var files = refusingSecondRead(IMAGE2);
         try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
             f.files.sources.put(
                     ROOT,

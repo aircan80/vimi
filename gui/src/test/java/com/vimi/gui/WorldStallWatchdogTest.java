@@ -20,6 +20,7 @@ public final class WorldStallWatchdogTest {
         frameProgressForOlderRevisionsIsNotAStall();
         firstFrameThatNeverArrivesAlertsOnce();
         presentingThatEndsIsNotAStall();
+        nativeStillCameraNeverAlerts();
         staleFramesDoNotMaskALostCamera();
         resetForgetsAnEpisode();
         thresholdIsConfigurable();
@@ -51,6 +52,31 @@ public final class WorldStallWatchdogTest {
         watchdog.requested(1);
         watchdog.presented(1, 1, 100 * MS);
         require(ready(watchdog, 0, 60_000 * MS) == 0, "An idle camera owes no frame");
+    }
+
+    /**
+     * #381 native presentation with a still camera: the helper announces a frame only when the
+     * presented camera or content changes, so a held camera sees no frames for minutes. Each
+     * commit is PRESENTING until the window shows it, which the helper announces for the same
+     * camera revision; READY in between owes nothing.
+     */
+    private static void nativeStillCameraNeverAlerts() {
+        var watchdog = watchdog();
+        watchdog.requested(1);
+        long now = 0;
+        require(pulses(watchdog, now, now + 500 * MS, true, true) == 0, "First frame awaited");
+        now += 500 * MS;
+        watchdog.presented(1, 1, now);
+        for (int commit = 2; commit <= 6; commit++) {
+            // The camera stays at revision 1; content arrives every few seconds.
+            require(ready(watchdog, now, now + 6_000 * MS) == 0, "A held camera owes nothing");
+            now += 6_000 * MS;
+            require(pulses(watchdog, now, now + 50 * MS, true, true) == 0, "A commit awaits its frame");
+            now += 50 * MS;
+            watchdog.presented(1, commit, now);
+        }
+        require(ready(watchdog, now, now + 60_000 * MS) == 0, "Still nothing after a minute");
+        require(!watchdog.alerted(), "No episode");
     }
 
     private static void hiddenOrNotReadyNeverAlerts() {
