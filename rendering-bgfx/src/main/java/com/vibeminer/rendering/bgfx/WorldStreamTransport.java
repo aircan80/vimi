@@ -1193,7 +1193,13 @@ public final class WorldStreamTransport {
             }
         }
 
-        /** On the objects worker: the one horizon delivery, once the first commit is done. */
+        /**
+         * On the objects worker: the one horizon delivery, once the first commit is done. It holds
+         * the worker until the child's HORIZON_DONE (or the child's exit), so OBJECTS deliveries
+         * that arrive meanwhile wait behind the child's read and parse of the WDL, up to {@link
+         * com.vibeminer.formats.world.WorldLowRes#MAX_SOURCE_BYTES}. That happens once per session
+         * and after the first visible tile; the file is deleted only once the child has answered.
+         */
         private void deliverHorizon(
                 HorizonOperation operation, WorldStreamLaunchOwner.Handle handle) throws Exception {
             Path path = handle.files().directory().resolve(WorldStreamControl.Horizon.BASENAME);

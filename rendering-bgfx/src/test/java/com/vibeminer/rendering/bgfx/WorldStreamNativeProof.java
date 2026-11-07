@@ -578,6 +578,7 @@ public final class WorldStreamNativeProof {
                     var stats = owner.stats();
                     require(
                             stats.dynamicBuffers() == SESSION.slots()
+                                    && stats.dynamicIndexBuffers() == SESSION.slots()
                                     && stats.backingBuffers() == backing
                                     && backing > stats.contextBuffers(),
                             "Fixed native buffer counts " + stats);
@@ -787,9 +788,25 @@ public final class WorldStreamNativeProof {
                         WorldFrameFileV2.create(
                                 directory.resolve("frames-successor"), nextNonce, SCOPE);
                 var successor = new WorldStreamNativeOwner(nextSession, nextFrames, BACKEND)) {
+            var stats = successor.stats();
             require(
-                    successor.stats().dynamicBuffers() == SESSION.slots(),
-                    "Successor context resources");
+                    stats.dynamicBuffers() == SESSION.slots()
+                            && stats.dynamicIndexBuffers() == SESSION.slots(),
+                    "Successor context resources " + stats);
+            // Every slot's vertex and index buffer is released with the renderer.
+            var released = successor.releaseRendererForProof();
+            require(
+                    released.vertex() == 0 && released.index() == 0,
+                    "Dynamic buffers left after close " + released);
+            System.out.println(
+                    "WORLD_NATIVE_BUFFERS_RELEASED_PASS open="
+                            + stats.dynamicBuffers()
+                            + "/"
+                            + stats.dynamicIndexBuffers()
+                            + " closed="
+                            + released.vertex()
+                            + "/"
+                            + released.index());
         }
         // Exterior object culling on a further fresh context: draw counts and pixels, culled and
         // not.

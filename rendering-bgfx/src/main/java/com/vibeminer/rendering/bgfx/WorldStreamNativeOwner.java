@@ -86,7 +86,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             long gpuHeapBytes,
             int msaaSamples,
             // The WDL horizon (#372), last so earlier fields keep their positions.
-            BgfxWorldStreamRenderer.HorizonCounts horizon) {}
+            BgfxWorldStreamRenderer.HorizonCounts horizon,
+            // One per slot, plus the horizon's two (#430, #479).
+            int dynamicIndexBuffers) {}
+
+    /** bgfx's live dynamic vertex and index buffer handles. */
+    record DynamicBuffers(int vertex, int index) {}
 
     /** Reset flags: no back buffer; anisotropic samplers use the device maximum (issue #357). */
     static final int RESET_FLAGS = org.lwjgl.bgfx.BGFX.BGFX_RESET_MAXANISOTROPY;
@@ -977,7 +982,47 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 pending,
                 stats.gpuMemoryUsed(),
                 samples,
-                renderer.horizonCounts());
+                renderer.horizonCounts(),
+                Short.toUnsignedInt(stats.numDynamicIndexBuffers()));
+    }
+
+    /**
+     * Test seam for native leak checks: retires in-flight readbacks, closes the renderer and runs a
+     * bgfx frame so its destroyed handles are freed, then reports the dynamic buffers still live.
+     * Only {@link #close} may follow.
+     */
+    DynamicBuffers releaseRendererForProof() {
+        requireOpen();
+        drainReadbacks();
+        renderer.close();
+        currentFrame = bgfx_frame(BGFX_FRAME_NONE);
+        var stats = bgfx_get_stats();
+        return new DynamicBuffers(
+                Short.toUnsignedInt(stats.numDynamicVertexBuffers()),
+                Short.toUnsignedInt(stats.numDynamicIndexBuffers()));
+    }
+
+    /** Waits out every readback fence: native destination pointers stay owned until then. */
+    private void drainReadbacks() {
+        boolean pending;
+        do {
+            pending = false;
+            for (var slot : readbacks) {
+                if (slot != null && slot.ticket != null) {
+                    pending = true;
+                }
+            }
+            if (pending) {
+                currentFrame = bgfx_frame(BGFX_FRAME_NONE);
+                for (var slot : readbacks) {
+                    if (slot != null
+                            && slot.ticket != null
+                            && readbackReady(currentFrame, slot.ready)) {
+                        slot.ticket = null;
+                    }
+                }
+            }
+        } while (pending);
     }
 
     private void requireOpen() {
@@ -1008,25 +1053,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         try {
             if (initialized) {
                 // Native destination pointers remain owned through every returned readback fence.
-                boolean pending;
-                do {
-                    pending = false;
-                    for (var slot : readbacks) {
-                        if (slot != null && slot.ticket != null) {
-                            pending = true;
-                        }
-                    }
-                    if (pending) {
-                        currentFrame = bgfx_frame(BGFX_FRAME_NONE);
-                        for (var slot : readbacks) {
-                            if (slot != null
-                                    && slot.ticket != null
-                                    && readbackReady(currentFrame, slot.ready)) {
-                                slot.ticket = null;
-                            }
-                        }
-                    }
-                } while (pending);
+                drainReadbacks();
                 if (renderer != null) {
                     renderer.close();
                 }
