@@ -3538,6 +3538,44 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void aPrefetchedReadIsTimedAsAWaitAndNotAsAFullSourceRead() {
+        long serialReads = -1;
+        for (boolean ahead : new boolean[] {false, true}) {
+            var files = new SlowGroups();
+            WorldStageTimings.reset();
+            WorldStageTimings.enable(true);
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+                f.files.sources.put(ROOT, root(manyGroups(files, 12)));
+                WorldStreamScopes.Prefetcher.enabled = ahead;
+                try (var set = f.run()) {
+                    assertEquals(1, set.models().size());
+                } finally {
+                    WorldStreamScopes.Prefetcher.enabled = true;
+                }
+                var snapshot = WorldStageTimings.snapshot();
+                var reads = snapshot.get("source.read.BASIC_EXTERIOR");
+                var waits = snapshot.get("source.prefetchWait.BASIC_EXTERIOR");
+                var bytes = snapshot.get("source.readBytes.BASIC_EXTERIOR");
+                assertEquals(reads.count(), bytes.count(), "bytes counted per full read only");
+                if (!ahead) {
+                    assertNull(waits, "no read-ahead, no wait series");
+                    serialReads = reads.count();
+                } else {
+                    assertTrue(waits != null && waits.count() > 0, "read-ahead hits are timed");
+                    assertEquals(
+                            serialReads,
+                            reads.count() + waits.count(),
+                            "every consumed input is either a full read or a read-ahead hit");
+                    assertTrue(reads.count() < serialReads, "hits leave source.read.*");
+                }
+            } finally {
+                WorldStageTimings.enable(false);
+                WorldStageTimings.reset();
+            }
+        }
+    }
+
+    @Test
     void cancellationDrainsAndClosesEveryReadAheadBeforeThePreparationReturns() {
         var files = new SlowGroups();
         var token = new Cancellation();

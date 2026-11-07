@@ -988,17 +988,26 @@ final class WorldStreamScopes {
             reserved = true;
             Source source = null;
             try {
-                long started = WorldStageTimings.start();
                 var prefetched =
                         kind == null || prefetcher == null ? null : prefetcher.take(id, kind);
-                source = prefetched == null ? null : Prefetcher.await(prefetched);
-                if (source == null) {
-                    source = engine.read(id, limit, token, classifyUnavailable);
+                if (prefetched != null) {
+                    // A read-ahead hit is timed apart: source.read.* stays a full read only, so
+                    // its numbers compare with runs without read-ahead. The series count is the
+                    // number of hits. A miss falls through to an ordinary, timed read.
+                    long waiting = WorldStageTimings.start();
+                    source = Prefetcher.await(prefetched);
+                    if (source != null && waiting != 0L) {
+                        WorldStageTimings.stop("source.prefetchWait." + profile.name(), waiting);
+                    }
                 }
-                if (started != 0L) {
-                    WorldStageTimings.stop("source.read." + profile.name(), started);
-                    WorldStageTimings.add(
-                            "source.readBytes." + profile.name(), source.bytes().length);
+                if (source == null) {
+                    long started = WorldStageTimings.start();
+                    source = engine.read(id, limit, token, classifyUnavailable);
+                    if (started != 0L) {
+                        WorldStageTimings.stop("source.read." + profile.name(), started);
+                        WorldStageTimings.add(
+                                "source.readBytes." + profile.name(), source.bytes().length);
+                    }
                 }
                 var binding = new Binding(id, source.key(), source.bytes().length);
                 for (var prior : bindings) {
