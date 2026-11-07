@@ -563,6 +563,61 @@ final class WorldStreamScopesTest {
     }
 
     @Test
+    void sourceReadsBindIndexFactsWithoutNameOrFormatStats() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var rawFiles = files.files();
+        var calls = new java.util.concurrent.ConcurrentLinkedQueue<String>();
+        var fileHandle =
+                (com.vibeminer.files.BuildFiles)
+                        Proxy.newProxyInstance(
+                                com.vibeminer.files.BuildFiles.class.getClassLoader(),
+                                new Class<?>[] {com.vibeminer.files.BuildFiles.class},
+                                (proxy, method, args) -> {
+                                    if (args != null && args[0] instanceof FileTypes.FileRef ref) {
+                                        calls.add(method.getName() + ":" + ref.fileDataId());
+                                    }
+                                    try {
+                                        return method.invoke(rawFiles, args);
+                                    } catch (java.lang.reflect.InvocationTargetException error) {
+                                        throw error.getCause();
+                                    }
+                                });
+        var pool = new TerrainAtlasPool();
+        var world = new WorldService(tables.handle(), fileHandle, pool);
+        try {
+            var source = world.preparedTerrain();
+            var scope = source.createScope(REQUEST, Cancellation.NONE);
+            source.activate(scope);
+            try (var written =
+                    source.prepareAndWrite(
+                            scope,
+                            TILE,
+                            Cancellation.NONE,
+                            (borrow, cancel) -> (AutoCloseable) () -> {})) {
+                assertTrue(written.isOpen());
+            }
+            // The scopes' source reads of the WDT (1) and root ADT (2) bind index facts only:
+            // per file, the first calls are statContent, open, statContent; never a full stat
+            // with names and a format sniff. Other files and later calls are not constrained.
+            for (long id : new long[] {1, 2}) {
+                var forId =
+                        calls.stream()
+                                .filter(call -> call.endsWith(":" + id))
+                                .map(call -> call.substring(0, call.indexOf(':')))
+                                .limit(3)
+                                .toList();
+                assertEquals(
+                        List.of("statContent", "openRead", "statContent"), forId, calls.toString());
+            }
+        } finally {
+            world.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+            tables.close();
+        }
+    }
+
+    @Test
     void wrappedAsyncCancellationPreservesScopeForInitialAndFinalMapAndWdtValidation()
             throws Exception {
         for (int mode = 0; mode < 7; mode++) {

@@ -19,6 +19,23 @@ public interface BuildItems extends AutoCloseable {
                 new UnsupportedOperationException("Derived item grid unavailable"));
     }
 
+    /** Rows handled so far by one catalog stage; called on the catalog worker. */
+    @FunctionalInterface
+    interface CatalogProgress {
+        CatalogProgress NONE = (stage, done) -> {};
+
+        void report(String stage, long done);
+    }
+
+    /**
+     * As {@link #grid}, reporting the derived catalog's preparation as it runs (#338): rows read
+     * from each table and rows stored. A catalog reused from disk reports nothing.
+     */
+    default CompletableFuture<ItemGridPage> grid(
+            ItemGridQuery query, Priority priority, CatalogProgress progress, Cancellation token) {
+        return grid(query, priority, token);
+    }
+
     default CompletableFuture<ItemClassLabels> classifications(
             ItemSummary item, Priority priority, Cancellation token) {
         return getData(item.id(), priority, token)

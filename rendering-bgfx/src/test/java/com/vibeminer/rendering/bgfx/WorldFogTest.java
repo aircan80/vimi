@@ -146,4 +146,60 @@ class WorldFogTest {
                 BgfxWorldStreamRenderer.cutoutMaterial(false));
         assertEquals(BgfxWorldWmoPass.DRAW_STATE, BgfxWorldStreamRenderer.cutoutState(false));
     }
+
+    /** The recorded sky composed with the stream fog and, when drawn, the WDL horizon (#177). */
+    @Test
+    void recordedSkyComposesWithTheStreamFogAndTheHorizon() {
+        float cut = WorldFog.STREAM.cut();
+        // No recorded sky: the explorer's own stream fog.
+        var none = WorldFog.sky(null, Float.NaN);
+        assertEquals(WorldFog.STREAM.start(), none.start());
+        assertEquals(WorldFog.STREAM.end(), none.end());
+        assertEquals(cut, none.cut());
+        var sky =
+                new WorldStreamTransport.Sky(
+                        new float[] {50, 70, 100}, new float[] {10, 20, 30}, 1, 250, 1000);
+        var recorded = WorldFog.sky(sky, Float.NaN);
+        assertEquals(250, recorded.start());
+        assertEquals(1000, recorded.end());
+        assertEquals(cut, recorded.cut());
+        assertEquals(50, recorded.horizon()[0]);
+        assertEquals(10, recorded.top()[0]);
+        // With the WDL horizon the cut moves out, and a recorded end below it is kept.
+        var foggy = WorldFog.sky(sky, 3200);
+        assertEquals(1000, foggy.end());
+        assertEquals(3200, foggy.cut());
+        assertEquals(1, foggy.factor(3000), 0, "full fog from the recorded end to the cut");
+        // Without recorded fog the fog ends at the horizon.
+        var plain =
+                WorldFog.sky(
+                        new WorldStreamTransport.Sky(
+                                new float[] {50, 70, 100}, new float[] {10, 20, 30}, 0, 0, 0),
+                        3200);
+        assertEquals(3200, plain.end());
+        assertEquals(3200, plain.cut());
+        // Half recorded: halfway from the horizon to the recorded end.
+        var half =
+                WorldFog.sky(
+                        new WorldStreamTransport.Sky(
+                                new float[] {50, 70, 100},
+                                new float[] {10, 20, 30},
+                                0.5,
+                                250,
+                                1000),
+                        3200);
+        assertEquals(2100, half.end(), 1e-3);
+        // A recorded end past the cut stops at it; the cut never moves in.
+        var far =
+                WorldFog.sky(
+                        new WorldStreamTransport.Sky(
+                                new float[] {50, 70, 100},
+                                new float[] {10, 20, 30},
+                                1,
+                                250,
+                                90_000),
+                        Float.NaN);
+        assertEquals(cut, far.end());
+        assertEquals(cut, far.cut());
+    }
 }

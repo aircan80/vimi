@@ -1,9 +1,11 @@
 package com.vibeminer.rendering.bgfx;
 
+import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_COLOR0;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_NORMAL;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_POSITION;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TEXCOORD0;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TYPE_FLOAT;
+import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TYPE_UINT8;
 import static org.lwjgl.bgfx.BGFX.BGFX_BUFFER_NONE;
 import static org.lwjgl.bgfx.BGFX.BGFX_DISCARD_ALL;
 import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIP_POINT;
@@ -68,7 +70,8 @@ import org.lwjgl.system.MemoryUtil;
  * drain.
  */
 final class BgfxWorldWmoPass implements AutoCloseable {
-    static final int VERTEX_BYTES = 32, MAX_MESH_BYTES = 19456, MAX_TEXTURE_BYTES = 1572864;
+    // The world-wmo vertex adds a 4-byte colour (#375), zero here: 512 x 36 + 1536 x 2 bytes.
+    static final int VERTEX_BYTES = 36, MAX_MESH_BYTES = 21504, MAX_TEXTURE_BYTES = 1572864;
     static final long DRAW_STATE =
             BGFX_STATE_WRITE_RGB
                     | BGFX_STATE_WRITE_A
@@ -202,6 +205,8 @@ final class BgfxWorldWmoPass implements AutoCloseable {
                     staging.putFloat(n.get());
                 }
                 staging.putFloat(uv.get()).putFloat(uv.get());
+                // No vertex colour: the shader adds nothing to the light.
+                staging.putInt(0);
             }
             var sourceIndices = data.indices();
             while (sourceIndices.hasRemaining()) {
@@ -217,6 +222,8 @@ final class BgfxWorldWmoPass implements AutoCloseable {
                         layout, BGFX_ATTRIB_NORMAL, 3, BGFX_ATTRIB_TYPE_FLOAT, false, false);
                 bgfx_vertex_layout_add(
                         layout, BGFX_ATTRIB_TEXCOORD0, 2, BGFX_ATTRIB_TYPE_FLOAT, false, false);
+                bgfx_vertex_layout_add(
+                        layout, BGFX_ATTRIB_COLOR0, 4, BGFX_ATTRIB_TYPE_UINT8, true, false);
                 bgfx_vertex_layout_end(layout);
                 if (layout.stride() != VERTEX_BYTES) {
                     throw new IOException("WMO vertex layout differs");
