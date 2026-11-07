@@ -61,6 +61,11 @@ public final class WorldFormats {
         private final int chunks;
 
         public Terrain(float[] vertices, int[] triangles, int chunks) {
+            this(vertices.clone(), triangles.clone(), chunks, true);
+        }
+
+        /** Adopts arrays no one else holds (the parser's own output). */
+        private Terrain(float[] vertices, int[] triangles, int chunks, boolean owned) {
             if (vertices.length == 0
                     || vertices.length % 3 != 0
                     || vertices.length > 256 * 145 * 3
@@ -80,17 +85,27 @@ public final class WorldFormats {
                     throw new IllegalArgumentException("Invalid terrain index");
                 }
             }
-            this.vertices = vertices.clone();
-            this.triangles = triangles.clone();
+            this.vertices = vertices;
+            this.triangles = triangles;
             this.chunks = chunks;
         }
 
+        /** A defensive copy; prefer {@link #vertexView()} to read without copying. */
         public float[] vertices() {
             return vertices.clone();
         }
 
+        /** A defensive copy; prefer {@link #triangleView()} to read without copying. */
         public int[] triangles() {
             return triangles.clone();
+        }
+
+        public java.nio.FloatBuffer vertexView() {
+            return java.nio.FloatBuffer.wrap(vertices).asReadOnlyBuffer();
+        }
+
+        public java.nio.IntBuffer triangleView() {
+            return java.nio.IntBuffer.wrap(triangles).asReadOnlyBuffer();
         }
 
         public int chunks() {
@@ -236,6 +251,14 @@ public final class WorldFormats {
         return new TerrainAreas(parsed.terrain(), parsed.areas());
     }
 
+    /** Geometry, area metadata and the native grid from one checked source walk. */
+    public record TerrainAreasGrid(Terrain terrain, AreaMetadata areas, TerrainGrid grid) {}
+
+    public static TerrainAreasGrid adtTileGrid(byte[] bytes, BooleanSupplier canceled) {
+        var parsed = parseAdt(bytes, canceled, true, true);
+        return new TerrainAreasGrid(parsed.terrain(), parsed.areas(), parsed.grid());
+    }
+
     /** Native source samples through the same checked walker, never inferred from a mesh. */
     public static TerrainGrid adtGrid(byte[] bytes, BooleanSupplier canceled) {
         return parseAdt(bytes, canceled, false, true).grid();
@@ -311,8 +334,8 @@ public final class WorldFormats {
                 float px = input.getFloat(c.start + 104),
                         py = input.getFloat(c.start + 108),
                         pz = input.getFloat(c.start + 112);
-                int height = -1, color = -1;
-                boolean badColors = false;
+                int height = -1, color = -1, normal = -1;
+                boolean badColors = false, badNormals = false;
                 input.position(c.start + 128);
                 while (input.position() < c.end) {
                     var sub = chunk(input, c.end);
@@ -327,6 +350,17 @@ public final class WorldFormats {
                             color = -1;
                         } else {
                             color = sub.start;
+                        }
+                    } else if (captureGrid && sub.tag == 0x4d434e52) {
+                        // 145 x int8[3]; files pad MCNR to 448 bytes.
+                        if (sub.size < TerrainGrid.NORMAL_BYTES
+                                || sub.size > 448
+                                || normal != -1
+                                || badNormals) {
+                            badNormals = true;
+                            normal = -1;
+                        } else {
+                            normal = sub.start;
                         }
                     }
                     input.position(sub.end);
@@ -403,6 +437,17 @@ public final class WorldFormats {
                                     : color < 0
                                             ? TerrainGrid.ColorState.ABSENT
                                             : TerrainGrid.ColorState.BGRA8;
+                    byte[] normals =
+                            normal < 0
+                                    ? new byte[0]
+                                    : java.util.Arrays.copyOfRange(
+                                            bytes, normal, normal + TerrainGrid.NORMAL_BYTES);
+                    var normalState =
+                            badNormals
+                                    ? TerrainGrid.NormalState.UNSUPPORTED
+                                    : normal < 0
+                                            ? TerrainGrid.NormalState.ABSENT
+                                            : TerrainGrid.NormalState.INT8;
                     grids.add(
                             new TerrainGrid.Chunk(
                                     chunks,
@@ -415,7 +460,9 @@ public final class WorldFormats {
                                     heights,
                                     holes,
                                     state,
-                                    colors));
+                                    colors,
+                                    normalState,
+                                    normals));
                 }
                 areas.add(
                         new AreaChunk(
@@ -438,7 +485,7 @@ public final class WorldFormats {
             return new ParsedAdt(null, metadata, captureGrid ? new TerrainGrid(grids) : null);
         }
         return new ParsedAdt(
-                new Terrain(vertices.take(), indices.take(), chunks),
+                new Terrain(vertices.take(), indices.take(), chunks, true),
                 metadata,
                 captureGrid ? new TerrainGrid(grids) : null);
     }

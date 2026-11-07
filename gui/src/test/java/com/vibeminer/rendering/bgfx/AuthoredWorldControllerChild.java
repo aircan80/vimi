@@ -67,6 +67,30 @@ public final class AuthoredWorldControllerChild {
                                             offer.sha256()),
                                     () -> false)) {
                         var h = payload.header();
+                        // An authored control file names one tile row whose packets the helper
+                        // rejects, as the real helper rejects an invalid packet (#365).
+                        var reject = directory.getParent().resolve("authored-reject-tile");
+                        if (Files.exists(reject)
+                                && Integer.parseInt(Files.readString(reject).trim()) == h.y()) {
+                            Files.writeString(
+                                    directory.getParent().resolve("authored-rejections.log"),
+                                    h.y() + System.lineSeparator(),
+                                    java.nio.file.StandardOpenOption.CREATE,
+                                    java.nio.file.StandardOpenOption.APPEND);
+                            // An authored hold delays the rejection, so a cancel can cross it.
+                            var holdReject = directory.getParent().resolve("authored-hold-reject");
+                            if (Files.exists(holdReject)) {
+                                Files.writeString(
+                                        directory.getParent().resolve("authored-held-reject"),
+                                        "held");
+                                while (Files.exists(holdReject)) Thread.sleep(2);
+                            }
+                            state.send("INPUT_CONSUMED " + offer.transaction() + " TILE");
+                            state.send("REJECTED " + offer.transaction() + " INVALID_PACKET");
+                            state.rejected.add(offer.transaction());
+                            state.grant();
+                            continue;
+                        }
                         state.tileY.put(offer.lease().slot(),h.y());
                         state.tileX.put(offer.lease().slot(),h.x());
                         state.leases.put(offer.lease().slot(),offer.lease());
@@ -131,6 +155,11 @@ public final class AuthoredWorldControllerChild {
                     }
                     state.canceled(cancel.transaction(), cancel.lease());
                 } else if (command instanceof WorldStreamControl.Cancel cancel) {
+                    if (state.rejected.contains(cancel.transaction())) {
+                        // As the real helper: a cancel of a rejected transaction is stale.
+                        state.send("REJECTED " + cancel.transaction() + " STALE_TRANSACTION");
+                        continue;
+                    }
                     state.canceled(cancel.transaction(), state.lease);
                 } else if (command instanceof WorldStreamControl.LateObjects late) {
                     // Reads the actual objects file for its resident tile; attaches only while
@@ -139,6 +168,9 @@ public final class AuthoredWorldControllerChild {
                     int slot = late.lease().slot();
                     if (Files.exists(directory.getParent().resolve("authored-fail-objects"))) {
                         outcome = "FAILED";
+                    } else if (Files.exists(directory.getParent().resolve("authored-budget-objects"))
+                            && state.members.contains(slot)) {
+                        outcome = "BUDGET";
                     } else if (!state.members.contains(slot)
                             || !late.lease().equals(state.leases.get(slot))
                             || state.transactions.getOrDefault(slot, 0L) != late.transaction()) {
@@ -241,7 +273,8 @@ public final class AuthoredWorldControllerChild {
         final java.util.Map<Integer,WorldStreamState.Lease> leases=new java.util.HashMap<>();
         final java.util.Map<Integer,Long> transactions=new java.util.HashMap<>();
         final Set<Integer> objects = new HashSet<>();
-        final long[] generations = new long[10];
+        final Set<Long> rejected = new HashSet<>();
+        final long[] generations = new long[WorldStreamState.SLOTS];
         long serial;
         boolean available;
         WorldStreamState.Lease lease;

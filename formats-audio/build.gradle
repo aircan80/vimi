@@ -68,3 +68,10 @@ checkstyle {
     configFile = rootProject.file('config/checkstyle/checkstyle.xml')
     maxWarnings = 0
 }
+
+// Optional: time from decoder open to first PCM for the authored tone; prints, asserts nothing.
+tasks.register('audioStreamLatencyProbe', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.formats.audio.AudioStreamLatencyProbe'
+}

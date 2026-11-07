@@ -1,5 +1,5 @@
 $input a_position, a_normal, a_texcoord0
-$output v_wmoNormal, v_wmoUv, v_wmoDepth
+$output v_wmoNormal, v_wmoUv, v_wmoDepth, v_wmoRelative
 #include <bgfx_shader.sh>
 uniform mat4 u_wmoEye;
 uniform mat4 u_wmoProjection;
@@ -13,4 +13,6 @@ void main()
     v_wmoNormal = mul(u_wmoNormal, vec4(a_normal, 0.0)).xyz;
     v_wmoUv = a_texcoord0;
     v_wmoDepth = -eye.z;
+    // Position relative to the model origin, which the hot pass places at the camera.
+    v_wmoRelative = relative.xyz;
 }

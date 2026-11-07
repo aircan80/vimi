@@ -50,6 +50,14 @@ public final class BuildApplication {
                 : Path.of(xdg).resolve("vimi");
     }
 
+    /**
+     * The World store of a library: bookmarks and controls in its database, screenshots in the
+     * data directory's {@code screenshots} folder (not the library folder).
+     */
+    static WorldBookmarkStore worldStore(Path dataDirectory, Path libraryDatabase) {
+        return WorldBookmarkStore.forLibrary(libraryDatabase, WorldScreenshots.folder(dataDirectory));
+    }
+
     public static CompletableFuture<BackendBuildService> open() {
         return open(defaultDataDirectory());
     }
@@ -252,7 +260,7 @@ public final class BuildApplication {
                                 fullContexts.communityNames(), ownership, keyClient == null ? network : keyClient, tactOwner, tactOwner, network, network, observer, background);
                         cleanup.addFirst(dataSources::closeAsync);
                         fullContexts.withSources(dataSources);
-                        var worldBookmarks = WorldBookmarkStore.forLibrary(library.databasePath());
+                        var worldBookmarks = worldStore(directory, library.databasePath());
                         cleanup.addFirst(() -> {
                             worldBookmarks.close();
                             return CompletableFuture.completedFuture(null);

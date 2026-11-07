@@ -37,10 +37,78 @@ public final class GpuPreviewServiceTest {
         require(WorldStreamGpuOwner.backend("Vulkan").name().equals("VULKAN"), "Vulkan backend");
         require(WorldStreamGpuOwner.backend("dx11").name().equals("D3D11"), "D3D11 alias");
         require(backend.getEnumConstants().length == 4, "Backend override covers every backend");
+        require(GpuPreviewService.backendArguments(WorldStreamGpuOwner.backend(null)).isEmpty(),
+                "Inline child keeps the platform default without an override");
+        require(GpuPreviewService.backendArguments(WorldStreamGpuOwner.backend("Vulkan"))
+                        .equals(java.util.List.of("--backend", "vulkan")),
+                "Inline child takes the Vulkan override");
+        require(GpuPreviewService.backendArguments(WorldStreamGpuOwner.backend("dx11"))
+                        .equals(java.util.List.of("--backend", "d3d11")),
+                "Inline child takes the D3D11 alias by its child name");
+        require(GpuPreviewService.backendArguments(WorldStreamGpuOwner.backend("metal"))
+                        .equals(java.util.List.of("--backend", "metal")),
+                "Inline child takes the Metal override");
         try {
             WorldStreamGpuOwner.backend("opengl");
             throw new AssertionError("Unknown GPU backend override must be rejected");
         } catch (IllegalArgumentException expected) {
+        }
+    }
+
+    private static void inlineChildCommandCarriesTheBackend() {
+        var vulkan = com.vibeminer.rendering.bgfx.WorldStreamTransport.Backend.VULKAN;
+        var platform = com.vibeminer.rendering.bgfx.WorldStreamTransport.Backend.DEFAULT;
+        Path scene = Path.of("scene.vgpu"), frames = Path.of("frames.vgpu");
+        var command = GpuPreviewService.childCommand(scene, frames, true, null, vulkan);
+        require(command.getFirst().equals(RendererChildren.launcherPath()), "Launcher first");
+        require(command.contains("--terrain-scene") && command.contains("--parent-pid"),
+                "Scene and parent arguments");
+        require(command.subList(command.size() - 2, command.size())
+                        .equals(List.of("--backend", "vulkan")),
+                "Overridden backend is the last argument pair");
+        require(!GpuPreviewService.childCommand(scene, frames, false, null, platform)
+                        .contains("--backend"),
+                "Platform default passes no backend");
+        require(GpuPreviewService.backendName(platform) == null
+                        && "d3d11".equals(GpuPreviewService.backendName(
+                                com.vibeminer.rendering.bgfx.WorldStreamTransport.Backend.D3D11)),
+                "Interior child backend names");
+    }
+
+    /** An invalid override fails the request, names the value, and writes nothing. */
+    private static void invalidBackendOverrideFailsBeforeAnySceneFile(Path root) throws Exception {
+        String previous = System.getProperty("vimi.gpu.backend");
+        var directory = Files.createDirectories(root.resolve("invalid-backend"));
+        var wrote = new AtomicInteger();
+        var started = new AtomicInteger();
+        var failed = new CountDownLatch(1);
+        System.setProperty("vimi.gpu.backend", "opengl");
+        var service = service(directory,
+                (file, mesh, appearance, parts) -> wrote.incrementAndGet(),
+                scene -> {
+                    started.incrementAndGet();
+                    return new FakeProcess(true);
+                });
+        try {
+            try {
+                GpuPreviewService.requestedBackend();
+                throw new AssertionError("An invalid override must be refused");
+            } catch (java.io.IOException expected) {
+                require(expected.getMessage().contains("'opengl'"), "Refusal names the value");
+            }
+            service.open(new Object(), mesh(), null, Set.of(), status -> {
+                if (status.state() == GpuPreviewService.State.FAILED) failed.countDown();
+            });
+            require(failed.await(5, TimeUnit.SECONDS), "Invalid backend reaches FAILED");
+            require(wrote.get() == 0 && started.get() == 0, "No scene written, no child started");
+            try (var left = Files.list(directory)) {
+                require(left.findAny().isEmpty(), "No temporary directory is left behind");
+            }
+        } finally {
+            if (previous == null) System.clearProperty("vimi.gpu.backend");
+            else System.setProperty("vimi.gpu.backend", previous);
+            service.closeAsync().get(5, TimeUnit.SECONDS);
+            Files.deleteIfExists(directory);
         }
     }
 
@@ -77,6 +145,31 @@ public final class GpuPreviewServiceTest {
         }
     }
 
+    /** Debug switches reach the helper only when set on the app (#370 readback comparison). */
+    private static void helperCommandForwardsOnlySetDiagnosticSwitches() {
+        String staging = "-Dvimi.world.readbackStaging=true", verify = "-Dvimi.frameVerify=true";
+        String savedStaging = System.getProperty("vimi.world.readbackStaging");
+        String savedVerify = System.getProperty("vimi.frameVerify");
+        try {
+            System.clearProperty("vimi.world.readbackStaging");
+            System.clearProperty("vimi.frameVerify");
+            var plain = GpuPreviewService.nativeCommand();
+            require(!plain.contains(staging) && !plain.contains(verify), "Unset switches stay off: " + plain);
+            System.setProperty("vimi.world.readbackStaging", "true");
+            System.setProperty("vimi.frameVerify", "true");
+            var set = GpuPreviewService.nativeCommand();
+            require(set.contains(staging) && set.contains(verify), "Set switches reach the helper: " + set);
+            require(set.indexOf(staging) < set.indexOf("-cp"), "Switches are JVM options, before -cp");
+            System.setProperty("vimi.world.readbackStaging", "false");
+            require(!GpuPreviewService.nativeCommand().contains(staging), "false stays off");
+        } finally {
+            if (savedStaging == null) System.clearProperty("vimi.world.readbackStaging");
+            else System.setProperty("vimi.world.readbackStaging", savedStaging);
+            if (savedVerify == null) System.clearProperty("vimi.frameVerify");
+            else System.setProperty("vimi.frameVerify", savedVerify);
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         Path root = Files.createTempDirectory("vimi-gpu-service-test-");
         try {
@@ -91,7 +184,10 @@ public final class GpuPreviewServiceTest {
             } catch (IllegalArgumentException expected) {
             }
             worldBackendOverrideIsExplicitAndBounded();
+            inlineChildCommandCarriesTheBackend();
+            invalidBackendOverrideFailsBeforeAnySceneFile(root);
             helperAndAppJvmOptionsAreAcceptedByThisRuntime();
+            helperCommandForwardsOnlySetDiagnosticSwitches();
             latestFrameHandoffNeverRepublishesOlderWork();
             inlineFramesAndCoalescedControls(root);
             terrainAndModelsShareOwnerAndKeepControlsTyped(root);
