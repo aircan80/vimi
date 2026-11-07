@@ -102,6 +102,18 @@ public final class WmoPortalTraversal {
             if (vertices.length < 9 || vertices.length % 3 != 0) {
                 throw new IllegalArgumentException("A portal needs at least three vertices");
             }
+            // A non-finite portal could never be passed and would hide the room behind it.
+            for (double value : vertices) {
+                if (!Double.isFinite(value)) {
+                    throw new IllegalArgumentException("Non-finite portal vertex");
+                }
+            }
+            if (!Double.isFinite(nx)
+                    || !Double.isFinite(ny)
+                    || !Double.isFinite(nz)
+                    || !Double.isFinite(distance)) {
+                throw new IllegalArgumentException("Non-finite portal plane");
+            }
         }
 
         @Override

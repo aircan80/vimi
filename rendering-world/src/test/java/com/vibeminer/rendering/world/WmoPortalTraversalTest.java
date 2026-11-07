@@ -264,6 +264,129 @@ class WmoPortalTraversalTest {
     }
 
     @Test
+    void nonFinitePortalsAreRefused() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new Portal(
+                                new double[] {10, -1, 0, 10, 1, 0, 10, 1, Double.NaN},
+                                1,
+                                0,
+                                0,
+                                -10));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new Portal(
+                                new double[] {10, -1, 0, 10, 1, 0, 10, 1, 2},
+                                Double.NaN,
+                                0,
+                                0,
+                                -10));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new Portal(
+                                new double[] {10, -1, 0, 10, 1, 0, 10, 1, 2},
+                                1,
+                                0,
+                                0,
+                                Double.POSITIVE_INFINITY));
+    }
+
+    @Test
+    void aDegeneratePortalIsPassedWithTheFrustumUnchanged() {
+        // The A|B door is collinear (three points on one line): it has no edge planes, so the walk
+        // goes on with the camera frustum alone and still reaches C through the off-axis B|C door,
+        // which a real A|B door of that size would hide (nestedPortalsNarrowTheFrustum).
+        var line = new Portal(new double[] {10, -1, 1, 10, 0, 1, 10, 1, 1}, 1, 0, 0, -10);
+        var groups =
+                List.of(
+                        room(0, WmoPortalTraversal.INTERIOR, 0, 1),
+                        room(10, WmoPortalTraversal.INTERIOR, 1, 1),
+                        room(20, WmoPortalTraversal.INTERIOR, 2, 0));
+        var t =
+                WmoPortalTraversal.of(
+                        groups,
+                        List.of(line, door(20, 4, 5)),
+                        List.of(new Ref(0, B, -1), new Ref(1, C, -1)));
+        assertEquals(List.of(A, B, C), visible(t, 1, 5, 0, 1));
+    }
+
+    @Test
+    void narrowedFrustaKeepTheirNewestPortalPlanes() {
+        // A 40-sided round door (radius 1 at x = 10, camera at the origin) gives 40 edge planes;
+        // the oldest 8 are dropped, leaving MAX_PORTAL_PLANES. Behind it, two small doors at
+        // x = 20 lie just outside the opening (radius 2.3 against 2): one at 36 degrees, where the
+        // dropped edges 0 to 7 would have culled it, and its mirror at 216 degrees, still culled.
+        int sides = 40;
+        assertTrue(sides - WmoPortalTraversal.MAX_PORTAL_PLANES == 8);
+        var round = new double[sides * 3];
+        for (int i = 0; i < sides; i++) {
+            double a = 2 * Math.PI * i / sides;
+            round[i * 3] = 10;
+            round[i * 3 + 1] = Math.cos(a);
+            round[i * 3 + 2] = Math.sin(a);
+        }
+        var portals = new ArrayList<Portal>();
+        portals.add(new Portal(round, 1, 0, 0, -10));
+        portals.add(small(20, 36));
+        portals.add(small(20, 216));
+        var groups =
+                List.of(
+                        new Group(WmoPortalTraversal.INTERIOR, -5, -10, -10, 10, 10, 10, 0, 1),
+                        new Group(WmoPortalTraversal.INTERIOR, 10, -10, -10, 20, 10, 10, 1, 2),
+                        new Group(WmoPortalTraversal.INTERIOR, 20, -10, -10, 30, 10, 10, 3, 0),
+                        new Group(WmoPortalTraversal.INTERIOR, 20, -10, -10, 30, 10, 10, 3, 0));
+        var t =
+                WmoPortalTraversal.of(
+                        groups,
+                        portals,
+                        List.of(new Ref(0, 1, -1), new Ref(1, 2, -1), new Ref(2, 3, -1)));
+        assertEquals(List.of(0, 1, 2), visible(t, 1, 0, 0, 0));
+    }
+
+    /** A 0.1-wide square door in the plane x = {@code at}, centred 2.3 out at {@code degrees}. */
+    private static Portal small(double at, double degrees) {
+        double a = Math.toRadians(degrees), y = 2.3 * Math.cos(a), z = 2.3 * Math.sin(a);
+        return new Portal(
+                new double[] {
+                    at, y - 0.05, z - 0.05, at, y + 0.05, z - 0.05, at, y + 0.05, z + 0.05, at,
+                    y - 0.05, z + 0.05
+                },
+                1,
+                0,
+                0,
+                -at);
+    }
+
+    @Test
+    void aThreeRoomRingWithNarrowedFrustaTerminates() {
+        // A ring A -> B -> C -> A through three widening doors ahead of the camera (x = 10, 20,
+        // 30), every reference passable from the camera's side: each lap narrows the frustum
+        // again, so the walk ends only through the entry cap, and every room is visible.
+        var portals = List.of(square(10, 1), square(20, 2.5), square(30, 4));
+        var refs = List.of(new Ref(0, B, -1), new Ref(1, C, -1), new Ref(2, A, -1));
+        var groups =
+                List.of(
+                        new Group(WmoPortalTraversal.INTERIOR, -5, -10, -10, 10, 10, 10, 0, 1),
+                        new Group(WmoPortalTraversal.INTERIOR, 10, -10, -10, 20, 10, 10, 1, 1),
+                        new Group(WmoPortalTraversal.INTERIOR, 20, -10, -10, 30, 10, 10, 2, 1));
+        var t = WmoPortalTraversal.of(groups, portals, refs);
+        assertEquals(List.of(A, B, C), visible(t, 1, 0, 0, 0));
+    }
+
+    /** A square door of half side {@code half} in the plane x = {@code at}, centred on the axis. */
+    private static Portal square(double at, double half) {
+        return new Portal(
+                new double[] {at, -half, -half, at, half, -half, at, half, half, at, -half, half},
+                1,
+                0,
+                0,
+                -at);
+    }
+
+    @Test
     void rangesOutsideTheRecordedPortalsAreRefused() {
         var portals = List.of(door(10, -1, 1));
         assertThrows(
