@@ -93,6 +93,10 @@ public final class ClientHotfixDetailsTest {
                 "Trailing bytes state their count");
         check(ClientHotfixDetails.undecoded("TRAILING_BYTES:<script>").contains("unresolved"),
                 "Only a fixed-format count is ever shown");
+        check(ClientHotfixDetails.undecoded(HotfixViewInfo.RAW_SCAN_GAVE_UP)
+                        .equals("raw-column check inconclusive after 8 tries; local hotfix cache row not shown,"
+                                + " no stale base substitution"),
+                "A raw-column give-up is named");
         check(ClientHotfixDetails.row(tables, "ItemSparse", 995, "Item", "70707", Cancellation.NONE)
                 .join().contains("not applied to this table (too large)"), "Oversized overlay is visible");
         check(ClientHotfixDetails.row(tables, "ItemSparse", 994, "Item", "70707", Cancellation.NONE)
