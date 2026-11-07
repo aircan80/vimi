@@ -22,6 +22,9 @@ final class WorldControlMailbox {
     private WorldStreamControl.Camera camera;
     // Separate one-deep lane: a late objects command never queues behind or ahead of tiles.
     private WorldStreamControl.LateObjects objects;
+    // Separate at-most-once lane for the horizon WDL (#372); a repeat is ignored, never fatal.
+    private WorldStreamControl.Horizon horizon;
+    private boolean horizonSeen;
     private long revision, policy;
     private int width, height;
     private boolean close, failed;
@@ -39,6 +42,7 @@ final class WorldControlMailbox {
             close = true;
             camera = null;
             objects = null;
+            horizon = null;
             transactions.clear();
             return Result.ACCEPTED;
         }
@@ -57,6 +61,13 @@ final class WorldControlMailbox {
             width = update.width();
             height = update.height();
             camera = update;
+            return Result.ACCEPTED;
+        }
+        if (command instanceof WorldStreamControl.Horizon wdl) {
+            if (!horizonSeen) {
+                horizonSeen = true;
+                horizon = wdl;
+            }
             return Result.ACCEPTED;
         }
         if (command instanceof WorldStreamControl.LateObjects late) {
@@ -80,6 +91,12 @@ final class WorldControlMailbox {
         objects = null;
         transactions.clear();
         return Result.OVERFLOW;
+    }
+
+    synchronized WorldStreamControl.Horizon takeHorizon() {
+        var result = horizon;
+        horizon = null;
+        return result;
     }
 
     synchronized WorldStreamControl.LateObjects takeObjects() {
