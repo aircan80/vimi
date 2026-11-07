@@ -169,6 +169,22 @@ final class WorldStreamDiffuseArray {
         }
     }
 
+    /**
+     * Releases every slot outside {@code live}: a slot whose resident a commit retired holds its
+     * layers no longer, so they become cached and evictable. Returns the slots released.
+     */
+    List<Integer> retain(Set<Integer> live) {
+        Objects.requireNonNull(live);
+        var released = new ArrayList<Integer>();
+        for (int slot : List.copyOf(slots.keySet())) {
+            if (!live.contains(slot)) {
+                release(slot);
+                released.add(slot);
+            }
+        }
+        return released;
+    }
+
     /** Drops every reference of {@code slot}; its layers stay cached until evicted. */
     void release(int slot) {
         var bound = slots.remove(slot);

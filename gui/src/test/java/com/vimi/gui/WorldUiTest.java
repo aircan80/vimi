@@ -550,9 +550,7 @@ public final class WorldUiTest {
                                                                                                                                     .scene
                                                                                                                                     .control
                                                                                                                                     .Label)
-                                                                                                                            view
-                                                                                                                                    .lookup(
-                                                                                                                                            "#world-position"))
+                                                                                                                            positionLine(view))
                                                                                                                     .getText();
                                                                                             require(
                                                                                                     position
@@ -1419,5 +1417,16 @@ public final class WorldUiTest {
 
     private static void require(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
+    }
+
+    /** The view's full position line: the model behind the HUD coordinates pill (its tooltip). */
+    private static javafx.scene.Node positionLine(WorldView view) {
+        try {
+            var field = WorldView.class.getDeclaredField("position");
+            field.setAccessible(true);
+            return (javafx.scene.Node) field.get(view);
+        } catch (ReflectiveOperationException error) {
+            throw new AssertionError(error);
+        }
     }
 }

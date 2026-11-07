@@ -30,10 +30,13 @@ final class WorldStreamPackedTile implements AutoCloseable {
         ByteBuffer geometry, atlas;
 
         /**
-         * Optional splatting inputs (issue #174 step 2): the mask chain (atlas layout, box mips),
-         * the 16 x 16 table of four array layers, and new layers with their full chains.
+         * Optional splatting inputs (issue #174 step 2): the mask chain ({@code splatMaskSide}
+         * square, box mips down to 1 x 1), the 16 x 16 table of four array layers, and new layers
+         * with their full chains.
          */
         ByteBuffer splatAlpha;
+
+        int splatMaskSide;
 
         byte[] splatTable;
         int[] splatLayers = new int[0];
@@ -214,9 +217,7 @@ final class WorldStreamPackedTile implements AutoCloseable {
             ByteBuffer splatAlpha = null;
             ByteBuffer[] splatChains = new ByteBuffer[0];
             if (splat != null) {
-                splatAlpha = ByteBuffer.allocate(WorldStreamAtlasMips.CHAIN_BYTES);
-                splatAlpha.put(splat.alpha()).clear();
-                WorldStreamAtlasMips.box(splatAlpha, canceled);
+                splatAlpha = maskChain(splat.alpha(), splat.maskSide(), canceled);
                 splatChains = new ByteBuffer[splat.layers().length];
                 for (int i = 0; i < splatChains.length; i++) {
                     check(canceled);
@@ -237,6 +238,7 @@ final class WorldStreamPackedTile implements AutoCloseable {
                             objectsState);
             if (splat != null) {
                 source.splatAlpha = splatAlpha;
+                source.splatMaskSide = splat.maskSide();
                 source.splatTable = splat.table();
                 source.splatLayers = splat.layers();
                 source.splatChains = splatChains;
@@ -301,5 +303,53 @@ final class WorldStreamPackedTile implements AutoCloseable {
         if (canceled.getAsBoolean()) {
             throw new CancellationException();
         }
+    }
+
+    /**
+     * A square RGBA8 mask map's full chain, {@code side} down to 1 x 1 in the {@link
+     * com.vibeminer.rendering.world.ObjectTextureMips} layout, each level a 2 x 2 box of the one
+     * above (issue #174 step 2b-2: 512 or 1024 per side, by tier).
+     */
+    static ByteBuffer maskChain(
+            byte[] alpha, int side, java.util.function.BooleanSupplier canceled) {
+        if (alpha.length != side * side * 4) {
+            throw new IllegalArgumentException("Splat mask size");
+        }
+        var chain =
+                ByteBuffer.allocate(
+                        com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(side, side)
+                                * 4);
+        chain.put(0, alpha);
+        int levels = com.vibeminer.rendering.world.ObjectTextureMips.levels(side, side);
+        for (int level = 1; level < levels; level++) {
+            check(canceled);
+            int s = side >> level, child = s * 2;
+            int from =
+                    com.vibeminer.rendering.world.ObjectTextureMips.levelOffset(
+                            side, side, level - 1);
+            int to = com.vibeminer.rendering.world.ObjectTextureMips.levelOffset(side, side, level);
+            for (int y = 0; y < s; y++) {
+                for (int x = 0; x < s; x++) {
+                    for (int c = 0; c < 4; c++) {
+                        int sum = 0;
+                        for (int dy = 0; dy < 2; dy++) {
+                            for (int dx = 0; dx < 2; dx++) {
+                                sum +=
+                                        chain.get(
+                                                        from
+                                                                + ((2 * y + dy) * child
+                                                                                + 2 * x
+                                                                                + dx)
+                                                                        * 4
+                                                                + c)
+                                                & 255;
+                            }
+                        }
+                        chain.put(to + (y * s + x) * 4 + c, (byte) ((sum + 2) / 4));
+                    }
+                }
+            }
+        }
+        return chain;
     }
 }

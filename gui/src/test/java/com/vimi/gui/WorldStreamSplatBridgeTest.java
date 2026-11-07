@@ -18,6 +18,23 @@ public final class WorldStreamSplatBridgeTest {
 
     public static void main(String[] args) throws Exception {
         check(Boolean.getBoolean("vimi.world.splat"), "Run with -Dvimi.world.splat=true");
+        try {
+            run(com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.STANDARD);
+            run(com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH);
+        } finally {
+            com.vibeminer.concepts.world.WorldTerrainStreaming.splatMasks(
+                    com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.STANDARD);
+        }
+    }
+
+    /** One authored tile composed at {@code detail}'s mask side, through the bridge. */
+    private static void run(com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail)
+            throws Exception {
+        com.vibeminer.concepts.world.WorldTerrainStreaming.splatMasks(detail);
+        int side =
+                detail == com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH
+                        ? com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK
+                        : com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK;
         var fixture = new WorldStreamSourceBridgeTest.Fixture();
         var path = Files.createTempDirectory("bridge-splat-").resolve("tile-1.wst");
         var layers = new AtomicInteger();
@@ -37,8 +54,13 @@ public final class WorldStreamSplatBridgeTest {
                                 var splat = borrow.splat().orElseThrow();
                                 var material = borrow.material();
                                 check(material != null, "Textured authored tile");
+                                check(splat.maskSide() == side, "Mask side follows the tier");
                                 var input =
-                                        WorldStreamSourceBridge.splatInput(borrow, material, splat, () -> false);
+                                        WorldStreamSourceBridge.splatInput(
+                                                borrow, material, splat, () -> false);
+                                check(
+                                        input.alpha().remaining() == side * side * 4,
+                                        "The writer receives the tier's mask map");
                                 check(
                                         input.fileIds().length == splat.diffuseCount()
                                                 && input.fileIds().length > 0,
@@ -105,7 +127,14 @@ public final class WorldStreamSplatBridgeTest {
                             });
                 }
             }
-            System.out.println("World splat bridge: " + layers.get() + " layer chains mapped");
+            System.out.println(
+                    "World splat bridge ("
+                            + detail
+                            + ", mask "
+                            + side
+                            + "): "
+                            + layers.get()
+                            + " layer chains mapped");
         } finally {
             fixture.close();
             Files.deleteIfExists(path);

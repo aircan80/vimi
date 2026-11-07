@@ -2,7 +2,8 @@ $input v_wmoNormal, v_wmoUv, v_wmoDepth, v_wmoRelative
 #include <bgfx_shader.sh>
 SAMPLER2D(s_wmoDiffuse, 0);
 // x: alpha-test reference (0 never discards); y: 1 outputs sampled alpha for blending, 0 outputs 1;
-// z: 1 turns the alpha test into an alpha-to-coverage ramp around the reference (multisampled).
+// z: 1 turns the alpha test into an alpha-to-coverage ramp around the reference (multisampled);
+// w: 1 unlit (full intensity, no light) plus 2 additive (fog fades it out, adds no fog colour).
 uniform vec4 u_wmoMaterial;
 // rgb: sky and fog colour at and below the horizon, 0..255; w: elevation (radians) of u_wmoSkyTop.
 uniform vec4 u_wmoFog;
@@ -33,11 +34,14 @@ void main()
         vec3 n = v_wmoNormal * inversesqrt(squared);
         diffuse = max(0.0, dot(n, vec3(-0.408248290463863, -0.408248290463863, 0.816496580927726)));
     }
-    float intensity = (1.0 / 3.0) + (2.0 / 3.0) * diffuse;
+    float additive = step(1.5, u_wmoMaterial.w);
+    float unlit = step(0.5, u_wmoMaterial.w - 2.0 * additive);
+    float intensity = mix((1.0 / 3.0) + (2.0 / 3.0) * diffuse, 1.0, unlit);
     float fog = clamp((v_wmoDepth - u_wmoFogRange.x) / (u_wmoFogRange.y - u_wmoFogRange.x), 0.0, u_wmoFogRange.z);
     // Fog toward the sky at this fragment's own elevation above the camera.
     float elevation = atan2(v_wmoRelative.z, max(length(v_wmoRelative.xy), 1e-6));
     vec3 sky = mix(u_wmoFog.xyz, u_wmoSkyTop.xyz, clamp(elevation / u_wmoFog.w, 0.0, 1.0));
-    vec3 rgb = floor(sampled.rgb * 255.0 * intensity * (1.0 - fog) + sky * fog);
+    // Additive light fades with distance; everything else fades into the sky.
+    vec3 rgb = floor(sampled.rgb * 255.0 * intensity * (1.0 - fog) + sky * fog * (1.0 - additive));
     gl_FragColor = vec4(rgb / 255.0, alpha);
 }

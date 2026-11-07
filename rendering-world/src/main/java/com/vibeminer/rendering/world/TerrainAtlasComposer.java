@@ -148,6 +148,24 @@ public final class TerrainAtlasComposer {
             Map<Long, DiffuseMip> diffuse,
             boolean splat,
             BooleanSupplier canceled) {
+        return compose(
+                tile, grid, textures, diffuse, splat, TerrainTileSplat.STANDARD_MASK, canceled);
+    }
+
+    /**
+     * As {@link #compose(WorldFormats.Tile, TerrainGrid, WorldTextureFormats.TextureData, Map,
+     * boolean, BooleanSupplier)}, with the splat mask map at {@code maskSide}: {@link
+     * TerrainTileSplat#STANDARD_MASK} or {@link TerrainTileSplat#HIGH_MASK} (issue #174 step 2b-2).
+     */
+    public static Composition compose(
+            WorldFormats.Tile tile,
+            TerrainGrid grid,
+            WorldTextureFormats.TextureData textures,
+            Map<Long, DiffuseMip> diffuse,
+            boolean splat,
+            int maskSide,
+            BooleanSupplier canceled) {
+        TerrainTileSplat.alphaBytes(maskSide);
         Objects.requireNonNull(tile);
         Objects.requireNonNull(grid);
         Objects.requireNonNull(textures);
@@ -178,7 +196,7 @@ public final class TerrainAtlasComposer {
         if (splat) {
             splatLayers = new byte[TerrainTileSplat.LAYER_BYTES];
             java.util.Arrays.fill(splatLayers, (byte) TerrainTileSplat.NONE);
-            splatAlpha = new byte[TerrainTileSplat.ALPHA_BYTES];
+            splatAlpha = new byte[TerrainTileSplat.alphaBytes(maskSide)];
         }
         for (int ordinal = 0; ordinal < 256; ordinal++) {
             check(canceled);
@@ -251,7 +269,7 @@ public final class TerrainAtlasComposer {
                     }
                     splatLayers[base + i] = (byte) index;
                 }
-                splatChunk(chunk, layers.size(), masks, colors, splatAlpha, canceled);
+                splatChunk(chunk, layers.size(), masks, colors, splatAlpha, maskSide, canceled);
             }
             coverage[ordinal / 64] |= 1L << (ordinal % 64);
         }
@@ -329,22 +347,27 @@ public final class TerrainAtlasComposer {
             ByteBuffer masks,
             ByteBuffer colors,
             byte[] alpha,
+            int maskSide,
             BooleanSupplier canceled) {
-        for (int py = 0; py < 32; py++) {
+        // Texels per chunk side: 32 (every other alpha-map texel) or 64 (each one).
+        int per = maskSide / 16, step = 64 / per;
+        for (int py = 0; py < per; py++) {
             check(canceled);
-            for (int px = 0; px < 32; px++) {
-                int maskPixel = (2 * py + 1) * 64 + 2 * px + 1;
-                int output = ((chunk.y() * 32 + py) * 512 + chunk.x() * 32 + px) * 4;
+            for (int px = 0; px < per; px++) {
+                int maskPixel = (step * py + step / 2) * 64 + step * px + step / 2;
+                int output = ((chunk.y() * per + py) * maskSide + chunk.x() * per + px) * 4;
                 for (int layer = 1; layer < 4; layer++) {
                     alpha[output + layer - 1] =
                             layer < layers ? masks.get((layer - 1) * 4096 + maskPixel) : 0;
                 }
                 double brightness = 1;
                 if (colors.hasRemaining()) {
+                    // The texel centre in vertex-grid units (8 cells per chunk side).
+                    double gx = (px + .5) * 8 / per, gy = (py + .5) * 8 / per;
                     brightness =
-                            (tint(colors, px, py, 0)
-                                            + tint(colors, px, py, 1)
-                                            + tint(colors, px, py, 2))
+                            (tint(colors, gx, gy, 0)
+                                            + tint(colors, gx, gy, 1)
+                                            + tint(colors, gx, gy, 2))
                                     / 3;
                 }
                 alpha[output + 3] = (byte) Math.max(0, Math.min(255, Math.round(brightness * 128)));
@@ -354,8 +377,12 @@ public final class TerrainAtlasComposer {
 
     // Fine source fan triangles a-m-b, b-m-e, e-m-d, d-m-a; holes do not erase texture facts.
     private static double tint(ByteBuffer colors, int px, int py, int channel) {
-        double x = (px + .5) / 4, y = (py + .5) / 4;
-        int col = (int) x, row = (int) y;
+        return tint(colors, (px + .5) / 4, (py + .5) / 4, channel);
+    }
+
+    /** MCCV tint at vertex-grid position (x, y), 8 cells per chunk side. */
+    private static double tint(ByteBuffer colors, double x, double y, int channel) {
+        int col = Math.min(7, (int) x), row = Math.min(7, (int) y);
         double dx = x - col, dy = y - row;
         int a = row * 17 + col, b = a + 1, d = a + 17, e = d + 1, m = a + 9;
         int first, second;

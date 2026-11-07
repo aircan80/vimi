@@ -1,20 +1,27 @@
 package com.vimi.gui;
 
 import com.vibeminer.access.Cancellation;
+import com.vibeminer.concepts.locations.MapRoles;
 import com.vibeminer.concepts.world.BuildWorld;
+import com.vibeminer.concepts.world.WorldInstanceLinks;
 import com.vibeminer.concepts.world.WorldService;
 import com.vibeminer.formats.world.WorldFormats;
 
+import javafx.animation.AnimationTimer;
 import javafx.application.Platform;
 import javafx.geometry.Pos;
 import javafx.scene.canvas.Canvas;
+import javafx.scene.control.Button;
+import javafx.scene.control.ButtonBase;
 import javafx.scene.control.Label;
-import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.ProgressIndicator;
+import javafx.scene.control.ToggleButton;
+import javafx.scene.control.Tooltip;
 import javafx.scene.image.Image;
 import javafx.scene.image.PixelFormat;
 import javafx.scene.image.WritableImage;
 import javafx.scene.input.KeyEvent;
+import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.input.ScrollEvent;
 import javafx.scene.layout.HBox;
@@ -28,13 +35,50 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
-/** North-up recorded artwork; one active batch and one replaceable pending view. FX-owned. */
+/**
+ * The minimap cluster: recorded artwork around the player (one active batch and one replaceable
+ * pending view), role and instance-entrance markers, the tile streaming ring on the rim, and a
+ * button row (zoom out, north-up/heading-up, zoom in, tracking popup). The buttons follow the HUD
+ * rule: they are not focus-traversable, their events never reach the viewport's flight handlers,
+ * and focus goes back to the viewport after a click. FX-owned.
+ */
 final class WorldMinimap extends VBox implements AutoCloseable {
     static final double SIZE = 180, CENTER = SIZE / 2, RADIUS = 86;
+    /** Zoom levels: canvas scale relative to one tile across the circle; 1 is the default. */
+    static final double[] ZOOMS = {.5, .75, 1, 1.5, 2, 3};
+    private static final int DEFAULT_ZOOM = 2;
+    /** Instance entrance marker colour (also the tracking checkbox's text colour). */
+    static final Color ENTRANCE = Color.web("#c69cff");
+    /** Streaming ring colour. */
+    static final Color RING = Color.web("#6fd3ff");
+    private static final double ENTRANCE_SIZE = 5, ENTRANCE_HIT = 7;
     private final Canvas canvas = new Canvas(SIZE, SIZE);
     private final Label message = new Label("Minimap artwork unavailable");
     private final ProgressIndicator activity = new ProgressIndicator(-1);
-    private final ChoiceBox<String> orientation = new ChoiceBox<>();
+    private final ToggleButton orientation = new ToggleButton("N");
+    private final Button zoomOut = new Button("-"), zoomIn = new Button("+"),
+            trackingButton = new Button("*");
+    private final WorldMinimapTracking tracking = new WorldMinimapTracking();
+    private final WorldMinimapRing ring = new WorldMinimapRing();
+    private final AnimationTimer ringFade = new AnimationTimer() {
+        @Override
+        public void handle(long now) {
+            // Through the hold nothing visible changes: redraw only while fading, and once after.
+            if (ring.opacity(now) < 1) redraw();
+            if (!ring.animating(now)) stop();
+        }
+    };
+    private int zoom = DEFAULT_ZOOM;
+    // The minimap key hides the cluster on purpose; it stays hidden across updates until shown.
+    private boolean userHidden;
+    private Runnable refocus = () -> {};
+    // Shown by its own state (a valid view) and not hidden by the HUD; see followHud.
+    private boolean ownVisible, hudHidden;
+    /** Recorded entrances on the current map; drawn while the tracking layer is on. */
+    private List<WorldInstanceLinks.Link> entrances = List.of();
+    private final List<double[]> entranceHits = new ArrayList<>();
+    private final List<WorldInstanceLinks.Link> entranceHitLinks = new ArrayList<>();
+    private java.util.function.Consumer<Clicked> clicked;
     private final LinkedHashMap<Long, Artwork> cache = new LinkedHashMap<>(16, .75f, true);
     private final ThreadPoolExecutor worker = executor("world-minimap-requests");
     private final ThreadPoolExecutor cancellation = executor("world-minimap-cancel");
@@ -70,16 +114,16 @@ final class WorldMinimap extends VBox implements AutoCloseable {
      * Equal keys draw the same picture.
      */
     record DrawKey(long x, long y, long heading, List<WorldFormats.Tile> tiles, WorldFormats.Tile origin,
-            double originX, double originY, Object roles) {
+            double originX, double originY, Object roles, double zoom) {
         /** Canvas pixels per yard of the player's position. */
         static final double PIXELS_PER_YARD = 2 * RADIUS / WorldFormats.TILE_SIZE;
 
         static DrawKey of(double x, double y, double yaw, List<WorldFormats.Tile> tiles,
-                WorldFormats.Tile origin, double originX, double originY, Object roles) {
-            double quarter = 4 * PIXELS_PER_YARD;
+                WorldFormats.Tile origin, double originX, double originY, Object roles, double zoom) {
+            double quarter = 4 * PIXELS_PER_YARD * zoom;
             return new DrawKey(Math.round(x * quarter), Math.round(y * quarter),
                     Math.round(Math.toDegrees(Math.IEEEremainder(yaw, 2 * Math.PI)) * 4), tiles,
-                    origin, originX, originY, roles);
+                    origin, originX, originY, roles, zoom);
         }
     }
 
@@ -95,6 +139,12 @@ final class WorldMinimap extends VBox implements AutoCloseable {
             List<WorldFormats.Tile> tiles) {}
 
     private record Artwork(Image image, String issue) {}
+
+    /**
+     * A clicked minimap marker: a role NPC ({@code role}) or an instance entrance ({@code
+     * entrance}), exactly one of them non-null, with its hover description.
+     */
+    record Clicked(MapRoles.Marker role, WorldInstanceLinks.Link entrance, String description) {}
 
     private record Loaded(long id, WorldService.Minimap image) {}
 
@@ -136,19 +186,44 @@ final class WorldMinimap extends VBox implements AutoCloseable {
             pointer = null;
             roleTip.hide();
         });
+        // A still primary click on a marker is reported and kept from the world pick; any other
+        // click on the artwork bubbles to the viewport as before.
+        canvas.addEventHandler(MouseEvent.MOUSE_CLICKED, event -> {
+            if (clicked == null || event.getButton() != MouseButton.PRIMARY || !event.isStillSincePress())
+                return;
+            var hit = markerAt(event.getX(), event.getY());
+            if (hit == null) return;
+            event.consume();
+            clicked.accept(hit);
+        });
         roleTip.setWrapText(true);
         roleTip.setMaxWidth(360);
         orientation.setId("world-minimap-orientation");
-        orientation.getItems().setAll("North up", "Heading up");
-        orientation.setValue("North up");
-        orientation.setAccessibleText("Minimap orientation");
-        orientation.setPrefWidth(156);
-        orientation.setOnAction(event -> redraw());
-        // Let the control/skin handle input first, then stop unhandled flight shortcuts and
-        // gestures from bubbling into the containing World viewport.
-        orientation.addEventHandler(KeyEvent.ANY, event -> event.consume());
-        orientation.addEventHandler(MouseEvent.ANY, event -> event.consume());
-        orientation.addEventHandler(ScrollEvent.ANY, event -> event.consume());
+        orientation.setAccessibleText("Minimap orientation: north up");
+        orientation.setTooltip(new Tooltip("North up / heading up"));
+        orientation.selectedProperty().addListener((o, was, headingUp) -> {
+            orientation.setText(headingUp ? "^" : "N");
+            redraw();
+        });
+        button(orientation, () -> {});
+        zoomOut.setId("world-minimap-zoom-out");
+        zoomOut.setAccessibleText("Zoom the minimap out");
+        zoomOut.setTooltip(new Tooltip("Zoom out"));
+        button(zoomOut, () -> zoom(zoom - 1));
+        zoomIn.setId("world-minimap-zoom-in");
+        zoomIn.setAccessibleText("Zoom the minimap in");
+        zoomIn.setTooltip(new Tooltip("Zoom in"));
+        button(zoomIn, () -> zoom(zoom + 1));
+        trackingButton.setId("world-minimap-tracking");
+        trackingButton.setAccessibleText("Tracking: NPC spawns, minimap roles and instance entrances");
+        trackingButton.setTooltip(new Tooltip("Tracking: spawns, roles, entrances"));
+        button(trackingButton, null);
+        // Opening the popup moves focus to it; the popup gives focus back when it closes.
+        trackingButton.setOnAction(event -> tracking.toggle(this));
+        tracking.entrances().selectedProperty().addListener((o, was, on) -> redraw());
+        var buttons = new HBox(4, zoomOut, orientation, zoomIn, trackingButton);
+        buttons.setId("world-minimap-buttons");
+        buttons.setAlignment(Pos.CENTER);
         activity.setId("world-minimap-activity");
         activity.setPrefSize(14, 14);
         activity.setMaxSize(14, 14);
@@ -160,8 +235,141 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         var state = new HBox(5, activity, message);
         state.setAlignment(Pos.CENTER);
         state.setMouseTransparent(true);
-        getChildren().addAll(canvas, state, orientation);
+        getChildren().addAll(canvas, state, buttons);
+        zoom(DEFAULT_ZOOM);
         hide();
+    }
+
+    /**
+     * The HUD button pattern: the control handles its input first, then the event stops here so
+     * flight keys and gestures never reach the viewport; after {@code action}, focus goes back.
+     */
+    private void button(ButtonBase button, Runnable action) {
+        button.setFocusTraversable(false);
+        button.setMinWidth(34);
+        button.setStyle("-fx-font-size: 11px; -fx-padding: 2 6 2 6;");
+        if (action != null) button.setOnAction(event -> {
+            action.run();
+            refocus.run();
+        });
+        button.addEventHandler(KeyEvent.ANY, KeyEvent::consume);
+        button.addEventHandler(MouseEvent.ANY, MouseEvent::consume);
+        button.addEventHandler(ScrollEvent.ANY, ScrollEvent::consume);
+    }
+
+    /** Gives keyboard focus back to the World viewport after a cluster click. */
+    void refocus(Runnable next) {
+        refocus = java.util.Objects.requireNonNull(next);
+        tracking.refocus(next);
+    }
+
+    /**
+     * The minimap key: hides the cluster (and its popup), or shows it again. Ignored while the
+     * HUD is hidden, so nothing changes out of sight.
+     */
+    void toggleShown() {
+        if (hudHidden) return;
+        userHidden = !userHidden;
+        applyVisible();
+    }
+
+    /** True while the minimap key has hidden the cluster. */
+    boolean userHidden() {
+        return userHidden;
+    }
+
+    /** Whether the cluster shows: it has a view, the minimap key left it on, the HUD shows. */
+    boolean shown() {
+        return ownVisible && view != null && !userHidden && !hudHidden;
+    }
+
+    /** The tracking key: opens or closes the popup, only while the cluster is shown. */
+    void toggleTracking() {
+        if (!shown()) {
+            tracking.hide();
+            return;
+        }
+        tracking.toggle(this);
+    }
+
+    /** The tracking popup; the view mounts the spawn and role controls in it. */
+    WorldMinimapTracking tracking() {
+        return tracking;
+    }
+
+    /** Reports clicked markers (null: clicks on markers bubble to the viewport like any other). */
+    void onMarkerClicked(java.util.function.Consumer<Clicked> next) {
+        clicked = next;
+    }
+
+    /** True in heading-up mode, false north-up. */
+    boolean headingUp() {
+        return orientation.isSelected();
+    }
+
+    void headingUp(boolean next) {
+        orientation.setSelected(next);
+    }
+
+    /** The current zoom scale, one of {@link #ZOOMS}. */
+    double zoom() {
+        return ZOOMS[zoom];
+    }
+
+    private void zoom(int index) {
+        int next = Math.clamp(index, 0, ZOOMS.length - 1);
+        boolean changed = next != zoom;
+        zoom = next;
+        zoomOut.setDisable(zoom == 0);
+        zoomIn.setDisable(zoom == ZOOMS.length - 1);
+        if (!changed || view == null) return;
+        // A wider view can reach tiles the current view list left out: place them again.
+        var current = view;
+        drawn = null;
+        update(current.source(), current.inventory(), current.origin(), current.originX(),
+                current.originY(), current.x(), current.y(), current.yaw());
+    }
+
+    /** The tile streaming state for the rim ring; {@code desired <= 0} shows no ring. */
+    void progress(int prepared, int desired) {
+        long now = System.nanoTime();
+        double before = ring.fraction(), shown = ring.opacity(now);
+        ring.update(prepared, desired, now);
+        if (ring.animating(now)) ringFade.start();
+        if (ring.fraction() != before || ring.opacity(now) != shown) redraw();
+    }
+
+    /** Ring fraction and opacity now; for tests. */
+    double[] ring() {
+        long now = System.nanoTime();
+        return new double[] {ring.fraction(), ring.opacity(now)};
+    }
+
+    /** Recorded instance entrances on the current map, drawn while the tracking layer is on. */
+    void entrances(List<WorldInstanceLinks.Link> next) {
+        entrances = List.copyOf(next);
+        if (tracking.entrances().isSelected()) redraw();
+    }
+
+    /** The marker under a canvas point: a role NPC first, then an entrance; null for none. */
+    Clicked markerAt(double x, double y) {
+        if (roles != null && view != null) {
+            var role = roles.markerAt(x, y);
+            if (role != null) return new Clicked(role, null, roles.hoverText(x, y));
+        }
+        for (int i = 0; i < entranceHits.size(); i++) {
+            var at = entranceHits.get(i);
+            if (Math.hypot(at[0] - x, at[1] - y) <= ENTRANCE_HIT) {
+                var link = entranceHitLinks.get(i);
+                return new Clicked(null, link, entranceText(link));
+            }
+        }
+        return null;
+    }
+
+    private static String entranceText(WorldInstanceLinks.Link link) {
+        return link + " entrance\nMap #" + link.mapId()
+                + " · recorded Map corpse position on this map";
     }
 
     private static ThreadPoolExecutor executor(String name) {
@@ -190,8 +398,8 @@ final class WorldMinimap extends VBox implements AutoCloseable {
 
     /** Shows, moves, updates or hides the role tooltip against what is drawn now. */
     private void hover() {
-        String text = roles == null || pointer == null || view == null
-                ? null : roles.hoverText(pointer[0], pointer[1]);
+        var hit = pointer == null || view == null ? null : markerAt(pointer[0], pointer[1]);
+        String text = hit == null ? null : hit.description();
         if (text == null) {
             roleTip.hide();
             return;
@@ -247,10 +455,11 @@ final class WorldMinimap extends VBox implements AutoCloseable {
                     List.copyOf(tiles));
         }
         var nearby = new ArrayList<WorldFormats.Tile>(9);
+        double scale = ZOOMS[zoom];
         for (var tile : around.tiles()) {
-            double left = screenY(maxY(tile, origin, originY), y);
-            double top = screenX(maxX(tile, origin, originX), x);
-            double side = 2 * RADIUS;
+            double left = screenY(maxY(tile, origin, originY), y, scale);
+            double top = screenX(maxX(tile, origin, originX), x, scale);
+            double side = 2 * RADIUS * scale;
             if (left < CENTER + RADIUS
                     && left + side > CENTER - RADIUS
                     && top < CENTER + RADIUS
@@ -270,10 +479,10 @@ final class WorldMinimap extends VBox implements AutoCloseable {
                         y,
                         yaw,
                         List.copyOf(nearby));
-        setVisible(true);
-        setManaged(true);
+        ownVisible = true;
+        applyVisible();
         var key = DrawKey.of(x, y, yaw, view.tiles(), origin, originX, originY,
-                roles == null ? null : roles.paintKey());
+                roles == null ? null : roles.paintKey(), scale);
         if (!key.equals(drawn)) {
             drawn = key;
             redraw();
@@ -307,11 +516,20 @@ final class WorldMinimap extends VBox implements AutoCloseable {
     }
 
     static double screenX(double nativeX, double playerX) {
-        return CENTER - (nativeX - playerX) * (2 * RADIUS / WorldFormats.TILE_SIZE);
+        return screenX(nativeX, playerX, 1);
     }
 
     static double screenY(double nativeY, double playerY) {
-        return CENTER - (nativeY - playerY) * (2 * RADIUS / WorldFormats.TILE_SIZE);
+        return screenY(nativeY, playerY, 1);
+    }
+
+    /** As {@link #screenX(double, double)} at a zoom scale. */
+    static double screenX(double nativeX, double playerX, double zoom) {
+        return CENTER - (nativeX - playerX) * (2 * RADIUS * zoom / WorldFormats.TILE_SIZE);
+    }
+
+    static double screenY(double nativeY, double playerY, double zoom) {
+        return CENTER - (nativeY - playerY) * (2 * RADIUS * zoom / WorldFormats.TILE_SIZE);
     }
 
     private void startMissing() {
@@ -412,7 +630,8 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         g.clip();
         g.setFill(Color.web("#223038"));
         g.fillRect(0, 0, SIZE, SIZE);
-        boolean rotating = "Heading up".equals(orientation.getValue());
+        boolean rotating = orientation.isSelected();
+        double scale = ZOOMS[zoom];
         double yaw = view == null ? 0 : view.yaw();
         double rotation = rotating ? yaw : 0;
         g.translate(CENTER, CENTER);
@@ -427,22 +646,24 @@ final class WorldMinimap extends VBox implements AutoCloseable {
                     continue;
                 }
                 readable++;
-                double left = screenY(maxY(tile, view.origin(), view.originY()), view.y());
-                double top = screenX(maxX(tile, view.origin(), view.originX()), view.x());
-                g.drawImage(artwork.image(), left, top, 2 * RADIUS, 2 * RADIUS);
+                double left = screenY(maxY(tile, view.origin(), view.originY()), view.y(), scale);
+                double top = screenX(maxX(tile, view.origin(), view.originX()), view.x(), scale);
+                g.drawImage(artwork.image(), left, top, 2 * RADIUS * scale, 2 * RADIUS * scale);
             }
             if (roles != null && view.inventory().map() != null) {
                 var current = view;
                 roles.paint(g, current.inventory().map().id(),
                         (worldX, worldY) -> new double[] {
-                            screenY(worldY, current.y()), screenX(worldX, current.x())},
+                            screenY(worldY, current.y(), scale), screenX(worldX, current.x(), scale)},
                         CENTER, RADIUS, rotation);
             }
         }
+        paintEntrances(g, rotation, scale);
         g.restore();
         g.setStroke(Color.web("#a6b9b7"));
         g.setLineWidth(2);
         g.strokeOval(CENTER - RADIUS, CENTER - RADIUS, 2 * RADIUS, 2 * RADIUS);
+        paintRing(g);
         g.setFill(Color.WHITE);
         g.fillText("N", CENTER + Math.sin(rotation) * (RADIUS - 8) - 4,
                 CENTER - Math.cos(rotation) * (RADIUS - 8) + 4);
@@ -466,18 +687,63 @@ final class WorldMinimap extends VBox implements AutoCloseable {
                                                         && !cache.containsKey(tile.minimapId()));
         activity.setVisible(loading);
         activity.setManaged(loading);
+        String mode = rotating ? "Heading up" : "North up";
+        orientation.setAccessibleText("Minimap orientation: " + mode.toLowerCase(java.util.Locale.ROOT));
         message.setText(
                 loading
                         ? "Loading minimap artwork…"
                         : readable == 0
                                 ? "Minimap artwork unavailable"
-                                : orientation.getValue() + (missing > 0 ? " · partial artwork" : ""));
-        setAccessibleText(orientation.getValue() + " minimap. " + message.getText());
-        canvas.setAccessibleText(orientation.getValue() + " minimap; player centered");
+                                : mode + (missing > 0 ? " · partial artwork" : ""));
+        setAccessibleText(mode + " minimap. " + message.getText());
+        canvas.setAccessibleText(mode + " minimap; player centered");
         hover();
     }
 
+    /** Entrance diamonds inside the circle; hit points are recorded after the map's rotation. */
+    private void paintEntrances(javafx.scene.canvas.GraphicsContext g, double rotation, double scale) {
+        entranceHits.clear();
+        entranceHitLinks.clear();
+        if (view == null || !tracking.entrances().isSelected()) return;
+        double cos = Math.cos(rotation), sin = Math.sin(rotation);
+        for (var link : entrances) {
+            var entrance = link.entrance();
+            if (entrance == null) continue;
+            double px = screenY(entrance.y(), view.y(), scale), py = screenX(entrance.x(), view.x(), scale);
+            double dx = px - CENTER, dy = py - CENTER;
+            double inside = RADIUS - ENTRANCE_SIZE;
+            if (dx * dx + dy * dy > inside * inside) continue;
+            double[] xs = {px, px + ENTRANCE_SIZE, px, px - ENTRANCE_SIZE};
+            double[] ys = {py - ENTRANCE_SIZE, py, py + ENTRANCE_SIZE, py};
+            g.setFill(ENTRANCE);
+            g.setStroke(Color.rgb(12, 16, 14, .9));
+            g.setLineWidth(1);
+            g.fillPolygon(xs, ys, 4);
+            g.strokePolygon(xs, ys, 4);
+            entranceHits.add(new double[] {CENTER + dx * cos - dy * sin, CENTER + dx * sin + dy * cos});
+            entranceHitLinks.add(link);
+        }
+    }
+
+    /** The streaming ring: clockwise from north over the rim, fading after it fills. */
+    private void paintRing(javafx.scene.canvas.GraphicsContext g) {
+        double opacity = ring.opacity(System.nanoTime());
+        if (opacity <= 0) return;
+        g.save();
+        g.setGlobalAlpha(opacity);
+        g.setStroke(RING);
+        g.setLineWidth(3);
+        g.setLineCap(javafx.scene.shape.StrokeLineCap.BUTT);
+        // JavaFX arcs run counter-clockwise from three o'clock; a negative extent is clockwise.
+        g.strokeArc(CENTER - RADIUS, CENTER - RADIUS, 2 * RADIUS, 2 * RADIUS, 90,
+                -360 * ring.fraction(), javafx.scene.shape.ArcType.OPEN);
+        g.restore();
+    }
+
     void hide() {
+        ringFade.stop();
+        ring.reset();
+        tracking.hide();
         roleTip.hide();
         generation++;
         view = null;
@@ -487,8 +753,40 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         cancelActive();
         activity.setVisible(false);
         activity.setManaged(false);
-        setVisible(false);
-        setManaged(false);
+        ownVisible = false;
+        applyVisible();
+    }
+
+    /**
+     * Follows the HUD's hidden state (H, Alt+Z) by listening, not binding, since the minimap also
+     * shows and hides itself: it shows while it has a view and the HUD is shown. Hiding the HUD
+     * closes the tracking popup and the role tip; the view and its artwork are kept. Call it once:
+     * each call adds a listener that is never removed (the view does so at construction).
+     */
+    void followHud(javafx.beans.value.ObservableBooleanValue hidden) {
+        java.util.Objects.requireNonNull(hidden);
+        hidden.addListener((o, was, now) -> hudHidden(now));
+        hudHidden(hidden.get());
+    }
+
+    private void hudHidden(boolean hidden) {
+        hudHidden = hidden;
+        if (hidden) {
+            tracking.hide();
+            roleTip.hide();
+        }
+        applyVisible();
+    }
+
+    /** The one visibility rule: a view, not hidden by the minimap key, and the HUD shown. */
+    private void applyVisible() {
+        boolean shown = shown();
+        if (!shown) {
+            tracking.hide();
+            roleTip.hide();
+        }
+        setVisible(shown);
+        setManaged(shown);
     }
 
     private void cancelActive() {
@@ -503,6 +801,7 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         if (closed) return;
         hide();
         closed = true;
+        ringFade.stop();
         if (roles != null) roles.close();
         worker.shutdown();
         cancellation.shutdown();

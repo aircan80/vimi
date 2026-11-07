@@ -516,4 +516,86 @@ final class WorldFrameFileV2Test {
         assertThrows(IllegalStateException.class, () -> file.readLatest(0, barrier(1, 1)));
         file.close();
     }
+
+    /** Writes {@code rows} rows of {@code stride} bytes: frame pixels then padding. */
+    private static void fillDirect(
+            ByteBuffer slot,
+            int width,
+            int height,
+            int stride,
+            java.util.function.IntBinaryOperator argb) {
+        var rows = slot.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < stride / 4; x++) {
+                rows.putInt(y * stride + x * 4, x < width ? argb.applyAsInt(x, y) : 0x00badbad);
+            }
+        }
+    }
+
+    @Test
+    void directReadbackPublishesPaddedRowsInPlaceAndReadersGetTightPixels() throws Exception {
+        Path path = directory.resolve("direct");
+        for (boolean verify : new boolean[] {false, true}) {
+            Files.deleteIfExists(path);
+            try (var writer = WorldFrameFileV2.open(path, NONCE, SCOPE, true, verify);
+                    var reader = WorldFrameFileV2.open(path, NONCE, SCOPE, false, verify)) {
+                int width = 3, height = 2, stride = 8 * 4; // a 3x2 frame in an 8-wide target
+                var slot = writer.beginDirect(1, stride * height);
+                assertNull(reader.readLatest(0, barrier(1, 1)), "an in-progress slot is skipped");
+                fillDirect(slot, width, height, stride, (x, y) -> 0xff000000 | (y << 8) | x);
+                writer.publishDirect(1, ticket(1, 1, 1, 1, width, height), stride);
+                var frame =
+                        reader.readLatest(
+                                0, new WorldFrameFileV2.Barrier(1, width, height, 1, 1, 1, 1));
+                assertNotNull(frame, "verify=" + verify);
+                var pixels = frame.pixels();
+                assertEquals(width * height, pixels.remaining());
+                for (int y = 0; y < height; y++) {
+                    for (int x = 0; x < width; x++) {
+                        assertEquals(0xff000000 | (y << 8) | x, pixels.get(y * width + x));
+                    }
+                }
+                frame.release();
+                // Begun again then abandoned: the slot holds no frame.
+                writer.beginDirect(1, stride * height);
+                writer.abandonDirect(1);
+                assertNull(
+                        reader.readLatest(
+                                0, new WorldFrameFileV2.Barrier(1, width, height, 1, 1, 1, 1)));
+            }
+        }
+    }
+
+    @Test
+    void directPublicationKeepsTheWriterChecks() throws Exception {
+        Path path = directory.resolve("direct-checks");
+        try (var file = WorldFrameFileV2.create(path, NONCE, SCOPE)) {
+            // Not begun: a slot that was never marked in progress cannot be published in place.
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> file.publishDirect(0, ticket(1, 1, 1, 1, 1, 1), 4));
+            var slot = file.beginDirect(0, 64);
+            fillDirect(slot, 2, 2, 16, (x, y) -> 0xff123456);
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> file.publishDirect(0, ticket(1, 1, 1, 1, 2, 2), 4),
+                    "stride shorter than a row");
+            fillDirect(slot, 2, 2, 16, (x, y) -> x == 1 && y == 1 ? 0x10123456 : 0xff123456);
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> file.publishDirect(0, ticket(1, 1, 1, 1, 2, 2), 16),
+                    "the last pixel is always sampled for alpha");
+            fillDirect(slot, 2, 2, 16, (x, y) -> 0xff123456);
+            file.publishDirect(0, ticket(5, 1, 1, 1, 2, 2), 16);
+            file.beginDirect(1, 64);
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> file.publishDirect(1, ticket(5, 1, 1, 1, 2, 2), 16),
+                    "sequences still only grow");
+            assertThrows(IllegalArgumentException.class, () -> file.beginDirect(3, 64));
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> file.beginDirect(0, WorldFrameFileV2.PAYLOAD_BYTES + 1));
+        }
+    }
 }
