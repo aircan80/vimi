@@ -1313,7 +1313,8 @@ final class WorldStreamSourceController {
             var facts = entry.source().facts();
             if (facts.outcome() == WorldTerrainStreaming.Outcome.TEXTURED) {
                 textured++;
-                if (entry.resident().coveredRectangles() < 256
+                // Chunks with no layers have nothing to draw: compare with what the material drew.
+                if (entry.resident().coveredRectangles() < facts.supportedChunks()
                         || facts.materialState() == WorldTerrainTextureSource.State.PARTIAL) partial++;
             } else {
                 height++;

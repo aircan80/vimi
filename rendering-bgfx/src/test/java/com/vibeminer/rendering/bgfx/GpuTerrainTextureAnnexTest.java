@@ -328,4 +328,62 @@ final class GpuTerrainTextureAnnexTest {
         }
         return new TerrainScene(tiles);
     }
+
+    @Test
+    void emptyRectangleCountsRoundTripAndAreBounded() throws Exception {
+        var scene = scene(1, 10);
+        var meta =
+                TerrainTextureBinding.fromSnapshot(
+                        0,
+                        scene.tiles().get(0),
+                        0,
+                        0,
+                        new long[] {2, 0, 0, 0},
+                        16,
+                        SOURCES,
+                        () -> false);
+        assertEquals(16, meta.emptyRectangles());
+        byte[] pixels = new byte[TerrainTextureBinding.PIXEL_BYTES];
+        for (int y = 0; y < 32; y++) {
+            for (int x = 32; x < 64; x++) {
+                int p = (y * 512 + x) * 4;
+                pixels[p] = 71;
+                pixels[p + 3] = (byte) 255;
+            }
+        }
+        var binding =
+                TerrainTextureBinding.borrow(meta, ByteBuffer.wrap(pixels).asReadOnlyBuffer());
+        Path geometry = scratch.resolve("geometry"), annex = scratch.resolve("annex");
+        var receipt = GpuTerrainSceneFile.writeBound(geometry, scene, () -> false);
+        GpuTerrainTextureAnnex.write(annex, receipt, scene, List.of(binding), () -> false);
+        var decoded =
+                GpuTerrainTextureAnnex.read(
+                        annex, GpuTerrainSceneFile.readBound(geometry, () -> false), () -> false);
+        assertEquals(16, decoded.bindings().getFirst().metadata().emptyRectangles());
+        // Covered plus empty can never pass 256 rectangles.
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        TerrainTextureBinding.fromSnapshot(
+                                0,
+                                scene.tiles().get(0),
+                                0,
+                                0,
+                                new long[] {-1, -1, -1, -1},
+                                1,
+                                SOURCES,
+                                () -> false));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        TerrainTextureBinding.fromSnapshot(
+                                0,
+                                scene.tiles().get(0),
+                                0,
+                                0,
+                                new long[] {2, 0, 0, 0},
+                                -1,
+                                SOURCES,
+                                () -> false));
+    }
 }
