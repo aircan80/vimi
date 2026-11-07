@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -16,8 +17,8 @@ final class WorldStreamStatusWriter {
     private final String prefix;
     private final ArrayDeque<byte[]> reliable = new ArrayDeque<>(16);
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
-    private byte[] camera;
-    private boolean finishing;
+    private byte[] camera, frame;
+    private boolean finishing, quiet;
     private volatile Throwable failure;
 
     WorldStreamStatusWriter(
@@ -48,12 +49,12 @@ final class WorldStreamStatusWriter {
 
     /** Camera replacement never reserves reliable credit or refreshes reliable write progress. */
     boolean cameraApplied(long policy, int width, int height) {
-        if (policy <= 0 || width < 1 || width > 800 || height < 1 || height > 500) {
+        if (policy <= 0 || !WorldFrameLimits.fits(width, height)) {
             throw new IllegalArgumentException("Invalid camera acknowledgement");
         }
         byte[] bytes = line("CAMERA_APPLIED " + policy + " " + width + " " + height);
         synchronized (lock) {
-            if (finishing) {
+            if (finishing || quiet) {
                 return false;
             }
             camera = bytes;
@@ -62,11 +63,43 @@ final class WorldStreamStatusWriter {
         }
     }
 
+    /**
+     * Latest-value wake-up hint: the frame mapping holds a newly published sequence. Replaces any
+     * unwritten older hint; never reserves reliable credit. The mapping stays the only authority.
+     */
+    boolean framePublished(long sequence) {
+        if (sequence < 1 || sequence > WorldFrameFileV2.MAX_SEQUENCE) {
+            throw new IllegalArgumentException("Invalid frame publication hint");
+        }
+        byte[] bytes = line("FRAME " + sequence);
+        synchronized (lock) {
+            if (finishing || quiet) {
+                return false;
+            }
+            frame = bytes;
+            lock.notifyAll();
+            return true;
+        }
+    }
+
+    /**
+     * Drops pending latest-value statuses and refuses new ones, so none can follow a terminal
+     * reliable status enqueued afterwards.
+     */
+    void quiet() {
+        synchronized (lock) {
+            quiet = true;
+            camera = null;
+            frame = null;
+        }
+    }
+
     /** Nonblocking, idempotent. Does not close a stream whose monitor may be held by a write. */
     CompletableFuture<Void> finish() {
         synchronized (lock) {
             finishing = true;
             camera = null;
+            frame = null;
             lock.notifyAll();
         }
         return drained.copy();
@@ -104,7 +137,7 @@ final class WorldStreamStatusWriter {
                 byte[] bytes;
                 boolean counted;
                 synchronized (lock) {
-                    while (reliable.isEmpty() && camera == null && !finishing) {
+                    while (reliable.isEmpty() && camera == null && frame == null && !finishing) {
                         lock.wait();
                     }
                     if (!reliable.isEmpty()) {
@@ -112,9 +145,13 @@ final class WorldStreamStatusWriter {
                         counted = true;
                     } else if (finishing) {
                         break;
-                    } else {
+                    } else if (camera != null) {
                         bytes = camera;
                         camera = null;
+                        counted = false;
+                    } else {
+                        bytes = frame;
+                        frame = null;
                         counted = false;
                     }
                 }
@@ -131,6 +168,7 @@ final class WorldStreamStatusWriter {
                 finishing = true;
                 reliable.clear();
                 camera = null;
+                frame = null;
             }
             drained.completeExceptionally(error);
         }
