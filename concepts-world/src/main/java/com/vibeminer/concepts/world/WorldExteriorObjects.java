@@ -1254,6 +1254,9 @@ public final class WorldExteriorObjects {
                             return !pending;
                         });
                 WorldStageTimings.stop("objects.phase.setDoodads", phase);
+                // objects.phase.interiors also covers the second set-doodad pass: the doodad sets
+                // of interior-only roots, deferred above, are placed here and are not counted
+                // under objects.phase.setDoodads.
                 phase = WorldStageTimings.start();
                 placeInteriors();
                 placeSetDoodads(building -> deferred.contains(building.rootId()));
