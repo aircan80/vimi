@@ -141,5 +141,64 @@ class JvmOptionsTest(unittest.TestCase):
             self.assertEqual(['-Xa'], package_app.jvm_options(path))
 
 
+class ImageCheckTest(unittest.TestCase):
+    """--image-only and full packaging share check_image, so both verify macOS signatures."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.image = Path(self.temp.name) / 'VibeMiner.app'
+        self.natives = self.image / 'Contents/app/native'
+        (self.natives / 'javafx').mkdir(parents=True)
+        (self.natives / 'javafx/libglass.dylib').write_bytes(b'native')
+        (self.natives / 'libsqlite3.dylib').write_bytes(b'native')
+        self.report = {'version': 'v0.1.0-alpha.1', 'collectors': 'ZGC Minor Cycles,ZGC Major Cycles'}
+        self.commands = []
+        self.failure = None
+        original = package_app.run
+        self.addCleanup(setattr, package_app, 'run', original)
+        package_app.run = self.run_command
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def run_command(self, args, **options):
+        self.commands.append(args)
+        if self.failure:
+            raise self.failure
+
+    def check(self, system='macos', report=None, tag='v0.1.0-alpha.1'):
+        package_app.check_image(self.image, system, report or self.report, tag)
+
+    def test_macos_image_verifies_the_seal_and_every_native(self):
+        self.check()
+        self.assertEqual(['codesign', '--verify', '--deep', '--strict', '--verbose=2', self.image], self.commands[0])
+        self.assertEqual([['codesign', '--verify', '--strict', self.natives / 'javafx/libglass.dylib'],
+                          ['codesign', '--verify', '--strict', self.natives / 'libsqlite3.dylib']], self.commands[1:])
+
+    def test_broken_signature_fails_the_check(self):
+        self.failure = package_app.subprocess.CalledProcessError(1, ['codesign'])
+        with self.assertRaises(package_app.subprocess.CalledProcessError):
+            self.check()
+        self.assertEqual(1, len(self.commands))
+
+    def test_macos_image_without_bundled_glass_fails(self):
+        (self.natives / 'javafx/libglass.dylib').unlink()
+        with self.assertRaisesRegex(ValueError, 'glass'):
+            self.check()
+
+    def test_other_systems_run_no_codesign(self):
+        for system in ('linux', 'windows'):
+            with self.subTest(system=system):
+                self.check(system)
+                self.assertEqual([], self.commands)
+
+    def test_version_and_collector_checks_still_apply(self):
+        with self.assertRaisesRegex(ValueError, 'differs from requested tag'):
+            self.check('linux', tag='v0.1.0-alpha.2')
+        with self.assertRaisesRegex(ValueError, 'not running ZGC'):
+            self.check('linux', report={'version': 'v0.1.0-alpha.1'})
+        self.assertEqual([], self.commands)
+
+
 if __name__ == '__main__':
     unittest.main()

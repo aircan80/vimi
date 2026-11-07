@@ -239,6 +239,19 @@ def verify_macos_signatures(image):
         run(["codesign", "--verify", "--strict", library], timeout=60)
 
 
+def check_image(image, system, report, tag):
+    """Checks every shipped form of the image needs, --image-only included.
+
+    Nothing changes the image after these checks: the archive and installers are built from it
+    as checked. On macOS that covers the bundle seal and every bundled native's signature.
+    """
+    if report.get("version") != tag:
+        raise ValueError("Packaged version differs from requested tag")
+    require_collectors(report)
+    if system == "macos":
+        verify_macos_signatures(image)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", required=True)
@@ -305,9 +318,7 @@ def main():
         command += ["--mac-package-identifier", "com.vibeminer.desktop", "--mac-package-name", "VibeMiner"]
     run(command, timeout=600)
     report = smoke(image, system, output, args.ui_smoke)
-    if report.get("version") != args.tag:
-        raise ValueError("Packaged version differs from requested tag")
-    require_collectors(report)
+    check_image(image, system, report, args.tag)
     if args.image_only:
         print(image)
         return
@@ -321,8 +332,6 @@ def main():
     else:
         portable = output / f"{stem}.zip"
         if system == "macos":
-            # Verify exactly what ships: the seal and every bundled native, just before archiving.
-            verify_macos_signatures(image)
             run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", image, portable], timeout=300)
         else:
             shutil.make_archive(str(portable.with_suffix("")), "zip", image.parent, image.name)
