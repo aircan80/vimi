@@ -93,7 +93,9 @@ class ShaderBuildTests(unittest.TestCase):
         for varying in sorted((shaders.ROOT / "rendering-bgfx/src").glob("*/shaders/**/varying.def.sc")):
             shaders.check_instance_semantics(varying.parent)
             checked += "i_data" in varying.read_text(encoding="utf-8")
-        self.assertGreaterEqual(checked, 4)
+        # The terrain, spike and global-candidate families still instance; the production World
+        # stream terrain is an indexed mesh (issue #373).
+        self.assertGreaterEqual(checked, 3)
 
 
 if __name__ == "__main__":

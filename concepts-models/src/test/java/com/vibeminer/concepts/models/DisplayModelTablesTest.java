@@ -213,16 +213,24 @@ class DisplayModelTablesTest {
         return new Tables().add(displays).add(models);
     }
 
+    /** One row per display, each choosing value 1 for GeosetIndex 0 (group 1, section 101). */
     private static Table geosetRows(long... displayIds) {
-        var table =
-                new Table(
-                        DisplayModelService.GEOSET_TABLE,
-                        "CreatureDisplayInfoID",
-                        "CreatureDisplayInfo");
+        var table = geosetTable();
         for (int i = 0; i < displayIds.length; i++) {
-            table.row(100 + i, displayIds[i]);
+            table.row(100 + i, displayIds[i], 0, 1);
         }
         return table;
+    }
+
+    private static Table geosetTable() {
+        return new Table(
+                DisplayModelService.GEOSET_TABLE,
+                "CreatureDisplayInfoID",
+                "CreatureDisplayInfo",
+                "GeosetIndex",
+                null,
+                "GeosetValue",
+                null);
     }
 
     private static DisplayModelService service(Tables tables) {
@@ -247,8 +255,8 @@ class DisplayModelTablesTest {
         var service = service(tables);
         var five = resolve(service, 5);
         var six = resolve(service, 6);
-        assertEquals(Boolean.FALSE, five.displayGeosets(), "no rows for display 5");
-        assertEquals(Boolean.TRUE, six.displayGeosets(), "display 6 records its own geosets");
+        assertEquals(Map.of(), five.displayGeosets(), "no rows for display 5");
+        assertEquals(Map.of(1, 1), six.displayGeosets(), "display 6 chooses 101: group 1, value 1");
         assertEquals(1, tables.pages(DisplayModelService.GEOSET_TABLE), "the table is read once");
         assertEquals(0L, five.creatureGeosetDataId());
         service.closeAsync().join();
@@ -257,13 +265,13 @@ class DisplayModelTablesTest {
     @Test
     void anEmptyOrMissingTableMeansNoRowsAndAPartialOrBadOneIsUnknown() {
         assertEquals(
-                Boolean.FALSE,
+                Map.of(),
                 resolve(service(displays(true).add(geosetRows())), 5).displayGeosets(),
                 "an empty table has no rows");
         var missing = geosetRows(5);
         missing.state = TableTypes.State.NOT_IN_BUILD;
         assertEquals(
-                Boolean.FALSE,
+                Map.of(),
                 resolve(service(displays(true).add(missing)), 5).displayGeosets(),
                 "a table the build does not have means no rows");
         var partial = geosetRows(6);
@@ -274,8 +282,15 @@ class DisplayModelTablesTest {
         assertNull(resolve(service, 6).displayGeosets());
         assertEquals(1, tables.pages(DisplayModelService.GEOSET_TABLE), "refused once, not reread");
         var unrelated =
-                new Table(DisplayModelService.GEOSET_TABLE, "CreatureDisplayInfoID", null)
-                        .row(1, 5);
+                new Table(
+                                DisplayModelService.GEOSET_TABLE,
+                                "CreatureDisplayInfoID",
+                                null,
+                                "GeosetIndex",
+                                null,
+                                "GeosetValue",
+                                null)
+                        .row(1, 5, 0, 1);
         assertNull(
                 resolve(service(displays(true).add(unrelated)), 5).displayGeosets(),
                 "an unverified join column is unknown");
@@ -301,7 +316,7 @@ class DisplayModelTablesTest {
         var tables = displays(true).add(once);
         var service = service(tables);
         assertNull(resolve(service, 5).displayGeosets(), "busy now: unknown, not cached");
-        assertEquals(Boolean.TRUE, resolve(service, 5).displayGeosets(), "read again later");
+        assertEquals(Map.of(1, 1), resolve(service, 5).displayGeosets(), "read again later");
         var stuck = geosetRows(5);
         stuck.busyPages = Integer.MAX_VALUE;
         var stuckTables = displays(true).add(stuck);
@@ -316,10 +331,32 @@ class DisplayModelTablesTest {
     }
 
     @Test
+    void geosetRowsMapGroupsAndRefuseConflictsAndOutOfProfileValues() {
+        // Display 5: GeosetIndex 0 -> 3 and GeosetIndex 3 -> 0 twice (groups 1 and 4);
+        // display 6 sets GeosetIndex 2 to both 1 and 2 (a conflict).
+        var rows =
+                geosetTable()
+                        .row(1, 5, 0, 3)
+                        .row(2, 5, 3, 0)
+                        .row(3, 5, 3, 0)
+                        .row(4, 6, 2, 1)
+                        .row(5, 6, 2, 2);
+        var service = service(displays(true).add(rows));
+        assertEquals(Map.of(1, 3, 4, 0), resolve(service, 5).displayGeosets());
+        assertEquals(
+                Map.of(3, DisplayModelTypes.Reference.CONFLICTING_GEOSET),
+                resolve(service, 6).displayGeosets());
+        var outside = geosetTable().row(1, 5, 0, 100);
+        assertNull(
+                resolve(service(displays(true).add(outside)), 5).displayGeosets(),
+                "a value outside 0..99 refuses the table");
+    }
+
+    @Test
     void anOverBoundTableIsUnknown() {
         var many = geosetRows();
         for (int i = 0; i <= DisplayModelService.GEOSET_ROWS; i++) {
-            many.row(i + 1, 5);
+            many.row(i + 1, 5, 0, 1);
         }
         assertNull(resolve(service(displays(true).add(many)), 5).displayGeosets());
     }

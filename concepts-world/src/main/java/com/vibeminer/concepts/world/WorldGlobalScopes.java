@@ -1095,7 +1095,7 @@ final class WorldGlobalScopes {
 
     private FileTypes.BuildFile stat(long id, Cancellation token, WorldSourceRefusals.Site site) {
         token.check();
-        var value = WorldSourceFutures.await(files.stat(FileTypes.FileRef.id(id), token));
+        var value = WorldSourceFutures.await(files.statContent(FileTypes.FileRef.id(id), token));
         token.check();
         if (value.state() != FileTypes.FileLookupState.FOUND
                 || value.file() == null

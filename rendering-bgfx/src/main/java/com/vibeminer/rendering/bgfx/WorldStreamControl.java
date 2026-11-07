@@ -1,6 +1,7 @@
 package com.vibeminer.rendering.bgfx;
 
 import com.vibeminer.rendering.world.TerrainCamera;
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -31,7 +32,7 @@ final class WorldStreamControl {
             Objects.requireNonNull(camera);
             positive(revision);
             positive(policy);
-            if (width < 1 || width > 800 || height < 1 || height > 500) {
+            if (!WorldFrameLimits.fits(width, height)) {
                 throw new IllegalArgumentException("Invalid camera dimensions");
             }
         }

@@ -506,6 +506,27 @@ public final class WorldStreamSessionProof {
                 send(child, new WorldStreamControl.Camera(NONCE, 16, 2, 800, 500, CAMERA));
                 frame(reader, 3, 16, 2, 800, 500, 100);
                 require(child.pid() == pid && child.isAlive(), "Child replaced unexpectedly");
+                // Issue #365: a packet whose bytes match its offer but fail decoding is one
+                // rejected transaction (REJECTED INVALID_PACKET, through completeDecode); the
+                // lease retires, a new credit follows, and the next good tile still stages.
+                var corrupt = statuses.credit.get();
+                packet(directory, 20, corrupt, 70);
+                Path corruptPath = directory.resolve("tile-20.wst");
+                // Truncated: its offer names the truncated bytes, so only decoding can refuse it.
+                byte[] corruptBytes = Files.readAllBytes(corruptPath);
+                Files.write(
+                        corruptPath,
+                        java.util.Arrays.copyOf(corruptBytes, corruptBytes.length - 16));
+                offer(child, directory, 20, corrupt);
+                statuses.await("INPUT_CONSUMED 20 TILE");
+                statuses.await("REJECTED 20 INVALID_PACKET");
+                statuses.await("CREDIT ");
+                var after = statuses.credit.get();
+                require(!after.equals(corrupt), "A new credit follows the rejected packet");
+                packet(directory, 21, after, 60);
+                offer(child, directory, 21, after);
+                statuses.await("STAGED 21 ");
+                require(child.isAlive(), "A rejected packet never ends the helper");
                 send(child, new WorldStreamControl.Close(NONCE));
                 statuses.await("CLOSED");
                 require(

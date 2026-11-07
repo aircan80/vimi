@@ -145,6 +145,31 @@ public final class GpuPreviewServiceTest {
         }
     }
 
+    /** Debug switches reach the helper only when set on the app (#370 readback comparison). */
+    private static void helperCommandForwardsOnlySetDiagnosticSwitches() {
+        String staging = "-Dvimi.world.readbackStaging=true", verify = "-Dvimi.frameVerify=true";
+        String savedStaging = System.getProperty("vimi.world.readbackStaging");
+        String savedVerify = System.getProperty("vimi.frameVerify");
+        try {
+            System.clearProperty("vimi.world.readbackStaging");
+            System.clearProperty("vimi.frameVerify");
+            var plain = GpuPreviewService.nativeCommand();
+            require(!plain.contains(staging) && !plain.contains(verify), "Unset switches stay off: " + plain);
+            System.setProperty("vimi.world.readbackStaging", "true");
+            System.setProperty("vimi.frameVerify", "true");
+            var set = GpuPreviewService.nativeCommand();
+            require(set.contains(staging) && set.contains(verify), "Set switches reach the helper: " + set);
+            require(set.indexOf(staging) < set.indexOf("-cp"), "Switches are JVM options, before -cp");
+            System.setProperty("vimi.world.readbackStaging", "false");
+            require(!GpuPreviewService.nativeCommand().contains(staging), "false stays off");
+        } finally {
+            if (savedStaging == null) System.clearProperty("vimi.world.readbackStaging");
+            else System.setProperty("vimi.world.readbackStaging", savedStaging);
+            if (savedVerify == null) System.clearProperty("vimi.frameVerify");
+            else System.setProperty("vimi.frameVerify", savedVerify);
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         Path root = Files.createTempDirectory("vimi-gpu-service-test-");
         try {
@@ -162,6 +187,7 @@ public final class GpuPreviewServiceTest {
             inlineChildCommandCarriesTheBackend();
             invalidBackendOverrideFailsBeforeAnySceneFile(root);
             helperAndAppJvmOptionsAreAcceptedByThisRuntime();
+            helperCommandForwardsOnlySetDiagnosticSwitches();
             latestFrameHandoffNeverRepublishesOlderWork();
             inlineFramesAndCoalescedControls(root);
             terrainAndModelsShareOwnerAndKeepControlsTyped(root);

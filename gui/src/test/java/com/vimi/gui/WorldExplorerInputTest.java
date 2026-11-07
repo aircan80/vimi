@@ -18,6 +18,9 @@ public final class WorldExplorerInputTest {
     public static void main(String[] args) {
         keysMapToClampedAxes();
         walkToggleIgnoresKeyRepeat();
+        commandKeysFireOncePerPressAndNeverMove();
+        devOverlayKeyCommandsOncePerPress();
+        hudKeysDefaultWithoutClashes();
         clearDropsHeldKeys();
         lookButtons();
         capturedLookIsRelativeAwayFromTheEdge();
@@ -41,7 +44,12 @@ public final class WorldExplorerInputTest {
         wheelReadyCoversStreamingMode();
         controlsEncodeDecodeLeniently();
         onlyAStillPrimaryClickInspects();
-        shiftWheelAdjustsBoundedSpeed();
+        shiftWheelStepsTheSpeedPresets();
+        reboundKeysDriveTheirActions();
+        bindingsAndSpeedEncodeDecodeLeniently();
+        theSpeedWheelFollowsTheSprintBinding();
+        storedBindingsFallBackAndGainNewActions();
+        helpFollowsTheBindings();
         wheelDollysAlongTheViewAndIgnoresBadInput();
         pulseIntegratesHeldKeysAtTheEstablishedRates();
         pulseRequestsFramesAtCadenceAndNearbyLoadsThrottled();
@@ -50,11 +58,11 @@ public final class WorldExplorerInputTest {
         smoothReleaseCoastsThenFramesTheRestingStep();
         walkWheelMovesAlongTheHeadingOnly();
         System.out.println(
-                "World explorer input: key axes, walk toggle, right-button captured look"
-                        + " (edge warps, event echoes, rounding, slow motion, timeouts, window"
-                        + " move), left-drag look,"
-                        + " per-pulse look coalescing, sensitivity/invert-Y, controls codec,"
-                        + " inspect click, wheel, speed, pulse cadence and idle passed");
+                "World explorer input: key axes, rebinding and AZERTY, walk toggle,"
+                        + " right-button captured look (edge warps, event echoes, rounding, slow"
+                        + " motion, timeouts, window move), left-drag look, per-pulse look"
+                        + " coalescing, sensitivity/invert-Y, controls codec, inspect click, wheel,"
+                        + " speed presets, pulse cadence and idle passed");
     }
 
     /** Records hook calls; the camera is the only mutable view state the input touches. */
@@ -76,14 +84,94 @@ public final class WorldExplorerInputTest {
         @Override public void abandonUnusableCandidate() { calls.add("abandon"); }
         @Override public void loadNext() { calls.add("nearby"); }
         @Override public void cursorHidden(boolean hidden) { cursor.add(hidden); }
+        final List<WorldControls> changed = new ArrayList<>();
+        @Override public void controlsChanged(WorldControls controls) { changed.add(controls); }
         final List<String> fallbacks = new ArrayList<>();
         @Override public void captureFallback(String reason) { fallbacks.add(reason); }
         int unavailable;
         @Override public void captureUnavailable() { unavailable++; }
+        final List<WorldControls.Action> commands = new ArrayList<>();
+        @Override public void command(WorldControls.Action action) { commands.add(action); }
 
         long count(String call) {
             return calls.stream().filter(call::equals).count();
         }
+    }
+
+    /**
+     * HUD commands (M: map panel, H: hide the HUD) fire once per physical press, in both layouts,
+     * and never move.
+     */
+    private static void commandKeysFireOncePerPressAndNeverMove() {
+        for (var layout : WorldControls.Layout.values()) {
+            // Every action keeps a key, so no preset key clashes; only the AZERTY preset leaves
+            // the speed digits unbound (its digits need Shift).
+            var expected = java.util.EnumSet.allOf(WorldControls.Action.class);
+            if (layout == WorldControls.Layout.AZERTY)
+                expected.removeIf(action -> action.speed() != null);
+            require(new java.util.HashSet<>(layout.keys().values()).equals(expected),
+                    layout + ": every action keeps a key, so no preset key clashes: " + layout.keys());
+            for (var command : List.of(
+                    java.util.Map.entry(KeyCode.M, WorldControls.Action.MAP_PANEL),
+                    java.util.Map.entry(KeyCode.H, WorldControls.Action.HIDE_HUD))) {
+                var key = command.getKey();
+                var host = new Host();
+                var input = exact(host);
+                input.controls(WorldControls.DEFAULTS.withKeys(layout.keys()));
+                require(layout.keys().get(key) == command.getValue(), layout + ": " + key + " is " + command.getValue());
+                input.keyPressed(key);
+                for (int i = 0; i < 20; i++) input.keyPressed(key);
+                require(host.commands.equals(List.of(command.getValue())),
+                        layout + ": held " + key + " (key repeat) is one command: " + host.commands);
+                require(input.axes().equals(ExplorerMotion.Input.NONE) && host.toggles == 0,
+                        layout + ": " + key + " never moves or walks");
+                input.keyReleased(key);
+                input.keyPressed(key);
+                require(host.commands.size() == 2, layout + ": a new press is a new command");
+                input.keyReleased(key);
+                input.keyPressed(KeyCode.W);
+                input.keyPressed(KeyCode.F);
+                require(host.commands.size() == 2, layout + ": movement and walk keys are not commands");
+            }
+        }
+        var commands = java.util.EnumSet.of(WorldControls.Action.MAP_PANEL,
+                WorldControls.Action.HIDE_HUD, WorldControls.Action.DEV_OVERLAY,
+                WorldControls.Action.SPAWNS, WorldControls.Action.TRACKING, WorldControls.Action.MINIMAP,
+                WorldControls.Action.DAY_NIGHT, WorldControls.Action.SPEED_STROLL,
+                WorldControls.Action.SPEED_MOUNT, WorldControls.Action.SPEED_FLY,
+                WorldControls.Action.SPEED_FAST, WorldControls.Action.SPEED_TURBO,
+                WorldControls.Action.INSPECT_PIN, WorldControls.Action.SCREENSHOT,
+                WorldControls.Action.BOOKMARKS);
+        for (var action : WorldControls.Action.values())
+            require(action.command == commands.contains(action),
+                    "Exactly the HUD keys are commands: " + action);
+        var host = new Host();
+        var input = exact(host);
+        input.controls(WorldControls.DEFAULTS.bind(KeyCode.G, WorldControls.Action.MAP_PANEL));
+        input.keyPressed(KeyCode.G);
+        require(host.commands.equals(List.of(WorldControls.Action.MAP_PANEL)), "A rebound map key works");
+        var older = WorldControls.decode("v1;keys=W:FORWARD;actions=FORWARD,BACK,LEFT,RIGHT,UP,DOWN,"
+                + "TURN_LEFT,TURN_RIGHT,LOOK_UP,LOOK_DOWN,SPRINT,WALK");
+        require(older.keys().get(KeyCode.M) == WorldControls.Action.MAP_PANEL,
+                "A value saved before the map panel existed gains its default key: " + older.keys());
+        var taken = WorldControls.decode("v1;keys=M:FORWARD;actions=FORWARD");
+        require(taken.keys().get(KeyCode.M) == WorldControls.Action.FORWARD
+                        && taken.byAction().get(WorldControls.Action.MAP_PANEL).isEmpty(),
+                "A stored binding that already uses M keeps it: " + taken.keys());
+        require(older.keys().get(KeyCode.H) == WorldControls.Action.HIDE_HUD,
+                "A value saved before hide HUD existed gains H: " + older.keys());
+        var takenH = WorldControls.decode("v1;keys=H:WALK;actions=WALK");
+        require(takenH.keys().get(KeyCode.H) == WorldControls.Action.WALK
+                        && takenH.byAction().get(WorldControls.Action.HIDE_HUD).isEmpty(),
+                "A stored binding that already uses H keeps it: " + takenH.keys());
+        var rebound = new Host();
+        var reboundInput = exact(rebound);
+        reboundInput.controls(WorldControls.DEFAULTS.bind(KeyCode.J, WorldControls.Action.HIDE_HUD));
+        reboundInput.keyPressed(KeyCode.J);
+        require(rebound.commands.equals(List.of(WorldControls.Action.HIDE_HUD)), "A rebound hide HUD key works");
+        require(WorldControls.DEFAULTS.help().contains("M map")
+                        && WorldControls.DEFAULTS.help().contains("H hides the HUD"),
+                "Help names the map and hide HUD keys: " + WorldControls.DEFAULTS.help());
     }
 
     private static WorldExplorerInput exact(Host host) {
@@ -130,6 +218,124 @@ public final class WorldExplorerInputTest {
         input.keyReleased(KeyCode.F);
         input.keyPressed(KeyCode.F);
         require(host.toggles == 2, "A second press toggles again");
+    }
+
+    private static void devOverlayKeyCommandsOncePerPress() {
+        for (var layout : WorldControls.Layout.values()) {
+            var keys = layout.keys();
+            require(keys.get(KeyCode.F3) == WorldControls.Action.DEV_OVERLAY,
+                    layout + " binds F3 to the developer overlay: " + keys);
+            require(keys.values().stream().filter(WorldControls.Action.DEV_OVERLAY::equals).count() == 1,
+                    layout + " binds the developer overlay to one key only");
+        }
+        var host = new Host();
+        var input = exact(host);
+        input.keyPressed(KeyCode.F3);
+        input.keyPressed(KeyCode.F3);
+        require(host.commands.equals(List.of(WorldControls.Action.DEV_OVERLAY)) && host.toggles == 0,
+                "Auto-repeat F3 commands the overlay once and never walks: " + host.commands);
+        require(input.axes().equals(ExplorerMotion.Input.NONE), "F3 moves nothing");
+        input.keyReleased(KeyCode.F3);
+        input.keyPressed(KeyCode.F3);
+        require(host.commands.size() == 2, "A second press commands again");
+        input.keyReleased(KeyCode.F3);
+        input.keyPressed(KeyCode.F);
+        require(host.commands.size() == 2 && host.toggles == 1, "Walk keeps its own toggle hook");
+        input.controls(WorldControls.DEFAULTS.unbind(WorldControls.Action.DEV_OVERLAY)
+                .bind(KeyCode.F7, WorldControls.Action.DEV_OVERLAY));
+        input.keyPressed(KeyCode.F3);
+        input.keyPressed(KeyCode.F7);
+        require(host.commands.size() == 3, "The overlay follows its rebinding: " + host.commands);
+        var older = WorldControls.decode("v1;keys=W:FORWARD;actions=FORWARD,BACK,WALK");
+        require(older.keys().get(KeyCode.F3) == WorldControls.Action.DEV_OVERLAY,
+                "Stored controls from before the overlay gain its default key: " + older.keys());
+        for (var layout : WorldControls.Layout.values())
+            require(layout.keys().get(KeyCode.I) == WorldControls.Action.INSPECT_PIN,
+                    layout + " binds I to the inspect card pin");
+        var pins = new Host();
+        var pinInput = exact(pins);
+        pinInput.keyPressed(KeyCode.I);
+        pinInput.keyPressed(KeyCode.I);
+        require(pins.commands.equals(List.of(WorldControls.Action.INSPECT_PIN))
+                        && pinInput.axes().equals(ExplorerMotion.Input.NONE),
+                "I commands the card once per press and moves nothing: " + pins.commands);
+        for (var layout : WorldControls.Layout.values())
+            require(layout.keys().get(KeyCode.F12) == WorldControls.Action.SCREENSHOT,
+                    layout + " binds F12 to the screenshot");
+        var shots = new Host();
+        var shotInput = exact(shots);
+        shotInput.keyPressed(KeyCode.F12);
+        shotInput.keyPressed(KeyCode.F12);
+        require(shots.commands.equals(List.of(WorldControls.Action.SCREENSHOT))
+                        && shotInput.axes().equals(ExplorerMotion.Input.NONE),
+                "F12 commands one screenshot per press and moves nothing: " + shots.commands);
+        for (var layout : WorldControls.Layout.values())
+            require(layout.keys().get(KeyCode.B) == WorldControls.Action.BOOKMARKS,
+                    layout + " binds B to the bookmarks page");
+        var help = WorldControls.DEFAULTS.help();
+        for (var part : List.of("M map", "H hides the HUD", "F3 developer overlay", "I pins the card",
+                "F12 screenshot", "V NPC spawns", "L tracking", "N minimap", "T day/night",
+                "1/2/3/4/5 speed", "B bookmarks"))
+            require(help.contains(part), "Help names " + part + ": " + help);
+        require(WorldControls.DEFAULTS.withKeys(WorldControls.Layout.AZERTY.keys()).help().contains("unbound speed"),
+                "AZERTY help says the speed keys are unbound");
+        require(WorldControls.DEFAULTS.help().contains("F3 developer overlay"),
+                "Help names the overlay key: " + WorldControls.DEFAULTS.help());
+    }
+
+    private static void hudKeysDefaultWithoutClashes() {
+        var movement = java.util.EnumSet.of(WorldControls.Action.FORWARD, WorldControls.Action.BACK,
+                WorldControls.Action.LEFT, WorldControls.Action.RIGHT, WorldControls.Action.UP,
+                WorldControls.Action.DOWN, WorldControls.Action.TURN_LEFT, WorldControls.Action.TURN_RIGHT,
+                WorldControls.Action.LOOK_UP, WorldControls.Action.LOOK_DOWN, WorldControls.Action.SPRINT,
+                WorldControls.Action.WALK);
+        for (var layout : WorldControls.Layout.values()) {
+            var keys = layout.keys();
+            require(keys.get(KeyCode.V) == WorldControls.Action.SPAWNS
+                            && keys.get(KeyCode.T) == WorldControls.Action.DAY_NIGHT
+                            && keys.get(KeyCode.L) == WorldControls.Action.TRACKING
+                            && keys.get(KeyCode.N) == WorldControls.Action.MINIMAP,
+                    layout + " binds V, L, N and T: " + keys);
+            var controls = WorldControls.DEFAULTS.withKeys(keys);
+            var bound = controls.byAction();
+            for (var action : movement)
+                require(!bound.get(action).isEmpty(), layout + ": the new keys take no movement key from " + action);
+            for (var action : WorldControls.Action.values())
+                require(action.command != movement.contains(action),
+                        "Every HUD key is a command and no movement key is: " + action);
+            boolean digits = keys.containsKey(KeyCode.DIGIT1);
+            require(digits == (layout == WorldControls.Layout.QWERTY),
+                    layout + (digits ? " binds" : " leaves unbound") + " the speed digits");
+        }
+        var qwerty = WorldControls.Layout.QWERTY.keys();
+        var speeds = List.of(KeyCode.DIGIT1, KeyCode.DIGIT2, KeyCode.DIGIT3, KeyCode.DIGIT4, KeyCode.DIGIT5);
+        for (int i = 0; i < speeds.size(); i++)
+            require(qwerty.get(speeds.get(i)).speed() == WorldControls.Speed.values()[i],
+                    "Digit " + (i + 1) + " selects " + WorldControls.Speed.values()[i]);
+        require(WorldControls.Action.SPAWNS.speed() == null, "Only speed actions name a preset");
+        var host = new Host();
+        var input = exact(host);
+        for (var code : List.of(KeyCode.V, KeyCode.T, KeyCode.DIGIT5)) {
+            input.keyPressed(code);
+            input.keyPressed(code);
+            input.keyReleased(code);
+        }
+        require(host.commands.equals(List.of(WorldControls.Action.SPAWNS, WorldControls.Action.DAY_NIGHT,
+                        WorldControls.Action.SPEED_TURBO)) && input.axes().equals(ExplorerMotion.Input.NONE),
+                "Each HUD key commands once per press and moves nothing: " + host.commands);
+        var repeat = new Host();
+        var repeatInput = exact(repeat);
+        repeatInput.keyPressed(KeyCode.L);
+        repeatInput.keyPressed(KeyCode.W);
+        repeatInput.clearMotion();
+        repeatInput.keyPressed(KeyCode.L);
+        require(repeat.commands.equals(List.of(WorldControls.Action.TRACKING))
+                        && repeatInput.axes().equals(ExplorerMotion.Input.NONE),
+                "clearMotion drops W but keeps L held, so its repeat does not fire again: " + repeat.commands);
+        var stored = WorldControls.decode(WorldControls.DEFAULTS.unbind(WorldControls.Action.SPAWNS)
+                .bind(KeyCode.K, WorldControls.Action.SPAWNS).encode());
+        require(stored.keys().get(KeyCode.K) == WorldControls.Action.SPAWNS && !stored.keys().containsKey(KeyCode.V),
+                "A rebound HUD key persists through the controls codec");
     }
 
     private static void clearDropsHeldKeys() {
@@ -535,17 +741,17 @@ public final class WorldExplorerInputTest {
     }
 
     private static void controlsEncodeDecodeLeniently() {
-        var custom = new WorldControls(.011, true);
+        var custom = WorldControls.DEFAULTS.withSensitivity(.011).withInvertY(true);
         require(WorldControls.decode(custom.encode()).equals(custom), "Round trip: " + custom.encode());
         require(WorldControls.decode(null).equals(WorldControls.DEFAULTS), "Nothing stored: defaults");
         require(WorldControls.decode("v9;sensitivity=0.01").equals(WorldControls.DEFAULTS),
                 "Another version: defaults");
         require(WorldControls.decode("v1;sensitivity=abc;invertY=true;future=1;junk")
-                        .equals(new WorldControls(WorldControls.DEFAULT_SENSITIVITY, true)),
+                        .equals(WorldControls.DEFAULTS.withInvertY(true)),
                 "A malformed value keeps its default; unknown keys are ignored");
-        require(new WorldControls(5, false).sensitivity() == WorldControls.MAX_SENSITIVITY
-                        && new WorldControls(-1, false).sensitivity() == WorldControls.MIN_SENSITIVITY
-                        && new WorldControls(Double.NaN, false).sensitivity()
+        require(WorldControls.DEFAULTS.withSensitivity(5).sensitivity() == WorldControls.MAX_SENSITIVITY
+                        && WorldControls.DEFAULTS.withSensitivity(-1).sensitivity() == WorldControls.MIN_SENSITIVITY
+                        && WorldControls.DEFAULTS.withSensitivity(Double.NaN).sensitivity()
                                 == WorldControls.DEFAULT_SENSITIVITY,
                 "Sensitivity is clamped and never non-finite");
         var store = WorldControls.memory();
@@ -560,20 +766,135 @@ public final class WorldExplorerInputTest {
         require(!WorldExplorerInput.inspects(MouseButton.SECONDARY, true), "Secondary never inspects");
     }
 
-    private static void shiftWheelAdjustsBoundedSpeed() {
+    private static void shiftWheelStepsTheSpeedPresets() {
         var host = new Host();
         var input = exact(host);
-        require(input.speed() == WorldExplorerInput.DEFAULT_SPEED, "Default flight speed");
-        input.scroll(40, true);
-        require(Math.abs(input.speed() - 96) < 1e-9, "Shift+wheel up speeds up by 20%");
+        require(input.controls().speed() == WorldControls.Speed.FLY && input.speed() == 20,
+                "Fly at 20 yd/s is the default");
+        double[] expected = {7, 14, 20, 60, 200};
+        for (var speed : WorldControls.Speed.values())
+            require(speed.yardsPerSecond == expected[speed.ordinal()], "Preset " + speed);
+        input.scroll(40, true, false);
+        require(input.speed() == 60 && host.changed.getLast().speed() == WorldControls.Speed.FAST,
+                "Shift+wheel up steps to the next preset and reports it");
         require(host.camera.equals(START), "Shift+wheel never moves");
-        for (int i = 0; i < 100; i++) input.scroll(40, true);
-        require(input.speed() == WorldExplorerInput.MAX_SPEED, "Speed is capped");
-        for (int i = 0; i < 100; i++) input.scroll(-40, true);
-        require(input.speed() == WorldExplorerInput.MIN_SPEED, "Speed has a floor");
+        for (int i = 0; i < 10; i++) input.scroll(40, true, false);
+        require(input.speed() == 200 && host.changed.size() == 2, "Turbo is the top; no further reports");
+        for (int i = 0; i < 10; i++) input.scroll(-40, true, false);
+        require(input.speed() == 7, "Stroll is the slowest preset");
         input.keyPressed(KeyCode.SHIFT);
-        require(input.effectiveSpeed() == WorldExplorerInput.MIN_SPEED * ExplorerMotion.FLY_SPRINT,
-                "Held Shift reports the sprint speed");
+        require(input.effectiveSpeed() == 7 * ExplorerMotion.FLY_SPRINT && ExplorerMotion.FLY_SPRINT == 2,
+                "Held Shift is a modest 2x");
+    }
+
+    private static void reboundKeysDriveTheirActions() {
+        var host = new Host();
+        var input = exact(host);
+        input.controls(WorldControls.DEFAULTS.withKeys(WorldControls.Layout.AZERTY.keys()));
+        check(input, List.of(KeyCode.Z), 1, 0, 0, 0, 0, false);
+        check(input, List.of(KeyCode.Q), 0, -1, 0, 0, 0, false);
+        check(input, List.of(KeyCode.A), 0, 0, -1, 0, 0, false);
+        check(input, List.of(KeyCode.W), 0, 0, 0, 0, 0, false);
+        var custom = WorldControls.DEFAULTS.bind(KeyCode.I, WorldControls.Action.FORWARD)
+                .bind(KeyCode.W, WorldControls.Action.BACK)
+                .bind(KeyCode.G, WorldControls.Action.WALK)
+                .unbind(WorldControls.Action.SPRINT)
+                .bind(KeyCode.CONTROL, WorldControls.Action.SPRINT);
+        input.controls(custom);
+        check(input, List.of(KeyCode.I), 1, 0, 0, 0, 0, false);
+        check(input, List.of(KeyCode.W), -1, 0, 0, 0, 0, false);
+        check(input, List.of(KeyCode.SHIFT), 0, 0, 0, 0, 0, false);
+        check(input, List.of(KeyCode.CONTROL), 0, 0, 0, 0, 0, true);
+        input.keyPressed(KeyCode.G);
+        input.keyPressed(KeyCode.G);
+        require(host.toggles == 1, "The rebound walk key toggles once per press: " + host.toggles);
+        input.keyPressed(KeyCode.F);
+        require(host.toggles == 2, "F stays bound to walk alongside G");
+        input.keyReleased(KeyCode.G);
+        input.keyReleased(KeyCode.F);
+        require(custom.bind(KeyCode.ESCAPE, WorldControls.Action.UP).equals(custom)
+                        && custom.bind(KeyCode.F11, WorldControls.Action.UP).equals(custom)
+                        && custom.bind(KeyCode.ALT, WorldControls.Action.UP).equals(custom),
+                "Escape, F11 and Alt never bind");
+        require(custom.byAction().get(WorldControls.Action.FORWARD).equals(List.of(KeyCode.I)),
+                "W moved from forward to back: " + custom.byAction());
+    }
+
+    private static void theSpeedWheelFollowsTheSprintBinding() {
+        var host = new Host();
+        var input = exact(host);
+        input.controls(WorldControls.DEFAULTS.unbind(WorldControls.Action.SPRINT)
+                .bind(KeyCode.CONTROL, WorldControls.Action.SPRINT));
+        input.scroll(40, false, true);
+        require(input.controls().speed() == WorldControls.Speed.FAST && host.camera.equals(START),
+                "Control+wheel steps speed when sprint is Control");
+        input.scroll(40, true, false);
+        require(input.controls().speed() == WorldControls.Speed.FAST && !host.camera.equals(START),
+                "Shift+wheel dollies when Shift no longer sprints");
+        host.camera = START;
+        input.controls(WorldControls.DEFAULTS.unbind(WorldControls.Action.SPRINT)
+                .bind(KeyCode.G, WorldControls.Action.SPRINT));
+        require(input.controls().sprintModifier() == null, "A letter is no modifier");
+        input.keyPressed(KeyCode.G);
+        input.scroll(-40, false, false);
+        require(input.controls().speed() == WorldControls.Speed.MOUNT && host.camera.equals(START),
+                "Holding a non-modifier sprint key turns the wheel into speed");
+        input.keyReleased(KeyCode.G);
+        input.scroll(40, true, false);
+        require(input.controls().speed() == WorldControls.Speed.MOUNT, "Shift alone is just Shift now");
+    }
+
+    private static void storedBindingsFallBackAndGainNewActions() {
+        require(WorldControls.decode("v1;keys=NOPE:FORWARD,BAD").keys().equals(WorldControls.DEFAULTS.keys()),
+                "A stored list with no usable binding falls back to the defaults");
+        var older = WorldControls.decode("v1;keys=I:FORWARD");
+        require(older.keys().get(KeyCode.I) == WorldControls.Action.FORWARD
+                        && older.keys().get(KeyCode.W) == null
+                        && older.keys().get(KeyCode.SHIFT) == WorldControls.Action.SPRINT
+                        && older.keys().get(KeyCode.F) == WorldControls.Action.WALK,
+                "An older value keeps its bindings; actions it never bound get their defaults: " + older.keys());
+        var cleared = WorldControls.DEFAULTS.unbind(WorldControls.Action.SPRINT);
+        require(WorldControls.decode(cleared.encode()).equals(cleared),
+                "An action the user cleared stays cleared (listed as known)");
+        var futureLess = WorldControls.decode("v1;keys=W:FORWARD,S:SPRINT;actions=FORWARD,BACK,SPRINT");
+        require(futureLess.keys().get(KeyCode.S) == WorldControls.Action.SPRINT
+                        && futureLess.byAction().get(WorldControls.Action.BACK).isEmpty()
+                        && futureLess.keys().get(KeyCode.A) == WorldControls.Action.LEFT,
+                "Known actions keep their stored keys (even none); unknown ones get defaults whose keys are free: "
+                        + futureLess.keys());
+        require(WorldControls.Speed.STROLL.label.equals("Stroll"), "The 7 yd/s preset is Stroll");
+    }
+
+    private static void helpFollowsTheBindings() {
+        var help = WorldControls.DEFAULTS.help();
+        require(help.startsWith("W A S D move") && help.contains("Shift+wheel changes speed")
+                && help.contains("F walks"), "Default help: " + help);
+        var azerty = WorldControls.DEFAULTS.withKeys(WorldControls.Layout.AZERTY.keys()).help();
+        require(azerty.startsWith("Z Q S D move") && azerty.contains("A/X down"), "AZERTY help: " + azerty);
+        var control = WorldControls.DEFAULTS.unbind(WorldControls.Action.SPRINT)
+                .bind(KeyCode.CONTROL, WorldControls.Action.SPRINT).unbind(WorldControls.Action.WALK).help();
+        require(control.contains("Ctrl+wheel changes speed") && control.contains("unbound walks"), "Rebound help: " + control);
+    }
+
+    private static void bindingsAndSpeedEncodeDecodeLeniently() {
+        var custom = WorldControls.DEFAULTS.withSpeed(WorldControls.Speed.TURBO)
+                .withKeys(WorldControls.Layout.AZERTY.keys())
+                .bind(KeyCode.NUMPAD8, WorldControls.Action.FORWARD);
+        var decoded = WorldControls.decode(custom.encode());
+        require(decoded.equals(custom), "Speed and bindings round trip: " + custom.encode());
+        require(WorldControls.decode("v1;sensitivity=0.006").keys().equals(WorldControls.DEFAULTS.keys())
+                        && WorldControls.decode("v1;sensitivity=0.006").speed() == WorldControls.Speed.FLY,
+                "Older values without speed or keys keep the defaults");
+        var lenient = WorldControls.decode("v1;speed=WARP;keys=W:FORWARD,NOPE:BACK,S:SIDEWAYS,ESCAPE:UP,junk");
+        require(lenient.speed() == WorldControls.Speed.FLY
+                        && lenient.keys().get(KeyCode.W) == WorldControls.Action.FORWARD
+                        && !lenient.keys().containsKey(KeyCode.ESCAPE)
+                        && lenient.byAction().get(WorldControls.Action.UP).isEmpty()
+                        && lenient.keys().get(KeyCode.S) == WorldControls.Action.BACK,
+                "Unknown speeds, key codes, actions and reserved keys are dropped; actions with no"
+                        + " readable stored key get defaults: " + lenient);
+        require(WorldControls.decode(WorldControls.DEFAULTS.withKeys(java.util.Map.of()).encode()).keys().isEmpty(),
+                "Every binding can be cleared and stays cleared");
     }
 
     private static void wheelDollysAlongTheViewAndIgnoresBadInput() {
@@ -581,28 +902,28 @@ public final class WorldExplorerInputTest {
         var input = exact(host);
         host.camera = new TerrainRenderer.Camera(100, 200, 50, .7, -.8);
         var before = host.camera;
-        input.scroll(40, false);
+        input.scroll(40, false, false);
         double dx = host.camera.x() - before.x(), dy = host.camera.y() - before.y(),
                 dz = host.camera.z() - before.z();
         require(dx > 0 && dy > 0 && dz < 0, "Wheel moves forward along the pitched view");
-        // One notch at 80 yd/s is clamp(8, 2, 32) = 8 yards.
-        require(Math.abs(Math.sqrt(dx * dx + dy * dy + dz * dz) - 8) < 1e-9, "One notch is 8 yards");
+        // One notch at the default 20 yd/s is clamp(20 * 0.25, 2, 32) = 5 yards.
+        require(Math.abs(Math.sqrt(dx * dx + dy * dy + dz * dz) - 5) < 1e-9, "One notch is 5 yards");
         require(host.calls.equals(List.of("ground:FREE", "abandon", "frame", "nearby")),
                 "Wheel reports ground, then abandons, frames and loads: " + host.calls);
-        input.scroll(-40, false);
+        input.scroll(-40, false, false);
         require(Math.abs(host.camera.x() - before.x()) < 1e-9
                 && Math.abs(host.camera.z() - before.z()) < 1e-9, "Reverse wheel restores");
         var settled = host.camera;
         host.calls.clear();
-        input.scroll(Double.NaN, false);
-        input.scroll(0, false);
+        input.scroll(Double.NaN, false, false);
+        input.scroll(0, false, false);
         host.wheelReady = false;
-        input.scroll(40, false);
+        input.scroll(40, false, false);
         require(host.camera.equals(settled) && host.calls.isEmpty(),
                 "Non-finite, zero or unready wheel input is ignored");
         host.wheelReady = true;
         host.camera = new TerrainRenderer.Camera(1_000_000, 1_000_000, 1_000_000, .7, .8);
-        input.scroll(Double.MAX_VALUE, false);
+        input.scroll(Double.MAX_VALUE, false, false);
         require(host.camera.x() <= 1_000_000 && host.camera.z() <= 1_000_000,
                 "Wheel stays inside camera bounds");
     }
@@ -617,8 +938,8 @@ public final class WorldExplorerInputTest {
         input.pulse(1_000_000_000L);
         require(host.camera.equals(START), "The first pulse integrates zero seconds");
         input.pulse(1_100_000_000L);
-        require(Math.abs(host.camera.x() - START.x() - 8) < 1e-9, "W flies 80 yd/s north");
-        require(Math.abs(host.camera.z() - START.z() - 8) < 1e-9, "Space climbs at flight speed");
+        require(Math.abs(host.camera.x() - START.x() - 2) < 1e-9, "W flies 20 yd/s north");
+        require(Math.abs(host.camera.z() - START.z() - 2) < 1e-9, "Space climbs at flight speed");
         require(Math.abs(host.camera.yaw() - ExplorerMotion.TURN_RATE * .1) < 1e-12,
                 "Left turns at the keyboard turn rate");
         input.keyReleased(KeyCode.W);
@@ -631,7 +952,7 @@ public final class WorldExplorerInputTest {
         input.keyPressed(KeyCode.W);
         input.pulse(1_500_000_000L);
         double run = Math.hypot(host.camera.x() - still.x(), host.camera.y() - still.y());
-        require(Math.abs(run - 8) < 1e-9, "A long pulse is capped at 0.1 s: " + run);
+        require(Math.abs(run - 2) < 1e-9, "A long pulse is capped at 0.1 s: " + run);
     }
 
     private static void pulseRequestsFramesAtCadenceAndNearbyLoadsThrottled() {
@@ -724,16 +1045,17 @@ public final class WorldExplorerInputTest {
 
     /**
      * Walking dollies along the heading only (pitch ignored) by one notch of walk speed times
-     * 0.1 s: 0.7 yd, above the 0.5 yd walking floor. With no ground the altitude is held.
+     * the dolly time: 1.75 yd, above the 0.5 yd walking floor. With no ground the altitude is
+     * held.
      */
     private static void walkWheelMovesAlongTheHeadingOnly() {
         var host = new Host();
         var input = new WorldExplorerInput(host);
         input.motion(true, false);
         host.camera = new TerrainRenderer.Camera(100, 200, 50, .7, -.8);
-        input.scroll(40, false);
+        input.scroll(40, false, false);
         double dx = host.camera.x() - 100, dy = host.camera.y() - 200;
-        double notch = Math.max(.5, ExplorerMotion.WALK_SPEED * .1);
+        double notch = Math.max(.5, ExplorerMotion.WALK_SPEED * WorldExplorerInput.DOLLY_SECONDS);
         require(Math.abs(Math.hypot(dx, dy) - notch) < 1e-9 && host.camera.z() == 50,
                 "Walk notch is " + notch + " yd along the heading: " + host.camera);
         require(Math.abs(Math.atan2(dy, dx) - .7) < 1e-9, "Along the heading");
@@ -741,7 +1063,7 @@ public final class WorldExplorerInputTest {
         // A fractional notch scales the step; a tiny one would still respect the 0.5 yd floor
         // only through the clamp on the speed term, never below a whole-notch fraction.
         host.camera = START;
-        input.scroll(4, false);
+        input.scroll(4, false, false);
         require(Math.abs(Math.hypot(host.camera.x() - START.x(), host.camera.y() - START.y())
                 - .1 * notch) < 1e-9, "A tenth of a notch moves a tenth");
     }
