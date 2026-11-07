@@ -86,6 +86,7 @@ public final class WorldStreamSourceControllerTest {
         aSkyFrameThatChangesTheStepsInputsStartsAStep();
         borrowedTilesAreNeverDroppedToMakeRoom();
         aTileOneRingBeyondKeepsItsPreparation();
+        aKeptTileUnavailableAfterDemandLeftIsNotPublished();
         aKeptTileNeverDisplacesAWantedResident();
         aKeptTileYieldsTheLaneWhenTheCameraTileIsMissing();
         tilesKeepStreamingWhileAFrameIsBorrowed();
@@ -562,6 +563,45 @@ public final class WorldStreamSourceControllerTest {
             check(!canceled.isDone(), "Crossing back and forth never restarted tile 1");
             check(fixture.files.opens(1002) == fixture.files.opens(2),
                     "Tile 1 was prepared once, as tile 0: " + fixture.files.opens(1002));
+        } finally {
+            release.complete(null);
+            fixture.close();
+        }
+    }
+
+    /**
+     * #366 review: a kept tile whose source turns out missing (CAPABILITY_UNAVAILABLE) after the
+     * demand left it publishes no UNAVAILABLE status, as for a helper rejection out of demand, and
+     * the wanted tiles still load.
+     */
+    private static void aKeptTileUnavailableAfterDemandLeftIsNotPublished() throws Exception {
+        var entered = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var canceled = new CompletableFuture<Void>();
+        var fixture = new Fixture(holding(1002, entered, release, canceled), 4);
+        fixture.residents = 2;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+            var t = fixture.tiles;
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(1)), List.of(t.get(2)));
+            fixture.until(entered::isDone);
+            // Tile 1 goes one ring beyond, then its held source read finds the source missing.
+            fixture.controller.neighborhood(List.of(t.get(0), t.get(2)), List.of(t.get(1)));
+            fixture.files.sources.remove(1002L);
+            release.complete(null);
+            fixture.until(() -> fixture.controller.rejectionsOutOfDemand() == 1);
+            check(!canceled.isDone(), "The kept tile was not canceled; its refusal arrived");
+            check(fixture.controller.snapshot().phase() != WorldStreamSourceController.Phase.UNAVAILABLE
+                            && !fixture.controller.snapshot().detail().contains("SOURCE_INPUT"),
+                    "No unavailable status for a tile out of demand: "
+                            + fixture.controller.snapshot().detail());
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2);
         } finally {
             release.complete(null);
             fixture.close();

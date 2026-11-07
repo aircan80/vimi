@@ -902,6 +902,13 @@ final class WorldStreamSourceController {
                             && origin != null
                             && origin.reason().name().equals(refusal.reason().name())
                             && tileUnavailable(origin)) {
+                        // As for a helper rejection: a tile kept one ring beyond, whose demand has
+                        // already left, publishes no UNAVAILABLE for terrain nobody asked for.
+                        if (!contains(wanted, refusedTile)) {
+                            rejectionsOutOfDemand.incrementAndGet();
+                            wake.set(true);
+                            return;
+                        }
                         unavailable.put(failedTile, origin);
                         publish(Phase.UNAVAILABLE, "Terrain unavailable: " + origin.site());
                         wake.set(true);
@@ -1922,7 +1929,10 @@ final class WorldStreamSourceController {
         return current != null && rejectedByHelper(current.result);
     }
 
-    /** Test observation: helper rejections that arrived for tiles out of demand. */
+    /**
+     * Test observation: helper rejections and unavailable-terrain refusals that arrived for tiles
+     * out of demand.
+     */
     int rejectionsOutOfDemand() {
         return rejectionsOutOfDemand.get();
     }
