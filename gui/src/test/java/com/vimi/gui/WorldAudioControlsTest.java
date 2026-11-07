@@ -394,11 +394,19 @@ public final class WorldAudioControlsTest {
         second.result().complete(plan(10, WorldAreaAudio.Variant.DAY, 200));
         rig.drain();
         check(rig.music() != null && rig.music().soundKitId() == 200, "current plan lost");
-        // Off with a plan already published, then a late duplicate completion: ignored too.
+        // A request still pending when everything turns off, completed after the off: ignored.
         rig.director.toggle(WorldAreaAudio.Kind.MUSIC, false);
-        second.result().complete(plan(10, WorldAreaAudio.Variant.DAY, 300));
+        rig.director.toggle(WorldAreaAudio.Kind.MUSIC, true);
+        var third = world.last();
+        check(third != second && !third.result().isDone(), "toggle-on did not request a new plan");
+        rig.director.toggle(WorldAreaAudio.Kind.MUSIC, false);
+        third.result().complete(plan(10, WorldAreaAudio.Variant.DAY, 300));
         rig.drain();
         check(rig.music() == null || rig.music().soundKitId() != 300, "late plan published");
+        rig.director.toggle(WorldAreaAudio.Kind.MUSIC, true);
+        rig.drain();
+        check(rig.music() == null || rig.music().soundKitId() != 300,
+                "a late plan surfaced on the next toggle-on");
         rig.close();
     }
 

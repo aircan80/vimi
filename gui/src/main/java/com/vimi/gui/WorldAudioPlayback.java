@@ -747,13 +747,18 @@ final class WorldAudioPlayback implements AutoCloseable {
         }
 
         /**
-         * Closes an unused look-ahead. Its open observes the changed state and stops promptly;
-         * waiting briefly keeps close from completing while it still owns a decoder.
+         * Closes an unused look-ahead once its open completes. Its open observes the changed
+         * state and stops promptly. Only a closing channel waits for it, briefly, so close does
+         * not complete while it still owns a decoder; on a track change the next track starts
+         * at once, even if a source read ignores cancellation.
          */
-        private static void discard(CompletableFuture<Pcm> ahead) {
+        private void discard(CompletableFuture<Pcm> ahead) {
             ahead.thenAccept(pcm -> {
                 if (pcm != null) pcm.close();
             });
+            synchronized (this) {
+                if (!closed) return;
+            }
             try {
                 ahead.get(2, java.util.concurrent.TimeUnit.SECONDS);
             } catch (Exception notReady) {

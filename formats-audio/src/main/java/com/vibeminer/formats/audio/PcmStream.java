@@ -14,8 +14,12 @@ import java.util.function.BooleanSupplier;
  */
 public final class PcmStream implements AutoCloseable {
     private static final byte[] END = new byte[0];
+
+    /** PCM read from the decoder per block, and the blocks queued ahead of the reader. */
+    static final int CHUNK_BYTES = 16_384, QUEUED_CHUNKS = 8;
+
     private final Process process;
-    private final ArrayBlockingQueue<Object> chunks = new ArrayBlockingQueue<>(8);
+    private final ArrayBlockingQueue<Object> chunks = new ArrayBlockingQueue<>(QUEUED_CHUNKS);
     private final long stallNanos, maximum;
     private final int sampleRate, channels;
     private byte[] current = END;
@@ -85,7 +89,7 @@ public final class PcmStream implements AutoCloseable {
     private void pump(java.io.InputStream output) {
         try (output) {
             while (!closed) {
-                byte[] block = output.readNBytes(16_384);
+                byte[] block = output.readNBytes(CHUNK_BYTES);
                 if (block.length == 0) {
                     decoded = true;
                     break;
@@ -107,7 +111,7 @@ public final class PcmStream implements AutoCloseable {
 
     /**
      * True once the decoder has written its last PCM. What remains is the bounded buffered tail
-     * (this stream's queue and the pipe), so a caller can prepare what follows the file.
+     * (this stream's queue), so a caller can prepare what follows the file.
      */
     public boolean decoded() {
         return decoded;

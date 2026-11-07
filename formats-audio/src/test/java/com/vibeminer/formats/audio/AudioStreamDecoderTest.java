@@ -430,10 +430,17 @@ final class AudioStreamDecoderTest {
 
     /**
      * The stream reports that its decoder finished while the decoded tail is still buffered, so a
-     * player can open what follows before the audio runs out.
+     * player can open what follows before the audio runs out. Nothing is read while waiting, so the
+     * decoder can only finish if the whole fixture fits the stream's queue; that size assumption is
+     * checked first, so a larger fixture fails with that reason, not a timeout.
      */
     @Test
     void reportsDecodingFinishedWhileTheTailIsStillBuffered() throws Exception {
+        int queued = PcmStream.QUEUED_CHUNKS * PcmStream.CHUNK_BYTES;
+        int whole = decode(fixture("authored-tone.ogg")).length;
+        assertTrue(
+                whole <= queued,
+                "fixture PCM (" + whole + " bytes) must fit the " + queued + "-byte queue");
         try (var stream = AudioStreamDecoder.open(fixture("authored-tone.ogg"), () -> false)) {
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
             while (!stream.decoded() && System.nanoTime() < deadline) {
