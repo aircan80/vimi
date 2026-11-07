@@ -857,7 +857,7 @@ final class GpuPreviewService {
     /**
      * Pure form of {@link #readyMessage(com.vibeminer.concepts.world.WorldGlobalScenes.Facts)}:
      * skipped groups with their most common reason (a stronger warning when more than half are
-     * missing) and blended surfaces left out.
+     * missing) and surfaces left out for an unsupported blend mode (#297).
      */
     static String readyMessage(int drawnGroups, java.util.Map<String, Integer> skippedReasons,
             int blendedBatches) {
@@ -880,7 +880,7 @@ final class GpuPreviewService {
         }
         if (blendedBatches > 0) {
             text.append(" · ").append(blendedBatches)
-                    .append(blendedBatches == 1 ? " glow or blended surface" : " glow or blended surfaces")
+                    .append(blendedBatches == 1 ? " surface with an unsupported blend" : " surfaces with an unsupported blend")
                     .append(" not drawn");
         }
         return text.toString();

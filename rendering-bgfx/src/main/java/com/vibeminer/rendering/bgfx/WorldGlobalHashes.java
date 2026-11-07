@@ -74,7 +74,8 @@ public final class WorldGlobalHashes {
             for (long word : words) {
                 WorldGlobalLayout.unsigned(word);
             }
-            // Flags, shader and blend words are carried but not applied (unlit opaque profile). A
+            // Flags (word 0) and blend mode (word 2) select the batch's range class in the
+            // renderer (WmoMaterialClass, #297); the shader word is carried but not applied. A
             // material without a texture is allowed only while no batch draws it.
         }
 

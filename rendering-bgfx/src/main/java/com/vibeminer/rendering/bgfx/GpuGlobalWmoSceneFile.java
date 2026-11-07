@@ -190,16 +190,16 @@ public final class GpuGlobalWmoSceneFile {
                 WorldGlobalFileAccess.stop(stopping);
                 byte[] bytes = new byte[metadata.images().get(n).length()];
                 cursor.bytes(bytes);
-                for (int at = 3; at < bytes.length; at += 4) {
-                    if ((at & 4095) == 3) {
-                        WorldGlobalFileAccess.stop(stopping);
-                    }
-                    WorldGlobalFileCodec.check((bytes[at] & 255) == 255);
-                }
+                WorldGlobalFileAccess.stop(stopping);
+                // Source alpha is kept since profile 3 (#297); the digest binds it.
                 WorldGlobalFileCodec.check(
                         HexFormat.of()
                                 .formatHex(WorldGlobalSceneWriter.sha().digest(bytes))
-                                .equals(metadata.description().images().get(n).opaqueRgbaSha256()));
+                                .equals(
+                                        metadata.description()
+                                                .images()
+                                                .get(n)
+                                                .originalRgbaSha256()));
                 images.add(bytes);
             }
             var second = cursor.finish();

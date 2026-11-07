@@ -21,6 +21,19 @@ final class GlobalWmoAuthoredData implements WorldGlobalSceneWriter.StructuralRe
             int[] indices,
             List<byte[]> images,
             List<WorldGlobalHashes.Batch> batches) {
+        this(vertices, indices, images, batches, new long[images.size()]);
+    }
+
+    /**
+     * As above, with material i's MOMT flags and blend mode packed as {@code flags << 32 | blend}
+     * in {@code materials[i]} (#297).
+     */
+    GlobalWmoAuthoredData(
+            float[] vertices,
+            int[] indices,
+            List<byte[]> images,
+            List<WorldGlobalHashes.Batch> batches,
+            long[] materialWords) {
         this.vertices = vertices;
         this.indices = indices;
         this.images = images;
@@ -50,24 +63,35 @@ final class GlobalWmoAuthoredData implements WorldGlobalSceneWriter.StructuralRe
         var descriptors = new ArrayList<WorldGlobalHashes.Image>();
         for (int i = 0; i < images.size(); i++) {
             long[] words = new long[16];
+            words[0] = materialWords[i] >>> 32;
+            words[2] = materialWords[i] & 0xffff_ffffL;
             words[3] = 4 + i;
             words[4] = 0xff000000L;
             words[8] = 10;
             materials.add(new WorldGlobalHashes.Material(words));
+            byte[] texels = images.get(i), opaque = texels.clone();
+            int min = 255, max = 0, nonopaque = 0;
+            for (int at = 3; at < texels.length; at += 4) {
+                int alpha = texels[at] & 255;
+                min = Math.min(min, alpha);
+                max = Math.max(max, alpha);
+                nonopaque += alpha == 255 ? 0 : 1;
+                opaque[at] = (byte) 255;
+            }
             descriptors.add(
                     new WorldGlobalHashes.Image(
                             4 + i,
                             2,
                             2,
                             1,
-                            0,
+                            nonopaque == 0 ? 0 : 8,
                             0,
                             1,
-                            255,
-                            255,
-                            0,
-                            hash(images.get(i)),
-                            hash(images.get(i))));
+                            min,
+                            max,
+                            nonopaque,
+                            hash(texels),
+                            hash(opaque)));
             sources.add(source(4 + i, WorldGlobalHashes.Role.IMAGE, i));
         }
         description =
@@ -97,12 +121,16 @@ final class GlobalWmoAuthoredData implements WorldGlobalSceneWriter.StructuralRe
     }
 
     static byte[] solid(int r, int g, int b) {
+        return solid(r, g, b, 255);
+    }
+
+    static byte[] solid(int r, int g, int b, int a) {
         var result = new byte[16];
         for (int i = 0; i < 4; i++) {
             result[4 * i] = (byte) r;
             result[4 * i + 1] = (byte) g;
             result[4 * i + 2] = (byte) b;
-            result[4 * i + 3] = (byte) 255;
+            result[4 * i + 3] = (byte) a;
         }
         return result;
     }

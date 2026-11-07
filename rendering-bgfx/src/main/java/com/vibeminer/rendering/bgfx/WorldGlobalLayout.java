@@ -5,7 +5,8 @@ import com.vibeminer.rendering.world.GlobalInteriorLimits;
 /** Pure standalone structural bounds. No file, source or native ownership is granted. */
 public final class WorldGlobalLayout {
     public static final int HEADER_BYTES = 1024;
-    public static final int PROFILE = 2, OMISSIONS = 0x1ff;
+    // Profile 3 (#297): images keep their source alpha and materials select their range class.
+    public static final int PROFILE = 3, OMISSIONS = 0x1ff;
     public static final int SOURCE_BYTES = 64, MATERIAL_BYTES = 64, GROUP_BYTES = 64;
     public static final int BATCH_BYTES = 16, IMAGE_BYTES = 96, INDEX_BYTES = 4;
 

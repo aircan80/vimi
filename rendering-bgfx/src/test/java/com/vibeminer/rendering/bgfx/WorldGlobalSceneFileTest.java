@@ -38,7 +38,8 @@ class WorldGlobalSceneFileTest {
                 new WorldGlobalLayout.Counts(1, 1, 1, 1, 3, 6, 1, 1);
         final float[] vertices = {0, 0, 0, -0f, 0, -1, 0, 0, 1, 0, 0, -2, 0, 0, 1};
         final int[] indices = {0, 1, 2, 2, 1, 0};
-        final byte[] rgba = {(byte) 255, 0, 0, (byte) 255};
+        // Profile 3 (#297): the file keeps the source alpha, here 0.
+        final byte[] rgba = {(byte) 255, 0, 0, 0};
         final WorldGlobalSceneWriter.Description description;
 
         Fixture() {
@@ -110,8 +111,8 @@ class WorldGlobalSceneFileTest {
                                             0,
                                             0,
                                             1,
-                                            hash(new byte[] {(byte) 255, 0, 0, 0}),
-                                            hash(rgba))));
+                                            hash(rgba),
+                                            hash(new byte[] {(byte) 255, 0, 0, (byte) 255}))));
         }
 
         public WorldGlobalLayout.Counts counts() {
@@ -219,7 +220,7 @@ class WorldGlobalSceneFileTest {
 
     @Test
     void validChecksumsCannotHideNoncanonicalHeaderOrDescriptorSubstitutions() throws Exception {
-        assertEquals(2, WorldGlobalLayout.PROFILE);
+        assertEquals(3, WorldGlobalLayout.PROFILE);
         for (int mode = 0; mode < 12; mode++) {
             var dir = Files.createDirectory(directory.resolve("bad-" + mode));
             var target = target(dir);
@@ -266,7 +267,8 @@ class WorldGlobalSceneFileTest {
                 switch (mode) {
                     case 0 -> b.putFloat(offsets.vertices(), -0f);
                     case 1 -> b.putShort(offsets.indices(), (short) 3);
-                    case 2 -> bytes[bytes.length - 1] = 0;
+                    // A changed source alpha no longer matches the image digest (#297).
+                    case 2 -> bytes[bytes.length - 1] = 1;
                     case 3 -> b.putFloat(288, -2);
                     default -> throw new AssertionError();
                 }
