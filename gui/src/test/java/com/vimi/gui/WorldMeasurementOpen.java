@@ -30,6 +30,10 @@ final class WorldMeasurementOpen implements AutoCloseable {
     final BackendBuildService service;
     final BuildInfo build;
     final PreparationHistory.Receipt receipt;
+
+    /** The community TACT keys the work was pinned to: the library's loaded snapshot, or none. */
+    final com.vibeminer.files.keys.TactKeys pinnedKeys;
+
     private final NativePreparationWork work;
     private final NativePreparationWork.MeasurementWorld measured;
 
@@ -37,11 +41,13 @@ final class WorldMeasurementOpen implements AutoCloseable {
             BackendBuildService service,
             BuildInfo build,
             PreparationHistory.Receipt receipt,
+            com.vibeminer.files.keys.TactKeys pinnedKeys,
             NativePreparationWork work,
             NativePreparationWork.MeasurementWorld measured) {
         this.service = service;
         this.build = build;
         this.receipt = receipt;
+        this.pinnedKeys = pinnedKeys;
         this.work = work;
         this.measured = measured;
     }
@@ -223,7 +229,8 @@ final class WorldMeasurementOpen implements AutoCloseable {
             work.openFilesForMeasurement(token);
             for (String issue : work.keysPreparedLocal(token)) say.accept("key issue: " + issue);
             var measured = work.openWorldForMeasurement(token);
-            return new WorldMeasurementOpen(service, selection.build(), receipt, work, measured);
+            return new WorldMeasurementOpen(
+                    service, selection.build(), receipt, pinned, work, measured);
         } catch (Throwable failure) {
             try {
                 if (work != null) {

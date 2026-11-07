@@ -92,15 +92,80 @@ public final class WorldMeasurementLibraryTest {
             require(
                     payloadsAfter.equals(payloadsBefore),
                     "Measurement open changes no payload file: " + changed(payloadsBefore, payloadsAfter));
+            creatureModeKeysAndOpenWriteNothing(directory, version);
             System.out.println(
                     "World measurement open: refuses unprepared builds and the application's"
-                            + " library; no stored object or payload write passed");
+                            + " library; no stored object or payload write; creatures mode pins"
+                            + " the loaded keys only, without a refresh, and its creature open"
+                            + " writes nothing passed");
         } catch (Throwable failure) {
             primary = failure;
             throw failure;
         } finally {
             TestCleanup.deleteTree(primary, directory);
         }
+    }
+
+    /**
+     * Creatures mode (#553): the work is pinned to exactly the library's loaded community key
+     * snapshot, and the key client is never asked; every other mode pins no keys. Opening the
+     * measurement creatures over the measured World returns its warmup issues, closes cleanly, and
+     * neither open stores an object or changes a payload file.
+     */
+    private static void creatureModeKeysAndOpenWriteNothing(Path directory, String version)
+            throws Exception {
+        var fetches = new java.util.concurrent.atomic.AtomicInteger();
+        com.vibeminer.network.TactKeyClient counting =
+                token -> {
+                    fetches.incrementAndGet();
+                    return OfflineSourceFixtures.publicKeys(token);
+                };
+        var payloadsBefore = payloads(directory.resolve("library"));
+        long objectsBefore = storedObjects(directory);
+        try (var opened =
+                WorldMeasurementOpen.open(
+                        directory,
+                        version,
+                        counting,
+                        ignored -> {},
+                        TimeUnit.MINUTES.toNanos(1),
+                        true)) {
+            var loaded = opened.sources().tactKeys();
+            require(loaded.count() > 0, "The fixture library has loaded community keys");
+            require(opened.pinnedKeys == loaded, "Creatures mode pins the loaded key snapshot");
+            try (var creatures = opened.openCreatures(Cancellation.NONE)) {
+                require(
+                        creatures.warmup() != null
+                                && creatures.creatures() != null
+                                && creatures.races() != null,
+                        "Measurement creatures open with their warmup issues: "
+                                + creatures.warmup());
+            }
+        }
+        try (var opened =
+                WorldMeasurementOpen.open(
+                        directory,
+                        version,
+                        counting,
+                        ignored -> {},
+                        TimeUnit.MINUTES.toNanos(1),
+                        false)) {
+            require(
+                    opened.pinnedKeys == com.vibeminer.files.keys.TactKeys.EMPTY,
+                    "Other modes pin no community keys");
+        }
+        require(fetches.get() == 0, "No TACT key refresh is started: " + fetches.get());
+        require(
+                storedObjects(directory) == objectsBefore,
+                "Creature-mode open stores no object: "
+                        + objectsBefore
+                        + " -> "
+                        + storedObjects(directory));
+        var payloadsAfter = payloads(directory.resolve("library"));
+        require(
+                payloadsAfter.equals(payloadsBefore),
+                "Creature-mode open changes no payload file: "
+                        + changed(payloadsBefore, payloadsAfter));
     }
 
     private static void refusesMissingDefaultAndUnseededLibraries() throws Exception {
