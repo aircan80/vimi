@@ -14,7 +14,7 @@ final class WorldStreamControl {
     static final int MAX_LINE_BYTES = 256;
 
     sealed interface Command
-            permits Camera, Offer, Commit, Cancel, CancelUnused, LateObjects, Close {
+            permits Camera, Offer, Commit, Cancel, CancelUnused, LateObjects, Horizon, Close {
         WorldStreamState.Nonce nonce();
     }
 
@@ -114,6 +114,23 @@ final class WorldStreamControl {
             if (length < WorldStreamObjectsFile.HEADER_BYTES
                     || length > WorldStreamObjectsFile.MAX_BYTES) {
                 throw new IllegalArgumentException("Invalid objects length");
+            }
+        }
+    }
+
+    /**
+     * The map's WDL bytes for the horizon (#372), file {@code horizon-1.wsh}. At most one per
+     * session, outside the tile transaction sequence; the child answers with exactly one {@code
+     * HORIZON_DONE}, and any failure only means no horizon.
+     */
+    record Horizon(WorldStreamState.Nonce nonce, int length, String sha256) implements Command {
+        static final String BASENAME = "horizon-1.wsh";
+
+        Horizon {
+            Objects.requireNonNull(nonce);
+            digest(sha256);
+            if (length < 12 || length > com.vibeminer.formats.world.WorldLowRes.MAX_SOURCE_BYTES) {
+                throw new IllegalArgumentException("Invalid horizon length");
             }
         }
     }
@@ -261,6 +278,8 @@ final class WorldStreamControl {
                                     + c.length()
                                     + " "
                                     + c.sha256();
+                    case Horizon c ->
+                            "HORIZON 1 " + Horizon.BASENAME + " " + c.length() + " " + c.sha256();
                     case Close ignored -> "CLOSE";
                 };
         byte[] line = (prefix + tail + "\n").getBytes(StandardCharsets.US_ASCII);
@@ -382,6 +401,12 @@ final class WorldStreamControl {
                                             integer(parts[5]), number(parts[6]), number(parts[4])),
                                     integer(parts[8]),
                                     parts[9]);
+                        }
+                        case "HORIZON" -> {
+                            arity(parts, 7);
+                            basename(parts[3], "1");
+                            basename(parts[4], Horizon.BASENAME);
+                            yield new Horizon(nonce, integer(parts[5]), parts[6]);
                         }
                         case "CLOSE" -> {
                             arity(parts, 3);

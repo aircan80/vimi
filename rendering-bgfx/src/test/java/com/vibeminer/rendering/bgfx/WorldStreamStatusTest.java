@@ -159,6 +159,18 @@ class WorldStreamStatusTest {
     }
 
     @Test
+    void horizonOutcomesDecodeAndAnythingElseIsRefused() throws Exception {
+        for (var outcome : WorldStreamStatus.HorizonOutcome.values()) {
+            var done = (WorldStreamStatus.HorizonDone) parse("HORIZON_DONE 1 " + outcome.name());
+            assertEquals(outcome, done.outcome());
+        }
+        for (String body :
+                new String[] {"HORIZON_DONE 2 DRAWN", "HORIZON_DONE 1 MAYBE", "HORIZON_DONE 1"}) {
+            assertThrows(IOException.class, () -> parse(body), body);
+        }
+    }
+
+    @Test
     void sessionCarriesTheSampledObjectFormats() throws IOException {
         var none = (WorldStreamStatus.Session) parse("SESSION TERRAIN_EXTERIOR_V1");
         org.junit.jupiter.api.Assertions.assertEquals(0, none.objectFormats(), "no mask: RGBA8");

@@ -136,4 +136,22 @@ class WorldControlMailboxTest {
         assertEquals(10_000, mailbox.takeCamera().revision());
         assertNull(mailbox.takeTransaction());
     }
+
+    @Test
+    void theHorizonLaneTakesOneCommandAndIgnoresRepeatsWithoutFailing() {
+        var mailbox = new WorldControlMailbox(NONCE);
+        var first = new WorldStreamControl.Horizon(NONCE, 100, "d".repeat(64));
+        assertEquals(WorldControlMailbox.Result.ACCEPTED, mailbox.offer(first));
+        assertEquals(
+                WorldControlMailbox.Result.ACCEPTED,
+                mailbox.offer(new WorldStreamControl.Horizon(NONCE, 200, "e".repeat(64))));
+        assertEquals(first, mailbox.takeHorizon());
+        assertNull(mailbox.takeHorizon());
+        assertEquals(
+                WorldControlMailbox.Result.ACCEPTED,
+                mailbox.offer(new WorldStreamControl.Horizon(NONCE, 300, "f".repeat(64))));
+        assertNull(mailbox.takeHorizon());
+        assertFalse(mailbox.failed());
+        assertFalse(mailbox.closing());
+    }
 }

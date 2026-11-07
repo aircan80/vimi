@@ -18,18 +18,25 @@ import java.util.function.BooleanSupplier;
  * 16 spacing. Each 16 x 16 cell is the ADT chunk's four-triangle fan (corner, centre, corner) with
  * the same winding. Hole cells are left out.
  *
- * <p>Tiles drawn at full detail are left out, so the two never overlap; they meet along tile edges.
- * There the full tile's edge follows every ADT sample while the horizon's follows only every chunk
- * corner, so the horizon sits {@link #SINK} lower than its source heights to stay under the full
- * edge, and along an edge shared with a full-detail tile a skirt, facing that tile, drops {@link
- * #SKIRT} further to close the gap. Known limit: where the full tile's edge dips more than {@code
- * SINK + SKIRT} below the horizon's (a cliff between chunk corners), a gap can still show; fog
- * hides it at distance.
+ * <p>Tiles drawn at full detail are not drawn here, so the two never overlap; they meet along tile
+ * edges. There the full tile's edge follows every ADT sample while the horizon's follows only every
+ * chunk corner, so the horizon sits {@link #SINK} lower than its source heights to stay under the
+ * full edge, and along an edge shared with a full-detail tile a skirt, facing that tile, drops
+ * {@link #SKIRT} further to close the gap. Known limit: where the full tile's edge dips more than
+ * {@code SINK + SKIRT} below the horizon's (a cliff between chunk corners), a gap can still show;
+ * fog hides it at distance.
+ *
+ * <p>The mesh keeps each tile's index ranges (its surface, and one skirt per edge), so a renderer
+ * can leave out full-detail tiles and draw only the skirts that face them at draw time, without a
+ * rebuild whenever the full-detail set changes ({@link #buildWindow}).
  */
 public final class HorizonMesh {
     public static final int MAX_RADIUS = 8;
     public static final float SINK = 2f, SKIRT = 24f;
     public static final int VERTICES_PER_TILE = WorldLowRes.HEIGHTS, TRIANGLES_PER_TILE = 1024;
+
+    /** Skirt edges, by the neighbour each faces: x - 1, x + 1, y - 1, y + 1. */
+    public static final int[][] EDGE_NEIGHBOURS = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
 
     /** Skirt vertices and triangles per tile: four edges of 17 corners and 16 quads each. */
     private static final int SKIRT_VERTICES = 4 * 17, SKIRT_TRIANGLES = 4 * 16 * 2;
@@ -37,15 +44,115 @@ public final class HorizonMesh {
     private final float[] positions;
     private final int[] indices;
     private final int tiles, centreX, centreY, radius;
+    // Per drawn tile: coordinates, surface index range, and per edge (4 each) a skirt range whose
+    // count is 0 when the edge has none. Surfaces come first in window order, then the skirts.
+    private final int[] tileX, tileY, surfaceStart, surfaceCount, skirtStart, skirtCount;
 
     private HorizonMesh(
-            float[] positions, int[] indices, int tiles, int centreX, int centreY, int radius) {
+            float[] positions,
+            int[] indices,
+            int centreX,
+            int centreY,
+            int radius,
+            int[] tileX,
+            int[] tileY,
+            int[] surfaceStart,
+            int[] surfaceCount,
+            int[] skirtStart,
+            int[] skirtCount) {
         this.positions = positions;
         this.indices = indices;
-        this.tiles = tiles;
+        this.tiles = tileX.length;
         this.centreX = centreX;
         this.centreY = centreY;
         this.radius = radius;
+        this.tileX = tileX;
+        this.tileY = tileY;
+        this.surfaceStart = surfaceStart;
+        this.surfaceCount = surfaceCount;
+        this.skirtStart = skirtStart;
+        this.skirtCount = skirtCount;
+    }
+
+    /**
+     * Each tile's index ranges, kept apart from the vertex and index arrays so a renderer can hold
+     * them after the upload. Immutable.
+     */
+    public static final class Ranges {
+        private final int tiles;
+        private final int[] tileX, tileY, surfaceStart, surfaceCount, skirtStart, skirtCount;
+
+        private Ranges(
+                int[] tileX,
+                int[] tileY,
+                int[] surfaceStart,
+                int[] surfaceCount,
+                int[] skirtStart,
+                int[] skirtCount) {
+            this.tiles = tileX.length;
+            this.tileX = tileX;
+            this.tileY = tileY;
+            this.surfaceStart = surfaceStart;
+            this.surfaceCount = surfaceCount;
+            this.skirtStart = skirtStart;
+            this.skirtCount = skirtCount;
+        }
+
+        /**
+         * Index ranges to draw now, as (start, count) pairs into {@code out}, for a mesh from
+         * {@link #buildWindow}: every tile not drawn at full detail, consecutive tiles merged into
+         * one range, and the skirts of those tiles that face a full-detail tile. Returns the number
+         * of ints written. {@code out} needs room for {@link #maxDrawRangeInts()} ints.
+         */
+        public int drawRanges(Hidden fullDetail, int[] out) {
+            Objects.requireNonNull(fullDetail);
+            int written = 0, runStart = -1, runEnd = -1;
+            for (int i = 0; i < tiles; i++) {
+                if (fullDetail.hidden(tileX[i], tileY[i]) || surfaceCount[i] == 0) {
+                    continue;
+                }
+                if (runStart >= 0 && surfaceStart[i] == runEnd) {
+                    runEnd += surfaceCount[i];
+                } else {
+                    if (runStart >= 0) {
+                        out[written++] = runStart;
+                        out[written++] = runEnd - runStart;
+                    }
+                    runStart = surfaceStart[i];
+                    runEnd = runStart + surfaceCount[i];
+                }
+            }
+            if (runStart >= 0) {
+                out[written++] = runStart;
+                out[written++] = runEnd - runStart;
+            }
+            for (int i = 0; i < tiles; i++) {
+                if (fullDetail.hidden(tileX[i], tileY[i])) {
+                    continue;
+                }
+                for (int e = 0; e < 4; e++) {
+                    int count = skirtCount[i * 4 + e];
+                    if (count > 0
+                            && fullDetail.hidden(
+                                    tileX[i] + EDGE_NEIGHBOURS[e][0],
+                                    tileY[i] + EDGE_NEIGHBOURS[e][1])) {
+                        out[written++] = skirtStart[i * 4 + e];
+                        out[written++] = count;
+                    }
+                }
+            }
+            return written;
+        }
+
+        /** Room {@link #drawRanges} may need: one range per tile surface and per skirt. */
+        public int maxDrawRangeInts() {
+            return tiles * 2 + tiles * 4 * 2;
+        }
+    }
+
+    /** This mesh's per-tile index ranges. */
+    public Ranges ranges() {
+        return new Ranges(tileX, tileY, surfaceStart, surfaceCount, skirtStart, skirtCount);
     }
 
     /** Tiles that are drawn at full detail, keyed by WDT coordinates. */
@@ -56,7 +163,8 @@ public final class HorizonMesh {
 
     /**
      * Builds the horizon for tiles within Chebyshev {@code radius} of the camera tile. Tiles the
-     * WDL lacks or {@code hidden} reports are skipped.
+     * WDL lacks or {@code hidden} reports are skipped, and only edges facing a hidden tile get a
+     * skirt.
      */
     public static HorizonMesh build(
             WorldLowRes.LowRes lowRes,
@@ -65,8 +173,32 @@ public final class HorizonMesh {
             int radius,
             Hidden hidden,
             BooleanSupplier canceled) {
-        Objects.requireNonNull(lowRes);
         Objects.requireNonNull(hidden);
+        return build(lowRes, cameraX, cameraY, radius, hidden, false, canceled);
+    }
+
+    /**
+     * Builds every WDL tile of the window, each with a skirt on all four edges, for a renderer that
+     * picks tiles and skirts at draw time ({@link Ranges#drawRanges}).
+     */
+    public static HorizonMesh buildWindow(
+            WorldLowRes.LowRes lowRes,
+            int cameraX,
+            int cameraY,
+            int radius,
+            BooleanSupplier canceled) {
+        return build(lowRes, cameraX, cameraY, radius, (x, y) -> false, true, canceled);
+    }
+
+    private static HorizonMesh build(
+            WorldLowRes.LowRes lowRes,
+            int cameraX,
+            int cameraY,
+            int radius,
+            Hidden hidden,
+            boolean everySkirt,
+            BooleanSupplier canceled) {
+        Objects.requireNonNull(lowRes);
         Objects.requireNonNull(canceled);
         if (cameraX < 0
                 || cameraX >= 64
@@ -89,9 +221,18 @@ public final class HorizonMesh {
             }
         }
         float[] positions = new float[count * (VERTICES_PER_TILE + SKIRT_VERTICES) * 3];
-        int[] indices = new int[count * (TRIANGLES_PER_TILE + SKIRT_TRIANGLES) * 3];
-        int vertex = 0, index = 0;
+        int[] indices = new int[count * TRIANGLES_PER_TILE * 3];
+        int[] skirts = new int[count * SKIRT_TRIANGLES * 3];
+        int[] tileX = new int[count], tileY = new int[count];
+        int[] surfaceStart = new int[count], surfaceCount = new int[count];
+        int[] skirtStart = new int[count * 4], skirtCount = new int[count * 4];
+        int vertex = 0, index = 0, skirtIndex = 0, drawnTile = 0;
         double t = WorldFormats.TILE_SIZE, step = t / 16;
+        // {corner of the edge's first sample (row, column), row step, column step, flip}, in
+        // EDGE_NEIGHBOURS order. Walking an edge in that order gives faces toward +X along a row
+        // edge and toward -Y along a column edge; flip reverses them so every skirt faces its
+        // full-detail neighbour.
+        int[][] edges = {{0, 0, 0, 1, 0}, {16, 0, 0, 1, 1}, {0, 0, 1, 0, 1}, {0, 16, 1, 0, 0}};
         for (int dx = -radius; dx <= radius; dx++) {
             check(canceled);
             for (int dy = -radius; dy <= radius; dy++) {
@@ -101,6 +242,9 @@ public final class HorizonMesh {
                 int x = cameraX + dx, y = cameraY + dy;
                 var tile = lowRes.tile(x, y);
                 double originX = (32 - x) * t, originY = (32 - y) * t;
+                tileX[drawnTile] = x;
+                tileY[drawnTile] = y;
+                surfaceStart[drawnTile] = index;
                 int base = vertex;
                 for (int row = 0; row < 17; row++) {
                     for (int column = 0; column < 17; column++) {
@@ -136,24 +280,18 @@ public final class HorizonMesh {
                         index = triangle(indices, index, d, m, a);
                     }
                 }
-                // Skirts on edges shared with a full-detail tile: {neighbour dx, dy, corner of
-                // the edge's first sample, row step, column step, flip}. Walking the edge in
-                // that order gives faces toward +X along a row edge and toward -Y along a column
-                // edge; flip reverses them so every skirt faces its full-detail neighbour.
-                int[][] edges = {
-                    {-1, 0, 0, 0, 0, 1, 0},
-                    {1, 0, 16, 0, 0, 1, 1},
-                    {0, -1, 0, 0, 1, 0, 1},
-                    {0, 1, 0, 16, 1, 0, 0}
-                };
-                for (int[] edge : edges) {
-                    int nx = x + edge[0], ny = y + edge[1];
-                    if (nx < 0 || nx >= 64 || ny < 0 || ny >= 64 || !hidden.hidden(nx, ny)) {
+                surfaceCount[drawnTile] = index - surfaceStart[drawnTile];
+                for (int e = 0; e < 4; e++) {
+                    int nx = x + EDGE_NEIGHBOURS[e][0], ny = y + EDGE_NEIGHBOURS[e][1];
+                    boolean inside = nx >= 0 && nx < 64 && ny >= 0 && ny < 64;
+                    if (!inside || !everySkirt && !hidden.hidden(nx, ny)) {
                         continue;
                     }
+                    int[] edge = edges[e];
+                    skirtStart[drawnTile * 4 + e] = skirtIndex;
                     int skirt = vertex;
                     for (int i = 0; i < 17; i++) {
-                        int row = edge[2] + i * edge[4], column = edge[3] + i * edge[5];
+                        int row = edge[0] + i * edge[2], column = edge[1] + i * edge[3];
                         put(
                                 positions,
                                 vertex++,
@@ -162,28 +300,45 @@ public final class HorizonMesh {
                                 tile.corner(row, column) - SINK - SKIRT);
                     }
                     for (int i = 0; i < 16; i++) {
-                        int row = edge[2] + i * edge[4], column = edge[3] + i * edge[5];
+                        int row = edge[0] + i * edge[2], column = edge[1] + i * edge[3];
                         int top = base + row * 17 + column;
-                        int next = base + (row + edge[4]) * 17 + column + edge[5];
-                        if (edge[6] == 0) {
-                            index = triangle(indices, index, top, next, skirt + i);
-                            index = triangle(indices, index, next, skirt + i + 1, skirt + i);
+                        int next = base + (row + edge[2]) * 17 + column + edge[3];
+                        if (edge[4] == 0) {
+                            skirtIndex = triangle(skirts, skirtIndex, top, next, skirt + i);
+                            skirtIndex =
+                                    triangle(skirts, skirtIndex, next, skirt + i + 1, skirt + i);
                         } else {
-                            index = triangle(indices, index, top, skirt + i, next);
-                            index = triangle(indices, index, next, skirt + i, skirt + i + 1);
+                            skirtIndex = triangle(skirts, skirtIndex, top, skirt + i, next);
+                            skirtIndex =
+                                    triangle(skirts, skirtIndex, next, skirt + i, skirt + i + 1);
                         }
                     }
+                    skirtCount[drawnTile * 4 + e] = skirtIndex - skirtStart[drawnTile * 4 + e];
                 }
+                drawnTile++;
             }
         }
         check(canceled);
+        // Skirts follow every surface, so the surfaces of neighbouring drawn tiles stay one run.
+        int[] all = Arrays.copyOf(indices, index + skirtIndex);
+        System.arraycopy(skirts, 0, all, index, skirtIndex);
+        for (int i = 0; i < skirtStart.length; i++) {
+            if (skirtCount[i] > 0) {
+                skirtStart[i] += index;
+            }
+        }
         return new HorizonMesh(
                 Arrays.copyOf(positions, vertex * 3),
-                Arrays.copyOf(indices, index),
-                count,
+                all,
                 cameraX,
                 cameraY,
-                radius);
+                radius,
+                tileX,
+                tileY,
+                surfaceStart,
+                surfaceCount,
+                skirtStart,
+                skirtCount);
     }
 
     private static void put(float[] positions, int vertex, double x, double y, double z) {
@@ -215,7 +370,7 @@ public final class HorizonMesh {
         return indices.length / 3;
     }
 
-    /** Horizon tiles drawn (in the window, present in the WDL and not hidden). */
+    /** Horizon tiles in this mesh (in the window, present in the WDL and not hidden). */
     public int tiles() {
         return tiles;
     }

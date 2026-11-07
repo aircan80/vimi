@@ -338,4 +338,32 @@ class WorldStreamParentStateTest {
         assertEquals(0, live.content());
         assertEquals(List.of(), live.active());
     }
+
+    @Test
+    void oneHorizonPerSessionAndUnmatchedAnswersAreIgnored() {
+        var state = ready();
+        // An answer before any HORIZON was sent is ignored, never fatal.
+        assertEquals(
+                WorldStreamParentState.Change.IGNORED,
+                state.status(
+                        new WorldStreamStatus.HorizonDone(
+                                NONCE, WorldStreamStatus.HorizonOutcome.DRAWN)));
+        var command = state.horizon(4096, "a".repeat(64));
+        assertNotNull(command);
+        assertEquals(4096, command.length());
+        assertNull(state.horizon(4096, "a".repeat(64)));
+        assertEquals(
+                WorldStreamParentState.Change.HORIZON,
+                state.status(
+                        new WorldStreamStatus.HorizonDone(
+                                NONCE, WorldStreamStatus.HorizonOutcome.FAILED)));
+        // A late duplicate answer is ignored too.
+        assertEquals(
+                WorldStreamParentState.Change.IGNORED,
+                state.status(
+                        new WorldStreamStatus.HorizonDone(
+                                NONCE, WorldStreamStatus.HorizonOutcome.DRAWN)));
+        // Before the session hello there is no horizon to send.
+        assertNull(new WorldStreamParentState(SESSION).horizon(4096, "a".repeat(64)));
+    }
 }

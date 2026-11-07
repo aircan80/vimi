@@ -28,15 +28,41 @@ public final class WorldHorizon {
         UNAVAILABLE
     }
 
-    /** {@code lowRes} is non-null exactly when READY. */
+    /**
+     * {@code lowRes} is non-null exactly when READY. {@code source} is the read-only WDL those
+     * heights came from, for a renderer process that parses it itself; it may be null.
+     */
     public record Result(
-            State state, long mapId, long fileId, WorldLowRes.LowRes lowRes, String reason) {
+            State state,
+            long mapId,
+            long fileId,
+            WorldLowRes.LowRes lowRes,
+            String reason,
+            java.nio.ByteBuffer source) {
+        public Result(
+                State state, long mapId, long fileId, WorldLowRes.LowRes lowRes, String reason) {
+            this(state, mapId, fileId, lowRes, reason, null);
+        }
+
         public Result {
             Objects.requireNonNull(state);
             Objects.requireNonNull(reason);
-            if ((state == State.READY) != (lowRes != null) || fileId < 0) {
+            if ((state == State.READY) != (lowRes != null)
+                    || fileId < 0
+                    || source != null && state != State.READY) {
                 throw new IllegalArgumentException("Invalid horizon result");
             }
+            source = source == null ? null : source.asReadOnlyBuffer();
+        }
+
+        /** A copy of the source WDL bytes, or null. */
+        public byte[] sourceBytes() {
+            if (source == null) {
+                return null;
+            }
+            byte[] copy = new byte[source.remaining()];
+            source.duplicate().get(copy);
+            return copy;
         }
 
         public static Result absent(long mapId, String reason) {
@@ -214,7 +240,8 @@ public final class WorldHorizon {
                                 + " tiles"
                                 + (lowRes.problems().isEmpty()
                                         ? ""
-                                        : ", " + lowRes.problems().size() + " refused"));
+                                        : ", " + lowRes.problems().size() + " refused"),
+                        java.nio.ByteBuffer.wrap(bytes));
         synchronized (this) {
             cache.put(key, result);
             while (cache.size() > CACHE) {

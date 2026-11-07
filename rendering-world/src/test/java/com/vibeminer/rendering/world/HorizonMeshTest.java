@@ -167,6 +167,70 @@ class HorizonMeshTest {
         assertTrue(mesh.payloadBytes() < 1 << 20);
     }
 
+    /** Triangles the draw ranges select, as index triples. */
+    private static java.util.List<int[]> drawn(HorizonMesh mesh, HorizonMesh.Hidden fullDetail) {
+        var ranges = mesh.ranges();
+        int[] out = new int[ranges.maxDrawRangeInts()];
+        int count = ranges.drawRanges(fullDetail, out);
+        var indices = mesh.indices();
+        var triangles = new java.util.ArrayList<int[]>();
+        for (int r = 0; r < count; r += 2) {
+            assertEquals(0, out[r] % 3);
+            assertEquals(0, out[r + 1] % 3);
+            for (int i = out[r]; i < out[r] + out[r + 1]; i += 3) {
+                triangles.add(new int[] {indices.get(i), indices.get(i + 1), indices.get(i + 2)});
+            }
+        }
+        return triangles;
+    }
+
+    @Test
+    void aTileCommittedAfterTheBuildIsLeftOutTheNextFrameWithItsFacingSkirts() {
+        var tiles = new HashSet<Integer>();
+        for (int x = 18; x <= 22; x++) {
+            for (int y = 18; y <= 22; y++) {
+                tiles.add(key(x, y));
+            }
+        }
+        var mesh = HorizonMesh.buildWindow(lowRes(tiles, -1), 20, 20, 2, () -> false);
+        assertEquals(25, mesh.tiles());
+        assertEquals(25 * 1024 + 25 * 4 * 32, mesh.triangleCount());
+        // Nothing at full detail: every surface, no skirts, in one merged range.
+        var ranges = mesh.ranges();
+        int[] out = new int[ranges.maxDrawRangeInts()];
+        assertEquals(2, ranges.drawRanges((x, y) -> false, out));
+        assertEquals(25 * 1024 * 3, out[1]);
+        // The same mesh, the frame after tile (20, 21) is committed: no rebuild needed.
+        var resident = new HashSet<Integer>(Set.of(key(20, 20)));
+        resident.add(key(20, 21));
+        HorizonMesh.Hidden fullDetail = (x, y) -> resident.contains(key(x, y));
+        var triangles = drawn(mesh, fullDetail);
+        // Two surfaces left out; the six tiles sharing an edge with them each draw one skirt.
+        assertEquals(23 * 1024 + 6 * 32, triangles.size());
+        var p = mesh.positions();
+        int skirtTriangles = 0;
+        for (int[] t : triangles) {
+            double cx = 0, cy = 0;
+            boolean skirt = false;
+            for (int v : t) {
+                cx += p.get(v * 3) / 3;
+                cy += p.get(v * 3 + 1) / 3;
+                skirt |= p.get(v * 3 + 2) < 100 - HorizonMesh.SINK - 1;
+            }
+            int tx = (int) Math.floor(32 - cx / T), ty = (int) Math.floor(32 - cy / T);
+            if (skirt) {
+                skirtTriangles++;
+                continue;
+            }
+            // No surface triangle of a full-detail tile is drawn.
+            assertTrue(!resident.contains(key(tx, ty)), "drawn over " + tx + "," + ty);
+        }
+        assertEquals(6 * 32, skirtTriangles);
+        // Evicting it again brings its surface back and drops the skirts, still without a rebuild.
+        resident.remove(key(20, 21));
+        assertEquals(24 * 1024 + 4 * 32, drawn(mesh, fullDetail).size());
+    }
+
     @Test
     void windowBoundsMapEdgesAndCancellation() {
         var lowRes = lowRes(Set.of(key(0, 0), key(0, 1), key(1, 0)), -1);

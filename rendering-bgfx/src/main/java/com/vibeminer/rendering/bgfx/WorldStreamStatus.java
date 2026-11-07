@@ -115,6 +115,22 @@ final class WorldStreamStatus {
         }
     }
 
+    /** The one terminal reply to {@code HORIZON}; none of them is ever session-fatal. */
+    enum HorizonOutcome {
+        /** Read and attached; the horizon is drawn from the next frame on. */
+        DRAWN,
+        /** The WDL was valid but declares no readable tile. */
+        NONE,
+        /** Read, validation or allocation failed; the session continues without a horizon. */
+        FAILED
+    }
+
+    record HorizonDone(WorldStreamState.Nonce nonce, HorizonOutcome outcome) implements Message {
+        HorizonDone {
+            java.util.Objects.requireNonNull(outcome);
+        }
+    }
+
     enum Rejection {
         STALE_TRANSACTION,
         STALE_LEASE,
@@ -231,6 +247,11 @@ final class WorldStreamStatus {
                     arity(p, 8);
                     yield new ObjectsDone(
                             nonce, transaction(p[3]), lease(p, 4), LateOutcome.valueOf(p[7]));
+                }
+                case "HORIZON_DONE" -> {
+                    arity(p, 5);
+                    require(p[3].equals("1"));
+                    yield new HorizonDone(nonce, HorizonOutcome.valueOf(p[4]));
                 }
                 case "COMMITTED" -> {
                     arity(p, 6);

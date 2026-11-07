@@ -158,6 +158,28 @@ class WorldStreamControlTest {
         assertTrue(WorldStreamControl.encode(camera).length <= 256);
     }
 
+    @Test
+    void horizonCommandsRoundTripOutsideTheTransactionSequence() throws IOException {
+        var command = new WorldStreamControl.Horizon(NONCE, 4_096, "c".repeat(64));
+        byte[] line = WorldStreamControl.encode(command);
+        assertEquals(
+                PREFIX + "HORIZON 1 horizon-1.wsh 4096 " + "c".repeat(64) + "\n",
+                new String(line, StandardCharsets.US_ASCII));
+        assertEquals(command, WorldStreamControl.decode(line, line.length));
+        for (String body :
+                new String[] {
+                    "HORIZON 2 horizon-1.wsh 4096 " + "c".repeat(64),
+                    "HORIZON 1 horizon-2.wsh 4096 " + "c".repeat(64),
+                    "HORIZON 1 horizon-1.wsh 11 " + "c".repeat(64),
+                    "HORIZON 1 horizon-1.wsh 8388609 " + "c".repeat(64),
+                    "HORIZON 1 horizon-1.wsh 4096 " + "C".repeat(64),
+                    "HORIZON 1 horizon-1.wsh 4096"
+                }) {
+            byte[] bad = (PREFIX + body + "\n").getBytes(StandardCharsets.US_ASCII);
+            assertThrows(IOException.class, () -> WorldStreamControl.decode(bad, bad.length), body);
+        }
+    }
+
     /**
      * The longest possible camera line, every field at its longest text and the sky tail at its
      * widest, still fits the control line bound (#177).
