@@ -7,6 +7,7 @@ import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.formats.tables.CapturedRowsTypes;
 import com.vibeminer.formats.world.WorldFormats;
+import com.vibeminer.formats.world.WorldStageTimings;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -987,11 +988,17 @@ final class WorldStreamScopes {
             reserved = true;
             Source source = null;
             try {
+                long started = WorldStageTimings.start();
                 var prefetched =
                         kind == null || prefetcher == null ? null : prefetcher.take(id, kind);
                 source = prefetched == null ? null : Prefetcher.await(prefetched);
                 if (source == null) {
                     source = engine.read(id, limit, token, classifyUnavailable);
+                }
+                if (started != 0L) {
+                    WorldStageTimings.stop("source.read." + profile.name(), started);
+                    WorldStageTimings.add(
+                            "source.readBytes." + profile.name(), source.bytes().length);
                 }
                 var binding = new Binding(id, source.key(), source.bytes().length);
                 for (var prior : bindings) {
