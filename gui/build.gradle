@@ -383,6 +383,38 @@ tasks.register('worldExplorerInputTest', JavaExec) {
 }
 check.dependsOn worldExplorerInputTest
 
+// Inspect card contents per pick kind; no display.
+tasks.register('worldInspectionTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldInspectionTest'
+}
+check.dependsOn worldInspectionTest
+
+// Viewport screenshot names and PNG files in a temporary folder; no display.
+tasks.register('worldScreenshotsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldScreenshotsTest'
+}
+check.dependsOn worldScreenshotsTest
+
+// Minimap rim streaming ring: fraction, hold after full and fade; no display.
+tasks.register('worldMinimapRingTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldMinimapRingTest'
+}
+check.dependsOn worldMinimapRingTest
+
+// Developer overlay pages as text: labelled split, once-only detail, wrapping; no display.
+tasks.register('worldDevReportTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldDevReportTest'
+}
+check.dependsOn worldDevReportTest
+
 // Exact picking of drawn exterior objects, their source records and the highlight; authored meshes.
 tasks.register('worldObjectPicksTest', JavaExec) {
     dependsOn testClasses
@@ -572,11 +604,39 @@ tasks.register('worldInstanceSwitchTest', JavaExec) {
 }
 check.dependsOn worldInstanceSwitchTest
 
+// World HUD pieces (zone text and banner timing, coordinates pill); requires a display.
+tasks.register('worldHudUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldHudUiTest'
+}
+
 // Authored physical terrain coordinates and deterministic keyboard/timer events; requires a display.
 tasks.register('worldNavigationUiTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldNavigationUiTest'
+}
+
+// World toasts: timing, stack, actions and isolation, plus view wiring; display required.
+tasks.register('worldToastsUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldToastsUiTest'
+}
+
+// F3 developer overlay over the real viewport: pages, mouse isolation, Retry/Copy; display.
+tasks.register('worldDevOverlayUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldDevOverlayUiTest'
+}
+
+// HUD keys (V, T, 1-5) over the real World view; display required.
+tasks.register('worldHudKeysUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldHudKeysUiTest'
 }
 
 // Authored JavaFX artwork/lifecycle proof; requires a desktop display.

@@ -676,6 +676,13 @@ public final class WorldTerrainTextureSource {
     static volatile boolean splat = Boolean.getBoolean("vimi.world.splat");
 
     /**
+     * Side of each tile's splat mask map, from the texture quality tier (issue #174 step 2b-2):
+     * STANDARD 512 (every other alpha-map texel), HIGH 1024 (the native 64 x 64 per chunk). It
+     * applies to tiles composed after it changes; each tile carries its own side.
+     */
+    static volatile int splatMask = com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK;
+
+    /**
      * Whole-file bound of a layer diffuse. The decoder reads only the header and the selected mip's
      * byte range (each mip read is bounded by {@code maxMipBytes}), so a large diffuse with a full
      * mip chain (a 1024 x 1024 BC3 chain is about 1.4 MB) no longer fails a 1 MiB file cap.
@@ -1031,7 +1038,7 @@ public final class WorldTerrainTextureSource {
                 request.report(Stage.COMPOSING, tileIndex, 0);
                 var composition =
                         TerrainAtlasComposer.compose(
-                                tile, grid, data, diffuse, splat, request::canceled);
+                                tile, grid, data, diffuse, splat, splatMask, request::canceled);
                 for (var issue : composition.diagnostics()) {
                     issues.add(
                             new Issue(

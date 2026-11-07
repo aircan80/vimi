@@ -362,6 +362,110 @@ final class WorldFrameFileV2 implements AutoCloseable {
         STAMP.setRelease(mapping, offset, stamp);
     }
 
+    private static long slotOffset(int slot) {
+        if (slot < 0 || slot >= SLOTS) {
+            throw new IllegalArgumentException("World frame slot " + slot);
+        }
+        return HEADER_BYTES + (long) slot * SLOT_BYTES;
+    }
+
+    /**
+     * Direct readback: marks {@code slot} in progress (odd stamp, so readers skip it) and returns
+     * its payload as a buffer a GPU readback may write {@code bytes} into. The caller then
+     * publishes it with {@link #publishDirect} or gives it up with {@link #abandonDirect}; the
+     * buffer must not be written after either.
+     */
+    synchronized ByteBuffer beginDirect(int slot, int bytes) throws IOException {
+        checkOpen();
+        long offset = slotOffset(slot);
+        if (bytes < 4 || bytes > PAYLOAD_BYTES) {
+            throw new IllegalArgumentException("World direct readback size " + bytes);
+        }
+        long stamp = (long) STAMP.getAcquire(mapping, offset);
+        STAMP.setRelease(mapping, offset, stamp | 1);
+        // The in-progress stamp must precede every write of the readback into the slot.
+        VarHandle.fullFence();
+        return mapping.asSlice(offset + HEADER_BYTES, bytes).asByteBuffer();
+    }
+
+    /** Gives up a direct slot: it holds no frame (stamp 0) until written again. */
+    synchronized void abandonDirect(int slot) throws IOException {
+        checkOpen();
+        STAMP.setRelease(mapping, slotOffset(slot), 0L);
+    }
+
+    /**
+     * Publishes a frame a GPU readback wrote into {@code slot} after {@link #beginDirect}: rows of
+     * {@code stride} bytes, the first {@code width * 4} of each are the frame. Same checks and
+     * seqlock order as {@link #write}, without copying the pixels.
+     */
+    synchronized void publishDirect(int slot, WorldStreamFrameGate.Frame ticket, int stride)
+            throws IOException {
+        checkOpen();
+        Objects.requireNonNull(ticket);
+        dimensions(ticket.width(), ticket.height());
+        long offset = slotOffset(slot);
+        long length = (long) stride * ticket.height();
+        if (!nonce.equals(ticket.nonce())
+                || ticket.sequence() < 1
+                || ticket.sequence() > MAX_SEQUENCE
+                || ticket.sequence() <= Math.max(lastSequence, highestReserved())
+                || ticket.camera() < 1
+                || ticket.content() < 0
+                || ticket.policy() < 1
+                || stride < ticket.width() * 4
+                || stride % 4 != 0
+                || length > PAYLOAD_BYTES
+                || ((long) STAMP.getAcquire(mapping, offset) & 1) == 0) {
+            throw new IllegalArgumentException("Invalid World direct frame publication");
+        }
+        var rows = mapping.asSlice(offset + HEADER_BYTES, length).asByteBuffer();
+        int width = ticket.width(), height = ticket.height(), pixels = width * height;
+        if (verify) {
+            for (int row = 0; row < height; row++) {
+                for (int x = 0; x < width; x++) {
+                    if (rows.get(row * stride + x * 4 + 3) != (byte) 255) {
+                        throw new IllegalArgumentException("Nonopaque World pixels");
+                    }
+                }
+            }
+        } else {
+            for (int i = 0, step = alphaStride(pixels); i < pixels; i += step) {
+                if (rows.get((i / width) * stride + (i % width) * 4 + 3) != (byte) 255) {
+                    throw new IllegalArgumentException("Nonopaque World pixels");
+                }
+            }
+            if (rows.get((height - 1) * stride + (width - 1) * 4 + 3) != (byte) 255) {
+                throw new IllegalArgumentException("Nonopaque World pixels");
+            }
+        }
+        long stamp = ticket.sequence() << 1;
+        var header = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
+        header.putLong(stamp)
+                .putLong(nonce.high())
+                .putLong(nonce.low())
+                .putLong(ticket.camera())
+                .putLong(ticket.content())
+                .putLong(ticket.policy())
+                .putInt(width)
+                .putInt(height)
+                .putInt(0)
+                .putInt((int) length);
+        if (verify) {
+            var crc = metadataCrc(header.array());
+            for (int row = 0; row < height; row++) {
+                crc.update(rows.duplicate().position(row * stride).limit(row * stride + width * 4));
+            }
+            header.putInt(56, (int) crc.getValue());
+        }
+        lastSequence = ticket.sequence();
+        // The slot is already odd (beginDirect); the header then the even stamp complete it.
+        mapping.asSlice(offset + 8, HEADER_BYTES - 8)
+                .copyFrom(MemorySegment.ofArray(header.array()).asSlice(8));
+        VarHandle.fullFence();
+        STAMP.setRelease(mapping, offset, stamp);
+    }
+
     synchronized Frame readLatest(long afterSequence, Barrier barrier) throws IOException {
         checkOpen();
         Objects.requireNonNull(barrier);
@@ -400,7 +504,14 @@ final class WorldFrameFileV2 implements AutoCloseable {
                 || width > WIDTH
                 || height < 1
                 || height > HEIGHT
-                || length != width * height * 4) {
+                || length < width * height * 4
+                || length > PAYLOAD_BYTES
+                || length % height != 0) {
+            return null;
+        }
+        // Rows may be padded (a direct GPU readback of a larger target): stride = length/height.
+        int stride = length / height;
+        if (stride < width * 4 || stride % 4 != 0) {
             return null;
         }
         var metadata =
@@ -417,11 +528,18 @@ final class WorldFrameFileV2 implements AutoCloseable {
         }
         int count = width * height;
         int[] pixels = pool.take(count);
-        mapping.asSlice(offset + HEADER_BYTES, length)
-                .asByteBuffer()
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .asIntBuffer()
-                .get(pixels, 0, count);
+        var ints =
+                mapping.asSlice(offset + HEADER_BYTES, length)
+                        .asByteBuffer()
+                        .order(ByteOrder.LITTLE_ENDIAN)
+                        .asIntBuffer();
+        if (stride == width * 4) {
+            ints.get(pixels, 0, count);
+        } else {
+            for (int row = 0, rowInts = stride / 4; row < height; row++) {
+                ints.get(row * rowInts, pixels, row * width, width);
+            }
+        }
         var seam = afterCopy;
         if (seam != null) {
             seam.run();
@@ -436,7 +554,7 @@ final class WorldFrameFileV2 implements AutoCloseable {
         }
         // The copy is consistent, so sampled nonopaque pixels are a real renderer fault: loud.
         boolean opaque = pixels[count - 1] >>> 24 == 255;
-        for (int i = 0, stride = alphaStride(count); opaque && i < count; i += stride) {
+        for (int i = 0, step = alphaStride(count); opaque && i < count; i += step) {
             opaque = pixels[i] >>> 24 == 255;
         }
         if (!opaque) {
