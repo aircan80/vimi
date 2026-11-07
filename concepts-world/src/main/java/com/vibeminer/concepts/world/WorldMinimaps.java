@@ -70,6 +70,9 @@ final class WorldMinimaps {
             } else {
                 result.complete(WorldService.Minimap.unavailable("Minimap artwork unavailable"));
             }
+        } catch (Throwable failure) {
+            // An Error (or anything else) must still settle the request: callers join it.
+            result.completeExceptionally(failure);
         }
     }
 
