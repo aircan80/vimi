@@ -740,8 +740,9 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     /**
      * Creature models and humanoid NPC appearances over a measurement World's table handle, for
      * the measurement probe's opt-in creature counts (#553). Same requirements as {@link
-     * #openWorldForMeasurement}; it never stages or publishes a workspace. Caller closes it before
-     * the World.
+     * #openWorldForMeasurement}; it never stages or publishes a workspace. Its lookups may add
+     * derived entries (decoded images, appearances) to this work's generated store, as the
+     * workspace's do. Caller closes it before the World.
      */
     MeasurementCreatures openCreaturesForMeasurement(BuildTables tables, Cancellation token) {
         token.check();

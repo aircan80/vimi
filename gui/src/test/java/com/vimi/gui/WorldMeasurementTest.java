@@ -19,9 +19,11 @@ public final class WorldMeasurementTest {
         measurementWorldNeedsPreparedFiles();
         measurementWorldClosesTheWorldBeforeItsTables();
         npcAnswersAreClassifiedByOutcome();
+        npcAnswersNameAppearanceResults();
+        choiceReasonsCountOnlyUnqualifiedNpcs();
         System.out.println(
-                "World measurement: helper options, GC log pauses, the measurement World and NPC"
-                        + " outcomes passed");
+                "World measurement: helper options, GC log pauses, the measurement World, NPC"
+                        + " outcomes and choice reasons passed");
     }
 
     private static void check(boolean value, String message) {
@@ -118,6 +120,100 @@ public final class WorldMeasurementTest {
             throw new AssertionError("Opened measurement creatures without prepared files");
         } catch (IllegalStateException expected) {
             check(expected.getMessage().contains("Files must be prepared"), expected.getMessage());
+        }
+    }
+
+    /** An answer with a result: built, or refused by the result's message (or without one). */
+    private static void npcAnswersNameAppearanceResults() {
+        var built =
+                new com.vibeminer.concepts.races.RaceAppearanceTypes.Result(
+                        com.vibeminer.concepts.races.RaceTypes.State.READY,
+                        WorldTileCreaturesTest.appearance(true),
+                        java.util.Set.of(0),
+                        java.util.List.of(),
+                        java.util.List.of(),
+                        false,
+                        null);
+        check(
+                WorldMeasurementProbe.NpcAnswers.outcome(
+                                new com.vibeminer.concepts.races.RaceNpcs.Appearance(
+                                        built, 0, 0, null, false))
+                        .equals("appearance built"),
+                "A built appearance");
+        for (String message : new String[] {"no race model", null}) {
+            var empty =
+                    new com.vibeminer.concepts.races.RaceAppearanceTypes.Result(
+                            com.vibeminer.concepts.races.RaceTypes.State.READY,
+                            null,
+                            java.util.Set.of(),
+                            java.util.List.of(),
+                            java.util.List.of(),
+                            false,
+                            message);
+            String outcome =
+                    WorldMeasurementProbe.NpcAnswers.outcome(
+                            new com.vibeminer.concepts.races.RaceNpcs.Appearance(
+                                    empty, 0, 0, null, false));
+            check(
+                    outcome.equals(
+                            "refused: " + (message == null ? "no NPC appearance" : message)),
+                    "A result without an appearance: " + outcome);
+        }
+    }
+
+    /**
+     * The probe's choice reasons (#553): qualified NPCs are not counted, each NPC keeps its latest
+     * reason, and each reason keeps its first example detail.
+     */
+    private static void choiceReasonsCountOnlyUnqualifiedNpcs() {
+        var choices = new java.util.HashMap<Long, com.vibeminer.concepts.creatures.CreatureModelPolicy.Choice>();
+        var absent =
+                new com.vibeminer.concepts.creatures.CreatureModelPolicy.Choice(
+                        com.vibeminer.concepts.creatures.CreatureModelPolicy.State.UNKNOWN,
+                        com.vibeminer.concepts.creatures.CreatureModelPolicy.Reason.CREATURE_ABSENT,
+                        0, null, null, null, "no record 1");
+        choices.put(1L, absent);
+        choices.put(
+                2L,
+                new com.vibeminer.concepts.creatures.CreatureModelPolicy.Choice(
+                        com.vibeminer.concepts.creatures.CreatureModelPolicy.State.UNKNOWN,
+                        com.vibeminer.concepts.creatures.CreatureModelPolicy.Reason.CREATURE_ABSENT,
+                        0, null, null, null, "no record 2"));
+        choices.put(
+                3L,
+                new com.vibeminer.concepts.creatures.CreatureModelPolicy.Choice(
+                        com.vibeminer.concepts.creatures.CreatureModelPolicy.State.AMBIGUOUS,
+                        com.vibeminer.concepts.creatures.CreatureModelPolicy.Reason.SEVERAL_DISPLAYS,
+                        2, null, null, null, "two displays"));
+        choices.put(
+                4L,
+                new com.vibeminer.concepts.creatures.CreatureModelPolicy.Choice(
+                        com.vibeminer.concepts.creatures.CreatureModelPolicy.State.QUALIFIED,
+                        com.vibeminer.concepts.creatures.CreatureModelPolicy.Reason.SINGLE_DISPLAY,
+                        1, 7, 8L, 9L, "one display"));
+        var probe =
+                new WorldMeasurementProbe.ChoiceReasons(
+                        (npc, token) -> new WorldTileCreatures.Chosen(choices.get(npc), null));
+        try {
+            for (long npc = 1; npc <= 4; npc++) probe.choose(npc, Cancellation.NONE);
+            check(
+                    probe.tally()
+                            .equals(
+                                    java.util.Map.of(
+                                            "UNKNOWN CREATURE_ABSENT", 2,
+                                            "AMBIGUOUS SEVERAL_DISPLAYS", 1)),
+                    "Only unqualified NPCs are counted: " + probe.tally());
+            check(
+                    probe.examples.get("UNKNOWN CREATURE_ABSENT").equals("no record 1"),
+                    "The first example detail is kept");
+            // NPC 3 asked again with another reason: only its latest counts.
+            choices.put(3L, absent);
+            probe.choose(3, Cancellation.NONE);
+            check(
+                    probe.tally().equals(java.util.Map.of("UNKNOWN CREATURE_ABSENT", 3)),
+                    "Latest reason per NPC: " + probe.tally());
+        } catch (Exception unexpected) {
+            throw new AssertionError(unexpected);
         }
     }
 

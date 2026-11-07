@@ -106,6 +106,16 @@ The report goes to stdout and to
 `gui/build/world-measurement/report.txt`. The task also writes
 `gui/build/world-measurement/gc.log` (`-Xlog:gc*`) and the helper's table.
 
+**Creatures mode** (#553, `-Pprobe.mode=creatures`) counts creature and humanoid NPC outcomes
+for a `probe.size` square (default 3) around each scenario centre, over `probe.passes` passes
+(default 2). Each tile goes through the production bridge, chooser, display previews and NPC
+appearances, with no helper, GPU or JavaFX. It differs from the other modes in two ways:
+- the work uses the copy's already-loaded community TACT keys (no refresh, no network), which
+  the Creature table's encrypted sections need;
+- it may add derived entries (decoded images, model previews, race appearances) to the copy's
+  generated store, as the application does, so a second run starts warm. Nothing is staged,
+  published or downloaded.
+
 **Prep mode** (#422) times the real source path one tile at a time, for a `probe.size` square
 (default 3) around each scenario centre. Per tile it runs:
 - `WorldTerrainStreaming.prepareAndWrite`, with a no-op output (`prep.terrain`);
