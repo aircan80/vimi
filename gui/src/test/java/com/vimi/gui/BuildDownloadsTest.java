@@ -18,8 +18,8 @@ public final class BuildDownloadsTest {
         restartActiveAndRetryFailure();
         refusesFutureSchemaWithoutMutation();
         System.out.println(
-                "Download policy: durable intent, bounded queue, pause/resume, shutdown and retry"
-                        + " passed");
+                "Download policy: durable intent, bounded queue, pause/resume, shutdown, retry and"
+                        + " non-resuming open passed");
     }
 
     private static BuildInfo build(int id) {
@@ -143,6 +143,22 @@ public final class BuildDownloadsTest {
         running.enable(build, route()).get(5, TimeUnit.SECONDS);
         require(started.await(5, TimeUnit.SECONDS), "Active starts");
         running.closeAsync().get(10, TimeUnit.SECONDS);
+        // Measurement opens load the persisted intent but never resume it on their own.
+        var quiet =
+                BuildDownloads.open(
+                        library.databasePath(),
+                        (entry, token, progress) -> {
+                            throw new AssertionError("A non-resuming open started a download");
+                        },
+                        false);
+        try {
+            Thread.sleep(300);
+            require(
+                    quiet.snapshot(build.identity()).enabled(),
+                    "Non-resuming open still shows the persisted intent");
+        } finally {
+            quiet.closeAsync().get(5, TimeUnit.SECONDS);
+        }
         var attempts = new AtomicInteger();
         var resumed =
                 BuildDownloads.open(
