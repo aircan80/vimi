@@ -742,6 +742,70 @@ public final class WorldExteriorObjects {
         }
     }
 
+    /**
+     * How one tile's placements use its models, for instancing estimates (#382): distinct building
+     * and doodad models with at least one placement, the draws of one submit per placement and
+     * range ({@code draws}), the draws if each model were submitted once for all its placements
+     * ({@code instancedDraws}), and placements per used model, largest first.
+     */
+    public record ModelUse(
+            int buildingModels,
+            int doodadModels,
+            long draws,
+            long instancedDraws,
+            int[] placementsPerModel) {
+        public ModelUse {
+            placementsPerModel = placementsPerModel.clone();
+        }
+
+        @Override
+        public int[] placementsPerModel() {
+            return placementsPerModel.clone();
+        }
+
+        /** {@code placementModel} holds each placement's model index into the other arrays. */
+        public static ModelUse of(int[] modelRanges, boolean[] doodad, int[] placementModel) {
+            if (modelRanges.length != doodad.length) {
+                throw new IllegalArgumentException("Model arrays differ in length");
+            }
+            int[] placed = new int[modelRanges.length];
+            long draws = 0;
+            for (int model : placementModel) {
+                placed[model]++;
+                draws += modelRanges[model];
+            }
+            int buildings = 0, doodads = 0;
+            long instanced = 0;
+            int used = 0;
+            for (int m = 0; m < placed.length; m++) {
+                if (placed[m] == 0) {
+                    continue;
+                }
+                used++;
+                instanced += modelRanges[m];
+                if (doodad[m]) {
+                    doodads++;
+                } else {
+                    buildings++;
+                }
+            }
+            int[] counts = new int[used];
+            int at = 0;
+            for (int count : placed) {
+                if (count > 0) {
+                    counts[at++] = count;
+                }
+            }
+            Arrays.sort(counts);
+            for (int i = 0, j = counts.length - 1; i < j; i++, j--) {
+                int swap = counts[i];
+                counts[i] = counts[j];
+                counts[j] = swap;
+            }
+            return new ModelUse(buildings, doodads, draws, instanced, counts);
+        }
+    }
+
     /** Immutable neutral per-tile set. Close only retires access; it holds no native resource. */
     public static final class TileObjects implements AutoCloseable {
         private final long mapId;
@@ -834,6 +898,31 @@ public final class WorldExteriorObjects {
             WorldStageTimings.add("objects.count.indices", indices);
             WorldStageTimings.add("objects.count.ranges", ranges);
             WorldStageTimings.add("objects.count.pixels", pixels);
+            int[] modelRanges = new int[models.size()];
+            boolean[] doodad = new boolean[models.size()];
+            for (int m = 0; m < modelRanges.length; m++) {
+                doodad[m] = models.get(m).doodad();
+                for (var mesh : models.get(m).meshes()) {
+                    modelRanges[m] += mesh.ranges.size();
+                }
+            }
+            int[] placementModel = new int[placements.size()];
+            for (int p = 0; p < placementModel.length; p++) {
+                placementModel[p] = placements.get(p).model();
+            }
+            var use = ModelUse.of(modelRanges, doodad, placementModel);
+            WorldStageTimings.value("objects.models.buildingsPerTile", use.buildingModels());
+            WorldStageTimings.value("objects.models.doodadsPerTile", use.doodadModels());
+            WorldStageTimings.value("objects.models.drawsPerTile", use.draws());
+            WorldStageTimings.value("objects.models.instancedDrawsPerTile", use.instancedDraws());
+            for (int placed : use.placementsPerModel()) {
+                WorldStageTimings.value("objects.models.placementsPerModel", placed);
+            }
+            for (int rank = 0; rank < Math.min(5, use.placementsPerModel().length); rank++) {
+                WorldStageTimings.value(
+                        "objects.models.top" + (rank + 1) + "Placements",
+                        use.placementsPerModel()[rank]);
+            }
         }
 
         public String recipe() {

@@ -251,6 +251,7 @@ public final class WorldMeasurementProbe {
             }
             var scope = source.createScope(map, Cancellation.NONE);
             source.activate(scope);
+            var usage = new ModelUsage();
             for (int pass = 1; pass <= passes && beforeDeadline(); pass++) {
                 WorldStageTimings.reset();
                 FileDecodeTimings.reset();
@@ -265,12 +266,18 @@ public final class WorldMeasurementProbe {
                     WorldStageTimings.stop("prep.terrain", terrain);
                     written.close();
                     if (objects) {
+                        // The production preparation, without the bridge's copy (about 6 ms per
+                        // tile in stream mode), so the probe can see each set's models.
                         long prepared = WorldStageTimings.start();
-                        var copy =
-                                WorldStreamSourceBridge.prepareExterior(
-                                        source, scope, tile, Cancellation.NONE, null, detail);
-                        WorldStageTimings.stop(
-                                copy.failed() ? "prep.objectsFailed" : "prep.objects", prepared);
+                        try (var set =
+                                source.prepareExteriorObjects(
+                                        scope, tile, Cancellation.NONE, detail)) {
+                            WorldStageTimings.stop("prep.objects", prepared);
+                            set.tallyCounts();
+                            if (pass == 1) usage.add(set);
+                        } catch (RuntimeException failed) {
+                            WorldStageTimings.stop("prep.objectsFailed", prepared);
+                        }
                     }
                     done++;
                 }
@@ -297,6 +304,7 @@ public final class WorldMeasurementProbe {
                 var snapshot = WorldStageTimings.snapshot();
                 print(snapshot, false);
                 if (objects) printCounts(snapshot);
+                if (objects && pass == 1) usage.print(scenario.name());
             }
         }
     }
@@ -806,6 +814,72 @@ public final class WorldMeasurementProbe {
                             tiles == 0 ? 0 : 100.0 * supported / (tiles * 256.0)));
             say("PROBE   issue reasons (one per issue) " + reasons);
             say("PROBE   chunk refusals (composer reason/mask issue) " + chunks);
+        }
+    }
+
+    /** Models across one scenario's tiles: distinct roots and placements per root (#382). */
+    static final class ModelUsage {
+        final Map<Long, int[]> placements = new TreeMap<>(); // rootId -> {placements, tiles, doodad}
+        final Map<Long, Integer> ranges = new TreeMap<>();
+        int tiles;
+
+        void add(com.vibeminer.concepts.world.WorldExteriorObjects.TileObjects set) {
+            tiles++;
+            var models = set.models();
+            var seen = new java.util.HashSet<Long>();
+            for (var placement : set.placements()) {
+                var model = models.get(placement.model());
+                long root = model.rootId();
+                var entry = placements.computeIfAbsent(root, k -> new int[3]);
+                entry[0]++;
+                entry[2] = model.doodad() ? 1 : 0;
+                if (seen.add(root)) entry[1]++;
+                int r = 0;
+                for (var mesh : model.meshes()) r += mesh.ranges().size();
+                ranges.put(root, r);
+            }
+        }
+
+        void print(String name) {
+            long draws = 0, instanced = 0;
+            int doodadModels = 0;
+            for (var entry : placements.entrySet()) {
+                int r = ranges.getOrDefault(entry.getKey(), 0);
+                draws += (long) entry.getValue()[0] * r;
+                instanced += r;
+                doodadModels += entry.getValue()[2];
+            }
+            say(
+                    String.format(
+                            Locale.ROOT,
+                            "PROBE models %s: %d tiles, %d distinct models (%d buildings, %d"
+                                    + " doodads); per-placement draws %d vs one instanced draw per"
+                                    + " model and range %d (%.1fx)",
+                            name,
+                            tiles,
+                            placements.size(),
+                            placements.size() - doodadModels,
+                            doodadModels,
+                            draws,
+                            instanced,
+                            instanced == 0 ? 0.0 : (double) draws / instanced));
+            var top =
+                    placements.entrySet().stream()
+                            .sorted((a, b) -> Integer.compare(b.getValue()[0], a.getValue()[0]))
+                            .limit(10)
+                            .toList();
+            var line = new StringBuilder("PROBE   top models by placements (placements/tiles/ranges):");
+            for (var entry : top) {
+                line.append(
+                        String.format(
+                                Locale.ROOT,
+                                " %s %d/%d/%d;",
+                                entry.getValue()[2] == 1 ? "doodad" : "building",
+                                entry.getValue()[0],
+                                entry.getValue()[1],
+                                ranges.getOrDefault(entry.getKey(), 0)));
+            }
+            say(line.toString());
         }
     }
 
