@@ -343,7 +343,7 @@ public final class TerrainAtlasComposer {
         }
     }
 
-    /** Layer 1 to 3 masks at the atlas's sampling points, and the MCCV brightness, per texel. */
+    /** Layer 1 to 3 masks at the atlas's sampling points per texel; A is reserved (zero). */
     private static void splatChunk(
             TerrainGrid.Chunk chunk,
             int layers,
@@ -363,17 +363,9 @@ public final class TerrainAtlasComposer {
                     alpha[output + layer - 1] =
                             layer < layers ? masks.get((layer - 1) * 4096 + maskPixel) : 0;
                 }
-                double brightness = 1;
-                if (colors.hasRemaining()) {
-                    // The texel centre in vertex-grid units (8 cells per chunk side).
-                    double gx = (px + .5) * 8 / per, gy = (py + .5) * 8 / per;
-                    brightness =
-                            (tint(colors, gx, gy, 0)
-                                            + tint(colors, gx, gy, 1)
-                                            + tint(colors, gx, gy, 2))
-                                    / 3;
-                }
-                alpha[output + 3] = (byte) Math.max(0, Math.min(255, Math.round(brightness * 128)));
+                // A is not read since #373 part 2 moved MCCV to the vertex; it stays zero until
+                // part 3 puts the MCSH shadow there.
+                alpha[output + 3] = 0;
             }
         }
     }

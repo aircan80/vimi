@@ -28,6 +28,7 @@ public final class TerrainScene {
         private final int x, y, chunks;
         private final float[] vertices;
         private final int[] indices;
+        private final byte[] attributes;
         // Immutable payload, so its geometry fingerprint is computed at most once.
         private volatile String fingerprint;
 
@@ -39,6 +40,7 @@ public final class TerrainScene {
                     copy(Objects.requireNonNull(terrain).vertexView()),
                     copy(terrain.triangleView()),
                     terrain.chunks(),
+                    copy(terrain.attributeView()),
                     true);
         }
 
@@ -54,6 +56,12 @@ public final class TerrainScene {
             return values;
         }
 
+        private static byte[] copy(java.nio.ByteBuffer view) {
+            byte[] values = new byte[view.remaining()];
+            view.get(values);
+            return values;
+        }
+
         String cachedFingerprint() {
             return fingerprint;
         }
@@ -62,7 +70,14 @@ public final class TerrainScene {
             fingerprint = value;
         }
 
-        private Tile(int x, int y, float[] vertices, int[] indices, int chunks, boolean owned) {
+        private Tile(
+                int x,
+                int y,
+                float[] vertices,
+                int[] indices,
+                int chunks,
+                byte[] attributes,
+                boolean owned) {
             Objects.requireNonNull(vertices);
             Objects.requireNonNull(indices);
             if (x < 0
@@ -78,8 +93,15 @@ public final class TerrainScene {
                     || indices.length > MAX_INDICES_PER_TILE) {
                 throw new IllegalArgumentException("Invalid terrain tile bounds");
             }
+            Objects.requireNonNull(attributes);
+            if (attributes.length != 0
+                    && attributes.length
+                            != vertices.length / 3 * WorldFormats.Terrain.ATTRIBUTE_BYTES) {
+                throw new IllegalArgumentException("Invalid terrain attributes");
+            }
             vertices = owned ? vertices : vertices.clone();
             indices = owned ? indices : indices.clone();
+            attributes = owned ? attributes : attributes.clone();
             for (float coordinate : vertices) {
                 if (!Float.isFinite(coordinate) || Math.abs(coordinate) > MAX_COORDINATE) {
                     throw new IllegalArgumentException("Invalid terrain coordinate");
@@ -96,11 +118,21 @@ public final class TerrainScene {
             this.chunks = chunks;
             this.vertices = vertices;
             this.indices = indices;
+            this.attributes = attributes;
         }
 
         /** Copies bounded caller arrays; views never expose their backing arrays. */
         public static Tile copyOf(int x, int y, float[] vertices, int[] indices, int chunks) {
-            return new Tile(x, y, vertices, indices, chunks, false);
+            return new Tile(x, y, vertices, indices, chunks, new byte[0], false);
+        }
+
+        /**
+         * As {@link #copyOf(int, int, float[], int[], int)} with per-vertex attributes: empty, or
+         * {@link WorldFormats.Terrain#ATTRIBUTE_BYTES} per vertex (issue #373).
+         */
+        public static Tile copyOf(
+                int x, int y, float[] vertices, int[] indices, int chunks, byte[] attributes) {
+            return new Tile(x, y, vertices, indices, chunks, attributes, false);
         }
 
         public int x() {
@@ -135,8 +167,22 @@ public final class TerrainScene {
             return IntBuffer.wrap(indices).asReadOnlyBuffer();
         }
 
-        public long payloadBytes() {
+        /**
+         * Per-vertex MCNR normals and MCCV colours ({@link WorldFormats.Terrain#attributes}), or
+         * empty when the tile carries none.
+         */
+        public java.nio.ByteBuffer attributes() {
+            return java.nio.ByteBuffer.wrap(attributes).asReadOnlyBuffer();
+        }
+
+        /** Position and index bytes: the geometry a cold terrain scene file stores. */
+        public long geometryBytes() {
             return (long) vertices.length * Float.BYTES + (long) indices.length * Integer.BYTES;
+        }
+
+        /** Retained bytes: geometry plus the optional per-vertex attributes (#373). */
+        public long payloadBytes() {
+            return geometryBytes() + attributes.length;
         }
     }
 
@@ -162,7 +208,7 @@ public final class TerrainScene {
                 throw new IllegalArgumentException("Duplicate terrain tile");
             }
             seen[key] = true;
-            bytes += tile.payloadBytes();
+            bytes += tile.geometryBytes();
             triangles += tile.triangleCount();
             for (int at = 0; at < tile.vertices.length; at += 3) {
                 minX = Math.min(minX, tile.vertices[at]);
@@ -186,6 +232,7 @@ public final class TerrainScene {
         return origin;
     }
 
+    /** Geometry bytes of every tile (positions and indices), as a cold scene file stores. */
     public long payloadBytes() {
         return payloadBytes;
     }

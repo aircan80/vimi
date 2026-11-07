@@ -4,7 +4,7 @@
 //
 // Stage 1: the shared layer array (256 x 256 BC1, or 128 x 128 RGBA8), repeat, anisotropic.
 // Stage 2: the tile's mask map (512 or 1024 square, RGBA8): R, G, B weigh layers 1 to 3, A is the
-//          MCCV brightness (128 = 1.0). Clamp, trilinear.
+//          MCCV brightness (128 = 1.0), unused since #373. Clamp, trilinear.
 // Stage 3: the tile's 16 x 16 chunk table of the four layers' array indices, 255 for none. Point.
 SAMPLER2DARRAY(s_worldSplatLayers, 1);
 SAMPLER2D(s_worldSplatMask, 2);
@@ -21,7 +21,7 @@ float splatFade(vec2 atlasUV)
     return smoothstep(0.5, 1.0, max(texels.x, texels.y));
 }
 
-// rgb: the splatted albedo, 0..255, MCCV applied; a: 1 where the chunk has its layers, 0 where it
+// rgb: the splatted albedo, 0..255, before MCCV; a: 1 where the chunk has its layers, 0 where it
 // keeps the atlas (its table says 255 for layer 0). Every sample is taken unconditionally, so call
 // it only under uniform branches.
 vec4 splatAlbedo(vec2 atlasUV)
@@ -43,6 +43,7 @@ vec4 splatAlbedo(vec2 atlasUV)
     float sum = mask.r + mask.g + mask.b;
     float w0 = max(0.0, 1.0 - sum);
     vec3 albedo = (l0 * w0 + l1 * mask.r + l2 * mask.g + l3 * mask.b) / max(1.0, w0 + sum);
-    albedo = min(albedo * mask.a * (255.0 * 255.0 / 128.0), vec3_splat(255.0));
+    // MCCV comes from the vertex since #373; mask A is no longer read.
+    albedo = albedo * 255.0;
     return vec4(albedo, ids.x < 254.5 ? 1.0 : 0.0);
 }

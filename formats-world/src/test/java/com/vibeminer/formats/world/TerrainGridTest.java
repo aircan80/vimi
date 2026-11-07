@@ -46,7 +46,49 @@ class TerrainGridTest {
         return result;
     }
 
-    private static final int MCNR = 0x4d434e52;
+    private static final int MCNR = 0x4d434e52, MCCV = 0x4d434356;
+
+    /**
+     * Issue #373: the mesh parse carries each vertex's MCNR normal and MCCV colour (B, G, R, A in
+     * the file; red, green, blue, 255 in the mesh). A chunk without them, or with a malformed one,
+     * has zero bytes there; positions never change.
+     */
+    @Test
+    void terrainCarriesNormalsAndColoursPerVertexInFileOrder() {
+        byte[] base = WorldFormatsTest.adt(0, 0, 0);
+        byte[] normals = new byte[TerrainGrid.NORMAL_BYTES];
+        for (int i = 0; i < normals.length; i++) {
+            normals[i] = (byte) (i % 3 == 2 ? 120 : i % 11 - 5);
+        }
+        byte[] colours = new byte[580];
+        for (int v = 0; v < 145; v++) {
+            colours[v * 4] = (byte) v; // B
+            colours[v * 4 + 1] = (byte) (v + 1); // G
+            colours[v * 4 + 2] = (byte) (v + 2); // R
+            colours[v * 4 + 3] = 9; // A, not carried
+        }
+        var plain = WorldFormats.adt(base, () -> false);
+        assertArrayEquals(new byte[145 * 8], plain.attributes());
+        var terrain = WorldFormats.adt(sub(sub(base, MCNR, normals), MCCV, colours), () -> false);
+        assertArrayEquals(plain.vertices(), terrain.vertices());
+        byte[] attributes = terrain.attributes();
+        assertEquals(145 * WorldFormats.Terrain.ATTRIBUTE_BYTES, attributes.length);
+        for (int v : new int[] {0, 5, 144}) {
+            int at = v * 8;
+            assertEquals(normals[v * 3], attributes[at]);
+            assertEquals(normals[v * 3 + 1], attributes[at + 1]);
+            assertEquals(normals[v * 3 + 2], attributes[at + 2]);
+            assertEquals(0, attributes[at + 3]);
+            assertEquals((byte) (v + 2), attributes[at + 4]);
+            assertEquals((byte) (v + 1), attributes[at + 5]);
+            assertEquals((byte) v, attributes[at + 6]);
+            assertEquals((byte) 255, attributes[at + 7]);
+        }
+        // A malformed MCCV is absent for the mesh; the normals stay.
+        var bad = WorldFormats.adt(sub(sub(base, MCNR, normals), MCCV, new byte[579]), () -> false);
+        assertEquals(normals[1], bad.attributes()[1]);
+        assertEquals(0, bad.attributes()[7]);
+    }
 
     @Test
     void normalsAreCopiedInFileOrderWithPaddingAndBadShapesAreUnsupported() {

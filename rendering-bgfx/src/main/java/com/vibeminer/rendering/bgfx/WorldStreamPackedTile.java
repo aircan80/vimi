@@ -10,18 +10,27 @@ import org.lwjgl.system.MemoryUtil;
 /**
  * Single-credit worker preparation. Consumes decoded heap ownership; performs no bgfx calls.
  *
- * <p>Geometry is one indexed mesh per tile (issue #373): every vertex once, with its position and
- * an RGBA8 fallback colour, then u16 indices. Terrain comes first and keeps the tile's own vertex
- * order (145 shared vertices per ADT chunk) and triangle order; water follows as its own vertex and
- * index ranges, its indices relative to its first vertex. Terrain triangles are grouped into runs
- * of consecutive triangles of one chunk, each with a world bounding sphere, so the renderer culls
- * whole chunks.
+ * <p>Geometry is one indexed mesh per tile (issue #373): every vertex once, with its position, an
+ * RGBA8 fallback colour, its MCCV colour and its normal, then u16 indices. Terrain comes first and
+ * keeps the tile's own vertex order (145 shared vertices per ADT chunk) and triangle order; water
+ * follows as its own vertex and index ranges, its indices relative to its first vertex. Terrain
+ * triangles are grouped into runs of consecutive triangles of one chunk, each with a world bounding
+ * sphere, so the renderer culls whole chunks.
  */
 final class WorldStreamPackedTile implements AutoCloseable {
     static final int MAX_WATER_TRIANGLES = 16384;
 
-    /** Bytes per mesh vertex: float x, y, z then an RGBA8 colour. */
-    static final int VERTEX_BYTES = 16;
+    /**
+     * Bytes per mesh vertex: float x, y, z; the RGBA8 fallback colour (unlit); the MCCV colour
+     * (RGBA8: alpha 255 when present, all zero when absent); the normal as unsigned bytes {@code
+     * round(127.5 + 127.5 * n)}, with (128, 128, 128) for an unlit vertex (water).
+     */
+    static final int VERTEX_BYTES = 24;
+
+    /**
+     * The normal bytes of an unlit vertex: decodes to almost zero, which the shader leaves unlit.
+     */
+    static final byte UNLIT_NORMAL = (byte) 128;
 
     static final int MAX_TERRAIN_VERTICES =
             com.vibeminer.rendering.world.TerrainScene.MAX_VERTICES_PER_TILE;
@@ -369,9 +378,10 @@ final class WorldStreamPackedTile implements AutoCloseable {
     }
 
     /**
-     * Writes the mesh: terrain vertices with their fallback colour, water vertices in diagnostic
-     * teal, then terrain and water indices. A terrain vertex is shaded from its area-weighted
-     * vertex normal with the light and altitude tint each triangle used to get.
+     * Writes the mesh: terrain vertices with their unlit altitude-tint fallback colour, MCCV colour
+     * and normal, water vertices in diagnostic teal and unlit, then terrain and water indices. A
+     * terrain vertex takes its MCNR normal when its chunk has one, else the area-weighted normal of
+     * its triangles; the shader lights both (#373).
      */
     private static void write(
             ByteBuffer out,
@@ -401,6 +411,8 @@ final class WorldStreamPackedTile implements AutoCloseable {
                 normals[v * 3 + 2] += nz;
             }
         }
+        var attributes = tile.attributes();
+        boolean attributed = attributes.hasRemaining();
         for (int v = 0; v < vertices; v++) {
             if ((v & 4095) == 0) {
                 check(canceled);
@@ -408,20 +420,33 @@ final class WorldStreamPackedTile implements AutoCloseable {
             float x = positions.get(v * 3), y = positions.get(v * 3 + 1);
             float z = positions.get(v * 3 + 2);
             double nx = normals[v * 3], ny = normals[v * 3 + 1], nz = normals[v * 3 + 2];
+            int a = v * WorldStreamTileFile.ATTRIBUTE_BYTES;
+            if (attributed
+                    && (attributes.get(a) != 0
+                            || attributes.get(a + 1) != 0
+                            || attributes.get(a + 2) != 0)) {
+                // MCNR: signed bytes in the position axes, 127 = 1.0; -128 is clamped.
+                nx = Math.max(-127, attributes.get(a));
+                ny = Math.max(-127, attributes.get(a + 1));
+                nz = Math.max(-127, attributes.get(a + 2));
+            }
             double length = Math.sqrt(nx * nx + ny * ny + nz * nz);
-            double light =
-                    length == 0
-                            ? .7
-                            : .45 + .55 * Math.abs((nx * .3 + ny * .4 + nz * .866) / length);
+            if (length == 0) {
+                nx = ny = 0;
+                nz = length = 1;
+            }
             double rock = Math.clamp((z - 150) / 600, 0, 1);
-            vertex(
-                    out,
-                    x,
-                    y,
-                    z,
-                    (72 + rock * 65) * light,
-                    (116 + rock * 10) * light,
-                    (68 + rock * 57) * light);
+            vertex(out, x, y, z, 72 + rock * 65, 116 + rock * 10, 68 + rock * 57);
+            if (attributed && attributes.get(a + 7) != 0) {
+                out.put(attributes.get(a + 4))
+                        .put(attributes.get(a + 5))
+                        .put(attributes.get(a + 6))
+                        .put((byte) 255);
+            } else {
+                out.putInt(0);
+            }
+            out.put(normal(nx / length)).put(normal(ny / length)).put(normal(nz / length));
+            out.put((byte) 255);
         }
         if (water != null) {
             var waterPositions = water.positions();
@@ -434,6 +459,8 @@ final class WorldStreamPackedTile implements AutoCloseable {
                         WATER_R,
                         WATER_G,
                         WATER_B);
+                out.putInt(0);
+                out.put(UNLIT_NORMAL).put(UNLIT_NORMAL).put(UNLIT_NORMAL).put((byte) 255);
             }
         }
         for (int at = 0; at < mesh.terrainIndices; at++) {
@@ -457,6 +484,11 @@ final class WorldStreamPackedTile implements AutoCloseable {
             ByteBuffer out, float x, float y, float z, double r, double g, double b) {
         out.putFloat(x).putFloat(y).putFloat(z);
         out.put(colour(r)).put(colour(g)).put(colour(b)).put((byte) 255);
+    }
+
+    /** One unit normal component as an unsigned normalized byte. */
+    static byte normal(double component) {
+        return (byte) Math.clamp(Math.round(127.5 + 127.5 * component), 0, 255);
     }
 
     private static byte colour(double value) {
