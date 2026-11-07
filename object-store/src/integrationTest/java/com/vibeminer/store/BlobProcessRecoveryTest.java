@@ -3,7 +3,6 @@ package com.vibeminer.store;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -12,22 +11,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /** Process termination checks; these do not simulate physical power loss. */
+@org.junit.jupiter.api.Timeout(KillPoint.TEST_TIMEOUT_SECONDS)
 final class BlobProcessRecoveryTest {
-    /**
-     * Bounds only a hung child, never a guess at how fast a busy machine starts a JVM: 6x the
-     * longest start seen on a stalled CI runner. Kept well inside the integration job's timeout, so
-     * a hang still fails the test and its reports are retained.
-     */
-    private static final long READY_GUARD_SECONDS = 60;
-
-    /** {@code destroyForcibly} is TerminateProcess or SIGKILL; exit is not a startup race. */
-    private static final long KILL_GUARD_SECONDS = 30;
-
     @TempDir Path directory;
 
     @Test
@@ -64,33 +53,7 @@ final class BlobProcessRecoveryTest {
                         .redirectErrorStream(true)
                         .redirectOutput(log.toFile())
                         .start();
-        Throwable primary = null;
-        try {
-            awaitReady(process, marker, log);
-            // Prove the kill point: the writer must still be running when it is killed.
-            assertTrue(
-                    process.isAlive(),
-                    () -> "Writer exited on its own before the kill; child log:\n" + childLog(log));
-        } catch (Throwable failure) {
-            primary = failure;
-            throw failure;
-        } finally {
-            process.destroyForcibly();
-            boolean exited = process.waitFor(KILL_GUARD_SECONDS, TimeUnit.SECONDS);
-            if (!exited) {
-                var killFailure =
-                        new AssertionError(
-                                "Killed writer did not exit within "
-                                        + KILL_GUARD_SECONDS
-                                        + " s; child log:\n"
-                                        + childLog(log));
-                if (primary == null) {
-                    throw killFailure;
-                }
-                // Keep the readiness failure as the reported cause.
-                primary.addSuppressed(killFailure);
-            }
-        }
+        KillPoint.kill(process, marker, log);
         try (var reopened = new SqliteBlobPrototype(database)) {
             assertEquals(committed ? 1 : 0, reopened.buildBytes("build"));
             var output = new java.io.ByteArrayOutputStream();
@@ -106,48 +69,6 @@ final class BlobProcessRecoveryTest {
             assertEquals(
                     committed ? 1L : 0L,
                     index.query("SELECT count(*) FROM payloads").getFirst()[0]);
-        }
-    }
-
-    /**
-     * Waits for the writer to reach its kill point. Only two outcomes end the wait: the marker
-     * appears, or the child exits first (a real failure). A slow child is not a failure: a loaded
-     * Windows runner once took about 10 s to start it. The guard only stops a genuine hang.
-     */
-    private static void awaitReady(Process process, Path marker, Path log) throws Exception {
-        long started = System.nanoTime();
-        long deadline = started + TimeUnit.SECONDS.toNanos(READY_GUARD_SECONDS);
-        while (!Files.exists(marker)) {
-            long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
-            if (!process.isAlive()) {
-                // The marker is written before the child blocks; re-check after observing exit.
-                if (Files.exists(marker)) {
-                    return;
-                }
-                fail(
-                        "Writer exited with "
-                                + process.exitValue()
-                                + " before its kill point, after "
-                                + elapsed
-                                + " ms; child log:\n"
-                                + childLog(log));
-            }
-            if (System.nanoTime() - deadline > 0) {
-                fail(
-                        "Writer still alive but not at its kill point after "
-                                + elapsed
-                                + " ms; child log:\n"
-                                + childLog(log));
-            }
-            Thread.sleep(20);
-        }
-    }
-
-    private static String childLog(Path log) {
-        try {
-            return Files.readString(log);
-        } catch (IOException error) {
-            return error.toString();
         }
     }
 
