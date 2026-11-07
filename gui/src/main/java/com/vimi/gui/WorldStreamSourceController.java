@@ -1529,6 +1529,20 @@ final class WorldStreamSourceController {
                     .append(tiles == 1 ? " tile" : " tiles").append(creatures.restPosed() == 0 ? " (Stand pose, facing north)"
                             : creatures.restPosed() == creatures.drawn() ? " (rest pose, facing north)"
                             : " (" + creatures.restPosed() + " in rest pose, facing north)");
+        var npcs = creatures.npcs();
+        if (npcs.drawn() > 0) {
+            // Humanoid NPCs (#385): their item models and item records left out are disclosed.
+            text.append(", of which ").append(plural(npcs.drawn(), "humanoid NPC"));
+            var notes = new java.util.ArrayList<String>();
+            // Drawn with visible sections it cannot draw (such as blended hair): disclosed.
+            if (npcs.withOmittedSurfaces() > 0)
+                notes.add(npcs.withOmittedSurfaces() + " with " + plural(npcs.omittedSurfaces(), "surface") + " left out");
+            var undrawn = new java.util.ArrayList<String>();
+            if (npcs.attachments() > 0) undrawn.add(plural(npcs.attachments(), "item model"));
+            if (npcs.omittedItems() > 0) undrawn.add(plural(npcs.omittedItems(), "item record"));
+            if (!undrawn.isEmpty()) notes.add(String.join(" and ", undrawn) + " not drawn");
+            if (!notes.isEmpty()) text.append(" (").append(String.join("; ", notes)).append(")");
+        }
         if (creatures.omitted() > 0) {
             text.append("; spawns not drawn: ");
             String separator = "";

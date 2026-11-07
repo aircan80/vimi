@@ -280,7 +280,8 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
                                 return tables == null || files == null ? null
                                         : new com.vibeminer.concepts.models.DisplayModelService(
                                                 tables, files, generatedStore);
-                            }, work::revision)));
+                            }, work::revision),
+                            WorldTileCreatures.npcs(work::racesHandle)));
                 }
             }
             setCenter(world); world.activate(); return;

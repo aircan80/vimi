@@ -48,6 +48,7 @@ public final class WorldTileCreaturesTest {
         cachesPerRevisionAndRetriesFailures();
         cancellationPropagatesAndSourceFailuresAreNotes();
         statusDisclosure();
+        humanoidNpcsDrawWholeOrSayWhy();
         capsStopLookupsAndForeignCancellationIsAFailure();
         failedIndexLoadsBackOff();
         conversionChecksVertexValuesAndLightsMissingNormals();
@@ -590,11 +591,85 @@ public final class WorldTileCreaturesTest {
         var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
         String text = WorldStreamSourceController.creatureDetail(summary, 1);
         require(text.equals("; 1 static creature model on 1 tile (rest pose, facing north)"
-                + "; spawns not drawn: 1 character appearance not evaluated"), "Status line: " + text);
+                + "; spawns not drawn: 1 character appearance unavailable"), "Status line: " + text);
         require(WorldStreamSourceController.creatureDetail(WorldTileCreatures.Summary.NONE, 0).isEmpty(),
                 "Nothing to disclose without creatures");
         require(WorldStreamSourceController.creatureDetail(WorldTileCreatures.Summary.failed("no prepared spawn source"), 0)
                 .equals("; creatures: no prepared spawn source"), "A note is shown when nothing was considered");
+    }
+
+    /**
+     * Humanoid NPC displays (#385) draw their race appearance whole, with item models and item
+     * records left out counted; a refused appearance is cached, one that cannot be read yet is
+     * asked once per tile and again on the next.
+     */
+    private static void humanoidNpcsDrawWholeOrSayWhy() {
+        var asked = new java.util.concurrent.ConcurrentHashMap<Long, AtomicInteger>();
+        WorldTileCreatures.Npcs npcs = (extended, token) -> {
+            asked.computeIfAbsent(extended, key -> new AtomicInteger()).incrementAndGet();
+            if (extended == 70) {
+                var result = new com.vibeminer.concepts.races.RaceAppearanceTypes.Result(
+                        com.vibeminer.concepts.races.RaceTypes.State.READY, appearance(true), Set.of(0), List.of(),
+                        List.of(), false, null);
+                return new com.vibeminer.concepts.races.RaceNpcs.Appearance(result, 1, 2, null, false);
+            }
+            if (extended == 100) {
+                // Every visible section drawable: nothing left out.
+                var clean = new com.vibeminer.concepts.races.RaceAppearanceTypes.Result(
+                        com.vibeminer.concepts.races.RaceTypes.State.READY, geosets(), Set.of(0), List.of(),
+                        List.of(), false, null);
+                return new com.vibeminer.concepts.races.RaceNpcs.Appearance(clean, 0, 0, null, false);
+            }
+            if (extended == 80)
+                return com.vibeminer.concepts.races.RaceNpcs.Appearance.refused("there is no pre-baked NPC texture");
+            return new com.vibeminer.concepts.races.RaceNpcs.Appearance(null, 0, 0,
+                    "Some NPC appearance rows cannot be read yet.", true);
+        };
+        var previews = new AtomicInteger();
+        var creatures = new WorldTileCreatures(token -> index(List.of(
+                WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0),
+                WorldSpawnOverlayTest.spawn(2, 1, -110, -110, 12.0),
+                WorldSpawnOverlayTest.spawn(3, 1, -120, -120, 13.0),
+                WorldSpawnOverlayTest.spawn(3, 2, -130, -130, 14.0),
+                WorldSpawnOverlayTest.spawn(4, 4, -140, -140, 15.0))), () -> "r1",
+                (npc, token) -> qualified((int) (6 + npc), null),
+                (display, token) -> {
+                    previews.incrementAndGet();
+                    return preview(display, display * 10, 0L, appearance(true));
+                }, npcs);
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        var summary = creatures.append(builder, 0, TILE, Cancellation.NONE);
+        require(summary.drawn() == 2 && builder.placementCount() == 2, "The readable NPCs are drawn: " + summary.drawn());
+        require(summary.count(WorldTileCreatures.Count.CHARACTER_APPEARANCE) == 1,
+                "A refused NPC appearance is a stated refusal");
+        require(summary.count(WorldTileCreatures.Count.CHARACTER_RETRY) == 2,
+                "Both spawns of the NPC that cannot be read yet are counted as retries");
+        require(asked.get(90L).get() == 1, "An NPC that cannot be read yet is asked once per tile");
+        // NPC 70's appearance has two visible sections it cannot draw (one without a surface, one
+        // additive): it is drawn, and the sections left out are disclosed. NPC 100 draws whole.
+        require(summary.npcs().equals(new WorldTileCreatures.NpcCounts(2, 1, 2, 1, 2)),
+                "The drawn NPCs' left-out item records, item models and surfaces are counted: " + summary.npcs());
+        require(summary.restPosed() == 2, "NPC appearances are static, disclosed as rest pose");
+        String text = WorldStreamSourceController.creatureDetail(summary, 1);
+        require(text.equals("; 2 static creature models on 1 tile (rest pose, facing north)"
+                        + ", of which 2 humanoid NPCs (1 with 2 surfaces left out;"
+                        + " 2 item models and 1 item record not drawn)"
+                        + "; spawns not drawn: 1 character appearance unavailable, 2 character appearance not readable yet"),
+                "Status line: " + text);
+        var again = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(again.drawn() == 2 && asked.get(70L).get() == 1 && asked.get(80L).get() == 1,
+                "Drawn and refused NPC appearances are cached");
+        require(asked.get(90L).get() == 2 && again.count(WorldTileCreatures.Count.CHARACTER_RETRY) == 2,
+                "An NPC that could not be read is asked again on the next tile");
+        require(summary.plus(again).npcs().equals(new WorldTileCreatures.NpcCounts(4, 2, 4, 2, 4)),
+                "NPC counts sum across tiles");
+        // Without an NPC source every humanoid display is a stated refusal, never a guess.
+        var none = new WorldTileCreatures(token -> index(List.of(WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0))),
+                () -> "r1", (npc, token) -> qualified(7, null),
+                (display, token) -> preview(display, 70L, 0L, appearance(true)));
+        var refused = none.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(refused.drawn() == 0 && refused.count(WorldTileCreatures.Count.CHARACTER_APPEARANCE) == 1,
+                "No NPC source: a stated refusal");
     }
 
     private static void capsStopLookupsAndForeignCancellationIsAFailure() {
