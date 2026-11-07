@@ -1,5 +1,6 @@
 package com.vibeminer.concepts.world;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -1975,6 +1976,43 @@ class WorldTerrainTextureSourceTest {
         return data.array();
     }
 
+    /**
+     * An uncompressed chain of {@code levels} from {@code width x height}, left half of each level
+     * red and right half blue, like the real 768 x 128 diffuses that stop at 6 x 1.
+     */
+    static byte[] blpBgraHalves(int width, int height, int levels) {
+        int total = 148;
+        for (int level = 0; level < levels; level++) {
+            total += Math.max(1, width >> level) * Math.max(1, height >> level) * 4;
+        }
+        var data = ByteBuffer.allocate(total).order(ByteOrder.LITTLE_ENDIAN);
+        data.put(new byte[] {'B', 'L', 'P', '2'})
+                .putInt(1)
+                .put((byte) 3)
+                .put((byte) 8)
+                .put((byte) 0)
+                .put((byte) 1)
+                .putInt(width)
+                .putInt(height);
+        int at = 148;
+        for (int level = 0; level < levels; level++) {
+            int w = Math.max(1, width >> level), h = Math.max(1, height >> level);
+            data.putInt(20 + level * 4, at).putInt(84 + level * 4, w * h * 4);
+            data.position(at);
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    // BGRA: red on the left, blue on the right.
+                    data.put(
+                            x < w / 2
+                                    ? new byte[] {0, 0, (byte) 255, (byte) 255}
+                                    : new byte[] {(byte) 255, 0, 0, (byte) 255});
+                }
+            }
+            at += w * h * 4;
+        }
+        return data.array();
+    }
+
     private static WorldTerrainTextureSource.DiffuseRefusal refusalFor(byte[] diffuse)
             throws Exception {
         var files = new Files();
@@ -1998,18 +2036,18 @@ class WorldTerrainTextureSourceTest {
 
     @Test
     void diffuseProfileRefusalsSayWhy() throws Exception {
-        // 16 x 8 down to 1 x 1: the small mip exists but the base is not square.
+        // 16 x 12: a short side that is not a power of two has no level of short side 4.
         assertEquals(
                 WorldTerrainTextureSource.DiffuseRefusal.NON_SQUARE,
-                refusalFor(blpShape(2, 16, 8, 5)));
+                refusalFor(blpShape(0, 16, 12, 1)));
+        // 16 x 8 alone: the level of short side 4 (8 x 4) is not declared.
+        assertEquals(
+                WorldTerrainTextureSource.DiffuseRefusal.MIP_UNAVAILABLE,
+                refusalFor(blpShape(0, 16, 8, 1)));
         // A single 16 x 16 level: no mip of 4 pixels or less.
         assertEquals(
                 WorldTerrainTextureSource.DiffuseRefusal.MIP_UNAVAILABLE,
                 refusalFor(blpShape(0, 16, 16, 1)));
-        // 16 x 8 and 8 x 4 only: no small mip, and the base is not square, so NON_SQUARE.
-        assertEquals(
-                WorldTerrainTextureSource.DiffuseRefusal.NON_SQUARE,
-                refusalFor(blpShape(1, 16, 8, 2)));
         // A square chain that stops at 8 x 8 is still MIP_UNAVAILABLE.
         assertEquals(
                 WorldTerrainTextureSource.DiffuseRefusal.MIP_UNAVAILABLE,
@@ -2064,5 +2102,53 @@ class WorldTerrainTextureSourceTest {
         // A BGRA alpha depth the format does not define stays a named refusal.
         assertEquals(
                 WorldTerrainTextureSource.DiffuseRefusal.UNSUPPORTED, refusalFor(blpBgra(2, 2)));
+    }
+
+    @Test
+    void nonSquareDiffusesAreDrawnStretchedFromTheirLevelOfShortSideFour() throws Exception {
+        // 32 x 8 down to 4 x 1 (no 4 x 4 level), and 16 x 8 down to 1 x 1 (which has 4 x 2).
+        for (byte[] diffuse : new byte[][] {blpBgraHalves(32, 8, 4), blpBgraHalves(16, 8, 5)}) {
+            var files = new Files();
+            files.sources.put(10L, diffuse);
+            var pool = new TerrainAtlasPool();
+            var source = new WorldTerrainTextureSource(files.files(), pool);
+            try (var result = read(source)) {
+                var tile = result.tiles().getFirst();
+                assertEquals(
+                        List.of(),
+                        tile.issues().stream().filter(issue -> issue.fileId() == 10).toList());
+                assertEquals(WorldTerrainTextureSource.State.READY, tile.state());
+            } finally {
+                source.closeAsync().get(5, TimeUnit.SECONDS);
+                pool.closeAsync().get(5, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    @Test
+    void boxAverageShrinksByMeansAndEnlargesByRepeats() {
+        // 8 x 2: left half red, right half blue, to 4 x 4.
+        byte[] source = new byte[8 * 2 * 4];
+        for (int i = 0; i < 16; i++) {
+            source[i * 4 + ((i % 8) < 4 ? 0 : 2)] = (byte) 255;
+            source[i * 4 + 3] = (byte) 255;
+        }
+        byte[] cell = WorldTerrainTextureSource.boxAverage(source, 8, 2, 4, 4);
+        for (int y = 0; y < 4; y++) {
+            for (int x = 0; x < 4; x++) {
+                int at = (y * 4 + x) * 4;
+                assertEquals(x < 2 ? 255 : 0, cell[at] & 255);
+                assertEquals(x < 2 ? 0 : 255, cell[at + 2] & 255);
+                assertEquals(255, cell[at + 3] & 255);
+            }
+        }
+        // Rounded mean: 0 and 255 over one output pixel give 128.
+        byte[] pair = {0, 0, 0, 0, (byte) 255, (byte) 255, (byte) 255, (byte) 255};
+        assertArrayEquals(
+                new byte[] {(byte) 128, (byte) 128, (byte) 128, (byte) 128},
+                WorldTerrainTextureSource.boxAverage(pair, 2, 1, 1, 1));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldTerrainTextureSource.boxAverage(pair, 3, 1, 1, 1));
     }
 }

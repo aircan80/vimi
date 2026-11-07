@@ -120,6 +120,50 @@ final class TerrainDiffuseDetailsTest {
         }
     }
 
+    @Test
+    void aNonSquareDiffuseIsStretchedToASquareLayer() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        long id = 10;
+        // 32 x 8, left half red and right half blue: resampled to 32 x 32, then the layer chain.
+        files.sources.put(id, WorldTerrainTextureSourceTest.blpBgraHalves(32, 8, 4));
+        var source = new WorldTerrainTextureSource(files.files(), new TerrainAtlasPool());
+        try {
+            var request =
+                    new WorldTerrainTextureSource.Request(
+                            source, null, List.of(), Cancellation.NONE, progress -> {}, false);
+            var detail = source.detail(bound(files, id), request);
+            assertFalse(detail.fileBlocks());
+            assertEquals("BGRA8", detail.sourceEncoding());
+            // Enlarging to the layer side filters across the tile's wrapped edge, so texel 0 is
+            // mostly, not purely, red.
+            int[] edge = texel(detail, 0);
+            assertTrue(edge[0] > edge[2], java.util.Arrays.toString(edge));
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void aSquareLayerThatIsNotAPowerOfTwoSaysWhyItIsRefused() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        long id = 10;
+        files.sources.put(id, WorldTerrainTextureSourceTest.blpBgraHalves(12, 12, 1));
+        var source = new WorldTerrainTextureSource(files.files(), new TerrainAtlasPool());
+        try {
+            var request =
+                    new WorldTerrainTextureSource.Request(
+                            source, null, List.of(), Cancellation.NONE, progress -> {}, false);
+            var refused =
+                    assertThrows(
+                            RuntimeException.class, () -> source.detail(bound(files, id), request));
+            assertEquals(
+                    WorldTerrainTextureSource.DiffuseRefusal.MIP_SHAPE,
+                    WorldTerrainTextureSource.diffuseRefusal(refused));
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
     /** BC2 BLP2 with standard mips from {@code base} down to 1; level 0 blue, the rest red. */
     static byte[] blpChain(int base) {
         int levels = Integer.numberOfTrailingZeros(base) + 1;
