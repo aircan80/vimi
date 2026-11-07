@@ -1,6 +1,7 @@
 package com.vibeminer.rendering.bgfx;
 
 import com.vibeminer.formats.world.WorldStageTimings;
+import com.vibeminer.rendering.world.ExteriorObjectLimits;
 import com.vibeminer.rendering.world.ObjectTextureFormats;
 import com.vibeminer.rendering.world.ObjectTextureMips;
 import java.io.BufferedInputStream;
@@ -44,14 +45,16 @@ import java.util.function.BooleanSupplier;
  */
 final class WorldStreamObjectsFile {
     // Version 5 (#367): range classes add ADDITIVE and the UNLIT flag, on #420's version 4.
-    static final int VERSION = 5, HEADER_BYTES = 256, MAX_BYTES = 28 << 20;
-    // Opaque buildings (24 roots, 256 meshes, 1,024 ranges, 64 placements, 64 images, 98,304
-    // vertices, 294,912 indices), plus cutout and blended building surfaces (256 ranges, 32
-    // images, 32,768 vertices, 98,304 indices), plus BASIC doodads (96 models and meshes, 512
-    // ranges and placements, 96 images, 65,536 vertices, 196,608 indices). Creature models share
-    // whatever room remains. Every table at its cap is about 27 MB.
-    static final int MAX_MODELS = 120, MAX_MESHES = 352, MAX_RANGES = 1792, MAX_PLACEMENTS = 576;
-    static final int MAX_IMAGES = 192, MAX_VERTICES = 196_608, MAX_INDICES = 589_824;
+    static final int VERSION = 5, HEADER_BYTES = 256;
+    // The tables are the sums of the producer's pools (ExteriorObjectLimits): opaque buildings,
+    // their cutout and blended surfaces, and doodads. Creature models share whatever room remains.
+    static final int MAX_MODELS = ExteriorObjectLimits.MODELS;
+    static final int MAX_MESHES = ExteriorObjectLimits.MESHES;
+    static final int MAX_RANGES = ExteriorObjectLimits.RANGES;
+    static final int MAX_PLACEMENTS = ExteriorObjectLimits.PLACEMENTS;
+    static final int MAX_IMAGES = ExteriorObjectLimits.IMAGES;
+    static final int MAX_VERTICES = ExteriorObjectLimits.VERTICES;
+    static final int MAX_INDICES = ExteriorObjectLimits.INDICES;
     static final int MAX_IMAGE_SIDE = 256, MAX_MESH_VERTICES = 65_536;
 
     /**
@@ -102,9 +105,30 @@ final class WorldStreamObjectsFile {
     static final int RANGE_INTS = 4, PLACEMENT_DOUBLES = 13;
 
     /** Draw calls per tile (sum over placements of their model's ranges); bounds a frame. */
-    static final int MAX_DRAWS = 4096;
+    static final int MAX_DRAWS = ExteriorObjectLimits.DRAWS;
 
     static final int VERTEX_FLOATS = 8, VERTEX_BYTES = 32;
+
+    /**
+     * The file ceiling: every table at its cap ({@link #length}), rounded up to the next MiB. With
+     * the #308 pools that is 27 MiB; it is derived so a raised pool can never outgrow the file.
+     */
+    static final int MAX_BYTES =
+            ceilingMiB(
+                    length(
+                            MAX_MODELS,
+                            MAX_MESHES,
+                            MAX_RANGES,
+                            MAX_PLACEMENTS,
+                            MAX_IMAGES,
+                            MAX_VERTICES,
+                            MAX_INDICES,
+                            MAX_IMAGE_BYTES));
+
+    private static int ceilingMiB(int bytes) {
+        return (bytes + (1 << 20) - 1) >>> 20 << 20;
+    }
+
     static final double MAX_SCALE = 64;
     private static final int SCRATCH = 64 << 10;
     private static final byte[] MAGIC = "VIMIWSO1".getBytes(StandardCharsets.US_ASCII);

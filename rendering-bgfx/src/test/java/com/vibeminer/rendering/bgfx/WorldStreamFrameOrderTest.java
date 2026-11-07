@@ -18,7 +18,8 @@ class WorldStreamFrameOrderTest {
     @Test
     void blendKeyRoundTripsItsSlotAndPlacement() {
         for (int slot = 0; slot < BgfxWorldStreamRenderer.SLOT_COUNT; slot++) {
-            for (int placement : new int[] {0, 1, 575, 1023}) {
+            for (int placement :
+                    new int[] {0, 1, 1023, WorldStreamObjectsFile.MAX_PLACEMENTS - 1}) {
                 long key = BgfxWorldStreamRenderer.blendKey(123.25, slot, placement);
                 assertEquals(slot, BgfxWorldStreamRenderer.blendPosition(key));
                 assertEquals(placement, BgfxWorldStreamRenderer.blendPlacement(key));
@@ -61,7 +62,10 @@ class WorldStreamFrameOrderTest {
                 IllegalArgumentException.class,
                 () -> BgfxWorldStreamRenderer.blendKey(1, BgfxWorldStreamRenderer.SLOT_COUNT, 0));
         assertThrows(
-                IllegalArgumentException.class, () -> BgfxWorldStreamRenderer.blendKey(1, 0, 1024));
+                IllegalArgumentException.class,
+                () ->
+                        BgfxWorldStreamRenderer.blendKey(
+                                1, 0, 1 << BgfxWorldStreamRenderer.BLEND_PLACEMENT_BITS));
     }
 
     /**
