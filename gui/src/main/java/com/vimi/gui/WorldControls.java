@@ -39,12 +39,52 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         LOOK_UP("Look up"),
         LOOK_DOWN("Look down"),
         SPRINT("Faster (hold; with the wheel: speed)"),
-        WALK("Walk on terrain (toggle)");
+        WALK("Walk on terrain (toggle)"),
+        MAP_PANEL("Map panel (toggle)", true),
+        HIDE_HUD("Hide or show the HUD (toggle)", true),
+        DEV_OVERLAY("Developer overlay (next page)", true),
+        INSPECT_PIN("Inspect card: pin / unpin, or re-open the last", true),
+        SCREENSHOT("Save a viewport screenshot", true),
+        BOOKMARKS("Bookmarks (menu page; again closes)", true),
+        SPAWNS("NPC spawn markers on/off", true),
+        TRACKING("Tracking popup open/close", true),
+        MINIMAP("Minimap show/hide", true),
+        DAY_NIGHT("Day/night: clock, day, night", true),
+        SPEED_STROLL("Speed: Stroll", true),
+        SPEED_MOUNT("Speed: Mount", true),
+        SPEED_FLY("Speed: Fly", true),
+        SPEED_FAST("Speed: Fast", true),
+        SPEED_TURBO("Speed: Turbo", true);
+
+        /** The speed preset a speed action selects, or null for other actions. */
+        Speed speed() {
+            return switch (this) {
+                case SPEED_STROLL -> Speed.STROLL;
+                case SPEED_MOUNT -> Speed.MOUNT;
+                case SPEED_FLY -> Speed.FLY;
+                case SPEED_FAST -> Speed.FAST;
+                case SPEED_TURBO -> Speed.TURBO;
+                default -> null;
+            };
+        }
 
         final String label;
+        /**
+         * A command key: it fires once per fresh press through {@link
+         * WorldExplorerInput.Host#command} and never drives motion. Modifiers are not checked,
+         * so Ctrl or Alt with the key fires it too, as with the walk key. A {@code clear()} while
+         * the key is still held (focus loss, full screen) forgets the press, so its next key
+         * repeat counts as a new press, also as with the walk key.
+         */
+        final boolean command;
 
         Action(String label) {
+            this(label, false);
+        }
+
+        Action(String label, boolean command) {
             this.label = label;
+            this.command = command;
         }
     }
 
@@ -114,6 +154,30 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
             keys.put(KeyCode.DOWN, Action.LOOK_DOWN);
             keys.put(KeyCode.SHIFT, Action.SPRINT);
             keys.put(KeyCode.F, Action.WALK);
+            // M is a letter on both layouts, so the key labelled M opens the map on either.
+            keys.put(KeyCode.M, Action.MAP_PANEL);
+            // H is a letter on both layouts too, and free in both presets.
+            keys.put(KeyCode.H, Action.HIDE_HUD);
+            // Function keys sit in the same place on every layout.
+            keys.put(KeyCode.F3, Action.DEV_OVERLAY);
+            // I sits in the same place on QWERTY and AZERTY.
+            keys.put(KeyCode.I, Action.INSPECT_PIN);
+            keys.put(KeyCode.F12, Action.SCREENSHOT);
+            // B sits in the same place on QWERTY and AZERTY.
+            keys.put(KeyCode.B, Action.BOOKMARKS);
+            // V, L, N and T sit in the same place on both layouts.
+            keys.put(KeyCode.V, Action.SPAWNS);
+            keys.put(KeyCode.L, Action.TRACKING);
+            keys.put(KeyCode.N, Action.MINIMAP);
+            keys.put(KeyCode.T, Action.DAY_NIGHT);
+            // AZERTY digits need Shift: that preset leaves the speed keys unbound (Shift+wheel).
+            if (this != AZERTY) {
+                keys.put(KeyCode.DIGIT1, Action.SPEED_STROLL);
+                keys.put(KeyCode.DIGIT2, Action.SPEED_MOUNT);
+                keys.put(KeyCode.DIGIT3, Action.SPEED_FLY);
+                keys.put(KeyCode.DIGIT4, Action.SPEED_FAST);
+                keys.put(KeyCode.DIGIT5, Action.SPEED_TURBO);
+            }
             return keys;
         }
     }
@@ -216,7 +280,23 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
                 + "/" + keysOf.apply(Action.LOOK_UP) + "/" + keysOf.apply(Action.LOOK_DOWN) + " to look · "
                 + keysOf.apply(Action.SPRINT) + " faster · wheel zooms"
                 + (modifier == null ? "" : " · " + modifier.getName() + "+wheel changes speed")
-                + " · " + keysOf.apply(Action.WALK) + " walks · click inspects · Keys… rebinds";
+                + " · " + keysOf.apply(Action.WALK) + " walks · " + keysOf.apply(Action.MAP_PANEL)
+                + " map · " + keysOf.apply(Action.HIDE_HUD) + " hides the HUD · click inspects · "
+                + keysOf.apply(Action.INSPECT_PIN) + " pins the card · "
+                + keysOf.apply(Action.BOOKMARKS) + " bookmarks · "
+                + keysOf.apply(Action.SPAWNS) + " NPC spawns · " + keysOf.apply(Action.TRACKING)
+                + " tracking · " + keysOf.apply(Action.MINIMAP) + " minimap · "
+                + keysOf.apply(Action.DAY_NIGHT) + " day/night · " + speedKeys(bound) + " speed · "
+                + keysOf.apply(Action.SCREENSHOT) + " screenshot · "
+                + keysOf.apply(Action.DEV_OVERLAY) + " developer overlay · Keys… rebinds";
+    }
+
+    /** The speed preset keys for the help: "1/2/3/4/5", or "unbound" when none is bound. */
+    private static String speedKeys(Map<Action, java.util.List<KeyCode>> bound) {
+        var names = new java.util.ArrayList<String>();
+        for (var action : Action.values())
+            if (action.speed() != null && !bound.get(action).isEmpty()) names.add(bound.get(action).getFirst().getName());
+        return names.isEmpty() ? "unbound" : String.join("/", names);
     }
 
     String encode() {

@@ -278,6 +278,7 @@ final class WorldObjectPicks {
             case WorldObjectPicking.OPAQUE -> "opaque";
             case WorldObjectPicking.CUTOUT -> "cutout (alpha-tested)";
             case WorldObjectPicking.BLENDED -> "blended";
+            case WorldObjectPicking.ADDITIVE -> "additive";
             default -> "unknown";
         };
     }
