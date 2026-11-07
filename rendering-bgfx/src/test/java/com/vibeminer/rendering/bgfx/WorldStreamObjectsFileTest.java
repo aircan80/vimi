@@ -397,6 +397,229 @@ final class WorldStreamObjectsFileTest {
                 exterior.bytes());
     }
 
+    /**
+     * Rooms A, B and C along x: a quad door A|B at x = 10 and a triangle door B|C at x = 20, so the
+     * set differs from {@link #twoRooms} in every table size.
+     */
+    static WmoPortalSet threeRooms() {
+        return new WmoPortalSet(
+                java.util.List.of(
+                        new WmoPortalTraversal.Group(0x2000, 0, -5, 0, 10, 5, 5, 0, 1),
+                        new WmoPortalTraversal.Group(0x2000, 10, -5, 0, 20, 5, 5, 1, 2),
+                        new WmoPortalTraversal.Group(0x2000, 20, -5, 0, 30, 5, 5, 3, 1)),
+                java.util.List.of(
+                        new WmoPortalTraversal.Portal(
+                                new double[] {10, -1, 0, 10, 1, 0, 10, 1, 2, 10, -1, 2},
+                                1,
+                                0,
+                                0,
+                                -10),
+                        new WmoPortalTraversal.Portal(
+                                new double[] {20, -1, 0, 20, 1, 0, 20, 0, 2}, 1, 0, 0, -20)),
+                java.util.List.of(
+                        new WmoPortalTraversal.Ref(0, 1, -1),
+                        new WmoPortalTraversal.Ref(0, 0, 1),
+                        new WmoPortalTraversal.Ref(1, 2, -1),
+                        new WmoPortalTraversal.Ref(1, 1, 1)));
+    }
+
+    /** Model 0 without a set, model 1 with {@link #twoRooms}, model 2 with {@link #threeRooms}. */
+    private static WorldStreamTileWriter.Exterior twoSets() {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        builder.image(2, 2, chain(2, 2, rgba(4, 10)));
+        builder.model();
+        triangle(builder, -1);
+        builder.model();
+        builder.portals(twoRooms());
+        triangle(builder, 1);
+        triangle(builder, 0);
+        builder.model();
+        builder.portals(threeRooms());
+        triangle(builder, 2);
+        triangle(builder, 0);
+        triangle(builder, 1);
+        for (int m = 0; m < 3; m++) {
+            builder.placement(m, 0, 0, 0, 1, 1, 0);
+        }
+        return builder.build();
+    }
+
+    private static void assertSameSet(WmoPortalSet expected, WmoPortalSet carried) {
+        assertEquals(expected.groups(), carried.groups());
+        assertEquals(expected.refs(), carried.refs());
+        assertEquals(expected.portals().size(), carried.portals().size());
+        for (int p = 0; p < expected.portals().size(); p++) {
+            var e = expected.portals().get(p);
+            var c = carried.portals().get(p);
+            assertArrayEquals(e.vertices(), c.vertices());
+            assertEquals(
+                    java.util.List.of(e.nx(), e.ny(), e.nz(), e.distance()),
+                    java.util.List.of(c.nx(), c.ny(), c.nz(), c.distance()));
+        }
+    }
+
+    /** A second set reads its own rows of every table: the set-relative prefix offsets. */
+    @Test
+    void twoPortalSetsOfDifferentSizesRoundTrip() throws Exception {
+        var exterior = twoSets();
+        var reference = write(exterior);
+        var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
+        assertEquals(2, read.portalSetCount());
+        assertEquals(1, read.portalModel(0));
+        assertEquals(2, read.portalModel(1));
+        assertSameSet(twoRooms(), read.portalSet(0));
+        assertSameSet(threeRooms(), read.portalSet(1));
+        assertArrayEquals(new int[] {-1, 1, 0, 2, 0, 1}, read.meshGroups);
+        assertEquals(
+                WorldStreamObjectsFile.length(3, 6, 6, 3, 1, 18, 18, read.imageBytes())
+                        + WorldStreamObjectsFile.portalLength(2, 5, 3, 11, 6),
+                reference.length());
+        // The header names the five table counts at 152..171, and 148 stays zero.
+        var head =
+                java.nio.ByteBuffer.wrap(Files.readAllBytes(objectsPath()))
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        assertEquals(0, head.getInt(148));
+        assertEquals(
+                java.util.List.of(2, 5, 3, 11, 6),
+                java.util.List.of(
+                        head.getInt(152),
+                        head.getInt(156),
+                        head.getInt(160),
+                        head.getInt(164),
+                        head.getInt(168)));
+    }
+
+    /** The tables of a valid set file, copied so one value can be changed and revalidated. */
+    private static final class Tables {
+        final WorldStreamObjectsFile.Data d;
+        final int[] meshGroups, sets, groups, vertexCounts, refs;
+        final float[] boxes, planes, vertices;
+
+        Tables(WorldStreamObjectsFile.Data d) {
+            this.d = d;
+            meshGroups = d.meshGroups.clone();
+            sets = d.portalSets.clone();
+            groups = d.portalGroups.clone();
+            boxes = d.portalBoxes.clone();
+            vertexCounts = d.portalVertexCounts.clone();
+            planes = d.portalPlanes.clone();
+            vertices = d.portalVertices.clone();
+            refs = d.portalRefs.clone();
+        }
+
+        String refused() {
+            return assertThrows(
+                            IllegalArgumentException.class,
+                            () ->
+                                    new WorldStreamObjectsFile.Data(
+                                            d.models,
+                                            d.meshes,
+                                            d.ranges,
+                                            d.placementModels,
+                                            d.placements,
+                                            d.images,
+                                            d.vertices,
+                                            d.colours,
+                                            d.indices,
+                                            d.pixels,
+                                            meshGroups,
+                                            sets,
+                                            groups,
+                                            boxes,
+                                            vertexCounts,
+                                            planes,
+                                            vertices,
+                                            refs))
+                    .getMessage();
+        }
+    }
+
+    @Test
+    void portalTablesThatDoNotDescribeTheirSetsAreRefused() throws Exception {
+        var valid = data(twoSets());
+        // Sets out of model order (the tables otherwise intact).
+        var order = new Tables(valid);
+        order.sets[0] = 2;
+        order.sets[WorldStreamObjectsFile.PORTAL_SET_INTS] = 1;
+        assertEquals("Portal sets", order.refused());
+        // A zero-group set.
+        var empty = new Tables(valid);
+        empty.sets[1] = 0;
+        assertEquals("Portal sets", empty.refused());
+        // Vertex counts crossing a set boundary: the first set's door takes a vertex of the
+        // second set's (every total unchanged).
+        var crossing = new Tables(valid);
+        crossing.vertexCounts[0] = 5;
+        crossing.vertexCounts[1] = 3;
+        assertEquals("Portal sets", crossing.refused());
+        // A second-set reference by its absolute group index (2 + 1) instead of the set's own.
+        var absolute = new Tables(valid);
+        absolute.refs[(2 + 0) * WorldStreamObjectsFile.PORTAL_REF_INTS + 1] = 3;
+        assertEquals("Portal set", absolute.refused());
+        // A group's reference range past its set's references: C (row 4) takes two from 3.
+        var range = new Tables(valid);
+        range.groups[4 * WorldStreamObjectsFile.PORTAL_GROUP_INTS + 2] = 2;
+        assertEquals("Portal set", range.refused());
+        // A side outside a signed 16-bit word.
+        var side = new Tables(valid);
+        side.refs[2] = 40000;
+        assertEquals("Portal set", side.refused());
+        // A value past the file's bound.
+        var far = new Tables(valid);
+        far.vertices[0] = 2e6f;
+        assertEquals("Portal value", far.refused());
+        // A mesh of a model with a set at -1, and one past its set's groups.
+        var unset = new Tables(valid);
+        unset.meshGroups[1] = -1;
+        assertEquals("Mesh groups", unset.refused());
+        var past = new Tables(valid);
+        past.meshGroups[1] = 2;
+        assertEquals("Mesh groups", past.refused());
+    }
+
+    @Test
+    void portalHeaderCountsAreBoundedAndConsistent() throws Exception {
+        var reference = write(twoSets());
+        var clean = Files.readAllBytes(objectsPath());
+        java.util.function.BiFunction<Integer, Integer, String> refused =
+                (at, value) -> {
+                    var bytes = clean.clone();
+                    java.nio.ByteBuffer.wrap(bytes)
+                            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                            .putInt(at, value);
+                    try {
+                        Files.write(objectsPath(), bytes);
+                        var failure =
+                                assertThrows(
+                                        IOException.class,
+                                        () ->
+                                                WorldStreamObjectsFile.read(
+                                                        objectsPath(),
+                                                        IDENTITY,
+                                                        reference,
+                                                        () -> false));
+                        return failure.getCause().getMessage();
+                    } catch (IOException e) {
+                        throw new java.io.UncheckedIOException(e);
+                    }
+                };
+        // Each count is bounded by its cap, and never negative, before anything is allocated.
+        assertEquals("Objects portal counts", refused.apply(152, WmoPortalSet.MAX_TILE_SETS + 1));
+        assertEquals("Objects portal counts", refused.apply(156, WmoPortalSet.MAX_TILE_GROUPS + 1));
+        assertEquals(
+                "Objects portal counts", refused.apply(160, WmoPortalSet.MAX_TILE_PORTALS + 1));
+        assertEquals(
+                "Objects portal counts", refused.apply(164, WmoPortalSet.MAX_TILE_VERTICES + 1));
+        assertEquals("Objects portal counts", refused.apply(168, WmoPortalSet.MAX_TILE_REFS + 1));
+        assertEquals("Objects portal counts", refused.apply(164, -1));
+        // Within the caps but not the file's length.
+        assertEquals("Objects header counts", refused.apply(164, 12));
+        // Byte 148 stays zero, and the reserved bytes from 172 must be zero.
+        assertEquals("Objects header counts", refused.apply(148, 2));
+        assertEquals("Reserved objects bytes", refused.apply(172, 1));
+        assertEquals("Reserved objects bytes", refused.apply(252, 1));
+    }
+
     @Test
     void portalSetsAndMeshGroupsAreValidated() {
         // A mesh group outside its model's set, or any group on a model without a set.
