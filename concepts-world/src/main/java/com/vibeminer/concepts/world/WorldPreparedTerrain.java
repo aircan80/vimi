@@ -596,13 +596,15 @@ final class WorldPreparedTerrain {
         if (!materials.matchesNamespace(namespace.build(), namespace.locale())) {
             throw new IllegalStateException("Configured material namespace differs");
         }
+        var map = new WorldService.MapInfo(namespace.mapId(), null, null, 0, namespace.wdtId());
+        // Reuse the geometry's checked root parse and fingerprint instead of a second read.
+        var root = owned.geometry.materialRoot();
         var operation =
-                materials.readOwned(
-                        new WorldService.MapInfo(
-                                namespace.mapId(), null, null, 0, namespace.wdtId()),
-                        List.of(tile),
-                        admission.cancellation(),
-                        p -> {});
+                root != null && root.binding().fileId() == tile.rootId()
+                        ? materials.readOwned(
+                                map, List.of(tile), admission.cancellation(), p -> {}, root)
+                        : materials.readOwned(
+                                map, List.of(tile), admission.cancellation(), p -> {});
         WorldTerrainTextureSource.BatchResult batch = null;
         try {
             Throwable materialFailure = null;
