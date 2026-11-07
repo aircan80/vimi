@@ -211,6 +211,7 @@ SHA and the IPC round trips together cost under 100 ms per tile. Two conclusions
 | `objects.phase.imageBudget` p50 | 4 ms | 3 ms |
 | `source.read.BASIC_EXTERIOR` count | 1,702 | 1,817 |
 | `source.read.BASIC_EXTERIOR` p50 / mean / max | 27 / 34 / 2,093 ms | 20 / 31 / 2,555 ms |
+| `source.prefetchWait.BASIC_EXTERIOR` count / p50 (WMO group read-ahead hits; waits only, not in `source.read.*` or `source.readBytes.*`) | not in this baseline | not in this baseline |
 | **Sum of exterior reads** | **58.0 s of 69.0 s** | **56.0 s of 64.9 s** |
 | All BLP decodes (`objects.blp.*`), total | 0.17 s | |
 | M2 model and skin parse, total | 0.12 s | |
@@ -218,6 +219,11 @@ SHA and the IPC round trips together cost under 100 ms per tile. Two conclusions
 | `child.objectsFile.read` p50 | 12 ms | 12 ms |
 | `child.objects.uploadWall` p50 | 201 ms | 200 ms |
 | `parent.objects.attachRoundTrip` p50 | 239 ms | 235 ms |
+
+With read-ahead on, `source.read.*` no longer covers all exterior source time: a read-ahead
+hit is recorded under `source.prefetchWait.*` instead. To compare with the sum above, add
+`source.prefetchWait.BASIC_EXTERIOR` to `source.read.BASIC_EXTERIOR`. Even then a hit counts
+only the wait, not the overlapped read.
 
 **Reading:** 84-86% of objects prep is waiting on about 190 source reads per tile, one at a time.
 Decode, parse, mips and assembly add up to under 0.5 s for nine tiles. Two consequences:
@@ -281,6 +287,25 @@ Some building and model counts are small by comparison:
 `child.frame.cropAndPublish` now starts before the staging crop, so on the staging path it
 includes the crop. Staging-path numbers measured after that change are not comparable with the
 ~0.5 ms above.
+
+**These draw counts predate CPU culling.** This baseline drew every resident object placement and
+every terrain chunk each frame. Since then, #369 culls object placements against the view frustum
+(plus a sub-pixel size cull), and #430 culls terrain per chunk run. Later runs report far fewer
+`child.frame.draws` for the same scene. That is the cull working, not objects going missing. To
+tell the two apart, the helper records per submitted frame `child.frame.placements`,
+`placementsCulled`, `objectSubmits`, `terrainChunks`, `terrainChunksCulled` and `terrainSubmits`.
+On 1.60.1.70862 (Linux, same scenarios, rotating in place; single runs), p50:
+
+| | Elwynn, cull on | Elwynn, cull off | Stormwind, cull on | Stormwind, cull off |
+| --- | ---: | ---: | ---: | ---: |
+| `child.frame.draws` | 911 | 6,552 | 277 | 4,877 |
+| `child.frame.triangles` | 0.18 M | 0.97 M | 0.09 M | 0.96 M |
+| `child.frame.placements` / `placementsCulled` | 3,949 / 3,324 | 3,949 / 0 | 2,913 / 2,791 | 2,913 / 0 |
+| `child.frame.terrainChunks` / `terrainChunksCulled` | 2,299 / 1,951 | 2,299 / 0 | 2,299 / 2,039 | 2,299 / 0 |
+| `child.frame.bgfxCpuRender` p50 | 0.67 ms | 4.34 ms | 0.28 ms | 2.80 ms |
+
+With the cull off, the draw count matches this baseline's 6,508 and 4,872 to within about 1%, and
+the per-tile placement counts match section 4. The resident objects are unchanged.
 
 **Reading:**
 - The helper's own per-frame CPU work is about 5 ms, at 800x500, for ~5-6.5k draws and ~1 M
