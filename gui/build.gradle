@@ -360,6 +360,21 @@ tasks.register('worldPickTest', JavaExec) {
 }
 check.dependsOn worldPickTest
 
+// Streamed frame size debounce over authored pulses; no display.
+tasks.register('worldResizeDebounceTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldResizeDebounceTest'
+}
+check.dependsOn worldResizeDebounceTest
+// Stream camera revisions and presented-frame overlay projection; no display.
+tasks.register('worldCameraRingTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldCameraRingTest'
+}
+check.dependsOn worldCameraRingTest
+
 // Explorer key/mouse/wheel mapping and pulse cadence against a recording host; no display.
 tasks.register('worldExplorerInputTest', JavaExec) {
     dependsOn testClasses
@@ -367,6 +382,38 @@ tasks.register('worldExplorerInputTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldExplorerInputTest'
 }
 check.dependsOn worldExplorerInputTest
+
+// Inspect card contents per pick kind; no display.
+tasks.register('worldInspectionTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldInspectionTest'
+}
+check.dependsOn worldInspectionTest
+
+// Viewport screenshot names and PNG files in a temporary folder; no display.
+tasks.register('worldScreenshotsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldScreenshotsTest'
+}
+check.dependsOn worldScreenshotsTest
+
+// Minimap rim streaming ring: fraction, hold after full and fade; no display.
+tasks.register('worldMinimapRingTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldMinimapRingTest'
+}
+check.dependsOn worldMinimapRingTest
+
+// Developer overlay pages as text: labelled split, once-only detail, wrapping; no display.
+tasks.register('worldDevReportTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldDevReportTest'
+}
+check.dependsOn worldDevReportTest
 
 // Exact picking of drawn exterior objects, their source records and the highlight; authored meshes.
 tasks.register('worldObjectPicksTest', JavaExec) {
@@ -557,11 +604,39 @@ tasks.register('worldInstanceSwitchTest', JavaExec) {
 }
 check.dependsOn worldInstanceSwitchTest
 
+// World HUD pieces (zone text and banner timing, coordinates pill); requires a display.
+tasks.register('worldHudUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldHudUiTest'
+}
+
 // Authored physical terrain coordinates and deterministic keyboard/timer events; requires a display.
 tasks.register('worldNavigationUiTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldNavigationUiTest'
+}
+
+// World toasts: timing, stack, actions and isolation, plus view wiring; display required.
+tasks.register('worldToastsUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldToastsUiTest'
+}
+
+// F3 developer overlay over the real viewport: pages, mouse isolation, Retry/Copy; display.
+tasks.register('worldDevOverlayUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldDevOverlayUiTest'
+}
+
+// HUD keys (V, T, 1-5) over the real World view; display required.
+tasks.register('worldHudKeysUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldHudKeysUiTest'
 }
 
 // Authored JavaFX artwork/lifecycle proof; requires a desktop display.
@@ -661,6 +736,15 @@ tasks.register('worldStreamSourceBridgeTest', JavaExec) {
 }
 check.dependsOn worldStreamSourceBridgeTest
 
+// The same authored source with shader-side splatting inputs on (#174 step 2b-1).
+tasks.register('worldStreamSplatBridgeTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldStreamSplatBridgeTest'
+    systemProperty 'vimi.world.splat', 'true'
+}
+check.dependsOn worldStreamSplatBridgeTest
+
 // Detached JavaFX bitmap publication; no window or GPU required.
 tasks.register('worldStreamImagePresentationTest', JavaExec) {
     dependsOn testClasses
@@ -668,6 +752,25 @@ tasks.register('worldStreamImagePresentationTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldStreamImagePresentationTest'
 }
 check.dependsOn worldStreamImagePresentationTest
+// Render-scale changes (monitor moves) re-request World frames; no window needed.
+tasks.register('worldRenderScaleWatchTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldRenderScaleWatchTest'
+}
+check.dependsOn worldRenderScaleWatchTest
+// Real node → scene → window wiring of the render-scale watch; needs a desktop session.
+tasks.register('worldRenderScaleUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldRenderScaleUiTest'
+}
+// PixelBuffer presentation on the FX thread, with a 1440p timing; needs a desktop session.
+tasks.register('worldStreamImagePresentationUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldStreamImagePresentationUiTest'
+}
 tasks.register('worldStreamSourceControllerTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
@@ -819,6 +922,15 @@ tasks.register('globalInteriorFloorsTest', JavaExec) {
     mainClass = 'com.vimi.gui.GlobalInteriorFloorsTest'
 }
 check.dependsOn globalInteriorFloorsTest
+
+// Optional: measures a World ambience kit change through the real decoder on device-paced lines.
+tasks.register('worldAudioZoneChangeProbe', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldAudioZoneChangeProbe'
+    systemProperty 'vimi.audioFixture',
+            rootProject.file('formats-audio/src/test/resources/audio/authored-tone.ogg').path
+}
 
 // Recorded sky and fog mixed into the World look (#177-2a); pure, no display.
 tasks.register('worldSkyLookTest', JavaExec) {

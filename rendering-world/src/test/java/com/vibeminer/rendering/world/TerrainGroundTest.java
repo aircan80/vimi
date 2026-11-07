@@ -141,12 +141,14 @@ class TerrainGroundTest {
     @Test
     void sharedTilesAreBoundedAndSearchedInOrder() {
         var qualified = TerrainGround.Tile.of(tile(false));
-        var thirteen = new ArrayList<TerrainGround.Tile>();
-        for (int i = 0; i < 13; i++) {
-            thirteen.add(qualified);
+        var tooMany = new ArrayList<TerrainGround.Tile>();
+        for (int i = 0; i <= TerrainGround.MAX_TILES; i++) {
+            tooMany.add(qualified);
         }
-        assertThrows(IllegalArgumentException.class, () -> TerrainGround.of(thirteen));
-        assertEquals(12, TerrainGround.of(thirteen.subList(0, 12)).tiles());
+        assertThrows(IllegalArgumentException.class, () -> TerrainGround.of(tooMany));
+        assertEquals(
+                TerrainGround.MAX_TILES,
+                TerrainGround.of(tooMany.subList(0, TerrainGround.MAX_TILES)).tiles());
         assertEquals(256, qualified.chunks());
     }
 
