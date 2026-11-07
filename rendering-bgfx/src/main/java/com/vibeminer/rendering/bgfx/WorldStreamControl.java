@@ -24,7 +24,8 @@ final class WorldStreamControl {
             long policy,
             int width,
             int height,
-            TerrainCamera camera)
+            TerrainCamera camera,
+            WorldStreamTransport.Sky sky)
             implements Command {
         Camera {
             Objects.requireNonNull(nonce);
@@ -34,6 +35,16 @@ final class WorldStreamControl {
             if (!WorldFrameLimits.fits(width, height)) {
                 throw new IllegalArgumentException("Invalid camera dimensions");
             }
+        }
+
+        Camera(
+                WorldStreamState.Nonce nonce,
+                long revision,
+                long policy,
+                int width,
+                int height,
+                TerrainCamera camera) {
+            this(nonce, revision, policy, width, height, camera, null);
         }
     }
 
@@ -132,6 +143,63 @@ final class WorldStreamControl {
 
     private WorldStreamControl() {}
 
+    /**
+     * The optional sky tail, bounded so a camera line always fits: {@code SKY} then the six colours
+     * as one 12-digit hex token (horizon then top, red-green-blue), the fog weight in thousandths
+     * (0..1000) and the recorded start and end in whole yards. Sky values are already quantized to
+     * exactly these steps.
+     */
+    private static String sky(WorldStreamTransport.Sky sky) {
+        if (sky == null) {
+            return "";
+        }
+        var colours = new StringBuilder(12);
+        for (float[] rgb : new float[][] {sky.horizon(), sky.top()}) {
+            for (float channel : rgb) {
+                colours.append(HexFormat.of().toHexDigits((byte) (int) channel));
+            }
+        }
+        return " SKY "
+                + colours
+                + " "
+                + Math.round(sky.fogWeight() * 1000)
+                + " "
+                + (long) sky.recordedStart()
+                + " "
+                + (long) sky.recordedEnd();
+    }
+
+    private static WorldStreamTransport.Sky sky(String[] parts) {
+        if (!parts[13].matches("[0-9a-f]{12}")) {
+            throw new IllegalArgumentException("Invalid sky colours");
+        }
+        float[] channels = new float[6];
+        for (int i = 0; i < 6; i++) {
+            channels[i] = Integer.parseInt(parts[13].substring(2 * i, 2 * i + 2), 16);
+        }
+        long weight = bounded(parts[14], 1000);
+        long start = bounded(parts[15], WorldStreamTransport.Sky.MAX_YARDS);
+        long end = bounded(parts[16], WorldStreamTransport.Sky.MAX_YARDS);
+        return new WorldStreamTransport.Sky(
+                new float[] {channels[0], channels[1], channels[2]},
+                new float[] {channels[3], channels[4], channels[5]},
+                weight / 1000.0,
+                start,
+                end);
+    }
+
+    /** A canonical decimal integer in 0..max. */
+    private static long bounded(String text, long max) {
+        if (!text.matches("0|[1-9][0-9]{0,6}")) {
+            throw new IllegalArgumentException("Invalid sky number");
+        }
+        long value = Long.parseLong(text);
+        if (value > max) {
+            throw new IllegalArgumentException("Sky number out of range");
+        }
+        return value;
+    }
+
     static byte[] encode(Command command) {
         Objects.requireNonNull(command);
         var nonce = command.nonce();
@@ -160,7 +228,8 @@ final class WorldStreamControl {
                                     + " "
                                     + c.camera().yaw()
                                     + " "
-                                    + c.camera().pitch();
+                                    + c.camera().pitch()
+                                    + sky(c.sky());
                     case Offer c ->
                             "OFFER "
                                     + c.transaction()
@@ -269,7 +338,13 @@ final class WorldStreamControl {
             Command result =
                     switch (parts[2]) {
                         case "CAM" -> {
-                            arity(parts, 12);
+                            // An optional sky tail: SKY colours weight start end.
+                            if (parts.length != 12) {
+                                arity(parts, 17);
+                                if (!parts[12].equals("SKY")) {
+                                    throw new IllegalArgumentException("Invalid camera sky");
+                                }
+                            }
                             yield new Camera(
                                     nonce,
                                     number(parts[3]),
@@ -281,7 +356,8 @@ final class WorldStreamControl {
                                             decimal(parts[8]),
                                             decimal(parts[9]),
                                             decimal(parts[10]),
-                                            decimal(parts[11])));
+                                            decimal(parts[11])),
+                                    parts.length == 12 ? null : sky(parts));
                         }
                         case "OFFER" -> {
                             arity(parts, 10);

@@ -473,8 +473,38 @@ public final class WorldStreamSessionProof {
                         (sky >>> 8 & 255) == (int) Math.floor(analytical[1])
                                 && (sky & 255) == (int) Math.floor(analytical[2]),
                         "Changed view did not expose analytical sky");
-                send(child, new WorldStreamControl.Camera(NONCE, 15, 2, 800, 500, CAMERA));
-                frame(reader, 3, 15, 2, 800, 500, 100);
+                // The same view with a recorded sky (#177): the frame shows the recorded colours.
+                var recorded =
+                        new WorldStreamTransport.Sky(
+                                new float[] {200, 40, 20}, new float[] {20, 40, 200}, 0, 0, 0);
+                send(
+                        child,
+                        new WorldStreamControl.Camera(
+                                NONCE,
+                                15,
+                                2,
+                                800,
+                                500,
+                                new TerrainCamera(-100, -10, 50, 0, 1),
+                                recorded));
+                var expected =
+                        WorldFog.sky(recorded, Float.NaN)
+                                .skyPixel(
+                                        1,
+                                        com.vibeminer.rendering.world.TerrainCamera.focalPixels(
+                                                800),
+                                        800,
+                                        500,
+                                        400,
+                                        250);
+                int recordedSky = frame(reader, 3, 15, 2, 800, 500, (int) Math.floor(expected[0]));
+                require(
+                        (recordedSky >>> 8 & 255) == (int) Math.floor(expected[1])
+                                && (recordedSky & 255) == (int) Math.floor(expected[2]),
+                        "A recorded sky did not reach the frame: "
+                                + Integer.toHexString(recordedSky));
+                send(child, new WorldStreamControl.Camera(NONCE, 16, 2, 800, 500, CAMERA));
+                frame(reader, 3, 16, 2, 800, 500, 100);
                 require(child.pid() == pid && child.isAlive(), "Child replaced unexpectedly");
                 // Issue #365: a packet whose bytes match its offer but fail decoding is one
                 // rejected transaction (REJECTED INVALID_PACKET, through completeDecode); the
@@ -506,7 +536,7 @@ public final class WorldStreamSessionProof {
                 System.out.println(
                         "WORLD_SESSION_PASS pid="
                                 + pid
-                                + " content=3 cameras=15 canceled=2 resize=800x500");
+                                + " content=3 cameras=16 canceled=2 resize=800x500 recordedSky");
             } finally {
                 if (child.isAlive()) {
                     child.destroyForcibly();
