@@ -77,19 +77,21 @@ class WorldStreamTransportCreditAttributionTest {
         try {
             session.initialized()
                     .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);
-            var first = reserve(session);
+            // Each CREDIT makes the lease usable before the status reader counts it, so a
+            // reservation is taken only once the enabling credit has been counted.
+            var first = reserveAfter(session, 1);
             assertFalse(first.capacityChangedElsewhere());
             long before = session.capacityRevision();
             first.cancel().get(5, TimeUnit.SECONDS);
             // The next reservation needs the CREDIT that returned the first one's lease.
-            var second = reserve(session);
-            assertTrue(session.capacityRevision() > before, "The CREDIT changed capacity");
+            var second = reserveAfter(session, before + 1);
             assertFalse(
                     first.capacityChangedElsewhere(),
                     "The credit returning its own lease is the first reservation's change");
             assertFalse(second.capacityChangedElsewhere());
+            before = session.capacityRevision();
             second.cancel().get(5, TimeUnit.SECONDS);
-            var third = reserve(session);
+            var third = reserveAfter(session, before + 1);
             assertFalse(
                     second.capacityChangedElsewhere(),
                     "The credit returning its own lease is the second reservation's change");
@@ -105,9 +107,14 @@ class WorldStreamTransportCreditAttributionTest {
         }
     }
 
-    private static WorldStreamTransport.TileReservation reserve(
-            WorldStreamTransport.Session session) throws InterruptedException {
+    /** Waits until the session counted {@code revision} capacity changes, then reserves. */
+    private static WorldStreamTransport.TileReservation reserveAfter(
+            WorldStreamTransport.Session session, long revision) throws InterruptedException {
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (session.capacityRevision() < revision && System.nanoTime() < until) {
+            Thread.sleep(1);
+        }
+        assertTrue(session.capacityRevision() >= revision, "The enabling CREDIT was counted");
         while (System.nanoTime() < until) {
             var reserved = session.tryReserveTile(7, 19);
             if (reserved.isPresent()) {
