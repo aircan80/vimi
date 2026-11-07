@@ -70,6 +70,9 @@ final class WorldMinimaps {
             } else {
                 result.complete(WorldService.Minimap.unavailable("Minimap artwork unavailable"));
             }
+        } catch (Throwable failure) {
+            // An Error (or anything else) must still settle the request: callers join it.
+            result.completeExceptionally(failure);
         }
     }
 
@@ -78,7 +81,7 @@ final class WorldMinimaps {
             return WorldService.Minimap.unavailable("No recorded minimap artwork");
         }
         var ref = FileTypes.FileRef.id(tile.minimapId());
-        var stat = files.stat(ref, token).join();
+        var stat = files.statContent(ref, token).join();
         token.check();
         if (stat.file() == null
                 || stat.file().size() != null && stat.file().size() > SOURCE_LIMIT) {
@@ -137,7 +140,7 @@ final class WorldMinimaps {
                                     | rgba[p + 2] & 255;
                 }
             }
-            var current = files.stat(ref, token).join();
+            var current = files.statContent(ref, token).join();
             token.check();
             if (current.file() == null || !contentKey.equals(current.file().contentKey())) {
                 return WorldService.Minimap.unavailable("Minimap source changed during read");

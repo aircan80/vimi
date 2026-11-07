@@ -91,11 +91,13 @@ public final class BuildPreparationTest {
         final CountDownLatch metadataEntered = new CountDownLatch(1),
                 filesEntered = new CountDownLatch(1),
                 namesEntered = new CountDownLatch(1),
-                tablesEntered = new CountDownLatch(1);
+                tablesEntered = new CountDownLatch(1),
+                warmEntered = new CountDownLatch(1);
         volatile CompletableFuture<Void> metadataGate = CompletableFuture.completedFuture(null),
                 filesGate = CompletableFuture.completedFuture(null),
                 namesGate = CompletableFuture.completedFuture(null),
-                tablesGate = CompletableFuture.completedFuture(null);
+                tablesGate = CompletableFuture.completedFuture(null),
+                warmGate = CompletableFuture.completedFuture(null);
         volatile boolean cancelKeys, failWarm, failFiles, failNames, cancelWarm, failRetirement;
         volatile String tableName = "Unavailable";
         volatile Consumer<BuildPreparation.Counter> oldCount;
@@ -163,7 +165,19 @@ public final class BuildPreparationTest {
         }
 
         public List<String> warm(Cancellation token) {
+            return warm(ignored -> {}, token);
+        }
+
+        @Override
+        public List<String> warm(
+                Consumer<BuildPreparation.Counter> counted, Cancellation token) {
             worker("warm");
+            counted.accept(new BuildPreparation.Counter(1, 5L, "lookup steps · item catalog"));
+            counted.accept(
+                    new BuildPreparation.Counter(
+                            8000, null, "item rows read · lookup step 2 of 5 (item catalog)"));
+            warmEntered.countDown();
+            warmGate.join();
             if (failWarm) throw new IllegalStateException("Warm failed");
             if (cancelWarm) token.cancel();
             return List.of("Expected unavailable lookup");
@@ -213,7 +227,8 @@ public final class BuildPreparationTest {
         forceEnrichmentCreatesGenerationAndRetainsPreviousReadiness();
         canceledEnrichmentAbortsPendingAndKeepsPublishedLedger();
         retirementFailureDoesNotInvalidateCommittedWorkspace();
-        System.out.println("BuildPreparation: 13 deterministic contracts passed");
+        slowLookupsPublishMovingProgress();
+        System.out.println("BuildPreparation: 14 deterministic contracts passed");
     }
 
     static void phaseOrderAndIndependentMetadataEvent() throws Exception {
@@ -238,6 +253,30 @@ public final class BuildPreparationTest {
                         && work.order.indexOf("files") < work.order.indexOf("keys")
                         && work.order.indexOf("keys") < work.order.indexOf("tables"),
                 "Strict pipeline ordering");
+        await(engine.closeAsync());
+    }
+
+    /** #338: a slow lookup step shows its latest count instead of a silent "Preparing lookups". */
+    static void slowLookupsPublishMovingProgress() throws Exception {
+        var work = new Fake();
+        work.warmGate = new CompletableFuture<>();
+        var engine = new BuildPreparation((b, s, l) -> work);
+        var job = engine.start(build(1), SOURCE, "enUS");
+        waitFor(work.warmEntered);
+        var during = job.snapshot();
+        require(
+                during.phase() == BuildPreparation.Phase.LOOKUPS
+                        && during.done() == 8000
+                        && during.total() == null,
+                "Lookups publish the step's open-ended row count: " + during);
+        require(
+                PreparationStatus.describe(during)
+                        .contains(
+                                "Preparing lookups… 8000 item rows read · lookup step 2 of 5"
+                                        + " (item catalog)"),
+                "Status shows the moving count: " + PreparationStatus.describe(during));
+        work.warmGate.complete(null);
+        await(job.completion());
         await(engine.closeAsync());
     }
 

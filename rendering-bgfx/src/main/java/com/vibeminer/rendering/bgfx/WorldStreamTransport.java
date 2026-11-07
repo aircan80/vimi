@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.world.TerrainCamera;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -147,10 +148,101 @@ public final class WorldStreamTransport {
         }
     }
 
-    public record Camera(long revision, long policy, int width, int height, TerrainCamera view) {
+    /**
+     * The recorded sky for a frame (#177): the horizon colour the fog fades into, the sky top
+     * colour (0..255 gamma), and the recorded distance fog with {@code fogWeight}, how much of the
+     * position records fog (0..1). The renderer composes it with its own fog distances and the WDL
+     * horizon ({@link WorldFog#sky}).
+     */
+    public record Sky(
+            float[] horizon,
+            float[] top,
+            double fogWeight,
+            float recordedStart,
+            float recordedEnd) {
+        /** The explorer's own sky, with no recorded fog. */
+        public static final Sky EXPLORER = new Sky(WorldFog.FOG_COLOUR, WorldFog.SKY_TOP, 0, 0, 0);
+
+        /** Recorded fog distances are whole yards up to this bound. */
+        public static final int MAX_YARDS = 1_000_000;
+
+        /**
+         * Values are quantized as the control line carries them, so every Sky round-trips exactly:
+         * colours to whole 0..255 steps, the weight to thousandths, distances to whole yards. Every
+         * value must be finite and in range, whatever the weight.
+         */
+        public Sky {
+            if (horizon.length != 3 || top.length != 3) {
+                throw new IllegalArgumentException("Invalid sky colours");
+            }
+            horizon = horizon.clone();
+            top = top.clone();
+            for (int i = 0; i < 3; i++) {
+                if (!(horizon[i] >= 0 && horizon[i] <= 255 && top[i] >= 0 && top[i] <= 255)) {
+                    throw new IllegalArgumentException("Invalid sky colours");
+                }
+                horizon[i] = Math.round(horizon[i]);
+                top[i] = Math.round(top[i]);
+            }
+            if (!(fogWeight >= 0 && fogWeight <= 1)
+                    || !(recordedStart >= 0 && recordedStart <= MAX_YARDS)
+                    || !(recordedEnd >= 0 && recordedEnd <= MAX_YARDS)) {
+                throw new IllegalArgumentException("Invalid recorded fog");
+            }
+            fogWeight = Math.round(fogWeight * 1000) / 1000.0;
+            recordedStart = Math.round(recordedStart);
+            recordedEnd = Math.round(recordedEnd);
+            if (fogWeight > 0 && !(recordedEnd > recordedStart)) {
+                throw new IllegalArgumentException("Invalid recorded fog");
+            }
+        }
+
+        @Override
+        public float[] horizon() {
+            return horizon.clone();
+        }
+
+        @Override
+        public float[] top() {
+            return top.clone();
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof Sky o
+                    && java.util.Arrays.equals(horizon, o.horizon)
+                    && java.util.Arrays.equals(top, o.top)
+                    && Double.compare(fogWeight, o.fogWeight) == 0
+                    && Float.compare(recordedStart, o.recordedStart) == 0
+                    && Float.compare(recordedEnd, o.recordedEnd) == 0;
+        }
+
+        @Override
+        public int hashCode() {
+            return java.util.Objects.hash(
+                    java.util.Arrays.hashCode(horizon),
+                    java.util.Arrays.hashCode(top),
+                    fogWeight,
+                    recordedStart,
+                    recordedEnd);
+        }
+    }
+
+    /** {@code sky} is the recorded sky for this frame, or null for the explorer's own. */
+    public record Camera(
+            long revision, long policy, int width, int height, TerrainCamera view, Sky sky) {
         public Camera {
             new WorldStreamControl.Camera(
-                    new WorldStreamState.Nonce(1, 1), revision, policy, width, height, view);
+                    new WorldStreamState.Nonce(1, 1), revision, policy, width, height, view, sky);
+        }
+
+        public Camera(long revision, long policy, int width, int height, TerrainCamera view) {
+            this(revision, policy, width, height, view, null);
+        }
+
+        /** This camera with another sky. */
+        public Camera withSky(Sky value) {
+            return new Camera(revision, policy, width, height, view, value);
         }
     }
 
@@ -197,7 +289,12 @@ public final class WorldStreamTransport {
     public enum Refusal {
         RETRY_LATER,
         CAPABILITY_UNAVAILABLE,
-        SOURCE_INVALIDATED
+        SOURCE_INVALIDATED,
+        /**
+         * The helper rejected this tile's packet (for example a header that does not match its
+         * slot); only that tile is affected and the session keeps streaming (issue #365).
+         */
+        PACKET_REJECTED
     }
 
     public static final class PreparationRefusal extends Exception {
@@ -363,13 +460,25 @@ public final class WorldStreamTransport {
         private final WorldStreamProducerCancellation.Producer cancellation;
         private volatile boolean active = true;
         private final boolean exteriorObjects;
+        private final TileReservation reservation;
 
+        // Without a reservation (structural tests) there is no shared array: splat keeps the atlas.
         private PacketDestination(
                 WorldStreamEnvelope.Session descriptor,
                 WorldStreamParentState.Ticket ticket,
                 Path path,
                 WorldStreamProducerCancellation.Producer cancellation) {
+            this(descriptor, null, ticket, path, cancellation);
+        }
+
+        private PacketDestination(
+                WorldStreamEnvelope.Session descriptor,
+                TileReservation reservation,
+                WorldStreamParentState.Ticket ticket,
+                Path path,
+                WorldStreamProducerCancellation.Producer cancellation) {
             exteriorObjects = descriptor.exteriorObjects();
+            this.reservation = reservation;
             this.context =
                     new Context(
                             descriptor.nonce(),
@@ -421,6 +530,30 @@ public final class WorldStreamTransport {
             return exteriorObjects;
         }
 
+        /**
+         * Binds this tile's slot to shared splat layers for its diffuse keys (issue #174 step 2).
+         * At most {@link WorldStreamTileFile#MAX_SPLAT_LAYERS} keys get a new layer, which this
+         * packet must upload; further new keys, and keys finding no free layer, resolve to -1 so
+         * their chunks keep the atlas. New layers stay pending until the tile is staged; any other
+         * end of this reservation forgets them, so no later tile reuses a layer never uploaded.
+         */
+        SplatBinding bindSplat(List<WorldStreamDiffuseArray.Key> keys) {
+            requireActive();
+            if (reservation == null) {
+                int[] none = new int[keys.size()];
+                java.util.Arrays.fill(none, -1);
+                return new SplatBinding(none, List.of());
+            }
+            return reservation.session.bindSplat(reservation, keys);
+        }
+
+        void dropSplatUpload(int layer) {
+            requireActive();
+            if (reservation != null) {
+                reservation.session.dropSplatUpload(reservation, layer);
+            }
+        }
+
         // The separately reviewed fixed writer performs MOVE inside the source's pinned resource
         // callback.
         OwnedPacket adopt(
@@ -464,32 +597,58 @@ public final class WorldStreamTransport {
         }
     }
 
+    /** Shared layer per requested key (-1 keeps the atlas) and the new layers to upload. */
+    record SplatBinding(int[] layers, List<Integer> uploads) {}
+
     public static final class TileReservation {
         private final Session session;
         private final WorldStreamParentState.Ticket ticket;
         private final CompletableFuture<Resident> result = new CompletableFuture<>();
+
+        // The result as callers see it: it completes only after the splat bookkeeping for the
+        // outcome has run, so no caller reacting to a failure can bind a layer this tile is still
+        // about to forget (#435).
+        private final CompletableFuture<Resident> settled;
         private final CompletableFuture<Void> canceled = new CompletableFuture<>();
         private volatile boolean stop;
         private volatile WorldStreamProducerCancellation.Producer cancellation;
         private boolean produced, offerOutstanding, cancelOutstanding;
+        // Opt-in hand-off stamps (-Dvimi.world.stageTimings); 0 while timings are off.
+        private volatile long reservedAt, producedAt, producerStartedAt, offeredAt, consumedAt;
         // Guarded by the session lock: the capacity revision when this reservation was issued and
         // the capacity changes it made itself before its result completed (#283).
         private long issuedCapacity;
         private int ownCapacityChanges;
 
+        // Splat layers this reservation's packet uploads; forgotten unless the tile is staged.
+        private int[] splatPending = new int[0];
+
+        // Whether this tile bound splat layers at all; a staged tile that did not releases the
+        // slot's previous binding, so an untextured successor never pins old layers forever.
+        private boolean splatBound;
+
         private TileReservation(Session session, WorldStreamParentState.Ticket ticket) {
             this.session = session;
             this.ticket = ticket;
+            settled =
+                    result.whenComplete(
+                            (resident, failure) -> {
+                                if (failure != null) {
+                                    session.forgetSplat(this);
+                                } else {
+                                    session.keepSplat(this);
+                                }
+                            });
         }
 
         /**
-         * The capacity revision this reservation alone accounts for: the revision when it was
-         * issued plus its own retirement and drain changes up to its result. Once the result has
-         * completed, a session revision above this means capacity changed for some other reason
-         * since the reservation was issued, so a caller blocked by its refusal should retry.
+         * Whether capacity changed since this reservation was issued for a reason other than the
+         * reservation itself: its own drain and retirement and the CREDIT that returns its lease
+         * (which may land after its result) do not count. Read live, atomically with the session
+         * revision. A caller blocked by its refusal retries when this is true.
          */
-        public long capacityBaseline() {
-            return session.baseline(this);
+        public boolean capacityChangedElsewhere() {
+            return session.changedElsewhere(this);
         }
 
         public CompletableFuture<Resident> produce(PacketProducer producer) {
@@ -671,6 +830,9 @@ public final class WorldStreamTransport {
         private final Object lock = new Object();
         private final WorldStreamEnvelope.Session descriptor;
         private final WorldStreamParentState state;
+        // Parent-owned shared splat layer array (issue #174 step 2): the only place that decides
+        // which diffuse occupies which GPU layer, so parent and child never disagree.
+        private final WorldStreamDiffuseArray splatLayers = new WorldStreamDiffuseArray();
         private final WorldStreamParentFrameGate frames;
         private final CompletableFuture<Void> initialized = new CompletableFuture<>();
         private final CompletableFuture<Void> completion = new CompletableFuture<>();
@@ -704,6 +866,7 @@ public final class WorldStreamTransport {
         // so a lost or absent hint costs at most the old poll interval.
         private final WorldFrameSignal frameSignal = new WorldFrameSignal();
         private volatile Runnable frameListener;
+        private volatile Runnable capacityListener;
         // Test seams: the reader's fallback wait, and completion when the reader has returned.
         volatile long framePollMillis = FRAME_POLL_MILLIS;
         final CompletableFuture<Void> framesReaderDone = new CompletableFuture<>();
@@ -722,6 +885,11 @@ public final class WorldStreamTransport {
         private final java.util.concurrent.atomic.AtomicLong rendererObjectsBudget =
                 new java.util.concurrent.atomic.AtomicLong();
         private final java.util.concurrent.atomic.AtomicLong rendererObjectsFailures =
+                new java.util.concurrent.atomic.AtomicLong();
+        // Per-transaction refusals that leave the session streaming (issue #365).
+        private final java.util.concurrent.atomic.AtomicLong rejectedCameras =
+                new java.util.concurrent.atomic.AtomicLong();
+        private final java.util.concurrent.atomic.AtomicLong rejectedTiles =
                 new java.util.concurrent.atomic.AtomicLong();
         private final CompletableFuture<String> objectsDiagnostic = new CompletableFuture<>();
         // Protocol records from helper stdout; unrelated lines are counted and sampled, never
@@ -768,6 +936,95 @@ public final class WorldStreamTransport {
                 this.ordered = List.copyOf(ordered);
                 this.metadata = metadata;
                 this.path = path;
+            }
+        }
+
+        SplatBinding bindSplat(
+                TileReservation reservation, List<WorldStreamDiffuseArray.Key> keys) {
+            synchronized (splatLayers) {
+                var resolution = splatLayers.bind(reservation.ticket.lease.slot(), keys);
+                int[] layers = resolution.layers().clone();
+                var uploads = new java.util.ArrayList<Integer>();
+                for (int layer : resolution.uploads()) {
+                    if (uploads.size() < WorldStreamTileFile.MAX_SPLAT_LAYERS) {
+                        uploads.add(layer);
+                    } else {
+                        // Beyond the per-packet cap: never uploaded here, so never resolved.
+                        splatLayers.discard(layer);
+                        for (int i = 0; i < layers.length; i++) {
+                            if (layers[i] == layer) {
+                                layers[i] = -1;
+                            }
+                        }
+                    }
+                }
+                reservation.splatPending = uploads.stream().mapToInt(Integer::intValue).toArray();
+                reservation.splatBound = true;
+                return new SplatBinding(layers, List.copyOf(uploads));
+            }
+        }
+
+        /** A packet that will not upload one of its new layers releases it before writing. */
+        void dropSplatUpload(TileReservation reservation, int layer) {
+            synchronized (splatLayers) {
+                splatLayers.discard(layer);
+                reservation.splatPending =
+                        java.util.Arrays.stream(reservation.splatPending)
+                                .filter(pending -> pending != layer)
+                                .toArray();
+            }
+        }
+
+        /**
+         * After a commit: slots the new table no longer draws, other than the tile still in flight,
+         * stop holding splat layers (issue #174). Credit only goes to inactive slots, so a slot is
+         * never rebound while its old generation is drawn; this releases the retired ones that are
+         * never rebound. Called under the session lock.
+         */
+        private void releaseRetiredSplat() {
+            var live = new java.util.HashSet<Integer>();
+            for (var resident : state.active()) {
+                live.add(resident.lease.slot());
+            }
+            if (tile != null && !tile.result.isDone()) {
+                live.add(tile.ticket.lease.slot());
+            }
+            synchronized (splatLayers) {
+                splatLayers.retain(live);
+            }
+        }
+
+        private void keepSplat(TileReservation reservation) {
+            synchronized (splatLayers) {
+                reservation.splatPending = new int[0];
+                if (!reservation.splatBound) {
+                    // This slot's new tile uses no splat layers: its old ones stay cached but
+                    // become evictable (draw-lifetime pinning is #174 step 2b-2's design).
+                    splatLayers.release(reservation.ticket.lease.slot());
+                }
+            }
+        }
+
+        private void forgetSplat(TileReservation reservation) {
+            synchronized (splatLayers) {
+                for (int layer : reservation.splatPending) {
+                    splatLayers.discard(layer);
+                }
+                reservation.splatPending = new int[0];
+            }
+        }
+
+        /** Test observation: layers some slot still references. */
+        int splatReferenced() {
+            synchronized (splatLayers) {
+                return splatLayers.referenced();
+            }
+        }
+
+        /** Test observation of the parent-owned splat array. */
+        int splatResident() {
+            synchronized (splatLayers) {
+                return splatLayers.resident();
             }
         }
 
@@ -1352,6 +1609,28 @@ public final class WorldStreamTransport {
                 }
                 capacityRevision++;
             }
+            var listener = capacityListener;
+            if (listener != null) {
+                try {
+                    listener.run();
+                } catch (RuntimeException failure) {
+                    // A consumer's fault must not end the status reader or the session.
+                    System.getLogger(WorldStreamTransport.class.getName())
+                            .log(
+                                    System.Logger.Level.WARNING,
+                                    "World capacity listener failed",
+                                    failure);
+                }
+            }
+        }
+
+        /**
+         * Runs after every {@link #capacityRevision} change, possibly under the transport's own
+         * lock, so it must only signal (never block or call back in). Replaced by a later call.
+         * Lets a consumer wait on capacity without polling (#366).
+         */
+        public void onCapacity(Runnable listener) {
+            capacityListener = listener;
         }
 
         /** A capacity change caused by {@code reservation}'s own drain or retirement. */
@@ -1362,9 +1641,10 @@ public final class WorldStreamTransport {
             }
         }
 
-        private long baseline(TileReservation reservation) {
+        private boolean changedElsewhere(TileReservation reservation) {
             synchronized (lock) {
-                return reservation.issuedCapacity + reservation.ownCapacityChanges;
+                return capacityRevision
+                        != reservation.issuedCapacity + reservation.ownCapacityChanges;
             }
         }
 
@@ -1381,6 +1661,7 @@ public final class WorldStreamTransport {
                 previousTile = tile;
                 tile = new TileReservation(this, reserved);
                 tile.issuedCapacity = capacityRevision;
+                tile.reservedAt = WorldStageTimings.start();
                 return java.util.Optional.of(tile);
             }
         }
@@ -1393,9 +1674,12 @@ public final class WorldStreamTransport {
                 }
                 state.beginProducer(reservation.ticket);
                 reservation.produced = true;
+                reservation.producedAt =
+                        WorldStageTimings.lap(
+                                "handoff.parent.reserveToProduce", reservation.reservedAt);
                 enqueueFile(() -> produceFile(reservation, producer));
             }
-            return reservation.result.copy();
+            return reservation.settled.copy();
         }
 
         private CompletableFuture<Void> cancel(TileReservation reservation) {
@@ -1530,6 +1814,9 @@ public final class WorldStreamTransport {
         }
 
         private void produceFile(TileReservation reservation, PacketProducer producer) {
+            reservation.producerStartedAt =
+                    WorldStageTimings.lap(
+                            "handoff.parent.produceToProducerStart", reservation.producedAt);
             WorldStreamProducerCancellation.Producer lower;
             try {
                 lower = cancellation.begin();
@@ -1553,6 +1840,7 @@ public final class WorldStreamTransport {
             var destination =
                     new PacketDestination(
                             descriptor,
+                            reservation,
                             reservation.ticket,
                             owner.files()
                                     .directory()
@@ -1637,6 +1925,10 @@ public final class WorldStreamTransport {
                                         packet.coverage,
                                         packet.objects);
                         enqueueCommand(command);
+                        reservation.offeredAt =
+                                WorldStageTimings.lap(
+                                        "handoff.parent.producerRunToOffer",
+                                        reservation.producerStartedAt);
                         packet = null;
                         published = true;
                     }
@@ -1710,8 +2002,14 @@ public final class WorldStreamTransport {
             }
         }
 
-        /** Replaces one pending camera; no pipe I/O or external callback occurs on the caller. */
-        public void camera(Camera camera) {
+        /**
+         * Replaces one pending camera; no pipe I/O or external callback occurs on the caller. A
+         * camera that is not a valid transition from the last accepted one (an older revision, a
+         * lower policy, or a new size without a policy change) is refused and logged, rate limited,
+         * and the session keeps streaming the last accepted camera: false. Only a stopping session
+         * throws.
+         */
+        public boolean camera(Camera camera) {
             Objects.requireNonNull(camera);
             var command =
                     new WorldStreamControl.Camera(
@@ -1720,15 +2018,80 @@ public final class WorldStreamTransport {
                             camera.policy(),
                             camera.width(),
                             camera.height(),
-                            camera.view());
+                            camera.view(),
+                            camera.sky());
             synchronized (lock) {
                 if (closing || owner != null && owner.stopping()) {
                     throw new IllegalStateException("World session is stopping");
                 }
-                frames.desire(command);
+                if (!frames.tryDesire(command)) {
+                    cameraRejected(camera);
+                    return false;
+                }
                 pendingCamera = command;
                 lock.notifyAll();
+                return true;
             }
+        }
+
+        /** A refused camera transition: logged first, then every 64th; never session-fatal. */
+        private void cameraRejected(Camera camera) {
+            long count = rejectedCameras.incrementAndGet();
+            if (!cadenceLogged(count)) {
+                return;
+            }
+            try {
+                System.getLogger(WorldStreamTransport.class.getName())
+                        .log(
+                                System.Logger.Level.WARNING,
+                                "World camera refused: revision "
+                                        + camera.revision()
+                                        + ", policy "
+                                        + camera.policy()
+                                        + ", "
+                                        + camera.width()
+                                        + "x"
+                                        + camera.height()
+                                        + " is not a valid transition ("
+                                        + count
+                                        + (count == 1 ? " camera" : " cameras")
+                                        + " this session); the last accepted camera stays");
+            } catch (RuntimeException | Error ignored) {
+                // Diagnostic delivery cannot interrupt camera publication.
+            }
+        }
+
+        /**
+         * The helper refused one tile transaction (an invalid packet); the session keeps streaming
+         * and the controller retries or skips that tile. Logged first, then every 64th, with the
+         * helper's redacted stderr tail, which names the helper's reason.
+         */
+        private void tileRejected() {
+            long count = rejectedTiles.incrementAndGet();
+            if (!cadenceLogged(count)) {
+                return;
+            }
+            try {
+                System.getLogger(WorldStreamTransport.class.getName())
+                        .log(
+                                System.Logger.Level.WARNING,
+                                "World helper rejected a tile ("
+                                        + count
+                                        + (count == 1 ? " tile" : " tiles")
+                                        + " this session); streaming continues"
+                                        + stderrSuffix());
+            } catch (RuntimeException | Error ignored) {
+                // Diagnostic delivery cannot interrupt the status reader.
+            }
+        }
+
+        /** Tiles the helper rejected this session (diagnostics and tests). */
+        public long rejectedTiles() {
+            return rejectedTiles.get();
+        }
+
+        long rejectedCameras() {
+            return rejectedCameras.get();
         }
 
         public CompletableFuture<DrainReceipt> closeAsync() {
@@ -1849,6 +2212,7 @@ public final class WorldStreamTransport {
                                 }
                                 operation.outstanding = false;
                                 retireReliable();
+                                releaseRetiredSplat();
                                 receipt =
                                         new CommitReceipt(
                                                 operation.metadata.next,
@@ -1877,6 +2241,10 @@ public final class WorldStreamTransport {
                         }
                         case INPUT_TILE -> {
                             var current = reservationFor(transaction(message));
+                            current.consumedAt =
+                                    WorldStageTimings.lap(
+                                            "handoff.parent.offerToInputConsumed",
+                                            current.offeredAt);
                             enqueueFile(
                                     () -> {
                                         WorldStreamPacketFile.Moved owned;
@@ -1899,6 +2267,8 @@ public final class WorldStreamTransport {
                         }
                         case STAGED -> {
                             TileReservation current = reservationFor(transaction(message));
+                            WorldStageTimings.lap(
+                                    "handoff.parent.inputConsumedToStaged", current.consumedAt);
                             synchronized (lock) {
                                 if (!current.offerOutstanding) {
                                     throw new IllegalStateException("Missing offer command credit");
@@ -1975,11 +2345,16 @@ public final class WorldStreamTransport {
                                 retireReliable();
                                 cancelPending = current.cancelOutstanding;
                             }
-                            var error = new IOException("World packet rejected");
+                            var error =
+                                    new PreparationRefusal(
+                                            Refusal.PACKET_REJECTED,
+                                            "World helper rejected the tile packet",
+                                            null);
                             if (!cancelPending) {
                                 publishCancellation(current);
                             }
                             current.result.completeExceptionally(error);
+                            tileRejected();
                         }
                         case CANCEL_REJECTED -> {
                             TileReservation current = reservationFor(transaction(message));
@@ -2019,7 +2394,26 @@ public final class WorldStreamTransport {
                                 rendererObjectsBudget();
                             }
                         }
-                        case CREDIT -> capacityChanged();
+                        case CREDIT -> {
+                            // The returned lease belongs to a reservation: count the change as its
+                            // own, so a refused reservation's unused credit is in its baseline
+                            // and cannot wake the retry it refused (#366 review).
+                            var credited = state.creditedTicket();
+                            TileReservation owner = null;
+                            synchronized (lock) {
+                                if (tile != null && tile.ticket == credited) {
+                                    owner = tile;
+                                } else if (previousTile != null
+                                        && previousTile.ticket == credited) {
+                                    owner = previousTile;
+                                }
+                            }
+                            if (owner == null) {
+                                capacityChanged();
+                            } else {
+                                capacityChanged(owner);
+                            }
+                        }
                         case IGNORED -> {}
                         default ->
                                 throw new IOException(
@@ -2219,6 +2613,11 @@ public final class WorldStreamTransport {
 
         private static String exitSuffix(WorldStreamLaunchOwner.Drain drain) {
             return drain.exitCode().isEmpty() ? "" : " (exit " + drain.exitCode().getAsInt() + ")";
+        }
+
+        /** Test observation of the bounded helper stderr tail so far. */
+        String stderrSnapshot() {
+            return stderrTail.snapshot();
         }
 
         /** Test observation of the single abnormal-end record; empty after a clean end. */

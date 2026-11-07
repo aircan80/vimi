@@ -89,6 +89,14 @@ public final class BuildPreparation {
 
         List<String> warm(Cancellation token);
 
+        /**
+         * As {@link #warm(Cancellation)}, reporting each lookup step as it starts (#338), so a long
+         * step is visibly moving. Implementations without steps report nothing.
+         */
+        default List<String> warm(Consumer<Counter> progress, Cancellation token) {
+            return warm(token);
+        }
+
         default void enrichNames(Cancellation token) {}
 
         default BuildAccounting accounting() {return null;}
@@ -118,6 +126,14 @@ public final class BuildPreparation {
     }
 
     private final Factory factory;
+
+    /**
+     * The work factory, for the World measurement probe (#422): it drives one work's metadata,
+     * files and keys itself and never starts or publishes a job.
+     */
+    Factory factory() {
+        return factory;
+    }
     private final Executor executor;
     private final Map<String, Job> jobs = new LinkedHashMap<>();
     private final java.util.Set<Context> contexts = new java.util.LinkedHashSet<>();
@@ -492,7 +508,7 @@ public final class BuildPreparation {
                                     + " "
                                     + prepared.message());
                 stage(Ready.FILES_READY, Phase.LOOKUPS, metadata, files, current.tables(), issues);
-                issues.addAll(work.warm(token));
+                issues.addAll(work.warm(value -> progress(Phase.LOOKUPS, value), token));
                 synchronized (this) {
                     token.check();
                     if (current.activity() == Activity.STOPPING)

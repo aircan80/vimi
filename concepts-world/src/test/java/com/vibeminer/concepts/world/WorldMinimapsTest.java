@@ -3,6 +3,7 @@ package com.vibeminer.concepts.world;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -110,6 +111,32 @@ class WorldMinimapsTest {
         }
     }
 
+    /** A file source that throws an Error still settles the request instead of hanging (#470). */
+    @Test
+    void errorFromTheFileSourceFailsTheImageInsteadOfHanging() throws Exception {
+        var error = new AssertionError("scripted Error from the file source");
+        var files =
+                (BuildFiles)
+                        Proxy.newProxyInstance(
+                                BuildFiles.class.getClassLoader(),
+                                new Class<?>[] {BuildFiles.class},
+                                (proxy, method, args) -> {
+                                    throw error;
+                                });
+        var images = new WorldMinimaps(files);
+        try {
+            var failure =
+                    assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () ->
+                                    images.image(tile(91), Cancellation.NONE)
+                                            .get(10, java.util.concurrent.TimeUnit.SECONDS));
+            assertSame(error, failure.getCause());
+        } finally {
+            images.closeAsync().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
     private static WorldFormats.Tile tile(long fid) {
         return new WorldFormats.Tile(17, 23, 0, 0, fid);
     }
@@ -129,6 +156,13 @@ class WorldMinimapsTest {
                             BuildFiles.class.getClassLoader(),
                             new Class<?>[] {BuildFiles.class},
                             (proxy, method, args) -> {
+                                if (method.getName().equals("stat")) {
+                                    // Full stats are not needed: answer as if the file were
+                                    // unknown.
+                                    return CompletableFuture.completedFuture(
+                                            new FileTypes.FileStat(
+                                                    FileTypes.FileLookupState.UNKNOWN_FILE, null));
+                                }
                                 calls.incrementAndGet();
                                 assertEquals(FileTypes.FileRef.id(91), args[0]);
                                 byte[] data = blp(side, gradient);

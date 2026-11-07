@@ -157,6 +157,48 @@ final class WorldStreamScopesTest {
     }
 
     @Test
+    void streamedTileReadsItsRootOnceAndMaterialReusesTheGeometryParse() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var pool = new TerrainAtlasPool();
+        var world = new WorldService(tables.handle(), files.files(), pool);
+        try {
+            var source = world.terrainStreaming().orElseThrow();
+            var scope = source.createScope(REQUEST, Cancellation.NONE);
+            int wdtOpens = -1;
+            for (int round = 0; round < 2; round++) {
+                try (var written =
+                        source.prepareAndWrite(
+                                scope,
+                                TILE,
+                                Cancellation.NONE,
+                                (borrow, cancel) -> {
+                                    assertEquals(
+                                            WorldTerrainStreaming.Outcome.TEXTURED,
+                                            borrow.facts().outcome());
+                                    assertEquals(
+                                            WorldTerrainTextureSource.State.READY,
+                                            borrow.facts().materialState());
+                                    return (AutoCloseable) () -> {};
+                                })) {
+                    assertTrue(written.isOpen());
+                }
+                // Geometry reads the root once; the material read reuses that parse.
+                assertEquals(1, files.opens(2), "round " + round);
+                if (round == 0) {
+                    wdtOpens = files.opens(1);
+                }
+            }
+            // The material WDT inventory is cached for the second tile preparation.
+            assertEquals(wdtOpens, files.opens(1));
+        } finally {
+            world.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+            tables.close();
+        }
+    }
+
+    @Test
     void publicPartialMaterialKeepsNullableCompositionCacheAndExplicitCoverage() throws Exception {
         var files = new WorldTerrainTextureSourceTest.Files();
         files.sources.remove(11L);
@@ -514,6 +556,61 @@ final class WorldStreamScopesTest {
             }
         } finally {
             cancelCapture.set(false);
+            world.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+            tables.close();
+        }
+    }
+
+    @Test
+    void sourceReadsBindIndexFactsWithoutNameOrFormatStats() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var rawFiles = files.files();
+        var calls = new java.util.concurrent.ConcurrentLinkedQueue<String>();
+        var fileHandle =
+                (com.vibeminer.files.BuildFiles)
+                        Proxy.newProxyInstance(
+                                com.vibeminer.files.BuildFiles.class.getClassLoader(),
+                                new Class<?>[] {com.vibeminer.files.BuildFiles.class},
+                                (proxy, method, args) -> {
+                                    if (args != null && args[0] instanceof FileTypes.FileRef ref) {
+                                        calls.add(method.getName() + ":" + ref.fileDataId());
+                                    }
+                                    try {
+                                        return method.invoke(rawFiles, args);
+                                    } catch (java.lang.reflect.InvocationTargetException error) {
+                                        throw error.getCause();
+                                    }
+                                });
+        var pool = new TerrainAtlasPool();
+        var world = new WorldService(tables.handle(), fileHandle, pool);
+        try {
+            var source = world.preparedTerrain();
+            var scope = source.createScope(REQUEST, Cancellation.NONE);
+            source.activate(scope);
+            try (var written =
+                    source.prepareAndWrite(
+                            scope,
+                            TILE,
+                            Cancellation.NONE,
+                            (borrow, cancel) -> (AutoCloseable) () -> {})) {
+                assertTrue(written.isOpen());
+            }
+            // The scopes' source reads of the WDT (1) and root ADT (2) bind index facts only:
+            // per file, the first calls are statContent, open, statContent; never a full stat
+            // with names and a format sniff. Other files and later calls are not constrained.
+            for (long id : new long[] {1, 2}) {
+                var forId =
+                        calls.stream()
+                                .filter(call -> call.endsWith(":" + id))
+                                .map(call -> call.substring(0, call.indexOf(':')))
+                                .limit(3)
+                                .toList();
+                assertEquals(
+                        List.of("statContent", "openRead", "statContent"), forId, calls.toString());
+            }
+        } finally {
             world.closeAsync().get(5, TimeUnit.SECONDS);
             pool.closeAsync().get(5, TimeUnit.SECONDS);
             tables.close();
@@ -1751,6 +1848,69 @@ final class WorldStreamScopesTest {
                             cache::prepare);
             outputs.add(next);
             assertEquals(WorldGeometryCache.LIMIT + 1, files.opens(2));
+        } finally {
+            for (var output : outputs) {
+                output.close();
+            }
+            cache.closeAsync().join();
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
+    @SuppressWarnings("try")
+    void geometryReleaseRevisionMovesOnlyWhenARefusedPreparationCouldNowSucceed() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        var cache = new WorldGeometryCache();
+        var outputs = new ArrayList<WorldGeometryCache.Prepared>();
+        var wakes = new java.util.concurrent.atomic.AtomicInteger();
+        try (var listener = cache.onRelease(wakes::incrementAndGet)) {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            java.util.function.Supplier<WorldGeometryCache.Prepared> prepare =
+                    () ->
+                            source.withRecordedTile(
+                                    scope,
+                                    TILE,
+                                    WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                    Cancellation.NONE,
+                                    cache::prepare);
+            long start = cache.releaseRevision();
+            var original = files.sources.get(2L);
+            for (int i = 0; i < WorldGeometryCache.LIMIT; i++) {
+                var changed = original.clone();
+                java.nio.ByteBuffer.wrap(changed)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                        .putFloat(20 + 112, 10 + i);
+                files.sources.put(2L, changed);
+                files.changedId = 2;
+                outputs.add(prepare.get());
+            }
+            assertEquals(start, cache.releaseRevision(), "Uncontended preparations are no release");
+            // The caller's own attempt, refused for output credit, ends the lane: not a release.
+            assertThrows(IllegalStateException.class, prepare::get);
+            assertEquals(
+                    start, cache.releaseRevision(), "An own refusal must not wake its own wait");
+            assertEquals(0, wakes.get());
+            outputs.removeFirst().close();
+            assertEquals(
+                    start + 1, cache.releaseRevision(), "A released output credit is a release");
+            assertEquals(1, wakes.get());
+            // A preparation turned away by a busy lane is woken when that lane ends.
+            var preparing = WorldGeometryCache.class.getDeclaredField("preparing");
+            preparing.setAccessible(true);
+            synchronized (cache) {
+                preparing.setBoolean(cache, true);
+            }
+            assertThrows(IllegalStateException.class, prepare::get);
+            assertEquals(start + 1, cache.releaseRevision());
+            cache.endPreparation();
+            assertEquals(start + 2, cache.releaseRevision(), "The busy lane ending is a release");
+            assertEquals(2, wakes.get());
+            outputs.add(prepare.get());
+            assertEquals(start + 2, cache.releaseRevision(), "Contention is counted once");
         } finally {
             for (var output : outputs) {
                 output.close();

@@ -52,3 +52,6 @@ replay_pid*
 # Native prerelease output and helper bytecode
 /dist/
 /scripts/release/__pycache__/
+
+# LWJGL extracts its native libraries here when proofs run.
+.lwjgl/

@@ -197,36 +197,59 @@ public final class RacesService implements BuildRaces {
                                                     request ->
                                                             appearance.render(prepared, request));
                             return finished.thenApply(
-                                            result ->
-                                                    result.appearance() == null
-                                                            ? RaceNpcs.Appearance.refused(
-                                                                    result.message() == null
-                                                                            ? "the NPC appearance could not"
-                                                                                    + " be built"
-                                                                            : result.message())
-                                                            : new RaceNpcs.Appearance(
-                                                                    result,
-                                                                    planned.omittedItems(),
-                                                                    planned.attachments(),
-                                                                    null,
-                                                                    false))
-                                    .exceptionally(RacesService::npcRetry);
-                        });
+                                    result ->
+                                            result.appearance() == null
+                                                    ? RaceNpcs.Appearance.refused(
+                                                            result.message() == null
+                                                                    ? "the NPC appearance could not"
+                                                                            + " be built"
+                                                                    : result.message())
+                                                    : new RaceNpcs.Appearance(
+                                                            result,
+                                                            planned.omittedItems(),
+                                                            planned.attachments(),
+                                                            null,
+                                                            false));
+                        })
+                .exceptionally(RacesService::npcRetry);
     }
 
-    /** A texture or row the render could not read now: asked for again, never refused. */
-    private static RaceNpcs.Appearance npcRetry(Throwable failure) {
-        var cause =
-                failure instanceof java.util.concurrent.CompletionException
-                                && failure.getCause() != null
-                        ? failure.getCause()
-                        : failure;
+    /**
+     * Resolves a failed NPC appearance to one of its three answers. Data that cannot be read now
+     * ({@link Unreadable}), a model file that changed while it was read and any other unexpected
+     * runtime failure are asked for again (retry, with the reason). A lasting fact of the model
+     * file (a {@link com.vibeminer.formats.models.ModelFormatException} that is invalid, over the
+     * reviewed limits or unsupported) or of the tables ({@link Projection}) is a stated refusal, so
+     * the NPC is not asked for again on every tile. Cancellation and {@link Error}s propagate.
+     */
+    static RaceNpcs.Appearance npcRetry(Throwable failure) {
+        var cause = failure;
+        while ((cause instanceof java.util.concurrent.CompletionException
+                        || cause instanceof java.util.concurrent.ExecutionException)
+                && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        if (cause instanceof java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        }
+        if (cause instanceof Error error) {
+            throw error;
+        }
         if (cause instanceof Unreadable unreadable) {
             return RaceNpcs.Appearance.unreadable(unreadable.getMessage());
         }
-        throw failure instanceof java.util.concurrent.CompletionException completion
-                ? completion
-                : new java.util.concurrent.CompletionException(cause);
+        if (cause instanceof Projection lasting) {
+            return RaceNpcs.Appearance.refused(lasting.getMessage());
+        }
+        if (cause instanceof com.vibeminer.formats.models.ModelFormatException model
+                && !"MODEL_SOURCE_CHANGED".equals(model.code())) {
+            return RaceNpcs.Appearance.refused(
+                    "the NPC model is " + model.code() + ": " + model.getMessage());
+        }
+        return RaceNpcs.Appearance.unreadable(
+                "the NPC appearance could not be built now ("
+                        + cause.getClass().getSimpleName()
+                        + ")");
     }
 
     @Override

@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.util.Objects;
 
 /** Metadata-only parent presentation oracle for World v2; no pixel allocation or UI upload. */
@@ -35,10 +36,7 @@ final class WorldStreamFrameGate {
                 || revision <= sentCamera
                 || epoch <= 0
                 || epoch < policy
-                || width < 1
-                || width > 800
-                || height < 1
-                || height > 500) {
+                || !WorldFrameLimits.fits(width, height)) {
             return false;
         }
         if (epoch == policy && (this.width != width || this.height != height)) {

@@ -68,8 +68,11 @@ final class WorldStreamTileWaterTest {
         var before = terrain(tile, true);
         var water = water(WorldStreamTileFile.MAX_WATER_CELLS, 0);
         var expected = WorldStreamTileFile.appendWater(path(), before, header, water, () -> false);
-        assertEquals(WorldStreamEnvelope.MAX_PACKET_BYTES, expected.length());
-        assertEquals(WorldStreamEnvelope.MAX_PACKET_BYTES, Files.size(path()));
+        // The largest terrain packet with the largest water; a splat trailer may add more.
+        int terrainAndWater =
+                WorldStreamEnvelope.MAX_PACKET_BYTES - WorldStreamTileFile.MAX_SPLAT_BYTES;
+        assertEquals(terrainAndWater, expected.length());
+        assertEquals(terrainAndWater, Files.size(path()));
         assertNotEquals(before.sha256(), expected.sha256());
         // The terrain-only expectation no longer describes these bytes.
         assertThrows(
@@ -83,18 +86,26 @@ final class WorldStreamTileWaterTest {
             assertEquals(16384, source.waterTriangles);
             assertEquals(WorldStreamPackedTile.MAX_GEOMETRY_BYTES, source.geometry.capacity());
             assertEquals(
-                    BgfxWorldStreamRenderer.MAX_TRIANGLES * BgfxWorldStreamRenderer.INSTANCE_BYTES,
+                    BgfxWorldStreamRenderer.MAX_VERTICES * WorldStreamPackedTile.VERTEX_BYTES
+                            + BgfxWorldStreamRenderer.MAX_INDICES * 2,
                     source.geometry.capacity());
-            var first = source.geometry.asFloatBuffer().slice(65536 * 12, 12);
-            // NW, SW, NE corners with diagnostic teal carried as the three corner w channels.
-            assertEquals(-10f, first.get(0));
-            assertEquals(-10f, first.get(1));
-            assertEquals(12.5f, first.get(2));
-            assertEquals(WorldStreamPackedTile.WATER_R, first.get(3));
-            assertEquals(-14f, first.get(4));
-            assertEquals(WorldStreamPackedTile.WATER_G, first.get(7));
-            assertEquals(-14f, first.get(9));
-            assertEquals(WorldStreamPackedTile.WATER_B, first.get(11));
+            assertEquals(37120, source.terrainVertices);
+            assertEquals(WorldStreamTileFile.MAX_WATER_CELLS * 4, source.waterVertices);
+            assertEquals(16384 * 3, source.waterIndices);
+            var data = source.geometry.duplicate().order(java.nio.ByteOrder.nativeOrder());
+            // The first water vertex follows the terrain's, in diagnostic teal.
+            int at = 37120 * WorldStreamPackedTile.VERTEX_BYTES;
+            assertEquals(-10f, data.getFloat(at));
+            assertEquals(-10f, data.getFloat(at + 4));
+            assertEquals(12.5f, data.getFloat(at + 8));
+            assertEquals((int) WorldStreamPackedTile.WATER_R, data.get(at + 12) & 255);
+            assertEquals((int) WorldStreamPackedTile.WATER_G, data.get(at + 13) & 255);
+            assertEquals((int) WorldStreamPackedTile.WATER_B, data.get(at + 14) & 255);
+            // Water indices follow the terrain's, relative to the first water vertex.
+            int indices = source.indexOffset() + 196608 * 2;
+            var mesh = source.geometry.duplicate().order(java.nio.ByteOrder.nativeOrder());
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    (mesh.getShort(indices) & 0xffff) < source.waterVertices);
         }
     }
 
@@ -215,6 +226,55 @@ final class WorldStreamTileWaterTest {
             assertEquals(identity, moved.destinationIdentity());
         }
         assertEquals(false, Files.exists(path()));
+    }
+
+    /**
+     * Sloped source cells keep their own corner heights, a merged whole chunk is one 33-yard quad,
+     * and a tile may carry many more layers than quads only when each layer is one quad.
+     */
+    @Test
+    void slopedCellsAndMergedChunksSurviveTheTrailerExactly() throws Exception {
+        var tile = WorldStreamTileFileTest.full(false);
+        var header = WorldStreamTileFileTest.header(tile, false);
+        var before = terrain(tile, false);
+        var cells = water(2, 0);
+        float[] positions = cells.positions().clone();
+        // Cell 0: a river falling 3.25 yards from north to south; cell 1: a whole chunk.
+        positions[2] = 20f;
+        positions[5] = 20f;
+        positions[8] = 16.75f;
+        positions[11] = 16.75f;
+        float chunk = (float) (com.vibeminer.formats.world.WorldFormats.TILE_SIZE / 16);
+        for (int corner = 0; corner < 4; corner++) {
+            int at = (4 + corner) * 3;
+            positions[at] = -100 - (corner / 2) * chunk;
+            positions[at + 1] = -100 - (corner % 2) * chunk;
+            positions[at + 2] = 9f;
+        }
+        var water = new WorldStreamTileFile.Water(positions, cells.depths(), cells.indices(), 2);
+        var expected = WorldStreamTileFile.appendWater(path(), before, header, water, () -> false);
+        try (var input = WorldStreamTileFile.read(path(), expected, () -> false)) {
+            assertArrayEquals(positions, input.water().positions());
+            assertEquals(2, input.water().layers());
+        }
+        // Layers count copied source layers: each is at least one quad, at most 1024.
+        var many = water(WorldStreamTileFile.MAX_WATER_LAYERS, 0);
+        assertEquals(
+                WorldStreamTileFile.MAX_WATER_LAYERS,
+                new WorldStreamTileFile.Water(
+                                many.positions(),
+                                many.depths(),
+                                many.indices(),
+                                WorldStreamTileFile.MAX_WATER_LAYERS)
+                        .layers());
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new WorldStreamTileFile.Water(
+                                many.positions(),
+                                many.depths(),
+                                many.indices(),
+                                WorldStreamTileFile.MAX_WATER_LAYERS + 1));
     }
 
     @Test

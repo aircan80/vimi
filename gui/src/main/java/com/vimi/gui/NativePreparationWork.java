@@ -481,19 +481,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             Consumer<BuildPreparation.Counter> progress, Cancellation token) {
         long started = System.nanoTime();
         progress.accept(new BuildPreparation.Counter(0, null, "Opening file resolution indexes"));
-        var result = builds.open(ref, token).join();
+        openFileHandles(token);
         long indexesReady = System.nanoTime();
-        if (result.state() != BuildTypes.BuildOpenState.OPEN || result.opened() == null)
-            throw new IllegalStateException(
-                    "Files " + result.state() + ": " + result.code() + " " + result.message());
-        opened = result.opened();
-        if (fileHandle == null) {
-            var filesOpen = files.forBuild(ref, locale, token).join();
-            if (filesOpen.state() != FileTypes.FilesOpenState.OPEN || filesOpen.files() == null)
-                throw new IllegalStateException(
-                        "File catalog " + filesOpen.state() + ": " + filesOpen.message());
-            fileHandle = filesOpen.files();
-        }
         var cache = new com.vibeminer.files.PreparedFileCatalog(generated);
         var identity =
                 new com.vibeminer.files.PreparedFileCatalog.Identity(
@@ -704,6 +693,59 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         return List.copyOf(issues);
     }
 
+    /**
+     * The build's resolution indexes and file handle only, for measurement probes (#422): unlike
+     * {@link #files} it neither restores nor prepares (and so never writes) the file catalog.
+     */
+    void openFilesForMeasurement(Cancellation token) {
+        openFileHandles(token);
+    }
+
+    private void openFileHandles(Cancellation token) {
+        var result = builds.open(ref, token).join();
+        if (result.state() != BuildTypes.BuildOpenState.OPEN || result.opened() == null)
+            throw new IllegalStateException(
+                    "Files " + result.state() + ": " + result.code() + " " + result.message());
+        opened = result.opened();
+        if (fileHandle == null) {
+            var filesOpen = files.forBuild(ref, locale, token).join();
+            if (filesOpen.state() != FileTypes.FilesOpenState.OPEN || filesOpen.files() == null)
+                throw new IllegalStateException(
+                        "File catalog " + filesOpen.state() + ": " + filesOpen.message());
+            fileHandle = filesOpen.files();
+        }
+    }
+
+    /**
+     * A World service over its own workspace table handle, for measurement probes (#422). Needs
+     * {@link #metadata}, the file handles ({@link #files} or {@link #openFilesForMeasurement}) and
+     * keys first, but neither the known-table pass nor the lookup warmup, and it never stages or publishes a workspace. Caller closes it before
+     * this work.
+     */
+    MeasurementWorld openWorldForMeasurement(Cancellation token) {
+        token.check();
+        if (opened == null || fileHandle == null)
+            throw new IllegalStateException("Files must be prepared before a measurement World");
+        var tables = openTables(tablesService(token, TableRole.WORKSPACE), token);
+        try {
+            return new MeasurementWorld(
+                    tables,
+                    new com.vibeminer.concepts.world.WorldService(tables, fileHandle, terrainAtlases));
+        } catch (RuntimeException | Error failure) {
+            tables.close();
+            throw failure;
+        }
+    }
+
+    /** One measurement World and the table handle it borrows; the World closes first. */
+    record MeasurementWorld(BuildTables tables, com.vibeminer.concepts.world.WorldService world)
+            implements AutoCloseable {
+        @Override
+        public void close() {
+            closeResources(world, tables);
+        }
+    }
+
     /** Caller owns this dedicated local table handle and closes it before this work context. */
     public BuildTables openLocalTablesForComparison(Cancellation token) {
         if (!definitionsAllowed) throw new IllegalStateException("Table definitions are disabled");
@@ -827,6 +869,52 @@ public final class NativePreparationWork implements BuildPreparation.Work {
 
     @Override
     public List<String> warm(Cancellation token) {
+        return warm(ignored -> {}, token);
+    }
+
+    /** The research lookup steps, in order, as the status names them (#338). */
+    static final List<String> LOOKUP_STEPS =
+            List.of("items", "item catalog", "item attributes", "creatures", "effects");
+
+    /** Reports step {@code index} as started and returns the time it started. */
+    private static long lookupStep(
+            java.util.function.Consumer<BuildPreparation.Counter> progress, int index) {
+        progress.accept(
+                new BuildPreparation.Counter(
+                        index,
+                        (long) LOOKUP_STEPS.size(),
+                        "lookup steps · " + LOOKUP_STEPS.get(index)));
+        return System.nanoTime();
+    }
+
+    /** "lookup step 2 of 5 (item catalog)" for step {@code index}. */
+    static String stepLabel(int index) {
+        return "lookup step "
+                + (index + 1)
+                + " of "
+                + LOOKUP_STEPS.size()
+                + " ("
+                + LOOKUP_STEPS.get(index)
+                + ")";
+    }
+
+    /** One log line with the whole step's duration and each lookup's share (#338). */
+    static String lookupTimings(long[] stepNanos, long totalNanos) {
+        var text = new StringBuilder("Research lookups prepared in ");
+        text.append(totalNanos / 1_000_000).append(" ms (");
+        for (int i = 0; i < LOOKUP_STEPS.size(); i++) {
+            if (i > 0) text.append(", ");
+            text.append(LOOKUP_STEPS.get(i)).append(' ').append(stepNanos[i] / 1_000_000).append(" ms");
+        }
+        return text.append(')').toString();
+    }
+
+    @Override
+    public List<String> warm(
+            java.util.function.Consumer<BuildPreparation.Counter> progress, Cancellation token) {
+        java.util.Objects.requireNonNull(progress);
+        long started = System.nanoTime();
+        long[] stepNanos = new long[LOOKUP_STEPS.size()];
         final Workspace staged;
         synchronized (handlesGate) {
             staged = pending;
@@ -841,6 +929,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         boolean ownedByPending = false;
         try {
             token.check();
+            long step = lookupStep(progress, 0);
             var itemOpen =
                     new ItemsService(
                                     staged.service(),
@@ -854,7 +943,15 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             nextItems = itemOpen.items();
             if (nextItems == null) issues.add("Items: " + itemOpen.code());
             else appendWarm(issues, nextItems.warmup(TableTypes.Priority.BACKGROUND, token).join());
+            stepNanos[0] = System.nanoTime() - step;
             if (nextItems != null && indexDirectory != null) {
+                step = lookupStep(progress, 1);
+                // Rebuilding the derived catalog can take minutes on a new build: report its rows.
+                com.vibeminer.concepts.items.BuildItems.CatalogProgress rows =
+                        (stage, done) ->
+                                progress.accept(
+                                        new BuildPreparation.Counter(
+                                                done, null, stage + " · " + stepLabel(1)));
                 var catalog =
                         nextItems
                                 .grid(
@@ -869,19 +966,24 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                                                 0,
                                                 1),
                                         TableTypes.Priority.BACKGROUND,
+                                        rows,
                                         token)
                                 .join();
+                stepNanos[1] = System.nanoTime() - step;
                 if (catalog.state() != com.vibeminer.concepts.items.ItemsPageState.OK)
                     issues.add("Item catalog: " + catalog.message());
                 else {
+                    step = lookupStep(progress, 2);
                     var attributeIssues =
                             nextItems
                                     .prepareAttributes(TableTypes.Priority.BACKGROUND, token)
                                     .join();
                     attributeIssues.forEach(issue -> issues.add("Item attributes: " + issue));
+                    stepNanos[2] = System.nanoTime() - step;
                 }
             }
             token.check();
+            step = lookupStep(progress, 3);
             var creatureOpen =
                     new CreaturesService(staged.service(), files, images)
                             .forBuild(ref, locale, token)
@@ -891,7 +993,9 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             else
                 appendWarm(
                         issues, nextCreatures.warmup(TableTypes.Priority.BACKGROUND, token).join());
+            stepNanos[3] = System.nanoTime() - step;
             token.check();
+            step = lookupStep(progress, 4);
             var effectOpen =
                     new ItemEffectsService(staged.service(),
                             new com.vibeminer.concepts.effects.EffectsTypes.Options(), info.version()).forBuild(ref, locale, token).join();
@@ -900,6 +1004,11 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             else
                 appendWarm(
                         issues, nextEffects.warmup(TableTypes.Priority.BACKGROUND, token).join());
+            stepNanos[4] = System.nanoTime() - step;
+            System.getLogger(NativePreparationWork.class.getName())
+                    .log(
+                            System.Logger.Level.INFO,
+                            lookupTimings(stepNanos, System.nanoTime() - started));
             synchronized (handlesGate) {
                 token.check();
                 if (closed.get() || pending != staged)

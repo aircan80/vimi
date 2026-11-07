@@ -112,6 +112,7 @@ public final class WorldService implements BuildWorld {
     private final WorldMinimaps minimaps;
     private final BuildTables tables;
     private final BuildFiles files;
+    private final WorldHorizon horizon;
     private final ThreadPoolExecutor worker =
             new ThreadPoolExecutor(
                     1,
@@ -143,6 +144,7 @@ public final class WorldService implements BuildWorld {
         this.tables = java.util.Objects.requireNonNull(tables);
         this.files = files;
         this.minimaps = new WorldMinimaps(files);
+        this.horizon = new WorldHorizon(files);
     }
 
     private WorldWaterPreview waterFacade;
@@ -162,6 +164,41 @@ public final class WorldService implements BuildWorld {
         }
         return java.util.Optional.of(waterFacade);
     }
+
+    /**
+     * Loads the light tables once, off the caller's thread, under this workspace's own lifetime:
+     * one caller's cancellation never fails the shared load. Later calls share a successful load; a
+     * failed or cancelled one is dropped, so the next call tries again.
+     */
+    public synchronized CompletableFuture<WorldSky.Index> skyIndex(Cancellation token) {
+        java.util.Objects.requireNonNull(token);
+        if (closing != null) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("World workspace closed"));
+        }
+        if (skyIndex == null) {
+            var result = new CompletableFuture<WorldSky.Index>();
+            skyIndex = result;
+            Thread.ofVirtual()
+                    .name("world-sky-index")
+                    .start(
+                            () -> {
+                                try {
+                                    result.complete(WorldSky.load(tables, lifetime));
+                                } catch (Throwable failure) {
+                                    synchronized (WorldService.this) {
+                                        if (skyIndex == result) {
+                                            skyIndex = null;
+                                        }
+                                    }
+                                    result.completeExceptionally(failure);
+                                }
+                            });
+        }
+        return skyIndex.copy();
+    }
+
+    private CompletableFuture<WorldSky.Index> skyIndex;
 
     /**
      * Prepares native evidence for the two small tables the water preview qualifies indirect layers
@@ -449,6 +486,15 @@ public final class WorldService implements BuildWorld {
                 });
     }
 
+    /** The geometry cache's release revision and listener (#304). */
+    long geometryReleaseRevision() {
+        return cache.releaseRevision();
+    }
+
+    AutoCloseable onGeometryRelease(Runnable listener) {
+        return cache.onRelease(listener);
+    }
+
     /** Private source factories call this only inside withRecordedTile on their source worker. */
     WorldGeometryCache.Prepared prepareGeometry(WorldStreamScopes.TileAdmission admission) {
         return cache.prepare(admission);
@@ -706,6 +752,18 @@ public final class WorldService implements BuildWorld {
     }
 
     @Override
+    public CompletableFuture<WorldHorizon.Result> horizon(MapInfo map, Cancellation token) {
+        synchronized (this) {
+            if (closing != null) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("World workspace closed"));
+            }
+        }
+        return horizon.load(
+                java.util.Objects.requireNonNull(map), java.util.Objects.requireNonNull(token));
+    }
+
+    @Override
     public CompletableFuture<Minimap> minimap(WorldFormats.Tile tile, Cancellation token) {
         synchronized (this) {
             if (closing != null) {
@@ -845,6 +903,7 @@ public final class WorldService implements BuildWorld {
                     var closes =
                             List.<java.util.function.Supplier<CompletableFuture<Void>>>of(
                                     minimaps::closeAsync,
+                                    horizon::closeAsync,
                                     () ->
                                             navigation == null
                                                     ? CompletableFuture.completedFuture(null)

@@ -1,7 +1,9 @@
 package com.vibeminer.rendering.bgfx;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MAG_ANISOTROPIC;
 import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MAG_MASK;
+import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIN_ANISOTROPIC;
 import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIN_MASK;
 import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIP_MASK;
 import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_U_MASK;
@@ -10,14 +12,16 @@ import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_V_MASK;
 import com.vibeminer.rendering.world.ObjectTextureMips;
 import org.junit.jupiter.api.Test;
 
-/** Issue #265: object textures sample their mip chains trilinearly and tile. */
+/** Issues #265, #357: object textures sample their mip chains anisotropically and tile. */
 class WorldObjectSamplerTest {
     @Test
-    void objectPassSamplesTrilinearWithRepeatAddressing() {
+    void objectPassSamplesAnisotropicWithLinearMipsAndRepeatAddressing() {
         int flags = BgfxWorldStreamRenderer.OBJECT_SAMPLER_FLAGS;
-        // Zero min, mag and mip fields are bgfx's linear filtering; zero U/V fields are repeat.
-        assertEquals(0, flags & BGFX_SAMPLER_MIN_MASK, "linear minification");
-        assertEquals(0, flags & BGFX_SAMPLER_MAG_MASK, "linear magnification");
+        // Anisotropic min and mag (issue #357) over linear mips; zero U/V fields are repeat.
+        assertEquals(
+                BGFX_SAMPLER_MIN_ANISOTROPIC, flags & BGFX_SAMPLER_MIN_MASK, "anisotropic min");
+        assertEquals(
+                BGFX_SAMPLER_MAG_ANISOTROPIC, flags & BGFX_SAMPLER_MAG_MASK, "anisotropic mag");
         assertEquals(0, flags & BGFX_SAMPLER_MIP_MASK, "linear between mip levels");
         assertEquals(0, flags & BGFX_SAMPLER_U_MASK, "repeat in U");
         assertEquals(0, flags & BGFX_SAMPLER_V_MASK, "repeat in V");

@@ -12,8 +12,29 @@ public final class TerrainAtlasPool {
     /** Every World output's atlas lease plus six for other borrowers, as before issue #173. */
     public static final int MAX_ENTRIES = WorldPreparedTerrain.MAX_OUTPUTS + 6;
 
-    public static final long ENTRY_BYTES = TerrainTileAtlas.PIXEL_BYTES + 32L + 256L * 64 + 256;
+    /**
+     * The most one entry may retain: the largest atlas with HIGH splatting inputs. Stats charge
+     * each entry less: a published atlas its own {@link TerrainTileAtlas#retainedBytes()}, a
+     * reservation the bound for the current splat setting ({@link #reservedBytes()}).
+     */
+    public static final long ENTRY_BYTES = TerrainTileAtlas.MAX_RETAINED_BYTES;
 
+    /**
+     * What a reservation is charged until its atlas is published: the largest atlas the source
+     * composes now, with no splat inputs, or with the current tier's mask side.
+     */
+    static long reservedBytes() {
+        return TerrainTileAtlas.maxRetainedBytes(
+                WorldTerrainTextureSource.splat ? WorldTerrainTextureSource.splatMask : 0);
+    }
+
+    /**
+     * A snapshot of the pool. {@code leaseClaims} counts every open lease, so one atlas counts
+     * several times while a retained copy and its original are both open (a texture batch hands a
+     * tile's atlas to its consumer that way). {@code claimedEntries} counts the atlases with at
+     * least one open lease, and {@code reservedEntries} the slots reserved but not yet published:
+     * together they are the slots owners hold.
+     */
     public record Stats(
             int entries,
             int reservedEntries,
@@ -21,11 +42,13 @@ public final class TerrainAtlasPool {
             int leaseClaims,
             int borrowPins,
             long chargedBytes,
-            long receiptMetadataBytes) {}
+            long receiptMetadataBytes,
+            int claimedEntries) {}
 
     private static final class Entry {
         final int slot;
         boolean reserved = true, cached;
+        long charge = reservedBytes();
         int claims, borrows;
         TerrainTileAtlas atlas;
         WorldTerrainTextureSource.Receipt receipt;
@@ -120,6 +143,7 @@ public final class TerrainAtlasPool {
                 if (entry == null) {
                     throw new IllegalStateException("Atlas reservation closed");
                 }
+                entry.charge = atlas.retainedBytes();
                 if (completeCacheKey != null && cache.containsKey(completeCacheKey)) {
                     throw new IllegalStateException("Duplicate ready atlas cache publication");
                 }
@@ -220,13 +244,15 @@ public final class TerrainAtlasPool {
     }
 
     public synchronized Stats stats() {
-        int entries = 0, reserved = 0, claims = 0, borrows = 0;
-        long metadata = 0;
+        int entries = 0, reserved = 0, claims = 0, borrows = 0, claimed = 0;
+        long metadata = 0, charged = 0;
         for (Entry entry : slots) {
             if (entry != null) {
                 entries++;
+                charged += entry.charge;
                 reserved += entry.reserved ? 1 : 0;
                 claims += entry.claims;
+                claimed += entry.claims > 0 ? 1 : 0;
                 borrows += entry.borrows;
                 if (entry.receipt != null) {
                     metadata += entry.receipt.metadataBytes();
@@ -234,7 +260,7 @@ public final class TerrainAtlasPool {
             }
         }
         return new Stats(
-                entries, reserved, cache.size(), claims, borrows, entries * ENTRY_BYTES, metadata);
+                entries, reserved, cache.size(), claims, borrows, charged, metadata, claimed);
     }
 
     public CompletableFuture<Void> closeAsync() {
