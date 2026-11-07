@@ -62,6 +62,32 @@ public final class RaceNpcs {
         }
     }
 
+    /**
+     * A humanoid NPC's drawable appearance (the race model with the NPC's choices, clothing
+     * geometry and pre-baked body texture), the item records and item models left out, or why it is
+     * refused. {@code retry} marks a refusal from data that could not be read yet.
+     */
+    public record Appearance(
+            RaceAppearanceTypes.Result result,
+            int omittedItems,
+            int omittedAttachments,
+            String refusal,
+            boolean retry) {
+        public Appearance {
+            if ((result == null) == (refusal == null)) {
+                throw new IllegalArgumentException("Inconsistent NPC appearance");
+            }
+        }
+
+        public static Appearance refused(String reason) {
+            return new Appearance(null, 0, 0, reason, false);
+        }
+
+        static Appearance unreadable(String reason) {
+            return new Appearance(null, 0, 0, reason, true);
+        }
+    }
+
     /** Bounds on the rows one NPC may relate to. */
     static final int MAX_OPTIONS = 256, MAX_ITEMS = 64, MAX_BAKE_FILES = 16;
 
