@@ -239,7 +239,14 @@ final class WorldStreamObjectsFileTest {
                                 read.pixels));
         // A BC1 image drawn by a cutout or blended range is refused: its alpha is not sampled
         // on every backend.
-        for (int kind : new int[] {WorldStreamObjectsFile.CUTOUT, WorldStreamObjectsFile.BLENDED}) {
+        // The check reads the kind, so the unlit flag and the additive kind (#367) count too.
+        for (int kind :
+                new int[] {
+                    WorldStreamObjectsFile.CUTOUT,
+                    WorldStreamObjectsFile.BLENDED,
+                    WorldStreamObjectsFile.ADDITIVE,
+                    WorldStreamObjectsFile.CUTOUT | WorldStreamObjectsFile.UNLIT
+                }) {
             var alpha = WorldStreamTileWriter.Exterior.builder();
             alpha.image(256, 64, ObjectTextureFormats.BC1, ByteBuffer.wrap(blocks1));
             alpha.model();
@@ -253,20 +260,38 @@ final class WorldStreamObjectsFileTest {
                     "BC1 image sampled with alpha",
                     assertThrows(IllegalArgumentException.class, alpha::build).getMessage());
         }
-        // The file carries version 4: the reader accepts no other, so a version 3 file (two-int
-        // RGBA8-only image table) fails its header check instead of being misread.
-        var bytes = Files.readAllBytes(objectsPath());
-        assertEquals(WorldStreamObjectsFile.VERSION, bytes[8]);
-        assertEquals(4, WorldStreamObjectsFile.VERSION);
-        bytes[8] = 3;
-        Files.write(objectsPath(), bytes);
-        var refused =
-                assertThrows(
-                        IOException.class,
-                        () ->
-                                WorldStreamObjectsFile.read(
-                                        objectsPath(), IDENTITY, reference, () -> false));
-        assertEquals("Objects header identity", refused.getCause().getMessage());
+        // An unlit opaque range ignores alpha too, so it may sample BC1: the flag does not change
+        // the kind.
+        var unlit = WorldStreamTileWriter.Exterior.builder();
+        unlit.image(256, 64, ObjectTextureFormats.BC1, ByteBuffer.wrap(blocks1));
+        unlit.model();
+        unlit.mesh(
+                FloatBuffer.wrap(new float[24]),
+                IntBuffer.wrap(new int[] {0, 1, 2}),
+                new int[] {0, 3, 0},
+                new int[] {WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT});
+        unlit.placement(0, 0, 0, 0, 1, 1, 0);
+        assertEquals(
+                WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT,
+                unlit.build().data().ranges[3]);
+        // The file carries version 5: the reader accepts no other. A version 3 file (two-int
+        // RGBA8-only image table) or a stale version 4 file (#420, before the additive and unlit
+        // classes of #367) fails its header check instead of being misread.
+        var clean = Files.readAllBytes(objectsPath());
+        assertEquals(WorldStreamObjectsFile.VERSION, clean[8]);
+        assertEquals(5, WorldStreamObjectsFile.VERSION);
+        for (byte stale : new byte[] {3, 4}) {
+            var bytes = clean.clone();
+            bytes[8] = stale;
+            Files.write(objectsPath(), bytes);
+            var refused =
+                    assertThrows(
+                            IOException.class,
+                            () ->
+                                    WorldStreamObjectsFile.read(
+                                            objectsPath(), IDENTITY, reference, () -> false));
+            assertEquals("Objects header identity", refused.getCause().getMessage());
+        }
     }
 
     @Test
@@ -764,9 +789,15 @@ final class WorldStreamObjectsFileTest {
         builder.model();
         builder.mesh(
                 FloatBuffer.wrap(new float[24]),
-                IntBuffer.wrap(new int[] {0, 1, 2, 0, 2, 1}),
-                new int[] {0, 3, 0, 3, 3, 0},
-                new int[] {WorldStreamObjectsFile.CUTOUT, WorldStreamObjectsFile.BLENDED});
+                IntBuffer.wrap(new int[] {0, 1, 2, 0, 2, 1, 1, 2, 0, 2, 0, 1}),
+                new int[] {0, 3, 0, 3, 3, 0, 6, 3, 0, 9, 3, 0},
+                new int[] {
+                    WorldStreamObjectsFile.CUTOUT,
+                    WorldStreamObjectsFile.BLENDED,
+                    // Version 5 (#367): additive and the unlit flag round-trip.
+                    WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT,
+                    WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT
+                });
         double h = Math.sqrt(0.5);
         builder.placement(0, 1, 2, 3, 1.5, new double[] {1, 0, 0, 0, h, -h, 0, h, h});
         var exterior = builder.build();
@@ -774,20 +805,28 @@ final class WorldStreamObjectsFileTest {
         var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
         assertEquals(WorldStreamObjectsFile.CUTOUT, read.ranges[3]);
         assertEquals(WorldStreamObjectsFile.BLENDED, read.ranges[7]);
+        assertEquals(
+                WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT, read.ranges[11]);
+        assertEquals(WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT, read.ranges[15]);
+        assertEquals(5, WorldStreamObjectsFile.VERSION);
         assertEquals(h, read.placements[8], 0);
         // An unknown class, a scaled matrix or a reflection is refused.
-        var badClass = WorldStreamTileWriter.Exterior.builder();
-        badClass.image(1, 1, ByteBuffer.allocate(4));
-        badClass.model();
-        badClass.mesh(
-                FloatBuffer.wrap(new float[24]),
-                IntBuffer.wrap(new int[] {0, 1, 2}),
-                new int[] {0, 3, 0},
-                new int[] {3});
-        badClass.placement(0, 0, 0, 0, 1, 1, 0);
-        assertEquals(
-                "Draw range",
-                assertThrows(IllegalArgumentException.class, badClass::build).getMessage());
+        // Modulate (4) and unknown flag bits stay refused: 0x200 alone and beside a known kind.
+        for (int unknown : new int[] {4, 0x200, WorldStreamObjectsFile.OPAQUE | 0x200}) {
+            var badClass = WorldStreamTileWriter.Exterior.builder();
+            badClass.image(1, 1, ByteBuffer.allocate(4));
+            badClass.model();
+            badClass.mesh(
+                    FloatBuffer.wrap(new float[24]),
+                    IntBuffer.wrap(new int[] {0, 1, 2}),
+                    new int[] {0, 3, 0},
+                    new int[] {unknown});
+            badClass.placement(0, 0, 0, 0, 1, 1, 0);
+            assertEquals(
+                    "Draw range",
+                    assertThrows(IllegalArgumentException.class, badClass::build).getMessage(),
+                    "Class " + Integer.toHexString(unknown));
+        }
         for (double[] rotation :
                 new double[][] {
                     {2, 0, 0, 0, 2, 0, 0, 0, 2}, {-1, 0, 0, 0, 1, 0, 0, 0, 1}, new double[9]

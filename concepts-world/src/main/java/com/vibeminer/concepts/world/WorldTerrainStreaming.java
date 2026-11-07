@@ -13,6 +13,27 @@ import java.util.function.Consumer;
  * belong off FX. Generic writer output and descriptive facts never authenticate packet bytes.
  */
 public final class WorldTerrainStreaming {
+    /**
+     * Selects the splat mask resolution of newly composed tiles from the texture quality tier
+     * (issue #174 step 2b-2): HIGH carries the native 64 x 64 alpha map per chunk (1024 per tile),
+     * STANDARD every other texel (512).
+     */
+    public static void splatMasks(WorldExteriorObjects.ImageDetail detail) {
+        splatMasks(detail, false);
+    }
+
+    /**
+     * As {@link #splatMasks(WorldExteriorObjects.ImageDetail)} for a session's view distance: the
+     * FAR view distance uses STANDARD masks on any tier ({@link
+     * com.vibeminer.rendering.world.TerrainTileSplat#maskSide}).
+     */
+    public static void splatMasks(WorldExteriorObjects.ImageDetail detail, boolean far) {
+        WorldTerrainTextureSource.splatMask =
+                com.vibeminer.rendering.world.TerrainTileSplat.maskSide(
+                        Objects.requireNonNull(detail) == WorldExteriorObjects.ImageDetail.HIGH,
+                        far);
+    }
+
     public enum Outcome {
         TEXTURED,
         HEIGHT_FALLBACK

@@ -904,6 +904,25 @@ public final class WorldStreamTransport {
             }
         }
 
+        /**
+         * After a commit: slots the new table no longer draws, other than the tile still in flight,
+         * stop holding splat layers (issue #174). Credit only goes to inactive slots, so a slot is
+         * never rebound while its old generation is drawn; this releases the retired ones that are
+         * never rebound. Called under the session lock.
+         */
+        private void releaseRetiredSplat() {
+            var live = new java.util.HashSet<Integer>();
+            for (var resident : state.active()) {
+                live.add(resident.lease.slot());
+            }
+            if (tile != null && !tile.result.isDone()) {
+                live.add(tile.ticket.lease.slot());
+            }
+            synchronized (splatLayers) {
+                splatLayers.retain(live);
+            }
+        }
+
         private void keepSplat(TileReservation reservation) {
             synchronized (splatLayers) {
                 reservation.splatPending = new int[0];
@@ -2196,6 +2215,7 @@ public final class WorldStreamTransport {
                                 }
                                 operation.outstanding = false;
                                 retireReliable();
+                                releaseRetiredSplat();
                                 receipt =
                                         new CommitReceipt(
                                                 operation.metadata.next,

@@ -227,6 +227,8 @@ final class WorldStreamObjectsCullProof {
                         + Integer.toHexString(farFogPixel)
                         + " water="
                         + Integer.toHexString(waterBlendPixel));
+        System.out.println(
+                "WORLD_OBJECT_MATERIAL_CLASSES_PASS " + WorldStreamMaterialClassProof.run(base));
         return result;
     }
 
