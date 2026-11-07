@@ -481,19 +481,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             Consumer<BuildPreparation.Counter> progress, Cancellation token) {
         long started = System.nanoTime();
         progress.accept(new BuildPreparation.Counter(0, null, "Opening file resolution indexes"));
-        var result = builds.open(ref, token).join();
+        openFileHandles(token);
         long indexesReady = System.nanoTime();
-        if (result.state() != BuildTypes.BuildOpenState.OPEN || result.opened() == null)
-            throw new IllegalStateException(
-                    "Files " + result.state() + ": " + result.code() + " " + result.message());
-        opened = result.opened();
-        if (fileHandle == null) {
-            var filesOpen = files.forBuild(ref, locale, token).join();
-            if (filesOpen.state() != FileTypes.FilesOpenState.OPEN || filesOpen.files() == null)
-                throw new IllegalStateException(
-                        "File catalog " + filesOpen.state() + ": " + filesOpen.message());
-            fileHandle = filesOpen.files();
-        }
         var cache = new com.vibeminer.files.PreparedFileCatalog(generated);
         var identity =
                 new com.vibeminer.files.PreparedFileCatalog.Identity(
@@ -702,6 +691,59 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             applyBuildKeys(found, issues, token);
         }
         return List.copyOf(issues);
+    }
+
+    /**
+     * The build's resolution indexes and file handle only, for measurement probes (#422): unlike
+     * {@link #files} it neither restores nor prepares (and so never writes) the file catalog.
+     */
+    void openFilesForMeasurement(Cancellation token) {
+        openFileHandles(token);
+    }
+
+    private void openFileHandles(Cancellation token) {
+        var result = builds.open(ref, token).join();
+        if (result.state() != BuildTypes.BuildOpenState.OPEN || result.opened() == null)
+            throw new IllegalStateException(
+                    "Files " + result.state() + ": " + result.code() + " " + result.message());
+        opened = result.opened();
+        if (fileHandle == null) {
+            var filesOpen = files.forBuild(ref, locale, token).join();
+            if (filesOpen.state() != FileTypes.FilesOpenState.OPEN || filesOpen.files() == null)
+                throw new IllegalStateException(
+                        "File catalog " + filesOpen.state() + ": " + filesOpen.message());
+            fileHandle = filesOpen.files();
+        }
+    }
+
+    /**
+     * A World service over its own workspace table handle, for measurement probes (#422). Needs
+     * {@link #metadata}, the file handles ({@link #files} or {@link #openFilesForMeasurement}) and
+     * keys first, but neither the known-table pass nor the lookup warmup, and it never stages or publishes a workspace. Caller closes it before
+     * this work.
+     */
+    MeasurementWorld openWorldForMeasurement(Cancellation token) {
+        token.check();
+        if (opened == null || fileHandle == null)
+            throw new IllegalStateException("Files must be prepared before a measurement World");
+        var tables = openTables(tablesService(token, TableRole.WORKSPACE), token);
+        try {
+            return new MeasurementWorld(
+                    tables,
+                    new com.vibeminer.concepts.world.WorldService(tables, fileHandle, terrainAtlases));
+        } catch (RuntimeException | Error failure) {
+            tables.close();
+            throw failure;
+        }
+    }
+
+    /** One measurement World and the table handle it borrows; the World closes first. */
+    record MeasurementWorld(BuildTables tables, com.vibeminer.concepts.world.WorldService world)
+            implements AutoCloseable {
+        @Override
+        public void close() {
+            closeResources(world, tables);
+        }
     }
 
     /** Caller owns this dedicated local table handle and closes it before this work context. */

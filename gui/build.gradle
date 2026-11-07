@@ -809,6 +809,57 @@ tasks.register('worldStreamNeighborhoodTest', JavaExec) {
 }
 check.dependsOn worldStreamNeighborhoodTest
 
+// Opt-in World measurement wiring (helper options, GC log parsing); no data, GPU or display.
+tasks.register('worldMeasurementTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldMeasurementTest'
+}
+check.dependsOn worldMeasurementTest
+
+// The probe's open path over an authored offline library: refusals and no stored-object writes.
+tasks.register('worldMeasurementLibraryTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldMeasurementLibraryTest'
+}
+check.dependsOn worldMeasurementLibraryTest
+
+// Phase 0 real-data World measurement (docs/world-measurement-baseline.md). Opt-in, never part
+// of check: runs only on a measurement copy of the library (-PdataDirectory=<copy> with a
+// MEASUREMENT_COPY marker; it refuses the app's own library), opens it without background work
+// and a build already prepared there, never a preparation job; starts the GPU helper and a
+// JavaFX toolkit, and ends within ten minutes. -Pprobe.mode=refusals
+// counts terrain texture refusals over whole maps; -Pprobe.mode=prep times tile prep alone (#422).
+tasks.register('worldMeasurementProbe', JavaExec) {
+    group = 'verification'
+    description = 'Measures the real World pipeline on the local build; see docs/world-measurement-baseline.md.'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldMeasurementProbe'
+    // The probe's deadline (at most 400 s) plus every close timeout (125 s) stays inside this.
+    timeout = java.time.Duration.ofMinutes(10)
+    def out = layout.buildDirectory.dir('world-measurement').get().asFile
+    doFirst { out.mkdirs() }
+    jvmArgs "-Xlog:gc*:file=${new File(out, 'gc.log').absolutePath}:uptime,level,tags"
+    systemProperty 'vimi.world.stageTimings', 'true'
+    systemProperty 'vimi.world.stageTimings.file', new File(out, 'helper-timings.txt').absolutePath
+    systemProperty 'probe.out', out.absolutePath
+    // The helper's private packet directories go under the probe's own build folder.
+    def temporary = new File(out, 'tmp')
+    doFirst { temporary.deleteDir(); temporary.mkdirs() }
+    systemProperty 'java.io.tmpdir', temporary.absolutePath
+    systemProperty 'probe.gcLog', new File(out, 'gc.log').absolutePath
+    ['probe.mode', 'probe.build', 'probe.scenarios', 'probe.maps', 'probe.fillSeconds',
+     'probe.rotateSeconds', 'probe.flySeconds', 'probe.settleSeconds', 'probe.mapSeconds',
+     'probe.deadlineSeconds', 'probe.size', 'probe.passes', 'probe.objects',
+     'vimi.world.objectTextures', 'vimi.world.creatures',
+     'vimi.gpu.backend'].each { name ->
+        def value = providers.gradleProperty(name)
+        if (value.isPresent()) systemProperty name, value.get()
+    }
+}
+
 tasks.register('legacyWorldActivityTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath

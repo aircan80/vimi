@@ -1333,6 +1333,21 @@ final class GpuPreviewService {
         return new ProcessBuilder(command).start();
     }
 
+    /** Helper-side table of the opt-in World stage timings; see WorldStageTimingsDump. */
+    static final String STAGE_TIMINGS_FILE = "vimi.world.stageTimings.file";
+
+    /**
+     * The helper JVM options that carry opt-in World measurement: none unless the stage timings
+     * are on, then the switch and, when given, the helper's own table file.
+     */
+    static List<String> measurementArguments(boolean enabled, String file) {
+        if (!enabled) return List.of();
+        var arguments = new ArrayList<String>();
+        arguments.add("-D" + com.vibeminer.formats.world.WorldStageTimings.PROPERTY + "=true");
+        if (file != null && !file.isBlank()) arguments.add("-D" + STAGE_TIMINGS_FILE + "=" + file);
+        return List.copyOf(arguments);
+    }
+
     /**
      * The helper's own JVM: the low-pause collector of the app (a GC pause stalls its draw loop)
      * and a bounded heap. Its large buffers are native; heap use is bounded by its capped input
@@ -1352,6 +1367,10 @@ final class GpuPreviewService {
             command.add("-XstartOnFirstThread");
         command.addAll(HELPER_JVM_OPTIONS);
         command.add("--enable-native-access=ALL-UNNAMED");
+        command.addAll(
+                measurementArguments(
+                        com.vibeminer.formats.world.WorldStageTimings.enabled(),
+                        System.getProperty(STAGE_TIMINGS_FILE)));
         // Debug frame verification (CRC32C, opaque alpha) must run on the writing side too.
         if (Boolean.getBoolean("vimi.frameVerify")) command.add("-Dvimi.frameVerify=true");
         // Diagnostic comparison of the World readback paths (#370): the helper reads it.
