@@ -173,7 +173,7 @@ public final class WorldInstanceUiTest {
             enter.fire();
             await(() -> inventoryMap(view) == DUNGEON.id() && (boolean) get(view, "explorer")
                     && get(view, "camera") != null && !(boolean) get(view, "scenePreparing"), () -> {
-                require(!hud.panelShown() && !hud.hidden() && !(boolean) get(view, "panelsHidden"),
+                require(!hud.panelShown() && !hud.hidden() && !((javafx.beans.value.ObservableBooleanValue) get(view, "hudHidden")).get(),
                         "Inside the instance the map panel is closed and the HUD shown");
                 require(leave.isVisible(), "Leave is offered inside the instance");
                 require(view.lookup("#world-menu-leave").isVisible(), "The Escape menu offers Leave instance inside it");

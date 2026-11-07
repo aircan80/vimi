@@ -215,13 +215,13 @@ public final class WorldMinimapInputUiTest {
         fx(() -> {
             var viewport = view.lookup("#world-viewport");
             var minimap = view.lookup("#world-minimap");
-            require((boolean) get("panelsHidden") == false && minimap.isVisible(), "HUD and minimap shown");
+            require(((javafx.beans.value.ObservableBooleanValue) get("hudHidden")).get() == false && minimap.isVisible(), "HUD and minimap shown");
             altZ(viewport);
-            require((boolean) get("panelsHidden") && !minimap.isVisible() && !minimap.isManaged()
+            require(((javafx.beans.value.ObservableBooleanValue) get("hudHidden")).get() && !minimap.isVisible() && !minimap.isManaged()
                             && !view.minimap().tracking().showing(),
                     "Alt+Z with the popup open hides the HUD, the minimap and the popup");
             altZ(viewport);
-            require(!(boolean) get("panelsHidden") && minimap.isVisible() && minimap.isManaged()
+            require(!((javafx.beans.value.ObservableBooleanValue) get("hudHidden")).get() && minimap.isVisible() && minimap.isManaged()
                             && !view.minimap().tracking().showing(),
                     "Alt+Z again shows the minimap; the popup stays closed");
             key(viewport, KeyCode.H, true);
