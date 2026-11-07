@@ -34,6 +34,15 @@ public final class AuthoredNativeLiquids implements AutoCloseable {
     }
 
     public AuthoredNativeLiquids(BuildFiles borrowed, int materialId, boolean includeCopy) {
+        this(borrowed, materialId, includeCopy, false);
+    }
+
+    /**
+     * {@code oceanRow} adds a LiquidType 2 row with the same material as the others, so it resolves
+     * a height-and-depth material instead of the depth-only convention.
+     */
+    public AuthoredNativeLiquids(
+            BuildFiles borrowed, int materialId, boolean includeCopy, boolean oceanRow) {
         if (materialId < 0 || materialId > 255) {
             throw new IllegalArgumentException("Authored material ID");
         }
@@ -76,7 +85,8 @@ public final class AuthoredNativeLiquids implements AutoCloseable {
                             Long.parseUnsignedLong(hash, 16),
                             Long.parseUnsignedLong(layout, 16),
                             materialId,
-                            includeCopy);
+                            includeCopy,
+                            oceanRow);
             raw.put(type ? 1371380L : 1132538L, bytes);
             var decoded =
                     Db2Reader.open(
@@ -212,7 +222,8 @@ public final class AuthoredNativeLiquids implements AutoCloseable {
             long hash,
             long layout,
             int materialId,
-            boolean includeCopy) {
+            boolean includeCopy,
+            boolean oceanRow) {
         var fields = new ArrayList<Field>();
         int prefix = 0, packedBits = 0;
         for (var f : definitions) {
@@ -235,7 +246,8 @@ public final class AuthoredNativeLiquids implements AutoCloseable {
                 packedBits += width;
             }
         }
-        int records = type ? 3 : 4,
+        int[] typeIds = oceanRow ? new int[] {2, 1240, 1250, 1288} : new int[] {1240, 1250, 1288};
+        int records = type ? typeIds.length : 4,
                 copies = type || !includeCopy ? 0 : 1,
                 recordSize = prefix + (packedBits + 7) / 8;
         int start = 204 + 40 + fields.size() * 28;
@@ -297,7 +309,7 @@ public final class AuthoredNativeLiquids implements AutoCloseable {
             }
         }
         b.position(start + records * recordSize + 1);
-        for (int id : type ? new int[] {1240, 1250, 1288} : new int[] {1, 2, 13, 146}) {
+        for (int id : type ? typeIds : new int[] {1, 2, 13, 146}) {
             b.putInt(id);
         }
         if (copies != 0) {
