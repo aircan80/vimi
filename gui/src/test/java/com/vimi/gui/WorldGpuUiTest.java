@@ -305,9 +305,7 @@ public final class WorldGpuUiTest {
                                                                                                                                     children()
                                                                                                                                                     .isEmpty()
                                                                                                                                             && ((Label)
-                                                                                                                                                            view
-                                                                                                                                                                    .lookup(
-                                                                                                                                                                            "#world-position"))
+                                                                                                                                                            positionLine(view))
                                                                                                                                                     .getText()
                                                                                                                                                     .contains(
                                                                                                                                                             "0 tiles"
@@ -579,6 +577,17 @@ public final class WorldGpuUiTest {
     private static void require(boolean value, String message) {
         if (!value) {
             throw new AssertionError(message);
+        }
+    }
+
+    /** The view's full position line: the model behind the HUD coordinates pill (its tooltip). */
+    private static javafx.scene.Node positionLine(WorldView view) {
+        try {
+            var field = WorldView.class.getDeclaredField("position");
+            field.setAccessible(true);
+            return (javafx.scene.Node) field.get(view);
+        } catch (ReflectiveOperationException error) {
+            throw new AssertionError(error);
         }
     }
 }
