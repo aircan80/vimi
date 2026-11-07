@@ -1,9 +1,11 @@
 package com.vibeminer.rendering.bgfx;
 
+import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_COLOR0;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_NORMAL;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_POSITION;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TEXCOORD0;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TYPE_FLOAT;
+import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TYPE_UINT8;
 import static org.lwjgl.bgfx.BGFX.BGFX_BUFFER_NONE;
 import static org.lwjgl.bgfx.BGFX.BGFX_CLEAR_COLOR;
 import static org.lwjgl.bgfx.BGFX.BGFX_CLEAR_DEPTH;
@@ -470,6 +472,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private short program = INVALID, skyProgram = INVALID, template = INVALID;
     private short eye = INVALID, projection = INVALID, rebase = INVALID, atlasUniform = INVALID;
     private short sampler = INVALID, sky = INVALID;
+    // Splat samplers on stages 1 to 3 and u_worldSplat (issue #174 step 2b-2,
+    // world-stream/splat.sh).
+    private short splatLayersSampler = INVALID, splatMaskSampler = INVALID;
+    private short splatTableSampler = INVALID, splatUniform = INVALID;
+    // Bound to the layer stage while the shared array does not exist: every declared sampler is
+    // bound on every draw, so no backend sees an empty slot. Two layers, so it is an array view.
+    private short splatDummyArray = INVALID;
     // Fog shared by terrain, objects and the sky's horizon (WorldFog).
     private short worldFog = INVALID, worldFogRange = INVALID, worldSkyTop = INVALID;
     private short skyTop = INVALID, skyHorizon = INVALID, skyView = INVALID;
@@ -512,6 +521,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private long content, nextTag, liveBytes, peakBytes, maximumStepNanos, objectsRevision;
     private int peakStepBytes;
     private boolean closed, callbackFreed, objectCulling = true;
+    private boolean vertexColours = VERTEX_COLOURS;
     private FrameCounts lastFrame = new FrameCounts(0, 0, 0, 0, 0, 0, 0);
     private int frameChunks, frameChunksCulled, frameTerrainSubmits;
     private int framePlacements, frameCulled, frameObjectSubmits, frameCameraUniforms;
@@ -577,6 +587,27 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             rebase = valid(bgfx_create_uniform("u_worldRebase", BGFX_UNIFORM_TYPE_VEC4, 1));
             atlasUniform = valid(bgfx_create_uniform("u_worldAtlas", BGFX_UNIFORM_TYPE_VEC4, 1));
             sampler = valid(bgfx_create_uniform("s_worldAtlas", BGFX_UNIFORM_TYPE_SAMPLER, 1));
+            splatLayersSampler =
+                    valid(bgfx_create_uniform("s_worldSplatLayers", BGFX_UNIFORM_TYPE_SAMPLER, 1));
+            splatMaskSampler =
+                    valid(bgfx_create_uniform("s_worldSplatMask", BGFX_UNIFORM_TYPE_SAMPLER, 1));
+            splatTableSampler =
+                    valid(bgfx_create_uniform("s_worldSplatTable", BGFX_UNIFORM_TYPE_SAMPLER, 1));
+            splatUniform = valid(bgfx_create_uniform("u_worldSplat", BGFX_UNIFORM_TYPE_VEC4, 1));
+            if ((bgfx_get_caps().supported() & org.lwjgl.bgfx.BGFX.BGFX_CAPS_TEXTURE_2D_ARRAY)
+                    != 0) {
+                splatDummyArray =
+                        valid(
+                                bgfx_create_texture_2d(
+                                        1,
+                                        1,
+                                        false,
+                                        2,
+                                        BGFX_TEXTURE_FORMAT_RGBA8,
+                                        BGFX_TEXTURE_NONE,
+                                        null,
+                                        0));
+            }
             sky = valid(bgfx_create_uniform("u_terrainMode", BGFX_UNIFORM_TYPE_VEC4, 1));
             worldFog = valid(bgfx_create_uniform("u_worldFog", BGFX_UNIFORM_TYPE_VEC4, 1));
             worldSkyTop = valid(bgfx_create_uniform("u_worldSkyTop", BGFX_UNIFORM_TYPE_VEC4, 1));
@@ -622,6 +653,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             wmoSampler = valid(bgfx_create_uniform("s_wmoDiffuse", BGFX_UNIFORM_TYPE_SAMPLER, 1));
             wmoMaterial = valid(bgfx_create_uniform("u_wmoMaterial", BGFX_UNIFORM_TYPE_VEC4, 1));
             wmoFog = valid(bgfx_create_uniform("u_wmoFog", BGFX_UNIFORM_TYPE_VEC4, 1));
+            // .w is taken: the MOCV vertex colour switch (#375, wmoSkyTop()). Do not reuse it.
             wmoSkyTop = valid(bgfx_create_uniform("u_wmoSkyTop", BGFX_UNIFORM_TYPE_VEC4, 1));
             wmoFogRange = valid(bgfx_create_uniform("u_wmoFogRange", BGFX_UNIFORM_TYPE_VEC4, 1));
         } catch (IOException | RuntimeException failed) {
@@ -1108,7 +1140,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                             valid(
                                     bgfx_create_dynamic_vertex_buffer(
                                             source.vertices.capacity()
-                                                    / WorldStreamObjectsFile.VERTEX_BYTES,
+                                                    / WorldStreamPackedObjects.GPU_VERTEX_BYTES,
                                             layout,
                                             BGFX_BUFFER_NONE));
                 }
@@ -1122,10 +1154,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             var built = build.building;
             step = "vertices";
             if (build.vertexAt < source.vertices.capacity()) {
-                int count = Math.min(OBJECT_CHUNK, source.vertices.capacity() - build.vertexAt);
+                // Whole vertices only: the chunk is rounded down to the vertex stride.
+                int chunk =
+                        OBJECT_CHUNK
+                                / WorldStreamPackedObjects.GPU_VERTEX_BYTES
+                                * WorldStreamPackedObjects.GPU_VERTEX_BYTES;
+                int count = Math.min(chunk, source.vertices.capacity() - build.vertexAt);
                 bgfx_update_dynamic_vertex_buffer(
                         built.vertices,
-                        build.vertexAt / WorldStreamObjectsFile.VERTEX_BYTES,
+                        build.vertexAt / WorldStreamPackedObjects.GPU_VERTEX_BYTES,
                         bgfx_copy(source.vertices.slice(build.vertexAt, count)));
                 build.vertexAt += count;
                 return count;
@@ -1536,6 +1573,33 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         objectCulling = enabled;
     }
 
+    /**
+     * WMO vertex colours (MOCV, #375) added to the building light. Off by default until compared
+     * with the client: only {@code -Dvimi.world.wmoVertexColours=true}, which the application
+     * forwards to this helper, turns them on. The colours are always uploaded; the flag only
+     * reaches the shader (u_wmoSkyTop.w), so turning it on needs no other shader.
+     */
+    static final boolean VERTEX_COLOURS =
+            vertexColoursEnabled(System.getProperty("vimi.world.wmoVertexColours"));
+
+    /** Only {@code true} (any letter case) turns WMO vertex colours on. */
+    static boolean vertexColoursEnabled(String property) {
+        return "true".equalsIgnoreCase(property);
+    }
+
+    /** Proof seam: overrides {@link #VERTEX_COLOURS} for this renderer. */
+    void vertexColours(boolean enabled) {
+        requireOwner();
+        vertexColours = enabled;
+    }
+
+    /** The object sky top uniform: the fog's top colour, with w the vertex colour switch. */
+    static float[] wmoSkyTop(WorldFog fog, boolean vertexColours) {
+        float[] value = fog.topUniform();
+        value[3] = vertexColours ? 1 : 0;
+        return value;
+    }
+
     /** Changes whenever late objects become drawable, so an unchanged camera redraws once. */
     long objectsRevision() {
         return objectsRevision;
@@ -1577,8 +1641,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         bgfx_vertex_layout_add(layout, BGFX_ATTRIB_NORMAL, 3, BGFX_ATTRIB_TYPE_FLOAT, false, false);
         bgfx_vertex_layout_add(
                 layout, BGFX_ATTRIB_TEXCOORD0, 2, BGFX_ATTRIB_TYPE_FLOAT, false, false);
+        bgfx_vertex_layout_add(layout, BGFX_ATTRIB_COLOR0, 4, BGFX_ATTRIB_TYPE_UINT8, true, false);
         bgfx_vertex_layout_end(layout);
-        if (layout.stride() != WorldStreamObjectsFile.VERTEX_BYTES) {
+        if (layout.stride() != WorldStreamPackedObjects.GPU_VERTEX_BYTES) {
             layout.free();
             throw new IOException("Object vertex layout differs");
         }
@@ -1814,7 +1879,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 frameUniform(wmoEye, matrix);
                 frameUniform(wmoProjection, project);
                 bgfx_set_uniform(wmoFog, stack.floats(fog.fogUniform()), 1);
-                bgfx_set_uniform(wmoSkyTop, stack.floats(fog.topUniform()), 1);
+                bgfx_set_uniform(wmoSkyTop, stack.floats(wmoSkyTop(fog, vertexColours)), 1);
                 bgfx_set_uniform(wmoFogRange, stack.floats(fog.rangeUniform()), 1);
             }
             bgfx_set_uniform(worldFog, stack.floats(fog.fogUniform()), 1);
@@ -1833,6 +1898,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 bgfx_set_uniform(
                         atlasUniform,
                         stack.floats(slot.anchorX, slot.anchorY, 3f / 1600, slot.textured ? 1 : 0),
+                        1);
+                bgfx_set_uniform(
+                        splatUniform,
+                        stack.floats(splatDrawn(slot) ? 1 : 0, slot.splatMaskSide, 0, 0),
                         1);
                 drawTerrain(slot, view);
             }
@@ -1878,7 +1947,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     continue;
                 }
                 bgfx_set_uniform(atlasUniform, stack.floats(slot.anchorX, slot.anchorY, 0, 0), 1);
+                bgfx_set_uniform(splatUniform, stack.floats(0, 0, 0, 0), 1);
                 bgfx_set_texture(0, sampler, slot.texture, SAMPLER_FLAGS);
+                bindSplat(slot);
                 // Water vertices follow the terrain's; its indices are relative to them.
                 bgfx_set_dynamic_vertex_buffer(
                         0, slot.vertices, slot.terrainVertices, slot.waterVertices);
@@ -1939,12 +2010,59 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         int rangeInts = visibleRanges(slot.runs, visible, ranges);
         for (int i = 0; i < rangeInts; i += 2) {
             bgfx_set_texture(0, sampler, slot.texture, SAMPLER_FLAGS);
+            bindSplat(slot);
             bgfx_set_dynamic_vertex_buffer(0, slot.vertices, 0, slot.terrainVertices);
             bgfx_set_dynamic_index_buffer(slot.indices, ranges[i], ranges[i + 1]);
             bgfx_set_state(TERRAIN_STATE, 0);
             bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
             frameTerrainSubmits++;
         }
+    }
+
+    /** Layer array sampling: repeat (eight repeats per chunk), trilinear, anisotropic. */
+    static final int SPLAT_LAYER_FLAGS =
+            org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIN_ANISOTROPIC
+                    | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MAG_ANISOTROPIC;
+
+    /** Mask map sampling: clamped, trilinear; the shader keeps it inside each chunk. */
+    static final int SPLAT_MASK_FLAGS = BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
+
+    /** Chunk table sampling: one texel per chunk, read exactly. */
+    static final int SPLAT_TABLE_FLAGS =
+            BGFX_SAMPLER_U_CLAMP
+                    | BGFX_SAMPLER_V_CLAMP
+                    | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIN_POINT
+                    | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MAG_POINT
+                    | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIP_POINT;
+
+    /**
+     * Whether {@code slot}'s committed generation draws its splat inputs: it uploaded them, and the
+     * shared layer array and its own mask and table exist. Otherwise it draws the atlas.
+     */
+    private boolean splatDrawn(Slot slot) {
+        return slot.splatted
+                && splatArray != INVALID
+                && slot.splatAlpha != INVALID
+                && slot.splatTable != INVALID;
+    }
+
+    /**
+     * Binds the splat stages for one terrain or water submit. A slot that does not draw splat binds
+     * stand-ins (u_worldSplat.x is 0, so the shader ignores them).
+     */
+    private void bindSplat(Slot slot) {
+        if (splatDrawn(slot)) {
+            bgfx_set_texture(1, splatLayersSampler, splatArray, SPLAT_LAYER_FLAGS);
+            bgfx_set_texture(2, splatMaskSampler, slot.splatAlpha, SPLAT_MASK_FLAGS);
+            bgfx_set_texture(3, splatTableSampler, slot.splatTable, SPLAT_TABLE_FLAGS);
+            return;
+        }
+        short layers = splatArray != INVALID ? splatArray : splatDummyArray;
+        if (layers != INVALID) {
+            bgfx_set_texture(1, splatLayersSampler, layers, SPLAT_LAYER_FLAGS);
+        }
+        bgfx_set_texture(2, splatMaskSampler, slot.texture, SPLAT_MASK_FLAGS);
+        bgfx_set_texture(3, splatTableSampler, slot.texture, SPLAT_TABLE_FLAGS);
     }
 
     /** Index ranges for the visible runs, as a new array; see the in-place overload. */
@@ -2465,6 +2583,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             horizon.close();
         }
         destroyHorizonBuffers();
+        if (splatDummyArray != INVALID) {
+            bgfx_destroy_texture(splatDummyArray);
+            splatDummyArray = INVALID;
+        }
         if (splatArray != INVALID) {
             bgfx_destroy_texture(splatArray);
             splatArray = INVALID;
@@ -2502,6 +2624,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     rebase,
                     atlasUniform,
                     sampler,
+                    splatLayersSampler,
+                    splatMaskSampler,
+                    splatTableSampler,
+                    splatUniform,
                     sky,
                     worldFog,
                     worldFogRange,

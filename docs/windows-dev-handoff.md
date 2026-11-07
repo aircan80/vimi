@@ -24,6 +24,8 @@ $sqliteLibrary = (Resolve-Path .local\sqlite\sqlite3.dll).Path
 Renderer override for A/B checks: `-PgpuBackend=vulkan|d3d11|default`, or
 `$env:VIMI_GPU_BACKEND`. Opt-in creatures: `-Dvimi.world.creatures=true`.
 Turn outdoor buildings off with `-Dvimi.world.exteriors=false`.
+Opt-in WMO vertex colours (MOCV added to building light, #375):
+`-Dvimi.world.wmoVertexColours=true`.
 
 ## Rules carried over from the Linux session
 

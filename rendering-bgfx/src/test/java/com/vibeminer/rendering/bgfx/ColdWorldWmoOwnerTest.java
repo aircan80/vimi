@@ -16,6 +16,23 @@ import org.junit.jupiter.api.io.TempDir;
 final class ColdWorldWmoOwnerTest {
     @TempDir Path directory;
 
+    /**
+     * The charge is the proposal's ledger rows: CPU mesh 22,528; GPU, queued and staging mesh at
+     * the pass cap each; CPU, GPU and queued RGBA at the texture cap each; four 262,144-byte
+     * texture phases; 65,536 geometry scratch; 262,144 metadata and shader reserve.
+     */
+    @Test
+    void chargeMatchesTheLedgerRowsAtThePassCaps() {
+        assertEquals(
+                22_528
+                        + 3L * BgfxWorldWmoPass.MAX_MESH_BYTES
+                        + 3L * BgfxWorldWmoPass.MAX_TEXTURE_BYTES
+                        + 4L * 262_144
+                        + 65_536
+                        + 262_144,
+                ColdWorldWmoOwner.CHARGE_BYTES);
+    }
+
     @Test
     void failedInputSpendsAttemptAndKeepsChargeUntilContextDrain() throws Exception {
         var scene =
