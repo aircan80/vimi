@@ -9,8 +9,24 @@ import java.util.function.Consumer;
 
 /** Application-owned bounded atlas storage; build sources must explicitly share this pool. */
 public final class TerrainAtlasPool {
-    public static final int MAX_ENTRIES = 18;
-    public static final long ENTRY_BYTES = TerrainTileAtlas.PIXEL_BYTES + 32L + 256L * 64 + 256;
+    /** Every World output's atlas lease plus six for other borrowers, as before issue #173. */
+    public static final int MAX_ENTRIES = WorldPreparedTerrain.MAX_OUTPUTS + 6;
+
+    /**
+     * The most one entry may retain: the largest atlas with HIGH splatting inputs. Stats charge
+     * each entry less: a published atlas its own {@link TerrainTileAtlas#retainedBytes()}, a
+     * reservation the bound for the current splat setting ({@link #reservedBytes()}).
+     */
+    public static final long ENTRY_BYTES = TerrainTileAtlas.MAX_RETAINED_BYTES;
+
+    /**
+     * What a reservation is charged until its atlas is published: the largest atlas the source
+     * composes now, with no splat inputs, or with the current tier's mask side.
+     */
+    static long reservedBytes() {
+        return TerrainTileAtlas.maxRetainedBytes(
+                WorldTerrainTextureSource.splat ? WorldTerrainTextureSource.splatMask : 0);
+    }
 
     public record Stats(
             int entries,
@@ -24,6 +40,7 @@ public final class TerrainAtlasPool {
     private static final class Entry {
         final int slot;
         boolean reserved = true, cached;
+        long charge = reservedBytes();
         int claims, borrows;
         TerrainTileAtlas atlas;
         WorldTerrainTextureSource.Receipt receipt;
@@ -118,6 +135,7 @@ public final class TerrainAtlasPool {
                 if (entry == null) {
                     throw new IllegalStateException("Atlas reservation closed");
                 }
+                entry.charge = atlas.retainedBytes();
                 if (completeCacheKey != null && cache.containsKey(completeCacheKey)) {
                     throw new IllegalStateException("Duplicate ready atlas cache publication");
                 }
@@ -219,10 +237,11 @@ public final class TerrainAtlasPool {
 
     public synchronized Stats stats() {
         int entries = 0, reserved = 0, claims = 0, borrows = 0;
-        long metadata = 0;
+        long metadata = 0, charged = 0;
         for (Entry entry : slots) {
             if (entry != null) {
                 entries++;
+                charged += entry.charge;
                 reserved += entry.reserved ? 1 : 0;
                 claims += entry.claims;
                 borrows += entry.borrows;
@@ -231,8 +250,7 @@ public final class TerrainAtlasPool {
                 }
             }
         }
-        return new Stats(
-                entries, reserved, cache.size(), claims, borrows, entries * ENTRY_BYTES, metadata);
+        return new Stats(entries, reserved, cache.size(), claims, borrows, charged, metadata);
     }
 
     public CompletableFuture<Void> closeAsync() {

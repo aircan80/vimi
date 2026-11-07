@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -21,7 +22,8 @@ import java.util.zip.CRC32C;
 
 /** Separate World v2 mapping codec. No renderer, control channel or GUI is wired to it. */
 final class WorldFrameFileV2 implements AutoCloseable {
-    static final int WIDTH = 800, HEIGHT = 500, SLOTS = 3, HEADER_BYTES = 64;
+    static final int WIDTH = WorldFrameLimits.MAX_WIDTH, HEIGHT = WorldFrameLimits.MAX_HEIGHT;
+    static final int SLOTS = 3, HEADER_BYTES = 64;
     static final int PAYLOAD_BYTES = WIDTH * HEIGHT * 4;
     static final int SLOT_BYTES = HEADER_BYTES + PAYLOAD_BYTES;
     static final long FILE_BYTES = HEADER_BYTES + (long) SLOTS * SLOT_BYTES;
@@ -33,6 +35,12 @@ final class WorldFrameFileV2 implements AutoCloseable {
     private static final ValueLayout.OfInt INT =
             ValueLayout.JAVA_INT.withOrder(ByteOrder.LITTLE_ENDIAN);
     private static final VarHandle STAMP = LONG.varHandle();
+
+    /**
+     * Debug only: {@code -Dvimi.frameVerify=true} restores the per-frame CRC32C and opaque alpha
+     * checks on both sides. Torn reads are always rejected by the slot stamp (seqlock).
+     */
+    static final String VERIFY_PROPERTY = "vimi.frameVerify";
 
     /** Immutable acknowledged presentation bounds; checked before any detached pixel allocation. */
     record Barrier(
@@ -65,14 +73,22 @@ final class WorldFrameFileV2 implements AutoCloseable {
         }
     }
 
-    /** Detached owned pixels survive unmapping; consumers get a read-only view without a clone. */
+    /**
+     * Detached pixels survive unmapping; consumers get a read-only view without a clone. The pixel
+     * array is pooled: the one owner calls {@link #release()} once it no longer reads the pixels,
+     * after which a later frame may overwrite them. An unreleased frame is ordinary garbage.
+     */
     static final class Frame {
         private final WorldStreamFrameGate.Frame metadata;
         private final int[] pixels;
+        private final Pool pool;
+        private final java.util.concurrent.atomic.AtomicBoolean released =
+                new java.util.concurrent.atomic.AtomicBoolean();
 
-        private Frame(WorldStreamFrameGate.Frame metadata, int[] pixels) {
+        private Frame(WorldStreamFrameGate.Frame metadata, int[] pixels, Pool pool) {
             this.metadata = metadata;
             this.pixels = pixels;
+            this.pool = pool;
         }
 
         WorldStreamFrameGate.Frame metadata() {
@@ -80,7 +96,75 @@ final class WorldFrameFileV2 implements AutoCloseable {
         }
 
         IntBuffer pixels() {
-            return IntBuffer.wrap(pixels).asReadOnlyBuffer();
+            if (released.get()) {
+                throw new IllegalStateException("World frame pixels released");
+            }
+            return IntBuffer.wrap(pixels, 0, metadata.width() * metadata.height())
+                    .slice()
+                    .asReadOnlyBuffer();
+        }
+
+        /** Idempotent; returns the pixel array for reuse by a later read. */
+        void release() {
+            if (released.compareAndSet(false, true)) {
+                pool.recycle(pixels);
+            }
+        }
+
+        int[] array() { // Tests only.
+            return pixels;
+        }
+    }
+
+    /**
+     * Bounded frame-size pixel arrays. Up to three frames are live at once (the read in progress,
+     * the transport's latest and the presentation), so three retained arrays keep the steady state
+     * allocation-free.
+     */
+    static final class Pool {
+        private final Object lock = new Object();
+        private final java.util.ArrayDeque<int[]> free = new java.util.ArrayDeque<>(SLOTS);
+        private long allocations;
+
+        /**
+         * An array of at least {@code pixels} ints. Arrays are sized to the frame, not the cap, so
+         * a small viewport holds no 2560x1600 arrays; ones too small after a resize are dropped.
+         */
+        int[] take(int pixels) {
+            synchronized (lock) {
+                int[] reused;
+                while ((reused = free.pollFirst()) != null) {
+                    // Too small, or more than twice the frame after a shrink: dropped, so the
+                    // memory follows the frame size.
+                    if (reused.length >= pixels && reused.length <= 2L * pixels) {
+                        return reused;
+                    }
+                }
+                allocations++;
+            }
+            return new int[pixels];
+        }
+
+        void recycle(int[] pixels) {
+            synchronized (lock) {
+                if (pixels.length <= WIDTH * HEIGHT
+                        && free.size() < SLOTS
+                        && free.stream().noneMatch(retained -> retained == pixels)) {
+                    free.addFirst(pixels);
+                }
+            }
+        }
+
+        long allocations() {
+            synchronized (lock) {
+                return allocations;
+            }
+        }
+
+        int retained() {
+            synchronized (lock) {
+                return free.size();
+            }
         }
     }
 
@@ -92,6 +176,10 @@ final class WorldFrameFileV2 implements AutoCloseable {
     private final WorldStreamState.Nonce nonce;
     private final byte[] scope;
     private final ByteBuffer scratch = ByteBuffer.allocate(64 << 10).order(ByteOrder.LITTLE_ENDIAN);
+    private final boolean verify;
+    private final Pool pool = new Pool();
+    // Test seam: runs after a slot's pixels are copied and before its stamp is re-checked.
+    volatile Runnable afterCopy;
     private boolean closed;
     private long lastSequence;
 
@@ -100,7 +188,9 @@ final class WorldFrameFileV2 implements AutoCloseable {
             Arena arena,
             MemorySegment mapping,
             WorldStreamState.Nonce nonce,
-            byte[] scope) {
+            byte[] scope,
+            boolean verify) {
+        this.verify = verify;
         this.channel = channel;
         this.arena = arena;
         this.mapping = mapping;
@@ -111,16 +201,17 @@ final class WorldFrameFileV2 implements AutoCloseable {
 
     static WorldFrameFileV2 create(Path path, WorldStreamState.Nonce nonce, String scope)
             throws IOException {
-        return open(path, nonce, scope, true);
+        return open(path, nonce, scope, true, Boolean.getBoolean(VERIFY_PROPERTY));
     }
 
     static WorldFrameFileV2 open(Path path, WorldStreamState.Nonce nonce, String scope)
             throws IOException {
-        return open(path, nonce, scope, false);
+        return open(path, nonce, scope, false, Boolean.getBoolean(VERIFY_PROPERTY));
     }
 
-    private static WorldFrameFileV2 open(
-            Path path, WorldStreamState.Nonce nonce, String scope, boolean create)
+    /** Explicit verification mode, independent of the system property. */
+    static WorldFrameFileV2 open(
+            Path path, WorldStreamState.Nonce nonce, String scope, boolean create, boolean verify)
             throws IOException {
         Objects.requireNonNull(nonce);
         if (scope == null || !scope.matches("[0-9a-f]{64}")) {
@@ -132,6 +223,11 @@ final class WorldFrameFileV2 implements AutoCloseable {
                         ? FileChannel.open(
                                 path,
                                 StandardOpenOption.CREATE_NEW,
+                                // Slots are laid out for the 2560x1600 cap, but only the bytes of
+                                // frames actually written take disk or memory: a sparse file
+                                // (NTFS honours this at creation; ext4/APFS are sparse anyway),
+                                // and mapped pages commit only when touched.
+                                StandardOpenOption.SPARSE,
                                 StandardOpenOption.READ,
                                 StandardOpenOption.WRITE,
                                 LinkOption.NOFOLLOW_LINKS)
@@ -159,7 +255,7 @@ final class WorldFrameFileV2 implements AutoCloseable {
                         .put(digest);
                 mapping.asSlice(0, HEADER_BYTES).copyFrom(MemorySegment.ofArray(header.array()));
             }
-            var result = new WorldFrameFileV2(channel, arena, mapping, nonce, digest);
+            var result = new WorldFrameFileV2(channel, arena, mapping, nonce, digest, verify);
             result.checkOpen();
             return result;
         } catch (IOException | RuntimeException | Error error) {
@@ -218,8 +314,22 @@ final class WorldFrameFileV2 implements AutoCloseable {
                 || bgra.remaining() != length) {
             throw new IllegalArgumentException("Invalid World frame publication");
         }
-        for (int i = bgra.position() + 3; i < bgra.limit(); i += 4) {
-            if (bgra.get(i) != (byte) 255) {
+        if (verify) {
+            for (int i = bgra.position() + 3; i < bgra.limit(); i += 4) {
+                if (bgra.get(i) != (byte) 255) {
+                    throw new IllegalArgumentException("Nonopaque World pixels");
+                }
+            }
+        } else {
+            // Cheap tripwire: a renderer change that writes alpha below 255 fails the helper
+            // loudly instead of showing a see-through viewport.
+            int pixels = length / 4, stride = alphaStride(pixels);
+            for (int i = 0; i < pixels; i += stride) {
+                if (bgra.get(bgra.position() + i * 4 + 3) != (byte) 255) {
+                    throw new IllegalArgumentException("Nonopaque World pixels");
+                }
+            }
+            if (bgra.get(bgra.limit() - 1) != (byte) 255) {
                 throw new IllegalArgumentException("Nonopaque World pixels");
             }
         }
@@ -236,9 +346,12 @@ final class WorldFrameFileV2 implements AutoCloseable {
                 .putInt(ticket.height())
                 .putInt(0)
                 .putInt(length);
-        var crc = metadataCrc(header.array());
-        crc.update(bgra.duplicate());
-        header.putInt(56, (int) crc.getValue());
+        if (verify) {
+            // 0 means "not checksummed": a verifying reader skips that slot's CRC.
+            var crc = metadataCrc(header.array());
+            crc.update(bgra.duplicate());
+            header.putInt(56, (int) crc.getValue());
+        }
         lastSequence = ticket.sequence();
         STAMP.setRelease(mapping, offset, stamp | 1);
         VarHandle.fullFence();
@@ -246,6 +359,110 @@ final class WorldFrameFileV2 implements AutoCloseable {
                 .copyFrom(MemorySegment.ofArray(header.array()).asSlice(8));
         mapping.asSlice(offset + HEADER_BYTES, length)
                 .copyFrom(MemorySegment.ofBuffer(bgra.duplicate()));
+        STAMP.setRelease(mapping, offset, stamp);
+    }
+
+    private static long slotOffset(int slot) {
+        if (slot < 0 || slot >= SLOTS) {
+            throw new IllegalArgumentException("World frame slot " + slot);
+        }
+        return HEADER_BYTES + (long) slot * SLOT_BYTES;
+    }
+
+    /**
+     * Direct readback: marks {@code slot} in progress (odd stamp, so readers skip it) and returns
+     * its payload as a buffer a GPU readback may write {@code bytes} into. The caller then
+     * publishes it with {@link #publishDirect} or gives it up with {@link #abandonDirect}; the
+     * buffer must not be written after either.
+     */
+    synchronized ByteBuffer beginDirect(int slot, int bytes) throws IOException {
+        checkOpen();
+        long offset = slotOffset(slot);
+        if (bytes < 4 || bytes > PAYLOAD_BYTES) {
+            throw new IllegalArgumentException("World direct readback size " + bytes);
+        }
+        long stamp = (long) STAMP.getAcquire(mapping, offset);
+        STAMP.setRelease(mapping, offset, stamp | 1);
+        // The in-progress stamp must precede every write of the readback into the slot.
+        VarHandle.fullFence();
+        return mapping.asSlice(offset + HEADER_BYTES, bytes).asByteBuffer();
+    }
+
+    /** Gives up a direct slot: it holds no frame (stamp 0) until written again. */
+    synchronized void abandonDirect(int slot) throws IOException {
+        checkOpen();
+        STAMP.setRelease(mapping, slotOffset(slot), 0L);
+    }
+
+    /**
+     * Publishes a frame a GPU readback wrote into {@code slot} after {@link #beginDirect}: rows of
+     * {@code stride} bytes, the first {@code width * 4} of each are the frame. Same checks and
+     * seqlock order as {@link #write}, without copying the pixels.
+     */
+    synchronized void publishDirect(int slot, WorldStreamFrameGate.Frame ticket, int stride)
+            throws IOException {
+        checkOpen();
+        Objects.requireNonNull(ticket);
+        dimensions(ticket.width(), ticket.height());
+        long offset = slotOffset(slot);
+        long length = (long) stride * ticket.height();
+        if (!nonce.equals(ticket.nonce())
+                || ticket.sequence() < 1
+                || ticket.sequence() > MAX_SEQUENCE
+                || ticket.sequence() <= Math.max(lastSequence, highestReserved())
+                || ticket.camera() < 1
+                || ticket.content() < 0
+                || ticket.policy() < 1
+                || stride < ticket.width() * 4
+                || stride % 4 != 0
+                || length > PAYLOAD_BYTES
+                || ((long) STAMP.getAcquire(mapping, offset) & 1) == 0) {
+            throw new IllegalArgumentException("Invalid World direct frame publication");
+        }
+        var rows = mapping.asSlice(offset + HEADER_BYTES, length).asByteBuffer();
+        int width = ticket.width(), height = ticket.height(), pixels = width * height;
+        if (verify) {
+            for (int row = 0; row < height; row++) {
+                for (int x = 0; x < width; x++) {
+                    if (rows.get(row * stride + x * 4 + 3) != (byte) 255) {
+                        throw new IllegalArgumentException("Nonopaque World pixels");
+                    }
+                }
+            }
+        } else {
+            for (int i = 0, step = alphaStride(pixels); i < pixels; i += step) {
+                if (rows.get((i / width) * stride + (i % width) * 4 + 3) != (byte) 255) {
+                    throw new IllegalArgumentException("Nonopaque World pixels");
+                }
+            }
+            if (rows.get((height - 1) * stride + (width - 1) * 4 + 3) != (byte) 255) {
+                throw new IllegalArgumentException("Nonopaque World pixels");
+            }
+        }
+        long stamp = ticket.sequence() << 1;
+        var header = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
+        header.putLong(stamp)
+                .putLong(nonce.high())
+                .putLong(nonce.low())
+                .putLong(ticket.camera())
+                .putLong(ticket.content())
+                .putLong(ticket.policy())
+                .putInt(width)
+                .putInt(height)
+                .putInt(0)
+                .putInt((int) length);
+        if (verify) {
+            var crc = metadataCrc(header.array());
+            for (int row = 0; row < height; row++) {
+                crc.update(rows.duplicate().position(row * stride).limit(row * stride + width * 4));
+            }
+            header.putInt(56, (int) crc.getValue());
+        }
+        lastSequence = ticket.sequence();
+        // The slot is already odd (beginDirect); the header then the even stamp complete it.
+        mapping.asSlice(offset + 8, HEADER_BYTES - 8)
+                .copyFrom(MemorySegment.ofArray(header.array()).asSlice(8));
+        VarHandle.fullFence();
         STAMP.setRelease(mapping, offset, stamp);
     }
 
@@ -273,7 +490,7 @@ final class WorldFrameFileV2 implements AutoCloseable {
         return null;
     }
 
-    private Frame read(Candidate candidate, Barrier barrier) {
+    private Frame read(Candidate candidate, Barrier barrier) throws IOException {
         long offset = candidate.offset();
         byte[] bytes = mapping.asSlice(offset, HEADER_BYTES).toArray(ValueLayout.JAVA_BYTE);
         var header = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
@@ -287,7 +504,14 @@ final class WorldFrameFileV2 implements AutoCloseable {
                 || width > WIDTH
                 || height < 1
                 || height > HEIGHT
-                || length != width * height * 4) {
+                || length < width * height * 4
+                || length > PAYLOAD_BYTES
+                || length % height != 0) {
+            return null;
+        }
+        // Rows may be padded (a direct GPU readback of a larger target): stride = length/height.
+        int stride = length / height;
+        if (stride < width * 4 || stride % 4 != 0) {
             return null;
         }
         var metadata =
@@ -302,33 +526,79 @@ final class WorldFrameFileV2 implements AutoCloseable {
         if (!barrier.accepts(metadata)) {
             return null;
         }
-        int[] pixels = new int[width * height];
-        mapping.asSlice(offset + HEADER_BYTES, length)
-                .asByteBuffer()
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .asIntBuffer()
-                .get(pixels);
-        var crc = metadataCrc(bytes);
-        scratch.clear();
-        var ints = scratch.asIntBuffer();
-        for (int first = 0; first < pixels.length; ) {
-            int count = Math.min(ints.capacity(), pixels.length - first);
-            for (int i = first; i < first + count; i++) {
-                if ((pixels[i] >>> 24) != 255) {
-                    return null;
-                }
+        int count = width * height;
+        int[] pixels = pool.take(count);
+        var ints =
+                mapping.asSlice(offset + HEADER_BYTES, length)
+                        .asByteBuffer()
+                        .order(ByteOrder.LITTLE_ENDIAN)
+                        .asIntBuffer();
+        if (stride == width * 4) {
+            ints.get(pixels, 0, count);
+        } else {
+            for (int row = 0, rowInts = stride / 4; row < height; row++) {
+                ints.get(row * rowInts, pixels, row * width, width);
             }
-            ints.clear().put(pixels, first, count);
-            scratch.clear().limit(count * 4);
-            crc.update(scratch);
-            first += count;
+        }
+        var seam = afterCopy;
+        if (seam != null) {
+            seam.run();
         }
         VarHandle.fullFence();
+        // Seqlock: an unchanged even stamp means no writer touched the slot during the copy.
+        int expectedCrc = header.getInt(56);
         if ((long) STAMP.getAcquire(mapping, offset) != candidate.stamp()
-                || (int) crc.getValue() != header.getInt(56)) {
+                || verify && expectedCrc != 0 && !verified(bytes, pixels, count, expectedCrc)) {
+            pool.recycle(pixels);
             return null;
         }
-        return new Frame(metadata, pixels);
+        // The copy is consistent, so sampled nonopaque pixels are a real renderer fault: loud.
+        boolean opaque = pixels[count - 1] >>> 24 == 255;
+        for (int i = 0, step = alphaStride(count); opaque && i < count; i += step) {
+            opaque = pixels[i] >>> 24 == 255;
+        }
+        if (!opaque) {
+            pool.recycle(pixels);
+            throw new NonopaqueFrameException(metadata.sequence());
+        }
+        return new Frame(metadata, pixels, pool);
+    }
+
+    /** About 64 evenly spaced alpha samples per frame, plus the last pixel. */
+    static int alphaStride(int pixels) {
+        return Math.max(1, pixels / 64);
+    }
+
+    /** A published, consistent frame has nonopaque pixels: a renderer contract violation. */
+    static final class NonopaqueFrameException extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        NonopaqueFrameException(long sequence) {
+            super("World frame " + sequence + " has nonopaque pixels");
+        }
+    }
+
+    private boolean verified(byte[] header, int[] pixels, int count, int expectedCrc) {
+        var crc = metadataCrc(header);
+        scratch.clear();
+        var ints = scratch.asIntBuffer();
+        for (int first = 0; first < count; ) {
+            int chunk = Math.min(ints.capacity(), count - first);
+            for (int i = first; i < first + chunk; i++) {
+                if ((pixels[i] >>> 24) != 255) {
+                    return false;
+                }
+            }
+            ints.clear().put(pixels, first, chunk);
+            scratch.clear().limit(chunk * 4);
+            crc.update(scratch);
+            first += chunk;
+        }
+        return (int) crc.getValue() == expectedCrc;
+    }
+
+    Pool pool() { // Tests only.
+        return pool;
     }
 
     private static CRC32C metadataCrc(byte[] header) {

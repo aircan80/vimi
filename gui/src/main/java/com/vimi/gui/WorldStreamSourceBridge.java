@@ -26,6 +26,7 @@ final class WorldStreamSourceBridge {
         private final WorldTerrainStreaming.Facts facts;
         private WorldTerrainStreaming.WrittenTile<WorldStreamTileWriter.PacketFile> owned;
         private volatile int waterCells;
+        private volatile List<String> waterIssues = List.of();
         private volatile ExteriorSummary exteriorSummary = ExteriorSummary.NONE;
         private volatile boolean exteriorFailed;
 
@@ -71,6 +72,11 @@ final class WorldStreamSourceBridge {
         /** Descriptive count of static water cells carried by this tile's moved packet. */
         int waterCells() {
             return waterCells;
+        }
+
+        /** Where this tile's water source disagrees with a convention the water followed. */
+        List<String> waterIssues() {
+            return waterIssues;
         }
 
         /** Descriptive drawn/omitted counts of this tile's attached objects. */
@@ -122,6 +128,16 @@ final class WorldStreamSourceBridge {
         private RefusalMetadata(WorldTerrainStreaming.Refusal refused) {
             reason = refused.reason();
             site = refused.site();
+        }
+        private RefusalMetadata(WorldTerrainStreaming.Refusal.Reason reason, String site) {
+            this.reason = reason;
+            this.site = site;
+        }
+        /** A tile the World helper kept rejecting (issue #365); its site names it. */
+        static RefusalMetadata helperRejected() {
+            return new RefusalMetadata(
+                    WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE,
+                    WorldStreamSourceController.HELPER_REJECTED);
         }
         WorldTerrainStreaming.Refusal.Reason reason() { return reason; }
         String site() { return site; }
@@ -209,6 +225,7 @@ final class WorldStreamSourceBridge {
                             set,
                             WorldExteriorObjects.Count.BATCH_UNSUPPORTED,
                             WorldExteriorObjects.Count.BATCH_MISSING_IMAGE,
+                            WorldExteriorObjects.Count.BATCH_IMAGE_CAPPED,
                             WorldExteriorObjects.Count.BATCH_CAPPED,
                             WorldExteriorObjects.Count.BATCH_UNREADABLE,
                             WorldExteriorObjects.Count.MODEL_BATCH_UNSUPPORTED,
@@ -372,13 +389,28 @@ final class WorldStreamSourceBridge {
             Cancellation cancellation,
             CreatureAppender creatures,
             WorldExteriorObjects.ImageDetail detail) {
+        return prepareExterior(source, scope, tile, cancellation, creatures, detail, false);
+    }
+
+    /**
+     * As above; {@code interiors} also draws interior WMO groups, for dungeon and raid maps
+     * (#280).
+     */
+    static ExteriorCopy prepareExterior(
+            WorldTerrainStreaming source,
+            WorldTerrainStreaming.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation cancellation,
+            CreatureAppender creatures,
+            WorldExteriorObjects.ImageDetail detail,
+            boolean interiors) {
         WorldExteriorObjects.TileObjects set = null;
         try {
             boolean failed = false;
             String note;
             var summary = ExteriorSummary.NONE;
             try {
-                set = source.prepareExteriorObjects(scope, tile, cancellation, detail);
+                set = source.prepareExteriorObjects(scope, tile, cancellation, detail, interiors);
                 logModelFailure(set);
                 summary = ExteriorSummary.of(set);
                 note = note(summary);
@@ -565,6 +597,7 @@ final class WorldStreamSourceBridge {
         private Prepared prepared;
         private volatile RefusalMetadata sourceRefusal;
         private volatile String waterNote = "";
+        private volatile List<String> lastWaterIssues = List.of();
 
         Producer(WorldTerrainStreaming source, WorldTerrainStreaming.Scope scope,
                 WorldFormats.Tile tile, BooleanSupplier latest) {
@@ -623,6 +656,7 @@ final class WorldStreamSourceBridge {
                 if (waterCopy != null) {
                     if (attached[0]) {
                         local.waterCells = waterCopy.cells();
+                        local.waterIssues = lastWaterIssues;
                     } else {
                         waterNote = "water packet append rolled back";
                     }
@@ -694,10 +728,15 @@ final class WorldStreamSourceBridge {
                     waterNote = "no water surface: " + facts.state();
                     return null;
                 }
-                var copy = new WorldStreamTileWriter.Water[1];
-                positive.withWrittenResource(r -> copy[0] = r.water());
-                waterNote = "water " + facts.state() + " cells=" + facts.cells();
-                return copy[0];
+                var copy = new WaterCopy[1];
+                positive.withWrittenResource(r -> copy[0] = r);
+                lastWaterIssues = facts.issues();
+                waterNote = "water " + facts.state() + " cells=" + facts.cells()
+                        + " quads=" + copy[0].water().cells()
+                        + (copy[0].capped() ? " capped at " + copy[0].layers() + " of "
+                                + facts.admittedLayers() + " layers" : "")
+                        + (facts.issues().isEmpty() ? "" : "; " + String.join("; ", facts.issues()));
+                return copy[0].water();
             } catch (CancellationException canceled) {
                 throw canceled;
             } catch (WorldTerrainStreaming.Refusal refused) {
@@ -829,37 +868,138 @@ final class WorldStreamSourceBridge {
         }
     }
 
-    /** Inert writer result: a detached validated copy; closing it releases nothing. */
-    record WaterCopy(WorldStreamTileWriter.Water water) implements AutoCloseable {
+    /**
+     * Inert writer result: a detached validated copy; closing it releases nothing. A full chunk
+     * (8 x 8 cells) whose used heights are all equal is copied as one quad over the whole chunk,
+     * which draws exactly the same plane: open sea and large lakes then cost one quad per chunk
+     * instead of 64. Layers are copied in source order until the packet's quad bound, and a layer
+     * that would pass it is left out whole ({@code capped}).
+     */
+    record WaterCopy(WorldStreamTileWriter.Water water, int sourceCells, int layers, boolean capped)
+            implements AutoCloseable {
+        /** The scalar water facts the copy reads: one actual Source borrow, or a test fixture. */
+        interface Cells {
+            int vertices();
+
+            int indices();
+
+            int layers();
+
+            int width(int layer);
+
+            int height(int layer);
+
+            long mask(int layer);
+
+            boolean planar(int layer);
+
+            float north(int vertex);
+
+            float west(int vertex);
+
+            float up(int vertex);
+
+            int depth(int vertex);
+        }
+
         static WaterCopy of(WorldWaterPreview.CheckedBorrow borrow, Cancellation token) {
-            int vertices = borrow.vertices(), indexCount = borrow.indices();
-            if (vertices < 4
-                    || vertices > WorldStreamTileWriter.Water.MAX_CELLS * 4
-                    || vertices % 4 != 0
-                    || indexCount != vertices / 4 * 6) {
+            return of(new Cells() {
+                @Override public int vertices() { return borrow.vertices(); }
+                @Override public int indices() { return borrow.indices(); }
+                @Override public int layers() { return borrow.layers(); }
+                @Override public int width(int layer) { return borrow.width(layer); }
+                @Override public int height(int layer) { return borrow.height(layer); }
+                @Override public long mask(int layer) { return borrow.mask(layer); }
+                @Override public boolean planar(int layer) { return borrow.planar(layer); }
+                @Override public float north(int vertex) { return borrow.north(vertex); }
+                @Override public float west(int vertex) { return borrow.west(vertex); }
+                @Override public float up(int vertex) { return borrow.up(vertex); }
+                @Override public int depth(int vertex) { return borrow.depth(vertex); }
+            }, token);
+        }
+
+        /** One copied quad: a source cell, or a merged full flat chunk. */
+        static boolean mergeable(Cells borrow, int layer) {
+            return borrow.width(layer) == 8
+                    && borrow.height(layer) == 8
+                    && borrow.mask(layer) == -1L
+                    && borrow.planar(layer);
+        }
+
+        static WaterCopy of(Cells borrow, Cancellation token) {
+            int vertices = borrow.vertices(), indexCount = borrow.indices(), layers = borrow.layers();
+            if (vertices < 4 || vertices % 4 != 0 || indexCount != vertices / 4 * 6 || layers < 1) {
                 throw new IllegalArgumentException("Water exceeds packet profile");
             }
-            var positions = new float[vertices * 3];
-            var depths = new byte[vertices];
-            var indices = new int[indexCount];
-            for (int v = 0; v < vertices; v++) {
-                if ((v & 1023) == 0) {
-                    token.check();
+            // First pass: quads per layer in source order, up to the packet bound.
+            int quads = 0, copied = 0, sourceCells = 0, consumed = 0;
+            boolean capped = false;
+            for (int l = 0; l < layers; l++) {
+                int cells = Long.bitCount(borrow.mask(l));
+                int layerQuads = mergeable(borrow, l) ? 1 : cells;
+                if (quads + layerQuads > WorldStreamTileWriter.Water.MAX_CELLS) {
+                    capped = true;
+                    break;
                 }
-                positions[v * 3] = borrow.north(v);
-                positions[v * 3 + 1] = borrow.west(v);
-                positions[v * 3 + 2] = borrow.up(v);
-                int depth = borrow.depth(v);
-                if (depth < 0 || depth > 255) {
-                    throw new IllegalArgumentException("Water depth byte");
-                }
-                depths[v] = (byte) depth;
+                quads += layerQuads;
+                sourceCells += cells;
+                consumed += cells * 4;
+                copied++;
             }
-            for (int i = 0; i < indexCount; i++) {
-                indices[i] = borrow.index(i);
+            if (consumed > vertices || quads == 0) {
+                throw new IllegalArgumentException("Water exceeds packet profile");
+            }
+            var positions = new float[quads * 12];
+            var depths = new byte[quads * 4];
+            var indices = new int[quads * 6];
+            int source = 0, quad = 0;
+            for (int l = 0; l < copied; l++) {
+                token.check();
+                int cells = Long.bitCount(borrow.mask(l));
+                if (mergeable(borrow, l)) {
+                    // Cells are Y-major: NW of cell 0, NE of cell 7, SW of 56 and SE of 63.
+                    int[] corners = {source, source + 4 * 7 + 1, source + 4 * 56 + 2,
+                            source + 4 * 63 + 3};
+                    for (int c = 0; c < 4; c++) {
+                        put(borrow, corners[c], positions, depths, quad * 4 + c);
+                    }
+                    quad++;
+                } else {
+                    for (int c = 0; c < cells; c++) {
+                        for (int corner = 0; corner < 4; corner++) {
+                            put(borrow, source + c * 4 + corner, positions, depths,
+                                    quad * 4 + corner);
+                        }
+                        quad++;
+                    }
+                }
+                source += cells * 4;
+            }
+            // The source's explicit NE--SW diagonal for every quad.
+            for (int q = 0; q < quads; q++) {
+                int b = q * 4;
+                indices[q * 6] = b;
+                indices[q * 6 + 1] = b + 2;
+                indices[q * 6 + 2] = b + 1;
+                indices[q * 6 + 3] = b + 1;
+                indices[q * 6 + 4] = b + 2;
+                indices[q * 6 + 5] = b + 3;
             }
             return new WaterCopy(
-                    new WorldStreamTileWriter.Water(positions, depths, indices, borrow.layers()));
+                    new WorldStreamTileWriter.Water(positions, depths, indices, copied),
+                    sourceCells, copied, capped);
+        }
+
+        private static void put(Cells borrow, int vertex,
+                float[] positions, byte[] depths, int at) {
+            positions[at * 3] = borrow.north(vertex);
+            positions[at * 3 + 1] = borrow.west(vertex);
+            positions[at * 3 + 2] = borrow.up(vertex);
+            int depth = borrow.depth(vertex);
+            if (depth < 0 || depth > 255) {
+                throw new IllegalArgumentException("Water depth byte");
+            }
+            depths[at] = (byte) depth;
         }
 
         @Override
@@ -899,12 +1039,50 @@ final class WorldStreamSourceBridge {
                 WorldStreamTileWriter.Reason.valueOf(facts.fallback().name()), coverage,
                 maxX, maxY, error, structural(facts.wdt()), structural(facts.root()),
                 material == null ? null : structural(material.textures()), diffuse);
+        WorldStreamTileWriter.PacketFile packet;
         try {
-            return WorldStreamTileWriter.writeUnadvertised(
+            packet = WorldStreamTileWriter.writeUnadvertised(
                     destination, data, borrow.geometry(), texture, null, stopping);
         } catch (IOException failure) {
             throw new UncheckedIOException(failure);
         }
+        var splat = borrow.splat();
+        if (splat.isPresent() && material != null && texture != null) {
+            try {
+                packet.splat(splatInput(borrow, material, splat.get(), stopping));
+            } catch (RuntimeException failure) {
+                packet.close();
+                throw failure;
+            }
+        }
+        return packet;
+    }
+
+    /** The tile's splatting inputs, decoding a layer diffuse only when the writer asks for it. */
+    static WorldStreamTileWriter.SplatInput splatInput(
+            WorldTerrainStreaming.CheckedBorrow borrow,
+            WorldTerrainStreaming.Material material,
+            com.vibeminer.rendering.world.TerrainTileSplat splat,
+            BooleanSupplier stopping) {
+        long[] ids = splat.diffuseIds();
+        String[] keys = new String[ids.length];
+        for (int i = 0; i < ids.length; i++) {
+            for (int d = 0; d < material.diffuseCount(); d++) {
+                var source = material.diffuse(d).source();
+                if (source.fileDataId() == ids[i]) keys[i] = source.contentKey();
+            }
+            if (keys[i] == null) throw new IllegalStateException("Splat diffuse outside its material");
+        }
+        byte[] table = new byte[splat.layers().remaining()];
+        splat.layers().get(table);
+        // The producer's stop reaches each layer decode: a stopped tile reads no more diffuses.
+        var token = new Cancellation();
+        return new WorldStreamTileWriter.SplatInput(ids, keys, table, splat.alpha(),
+                id -> {
+                    if (stopping.getAsBoolean()) token.cancel();
+                    return borrow.diffuseDetail(id, token)
+                            .map(detail -> new WorldStreamTileWriter.Diffuse(detail.chain()));
+                });
     }
 
     private static WorldStreamTileWriter.Source structural(WorldTerrainStreaming.SourceTuple input) {

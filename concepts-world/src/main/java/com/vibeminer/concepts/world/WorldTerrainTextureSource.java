@@ -690,16 +690,6 @@ public final class WorldTerrainTextureSource {
     }
 
     /**
-     * Largest diffuse BLP file accepted. Terrain diffuses are 1024 or 2048 square BC3 chains up to
-     * about 5.6 MiB. The decoder reads only the header and the one small mip it decodes, but the
-     * decoded stream holds the BLTE chunk that mip lies in, so the transient cost per diffuse is
-     * one decoded chunk: at most the file size, so at most this bound (BLTE chunks are capped at 16
-     * MiB). Diffuses are decoded one at a time. Any later caller that reads a whole diffuse binding
-     * into memory would pull up to this many bytes.
-     */
-    static final int DIFFUSE_SOURCE_LIMIT = 8 << 20;
-
-    /**
      * Largest root ADT accepted, the same as the streaming geometry admission, so a root the
      * geometry draws is never refused for textures only because the material read it itself.
      */
@@ -754,6 +744,30 @@ public final class WorldTerrainTextureSource {
 
     private final BuildFiles files;
     private final TerrainAtlasPool pool;
+
+    /**
+     * Shader-side terrain splatting (issue #174 step 2), off until its renderer path ships: only
+     * {@code -Dvimi.world.splat=true} composes the splatting inputs beside each atlas.
+     */
+    static volatile boolean splat = Boolean.getBoolean("vimi.world.splat");
+
+    /**
+     * Side of each tile's splat mask map, from the texture quality tier (issue #174 step 2b-2):
+     * STANDARD 512 (every other alpha-map texel), HIGH 1024 (the native 64 x 64 per chunk). It
+     * applies to tiles composed after it changes; each tile carries its own side.
+     */
+    static volatile int splatMask = com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK;
+
+    /**
+     * Whole-file bound of a layer diffuse. The decoder reads only the header and the selected mip's
+     * byte range (each mip read is bounded by {@code maxMipBytes}), so a large diffuse with a full
+     * mip chain (a 1024 x 1024 BC3 chain is about 1.4 MB) no longer fails a 1 MiB file cap. The
+     * decoded stream holds the BLTE chunk the selected mip lies in, so the transient cost per
+     * diffuse is one decoded chunk: at most the file size, so at most this bound. Diffuses are
+     * decoded one at a time.
+     */
+    static final int DIFFUSE_SOURCE_LIMIT = 8 << 20;
+
     // Layer diffuses decoded for shader-side splatting, shared by every tile of this source.
     final TerrainDiffuseDetails details = new TerrainDiffuseDetails();
     private final TerrainTextureTasks tasks;
@@ -1130,7 +1144,8 @@ public final class WorldTerrainTextureSource {
                 }
                 request.report(Stage.COMPOSING, tileIndex, 0);
                 var composition =
-                        TerrainAtlasComposer.compose(tile, grid, data, diffuse, request::canceled);
+                        TerrainAtlasComposer.compose(
+                                tile, grid, data, diffuse, splat, splatMask, request::canceled);
                 for (var issue : composition.diagnostics()) {
                     issues.add(
                             new Issue(
@@ -1260,9 +1275,11 @@ public final class WorldTerrainTextureSource {
     }
 
     /**
-     * The largest declared mip of one layer diffuse within {@link TerrainDiffuseDetails#MAX_SIDE},
-     * for shader-side splatting (issue #174 step 2). Same file bounds and revalidation as the
-     * coverage preview's 4 x 4 mip; a decoded detail is cached by file id and content key.
+     * One layer diffuse as its {@link com.vibeminer.rendering.world.TerrainLayerBlocks} BC1 chain,
+     * for shader-side splatting (issue #174 step 2). A DXT file of side at least 256 that records
+     * its levels from 256 down to 4 x 4 is carried as its own blocks; any other diffuse is decoded
+     * at its largest declared mip within 256 and encoded. Same file bounds and revalidation as the
+     * coverage preview's 4 x 4 mip; the result is cached by file id and content key.
      */
     TerrainDiffuseDetails.Detail detail(FileBinding before, Request request) {
         var cached = details.get(before.fileId(), before.contentKey());
@@ -1281,32 +1298,41 @@ public final class WorldTerrainTextureSource {
                     before,
                     DIFFUSE_SOURCE_LIMIT,
                     !stream.holes().isEmpty());
-            var image =
-                    Blp2Decoder.decodeLargestWithin(
-                                    AssetSources.file(stream),
-                                    TerrainDiffuseDetails.MAX_SIDE,
-                                    // Decoded pixels and bytes bounded by one 128 x 128 layer.
-                                    new Blp2Types.Limits(
-                                            DIFFUSE_SOURCE_LIMIT,
-                                            16384,
-                                            TerrainDiffuseDetails.MAX_SIDE
-                                                    * TerrainDiffuseDetails.MAX_SIDE,
-                                            1 << 20,
-                                            TerrainDiffuseDetails.MAX_SIDE
-                                                    * TerrainDiffuseDetails.MAX_SIDE
-                                                    * 4L),
-                                    request.token,
-                                    Blp2Types.MipProfile.DECLARED_HANDMADE_V1)
-                            .join();
-            request.check();
-            int side = image.width();
-            if (side != image.height()
-                    || side > TerrainDiffuseDetails.MAX_SIDE
-                    || Integer.bitCount(side) != 1
-                    || image.baseWidth() != image.baseHeight()
-                    || image.rowStride() != side * 4) {
-                throw new SourceFailure(Reason.DIFFUSE_PROFILE);
+            var source = AssetSources.file(stream);
+            String[] encoding = new String[1];
+            byte[] chain = layerBlocks(source, request, encoding);
+            boolean fileBlocks = chain != null;
+            if (chain == null) {
+                int side = com.vibeminer.rendering.world.TerrainLayerBlocks.SIDE;
+                var image =
+                        Blp2Decoder.decodeLargestWithin(
+                                        source,
+                                        side,
+                                        // Decoded pixels and bytes bounded by one 256 x 256 layer.
+                                        new Blp2Types.Limits(
+                                                DIFFUSE_SOURCE_LIMIT,
+                                                16384,
+                                                side * side,
+                                                1 << 20,
+                                                side * side * 4L),
+                                        request.token,
+                                        Blp2Types.MipProfile.DECLARED_HANDMADE_V1)
+                                .join();
+                request.check();
+                int decoded = image.width();
+                if (decoded != image.height()
+                        || decoded > side
+                        || Integer.bitCount(decoded) != 1
+                        || image.baseWidth() != image.baseHeight()
+                        || image.rowStride() != decoded * 4) {
+                    throw new SourceFailure(Reason.DIFFUSE_PROFILE);
+                }
+                chain =
+                        com.vibeminer.rendering.world.TerrainLayerBlocks.encode(
+                                java.nio.ByteBuffer.wrap(image.rgba()), decoded);
+                encoding[0] = image.encoding().name();
             }
+            request.check();
             revalidate(
                     List.of(
                             new FileBinding(
@@ -1318,7 +1344,91 @@ public final class WorldTerrainTextureSource {
                     request);
             return details.put(
                     new TerrainDiffuseDetails.Detail(
-                            before.fileId(), before.contentKey(), side, image.rgba()));
+                            before.fileId(), before.contentKey(), chain, fileBlocks, encoding[0]));
+        }
+    }
+
+    /**
+     * The layer chain from the file's own DXT blocks, or null when the file has none to carry: not
+     * DXT, not square, smaller than 256, or not recording every level from 256 down to 4 x 4 in
+     * exact storage. Reads only the header, the mip table and those levels' byte ranges.
+     */
+    private static byte[] layerBlocks(
+            com.vibeminer.formats.AssetSource source, Request request, String[] encoding) {
+        int side = com.vibeminer.rendering.world.TerrainLayerBlocks.SIDE;
+        try {
+            byte[] head = source.readAt(0, Blp2Decoder.HEADER_BYTES, request.token).join();
+            request.check();
+            var header = java.nio.ByteBuffer.wrap(head).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            if (head.length != Blp2Decoder.HEADER_BYTES
+                    || header.getInt(0) != 0x32504c42
+                    || header.getInt(4) != 1
+                    || (head[8] & 255) != 2) {
+                return null;
+            }
+            int format =
+                    switch (head[10] & 255) {
+                        case 0 -> com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+                        case 1 -> com.vibeminer.rendering.world.ObjectTextureFormats.BC2;
+                        case 7 -> com.vibeminer.rendering.world.ObjectTextureFormats.BC3;
+                        default -> -1;
+                    };
+            long width = Integer.toUnsignedLong(header.getInt(12));
+            long height = Integer.toUnsignedLong(header.getInt(16));
+            if (format < 0
+                    || width != height
+                    || width < side
+                    || width > 16384
+                    || Long.bitCount(width) != 1) {
+                return null;
+            }
+            int top = Long.numberOfTrailingZeros(width / side);
+            var mips =
+                    Blp2Decoder.readMipsSynchronous(
+                            source,
+                            new Blp2Types.Limits(
+                                    DIFFUSE_SOURCE_LIMIT, 16384, 16384L * 16384, 1 << 20, 64),
+                            request.token,
+                            Blp2Types.MipProfile.DECLARED_HANDMADE_V1);
+            var levels = new java.util.ArrayList<byte[]>();
+            for (int k = 0; k < com.vibeminer.rendering.world.TerrainLayerBlocks.LEVELS; k++) {
+                int levelSide = com.vibeminer.rendering.world.TerrainLayerBlocks.side(k);
+                int bytes =
+                        com.vibeminer.rendering.world.ObjectTextureFormats.levelBytes(
+                                format, levelSide, levelSide, 0);
+                Blp2Types.Mip mip = null;
+                for (var candidate : mips) {
+                    if (candidate.level() == top + k) {
+                        mip = candidate;
+                    }
+                }
+                if (mip == null
+                        || mip.width() != levelSide
+                        || mip.height() != levelSide
+                        || mip.storage() != Blp2Types.MipStorage.EXACT
+                        || mip.byteLength() != bytes) {
+                    if (k < 7) {
+                        return null;
+                    }
+                    break;
+                }
+                request.check();
+                byte[] level = source.readAt(mip.offset(), bytes, request.token).join();
+                if (level.length != bytes) {
+                    return null;
+                }
+                levels.add(level);
+            }
+            var chain =
+                    com.vibeminer.rendering.world.TerrainLayerBlocks.fromBlocks(
+                            format, levels.toArray(byte[][]::new));
+            encoding[0] = new String[] {"RGBA8", "BC1", "BC2", "BC3"}[format];
+            return chain;
+        } catch (com.vibeminer.formats.images.BlpFormatException
+                | IllegalArgumentException
+                | java.util.concurrent.CompletionException unusable) {
+            propagateCancellation(request, unusable);
+            return null;
         }
     }
 

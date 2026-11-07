@@ -121,7 +121,8 @@ public final class WorldTextureUiTest {
             int iconifiedReads=reads.get();
             fx(() -> { ownedStage.setIconified(false); return null; });
             await(() -> reads.get()>iconifiedReads,"stationary deiconify reloads textures");
-            fx(() -> { ((ListView<?>)ownedView.lookup("#world-maps")).getSelectionModel().select(1); return null; });
+            // While exploring, the map list sits in the map panel (HUD step 1): open it first.
+            fx(() -> { ((javafx.scene.control.Button)ownedView.lookup("#world-hud-map")).fire(); ((ListView<?>)ownedView.lookup("#world-maps")).getSelectionModel().select(1); return null; });
             await(() -> fixture.stats().leaseClaims()==0,"empty map selection releases previous snapshot");
             await(() -> children.stream().noneMatch(Process::isAlive),"empty map selection retires GPU child");
             require(fx(() -> !((javafx.scene.Node)get(ownedView,"textureActivity")).isVisible()),"Empty map cannot retain stale texture activity");
