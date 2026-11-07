@@ -829,7 +829,8 @@ final class WorldStreamSourceBridge {
             Cancellation cancellation) {
         for (var image : set.images()) {
             cancellation.check();
-            builder.image(image.width(), image.height(), image.rgba());
+            // The chain as stored: RGBA8, or the file's own BC blocks (#374).
+            builder.image(image.width(), image.height(), image.format(), image.data());
         }
         for (var model : set.models()) {
             builder.model();
