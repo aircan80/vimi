@@ -221,45 +221,7 @@ public final class WmoPortalTraversal {
      */
     public static WmoPortalTraversal of(
             WmoFormats.Portals recorded, List<WmoFormats.GroupHeader> headers) {
-        if (!recorded.retained()) {
-            throw new IllegalArgumentException("Portals not retained");
-        }
-        var groups = new ArrayList<Group>(headers.size());
-        for (var h : headers) {
-            groups.add(
-                    new Group(
-                            h.flags(),
-                            h.lower().x(),
-                            h.lower().y(),
-                            h.lower().z(),
-                            h.upper().x(),
-                            h.upper().y(),
-                            h.upper().z(),
-                            h.firstPortal(),
-                            h.portalCount()));
-        }
-        var portals = new ArrayList<Portal>(recorded.portals().size());
-        for (var p : recorded.portals()) {
-            var vertices = new double[p.vertexCount() * 3];
-            for (int i = 0; i < p.vertexCount(); i++) {
-                var v = recorded.vertex(p.firstVertex() + i);
-                vertices[i * 3] = v.x();
-                vertices[i * 3 + 1] = v.y();
-                vertices[i * 3 + 2] = v.z();
-            }
-            portals.add(
-                    new Portal(
-                            vertices,
-                            p.normal().x(),
-                            p.normal().y(),
-                            p.normal().z(),
-                            p.distance()));
-        }
-        var refs = new ArrayList<Ref>(recorded.refs().size());
-        for (var r : recorded.refs()) {
-            refs.add(new Ref(r.portal(), r.group(), r.side()));
-        }
-        return of(groups, portals, refs);
+        return WmoPortalSet.of(recorded, headers).traversal();
     }
 
     public int groupCount() {
