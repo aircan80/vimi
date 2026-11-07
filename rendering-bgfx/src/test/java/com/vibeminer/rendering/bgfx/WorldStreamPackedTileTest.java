@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -37,15 +38,27 @@ final class WorldStreamPackedTileTest {
             assertThrows(IllegalStateException.class, input::tile);
             assertThrows(IllegalStateException.class, input::atlas);
             assertThrows(IllegalStateException.class, packed::take);
-            assertEquals(48, source.payloadBytes());
+            // Three 16-byte vertices and three u16 indices.
+            assertEquals(3 * 16 + 3 * 2, source.payloadBytes());
             assertNull(source.atlas);
-            var data = source.geometry.asFloatBuffer();
-            assertEquals(10f, data.get(0));
-            assertEquals(10f, data.get(4));
-            assertEquals(10f, data.get(8));
-            assertEquals(44.28f, data.get(3), .00001f);
-            assertEquals(71.34f, data.get(7), .00001f);
-            assertEquals(41.82f, data.get(11), .00001f);
+            var data = source.geometry.duplicate().order(java.nio.ByteOrder.nativeOrder());
+            for (int v = 0; v < 3; v++) {
+                assertEquals(10f, data.getFloat(v * 16));
+            }
+            assertEquals(1f, data.getFloat(16 + 4));
+            assertEquals(1f, data.getFloat(32 + 8));
+            // The +X face light (.45 + .55 * .3) on the low-altitude grass tint, as RGBA8.
+            assertEquals(44, data.get(12) & 255);
+            assertEquals(71, data.get(13) & 255);
+            assertEquals(42, data.get(14) & 255);
+            assertEquals(255, data.get(15) & 255);
+            assertEquals(3, source.terrainVertices);
+            assertEquals(3, source.terrainIndices);
+            assertEquals(48, source.indexOffset());
+            assertEquals(0, data.getShort(48));
+            assertEquals(1, data.getShort(50));
+            assertEquals(2, data.getShort(52));
+            assertArrayEquals(new int[] {0, 3}, source.runs);
         }
     }
 
@@ -58,10 +71,10 @@ final class WorldStreamPackedTileTest {
             packed.close();
             assertThrows(IllegalStateException.class, input::tile);
             assertEquals(WorldStreamNativeProof.TERRAIN_FIXTURE_BYTES, source.payloadBytes());
-            assertEquals(4_543_828, WorldStreamNativeProof.TERRAIN_FIXTURE_BYTES);
-            assertEquals(5_330_260, WorldStreamPackedTile.MAX_PAYLOAD_BYTES);
+            assertEquals(2_385_236, WorldStreamNativeProof.TERRAIN_FIXTURE_BYTES);
+            assertEquals(3_007_828, WorldStreamPackedTile.MAX_PAYLOAD_BYTES);
             assertTrue(source.payloadBytes() <= WorldStreamPackedTile.MAX_PAYLOAD_BYTES);
-            assertEquals(3 << 20, source.geometry.capacity());
+            assertEquals(37120 * 16 + 196608 * 2, source.geometry.capacity());
             assertEquals(WorldStreamAtlasMips.CHAIN_BYTES, source.atlas.capacity());
             assertEquals(0, source.atlas.position());
             assertEquals(WorldStreamAtlasMips.CHAIN_BYTES, source.atlas.limit());

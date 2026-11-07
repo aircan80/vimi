@@ -438,7 +438,7 @@ class WorldStreamTransportTest {
                         },
                         WorldStreamTestChildren.STARTUP_GUARD_MILLIS,
                         5000,
-                        600); // exit grace for a JVM child on a loaded runner
+                        WorldStreamTestChildren.EXIT_GRACE_MILLIS);
         try {
             session.initialized()
                     .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);

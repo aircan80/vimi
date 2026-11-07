@@ -22,7 +22,7 @@ public final class PcmStream implements AutoCloseable {
     private int position;
     private long delivered;
     private boolean ended;
-    private volatile boolean closed;
+    private volatile boolean closed, decoded;
 
     private PcmStream(
             Process process, int sampleRate, int channels, long stallNanos, byte[] first) {
@@ -87,6 +87,7 @@ public final class PcmStream implements AutoCloseable {
             while (!closed) {
                 byte[] block = output.readNBytes(16_384);
                 if (block.length == 0) {
+                    decoded = true;
                     break;
                 }
                 chunks.put(block);
@@ -102,6 +103,14 @@ public final class PcmStream implements AutoCloseable {
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /**
+     * True once the decoder has written its last PCM. What remains is the bounded buffered tail
+     * (this stream's queue and the pipe), so a caller can prepare what follows the file.
+     */
+    public boolean decoded() {
+        return decoded;
     }
 
     public int sampleRate() {

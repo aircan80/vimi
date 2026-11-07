@@ -60,6 +60,8 @@ final class WorldStreamSession {
     // Opt-in measurement only (-Dvimi.world.stageTimings); stamps are 0 while it is off.
     private final WorldStageTimingsDump timingsDump = WorldStageTimingsDump.configured();
     private long uploadStarted, lateStarted;
+    // Opt-in hand-off stamps of the one offer in flight; 0 while timings are off.
+    private volatile long offerReadAt, decodeDoneAt;
     private WorldStreamTileFile.Header uploadHeader;
     private int issued, released;
     private boolean staged, cancelAcknowledgement;
@@ -341,6 +343,9 @@ final class WorldStreamSession {
                     requestClose();
                     return;
                 }
+                if (command instanceof WorldStreamControl.Offer) {
+                    offerReadAt = WorldStageTimings.start();
+                }
                 var result = mailbox.offer(command);
                 if (command instanceof WorldStreamControl.Close
                         && result == WorldControlMailbox.Result.ACCEPTED) {
@@ -401,7 +406,19 @@ final class WorldStreamSession {
             }
             decoderCanceled.set(false);
             decodedCommand = offer;
-            decoding = CompletableFuture.supplyAsync(() -> decodeOffer(offer), decoder);
+            long executed = WorldStageTimings.lap("child.handoff.offerReadToExecute", offerReadAt);
+            decoding =
+                    CompletableFuture.supplyAsync(
+                            () -> {
+                                WorldStageTimings.lap(
+                                        "child.handoff.executeToDecodeStart", executed);
+                                try {
+                                    return decodeOffer(offer);
+                                } finally {
+                                    decodeDoneAt = WorldStageTimings.start();
+                                }
+                            },
+                            decoder);
         } else if (command instanceof WorldStreamControl.Commit commit) {
             if (decoding != null) {
                 deferred = command;
@@ -759,6 +776,7 @@ final class WorldStreamSession {
         decoding = null;
         decodedCommand = null;
         if (command instanceof WorldStreamControl.Offer offer) {
+            WorldStageTimings.lap("child.handoff.decodeDoneToNoticed", decodeDoneAt);
             send("INPUT_CONSUMED " + offer.transaction() + " TILE");
             if (result.error() != null || closing.get() || decoderCanceled.get()) {
                 if (result.tile() != null) {
