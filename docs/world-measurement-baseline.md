@@ -180,7 +180,7 @@ map, in batches of 9. It counts:
 | `child.tile.pack` | 3.4 ms | 2.7 ms | |
 | `child.tile.uploadWall` (begin to STAGED) | 33 ms | 31 ms | Steps p50 0.07 ms |
 | `parent.commit.roundTrip` | 3.9 ms | 3.5 ms | |
-| `parent.commit.toAcceptedFrame` | 37 ms | 31 ms | Receipt to the first FX-accepted frame |
+| `parent.commit.toAcceptedFrame` | 37 ms | 31 ms | Receipt to the first accepted frame drawn from that receipt |
 
 About 400 ms of `produceToStaged` (Elwynn p50 1,179 ms) is not attributed to any timed stage:
 - source total 742 ms;
@@ -206,6 +206,7 @@ SHA and the IPC round trips together cost under 100 ms per tile. Two conclusions
 | `objects.phase.buildings` (WMO roots, groups, images) p50 | 1.9 s | 1.0 s |
 | `objects.phase.doodads` (MDDF M2) p50 | 3.2 s | 2.4 s |
 | `objects.phase.setDoodads` max | 6.5 s | 7.0 s |
+| `objects.phase.interiors` (interior groups, then the set doodads of interior-only roots, which the `setDoodads` figure above still includes) | not in this baseline | not in this baseline |
 | `objects.phase.mipChains` p50 | 8 ms | 7 ms |
 | `objects.phase.imageBudget` p50 | 4 ms | 3 ms |
 | `source.read.BASIC_EXTERIOR` count | 1,702 | 1,817 |
@@ -282,6 +283,10 @@ Some building and model counts are small by comparison:
 | `fx.frame.revisionLag` (camera revisions) | ~3 | ~3 |
 | `fx.frame.present` (FX setPixels and swap) p50 | 1.0 ms | 0.9 ms |
 | `parent.frame.takeLatest` (mmap read, copy, CRC) p50 | 0.01 ms | 0.003 ms |
+
+`child.frame.cropAndPublish` now starts before the staging crop, so on the staging path it
+includes the crop. Staging-path numbers measured after that change are not comparable with the
+~0.5 ms above.
 
 **Reading:**
 - The helper's own per-frame CPU work is about 5 ms, at 800x500, for ~5-6.5k draws and ~1 M

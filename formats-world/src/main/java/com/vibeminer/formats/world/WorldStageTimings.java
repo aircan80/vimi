@@ -64,6 +64,22 @@ public final class WorldStageTimings {
         record(stage, System.nanoTime() - started);
     }
 
+    /**
+     * Records the time since {@code since} under {@code stage} and returns a new stamp, for chains
+     * of hand-offs. A 0 stamp (taken while off) records nothing and returns 0, so a chain started
+     * while off stays silent.
+     */
+    public static long lap(String stage, long since) {
+        if (since == 0L) {
+            return 0L;
+        }
+        long now = start();
+        if (now != 0L) {
+            record(stage, now - since);
+        }
+        return now;
+    }
+
     /** Records one duration in nanoseconds. */
     public static void record(String stage, long nanos) {
         if (enabled) {
