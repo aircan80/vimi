@@ -508,7 +508,9 @@ public final class WorldTextureFormats {
         if (layers != null && layers.length() == 0 && issue == ChunkIssue.NONE) {
             return new ChunkSlice(
                     new ChunkTexture(ordinal, entries, ChunkIssue.NO_LAYERS),
-                    new Slice(layers.end(), layers.end()));
+                    new Slice(layers.end(), layers.end()),
+                    shadow,
+                    shadowBits);
         }
         if (layers == null
                 || alpha == null
