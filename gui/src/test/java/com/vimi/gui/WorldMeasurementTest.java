@@ -18,8 +18,10 @@ public final class WorldMeasurementTest {
         gcLogPausesAreGroupedByKind();
         measurementWorldNeedsPreparedFiles();
         measurementWorldClosesTheWorldBeforeItsTables();
+        npcAnswersAreClassifiedByOutcome();
         System.out.println(
-                "World measurement: helper options, GC log pauses and the measurement World passed");
+                "World measurement: helper options, GC log pauses, the measurement World and NPC"
+                        + " outcomes passed");
     }
 
     private static void check(boolean value, String message) {
@@ -111,6 +113,45 @@ public final class WorldMeasurementTest {
         } catch (IllegalStateException expected) {
             check(expected.getMessage().contains("Files must be prepared"), expected.getMessage());
         }
+        try {
+            work.openCreaturesForMeasurement(null, Cancellation.NONE);
+            throw new AssertionError("Opened measurement creatures without prepared files");
+        } catch (IllegalStateException expected) {
+            check(expected.getMessage().contains("Files must be prepared"), expected.getMessage());
+        }
+    }
+
+    /** The probe's NPC counts (#553) name each display's latest answer, refusals by reason. */
+    private static void npcAnswersAreClassifiedByOutcome() throws RuntimeException {
+        var answers =
+                new java.util.LinkedHashMap<Long, com.vibeminer.concepts.races.RaceNpcs.Appearance>();
+        answers.put(1L, com.vibeminer.concepts.races.RaceNpcs.Appearance.refused("no bake"));
+        answers.put(2L, com.vibeminer.concepts.races.RaceNpcs.Appearance.refused("no bake"));
+        answers.put(3L, new com.vibeminer.concepts.races.RaceNpcs.Appearance(null, 0, 0, "busy", true));
+        var probe =
+                new WorldMeasurementProbe.NpcAnswers((id, token) -> answers.get(id));
+        try {
+            for (long id = 1; id <= 3; id++) probe.appearance(id, Cancellation.NONE);
+            probe.appearance(4, Cancellation.NONE);
+        } catch (Exception unexpected) {
+            throw new AssertionError(unexpected);
+        }
+        check(
+                probe.tally()
+                        .equals(
+                                java.util.Map.of(
+                                        "refused: no bake", 2,
+                                        "not readable yet: busy", 1,
+                                        "refused: no NPC appearance", 1)),
+                "NPC outcomes: " + probe.tally());
+        // A display asked again keeps only its latest answer.
+        answers.put(3L, com.vibeminer.concepts.races.RaceNpcs.Appearance.refused("no bake"));
+        try {
+            probe.appearance(3, Cancellation.NONE);
+        } catch (Exception unexpected) {
+            throw new AssertionError(unexpected);
+        }
+        check(probe.tally().get("refused: no bake") == 3, "Latest answer: " + probe.tally());
     }
 
     private static void measurementWorldClosesTheWorldBeforeItsTables() {

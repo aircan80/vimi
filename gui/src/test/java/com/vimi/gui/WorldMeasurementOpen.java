@@ -50,6 +50,25 @@ final class WorldMeasurementOpen implements AutoCloseable {
         return measured.world();
     }
 
+    /**
+     * Creature and race handles over the measured World's tables (#553); the caller closes them
+     * before this open.
+     */
+    NativePreparationWork.MeasurementCreatures openCreatures(Cancellation token) {
+        return work.openCreaturesForMeasurement(measured.tables(), token);
+    }
+
+    /** A new display preview component over the measured tables and files; caller closes it. */
+    com.vibeminer.concepts.models.BuildDisplayModels displays() {
+        return new com.vibeminer.concepts.models.DisplayModelService(
+                measured.tables(), work.filesHandle(), work.generatedHandle());
+    }
+
+    /** The library's data sources (world spawns), opened without scheduled checks. */
+    DataSourcesService sources() {
+        return service.dataSources();
+    }
+
     /** The marker a measurement copy must carry at its root; a real library never has it. */
     static final String MARKER = "MEASUREMENT_COPY";
 

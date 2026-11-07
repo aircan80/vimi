@@ -737,6 +737,45 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         }
     }
 
+    /**
+     * Creature models and humanoid NPC appearances over a measurement World's table handle, for
+     * the measurement probe's opt-in creature counts (#553). Same requirements as {@link
+     * #openWorldForMeasurement}; it never stages or publishes a workspace. Caller closes it before
+     * the World.
+     */
+    MeasurementCreatures openCreaturesForMeasurement(BuildTables tables, Cancellation token) {
+        token.check();
+        if (opened == null || fileHandle == null)
+            throw new IllegalStateException("Files must be prepared before measurement creatures");
+        var open =
+                new CreaturesService(
+                                tablesService(token, TableRole.WORKSPACE),
+                                files,
+                                new BlpImages(generated))
+                        .forBuild(ref, locale, token)
+                        .join();
+        if (open.creatures() == null)
+            throw new IllegalStateException("Creatures " + open.code());
+        try {
+            return new MeasurementCreatures(
+                    open.creatures(),
+                    new com.vibeminer.concepts.races.RacesService(tables, fileHandle, generated));
+        } catch (RuntimeException | Error failure) {
+            closeResources(open.creatures());
+            throw failure;
+        }
+    }
+
+    /** Measurement creature and race handles; both close before the World's tables. */
+    record MeasurementCreatures(
+            BuildCreatures creatures, com.vibeminer.concepts.races.BuildRaces races)
+            implements AutoCloseable {
+        @Override
+        public void close() {
+            closeResources(races, creatures);
+        }
+    }
+
     /** One measurement World and the table handle it borrows; the World closes first. */
     record MeasurementWorld(BuildTables tables, com.vibeminer.concepts.world.WorldService world)
             implements AutoCloseable {
