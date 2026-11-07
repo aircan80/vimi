@@ -174,7 +174,9 @@ public final class GpuViewerMain {
                     init.resolution().width(0).height(0).reset(BGFX_RESET_NONE);
                     BGFXPlatform.bgfx_render_frame(0);
                     if (!bgfx_init(init)) {
-                        throw new IOException("Unable to initialize GPU backend");
+                        throw new IOException(
+                                "Unable to initialize GPU backend "
+                                        + options.getOrDefault("--backend", "(platform default)"));
                     }
                     initialized = true;
                 }

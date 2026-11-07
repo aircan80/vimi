@@ -93,6 +93,12 @@ public final class BuildOpener implements Builds {
             Options options,
             BuildResolutionCache resolutionCache,
             BuildResolutionCache.Storage resolutionStorage) {
+        if (resolutionStorage != null
+                && resolutionStorage.isReadOnly()
+                && resolutionCache == null) {
+            throw new IllegalArgumentException(
+                    "Read-only resolution storage needs a resolution cache to restore through");
+        }
         this.resolutionCache = resolutionCache;
         this.resolutionStorage = resolutionStorage;
         this.source = Objects.requireNonNull(source);
@@ -238,6 +244,20 @@ public final class BuildOpener implements Builds {
             BuildMetadata metadata) {}
 
     private Build readBuild(BuildRef build, Cancellation token) {
+        boolean readOnly = resolutionStorage != null && resolutionStorage.isReadOnly();
+        if (readOnly && resolutionCache.memory(build, options) == null) {
+            // Before any metadata read: a read-only open must not touch configs, ENCODING or
+            // ROOT, let alone the network, for a build it is going to refuse.
+            boolean stored;
+            try {
+                stored = BuildResolutionCache.stored(build, options, resolutionStorage, token);
+            } catch (BuildResolutionCache.UnreadableProjection unreadable) {
+                throw unreadable(unreadable);
+            }
+            if (!stored) {
+                throw needsPreparation();
+            }
+        }
         MetadataContext context =
                 metadataCache
                         .open(build, cancellation -> readMetadata(build, cancellation), token)
@@ -246,9 +266,21 @@ public final class BuildOpener implements Builds {
         ArchiveLocations locations =
                 resolutionCache == null ? null : resolutionCache.memory(build, options);
         if (locations == null && resolutionCache != null) {
-            locations =
-                    resolutionCache.restore(
-                            build, options, context.config().archives(), resolutionStorage, token);
+            try {
+                locations =
+                        resolutionCache.restore(
+                                build,
+                                options,
+                                context.config().archives(),
+                                resolutionStorage,
+                                token);
+            } catch (BuildResolutionCache.UnreadableProjection unreadable) {
+                throw unreadable(unreadable);
+            }
+        }
+        if (locations == null && readOnly) {
+            // A read-only open never resolves archive indexes itself: that is preparation.
+            throw needsPreparation();
         }
         if (locations == null) {
             locations = readIndexes(context.config(), context.cdn(), token);
@@ -668,6 +700,40 @@ public final class BuildOpener implements Builds {
                 "BUILD_METADATA_TOO_LARGE",
                 "Metadata exceeds admitted byte bounds or has no known length",
                 null);
+    }
+
+    private static OpenFailed needsPreparation() {
+        return new OpenFailed(
+                BuildOpenState.UNAVAILABLE,
+                BuildPart.ARCHIVE_INDEX,
+                BuildResolutionCache.NEEDS_PREPARATION,
+                "Build needs preparation: no stored file-resolution projection (not prepared, or"
+                        + " its projection was not stored: over 512 MiB or a failed save)",
+                null);
+    }
+
+    private static OpenFailed unreadable(BuildResolutionCache.UnreadableProjection failure) {
+        Throwable cause = failure.getCause();
+        while (cause instanceof CompletionException && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        String detail =
+                cause == null
+                        ? failure.getMessage()
+                        : failure.getMessage()
+                                + ": "
+                                + (cause instanceof com.vibeminer.store.StoreException store
+                                        ? store.code()
+                                        : cause.getClass().getSimpleName());
+        var refused =
+                new OpenFailed(
+                        BuildOpenState.UNAVAILABLE,
+                        BuildPart.ARCHIVE_INDEX,
+                        BuildResolutionCache.PROJECTION_UNREADABLE,
+                        detail,
+                        null);
+        refused.initCause(failure);
+        return refused;
     }
 
     private static final class OpenFailed extends RuntimeException {

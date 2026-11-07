@@ -558,4 +558,120 @@ class WorldTextureFormatsTest {
                 WorldTextureFormats.ChunkIssue.LAYER_SHAPE,
                 decode(texture(noAlpha), ByteBuffer.allocate(4096)).issue());
     }
+
+    @Test
+    void shadowMapsDecodeLeastSignificantBitFirstAndNeverAffectCoverage() {
+        byte[] bits = new byte[WorldTextureFormats.SHADOW_BYTES];
+        bits[0] = 0b0000_0101;
+        bits[7] = (byte) 0x80;
+        bits[62 * 8] = 1;
+        Arrays.fill(bits, 63 * 8, 64 * 8, (byte) 0);
+        byte[] source =
+                texture(join(part("MCSH", bits), chunk(1, false), part("MCMT", new byte[4])));
+        try (var data = WorldTextureFormats.read(source, () -> false)) {
+            assertEquals(WorldTextureFormats.ShadowState.BITS, data.shadowState(0));
+            assertEquals(WorldTextureFormats.ShadowState.ABSENT, data.shadowState(1));
+            assertTrue(data.decodeAlphas(0, ByteBuffer.allocate(4096), () -> false).admitted());
+            var exact = ByteBuffer.allocate(4096 + 5);
+            exact.position(5);
+            assertTrue(
+                    data.decodeShadow(
+                            0, WorldTextureFormats.DO_NOT_FIX_ALPHA_MAP, exact, () -> false));
+            assertEquals(4101, exact.position());
+            assertEquals(255, exact.get(5) & 255);
+            assertEquals(0, exact.get(5 + 1) & 255);
+            assertEquals(255, exact.get(5 + 2) & 255);
+            assertEquals(255, exact.get(5 + 63) & 255);
+            assertEquals(255, exact.get(5 + 62 * 64) & 255);
+            assertEquals(0, exact.get(5 + 63 * 64) & 255);
+            var fixed = ByteBuffer.allocate(4096);
+            assertTrue(data.decodeShadow(0, 0, fixed, () -> false));
+            // Last column repeats column 62; last row repeats row 62.
+            assertEquals(0, fixed.get(63) & 255);
+            assertEquals(255, fixed.get(63 * 64) & 255);
+            var none = ByteBuffer.allocate(4096);
+            assertFalse(data.decodeShadow(1, 0, none, () -> false));
+            assertEquals(0, none.position());
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> data.decodeShadow(0, 0, ByteBuffer.allocate(4095), () -> false));
+            assertThrows(
+                    CancellationException.class,
+                    () -> data.decodeShadow(0, 0, ByteBuffer.allocate(4096), () -> true));
+            assertThrows(IllegalArgumentException.class, () -> data.shadowState(256));
+        }
+        var closed = WorldTextureFormats.read(source, () -> false);
+        closed.close();
+        assertThrows(
+                IllegalStateException.class,
+                () -> closed.decodeShadow(0, 0, ByteBuffer.allocate(4096), () -> false));
+        for (byte[] bad :
+                new byte[][] {
+                    join(part("MCSH", new byte[511]), chunk(1, false)),
+                    join(part("MCSH", bits), part("MCSH", bits), chunk(1, false))
+                }) {
+            try (var data = WorldTextureFormats.read(texture(bad), () -> false)) {
+                assertEquals(WorldTextureFormats.ShadowState.UNSUPPORTED, data.shadowState(0));
+                assertFalse(data.decodeShadow(0, 0, ByteBuffer.allocate(4096), () -> false));
+                assertTrue(data.decodeAlphas(0, ByteBuffer.allocate(4096), () -> false).admitted());
+            }
+        }
+    }
+
+    @Test
+    void shadowStateIsUnsupportedWhenTheSubChunkWalkStopsEarlyAndSitsBesideEightBitMaps() {
+        var many = new ByteArrayOutputStream();
+        many.writeBytes(chunk(1, false));
+        for (int i = 0; i < 16; i++) {
+            many.writeBytes(part("MCMT", new byte[4]));
+        }
+        many.writeBytes(part("MCSH", new byte[WorldTextureFormats.SHADOW_BYTES]));
+        try (var data = WorldTextureFormats.read(texture(many.toByteArray()), () -> false)) {
+            assertEquals(WorldTextureFormats.ShadowState.UNSUPPORTED, data.shadowState(0));
+            assertEquals(
+                    WorldTextureFormats.ChunkIssue.CHUNK_SHAPE, data.chunks().getFirst().issue());
+        }
+        byte[] bits = new byte[WorldTextureFormats.SHADOW_BYTES];
+        bits[1] = 1;
+        try (var data =
+                WorldTextureFormats.read(
+                        texture(join(chunk(2, true), part("MCSH", bits))), () -> false)) {
+            assertEquals(WorldTextureFormats.ShadowState.BITS, data.shadowState(0));
+            var masks = ByteBuffer.allocate(8192);
+            assertTrue(data.decodeAlphas(0, masks, () -> false).admitted());
+            assertEquals(2, masks.get(4096));
+            var shadow = ByteBuffer.allocate(4096);
+            assertTrue(data.decodeShadow(0, 0, shadow, () -> false));
+            assertEquals(255, shadow.get(8) & 255);
+            assertEquals(0, shadow.get(7) & 255);
+        }
+    }
+
+    @Test
+    void adoptReadsTheCallersArrayWithoutACopyAndKeepsEveryBound() {
+        byte[] source = texture(chunk(2, true));
+        try (var adopted =
+                        WorldTextureFormats.adopt(
+                                source, WorldTextureFormats.AlphaFormat.BIG_8BIT, () -> false);
+                var copied = WorldTextureFormats.read(source, () -> false)) {
+            assertEquals(source.length, adopted.retainedSourceBytes());
+            var a = ByteBuffer.allocate(8192);
+            var b = ByteBuffer.allocate(8192);
+            assertTrue(adopted.decodeAlphas(0, a, () -> false).admitted());
+            assertTrue(copied.decodeAlphas(0, b, () -> false).admitted());
+            assertEquals(a.flip(), b.flip());
+        }
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        WorldTextureFormats.adopt(
+                                new byte[(8 << 20) + 1],
+                                WorldTextureFormats.AlphaFormat.BIG_8BIT,
+                                () -> false));
+        assertThrows(
+                CancellationException.class,
+                () ->
+                        WorldTextureFormats.adopt(
+                                source, WorldTextureFormats.AlphaFormat.BIG_8BIT, () -> true));
+    }
 }

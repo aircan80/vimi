@@ -29,7 +29,99 @@ public final class BuildResolutionCache implements AutoCloseable {
             java.util.Objects.requireNonNull(reader);
             java.util.Objects.requireNonNull(writer);
         }
+
+        /**
+         * Storage for an already-prepared build opened read-only (#346): stored projections are
+         * read, nothing is ever saved or repaired, and a build without a stored projection is
+         * refused as needing preparation instead of being resolved from its archive indexes. Pass
+         * it to a {@link BuildOpener} together with a {@link BuildResolutionCache}: the cache does
+         * the restore. The read-only route must also open the build through a local-only source:
+         * the opener checks for the stored projection before it reads any metadata, but a networked
+         * source could still fetch configs, ENCODING or ROOT for a prepared build.
+         */
+        public static Storage readOnly(ObjectReader reader) {
+            return new Storage(reader, READ_ONLY);
+        }
+
+        /** Whether this storage refuses to save, so a missing projection refuses the open. */
+        public boolean isReadOnly() {
+            return writer == READ_ONLY;
+        }
     }
+
+    /**
+     * Code of a read-only open refused because no resolution projection is stored: the build was
+     * not prepared, or its projection was never stored (over 512 MiB, or its save failed).
+     */
+    public static final String NEEDS_PREPARATION = "BUILD_NEEDS_PREPARATION";
+
+    /**
+     * Code of a read-only open refused because the stored projection exists but cannot be read now
+     * (store closed or busy, unreadable index, lost or corrupt chunk). Preparing again would not
+     * help; the cause is attached.
+     */
+    public static final String PROJECTION_UNREADABLE = "BUILD_PROJECTION_UNREADABLE";
+
+    /** A stored projection a read-only open could not read; see {@link #PROJECTION_UNREADABLE}. */
+    static final class UnreadableProjection extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        UnreadableProjection(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
+    /**
+     * Whether a projection is stored for {@code build}, without reading it: a read-only open checks
+     * this before any metadata read. Store failures surface as {@link UnreadableProjection}.
+     */
+    @SuppressWarnings("try")
+    static boolean stored(
+            BuildTypes.BuildRef build,
+            BuildOpener.Options options,
+            Storage storage,
+            Cancellation token) {
+        var cancel = new com.vibeminer.store.Cancellation();
+        try (var registration = token.onCancel(cancel::cancel)) {
+            return storage.reader().has(key(identity(build, options)), cancel).join();
+        } catch (java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        } catch (RuntimeException failure) {
+            token.check();
+            throw new UnreadableProjection("Stored file-resolution projection unreadable", failure);
+        }
+    }
+
+    private static final ObjectWriter READ_ONLY =
+            new ObjectWriter() {
+                private <T> CompletableFuture<T> refused() {
+                    return CompletableFuture.failedFuture(
+                            new IllegalStateException("Resolution storage is read-only"));
+                }
+
+                @Override
+                public CompletableFuture<List<StoreTypes.PutResult>> put(
+                        List<StoreTypes.PutObject> batch,
+                        boolean commitNow,
+                        com.vibeminer.store.Cancellation cancellation) {
+                    return refused();
+                }
+
+                @Override
+                public CompletableFuture<List<StoreTypes.DeleteResult>> delete(
+                        List<ObjectKey> keys, com.vibeminer.store.Cancellation cancellation) {
+                    return refused();
+                }
+
+                @Override
+                public CompletableFuture<com.vibeminer.store.ObjectStaging> stage(
+                        ObjectKey key,
+                        long declaredLength,
+                        StoreTypes.Origin origin,
+                        com.vibeminer.store.Cancellation cancellation) {
+                    return refused();
+                }
+            };
 
     private record Key(BuildTypes.BuildRef build, BuildOpener.Options options) {}
 
@@ -103,6 +195,10 @@ public final class BuildResolutionCache implements AutoCloseable {
                 return null;
             }
             if (read.state() != StoreTypes.ReadState.PRESENT) {
+                if (storage.isReadOnly()) {
+                    throw new UnreadableProjection(
+                            "Stored file-resolution projection is " + read.state(), null);
+                }
                 return null;
             }
             return ArchiveLocations.readProjection(
@@ -110,10 +206,15 @@ public final class BuildResolutionCache implements AutoCloseable {
                     archives,
                     identity,
                     token::check);
-        } catch (java.util.concurrent.CancellationException canceled) {
-            throw canceled;
+        } catch (java.util.concurrent.CancellationException | UnreadableProjection passThrough) {
+            throw passThrough;
         } catch (RuntimeException | java.io.IOException invalid) {
             token.check();
+            if (storage.isReadOnly()) {
+                // A read-only open never falls back to the archive indexes; report why.
+                throw new UnreadableProjection(
+                        "Stored file-resolution projection unreadable", invalid);
+            }
             System.getLogger(BuildResolutionCache.class.getName())
                     .log(
                             System.Logger.Level.WARNING,
@@ -128,7 +229,9 @@ public final class BuildResolutionCache implements AutoCloseable {
             List<CdnKey> archives,
             ArchiveLocations locations,
             Storage storage) {
-        if (storage == null || locations.projectionLength(archives) > (512L << 20)) {
+        if (storage == null
+                || storage.isReadOnly()
+                || locations.projectionLength(archives) > (512L << 20)) {
             return;
         }
         synchronized (this) {
