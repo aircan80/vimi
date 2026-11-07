@@ -1596,7 +1596,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /**
      * Proof seam: false draws every placement, as before CPU culling, so a proof can compare draw
-     * counts and pixels with culling on and off. Production never turns it off.
+     * counts and pixels with culling on and off. Portal culling (#383) uses the same view, so it is
+     * off too. Production never turns it off.
      */
     void objectCulling(boolean enabled) {
         requireOwner();

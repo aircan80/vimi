@@ -34,7 +34,7 @@ import java.util.List;
  *       not separate them). From that group the portal is always passable: the side test is
  *       skipped, and the frustum is narrowed to the portal's edges only when the camera is on the
  *       recorded side and off the plane; otherwise it passes unchanged. From the wrong side the
- *       destination group's box, not the portal polygon, is tested against the frustum. {@link
+ *       portal is passed when either its polygon or the destination group's box is in view. {@link
  *       #inconsistentReferences()} counts them.
  *   <li>Near a portal plane ({@code |dot| <= }{@link #PLANE_EPSILON}) the edge planes degenerate,
  *       so the portal is passed with the current frustum unchanged, whichever side the camera is on
@@ -52,8 +52,9 @@ import java.util.List;
  *       frustum alone, which holds every narrowed one.
  * </ul>
  *
- * <p>An instance keeps its scratch between calls so a per-frame walk allocates only the narrowed
- * plane lists; it is not thread-safe.
+ * <p>An instance keeps its walk state between calls, and with a reused {@link Scratch} a walk
+ * allocates nothing; the {@code List<Plane>} forms allocate per call and are meant for tests. An
+ * instance is not thread-safe.
  */
 public final class WmoPortalTraversal {
     /** MOGP flags: exterior (0x8) and interior (0x2000). */
