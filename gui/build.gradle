@@ -680,6 +680,17 @@ tasks.register('worldStreamBackgroundTest', JavaExec) {
 }
 check.dependsOn worldStreamBackgroundTest
 
+// Manual real-data World view-distance timing (#173); never part of check. Close the app first.
+tasks.register('worldStreamRealDataProbe', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldStreamRealDataProbe'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    for (name in ['vimi.world.viewDistance', 'probe.map', 'probe.moves']) {
+        if (project.hasProperty(name)) systemProperty name, project.property(name)
+    }
+}
+
 tasks.register('worldStreamNeighborhoodTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
