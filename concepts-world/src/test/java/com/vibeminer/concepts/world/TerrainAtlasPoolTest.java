@@ -185,6 +185,8 @@ class TerrainAtlasPoolTest {
         var retained = hit.retain();
         assertEquals(1, pool.stats().entries());
         assertEquals(3, pool.stats().leaseClaims());
+        // Three open leases, one atlas: owners are counted per claimed entry, not per claim.
+        assertEquals(1, pool.stats().claimedEntries());
         assertEquals(1, pool.stats().cachedEntries());
         original.close();
         hit.close();

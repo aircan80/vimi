@@ -55,6 +55,11 @@ final class WorldAudioPlayback implements AutoCloseable {
 
         int read(byte[] buffer, int offset, int length, BooleanSupplier canceled) throws IOException;
 
+        /** True once only the buffered end of this stream remains to be read. */
+        default boolean nearEnd() {
+            return false;
+        }
+
         @Override
         void close();
     }
@@ -93,6 +98,7 @@ final class WorldAudioPlayback implements AutoCloseable {
                     throws IOException {
                 return stream.read(buffer, offset, length, c);
             }
+            @Override public boolean nearEnd() { return stream.decoded(); }
             @Override public void close() { stream.close(); }
         };
     }
@@ -313,7 +319,13 @@ final class WorldAudioPlayback implements AutoCloseable {
 
         private Pcm open(long expected, Source from, long fileId, Cancellation token,
                 String[] problem) {
-            report(false, "Loading recorded " + label() + " file #" + fileId + "…");
+            return open(expected, from, fileId, token, problem, false);
+        }
+
+        /** A quiet open reports no status: a look-ahead must not interrupt "Playing". */
+        private Pcm open(long expected, Source from, long fileId, Cancellation token,
+                String[] problem, boolean quiet) {
+            if (!quiet) report(false, "Loading recorded " + label() + " file #" + fileId + "…");
             WorldAreaAudio.AudioFile file = null;
             for (int attempt = 1; file == null; attempt++) {
                 try {
@@ -325,7 +337,7 @@ final class WorldAudioPlayback implements AutoCloseable {
                                 + " is unavailable.";
                         return null;
                     }
-                    if (attempt == BUSY_STATUS_ATTEMPTS) {
+                    if (attempt == BUSY_STATUS_ATTEMPTS && !quiet) {
                         report(false, "Waiting for the audio source to load recorded " + label()
                                 + " file #" + fileId + "…");
                     }
@@ -408,6 +420,10 @@ final class WorldAudioPlayback implements AutoCloseable {
             String[] problem = new String[1];
             Pcm pcm = open(expected, from, fileId, token, problem);
             if (pcm == null) return current(expected) ? problem[0] : null;
+            // At most one look-ahead per voice: the next file of a multi-file ambience, opened
+            // once the current one is near its end.
+            CompletableFuture<Pcm> ahead = null;
+            long aheadId = 0;
             if (!adopt(pcm)) return null;
             Output out = null;
             try {
@@ -459,11 +475,28 @@ final class WorldAudioPlayback implements AutoCloseable {
                         if (live && kind == WorldAreaAudio.Kind.AMBIENCE) {
                             if (loop != null && loop.size() > 0) cached = loop.toByteArray();
                             loop = null;
-                            long nextId = cached != null ? fileId : pick(playing);
-                            // One in-memory copy serves every loop pass.
-                            Pcm next = cached == null ? open(expected, from, nextId, token, problem)
-                                    : pcm instanceof MemoryPcm memory ? memory
-                                    : new MemoryPcm(pcm.sampleRate(), pcm.channels(), cached);
+                            long nextId;
+                            Pcm next;
+                            if (cached != null) {
+                                // One in-memory copy serves every loop pass.
+                                nextId = fileId;
+                                next = pcm instanceof MemoryPcm memory ? memory
+                                        : new MemoryPcm(pcm.sampleRate(), pcm.channels(), cached);
+                            } else {
+                                next = null;
+                                nextId = 0;
+                                if (ahead != null) {
+                                    // The look-ahead is the next file; a failed one falls back to
+                                    // opening it now, which reports its own status.
+                                    next = ahead.join();
+                                    nextId = aheadId;
+                                    ahead = null;
+                                }
+                                if (next == null) {
+                                    nextId = pick(playing);
+                                    next = open(expected, from, nextId, token, problem);
+                                }
+                            }
                             if (next == null) return current(expected) ? problem[0] : null;
                             if (next.sampleRate() != pcm.sampleRate()
                                     || next.channels() != pcm.channels()) {
@@ -523,8 +556,18 @@ final class WorldAudioPlayback implements AutoCloseable {
                         if (written <= 0) return current(expected) ? OUTPUT_STOPPED : null;
                         offset += written;
                     }
+                    if (ahead == null && kind == WorldAreaAudio.Kind.AMBIENCE && cached == null
+                            && loop == null && pcm.nearEnd()) {
+                        long id = pick(playing);
+                        aheadId = id;
+                        ahead = CompletableFuture.supplyAsync(
+                                () -> open(expected, from, id, token, new String[1], true),
+                                task -> Thread.ofVirtual().name("world-audio-look-ahead")
+                                        .start(task));
+                    }
                 }
             } finally {
+                if (ahead != null) discard(ahead);
                 if (pcm != null) pcm.close();
                 synchronized (this) {
                     active = null;
@@ -700,6 +743,21 @@ final class WorldAudioPlayback implements AutoCloseable {
                         settle();
                     }
                 }
+            }
+        }
+
+        /**
+         * Closes an unused look-ahead. Its open observes the changed state and stops promptly;
+         * waiting briefly keeps close from completing while it still owns a decoder.
+         */
+        private static void discard(CompletableFuture<Pcm> ahead) {
+            ahead.thenAccept(pcm -> {
+                if (pcm != null) pcm.close();
+            });
+            try {
+                ahead.get(2, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (Exception notReady) {
+                /* Closed by the callback above once it completes. */
             }
         }
 
