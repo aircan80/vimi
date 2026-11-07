@@ -98,7 +98,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private long nativeSequence;
     private final WorldNativeSurface nativeSurface = new WorldNativeSurface(viewport, image,
             node -> {
-                if (this.explorer) this.content.setCenter(node);
+                // As for full screen: during an instance switch the switch owns the layout.
+                if (this.explorer && !this.instances.engaged()) this.content.setCenter(node);
             }, new WorldNativePresenter(nativeRequested
                     ? WorldNativePresenter.user32() : WorldNativePresenter.unavailable()));
     // Viewport-only full screen (F11 / Alt+Enter) and the "hide HUD" toggle (Alt+Z).
@@ -106,7 +107,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // HUD over the viewport: Map button and map name, status rows, the map panel (M).
     // Its refocus is shared by every HUD widget (the minimap too); only while exploring.
     private final WorldHud hud = new WorldHud(this::toggleMapPanel, () -> {
-        if (this.explorer) viewport.requestFocus();
+        if (this.explorer) focusViewport();
     });
     private final Button panelBack = new Button();
     // HUD step 2: zone text and banner top-centre, coordinates pill bottom-right.
@@ -285,7 +286,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 default -> menu.open(WorldGameMenu.Page.CONTROLS);
             }
         }
-    }, viewport::requestFocus);
+    }, this::focusViewport);
     private final Button saveBookmark = new Button("Bookmark this view");
     private String buildLabel = "";
     // A validated target waiting for its tile's first verified seed; never applied elsewhere.
@@ -1001,7 +1002,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         });
         anchorToasts();
         toasts.refocus(() -> {
-            if (explorer) viewport.requestFocus();
+            if (explorer) focusViewport();
         });
         placeToasts();
         // Opening the popup stops flight; a held command key (L) stays held so its repeat is no toggle.
@@ -2250,7 +2251,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void menuClosed() {
-        if (explorer) viewport.requestFocus();
+        if (explorer) focusViewport();
     }
 
     /**
@@ -2273,7 +2274,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (menu.shown()) menu.close();
         else if (hud.panelShown()) {
             closeMapPanel();
-            viewport.requestFocus();
+            focusViewport();
         } else if (fullscreen.active()) leaveFullscreenByEscape();
         else menu.open();
         return true;
@@ -2282,6 +2283,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void leaveFullscreenByEscape() {
         layoutToggledAt = System.nanoTime();
         fullscreen.exit();
+        nativeAfterFullscreen();
         clearKeys();
         applyPanels();
     }
@@ -2320,7 +2322,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void toggleMapPanel() {
         if (hud.panelShown()) {
             closeMapPanel();
-            viewport.requestFocus();
+            focusViewport();
             return;
         }
         if (!explorer || instances.engaged()) return;
@@ -2483,11 +2485,30 @@ final class WorldView extends BorderPane implements AutoCloseable {
         // An instance switch (drain or interior) owns the layout; only leaving is allowed.
         if (instances.engaged() && !fullscreen.active()) return;
         layoutToggledAt = System.nanoTime();
+        boolean entering = !fullscreen.active();
+        // One owner of the viewport at a time: native presentation hands it back before full
+        // screen takes it, and the stream restarts on readback there (#381, #415).
+        boolean restream = entering && nativeStream;
+        if (restream) retireStreaming();
         fullscreen.toggle(getScene() == null ? null : getScene().getWindow(),
                 "World explorer" + (inventory == null ? "" : " · " + inventory.map()));
+        if (restream) startStreaming();
+        else if (!entering) nativeAfterFullscreen();
         placeToasts();
         clearKeys();
         applyPanels();
+    }
+
+    /**
+     * Full screen has ended: a stream that runs on readback only because of full screen goes back
+     * to native presentation. Only when it was asked for and has not failed in this view.
+     */
+    private void nativeAfterFullscreen() {
+        if (!nativeRequested || nativeFailed || nativeStream || streaming == null || fullscreen.active()
+                || closed || !active || !explorer || instances.engaged()
+                || WorldNativeSurface.parentHandle(getScene() == null ? null : getScene().getWindow()) == 0) return;
+        retireStreaming();
+        startStreaming();
     }
 
     // When F11 or Alt+Enter last moved the viewport between stages; see viewportFocusLost().
@@ -2517,7 +2538,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         // A hidden HUD closes the map panel, so the next M opens it again.
         if (hidden) closeMapPanel();
         applyPanels();
-        if (explorer) viewport.requestFocus();
+        if (explorer) focusViewport();
     }
 
     private void applyPanels() {
@@ -3317,7 +3338,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         detail, interiors);
         stallWatchdog.reset();
         // #381: native presentation when asked for, on Windows, unless it already failed here.
-        long presentParent = nativeRequested && !nativeFailed
+        // Not in full screen: the helper's child belongs to the application window.
+        long presentParent = nativeRequested && !nativeFailed && !fullscreen.active()
                 ? WorldNativeSurface.parentHandle(getScene() == null ? null : getScene().getWindow()) : 0;
         nativeStream = presentParent != 0;
         nativeSequence = 0;
@@ -3588,14 +3610,17 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private boolean viewportActive() {
-        // The viewport's own window: the application window, or the full-screen stage.
-        var scene = viewport.getScene();
+        // The viewport's own window: the application window, or the full-screen stage. While
+        // native presentation holds it on its overlay stage, which each pulse shows only when
+        // this is true, the placeholder stands in for it in the application window.
+        javafx.scene.Node shown = nativeSurface.attached() ? nativeSurface.placeholder() : viewport;
+        var scene = shown.getScene();
         if (closed || !active || !explorer || scene == null
                 || scene.getWindow() == null || !scene.getWindow().isShowing()) return false;
         if (scene.getWindow() instanceof javafx.stage.Stage stage && stage.isIconified()) return false;
         if (getScene() != null && getScene().getWindow() instanceof javafx.stage.Stage main && main.isIconified())
             return false;
-        for (javafx.scene.Node node = viewport; node != null; node = node.getParent()) {
+        for (javafx.scene.Node node = shown; node != null; node = node.getParent()) {
             if (!node.isVisible()) return false;
         }
         return true;

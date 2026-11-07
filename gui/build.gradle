@@ -376,6 +376,14 @@ tasks.register('worldNativeSurfaceUiTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldNativeSurfaceUiTest'
 }
 
+// The World view and native presentation share the viewport with full screen and instance
+// switches; display, any OS.
+tasks.register('worldNativeViewportUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldNativeViewportUiTest'
+}
+
 // Streamed frame size debounce over authored pulses; no display.
 tasks.register('worldResizeDebounceTest', JavaExec) {
     dependsOn testClasses
