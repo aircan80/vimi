@@ -151,6 +151,22 @@ public final class WorldExteriorObjects {
         return kind == ADDITIVE ? BLENDED : kind;
     }
 
+    /**
+     * The format an image drawn by {@code rangeClass} is carried in when its file stores {@code
+     * fileFormat} blocks (an {@link ObjectTextureFormats} code, or -1 when it has none), or -1 for
+     * RGBA8 (issue #374). Only the kind counts, never the UNLIT flag: opaque ranges, which ignore
+     * alpha, take BC1, BC2 or BC3; blended and additive ones BC2 or BC3 only, because BC1 alpha is
+     * not sampled on every backend; cutout ranges keep RGBA8, whose mips preserve alpha-test
+     * coverage (#265). The World objects file refuses BC1 for any range but an opaque one.
+     */
+    public static int blockFormatFor(int fileFormat, int rangeClass) {
+        int image = imageClass(rangeClass);
+        if (fileFormat < 0 || image == CUTOUT) {
+            return -1;
+        }
+        return image == BLENDED && fileFormat == ObjectTextureFormats.BC1 ? -1 : fileFormat;
+    }
+
     /** Position xyz, unit normal xyz, texture1 uv: 32 bytes per vertex. */
     static final int VERTEX_FLOATS = 8;
 
@@ -2798,17 +2814,19 @@ public final class WorldExteriorObjects {
          */
         static int blockFormat(
                 byte[] raw, long width, long height, List<Blp2Types.Mip> declared, int material) {
-            if (material == CUTOUT || raw.length < Blp2Decoder.HEADER_BYTES || raw[8] != 2) {
+            if (raw.length < Blp2Decoder.HEADER_BYTES || raw[8] != 2) {
                 return -1;
             }
             int format =
-                    switch (raw[10] & 255) {
-                        case 0 -> ObjectTextureFormats.BC1;
-                        case 1 -> ObjectTextureFormats.BC2;
-                        case 7 -> ObjectTextureFormats.BC3;
-                        default -> -1;
-                    };
-            if (format < 0 || material == BLENDED && format == ObjectTextureFormats.BC1) {
+                    blockFormatFor(
+                            switch (raw[10] & 255) {
+                                case 0 -> ObjectTextureFormats.BC1;
+                                case 1 -> ObjectTextureFormats.BC2;
+                                case 7 -> ObjectTextureFormats.BC3;
+                                default -> -1;
+                            },
+                            material);
+            if (format < 0) {
                 return -1;
             }
             int levels = ObjectTextureMips.levels((int) width, (int) height);

@@ -992,6 +992,67 @@ class WorldExteriorObjectsTest {
     }
 
     /**
+     * Issue #374 with #367's range classes: one DXT file drawn by every kind, lit and unlit, takes
+     * the format the objects file admits for that class. BC1 only for opaque ranges (unlit too);
+     * blended and additive ones carry BC2/BC3 or fall back to RGBA8; cutout ones always RGBA8.
+     */
+    @Test
+    void eachRangeClassCarriesTheBlockFormatItsClassAdmits() {
+        int bc1 = com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        int bc3 = com.vibeminer.rendering.world.ObjectTextureFormats.BC3;
+        int rgba = com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8;
+        int o = WorldExteriorObjects.OPAQUE, c = WorldExteriorObjects.CUTOUT;
+        int b = WorldExteriorObjects.BLENDED, a = WorldExteriorObjects.ADDITIVE;
+        int u = WorldExteriorObjects.UNLIT;
+        int[] classes = {o, o | u, c, c | u, b, b | u, a, a | u};
+        // Per class: the format from a DXT1 file, then from a DXT5 file.
+        int[][] expected = {
+            {bc1, bc3}, {bc1, bc3}, {rgba, rgba}, {rgba, rgba},
+            {rgba, bc3}, {rgba, bc3}, {rgba, bc3}, {rgba, bc3}
+        };
+        for (int file = 0; file < 2; file++) {
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+                var materials = new ArrayList<Material>();
+                var batches = new ArrayList<Batch>();
+                for (int i = 0; i < classes.length; i++) {
+                    materials.add(new Material(WorldExteriorObjects.kind(classes[i]), IMAGE, 0));
+                    batches.add(new Batch(i * 3, 3, 0, i));
+                }
+                byte[] root = root(1, new long[] {GROUP}, materials);
+                int momt = indexOf(root, "MOMT") + 8;
+                var data = ByteBuffer.wrap(root).order(ByteOrder.LITTLE_ENDIAN);
+                for (int i = 0; i < classes.length; i++) {
+                    if ((classes[i] & u) != 0) {
+                        data.putInt(momt + i * 64, 0x1); // MOMT F_UNLIT
+                    }
+                }
+                f.files.sources.put(ROOT, root);
+                f.files.sources.put(GROUP, group(EXT, 3, classes.length, batches));
+                f.files.sources.put(
+                        IMAGE, file == 0 ? blp(256, 256, 9, 0x07e0) : blp3(256, 256, 9, 0x07e0));
+                try (var set = f.run()) {
+                    var ranges = set.models().getFirst().meshes().getFirst().ranges();
+                    assertEquals(classes.length, ranges.size());
+                    for (int i = 0; i < classes.length; i++) {
+                        var range = ranges.get(i);
+                        assertEquals(classes[i], range.blend(), "range " + i);
+                        int format = set.images().get(range.image()).format();
+                        assertEquals(
+                                expected[i][file],
+                                format,
+                                "class 0x" + Integer.toHexString(classes[i]) + " file " + file);
+                        // The rule the producer applies, exactly as the objects file reads it.
+                        int rule =
+                                WorldExteriorObjects.blockFormatFor(
+                                        file == 0 ? bc1 : bc3, classes[i]);
+                        assertEquals(rule < 0 ? rgba : rule, format);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Issue #367: MOMT flags bit 0x1 (F_UNLIT) marks a range unlit, whatever its kind; blend mode 3
      * is additive; modes above 3 (modulate and variants) stay unsupported.
      */
