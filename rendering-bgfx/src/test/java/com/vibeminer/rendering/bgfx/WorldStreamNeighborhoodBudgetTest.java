@@ -71,15 +71,15 @@ final class WorldStreamNeighborhoodBudgetTest {
 
     @Test
     void terrainGpuMemoryStaysFixedPerSlot() {
-        long buffer =
-                (long) BgfxWorldStreamRenderer.MAX_TRIANGLES
-                        * BgfxWorldStreamRenderer.INSTANCE_BYTES;
-        assertEquals(3_932_160, buffer);
+        // One indexed terrain and water mesh per slot (#373): 69,888 vertices of 16 bytes and
+        // 245,760 u16 indices at most.
+        long buffer = WorldStreamPackedTile.MAX_GEOMETRY_BYTES;
+        assertEquals(1_609_728, buffer);
         long atlas = WorldStreamAtlasMips.CHAIN_BYTES;
         long terrain = BgfxWorldStreamRenderer.SLOT_COUNT * (buffer + atlas);
-        // FAR, 26 slots: 138.6 MB (5.33 MB per slot with the atlas mip chain); NEAR, 10: 53.3 MB.
-        assertEquals(138_586_760, terrain);
-        assertEquals(53_302_600, WorldStreamTransport.ViewDistance.NEAR.slots() * (buffer + atlas));
+        // FAR, 26 slots: 78.2 MB (3.01 MB per slot with the atlas mip chain); NEAR, 10: 30.1 MB.
+        assertEquals(78_203_528, terrain);
+        assertEquals(30_078_280, WorldStreamTransport.ViewDistance.NEAR.slots() * (buffer + atlas));
     }
 
     @Test
