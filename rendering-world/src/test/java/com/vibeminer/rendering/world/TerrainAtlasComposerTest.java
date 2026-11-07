@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.world;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -76,6 +77,28 @@ class TerrainAtlasComposerTest {
             var chunk = new ByteArrayOutputStream();
             chunk.writeBytes(part("MCLY", layers.array()));
             chunk.writeBytes(part("MCAL", masks));
+            out.writeBytes(part("MCNK", chunk.toByteArray()));
+        }
+        return WorldTextureFormats.read(out.toByteArray(), () -> false);
+    }
+
+    /** Single-layer chunks over 64 diffuses, the reader's MDID bound: chunk o draws o % 64 + 1. */
+    private static WorldTextureFormats.TextureData distinctDiffuses() {
+        var out = new ByteArrayOutputStream();
+        out.writeBytes(part("MVER", ints(18)));
+        out.writeBytes(part("MAMP", ints(0)));
+        int[] ids = new int[TerrainTileSplat.MAX_DIFFUSES];
+        for (int i = 0; i < ids.length; i++) {
+            ids[i] = i + 1;
+        }
+        out.writeBytes(part("MDID", ints(ids)));
+        out.writeBytes(part("MHID", ints(new int[ids.length])));
+        for (int ordinal = 0; ordinal < 256; ordinal++) {
+            var layers = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
+            layers.putInt(ordinal % ids.length).putInt(0).putInt(0).putInt(0);
+            var chunk = new ByteArrayOutputStream();
+            chunk.writeBytes(part("MCLY", layers.array()));
+            chunk.writeBytes(part("MCAL", new byte[0]));
             out.writeBytes(part("MCNK", chunk.toByteArray()));
         }
         return WorldTextureFormats.read(out.toByteArray(), () -> false);
@@ -221,6 +244,156 @@ class TerrainAtlasComposerTest {
             assertFalse(result.atlas().pixels().hasArray());
             assertTrue(result.atlas().retainedBytes() < (2 << 20));
         }
+    }
+
+    @Test
+    void splatCarriesLayerIdsMasksAndBrightnessForTheSameChunks() {
+        try (var textures = textures(new int[] {128, 64}, false)) {
+            var mips = Map.of(1L, mip(1, 255, 0, 0), 2L, mip(2, 0, 255, 0), 3L, mip(3, 0, 0, 255));
+            var plain =
+                    TerrainAtlasComposer.compose(
+                            TILE, grid(new byte[0], true, true), textures, mips, () -> false);
+            assertEquals(null, plain.splat(), "Splat is opt-in");
+            var result =
+                    TerrainAtlasComposer.compose(
+                            TILE, grid(new byte[0], true, true), textures, mips, true, () -> false);
+            var splat = result.splat();
+            assertArrayEquals(new long[] {1, 2, 3}, splat.diffuseIds());
+            // Every chunk: layers 0, 1, 2 name diffuses 1, 2, 3; the fourth is absent.
+            for (int y = 0; y < 16; y++) {
+                for (int x = 0; x < 16; x++) {
+                    assertEquals(0, splat.layer(x, y, 0));
+                    assertEquals(1, splat.layer(x, y, 1));
+                    assertEquals(2, splat.layer(x, y, 2));
+                    assertEquals(TerrainTileSplat.NONE, splat.layer(x, y, 3));
+                }
+            }
+            var alpha = splat.alpha();
+            for (int texel : new int[] {0, 511, 512 * 300 + 77, 512 * 512 - 1}) {
+                assertEquals(128, alpha.get(texel * 4) & 255, "layer 1 mask");
+                assertEquals(64, alpha.get(texel * 4 + 1) & 255, "layer 2 mask");
+                assertEquals(0, alpha.get(texel * 4 + 2) & 255, "no layer 3");
+                assertEquals(128, alpha.get(texel * 4 + 3) & 255, "no MCCV: brightness 1.0");
+            }
+            assertThrows(ReadOnlyBufferException.class, () -> splat.alpha().put(0, (byte) 1));
+            // The atlas is unchanged by requesting the splat.
+            assertEquals(plain.atlas().pixels(), result.atlas().pixels());
+        }
+    }
+
+    @Test
+    void aFullDiffuseListStillSplatsEveryChunk() {
+        // The reader bounds a tile to 64 diffuse ids, so the composer's own cap (chunks whose new
+        // diffuses would pass the list keep the atlas) is a guard; at the bound, all chunks splat.
+        try (var textures = distinctDiffuses()) {
+            var mips = new java.util.HashMap<Long, TerrainAtlasComposer.DiffuseMip>();
+            for (long id = 1; id <= TerrainTileSplat.MAX_DIFFUSES; id++) {
+                mips.put(id, mip(id, 200, 100, 50));
+            }
+            var result =
+                    TerrainAtlasComposer.compose(
+                            TILE, grid(new byte[0], true, true), textures, mips, true, () -> false);
+            var splat = result.splat();
+            assertEquals(TerrainTileSplat.MAX_DIFFUSES, splat.diffuseCount());
+            int splatted = 0;
+            for (int y = 0; y < 16; y++) {
+                for (int x = 0; x < 16; x++) {
+                    if (splat.layer(x, y, 0) != TerrainTileSplat.NONE) {
+                        splatted++;
+                    }
+                }
+            }
+            assertEquals(256, splatted);
+            assertTrue(result.atlas() != null, "the tile still composes its atlas");
+        }
+    }
+
+    @Test
+    void highMaskCarriesEveryAlphaMapTexel() {
+        // Mask variation: alpha-map texels at odd row and odd column are 0, the rest 128.
+        try (var textures = textures(new int[] {128, 64}, true)) {
+            var mips = Map.of(1L, mip(1, 255, 0, 0), 2L, mip(2, 0, 255, 0), 3L, mip(3, 0, 0, 255));
+            var standard =
+                    TerrainAtlasComposer.compose(
+                                    TILE,
+                                    grid(new byte[0], true, true),
+                                    textures,
+                                    mips,
+                                    true,
+                                    () -> false)
+                            .splat();
+            var high =
+                    TerrainAtlasComposer.compose(
+                                    TILE,
+                                    grid(new byte[0], true, true),
+                                    textures,
+                                    mips,
+                                    true,
+                                    TerrainTileSplat.HIGH_MASK,
+                                    () -> false)
+                            .splat();
+            assertEquals(TerrainTileSplat.STANDARD_MASK, standard.maskSide());
+            assertEquals(TerrainTileSplat.HIGH_MASK, high.maskSide());
+            assertEquals(TerrainTileSplat.MAX_ALPHA_BYTES, high.alpha().remaining());
+            // STANDARD samples only odd/odd texels (every other one): all 0 here.
+            assertEquals(0, standard.alpha().get(0) & 255);
+            // HIGH keeps the native map: texel (0, 0) is 128, texel (1, 1) is 0.
+            var alpha = high.alpha();
+            assertEquals(128, alpha.get(0) & 255);
+            assertEquals(0, alpha.get((1 * TerrainTileSplat.HIGH_MASK + 1) * 4) & 255);
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            TerrainAtlasComposer.compose(
+                                    TILE,
+                                    grid(new byte[0], true, true),
+                                    textures,
+                                    mips,
+                                    true,
+                                    768,
+                                    () -> false));
+        }
+    }
+
+    @Test
+    void highMasksOnlyOnTheNearViewDistance() {
+        assertEquals(TerrainTileSplat.HIGH_MASK, TerrainTileSplat.maskSide(true, false));
+        assertEquals(TerrainTileSplat.STANDARD_MASK, TerrainTileSplat.maskSide(true, true));
+        assertEquals(TerrainTileSplat.STANDARD_MASK, TerrainTileSplat.maskSide(false, false));
+        assertEquals(TerrainTileSplat.STANDARD_MASK, TerrainTileSplat.maskSide(false, true));
+        // Measured in the splat proof: one slot's mask chain at each side.
+        assertEquals(1_398_100L, TerrainTileSplat.maskChainBytes(TerrainTileSplat.STANDARD_MASK));
+        assertEquals(5_592_404L, TerrainTileSplat.maskChainBytes(TerrainTileSplat.HIGH_MASK));
+        assertThrows(IllegalArgumentException.class, () -> TerrainTileSplat.maskChainBytes(768));
+        // Exact per-slot totals: NEAR (10 slots) + HIGH, and FAR (26 slots) on any tier.
+        assertEquals(
+                10 * 5_592_404L,
+                10 * TerrainTileSplat.maskChainBytes(TerrainTileSplat.maskSide(true, false)));
+        assertEquals(
+                26 * 1_398_100L,
+                26 * TerrainTileSplat.maskChainBytes(TerrainTileSplat.maskSide(true, true)));
+    }
+
+    @Test
+    void splatRefusesInvalidShapes() {
+        var layers = new byte[TerrainTileSplat.LAYER_BYTES];
+        var alpha = new byte[TerrainTileSplat.ALPHA_BYTES];
+        new TerrainTileSplat(new long[] {1}, layers, alpha);
+        layers[7] = 1;
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new TerrainTileSplat(new long[] {1}, layers, alpha),
+                "A layer index outside the diffuse list");
+        layers[7] = (byte) TerrainTileSplat.NONE;
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new TerrainTileSplat(new long[] {1, 1}, layers, alpha));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new TerrainTileSplat(new long[] {1}, new byte[10], alpha));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new TerrainTileSplat(new long[65], layers, alpha));
     }
 
     @Test
