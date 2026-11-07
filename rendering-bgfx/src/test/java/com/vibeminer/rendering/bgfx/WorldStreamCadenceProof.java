@@ -17,8 +17,8 @@ import java.util.concurrent.atomic.AtomicLongArray;
  * JavaFX; the consumer takes each frame when the transport's frame listener signals it.
  */
 public final class WorldStreamCadenceProof {
-    private static final long WARMUP_NANOS = TimeUnit.SECONDS.toNanos(2);
-    private static final long SAMPLE_NANOS = TimeUnit.SECONDS.toNanos(6);
+    private static final long WARMUP_NANOS = TimeUnit.SECONDS.toNanos(1);
+    private static final long SAMPLE_NANOS = TimeUnit.SECONDS.toNanos(4);
     private static final int MAX_REVISIONS = 1 << 16;
 
     @SuppressWarnings("try")
@@ -30,6 +30,12 @@ public final class WorldStreamCadenceProof {
                 "WORLD_FRAME_READ 800x500 mean ms: default %.3f, debug-verify %.3f%n",
                 readMillis(output, false),
                 readMillis(output, true));
+        System.out.printf(
+                Locale.ROOT,
+                "WORLD_FRAME_PUBLISH 2560x1440 mean ms: staging (crop + mapping copy) %.3f,"
+                        + " direct (header only) %.3f%n",
+                publishMillis(output, true),
+                publishMillis(output, false));
         var prepared =
                 WorldStreamTransport.prepare(
                         output,
@@ -47,6 +53,18 @@ public final class WorldStreamCadenceProof {
                                                                     "java")
                                                             .toString(),
                                                     "--enable-native-access=ALL-UNNAMED",
+                                                    "-D"
+                                                            + WorldStreamSession
+                                                                    .FRAME_TIMINGS_PROPERTY
+                                                            + "=true",
+                                                    // Compare the old staging readback path.
+                                                    "-D"
+                                                            + WorldStreamNativeOwner
+                                                                    .STAGING_PROPERTY
+                                                            + "="
+                                                            + Boolean.getBoolean(
+                                                                    WorldStreamNativeOwner
+                                                                            .STAGING_PROPERTY),
                                                     "-cp",
                                                     System.getProperty("java.class.path"),
                                                     GpuViewerMain.class.getName()));
@@ -76,6 +94,8 @@ public final class WorldStreamCadenceProof {
             session.camera(new WorldStreamTransport.Camera(1, 1, 800, 500, view(0)));
             var receipt = session.commit(1, resident).get(5, TimeUnit.SECONDS);
             var running = new java.util.concurrent.atomic.AtomicBoolean(true);
+            // {width, height, policy}: the driver always sends the current size.
+            var size = new java.util.concurrent.atomic.AtomicReference<>(new int[] {800, 500, 1});
             // A 240 Hz camera driver: faster than any presentation rate under test.
             var driver =
                     Thread.ofPlatform()
@@ -88,10 +108,15 @@ public final class WorldStreamCadenceProof {
                                             if (r >= MAX_REVISIONS) {
                                                 return;
                                             }
+                                            int[] current = size.get();
                                             sentAt.set((int) r, System.nanoTime());
                                             session.camera(
                                                     new WorldStreamTransport.Camera(
-                                                            r, 1, 800, 500, view(r)));
+                                                            r,
+                                                            current[2],
+                                                            current[0],
+                                                            current[1],
+                                                            view(r)));
                                             next += 4_166_667L;
                                             long wait = next - System.nanoTime();
                                             if (wait > 0) {
@@ -100,62 +125,71 @@ public final class WorldStreamCadenceProof {
                                             }
                                         }
                                     });
-            long start = System.nanoTime(), sampleFrom = start + WARMUP_NANOS;
-            long end = sampleFrom + SAMPLE_NANOS;
-            var intervals = new ArrayList<Long>();
-            var latencies = new ArrayList<Long>();
-            long last = 0, firstSequence = -1, lastSequence = 0;
-            long sampleAllocations = 0, sampleCollections = 0;
-            int frames = 0;
-            while (System.nanoTime() < end) {
-                var frame = next(session, 1_000_000_000L);
-                if (frame == null) {
-                    continue;
-                }
-                long now = System.nanoTime();
-                if (frame.content() != receipt) {
+            int[][] sizes = {{800, 500}, {1920, 1080}, {2560, 1440}};
+            for (int index = 0; index < sizes.length; index++) {
+                int width = sizes[index][0], height = sizes[index][1], policy = index + 1;
+                size.set(new int[] {width, height, policy});
+                long start = System.nanoTime(), sampleFrom = start + WARMUP_NANOS;
+                long end = sampleFrom + SAMPLE_NANOS;
+                var intervals = new ArrayList<Long>();
+                var latencies = new ArrayList<Long>();
+                long last = 0, firstSequence = -1, lastSequence = 0;
+                long sampleAllocations = 0, sampleCollections = 0;
+                int frames = 0;
+                while (System.nanoTime() < end) {
+                    var frame = next(session, 1_000_000_000L);
+                    if (frame == null) {
+                        continue;
+                    }
+                    long now = System.nanoTime();
+                    if (frame.content() != receipt
+                            || frame.policy() != policy
+                            || frame.width() != width
+                            || frame.height() != height) {
+                        done(frame);
+                        continue;
+                    }
+                    long cameraRevision = frame.cameraRevision();
                     done(frame);
-                    continue;
-                }
-                long cameraRevision = frame.cameraRevision();
-                done(frame);
-                if (now < sampleFrom) {
+                    if (now < sampleFrom) {
+                        last = now;
+                        continue;
+                    }
+                    if (firstSequence < 0) {
+                        sampleAllocations = poolAllocations(session);
+                        sampleCollections = collections();
+                        firstSequence = frame.sequence();
+                    }
+                    lastSequence = frame.sequence();
+                    frames++;
+                    if (last != 0) {
+                        intervals.add(now - last);
+                    }
                     last = now;
-                    continue;
+                    if (cameraRevision < MAX_REVISIONS) {
+                        latencies.add(now - sentAt.get((int) cameraRevision));
+                    }
                 }
-                if (firstSequence < 0) {
-                    sampleAllocations = poolAllocations(session);
-                    sampleCollections = collections();
-                    firstSequence = frame.sequence();
-                }
-                lastSequence = frame.sequence();
-                frames++;
-                if (last != 0) {
-                    intervals.add(now - last);
-                }
-                last = now;
-                if (cameraRevision < MAX_REVISIONS) {
-                    latencies.add(now - sentAt.get((int) cameraRevision));
-                }
+                long frameArrays = poolAllocations(session) - sampleAllocations;
+                long gcs = collections() - sampleCollections;
+                double seconds = SAMPLE_NANOS / 1e9;
+                System.out.printf(
+                        Locale.ROOT,
+                        "WORLD_STREAM_CADENCE %dx%d frames=%d fps=%.1f publishedSpan=%d"
+                                + " frameArraysAllocated=%d gcs=%d%n"
+                                + "  interval ms %s%n  camera->taken ms %s%n",
+                        width,
+                        height,
+                        frames,
+                        frames / seconds,
+                        lastSequence - firstSequence + 1,
+                        frameArrays,
+                        gcs,
+                        summary(intervals),
+                        summary(latencies));
             }
             running.set(false);
             driver.join();
-            long frameArrays = poolAllocations(session) - sampleAllocations;
-            long gcs = collections() - sampleCollections;
-            double seconds = SAMPLE_NANOS / 1e9;
-            System.out.printf(
-                    Locale.ROOT,
-                    "WORLD_STREAM_CADENCE frames=%d fps=%.1f publishedSpan=%d"
-                            + " cameras=%d frameArraysAllocated=%d gcs=%d%n"
-                            + "  interval ms %s%n  camera->taken ms %s%n",
-                    frames,
-                    frames / seconds,
-                    lastSequence - firstSequence + 1,
-                    revision.get(),
-                    frameArrays,
-                    gcs,
-                    summary(intervals),
-                    summary(latencies));
             session.closeAsync().get(7, TimeUnit.SECONDS);
             session.completion().get(2, TimeUnit.SECONDS);
         } finally {
@@ -183,6 +217,59 @@ public final class WorldStreamCadenceProof {
         return null;
     }
 
+    /**
+     * Mean helper-side publication of one 2560x1440 frame from a 2560x1536 readback target: the
+     * staging path (crop copy into a private buffer, then a copy into the mapping) against the
+     * direct path (the readback is already in the slot; only the header is written).
+     */
+    private static double publishMillis(Path output, boolean staging) throws Exception {
+        var nonce = new WorldStreamState.Nonce(7, 8);
+        Path path = output.resolve("publish-" + staging + ".wsf");
+        Files.deleteIfExists(path);
+        int width = 2560, height = 1440, stride = 2560 * 4, targetRows = 1536;
+        var readback =
+                java.nio.ByteBuffer.allocateDirect(stride * targetRows)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        while (readback.hasRemaining()) {
+            readback.putInt(0xff336699);
+        }
+        readback.flip();
+        var cropped = java.nio.ByteBuffer.allocateDirect(width * height * 4);
+        try (var file = WorldFrameFileV2.open(path, nonce, "ab".repeat(32), true, false)) {
+            long sequence = 0, total = 0;
+            int frames = 120;
+            for (int i = 0; i < frames + 20; i++) {
+                int slot = i % 3;
+                var ticket =
+                        new WorldStreamFrameGate.Frame(nonce, ++sequence, 1, 0, 1, width, height);
+                long start;
+                if (staging) {
+                    start = System.nanoTime();
+                    cropped.clear();
+                    for (int row = 0; row < height; row++) {
+                        cropped.put(
+                                readback.duplicate()
+                                        .position(row * stride)
+                                        .limit(row * stride + width * 4));
+                    }
+                    cropped.flip();
+                    file.write(ticket, cropped);
+                } else {
+                    var direct = file.beginDirect(slot, stride * targetRows);
+                    direct.put(readback.duplicate()); // stands in for the GPU readback itself
+                    start = System.nanoTime();
+                    file.publishDirect(slot, ticket, stride);
+                }
+                if (i >= 20) {
+                    total += System.nanoTime() - start;
+                }
+            }
+            return total / 1e6 / frames;
+        } finally {
+            Files.deleteIfExists(path);
+        }
+    }
+
     /** Mean parent read of one full frame (copy, checks), released after each read. */
     private static double readMillis(Path output, boolean verify) throws Exception {
         var nonce = new WorldStreamState.Nonce(5, 6);
@@ -190,7 +277,7 @@ public final class WorldStreamCadenceProof {
         Files.deleteIfExists(path);
         try (var file = WorldFrameFileV2.open(path, nonce, "ef".repeat(32), true, verify)) {
             var bgra =
-                    java.nio.ByteBuffer.allocate(WorldFrameFileV2.PAYLOAD_BYTES)
+                    java.nio.ByteBuffer.allocate(800 * 500 * 4)
                             .order(java.nio.ByteOrder.LITTLE_ENDIAN);
             while (bgra.hasRemaining()) {
                 bgra.putInt(0xff336699);

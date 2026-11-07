@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.world.ObjectTextureFormats;
 import com.vibeminer.rendering.world.ObjectTextureMips;
 import java.io.BufferedInputStream;
@@ -29,7 +30,7 @@ import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
 /**
- * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 4. Structural
+ * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 5. Structural
  * only: the application's closed source bridge is its sole producer, and the OBJECTS command (or
  * the terrain tile header) names its exact length and SHA-256.
  *
@@ -42,7 +43,8 @@ import java.util.function.BooleanSupplier;
  * #374). Every count, offset, index and float is validated; reserved bytes must be zero.
  */
 final class WorldStreamObjectsFile {
-    static final int VERSION = 4, HEADER_BYTES = 256, MAX_BYTES = 28 << 20;
+    // Version 5 (#367): range classes add ADDITIVE and the UNLIT flag, on #420's version 4.
+    static final int VERSION = 5, HEADER_BYTES = 256, MAX_BYTES = 28 << 20;
     // Opaque buildings (24 roots, 256 meshes, 1,024 ranges, 64 placements, 64 images, 98,304
     // vertices, 294,912 indices), plus cutout and blended building surfaces (256 ranges, 32
     // images, 32,768 vertices, 98,304 indices), plus BASIC doodads (96 models and meshes, 512
@@ -87,8 +89,25 @@ final class WorldStreamObjectsFile {
     /** Per image: width, height, format ({@link ObjectTextureFormats}). */
     static final int IMAGE_INTS = 3;
 
-    /** Range material classes: depth-writing opaque, alpha-tested cutout, sorted alpha blend. */
-    static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2;
+    /**
+     * Range material classes: depth-writing opaque, alpha-tested cutout, sorted alpha blend and
+     * sorted additive blend (MOMT blend mode 3, #367). A class may carry {@link #UNLIT} (MOMT
+     * F_UNLIT): drawn at full intensity, without the light.
+     */
+    static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2, ADDITIVE = 3;
+
+    static final int UNLIT = com.vibeminer.rendering.world.WorldObjectPicking.UNLIT;
+
+    /** The kind of a range class, without its flags. */
+    static int kind(int rangeClass) {
+        return com.vibeminer.rendering.world.WorldObjectPicking.kind(rangeClass);
+    }
+
+    /** Kinds drawn in the sorted blended pass. */
+    static boolean sorted(int rangeClass) {
+        int kind = kind(rangeClass);
+        return kind == BLENDED || kind == ADDITIVE;
+    }
 
     static final int RANGE_INTS = 4, PLACEMENT_DOUBLES = 13;
 
@@ -299,8 +318,8 @@ final class WorldStreamObjectsFile {
                                     && (long) first + length <= indexes
                                     && image >= 0
                                     && image < imageCount
-                                    && blend >= OPAQUE
-                                    && blend <= BLENDED,
+                                    && com.vibeminer.rendering.world.WorldObjectPicking.validClass(
+                                            blend),
                             "Draw range");
                 }
                 meshRanges[mesh] = count;
@@ -367,7 +386,7 @@ final class WorldStreamObjectsFile {
             // so only opaque ranges, which ignore alpha, may sample a BC1 image.
             for (int r = 0; r < rangeCount; r++) {
                 require(
-                        ranges[r * RANGE_INTS + 3] == OPAQUE
+                        kind(ranges[r * RANGE_INTS + 3]) == OPAQUE
                                 || images[ranges[r * RANGE_INTS + 2] * IMAGE_INTS + 2]
                                         != ObjectTextureFormats.BC1,
                         "BC1 image sampled with alpha");
@@ -479,6 +498,17 @@ final class WorldStreamObjectsFile {
     /** CREATE_NEW publication of {@code tile-<txn>.wso} in directory; never replaces a file. */
     static Reference write(Path directory, Identity identity, Data data, BooleanSupplier canceled)
             throws IOException {
+        long started = WorldStageTimings.start();
+        try {
+            return writeTimed(directory, identity, data, canceled);
+        } finally {
+            WorldStageTimings.stop("objectsFile.write.total", started);
+        }
+    }
+
+    private static Reference writeTimed(
+            Path directory, Identity identity, Data data, BooleanSupplier canceled)
+            throws IOException {
         Objects.requireNonNull(directory);
         Objects.requireNonNull(identity);
         Objects.requireNonNull(data);
@@ -549,7 +579,10 @@ final class WorldStreamObjectsFile {
                 if (channel.size() != data.bytes()) {
                     throw new IOException("Objects file length differs");
                 }
+                WorldStageTimings.add("objectsFile.write.bytes", data.bytes());
+                long forcing = WorldStageTimings.start();
                 channel.force(false);
+                WorldStageTimings.stop("objectsFile.write.fsync", forcing);
             }
             check(canceled);
             if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
@@ -567,6 +600,17 @@ final class WorldStreamObjectsFile {
 
     /** Reads and fully validates one objects file bound to exactly this tile and reference. */
     static Data read(Path path, Identity identity, Reference reference, BooleanSupplier canceled)
+            throws IOException {
+        long started = WorldStageTimings.start();
+        try {
+            return readTimed(path, identity, reference, canceled);
+        } finally {
+            WorldStageTimings.stop("child.objectsFile.read", started);
+        }
+    }
+
+    private static Data readTimed(
+            Path path, Identity identity, Reference reference, BooleanSupplier canceled)
             throws IOException {
         Objects.requireNonNull(identity);
         Objects.requireNonNull(reference);

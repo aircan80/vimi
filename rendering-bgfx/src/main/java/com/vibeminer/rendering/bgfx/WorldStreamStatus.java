@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -190,7 +191,7 @@ final class WorldStreamStatus {
                     arity(p, 6);
                     long policy = positive(p[3]);
                     int width = integer(p[4]), height = integer(p[5]);
-                    require(width >= 1 && width <= 800 && height >= 1 && height <= 500);
+                    require(WorldFrameLimits.fits(width, height));
                     yield new CameraApplied(nonce, policy, width, height);
                 }
                 case "FRAME" -> {
