@@ -1,0 +1,114 @@
+/* World HUD overlays: small, translucent, drawn over the 3D view. */
+.world-hud-chip {
+    -fx-background-color: rgba(14, 24, 31, 0.72);
+    -fx-background-radius: 6;
+    -fx-padding: 4 8;
+}
+
+.world-hud-chip .label,
+.world-hud-chip.label {
+    -fx-text-fill: #e8eeee;
+}
+
+.world-hud-map-button {
+    -fx-background-color: rgba(14, 24, 31, 0.82);
+    -fx-background-radius: 6;
+    -fx-text-fill: #f2f5f2;
+    -fx-font-weight: bold;
+    -fx-padding: 5 12;
+}
+
+.world-hud-map-button:hover,
+.world-hud-map-button:selected-panel {
+    -fx-background-color: rgba(40, 108, 181, 0.9);
+}
+
+.world-hud-map-name {
+    -fx-text-fill: #f2f5f2;
+    -fx-font-size: 1.15em;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.85), 4, 0.4, 0, 1);
+}
+
+.world-map-panel {
+    -fx-background-color: rgba(243, 246, 243, 0.97);
+    -fx-background-radius: 8;
+    -fx-padding: 10;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.45), 12, 0.2, 0, 2);
+}
+
+.world-hud-zone {
+    -fx-text-fill: #f6e7b4;
+    -fx-font-size: 1.25em;
+    -fx-font-weight: bold;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.9), 4, 0.5, 0, 1);
+}
+
+.world-hud-subzone {
+    -fx-text-fill: #f2f5f2;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.9), 4, 0.5, 0, 1);
+}
+
+.world-hud-banner {
+    -fx-text-fill: #f6e7b4;
+    -fx-font-size: 28px;
+    -fx-font-weight: bold;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.9), 8, 0.5, 0, 2);
+}
+
+.world-hud-coordinates {
+    -fx-font-family: monospace;
+    -fx-text-alignment: right;
+    -fx-alignment: center-right;
+}
+
+.world-hud-icons {
+    -fx-background-color: rgba(14, 24, 31, 0.6);
+    -fx-background-radius: 8;
+    -fx-padding: 3 5;
+}
+
+.world-hud-icon {
+    -fx-background-color: transparent;
+    -fx-background-radius: 5;
+    -fx-padding: 2 4;
+    -fx-min-width: 24;
+    -fx-min-height: 24;
+    -fx-text-fill: #e8eeee;
+    -fx-font-weight: bold;
+}
+
+.world-hud-icon:hover {
+    -fx-background-color: rgba(255, 255, 255, 0.16);
+}
+
+.world-hud-icon .world-hud-glyph {
+    -fx-fill: #e8eeee;
+}
+
+.world-hud-icon .world-hud-slash {
+    -fx-stroke: #eb5757;
+    -fx-stroke-width: 2.2;
+}
+
+.world-hud-icon:amber,
+.world-hud-icon:amber .world-hud-glyph {
+    -fx-text-fill: #f2b84b;
+    -fx-fill: #f2b84b;
+}
+
+.world-hud-icon:red {
+    -fx-text-fill: #eb5757;
+}
+
+.world-hud-icon:dim {
+    -fx-opacity: 0.5;
+}
+
+.world-hud-icon:bright {
+    -fx-text-fill: #ffffff;
+    -fx-effect: dropshadow(gaussian, rgba(255, 230, 150, 0.9), 6, 0.4, 0, 0);
+}
+
+.world-hud-text-icon {
+    -fx-font-family: monospace;
+}

@@ -46,7 +46,12 @@ public final class WorldStreamSplatUploadProof {
                                         System.getProperty("vimi.proof.backend", "vulkan")))) {
             var splatted = new WorldStreamState.Lease(0, 1, 1);
             var plain = new WorldStreamState.Lease(1, 1, 2);
-            WorldStreamNativeProof.splatForNextPrepare = WorldStreamTileSplatTest.splat(0, 1, 2);
+            int maskSide =
+                    "high".equals(System.getProperty("vimi.proof.splatMask"))
+                            ? com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK
+                            : com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK;
+            WorldStreamNativeProof.splatForNextPrepare =
+                    WorldStreamTileSplatTest.splatWithMask(maskSide, 0, 1, 2);
             var packed =
                     worker.submit(
                                     () ->
@@ -61,6 +66,13 @@ public final class WorldStreamSplatUploadProof {
                     owner.splatBlocks() == !forced,
                     "Layer array format: BC1 unless forced to the RGBA8 fallback");
             require(owner.splatted(0), "Splat inputs uploaded for the slot");
+            long maskBytes = owner.splatMaskBytes();
+            require(
+                    maskBytes
+                            == com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(
+                                            maskSide, maskSide)
+                                    * 4L,
+                    "One slot's mask chain at its tier's side: " + maskBytes);
             var second =
                     worker.submit(
                                     () ->
@@ -72,15 +84,16 @@ public final class WorldStreamSplatUploadProof {
             require(!owner.splatted(1), "A packet without splat inputs uploads as before");
             owner.commit(1, 2, List.of(splatted, plain));
             long revision = ++cameraRevision;
-            owner.submit(
+            var camera =
                     new WorldStreamControl.Camera(
-                            NONCE,
-                            revision,
-                            1,
-                            256,
-                            256,
-                            new TerrainCamera(-100, -10, 50, 0, -.6)));
+                            NONCE, revision, 1, 256, 256, new TerrainCamera(-100, -10, 50, 0, -.6));
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            // The owner refuses a draw while no readback slot is free (the upload's last frames
+            // may still be in flight): resubmit the same camera until it is drawn.
+            while (!owner.submit(camera)) {
+                owner.advance();
+                require(System.nanoTime() < deadline, "The final camera was never drawn");
+            }
             WorldFrameFileV2.Frame frame = null;
             long sequence = 0;
             while (frame == null && System.nanoTime() < deadline) {
@@ -101,6 +114,10 @@ public final class WorldStreamSplatUploadProof {
                             + System.getProperty("vimi.proof.backend", "vulkan")
                             + " layers="
                             + (owner.splatBlocks() ? "BC1-256" : "RGBA8-128")
+                            + " mask="
+                            + maskSide
+                            + " maskBytesPerSlot="
+                            + maskBytes
                             + " peakStepBytes="
                             + peak[0]
                             + " textures="
