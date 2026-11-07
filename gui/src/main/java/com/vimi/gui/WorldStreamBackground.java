@@ -26,7 +26,7 @@ final class WorldStreamBackground {
             BooleanSupplier stopping) {
         Objects.requireNonNull(pixels);
         Objects.requireNonNull(stopping);
-        if (width < 1 || width > 800 || height < 1 || height > 500
+        if (!com.vibeminer.rendering.world.WorldFrameLimits.fits(width, height)
                 || pixels.remaining() != width * height) {
             throw new IllegalArgumentException("World background pixel bounds");
         }

@@ -27,12 +27,15 @@ final class WorldStreamEnvelopeTest {
         assertEquals(SCOPE, HexFormat.of().formatHex(bytes, 32, 64));
         var values = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
         assertEquals(7, values.getLong(80));
-        assertEquals(800, values.getInt(88));
-        assertEquals(500, values.getInt(92));
+        assertEquals(com.vibeminer.rendering.world.WorldFrameLimits.MAX_WIDTH, values.getInt(88));
+        assertEquals(com.vibeminer.rendering.world.WorldFrameLimits.MAX_HEIGHT, values.getInt(92));
         // The default (near) session: 10 slots, 9 active.
         assertEquals(10, values.getInt(96));
         assertEquals(9, values.getInt(100));
-        assertEquals(2_907_264, values.getInt(104));
+        assertEquals(WorldStreamEnvelope.MAX_PACKET_BYTES, values.getInt(104));
+        assertEquals(
+                2_907_264 + WorldStreamTileFile.MAX_SPLAT_BYTES,
+                WorldStreamEnvelope.MAX_PACKET_BYTES);
         assertEquals(1, values.getInt(108), "STANDARD object textures by default");
         assertEquals(
                 session,

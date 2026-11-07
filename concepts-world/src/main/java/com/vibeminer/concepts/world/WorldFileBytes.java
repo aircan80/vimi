@@ -36,7 +36,7 @@ final class WorldFileBytes {
         if (files == null) {
             throw new IllegalStateException("Build files are unavailable in this workspace");
         }
-        var stat = files.stat(ref, token).join();
+        var stat = files.statContent(ref, token).join();
         if (stat.file() == null
                 || stat.file().size() != null && stat.file().size() > WorldFormats.MAX_FILE_BYTES) {
             throw new IllegalStateException("File absent or exceeds world preview limit");
@@ -67,7 +67,7 @@ final class WorldFileBytes {
                 }
             }
             if (bound) {
-                var current = files.stat(ref, token).join();
+                var current = files.statContent(ref, token).join();
                 if (current.file() == null
                         || !contentKey.equals(current.file().contentKey())
                         || stat.file().fileDataId() != current.file().fileDataId()) {
