@@ -419,9 +419,9 @@ public final class WorldMeasurementProbe {
                             1, handle, map, inventory, origin, null, catalog.areaIndex());
             var detail = WorldStreamGpuOwner.IMAGE_DETAIL;
             WorldStreamSourceBridge.ExteriorPreparer preparer =
-                    (source, scope, tile, cancellation) ->
+                    (source, scope, tile, cancellation, formats) ->
                             WorldStreamSourceBridge.prepareExterior(
-                                    source, scope, tile, cancellation, null, detail);
+                                    source, scope, tile, cancellation, null, detail, false, formats);
             var holder = new WorldStreamSourceController[1];
             controller =
                     new WorldStreamSourceController(

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.tables.AuthoredPartialNativeMap;
@@ -292,6 +293,57 @@ class WorldPartialMapScopeTest {
                 assertThrows(
                         IllegalStateException.class,
                         () -> scopes.recorded(scope, TILE, Cancellation.NONE));
+            } finally {
+                cache.closeAsync().join();
+                scopes.closeAsync().join();
+            }
+        }
+    }
+
+    /** With a PARTIAL Map table, proofs and their revalidation still use index facts only. */
+    @Test
+    void partialMapProofsAndRevalidationNeverDoAFullStat() {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        try (var fixture = new AuthoredPartialNativeMap(files.files())) {
+            var raw = fixture.files();
+            var calls = new java.util.concurrent.ConcurrentLinkedQueue<String>();
+            var recording =
+                    (com.vibeminer.files.BuildFiles)
+                            java.lang.reflect.Proxy.newProxyInstance(
+                                    com.vibeminer.files.BuildFiles.class.getClassLoader(),
+                                    new Class<?>[] {com.vibeminer.files.BuildFiles.class},
+                                    (proxy, method, args) -> {
+                                        if (args != null
+                                                && args.length > 0
+                                                && args[0]
+                                                        instanceof
+                                                        com.vibeminer.files.FileTypes.FileRef ref) {
+                                            calls.add(method.getName() + ":" + ref.fileDataId());
+                                        }
+                                        try {
+                                            return method.invoke(raw, args);
+                                        } catch (java.lang.reflect.InvocationTargetException e) {
+                                            throw e.getCause();
+                                        }
+                                    });
+            var scopes = new WorldStreamScopes(fixture.tables(), recording);
+            var cache = new WorldGeometryCache();
+            try {
+                var scope = scopes.create(REQUEST, Cancellation.NONE);
+                assertEquals(TILE, scopes.recorded(scope, TILE, Cancellation.NONE));
+                scopes.withRecordedTile(
+                                scope,
+                                TILE,
+                                WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                Cancellation.NONE,
+                                cache::prepare)
+                        .close();
+                assertTrue(
+                        calls.stream().anyMatch(call -> call.startsWith("statContent:")),
+                        calls.toString());
+                assertFalse(
+                        calls.stream().anyMatch(call -> call.startsWith("stat:")),
+                        calls.toString());
             } finally {
                 cache.closeAsync().join();
                 scopes.closeAsync().join();

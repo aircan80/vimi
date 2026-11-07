@@ -129,4 +129,51 @@ class WorldImageBudgetTest {
                         Blp2Types.MipProfile.STRICT);
         assertEquals(3, WorldImageBudget.recordedLevels(declared));
     }
+
+    @Test
+    void compressedRequestsCostTheirBlocksAndRgbaKeepsItsCap() {
+        int bc1 = com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        var compressed = new WorldImageBudget.Request(1024, 1024, 11, bc1, Integer.MAX_VALUE);
+        var rgba =
+                new WorldImageBudget.Request(
+                        1024,
+                        1024,
+                        11,
+                        com.vibeminer.rendering.world.ObjectTextureFormats.RGBA8,
+                        256);
+        int[] sides = {512, 256, 128, 64, 32};
+        // A budget of one 256^2 RGBA8 chain: the BC1 request reaches 512 (1/8 the bytes).
+        long budget = WorldImageBudget.cost(256, 256, 0);
+        org.junit.jupiter.api.Assertions.assertArrayEquals(
+                new int[] {1}, WorldImageBudget.allocate(List.of(compressed), budget, sides));
+        // The RGBA8 request stops at its own 256 cap even with room for more.
+        org.junit.jupiter.api.Assertions.assertArrayEquals(
+                new int[] {2}, WorldImageBudget.allocate(List.of(rgba), budget * 16, sides));
+        // Levels under one block are charged as RGBA8.
+        org.junit.jupiter.api.Assertions.assertEquals(
+                WorldImageBudget.cost(1024, 1024, 9), compressed.cost(9));
+    }
+
+    @Test
+    void rgbaFallbackStaysWithinWhatTheBlocksWereCharged() {
+        int bc1 = com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        int bc3 = com.vibeminer.rendering.world.ObjectTextureFormats.BC3;
+        var bc1At1024 = new WorldImageBudget.Request(1024, 1024, 11, bc1, Integer.MAX_VALUE);
+        // BC1 512 (level 1) charged 43,690: RGBA8 256 costs 87,381, 128 costs 21,845.
+        org.junit.jupiter.api.Assertions.assertEquals(3, bc1At1024.rgbaLevelWithin(1, 256));
+        // BC1 256 (level 2) charged 10,922: RGBA8 64 (level 4).
+        org.junit.jupiter.api.Assertions.assertEquals(4, bc1At1024.rgbaLevelWithin(2, 256));
+        // BC3 256 charged 21,845 (a quarter of RGBA8): RGBA8 128.
+        var bc3At256 = new WorldImageBudget.Request(256, 256, 9, bc3, Integer.MAX_VALUE);
+        org.junit.jupiter.api.Assertions.assertEquals(1, bc3At256.rgbaLevelWithin(0, 256));
+        // Doodad BC1 128 charged 2,730: RGBA8 32 within the 128 doodad cap.
+        var doodad = new WorldImageBudget.Request(128, 128, 8, bc1, Integer.MAX_VALUE);
+        org.junit.jupiter.api.Assertions.assertEquals(2, doodad.rgbaLevelWithin(0, 128));
+        for (int level = 0; level < 11; level++) {
+            int rgba = bc1At1024.rgbaLevelWithin(level, 256);
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    rgba == 10 || WorldImageBudget.cost(1024, 1024, rgba) <= bc1At1024.cost(level),
+                    "level " + level);
+        }
+    }
 }
