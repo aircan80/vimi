@@ -67,6 +67,25 @@ public final class WorldSkyLookTest {
         check(none == EXPLORER, "unavailable keeps the explorer's look");
     }
 
+    /** #177 step 2c: the recorded direct and ambient light ride the sky, weighed like the fog. */
+    private static void carriesTheRecordedLight() {
+        var sample = new WorldSky.Sample(0x0a141e, 0, 0, 0, 0, 0x324664,
+                new WorldSky.Lighting(0xFFE0C0, 0x404060), 1000, 0.25);
+        var lit = WorldSkyLook.of(new WorldSky.Result(WorldSky.State.READY, 0, 0, false, sample,
+                0.5, List.of(), List.of()), EXPLORER);
+        near(lit.direct(), new double[] {0xFF, 0xE0, 0xC0}, "direct from DirectColor");
+        near(lit.ambient(), new double[] {0x40, 0x40, 0x60}, "ambient from AmbientColor");
+        check(lit.lightWeight() == 0.5, "light weighed by the coverage " + lit.lightWeight());
+        // No recorded light: weight 0, the renderer keeps its own light.
+        check(WorldSkyLook.of(result(1, 1000, 0.25, 1), EXPLORER).lightWeight() == 0,
+                "unlit sample carries no light");
+        // No fog but light: the light is still carried.
+        var clear = new WorldSky.Sample(0, 0, 0, 0, 0, 0, new WorldSky.Lighting(0x808080, 0x202020),
+                0, 0);
+        check(WorldSkyLook.of(new WorldSky.Result(WorldSky.State.READY, 0, 0, false, clear, 1,
+                List.of(), List.of()), EXPLORER).lightWeight() == 1, "light without fog");
+    }
+
     private static void clampsTheFogScaler() {
         var above = WorldSkyLook.of(result(1, 1000, 3, 1), EXPLORER);
         check(above.recordedEnd() == 1000 && above.recordedStart() == 999,
@@ -244,6 +263,7 @@ public final class WorldSkyLookTest {
 
     public static void main(String[] args) {
         mapsRecordedChannelsAndFog();
+        carriesTheRecordedLight();
         clampsTheFogScaler();
         clockToHalfMinutes();
         throttlesLookups();
@@ -252,6 +272,7 @@ public final class WorldSkyLookTest {
         aFailingLookupNeitherBreaksNorFloodsThePulse();
         pinsTheClockForOwnerChecks();
         System.out.println("World sky look: recorded channels, coverage and fog share, scaler"
-                + " clamp, clock, throttle, camera feed, still-camera clock, failing lookups and pinned time passed");
+                + " clamp, recorded light, clock, throttle, camera feed, still-camera clock, failing lookups"
+                + " and pinned time passed");
     }
 }

@@ -11,7 +11,8 @@ import java.util.Objects;
 
 /** Bounded v2 command codec only. Does not open packet files or execute commands. */
 final class WorldStreamControl {
-    static final int MAX_LINE_BYTES = 256;
+    /** The longest camera line with its sky and light tails is 273 bytes (#177 step 2c). */
+    static final int MAX_LINE_BYTES = 320;
 
     sealed interface Command
             permits Camera, Offer, Commit, Cancel, CancelUnused, LateObjects, Horizon, Close {
@@ -147,11 +148,22 @@ final class WorldStreamControl {
      * The optional sky tail, bounded so a camera line always fits: {@code SKY} then the six colours
      * as one 12-digit hex token (horizon then top, red-green-blue), the fog weight in thousandths
      * (0..1000) and the recorded start and end in whole yards. Sky values are already quantized to
-     * exactly these steps.
+     * exactly these steps. A recorded light (#177 step 2c) adds {@code LIGHT}, the direct and
+     * ambient colours as one 12-digit hex token, and the light weight in thousandths.
      */
     private static String sky(WorldStreamTransport.Sky sky) {
         if (sky == null) {
             return "";
+        }
+        String light = "";
+        if (sky.lightWeight() > 0) {
+            var lights = new StringBuilder(12);
+            for (float[] rgb : new float[][] {sky.direct(), sky.ambient()}) {
+                for (float channel : rgb) {
+                    lights.append(HexFormat.of().toHexDigits((byte) (int) channel));
+                }
+            }
+            light = " LIGHT " + lights + " " + Math.round(sky.lightWeight() * 1000);
         }
         var colours = new StringBuilder(12);
         for (float[] rgb : new float[][] {sky.horizon(), sky.top()}) {
@@ -166,7 +178,8 @@ final class WorldStreamControl {
                 + " "
                 + (long) sky.recordedStart()
                 + " "
-                + (long) sky.recordedEnd();
+                + (long) sky.recordedEnd()
+                + light;
     }
 
     private static WorldStreamTransport.Sky sky(String[] parts) {
@@ -180,12 +193,29 @@ final class WorldStreamControl {
         long weight = bounded(parts[14], 1000);
         long start = bounded(parts[15], WorldStreamTransport.Sky.MAX_YARDS);
         long end = bounded(parts[16], WorldStreamTransport.Sky.MAX_YARDS);
+        float[] light = new float[6];
+        long lightWeight = 0;
+        if (parts.length == 20) {
+            if (!parts[17].equals("LIGHT") || !parts[18].matches("[0-9a-f]{12}")) {
+                throw new IllegalArgumentException("Invalid camera light");
+            }
+            for (int i = 0; i < 6; i++) {
+                light[i] = Integer.parseInt(parts[18].substring(2 * i, 2 * i + 2), 16);
+            }
+            lightWeight = bounded(parts[19], 1000);
+            if (lightWeight == 0) {
+                throw new IllegalArgumentException("Invalid camera light");
+            }
+        }
         return new WorldStreamTransport.Sky(
                 new float[] {channels[0], channels[1], channels[2]},
                 new float[] {channels[3], channels[4], channels[5]},
                 weight / 1000.0,
                 start,
-                end);
+                end,
+                new float[] {light[0], light[1], light[2]},
+                new float[] {light[3], light[4], light[5]},
+                lightWeight / 1000.0);
     }
 
     /** A canonical decimal integer in 0..max. */
@@ -289,7 +319,10 @@ final class WorldStreamControl {
         return line;
     }
 
-    /** Reads at most256 bytes, never scans for LF after an invalid/oversized command. */
+    /**
+     * Reads at most {@link #MAX_LINE_BYTES} bytes, never scans for LF after an invalid/oversized
+     * command.
+     */
     static Command read(InputStream input) throws IOException {
         Objects.requireNonNull(input);
         byte[] line = new byte[MAX_LINE_BYTES];
@@ -340,7 +373,9 @@ final class WorldStreamControl {
                         case "CAM" -> {
                             // An optional sky tail: SKY colours weight start end.
                             if (parts.length != 12) {
-                                arity(parts, 17);
+                                if (parts.length != 20) {
+                                    arity(parts, 17);
+                                }
                                 if (!parts[12].equals("SKY")) {
                                     throw new IllegalArgumentException("Invalid camera sky");
                                 }

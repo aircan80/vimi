@@ -2018,7 +2018,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             bgfx_set_uniform(worldFog, stack.floats(fog.fogUniform()), 1);
             bgfx_set_uniform(worldSkyTop, stack.floats(fog.topUniform()), 1);
             bgfx_set_uniform(worldFogRange, stack.floats(fog.rangeUniform()), 1);
-            bgfx_set_uniform(worldLight, stack.floats(light.uniform(terrainLighting)), 3);
+            // The recorded direct and ambient light of the camera's sky, when it has one (#177).
+            bgfx_set_uniform(
+                    worldLight,
+                    stack.floats(light.withRecorded(recordedSky).uniform(terrainLighting)),
+                    3);
             var view =
                     objectCulling
                             ? WorldStreamObjectCulling.View.of(camera, width, height, fog.cut())

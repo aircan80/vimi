@@ -3,6 +3,7 @@ package com.vibeminer.rendering.bgfx;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -67,5 +68,41 @@ class WorldLightTest {
                     IllegalArgumentException.class,
                     () -> WorldStreamTileFile.validateAttributes(bad));
         }
+    }
+
+    @Test
+    void aSkysRecordedLightIsMixedInByItsWeight() {
+        var explorer = WorldStreamTransport.Sky.EXPLORER;
+        assertSame(WorldLight.FIXED, WorldLight.FIXED.withRecorded(null));
+        assertSame(WorldLight.FIXED, WorldLight.FIXED.withRecorded(explorer));
+        var full =
+                new WorldStreamTransport.Sky(
+                        explorer.horizon(),
+                        explorer.top(),
+                        0,
+                        0,
+                        0,
+                        new float[] {255, 0, 51},
+                        new float[] {0, 255, 102},
+                        1);
+        var recorded = WorldLight.FIXED.withRecorded(full);
+        assertArrayEquals(new float[] {1, 0, 0.2f}, recorded.diffuse(), 1e-6f);
+        assertArrayEquals(new float[] {0, 1, 0.4f}, recorded.ambient(), 1e-6f);
+        assertArrayEquals(WorldLight.FIXED.direction(), recorded.direction(), 0);
+        var half =
+                new WorldStreamTransport.Sky(
+                        explorer.horizon(),
+                        explorer.top(),
+                        0,
+                        0,
+                        0,
+                        new float[] {255, 0, 51},
+                        new float[] {0, 255, 102},
+                        0.5);
+        var mixed = WorldLight.FIXED.withRecorded(half);
+        assertArrayEquals(
+                new float[] {(2 / 3f + 1) / 2, (2 / 3f) / 2, (2 / 3f + 0.2f) / 2},
+                mixed.diffuse(),
+                1e-6f);
     }
 }

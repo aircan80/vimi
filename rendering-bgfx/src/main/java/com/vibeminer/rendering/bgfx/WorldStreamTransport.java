@@ -152,16 +152,33 @@ public final class WorldStreamTransport {
      * The recorded sky for a frame (#177): the horizon colour the fog fades into, the sky top
      * colour (0..255 gamma), and the recorded distance fog with {@code fogWeight}, how much of the
      * position records fog (0..1). The renderer composes it with its own fog distances and the WDL
-     * horizon ({@link WorldFog#sky}).
+     * horizon ({@link WorldFog#sky}). The recorded light (#177 step 2c) is LightData's {@code
+     * DirectColor} and {@code AmbientColor} (0..255 gamma) with {@code lightWeight}, how much of
+     * the position records light (0..1); with weight 0 the renderer keeps its own light.
      */
     public record Sky(
             float[] horizon,
             float[] top,
             double fogWeight,
             float recordedStart,
-            float recordedEnd) {
-        /** The explorer's own sky, with no recorded fog. */
+            float recordedEnd,
+            float[] direct,
+            float[] ambient,
+            double lightWeight) {
+        private static final float[] NO_LIGHT = {0, 0, 0};
+
+        /** The explorer's own sky, with no recorded fog or light. */
         public static final Sky EXPLORER = new Sky(WorldFog.FOG_COLOUR, WorldFog.SKY_TOP, 0, 0, 0);
+
+        /** A sky with no recorded light. */
+        public Sky(
+                float[] horizon,
+                float[] top,
+                double fogWeight,
+                float recordedStart,
+                float recordedEnd) {
+            this(horizon, top, fogWeight, recordedStart, recordedEnd, NO_LIGHT, NO_LIGHT, 0);
+        }
 
         /** Recorded fog distances are whole yards up to this bound. */
         public static final int MAX_YARDS = 1_000_000;
@@ -172,18 +189,28 @@ public final class WorldStreamTransport {
          * value must be finite and in range, whatever the weight.
          */
         public Sky {
-            if (horizon.length != 3 || top.length != 3) {
+            if (horizon.length != 3
+                    || top.length != 3
+                    || direct.length != 3
+                    || ambient.length != 3) {
                 throw new IllegalArgumentException("Invalid sky colours");
             }
             horizon = horizon.clone();
             top = top.clone();
-            for (int i = 0; i < 3; i++) {
-                if (!(horizon[i] >= 0 && horizon[i] <= 255 && top[i] >= 0 && top[i] <= 255)) {
-                    throw new IllegalArgumentException("Invalid sky colours");
+            direct = direct.clone();
+            ambient = ambient.clone();
+            for (float[] colour : new float[][] {horizon, top, direct, ambient}) {
+                for (int i = 0; i < 3; i++) {
+                    if (!(colour[i] >= 0 && colour[i] <= 255)) {
+                        throw new IllegalArgumentException("Invalid sky colours");
+                    }
+                    colour[i] = Math.round(colour[i]);
                 }
-                horizon[i] = Math.round(horizon[i]);
-                top[i] = Math.round(top[i]);
             }
+            if (!(lightWeight >= 0 && lightWeight <= 1)) {
+                throw new IllegalArgumentException("Invalid recorded light");
+            }
+            lightWeight = Math.round(lightWeight * 1000) / 1000.0;
             if (!(fogWeight >= 0 && fogWeight <= 1)
                     || !(recordedStart >= 0 && recordedStart <= MAX_YARDS)
                     || !(recordedEnd >= 0 && recordedEnd <= MAX_YARDS)) {
@@ -208,13 +235,26 @@ public final class WorldStreamTransport {
         }
 
         @Override
+        public float[] direct() {
+            return direct.clone();
+        }
+
+        @Override
+        public float[] ambient() {
+            return ambient.clone();
+        }
+
+        @Override
         public boolean equals(Object other) {
             return other instanceof Sky o
                     && java.util.Arrays.equals(horizon, o.horizon)
                     && java.util.Arrays.equals(top, o.top)
                     && Double.compare(fogWeight, o.fogWeight) == 0
                     && Float.compare(recordedStart, o.recordedStart) == 0
-                    && Float.compare(recordedEnd, o.recordedEnd) == 0;
+                    && Float.compare(recordedEnd, o.recordedEnd) == 0
+                    && java.util.Arrays.equals(direct, o.direct)
+                    && java.util.Arrays.equals(ambient, o.ambient)
+                    && Double.compare(lightWeight, o.lightWeight) == 0;
         }
 
         @Override
@@ -224,7 +264,10 @@ public final class WorldStreamTransport {
                     java.util.Arrays.hashCode(top),
                     fogWeight,
                     recordedStart,
-                    recordedEnd);
+                    recordedEnd,
+                    java.util.Arrays.hashCode(direct),
+                    java.util.Arrays.hashCode(ambient),
+                    lightWeight);
         }
     }
 
