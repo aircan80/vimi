@@ -19,7 +19,8 @@ public final class WorldCurrentArea {
 
     /**
      * Most tiles one lookup scans: the World stream's FAR 5 x 5 neighbourhood (25 residents, issue
-     * #173) with headroom, the same bound as {@code TerrainGround.MAX_TILES}.
+     * #173) plus 3 spare tiles, the same 3 as {@code TerrainGround.MAX_TILES} (28) keeps over the
+     * residents. The World stream controller test pins that every resident fits.
      */
     public static final int MAX_TILES = 28;
 
