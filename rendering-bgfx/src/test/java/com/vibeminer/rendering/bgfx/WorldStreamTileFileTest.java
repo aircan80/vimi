@@ -238,6 +238,51 @@ final class WorldStreamTileFileTest {
     }
 
     @Test
+    void handmadePalettedDiffuseTupleSurvivesTexturedPacketRoundtrip() throws Exception {
+        var tile = full(false);
+        var diffuse =
+                new WorldStreamTileFile.Source(
+                        188810,
+                        "06".repeat(16),
+                        1172 + 2 * 87381, // header, palette, 256 -> 1 indexes and alpha
+                        null,
+                        1 << 20,
+                        256,
+                        6,
+                        2,
+                        WorldStreamTileFile.Encoding.PALETTED,
+                        8,
+                        8);
+        var expected =
+                WorldStreamTileFile.write(
+                        directory, header(tile, true, diffuse), tile, atlas(), () -> false);
+        assertEquals(
+                diffuse,
+                WorldStreamTileFile.read(path(), expected, () -> false)
+                        .header()
+                        .diffuse()
+                        .getFirst());
+        // Other handmade palette tuples stay outside the reviewed set.
+        for (int[] tuple : new int[][] {{8, 0}, {0, 8}, {1, 0}}) {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            new WorldStreamTileFile.Source(
+                                    188810,
+                                    "06".repeat(16),
+                                    50000,
+                                    null,
+                                    1 << 20,
+                                    256,
+                                    6,
+                                    2,
+                                    WorldStreamTileFile.Encoding.PALETTED,
+                                    tuple[0],
+                                    tuple[1]));
+        }
+    }
+
+    @Test
     void heightRoundtripKeepsExactGeometryAndIndependentDomainHash() throws Exception {
         var tile = triangle();
         var expected =

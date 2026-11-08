@@ -921,6 +921,59 @@ class WorldTerrainTextureSourceTest {
         }
     }
 
+    /** A handmade 8x8 -> 1x1 palette chain with 8-bit alpha (1/8/8, mip byte 0x02). */
+    private static byte[] palettedChain(int red) {
+        int start = 148 + 1024, total = start;
+        for (int level = 0; level < 4; level++) {
+            total += (8 >> level) * (8 >> level) * 2;
+        }
+        var data = ByteBuffer.allocate(total).order(ByteOrder.LITTLE_ENDIAN);
+        data.put(new byte[] {'B', 'L', 'P', '2'})
+                .putInt(1)
+                .put((byte) 1)
+                .put((byte) 8)
+                .put((byte) 8)
+                .put((byte) 2)
+                .putInt(8)
+                .putInt(8);
+        data.put(148 + 4 * 3, (byte) 0)
+                .put(148 + 4 * 3 + 1, (byte) 0)
+                .put(148 + 4 * 3 + 2, (byte) red);
+        int at = start;
+        for (int level = 0; level < 4; level++) {
+            int pixels = (8 >> level) * (8 >> level);
+            data.putInt(20 + level * 4, at).putInt(84 + level * 4, pixels * 2);
+            for (int i = 0; i < pixels; i++) {
+                data.put(at + i, (byte) 3).put(at + pixels + i, (byte) 255);
+            }
+            at += pixels * 2;
+        }
+        return data.array();
+    }
+
+    @Test
+    void handmadePalettedDiffuseReachesQualifiedTerrainAtlas() throws Exception {
+        var files = new Files();
+        files.sources.put(10L, palettedChain(255));
+        files.sources.put(11L, palettedChain(64));
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try (var loaded = read(source)) {
+            var tile = loaded.tiles().getFirst();
+            assertEquals(WorldTerrainTextureSource.State.READY, tile.state());
+            assertEquals(256, tile.supportedChunks());
+            for (var diffuse : tile.receipt().diffuse()) {
+                assertEquals("PALETTED", diffuse.encoding());
+                assertEquals(8, diffuse.alphaDepth());
+                assertEquals(8, diffuse.alphaEncoding());
+                assertEquals(2, diffuse.mipFlags());
+            }
+        } finally {
+            source.closeAsync().join();
+            pool.closeAsync().join();
+        }
+    }
+
     @Test
     void handmadeBc3DiffuseReachesQualifiedTerrainAtlas() throws Exception {
         var files = new Files();

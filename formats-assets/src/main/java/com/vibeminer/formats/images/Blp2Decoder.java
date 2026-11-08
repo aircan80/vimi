@@ -102,6 +102,18 @@ public final class Blp2Decoder {
         return flags == 0 || flags == 1 || flags == 0x10 || flags == 0x11;
     }
 
+    /**
+     * The colour encoding, alpha depth and alpha encoding tuples reviewed for declared handmade mip
+     * chains (mip byte 0x02): BC2/8/1, BC3/8/7 and 8-bit-alpha palette (1/8/8). The chain itself is
+     * validated the same way for each: complete, power-of-two, exact and ending at EOF.
+     */
+    public static boolean isHandmadeTuple(Encoding encoding, int depth, int alpha) {
+        return depth == 8
+                && (encoding == Encoding.BC2 && alpha == 1
+                        || encoding == Encoding.BC3 && alpha == 7
+                        || encoding == Encoding.PALETTED && alpha == 8);
+    }
+
     public static boolean allowsMipLevels(int flags) {
         return (flags & 1) != 0;
     }
@@ -225,10 +237,7 @@ public final class Blp2Decoder {
                             + " is not supported.");
         }
         boolean handmade = flags == 2 && profile == MipProfile.DECLARED_HANDMADE_V1;
-        if (handmade
-                && !(depth == 8
-                        && (encoding == Encoding.BC2 && alpha == 1
-                                || encoding == Encoding.BC3 && alpha == 7))) {
+        if (handmade && !isHandmadeTuple(encoding, depth, alpha)) {
             throw error(
                     "UNSUPPORTED",
                     "Declared handmade v1 does not support colour encoding "
@@ -239,7 +248,7 @@ public final class Blp2Decoder {
                             + depth
                             + " and alpha encoding "
                             + alpha
-                            + "; reviewed tuples are BC2/8/1 and BC3/8/7.");
+                            + "; reviewed tuples are BC2/8/1, BC3/8/7 and PALETTED/8/8.");
         }
         if (!isMipFlags(flags) && !handmade) {
             throw error(

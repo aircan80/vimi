@@ -50,3 +50,16 @@ wrong strict-mode lengths remain BLP_INVALID. Handmade BC1 (alpha depth 0 or 1)
 and BC2 depth 4 remain BLP_UNSUPPORTED pending their own evidence; strict BC1 with
 and without 1-bit alpha and strict BC2/BC3 decode as before. Terrain diffuse is
 CPU-decoded to RGBA8 and uploaded as RGBA8; no bgfx BC3 texture format is used.
+
+Follow-up (paletted handmade chains): two terrain diffuse BLPs in the 2.5.6 classic
+client use colour encoding 1 (palette), alpha depth 8, alpha encoding 8 and mip
+byte 0x02, and were refused as DIFFUSE_PROFILE. The palette decoder already reads
+this tuple and the generic mip-storage size (one index byte plus one alpha byte per
+pixel) already applies, so the declared handmade guard and the streaming packet
+diffuse-tuple guard now admit PALETTED/8/8 beside BC2/8/1 and BC3/8/7 with the same
+complete, exact, EOF-ending chain validation. Other handmade palette tuples (alpha
+depth 0, 1 or 4, or alpha encoding 0) stay BLP_UNSUPPORTED. Strict decoding is
+unchanged, so the decoder revision stays blp2-rgba8-v3: tiles with a refused diffuse
+were PARTIAL and never cached. Synthetic 8×8 chains check exact RGBA and alpha at
+every level, malformed chains and terrain/packet qualification; no game texture is
+committed.

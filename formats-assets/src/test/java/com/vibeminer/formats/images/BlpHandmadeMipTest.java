@@ -63,6 +63,114 @@ final class BlpHandmadeMipTest {
         return bytes;
     }
 
+    /**
+     * The reported terrain diffuse header: palette, 8-bit alpha, alpha encoding 8, mip byte 0x02,
+     * with a complete 8x8 -> 1x1 chain. Each level's indexes and alpha bytes are distinct.
+     */
+    private static byte[] handmadePaletted() {
+        var mips = new byte[4][];
+        for (int level = 0; level < mips.length; level++) {
+            int pixels = (8 >> level) * (8 >> level);
+            mips[level] = new byte[pixels * 2];
+            for (int i = 0; i < pixels; i++) {
+                mips[level][i] = (byte) (level * 64 + i);
+                mips[level][pixels + i] = (byte) (255 - level * 50 - i);
+            }
+        }
+        var bytes = Blp2DecoderTest.build(1, 8, 8, 8, 8, mips);
+        bytes[11] = 2;
+        return bytes;
+    }
+
+    @Test
+    void handmadePalettedTerrainHeaderDecodesEveryDeclaredMipWithItsAlpha() {
+        var bytes = handmadePaletted();
+        var mips =
+                Blp2Decoder.readMips(
+                                AssetSource.bytes(bytes),
+                                new Limits(),
+                                Cancellation.NONE,
+                                MipProfile.DECLARED_HANDMADE_V1)
+                        .join();
+        assertEquals(4, mips.size());
+        for (int level = 0; level < mips.size(); level++) {
+            int side = 8 >> level;
+            assertEquals(side, mips.get(level).width());
+            assertEquals(side * side * 2L, mips.get(level).byteLength());
+            var image =
+                    Blp2Decoder.decode(
+                                    AssetSource.bytes(bytes),
+                                    level,
+                                    new Limits(),
+                                    Cancellation.NONE,
+                                    MipProfile.DECLARED_HANDMADE_V1)
+                            .join();
+            assertEquals(Blp2Types.Encoding.PALETTED, image.encoding());
+            assertEquals(8, image.alphaDepth());
+            assertEquals(8, image.alphaEncoding());
+            assertEquals(2, image.mipFlags());
+            byte[] expected = new byte[side * side * 4];
+            for (int i = 0; i < side * side; i++) {
+                int index = (level * 64 + i) & 255;
+                // Blp2DecoderTest.build stores palette entry i as B=i+2, G=i+1, R=i.
+                expected[i * 4] = (byte) index;
+                expected[i * 4 + 1] = (byte) (index + 1);
+                expected[i * 4 + 2] = (byte) (index + 2);
+                expected[i * 4 + 3] = (byte) (255 - level * 50 - i);
+            }
+            assertArrayEquals(expected, image.rgba(), "level " + level);
+        }
+        var largest =
+                Blp2Decoder.decodeLargestWithin(
+                                AssetSource.bytes(bytes),
+                                4,
+                                new Limits(),
+                                Cancellation.NONE,
+                                MipProfile.DECLARED_HANDMADE_V1)
+                        .join();
+        assertEquals(1, largest.mipLevel());
+        assertEquals(4, largest.width());
+        // Strict mode still refuses the declared handmade byte.
+        refusedStrict(bytes);
+    }
+
+    @Test
+    void malformedHandmadePalettedChainsStayInvalid() {
+        // Missing the 1x1 level.
+        var short3 = new byte[3][];
+        for (int level = 0; level < 3; level++) {
+            short3[level] = new byte[(8 >> level) * (8 >> level) * 2];
+        }
+        var incomplete = Blp2DecoderTest.build(1, 8, 8, 8, 8, short3);
+        incomplete[11] = 2;
+        refused("BLP_INVALID", incomplete);
+        // Index-only levels (no alpha bytes), trailing bytes and a truncated last level.
+        var noAlpha = handmadePaletted();
+        put(noAlpha, 84, 64);
+        refused("BLP_INVALID", noAlpha);
+        refused("BLP_INVALID", Arrays.copyOf(handmadePaletted(), handmadePaletted().length + 1));
+        refused("BLP_INVALID", Arrays.copyOf(handmadePaletted(), handmadePaletted().length - 1));
+    }
+
+    @Test
+    void unreviewedHandmadePaletteTuplesStayUnsupported() {
+        for (int[] tuple : new int[][] {{0, 0}, {1, 0}, {4, 0}, {8, 0}, {0, 8}}) {
+            var bytes = handmadePaletted();
+            bytes[9] = (byte) tuple[0];
+            bytes[10] = (byte) tuple[1];
+            refused("BLP_UNSUPPORTED", bytes);
+        }
+    }
+
+    private static void refusedStrict(byte[] bytes) {
+        assertThrows(
+                RuntimeException.class,
+                () ->
+                        Blp2Decoder.readMips(
+                                        AssetSource.bytes(bytes), new Limits(), Cancellation.NONE)
+                                .join());
+    }
+
     @Test
     void handmadeBc3ReportedTerrainHeaderDecodesEveryDeclaredMipAndAlpha() {
         var bytes = handmadeBc3();
