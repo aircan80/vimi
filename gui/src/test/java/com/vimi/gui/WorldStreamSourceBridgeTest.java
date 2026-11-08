@@ -40,6 +40,70 @@ public final class WorldStreamSourceBridgeTest {
         waterCopyCapsWholeLayersAtThePacketBound();
         waterCopyKeepsAChunksDepthGradient();
         waterCopyCoarsensDepthBeforeCapping();
+        waterCopyFoldsOnTheNeSwDiagonal();
+        waterCopyChecksEveryCellCorner();
+        waterCopyKeepsExactDepthAtExactlyTheBound();
+    }
+
+    /**
+     * A merged quad draws as two triangles split on the NE--SW diagonal, so a chunk whose depth
+     * is a ridge along that diagonal (0 at NW and SE, 80 at NE and SW) is exactly one quad,
+     * while a ridge along NW--SE, which the quad cannot draw, keeps cells.
+     */
+    private static void waterCopyFoldsOnTheNeSwDiagonal() {
+        int[][] chunk = {{8, 8}};
+        long[] full = {-1L};
+        boolean[] flat = {true};
+        var ridge = WorldStreamSourceBridge.WaterCopy.of(
+                new AuthoredWater(chunk, full, flat,
+                        (l, r, c) -> 10 * Math.min(r + c, 16 - r - c)),
+                Cancellation.NONE);
+        check(ridge.water().cells() == 1, "A NE-SW ridge is one quad: " + ridge.water().cells());
+        int[] depths = {0, 80, 80, 0};
+        for (int c = 0; c < 4; c++) {
+            check((ridge.water().depths()[c] & 255) == depths[c], "Ridge corner " + c);
+        }
+        int across = copyCells(new AuthoredWater(chunk, full, flat,
+                (l, r, c) -> 80 - 10 * Math.min(r + c, 16 - r - c)));
+        check(across == 1, "Its mirror (80 at NW and SE, 0 at NE and SW) is still one quad");
+        int fold = copyCells(new AuthoredWater(chunk, full, flat, (l, r, c) -> 10 * Math.abs(r - c)));
+        check(fold > 1, "A ridge along NW-SE keeps cells: " + fold);
+    }
+
+    /**
+     * Every corner of every cell is checked, not only its NW corner: a depth that differs only
+     * on the chunk's south edge (grid row 8, which is no cell's NW corner) keeps cells.
+     */
+    private static void waterCopyChecksEveryCellCorner() {
+        int[][] chunk = {{8, 8}};
+        long[] full = {-1L};
+        boolean[] flat = {true};
+        int south = copyCells(new AuthoredWater(chunk, full, flat,
+                (l, r, c) -> r == 8 && c == 4 ? 150 : 100));
+        check(south > 1, "A south-edge depth keeps cells: " + south);
+        int east = copyCells(new AuthoredWater(chunk, full, flat,
+                (l, r, c) -> c == 8 && r == 4 ? 150 : 100));
+        check(east > 1, "An east-edge depth keeps cells: " + east);
+    }
+
+    /** 128 noisy flat chunks are exactly 8192 quads: all fit with exact depth, nothing capped. */
+    private static void waterCopyKeepsExactDepthAtExactlyTheBound() {
+        int layers = 128;
+        var shape = new int[layers][];
+        var masks = new long[layers];
+        var planar = new boolean[layers];
+        for (int l = 0; l < layers; l++) {
+            shape[l] = new int[] {8, 8};
+            masks[l] = -1L;
+            planar[l] = true;
+        }
+        var copy = WorldStreamSourceBridge.WaterCopy.of(
+                new AuthoredWater(shape, masks, planar, (l, r, c) -> 100 + 2 * ((r + c) % 2)),
+                Cancellation.NONE);
+        check(!copy.capped() && copy.finest() == 1 && copy.layers() == layers
+                        && copy.water().cells() == WorldStreamTileWriter.Water.MAX_CELLS,
+                "Exactly the bound keeps every cell: " + copy.finest() + " "
+                        + copy.water().cells());
     }
 
     /**
@@ -197,7 +261,7 @@ public final class WorldStreamSourceBridgeTest {
                         == 64,
                 "Two-byte noise keeps every cell");
         // Deep everywhere except a shallow strip on grid column 4. Every 4 x 4 block touches it,
-        // so they split; the 2 x 2 blocks on cell columns 0-1 and 6-7 are flat and merge (16),
+        // so they split; the 2 x 2 blocks on cell columns 0-1 and 6-7 are flat and merge (4 + 4),
         // and cell columns 2..5 beside the strip keep their cells (32).
         var coast = WorldStreamSourceBridge.WaterCopy.of(
                 new AuthoredWater(chunk, full, flat, (l, r, c) -> c == 4 ? 20 : 255),
