@@ -314,4 +314,30 @@ class WorldLiquidsTest {
                 WorldLiquids.FormatException.class,
                 () -> WorldLiquids.decodeDeclaredHeight(aliased, 0, true, () -> false));
     }
+
+    @Test
+    void magmaAndSlimeFormatsReadTheirHeightsAndOnlySlimeHasDepth() {
+        int width = 2, height = 1, vertices = (width + 1) * (height + 1);
+        for (int format : new int[] {1, 3}) {
+            // A direct secondary names the format and keeps the layer's own rectangle.
+            byte[] base = payload(format, width, height, 0b11);
+            // Room for the format's whole stream: height, two u16 coordinates (and depth).
+            byte[] stream = java.util.Arrays.copyOf(base, TABLE + 48 + vertices * 9);
+            var b = ByteBuffer.wrap(stream).order(ByteOrder.LITTLE_ENDIAN);
+            for (int v = 0; v < vertices; v++) {
+                b.putShort(TABLE + 48 + vertices * 4 + v * 4, (short) 999);
+                b.put(TABLE + 48 + vertices * 8 + v, (byte) (50 + v));
+            }
+            var raw = WorldLiquids.readMh2o(root(stream), () -> false);
+            var decoded = WorldLiquids.decodeHeights(raw, 0, format, () -> false);
+            for (int v = 0; v < vertices; v++) {
+                assertEquals(v + 2, decoded.heights().get(v), "format " + format);
+                assertEquals(format == 3 ? 50 + v : 0, decoded.depths().get(v) & 255);
+            }
+        }
+        var raw = WorldLiquids.readMh2o(root(payload(0, width, height, 0b11)), () -> false);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldLiquids.decodeHeights(raw, 0, 2, () -> false));
+    }
 }

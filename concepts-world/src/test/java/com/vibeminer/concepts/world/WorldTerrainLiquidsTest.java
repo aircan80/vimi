@@ -1516,4 +1516,41 @@ class WorldTerrainLiquidsTest {
             }
         }
     }
+
+    @Test
+    void magmaAndSlimeLayersAreDrawnInTheirLiquidTypeColour() throws Exception {
+        // Material 2 is LVF 1 (magma: height and texture coordinates) and 13 is LVF 3 (slime:
+        // height, texture coordinates and depth), each given room for its whole stream.
+        for (int[] material : new int[][] {{2, 8}, {13, 9}}) {
+            try (var f = new Fixture()) {
+                f.nativeRows.close();
+                f.nativeRows =
+                        new AuthoredNativeLiquids(f.files, material[0], true, false, 0xFF26D000);
+                byte[] p = liquids(1, 42, 1, false);
+                int vertices = 3072 + 24 + 8;
+                f.payload(java.util.Arrays.copyOf(p, vertices + 81 * material[1]));
+                try (var owner = f.inspect()) {
+                    assertEquals(WorldTerrainLiquids.State.READY, owner.summary().state());
+                    assertEquals(1, owner.summary().admitted());
+                    owner.withBorrow(
+                            v -> {
+                                assertEquals(0x26D000, v.colour(0));
+                                assertEquals(5, v.actualUsedHeight(0, 0));
+                                return null;
+                            });
+                }
+            }
+        }
+        // Water keeps the renderer's water colour.
+        try (var f = new Fixture()) {
+            f.payload(liquids(1, 42, 1, false));
+            try (var owner = f.inspect()) {
+                owner.withBorrow(
+                        v -> {
+                            assertEquals(-1, v.colour(0));
+                            return null;
+                        });
+            }
+        }
+    }
 }

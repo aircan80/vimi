@@ -87,6 +87,7 @@ final class WorldLiquidTables {
         private final String key, receiptSha;
         private final long length;
         private final Map<Long, Integer> values;
+        private final Map<Long, int[]> extras;
 
         private Observed(
                 Profile profile,
@@ -94,13 +95,15 @@ final class WorldLiquidTables {
                 String key,
                 String receiptSha,
                 long length,
-                Map<Long, Integer> values) {
+                Map<Long, Integer> values,
+                Map<Long, int[]> extras) {
             this.profile = profile;
             this.stamp = stamp;
             this.key = key;
             this.receiptSha = receiptSha;
             this.length = length;
             this.values = Map.copyOf(values);
+            this.extras = Map.copyOf(extras);
         }
 
         long sourceId() {
@@ -130,13 +133,39 @@ final class WorldLiquidTables {
         Set<Long> ids() {
             return values.keySet();
         }
+
+        /**
+         * A LiquidType row's SoundBank, the client's liquid category: 0 water, 1 ocean, 2 magma, 3
+         * slime (other values are kept as read).
+         */
+        int soundBank(long id) {
+            return extra(id, 0);
+        }
+
+        /** A LiquidType row's MinimapStaticCol, the client's flat colour for the liquid. */
+        int minimapColour(long id) {
+            return extra(id, 1);
+        }
+
+        private int extra(long id, int index) {
+            if (profile != Profile.TYPE) {
+                throw new IllegalStateException("Only LiquidType rows carry a category and colour");
+            }
+            int[] row = extras.get(id);
+            if (row == null) {
+                throw unavailable(Reason.ROW_NOT_OBSERVED);
+            }
+            return row[index];
+        }
     }
 
     private record Context(
             CapturedRowsTypes.Receipt receipt,
             NativeIdReceiptFingerprint.CanonicalStamp stamp,
             int idColumn,
-            int valueColumn) {}
+            int valueColumn,
+            int bankColumn,
+            int colourColumn) {}
 
     private final BuildTables tables;
     private final BuildFiles files;
@@ -199,8 +228,10 @@ final class WorldLiquidTables {
                             receipt.table().contentKey(),
                             NativeIdReceiptFingerprint.sha256(receipt),
                             receipt.completion().consumedBytes(),
+                            Map.of(),
                             Map.of());
             var values = new HashMap<Long, Integer>();
+            var extras = new HashMap<Long, int[]>();
             long ordinal = 0;
             while (ordinal < receipt.rowCount()) {
                 var page = page(rows, ordinal, token);
@@ -239,6 +270,17 @@ final class WorldLiquidTables {
                         throw unavailable(Reason.ROW_ISSUE);
                     }
                     values.put(id, (int) value);
+                    if (profile == Profile.TYPE) {
+                        long bank = integer(raw.get(context.bankColumn()));
+                        long colour = integer(raw.get(context.colourColumn()));
+                        if (bank < 0
+                                || bank > 255
+                                || colour < Integer.MIN_VALUE
+                                || colour > Integer.MAX_VALUE) {
+                            throw unavailable(Reason.ROW_ISSUE);
+                        }
+                        extras.put(id, new int[] {(int) bank, (int) colour});
+                    }
                 }
                 ordinal = next;
             }
@@ -257,7 +299,8 @@ final class WorldLiquidTables {
                     receipt.table().contentKey(),
                     NativeIdReceiptFingerprint.sha256(receipt),
                     receipt.completion().consumedBytes(),
-                    values);
+                    values,
+                    extras);
         }
     }
 
@@ -416,7 +459,18 @@ final class WorldLiquidTables {
                                 ? new TableSchema.ForeignKey("LiquidMaterial", "ID")
                                 : null);
         column(r, "Flags", 32, false, TableSchema.KeyStorage.NONE, null);
-        return new Context(r, NativeIdReceiptFingerprint.canonicalStamp(r), id, value);
+        // LiquidType also gives each liquid its category and flat colour (#171).
+        int bank =
+                p == Profile.TYPE
+                        ? column(r, "SoundBank", 8, true, TableSchema.KeyStorage.NONE, null)
+                        : -1;
+        int colour =
+                p == Profile.TYPE
+                        ? column(
+                                r, "MinimapStaticCol", 32, false, TableSchema.KeyStorage.NONE, null)
+                        : -1;
+        return new Context(
+                r, NativeIdReceiptFingerprint.canonicalStamp(r), id, value, bank, colour);
     }
 
     private static int column(

@@ -25,8 +25,9 @@ final class WorldStreamEnvelope {
     static final int VERSION = 3;
 
     // Terrain 2,581,504B (2,284,544B plus 296,960B of vertex normals and colours since packet
-    // version 4, #373) plus the optional 622,720B static water trailer.
-    static final int MAX_PACKET_BYTES = 3_204_224 + WorldStreamTileFile.MAX_SPLAT_BYTES;
+    // version 4, #373) plus the optional 721,024B static water trailer (622,720B plus 98,304B of
+    // per-vertex liquid colours since water trailer version 2, #171).
+    static final int MAX_PACKET_BYTES = 3_302_528 + WorldStreamTileFile.MAX_SPLAT_BYTES;
     private static final byte[] SESSION_MAGIC = "VIMIWSS2".getBytes(StandardCharsets.US_ASCII);
     private static final byte[] COMMIT_MAGIC = "VIMIWSC2".getBytes(StandardCharsets.US_ASCII);
 
