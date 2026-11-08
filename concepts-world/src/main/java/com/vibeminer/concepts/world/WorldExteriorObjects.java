@@ -254,13 +254,8 @@ public final class WorldExteriorObjects {
      * {@code export-renderer.js:606} and {@code formatlib-m2.cs:282}.
      */
     static boolean firstTextureUsesUv0(int shaderId, int textureCount) {
-        if (shaderId < 0 || shaderId > 0xffff || textureCount < 1) {
-            return false;
-        }
-        var names = M2Combiners.name(textureCount, shaderId);
-        return names != null
-                && M2Combiners.namedBitsOnly(textureCount, shaderId)
-                && names.vertexShader().startsWith("Diffuse_T1");
+        // Shared with World creatures (DisplayModelService.worldBatch, #361).
+        return M2Combiners.firstTextureUsesUv0(textureCount, shaderId);
     }
 
     /** M2 bone flags that billboard (spherical or cylindrical); no view policy here. */

@@ -680,7 +680,8 @@ public final class DisplayModelService implements BuildDisplayModels {
             var appearance =
                     new MeshAppearance(mesh, uv, normals, bindings, pool.textures, billboards);
             limitations(reference, mesh, issues);
-            if (sourceFactsComplete && pool.complete) {
+            // The World rule reads no material source facts, so their absence does not stop a save.
+            if ((world || sourceFactsComplete) && pool.complete) {
                 cache.save(key, appearance, receipts, token, issues);
             }
             return ready(reference, appearance, issues, false);
@@ -925,11 +926,20 @@ public final class DisplayModelService implements BuildDisplayModels {
 
     /**
      * Whether a batch is drawn under the World objects' batch rule (#360, {@code
-     * WorldExteriorObjects}): material layer 0, at least one texture, a combiner whose shader ID
-     * names a {@code Diffuse_T1*} vertex shader (texture 1 sampled with UV0) and sets no other bit,
-     * and blend 0 (opaque) or 1 (alpha key). The creature World has no blended pass, so blend 2,
-     * which World objects draw blended, is left out here. Color, texture weight, texture transform,
-     * priority and render flags are not consulted.
+     * WorldExteriorObjects.copyModel}): material layer 0, at least one texture, a combiner whose
+     * texture 1 is sampled with UV0 ({@link M2Combiners#firstTextureUsesUv0}, shared with World
+     * objects), and blend 0 (opaque) or 1 (alpha key). Color, texture weight, texture transform,
+     * priority and render flags are not consulted, as for objects.
+     *
+     * <p>Three intended differences from World objects ({@link #worldSurfaces}):
+     *
+     * <ul>
+     *   <li>Blend 2 is skipped rather than claiming the section: creatures have no blended pass, so
+     *       a later opaque or alpha-keyed batch on the section may draw instead.
+     *   <li>Texture types 11 to 13 resolve to the display's monster skin; objects take type 0 only.
+     *   <li>A batch whose texture does not resolve or decode leaves the section to a later batch;
+     *       objects claim the section before decoding.
+     * </ul>
      */
     static boolean worldBatch(M2Types.Model model, M2Types.Batch batch) {
         if (batch.materialLayer() != 0
@@ -945,10 +955,7 @@ public final class DisplayModelService implements BuildDisplayModels {
                         >= model.textures().size()) {
             return false;
         }
-        var names = M2Combiners.name(batch.textureCount(), batch.shaderId());
-        return names != null
-                && M2Combiners.namedBitsOnly(batch.textureCount(), batch.shaderId())
-                && names.vertexShader().startsWith("Diffuse_T1")
+        return M2Combiners.firstTextureUsesUv0(batch.textureCount(), batch.shaderId())
                 && model.materials().get(batch.materialIndex()).blendMode() <= 1;
     }
 
