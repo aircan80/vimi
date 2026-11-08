@@ -300,7 +300,7 @@ class PreviewAnimationTest {
     void billboardTranslationMovesThePivotAndScaleSizesTheCard() {
         var root =
                 new Bone(-1, 0, 0, 0, constant(3, 0, 0, 3), constant(4, 0, 0, S, S), null, false);
-        var card = new Bone(0, 1, 0, 1, constant(3, 0, 0, 1), null, constant(3, 2, 2, 2), true);
+        var card = new Bone(0, 1, 0, 1, constant(3, 1, 0, 0), null, constant(3, 2, 2, 2), true);
         var rest = mesh(1.5f, 0, 1, 1, .5f, 1, 2, 0, 0);
         var animation =
                 new PreviewAnimation(
@@ -313,11 +313,12 @@ class PreviewAnimationTest {
                         rigid(1, 1, 0),
                         full(3));
         var pose = animation.pose(rest, 0);
-        // Pivot (1,0,1) + translation (0,0,1) rotates to (0,1,2) and lifts by 3.
-        assertEquals(new MeshAppearance.Vec3(0, 1, 5), round(pose.pivots().get(1)));
+        // Pivot (1,0,1) + translation (1,0,0) rotates to (0,2,1) and lifts by 3; applying the
+        // translation after the parent would give (1,1,4).
+        assertEquals(new MeshAppearance.Vec3(0, 2, 4), round(pose.pivots().get(1)));
         // Card offsets double around the pivot; they are neither rotated nor translated.
-        near(new float[] {1, 1, 5}, pose.mesh().positions(), 0);
-        near(new float[] {0, 2, 5}, pose.mesh().positions(), 1);
+        near(new float[] {1, 2, 4}, pose.mesh().positions(), 0);
+        near(new float[] {0, 3, 4}, pose.mesh().positions(), 1);
         near(new float[] {0, 2, 3}, pose.mesh().positions(), 2);
     }
 

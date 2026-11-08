@@ -473,11 +473,6 @@ public final class PreviewAnimation {
         track.sample(time, out);
     }
 
-    private static void identity(double[] m) {
-        Arrays.fill(m, 0);
-        m[0] = m[5] = m[10] = 1;
-    }
-
     private static void compose(Bone bone, double[] t, double[] q, double[] s, double[] m) {
         double x = q[0], y = q[1], z = q[2], w = q[3];
         double[] r = {
