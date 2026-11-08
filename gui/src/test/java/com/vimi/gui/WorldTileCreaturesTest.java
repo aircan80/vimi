@@ -49,12 +49,44 @@ public final class WorldTileCreaturesTest {
         cachesPerRevisionAndRetriesFailures();
         cancellationPropagatesAndSourceFailuresAreNotes();
         statusDisclosure();
+        theWorldAsksForItsOwnBinding();
         humanoidNpcsDrawWholeOrSayWhy();
         capsStopLookupsAndForeignCancellationIsAFailure();
         failedIndexLoadsBackOff();
         conversionChecksVertexValuesAndLightsMissingNormals();
         BridgeAssembly.run();
         System.out.println("WorldTileCreaturesTest passed");
+    }
+
+    /**
+     * The production previews give the World the component's World binding (#361), not the
+     * preview's reviewed profiles.
+     */
+    private static void theWorldAsksForItsOwnBinding() {
+        var forPreview = preview(7, 0L, 0L, appearance(false));
+        var forWorld = preview(7, 0L, 0L, appearance(true));
+        var models = new com.vibeminer.concepts.models.BuildDisplayModels() {
+            @Override
+            public java.util.concurrent.CompletableFuture<DisplayModelTypes.Preview> preview(
+                    long displayId, Cancellation token) {
+                return java.util.concurrent.CompletableFuture.completedFuture(forPreview);
+            }
+
+            @Override
+            public java.util.concurrent.CompletableFuture<DisplayModelTypes.Preview> worldPreview(
+                    long displayId, Cancellation token) {
+                return java.util.concurrent.CompletableFuture.completedFuture(forWorld);
+            }
+
+            @Override
+            public java.util.concurrent.CompletableFuture<Void> closeAsync() {
+                return java.util.concurrent.CompletableFuture.completedFuture(null);
+            }
+        };
+        try (var previews = new WorldTileCreatures.DisplayPreviews(() -> models, () -> "r")) {
+            require(previews.preview(7, Cancellation.NONE) == forWorld,
+                    "The World draws the World binding, not the preview's");
+        }
     }
 
     private static void conversionKeepsOpaqueSurfacesAndDropsCards() {
@@ -741,7 +773,7 @@ public final class WorldTileCreaturesTest {
                 "The drawn NPCs' left-out item records, item models and surfaces are counted: " + summary.npcs());
         require(summary.restPosed() == 2, "NPC appearances are static, disclosed as rest pose");
         String text = WorldStreamSourceController.creatureDetail(summary, 1);
-        require(text.equals("; 2 static creature models on 1 tile (rest pose, facing north, first texture per surface)"
+        require(text.equals("; 2 static creature models on 1 tile (rest pose, facing north)"
                         + ", of which 2 humanoid NPCs (1 with 2 surfaces left out;"
                         + " 2 item models and 1 item record not drawn)"
                         + "; spawns not drawn: 1 character appearance unavailable, 2 character appearance not readable yet"),
