@@ -459,10 +459,8 @@ public final class M2IdleAnimation {
         budget[0] += (int) keys;
         // A global sequence of length 0 never advances: its clock stays at 0 and evaluation holds
         // the first key, so its keys may be stamped at any time (client data stamps them past 0).
-        // Stamps are kept as int milliseconds.
         long clock = global < 0 ? sequenceMillis : globalMillis[global];
-        long limit =
-                global >= 0 && clock == 0 ? Integer.MAX_VALUE : Math.min(clock, Integer.MAX_VALUE);
+        long limit = global >= 0 && clock == 0 ? Long.MAX_VALUE : clock;
         int count = (int) keys;
         int[] stamps = new int[count];
         input.records(
@@ -482,6 +480,11 @@ public final class M2IdleAnimation {
                     }
                     if (stamp > limit) {
                         throw error("INVALID", "A bone key time lies beyond its sequence.");
+                    }
+                    // Stamps are kept as int milliseconds.
+                    if (stamp > Integer.MAX_VALUE) {
+                        throw error(
+                                "INVALID", "A bone key time is outside the supported key range.");
                     }
                     stamps[i] = (int) stamp;
                 });

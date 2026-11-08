@@ -2,11 +2,14 @@ package com.vibeminer.formats.models;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.AssetSource;
+import com.vibeminer.formats.AssetTasks;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.function.Consumer;
@@ -164,6 +167,14 @@ class M2IdleAnimationTest {
         M2ReadersTest.failure(code, () -> read(bytes));
     }
 
+    private static void refused(String code, String message, Consumer<Annex> change, int version) {
+        byte[] bytes = authored(version, change);
+        var error = AssetTasks.unwrap(assertThrows(RuntimeException.class, () -> read(bytes)));
+        var format = assertInstanceOf(ModelFormatException.class, error);
+        assertEquals(code, format.code());
+        assertEquals(message, format.getMessage());
+    }
+
     @ParameterizedTest
     @ValueSource(ints = {272, 274})
     void readsLocalStandKeysForEveryBone(int version) {
@@ -252,6 +263,7 @@ class M2IdleAnimationTest {
         // Unordered key times.
         refused(
                 "MODEL_INVALID",
+                "Bone key times are unordered.",
                 a ->
                         a.keys(
                                 0,
@@ -273,6 +285,7 @@ class M2IdleAnimationTest {
         // A key beyond the Stand duration.
         refused(
                 "MODEL_INVALID",
+                "A bone key time lies beyond its sequence.",
                 a ->
                         a.keys(
                                 0,
@@ -294,6 +307,7 @@ class M2IdleAnimationTest {
         // A global track key beyond its clock.
         refused(
                 "MODEL_INVALID",
+                "A bone key time lies beyond its sequence.",
                 a ->
                         a.keys(
                                 1,
@@ -373,6 +387,7 @@ class M2IdleAnimationTest {
         // Order is still required on a zero-length clock.
         refused(
                 "MODEL_INVALID",
+                "Bone key times are unordered.",
                 a -> {
                     a.buffer.putInt(a.at + GLOBALS, 0);
                     a.keys(
@@ -391,6 +406,52 @@ class M2IdleAnimationTest {
                             12);
                 },
                 version);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void keyStampsAboveTheIntRangeAreRefusedAsOutOfRange(int version) {
+        // A zero-length clock has no sequence bound, but stamps are int milliseconds.
+        refused(
+                "MODEL_INVALID",
+                "A bone key time is outside the supported key range.",
+                a -> {
+                    a.buffer.putInt(a.at + GLOBALS, 0);
+                    a.keys(
+                            1,
+                            56,
+                            1,
+                            0,
+                            1,
+                            0,
+                            new int[] {0, Integer.MIN_VALUE},
+                            v -> {
+                                for (int i = 0; i < 6; i++) {
+                                    v.putFloat(1);
+                                }
+                            },
+                            12);
+                },
+                version);
+        // The largest int stamp is still admitted there.
+        var idle =
+                read(
+                        authored(
+                                version,
+                                a -> {
+                                    a.buffer.putInt(a.at + GLOBALS, 0);
+                                    a.keys(
+                                            1,
+                                            56,
+                                            1,
+                                            0,
+                                            1,
+                                            0,
+                                            new int[] {Integer.MAX_VALUE},
+                                            v -> v.putFloat(1).putFloat(1).putFloat(1),
+                                            12);
+                                }));
+        assertArrayEquals(new int[] {Integer.MAX_VALUE}, idle.bones().get(1).scale().times());
     }
 
     @ParameterizedTest
@@ -438,6 +499,7 @@ class M2IdleAnimationTest {
         // Self alias.
         refused(
                 "MODEL_INVALID",
+                "The Stand sequence alias chain contains a cycle.",
                 a -> {
                     a.buffer.putInt(a.sequence(1) + 12, 0x60);
                     a.buffer.putShort(a.sequence(1) + 62, (short) 1);
@@ -446,6 +508,7 @@ class M2IdleAnimationTest {
         // Two sequences aliasing each other.
         refused(
                 "MODEL_INVALID",
+                "The Stand sequence alias chain contains a cycle.",
                 a -> {
                     a.buffer.putInt(a.sequence(1) + 12, 0x60);
                     a.buffer.putShort(a.sequence(1) + 62, (short) 0);
@@ -456,6 +519,7 @@ class M2IdleAnimationTest {
         // An alias past the declared sequences.
         refused(
                 "MODEL_INVALID",
+                "The Stand sequence aliases an undeclared sequence.",
                 a -> {
                     a.buffer.putInt(a.sequence(1) + 12, 0x60);
                     a.buffer.putShort(a.sequence(1) + 62, (short) 2);
