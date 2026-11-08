@@ -38,15 +38,26 @@ public final class WorldStreamSourceBridgeTest {
         portalSetsAreCopiedWhileTheyFit();
         waterCopyMergesFullFlatChunksOnly();
         waterCopyCapsWholeLayersAtThePacketBound();
+        waterCopyKeepsAChunksDepthGradient();
+        waterCopyCoarsensDepthBeforeCapping();
     }
 
     /**
      * Authored source water: each layer is (width, height, mask, planar); every cell emits NW, NE,
      * SW, SE with north = row (+1 for the south corners), west = column (+1 for the east ones)
-     * and up = layer + corner / 10 when the layer is not planar.
+     * and up = layer + corner / 10 when the layer is not planar. Depth is a function of the layer
+     * and the vertex's grid row and column; by default 10 + row + column, an even slope.
      */
-    private record AuthoredWater(int[][] shape, long[] masks, boolean[] planar)
+    private record AuthoredWater(int[][] shape, long[] masks, boolean[] planar, DepthField field)
             implements WorldStreamSourceBridge.WaterCopy.Cells {
+        interface DepthField {
+            int depth(int layer, int row, int column);
+        }
+
+        AuthoredWater(int[][] shape, long[] masks, boolean[] planar) {
+            this(shape, masks, planar, (layer, row, column) -> 10 + row + column);
+        }
+
         int cells(int layer) { return Long.bitCount(masks[layer]); }
         int total() {
             int n = 0;
@@ -77,6 +88,8 @@ public final class WorldStreamSourceBridgeTest {
         @Override public boolean planar(int layer) { return planar[layer]; }
         /** Layer 2 is a magma layer with its own flat colour; the rest are water. */
         @Override public int colour(int layer) { return layer == 2 ? 0xD06800 : -1; }
+        /** Layer 0 is ocean; the others are river or lake water. */
+        @Override public boolean ocean(int layer) { return layer == 0; }
         @Override public float north(int vertex) {
             var at = locate(vertex);
             return at[1] / width(at[0]) + at[2] / 2;
@@ -89,7 +102,9 @@ public final class WorldStreamSourceBridgeTest {
             var at = locate(vertex);
             return planar[at[0]] ? 5 : 5 + at[2] / 10f;
         }
-        @Override public int depth(int vertex) { return locate(vertex)[2] + 10; }
+        @Override public int depth(int vertex) {
+            return field.depth(locate(vertex)[0], (int) north(vertex), (int) west(vertex));
+        }
     }
 
     /**
@@ -105,11 +120,13 @@ public final class WorldStreamSourceBridgeTest {
                         && copy.layers() == 3 && !copy.capped(),
                 "One quad for the flat full chunk, every cell otherwise: " + water.cells());
         var p = water.positions();
-        // The merged quad spans the chunk: NW (0,0), NE (0,8), SW (8,0), SE (8,8).
+        // The merged quad spans the chunk: NW (0,0), NE (0,8), SW (8,0), SE (8,8), and keeps the
+        // corner depths of its even slope.
         float[] corners = {0, 0, 0, 8, 8, 0, 8, 8};
+        int[] depths = {10, 18, 18, 26};
         for (int c = 0; c < 4; c++) {
             check(p[c * 3] == corners[c * 2] && p[c * 3 + 1] == corners[c * 2 + 1]
-                            && p[c * 3 + 2] == 5 && water.depths()[c] == 10 + c,
+                            && p[c * 3 + 2] == 5 && water.depths()[c] == depths[c],
                     "Merged corner " + c + " comes from the chunk's corner cell");
         }
         // The sloped chunk's first cell keeps its own corner heights.
@@ -122,6 +139,12 @@ public final class WorldStreamSourceBridgeTest {
                     | colours[v * 3 + 2] & 255;
             int expected = v >= (1 + 64) * 4 ? 0xD06800 : WorldStreamTileWriter.Water.WATER_RGB;
             check(rgb == expected, "Vertex " + v + " colour " + Integer.toHexString(rgb));
+            // The merged ocean quad is OCEAN, the sloped chunk RIVER, the magma layer FLAT.
+            byte kind = water.kinds()[v];
+            byte expectedKind = v < 4 ? WorldStreamTileWriter.Water.OCEAN
+                    : v >= (1 + 64) * 4 ? WorldStreamTileWriter.Water.FLAT
+                    : WorldStreamTileWriter.Water.RIVER;
+            check(kind == expectedKind, "Vertex " + v + " kind " + kind);
         }
         var indices = water.indices();
         for (int q = 0; q < water.cells(); q++) {
@@ -153,6 +176,99 @@ public final class WorldStreamSourceBridgeTest {
                 new AuthoredWater(shape, masks, planar), Cancellation.NONE);
         check(!merged.capped() && merged.layers() == 129 && merged.water().cells() == 2 + 127 * 64,
                 "Merged flat chunks make room for every layer");
+    }
+
+    /**
+     * Depth shades water (#171), so a flat full chunk's cells merge only where one quad draws
+     * every source depth within a byte: equal depths, an even slope, or one-byte noise. A coastal
+     * chunk with a shallow strip inside it keeps the cells around the strip and their depths.
+     */
+    private static void waterCopyKeepsAChunksDepthGradient() {
+        int[][] chunk = {{8, 8}};
+        long[] full = {-1L};
+        boolean[] flat = {true};
+        check(copyCells(new AuthoredWater(chunk, full, flat, (l, r, c) -> 200)) == 1,
+                "Equal depths merge");
+        check(copyCells(new AuthoredWater(chunk, full, flat, (l, r, c) -> 255 - 30 * c)) == 1,
+                "An even shallow-to-deep slope merges: the quad draws the same depths");
+        check(copyCells(new AuthoredWater(chunk, full, flat, (l, r, c) -> 100 + (r + c) % 2)) == 1,
+                "One-byte noise merges");
+        check(copyCells(new AuthoredWater(chunk, full, flat, (l, r, c) -> 100 + 2 * ((r + c) % 2)))
+                        == 64,
+                "Two-byte noise keeps every cell");
+        // Deep everywhere except a shallow strip on grid column 4. Every 4 x 4 block touches it,
+        // so they split; the 2 x 2 blocks on cell columns 0-1 and 6-7 are flat and merge (16),
+        // and cell columns 2..5 beside the strip keep their cells (32).
+        var coast = WorldStreamSourceBridge.WaterCopy.of(
+                new AuthoredWater(chunk, full, flat, (l, r, c) -> c == 4 ? 20 : 255),
+                Cancellation.NONE);
+        var water = coast.water();
+        check(!coast.capped() && coast.finest() == 1 && water.cells() == 8 + 32,
+                "The coastal chunk keeps the cells around its strip: " + water.cells());
+        // Every copied vertex keeps its own source depth: 20 on column 4, 255 elsewhere.
+        var p = water.positions();
+        for (int v = 0; v < water.cells() * 4; v++) {
+            int expected = p[v * 3 + 1] == 4 ? 20 : 255;
+            check((water.depths()[v] & 255) == expected,
+                    "Vertex " + v + " at column " + p[v * 3 + 1] + " depth "
+                            + (water.depths()[v] & 255));
+        }
+        check(covered(water) == 64, "The quads cover the whole chunk once");
+        // A wavy (planar = false) chunk never merges, whatever its depths.
+        check(copyCells(new AuthoredWater(chunk, full, new boolean[] {false}, (l, r, c) -> 200))
+                        == 64,
+                "A sloped surface keeps every cell");
+    }
+
+    /**
+     * A tile whose depths would pass 8192 quads merges blocks regardless of depth at the finest
+     * size that fits, rather than leaving layers out; only when whole chunks do not fit are
+     * layers capped.
+     */
+    private static void waterCopyCoarsensDepthBeforeCapping() {
+        int layers = 256;
+        var shape = new int[layers][];
+        var masks = new long[layers];
+        var planar = new boolean[layers];
+        for (int l = 0; l < layers; l++) {
+            shape[l] = new int[] {8, 8};
+            masks[l] = -1L;
+            planar[l] = true;
+        }
+        // Two-byte noise everywhere: 64 cells per chunk would be 16,384 quads.
+        AuthoredWater.DepthField noise = (l, r, c) -> 100 + 2 * ((r + c) % 2);
+        var copy = WorldStreamSourceBridge.WaterCopy.of(
+                new AuthoredWater(shape, masks, planar, noise), Cancellation.NONE);
+        check(!copy.capped() && copy.layers() == layers && copy.finest() == 2
+                        && copy.water().cells() == layers * 16,
+                "2 x 2 blocks fit every layer: " + copy.finest() + " " + copy.water().cells());
+        // With 200 layers, half of them a smooth slope that stays whole, the noisy rest keep
+        // every cell: 100 + 6,400 quads fit.
+        int some = 200;
+        AuthoredWater.DepthField half = (l, r, c) -> l % 2 == 0 ? 10 + r + c : 100 + 2 * ((r + c) % 2);
+        var mixed = WorldStreamSourceBridge.WaterCopy.of(
+                new AuthoredWater(java.util.Arrays.copyOf(shape, some),
+                        java.util.Arrays.copyOf(masks, some),
+                        java.util.Arrays.copyOf(planar, some), half),
+                Cancellation.NONE);
+        check(!mixed.capped() && mixed.finest() == 1 && mixed.water().cells() == 100 + 100 * 64,
+                "Exact depth while it fits: " + mixed.water().cells());
+    }
+
+    /** Cells covered by the copy's quads, from their corner positions. */
+    private static int covered(WorldStreamTileWriter.Water water) {
+        var p = water.positions();
+        int area = 0;
+        for (int q = 0; q < water.cells(); q++) {
+            float north = p[q * 12], west = p[q * 12 + 1];
+            float south = p[q * 12 + 9], east = p[q * 12 + 10];
+            area += (int) ((south - north) * (east - west));
+        }
+        return area;
+    }
+
+    private static int copyCells(AuthoredWater source) {
+        return WorldStreamSourceBridge.WaterCopy.of(source, Cancellation.NONE).water().cells();
     }
 
     /**

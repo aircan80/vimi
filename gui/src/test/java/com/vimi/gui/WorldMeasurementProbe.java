@@ -1444,6 +1444,10 @@ public final class WorldMeasurementProbe {
             var states = new TreeMap<String, Integer>();
             var issues = new TreeMap<String, Integer>();
             long declared = 0, admitted = 0, unresolved = 0, cells = 0;
+            // The bridge's copy: quads, the tile maximum, capped tiles, and the quads a
+            // planar-only merge (ignoring depth) would have drawn.
+            // total, max, capped tiles, planar-only total, planar-only max, tiles with coarsened depth
+            long[] quads = new long[6];
             // The tiles this map's stride selects; fewer done means the budget ran out.
             int tiles = 0, sampled = (all.size() + stride - 1) / stride;
             long began = System.nanoTime();
@@ -1455,7 +1459,23 @@ public final class WorldMeasurementProbe {
                         source.prepareAndWrite(
                                 scope, all.get(at), Cancellation.NONE, (borrow, token) -> () -> {})) {
                     try (var prepared =
-                            water.prepareAndWrite(written, Cancellation.NONE, (borrow, token) -> () -> {})) {
+                            water.prepareAndWrite(written, Cancellation.NONE, (borrow, token) -> {
+                                var copy = WorldStreamSourceBridge.WaterCopy.of(borrow, token);
+                                int drawn = copy.water().cells();
+                                quads[0] += drawn;
+                                quads[1] = Math.max(quads[1], drawn);
+                                if (copy.capped()) quads[2]++;
+                                if (copy.finest() > 1) quads[5]++;
+                                int planarOnly = 0;
+                                for (int l = 0; l < borrow.layers(); l++) {
+                                    boolean full = borrow.width(l) == 8 && borrow.height(l) == 8
+                                            && borrow.mask(l) == -1L && borrow.planar(l);
+                                    planarOnly += full ? 1 : Long.bitCount(borrow.mask(l));
+                                }
+                                quads[3] += planarOnly;
+                                quads[4] = Math.max(quads[4], planarOnly);
+                                return copy;
+                            })) {
                         var facts = prepared.facts();
                         key = facts.state() + "/" + facts.reason();
                         declared += facts.declaredLayers();
@@ -1494,6 +1514,18 @@ public final class WorldMeasurementProbe {
                             cells));
             say("PROBE   water states/reasons (one per tile) " + states);
             say("PROBE   water issue kinds " + issues);
+            say(
+                    String.format(
+                            Locale.ROOT,
+                            "PROBE   water quads %d (tile max %d of %d, capped tiles %d, coarsened depth tiles %d);"
+                                    + " planar-only merge would draw %d (tile max %d)",
+                            quads[0],
+                            quads[1],
+                            com.vibeminer.rendering.bgfx.WorldStreamTileWriter.Water.MAX_CELLS,
+                            quads[2],
+                            quads[5],
+                            quads[3],
+                            quads[4]));
         }
     }
 

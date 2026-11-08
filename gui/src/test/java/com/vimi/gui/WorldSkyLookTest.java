@@ -86,6 +86,22 @@ public final class WorldSkyLookTest {
                 List.of(), List.of()), EXPLORER).lightWeight() == 1, "light without fog");
     }
 
+    /** #171: the recorded water light rides the sky, weighed like the fog and light. */
+    private static void carriesTheRecordedWaterLight() {
+        var water = new WorldSky.Water(0x102030, 0x405060, 0x708090, 0xA0B0C0, 0.25, 0.75, 0.5, 1);
+        var sample = new WorldSky.Sample(0, 0, 0, 0, 0, 0, null, water, 0, 0);
+        var sky = WorldSkyLook.of(new WorldSky.Result(WorldSky.State.READY, 0, 0, false, sample,
+                0.5, List.of(), List.of()), EXPLORER);
+        check(sky.waterWeight() == 0.5, "water weighed by the coverage " + sky.waterWeight());
+        float[] colours = sky.water();
+        check(colours[0] == 0x10 && colours[5] == 0x60 && colours[9] == 0xA0,
+                "water colours in order " + Arrays.toString(colours));
+        check(Arrays.equals(sky.waterAlphas(), new float[] {0.25f, 0.75f, 0.5f, 1}),
+                "water opacities " + Arrays.toString(sky.waterAlphas()));
+        check(WorldSkyLook.of(result(1, 1000, 0.25, 1), EXPLORER).waterWeight() == 0,
+                "a dry sample carries no water light");
+    }
+
     private static void clampsTheFogScaler() {
         var above = WorldSkyLook.of(result(1, 1000, 3, 1), EXPLORER);
         check(above.recordedEnd() == 1000 && above.recordedStart() == 999,
@@ -264,6 +280,7 @@ public final class WorldSkyLookTest {
     public static void main(String[] args) {
         mapsRecordedChannelsAndFog();
         carriesTheRecordedLight();
+        carriesTheRecordedWaterLight();
         clampsTheFogScaler();
         clockToHalfMinutes();
         throttlesLookups();
@@ -272,7 +289,7 @@ public final class WorldSkyLookTest {
         aFailingLookupNeitherBreaksNorFloodsThePulse();
         pinsTheClockForOwnerChecks();
         System.out.println("World sky look: recorded channels, coverage and fog share, scaler"
-                + " clamp, recorded light, clock, throttle, camera feed, still-camera clock, failing lookups"
+                + " clamp, recorded light, water light, clock, throttle, camera feed, still-camera clock, failing lookups"
                 + " and pinned time passed");
     }
 }

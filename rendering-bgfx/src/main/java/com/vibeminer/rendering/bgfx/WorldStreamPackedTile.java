@@ -22,8 +22,9 @@ final class WorldStreamPackedTile implements AutoCloseable {
 
     /**
      * Bytes per mesh vertex: float x, y, z; the RGBA8 fallback colour (unlit); the MCCV colour
-     * (RGBA8: alpha 255 when present, all zero when absent); the normal as unsigned bytes {@code
-     * round(127.5 + 127.5 * n)}, with (128, 128, 128) for an unlit vertex (water).
+     * (terrain: RGBA8 with alpha 255 when present, all zero when absent; water, which has no MCCV:
+     * the depth byte, the liquid kind, then 0, 0, so alpha stays 0); the normal as unsigned bytes
+     * {@code round(127.5 + 127.5 * n)}, with (128, 128, 128) for an unlit vertex (water).
      */
     static final int VERTEX_BYTES = 24;
 
@@ -460,6 +461,8 @@ final class WorldStreamPackedTile implements AutoCloseable {
         if (water != null) {
             var waterPositions = water.positions();
             var colours = water.colours();
+            var depths = water.depths();
+            var kinds = water.kinds();
             for (int v = 0; v < mesh.waterVertices; v++) {
                 // Each liquid's own colour (#171): water, or a magma or slime flat colour.
                 vertex(
@@ -470,7 +473,9 @@ final class WorldStreamPackedTile implements AutoCloseable {
                         colours[v * 3] & 255,
                         colours[v * 3 + 1] & 255,
                         colours[v * 3 + 2] & 255);
-                out.putInt(0);
+                // Water has no MCCV: that slot carries its depth and liquid kind for the water
+                // shading (#171), read only by water draws.
+                out.put(depths[v]).put(kinds[v]).put((byte) 0).put((byte) 0);
                 out.put(UNLIT_NORMAL).put(UNLIT_NORMAL).put(UNLIT_NORMAL).put((byte) 255);
             }
         }
