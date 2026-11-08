@@ -34,6 +34,18 @@ final class WorldSkyTables {
     /** Optional: without them the sky and fog still load, with no recorded light. */
     private static final String[] LIGHT = {"DirectColor", "AmbientColor"};
 
+    /**
+     * Optional water light (#171), in {@link WorldSky.Water} order: LightData colours and
+     * LightParams opacities. Without them the sky, fog and light still load, with no water light.
+     */
+    private static final String[] WATER_COLOURS = {
+        "OceanCloseColor", "OceanFarColor", "RiverCloseColor", "RiverFarColor"
+    };
+
+    private static final String[] WATER_ALPHAS = {
+        "OceanShallowAlpha", "OceanDeepAlpha", "WaterShallowAlpha", "WaterDeepAlpha"
+    };
+
     /** The light tables cannot be used at all; the message names the table and why. */
     static final class Unavailable extends IllegalStateException {
         private static final long serialVersionUID = 1L;
@@ -83,6 +95,18 @@ final class WorldSkyTables {
             issues.add("Direct and ambient light are unavailable: " + failure.getMessage());
             lit = false;
         }
+        boolean wet = true;
+        try {
+            for (String colour : WATER_COLOURS) {
+                data.requireInteger(colour, -1);
+            }
+            for (String alpha : WATER_ALPHAS) {
+                params.requireDecimal(alpha, -1);
+            }
+        } catch (Unavailable failure) {
+            issues.add("Water light is unavailable: " + failure.getMessage());
+            wet = false;
+        }
         if (map != null) {
             try {
                 map.requireInteger("TimeOfDayOverride", -1);
@@ -93,9 +117,27 @@ final class WorldSkyTables {
         }
 
         var paramIds = new HashSet<Long>();
+        var alphas = new HashMap<Long, double[]>();
+        int dryParams = 0;
         for (var row : params.rows(tables, WorldSky.MAX_LIGHTS, token)) {
             paramIds.add(row.id());
+            if (wet) {
+                try {
+                    double[] values = new double[WATER_ALPHAS.length];
+                    for (int i = 0; i < values.length; i++) {
+                        values[i] = params.decimal(row, WATER_ALPHAS[i], -1);
+                        if (!(values[i] >= 0 && values[i] <= 1)) {
+                            throw new Unreadable();
+                        }
+                    }
+                    alphas.put(row.id(), values);
+                } catch (Unreadable failure) {
+                    // Only this parameter set's water light is lost.
+                    dryParams++;
+                }
+            }
         }
+        count(issues, dryParams, "LightParams rows have unreadable water opacities.");
 
         var lights = new ArrayList<WorldSky.Light>();
         int unreadable = 0, unknownParams = 0;
@@ -125,7 +167,7 @@ final class WorldSkyTables {
 
         var keys = new ArrayList<WorldSky.Key>();
         unreadable = 0;
-        int orphan = 0, unlit = 0;
+        int orphan = 0, unlit = 0, dry = 0;
         for (var row : data.rows(tables, WorldSky.MAX_KEYS, token)) {
             try {
                 int[] colours = new int[COLOURS.length];
@@ -154,6 +196,33 @@ final class WorldSkyTables {
                         unlit++;
                     }
                 }
+                WorldSky.Water water = null;
+                double[] opacity = alphas.get(paramId);
+                if (wet && opacity != null) {
+                    try {
+                        int[] water4 = new int[WATER_COLOURS.length];
+                        for (int i = 0; i < water4.length; i++) {
+                            water4[i] = colour(data, row, WATER_COLOURS[i]);
+                        }
+                        // All four colours 0 records no water light, as a FogEnd of 0 records no
+                        // fog: on 1.60.1 about two thirds of the rows leave them 0.
+                        water =
+                                (water4[0] | water4[1] | water4[2] | water4[3]) == 0
+                                        ? null
+                                        : new WorldSky.Water(
+                                                water4[0],
+                                                water4[1],
+                                                water4[2],
+                                                water4[3],
+                                                opacity[0],
+                                                opacity[1],
+                                                opacity[2],
+                                                opacity[3]);
+                    } catch (Unreadable failure) {
+                        // Only this key's water light is lost.
+                        dry++;
+                    }
+                }
                 keys.add(
                         new WorldSky.Key(
                                 row.id(),
@@ -167,6 +236,7 @@ final class WorldSkyTables {
                                         colours[4],
                                         colours[5],
                                         lighting,
+                                        water,
                                         fogEnd,
                                         fogScaler)));
             } catch (Unreadable | IllegalArgumentException failure) {
@@ -180,6 +250,10 @@ final class WorldSkyTables {
                 unlit,
                 "LightData rows have unreadable direct or ambient light; their sky and fog are"
                         + " kept.");
+        count(
+                issues,
+                dry,
+                "LightData rows have unreadable water colours; their sky, fog and light are kept.");
 
         var mapTimes = new HashMap<Long, Integer>();
         if (map != null) {

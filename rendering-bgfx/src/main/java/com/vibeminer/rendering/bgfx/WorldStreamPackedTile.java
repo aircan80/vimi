@@ -462,15 +462,17 @@ final class WorldStreamPackedTile implements AutoCloseable {
         }
         if (water != null) {
             var waterPositions = water.positions();
+            var colours = water.colours();
             for (int v = 0; v < mesh.waterVertices; v++) {
+                // Each liquid's own colour (#171): water, or a magma or slime flat colour.
                 vertex(
                         out,
                         waterPositions[v * 3],
                         waterPositions[v * 3 + 1],
                         waterPositions[v * 3 + 2],
-                        WATER_R,
-                        WATER_G,
-                        WATER_B);
+                        colours[v * 3] & 255,
+                        colours[v * 3 + 1] & 255,
+                        colours[v * 3 + 2] & 255);
                 out.putInt(0);
                 out.put(UNLIT_NORMAL).put(UNLIT_NORMAL).put(UNLIT_NORMAL).put((byte) 255);
             }
