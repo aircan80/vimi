@@ -26,6 +26,9 @@ final class WorldTerrainLiquids {
      */
     static final int MAX_LAYERS = 1024, MAX_CELLS = 16384, MAX_SAMPLES = MAX_LAYERS * 81;
 
+    /** Distinct direct format 1/3 LiquidTypes looked up per root, one capture each. */
+    static final int MAX_DIRECT_TYPES = 8;
+
     enum State {
         ABSENT,
         EMPTY,
@@ -704,7 +707,9 @@ final class WorldTerrainLiquids {
             }
         }
         WorldLiquidTables.Observed types = null, materials = null, failedContext = null;
-        WorldLiquidTables.Observed directTypes = null;
+        // Direct format 1/3 LiquidType rows, one lookup per type, and those lookups' proofs.
+        var directTypes = new java.util.HashMap<Long, WorldLiquidTables.Observed>();
+        var directProofs = new ArrayList<WorldLiquidTables.Observed>();
         var oceanProof = new WorldLiquidTables.Observed[2];
         try {
             if (!selected.isEmpty()) {
@@ -716,9 +721,10 @@ final class WorldTerrainLiquids {
                 materials = tables.observe(WorldLiquidTables.Profile.MATERIAL, ids, token);
             }
             // A direct format 1 or 3 layer (secondary below 42) is coloured by its own LiquidType
-            // row, looked up apart so a missing row leaves only that layer undrawn, never the
-            // tile's water.
-            var direct = new java.util.HashSet<Long>();
+            // row. Each such type is looked up on its own, so a missing row leaves only the layers
+            // of that type undrawn: never another type's layers, nor the tile's water. At most
+            // MAX_DIRECT_TYPES are looked up; layers of further types stay undrawn.
+            var direct = new java.util.TreeSet<Long>();
             for (var l : raw.layers()) {
                 long type = l.liquidType();
                 if ((l.secondary() == 1 || l.secondary() == 3)
@@ -726,12 +732,23 @@ final class WorldTerrainLiquids {
                     direct.add(type);
                 }
             }
-            if (!direct.isEmpty()) {
+            for (long type : direct) {
+                if (directProofs.size() == MAX_DIRECT_TYPES) {
+                    break;
+                }
                 try {
-                    directTypes = tables.observe(WorldLiquidTables.Profile.TYPE, direct, token);
+                    var row =
+                            tables.observe(
+                                    WorldLiquidTables.Profile.TYPE, java.util.Set.of(type), token);
+                    directTypes.put(type, row);
+                    directProofs.add(row);
                 } catch (WorldLiquidTables.Unavailable missing) {
                     if (missing.reason == WorldLiquidTables.Reason.SOURCE_CHANGED) {
                         throw new Changed();
+                    }
+                    // The negative result stays tied to unchanged source, like the main path's.
+                    if (missing.actualContext() != null) {
+                        directProofs.add(missing.actualContext());
                     }
                 }
             }
@@ -759,10 +776,7 @@ final class WorldTerrainLiquids {
                 var rows =
                         types != null && types.ids().contains((long) l.liquidType())
                                 ? types
-                                : directTypes != null
-                                                && directTypes.ids().contains((long) l.liquidType())
-                                        ? directTypes
-                                        : null;
+                                : directTypes.get((long) l.liquidType());
                 boolean coloured = (format == 1 || format == 3) && rows != null;
                 supported[l.ordinal()] = format == 0 || format == 2 || coloured;
                 colours[l.ordinal()] =
@@ -813,11 +827,13 @@ final class WorldTerrainLiquids {
                     0);
         }
         var observations = new ArrayList<WorldLiquidTables.Observed>(3);
+        var proofs =
+                new ArrayList<WorldLiquidTables.Observed>(
+                        java.util.Arrays.asList(
+                                types, materials, failedContext, oceanProof[0], oceanProof[1]));
+        proofs.addAll(directProofs);
         // Even known-negative selected-row observations must stay tied to unchanged source.
-        for (var proof :
-                new WorldLiquidTables.Observed[] {
-                    types, materials, directTypes, failedContext, oceanProof[0], oceanProof[1]
-                }) {
+        for (var proof : proofs) {
             if (proof == null) {
                 continue;
             }
