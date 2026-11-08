@@ -19,6 +19,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.AbstractList;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -1949,6 +1950,31 @@ class WorldTerrainTextureSourceTest {
         return data.array();
     }
 
+    /** An uncompressed BGRA 8 x 8 chain down to 1 x 1 with the given alpha depth and encoding. */
+    private static byte[] blpBgra(int alphaDepth, int alphaEncoding) {
+        int total = 148 + (64 + 16 + 4 + 1) * 4;
+        var data = ByteBuffer.allocate(total).order(ByteOrder.LITTLE_ENDIAN);
+        data.put(new byte[] {'B', 'L', 'P', '2'})
+                .putInt(1)
+                .put((byte) 3)
+                .put((byte) alphaDepth)
+                .put((byte) alphaEncoding)
+                .put((byte) 1)
+                .putInt(8)
+                .putInt(8);
+        int at = 148;
+        for (int level = 0; level < 4; level++) {
+            int side = 8 >> level;
+            data.putInt(20 + level * 4, at).putInt(84 + level * 4, side * side * 4);
+            data.position(at);
+            for (int pixel = 0; pixel < side * side; pixel++) {
+                data.put((byte) 0x20).put((byte) 0x60).put((byte) 0xa0).put((byte) 0x10);
+            }
+            at += side * side * 4;
+        }
+        return data.array();
+    }
+
     private static WorldTerrainTextureSource.DiffuseRefusal refusalFor(byte[] diffuse)
             throws Exception {
         var files = new Files();
@@ -1980,6 +2006,14 @@ class WorldTerrainTextureSourceTest {
         assertEquals(
                 WorldTerrainTextureSource.DiffuseRefusal.MIP_UNAVAILABLE,
                 refusalFor(blpShape(0, 16, 16, 1)));
+        // 16 x 8 and 8 x 4 only: no small mip, and the base is not square, so NON_SQUARE.
+        assertEquals(
+                WorldTerrainTextureSource.DiffuseRefusal.NON_SQUARE,
+                refusalFor(blpShape(1, 16, 8, 2)));
+        // A square chain that stops at 8 x 8 is still MIP_UNAVAILABLE.
+        assertEquals(
+                WorldTerrainTextureSource.DiffuseRefusal.MIP_UNAVAILABLE,
+                refusalFor(blpShape(1, 16, 16, 2)));
         // Not a BLP2 container.
         byte[] blp1 = blpShape(2, 8, 8, 4);
         blp1[3] = '1';
@@ -2005,5 +2039,30 @@ class WorldTerrainTextureSourceTest {
                 WorldTerrainTextureSource.DiffuseRefusal.NONE,
                 new WorldTerrainTextureSource.Issue(WorldTerrainTextureSource.Reason.LIMIT, -1, 10)
                         .diffuseRefusal());
+    }
+
+    @Test
+    void uncompressedDiffusesWithAnyAlphaDepthAndEncodingByteAreDrawn() throws Exception {
+        // Recorded on real terrain diffuses: BGRA with alpha depth 0 or 4 and alpha encoding 2.
+        for (int[] profile : new int[][] {{0, 2}, {4, 2}, {8, 0}, {1, 8}}) {
+            var files = new Files();
+            files.sources.put(10L, blpBgra(profile[0], profile[1]));
+            var pool = new TerrainAtlasPool();
+            var source = new WorldTerrainTextureSource(files.files(), pool);
+            try (var result = read(source)) {
+                var tile = result.tiles().getFirst();
+                assertEquals(
+                        List.of(),
+                        tile.issues().stream().filter(issue -> issue.fileId() == 10).toList(),
+                        Arrays.toString(profile));
+                assertEquals(WorldTerrainTextureSource.State.READY, tile.state());
+            } finally {
+                source.closeAsync().get(5, TimeUnit.SECONDS);
+                pool.closeAsync().get(5, TimeUnit.SECONDS);
+            }
+        }
+        // A BGRA alpha depth the format does not define stays a named refusal.
+        assertEquals(
+                WorldTerrainTextureSource.DiffuseRefusal.UNSUPPORTED, refusalFor(blpBgra(2, 2)));
     }
 }
