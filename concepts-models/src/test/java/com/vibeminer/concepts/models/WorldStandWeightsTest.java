@@ -241,27 +241,72 @@ class WorldStandWeightsTest {
         assertTrue(noted(undeclared, "undeclared global sequence"), undeclared.issues().toString());
     }
 
-    @Test
-    void aStandFromAnExternalSkeletonLeavesKeyedWeightsUndecided() throws Exception {
+    /**
+     * The skeleton fixture without sequences of its own, as the external-skeleton creatures store
+     * none: their Stand plays from the skeleton.
+     */
+    private static NativeMaterialFixture skeletonOnly() throws Exception {
         var fixture = DisplayIdleAnimationsTest.skeletonFixture();
-        weight(fixture, 1, -1, 1, 0, FULL, 0);
-        var model =
-                M2ModelReader.read(
-                                AssetSource.bytes(DisplayIdleAnimationsTest.skeletonModel(fixture)))
-                        .join();
+        fixture.declaration(28, 0, 0);
+        return fixture;
+    }
+
+    /** The texture weights at the Stand of the skeleton fixture's external skeleton. */
+    private static java.util.List<M2StandWeights.Weight> skeletonWeights(
+            NativeMaterialFixture fixture) throws Exception {
+        byte[] bytes = DisplayIdleAnimationsTest.skeletonModel(fixture);
+        var model = M2ModelReader.read(AssetSource.bytes(bytes)).join();
         var source = AssetSource.bytes(DisplayIdleAnimationsTest.skeleton());
         var skeleton = M2SkeletonFile.read(source, Cancellation.NONE).join();
         var idle = M2IdleAnimation.readSkeleton(source, skeleton, model, Cancellation.NONE).join();
-        var weights =
-                M2StandWeights.read(
-                                AssetSource.bytes(DisplayIdleAnimationsTest.skeletonModel(fixture)),
-                                model,
-                                idle,
-                                Cancellation.NONE)
-                        .join();
+        return M2StandWeights.read(AssetSource.bytes(bytes), model, idle, Cancellation.NONE).join();
+    }
+
+    private static void assertRefused(java.util.List<M2StandWeights.Weight> weights, String why) {
         assertEquals(1, weights.size());
         assertFalse(weights.getFirst().resolved());
-        assertTrue(weights.getFirst().refusal().contains("external skeleton"));
+        assertTrue(weights.getFirst().refusal().contains(why), weights.getFirst().refusal());
+    }
+
+    @Test
+    void anExternalSkeletonStandTakesATrackFullInEverySliceAsFull() throws Exception {
+        // The shape the external-skeleton creatures carry: no sequences of their own, one slice
+        // holding one full key. Whatever slice the skeleton's Stand reads is full at time 0.
+        var single = skeletonOnly();
+        weight(single, 0, -1, 1, 0, FULL);
+        assertEquals(
+                java.util.List.of(new M2StandWeights.Weight(1, null)), skeletonWeights(single));
+        // Full first keys, later fading, and slices without keys: still full at time 0.
+        var later = skeletonOnly();
+        weight(later, 1, -1, 3, 2, FULL, 0);
+        assertEquals(java.util.List.of(new M2StandWeights.Weight(1, null)), skeletonWeights(later));
+    }
+
+    @Test
+    void anExternalSkeletonStandLeavesASliceNotFullAtTimeZeroUndecided() throws Exception {
+        var fixture = skeletonOnly();
+        weight(fixture, 1, -1, 1, 0, 0, FULL);
+        assertRefused(skeletonWeights(fixture), "not every slice is full at time 0");
+        var partial = skeletonOnly();
+        weight(partial, 0, -1, 2, 1, FULL - 1);
+        assertRefused(skeletonWeights(partial), "not every slice is full at time 0");
+    }
+
+    @Test
+    void anExternalSkeletonStandLeavesTracksItCannotNumberUndecided() throws Exception {
+        // The model declares sequences of its own beside the skeleton's.
+        var own = skeletonOnly();
+        stand(own, false, false);
+        weight(own, 0, -1, 1, 0, FULL);
+        assertRefused(skeletonWeights(own), "external skeleton");
+        // A global clock of the model's own.
+        var global = skeletonOnly();
+        weight(global, 0, 0, 1, 0, FULL);
+        assertRefused(skeletonWeights(global), "external skeleton");
+        // Curve keys are not evaluated.
+        var curve = skeletonOnly();
+        weight(curve, 2, -1, 1, 0, FULL);
+        assertRefused(skeletonWeights(curve), "curve interpolation 2");
     }
 
     @Test

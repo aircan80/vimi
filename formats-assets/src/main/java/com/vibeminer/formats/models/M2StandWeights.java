@@ -22,9 +22,16 @@ import java.util.concurrent.CompletableFuture;
  * for step and linear keys alike. A slice without keys is full weight (1), as {@link
  * M2Appearance.ModelFacts#staticWeights} treats it. A track whose value cannot be decided is
  * returned with a refusal, never a guessed value.
+ *
+ * <p>A Stand from an external skeleton plays the skeleton's sequence numbering, which the model's
+ * own weight tracks are not verified to share. Such a track is decided only when its value at the
+ * Stand sample does not depend on which slice the Stand reads: the model declares no sequences or
+ * global sequences of its own, the track runs on sequence time with step or linear keys, and the
+ * first key of every keyed slice is full. Whatever slice the Stand reads then holds full weight at
+ * time 0, or declares no keys, which is full weight as well.
  */
 public final class M2StandWeights {
-    public static final String REVISION = "m2-stand-texture-weights-v1";
+    public static final String REVISION = "m2-stand-texture-weights-v2";
 
     /** Full weight: fixed-point 32767. */
     private static final int FULL = 32767;
@@ -93,8 +100,10 @@ public final class M2StandWeights {
         var weights = declaration(model, "weights");
         long globals = declaration(model, "globalSequences").count();
         // A Stand from an external skeleton plays the skeleton's sequence and global sequence
-        // numbering; that the model's own tracks are numbered the same way is not verified.
+        // numbering; that the model's own tracks are numbered the same way is not verified, so
+        // only a track whose Stand value is the same for every slice is decided (skeletonTrack).
         boolean skeleton = model.skeletonFileDataId() != 0;
+        boolean ownSequences = declaration(model, "sequences").count() != 0;
         var rows = new ArrayList<byte[]>();
         input.records(
                 input.span(
@@ -111,7 +120,10 @@ public final class M2StandWeights {
         for (byte[] row : rows) {
             token.check();
             try {
-                out.add(track(input, model, header, row, stand.sequenceIndex(), globals, skeleton));
+                out.add(
+                        skeleton
+                                ? skeletonTrack(input, model, header, row, globals, ownSequences)
+                                : track(input, model, header, row, stand.sequenceIndex(), globals));
             } catch (ModelFormatException invalid) {
                 if (!invalid.code().equals("MODEL_INVALID")
                         && !invalid.code().equals("MODEL_LIMIT")) {
@@ -130,8 +142,7 @@ public final class M2StandWeights {
             int header,
             byte[] row,
             int sequence,
-            long globals,
-            boolean skeleton) {
+            long globals) {
         int interpolation = u16(row, 0);
         int global = i16(row, 2);
         long timeSlices = u32(row, 4), timeOffset = u32(row, 8);
@@ -141,11 +152,6 @@ public final class M2StandWeights {
         }
         if (valueSlices == 0) {
             return Weight.of(1);
-        }
-        if (skeleton) {
-            return Weight.refused(
-                    "the Stand plays from an external skeleton, whose sequence numbering the"
-                            + " model's weight tracks are not verified to share");
         }
         if (global < -1 || global >= globals) {
             return Weight.refused("its track names an undeclared global sequence");
@@ -215,6 +221,97 @@ public final class M2StandWeights {
             return Weight.refused("its Stand key is negative");
         }
         return Weight.of(value >= FULL ? 1 : value / (float) FULL);
+    }
+
+    /**
+     * One weight track of a model whose Stand plays from an external skeleton: full weight when
+     * every slice the Stand could read is full at time 0 (see the class comment), else refused.
+     */
+    private static Weight skeletonTrack(
+            M2Input input,
+            M2Types.Model model,
+            int header,
+            byte[] row,
+            long globals,
+            boolean ownSequences) {
+        int interpolation = u16(row, 0);
+        int global = i16(row, 2);
+        long timeSlices = u32(row, 4), timeOffset = u32(row, 8);
+        long valueSlices = u32(row, 12), valueOffset = u32(row, 16);
+        if (timeSlices != valueSlices) {
+            return Weight.refused("its track has different time and value slice counts");
+        }
+        if (valueSlices == 0) {
+            return Weight.of(1);
+        }
+        if (ownSequences || globals != 0 || global != -1) {
+            return Weight.refused(
+                    "the Stand plays from an external skeleton, whose sequence numbering the"
+                            + " model's weight tracks are not verified to share");
+        }
+        if (interpolation > 1) {
+            return Weight.refused(
+                    "its track uses curve interpolation "
+                            + interpolation
+                            + "; only step and linear keys are evaluated");
+        }
+        var times =
+                input.span(
+                        "weight times",
+                        timeSlices,
+                        timeOffset,
+                        8,
+                        MAX_SLICES,
+                        model.baseOffset(),
+                        model.baseBytes(),
+                        header);
+        var values =
+                input.span(
+                        "weight values",
+                        valueSlices,
+                        valueOffset,
+                        8,
+                        MAX_SLICES,
+                        model.baseOffset(),
+                        model.baseBytes(),
+                        header);
+        for (int slice = 0; slice < valueSlices; slice++) {
+            byte[] timeSlice = input.at(times.offset() + 8L * slice, 8);
+            byte[] valueSlice = input.at(values.offset() + 8L * slice, 8);
+            long keys = u32(valueSlice);
+            if (keys != u32(timeSlice)) {
+                return Weight.refused("its track has different time and value key counts");
+            }
+            if (keys == 0) {
+                continue;
+            }
+            input.span(
+                    "weight key times",
+                    keys,
+                    u32(timeSlice, 4),
+                    4,
+                    Integer.MAX_VALUE,
+                    model.baseOffset(),
+                    model.baseBytes(),
+                    header);
+            var first =
+                    input.span(
+                            "weight keys",
+                            keys,
+                            u32(valueSlice, 4),
+                            2,
+                            Integer.MAX_VALUE,
+                            model.baseOffset(),
+                            model.baseBytes(),
+                            header);
+            if (i16(input.at(first.offset(), 2), 0) < FULL) {
+                return Weight.refused(
+                        "the Stand plays from an external skeleton, whose sequence numbering the"
+                                + " model's weight tracks are not verified to share, and not"
+                                + " every slice is full at time 0");
+            }
+        }
+        return Weight.of(1);
     }
 
     private static M2Types.ArrayDeclaration declaration(M2Types.Model model, String name) {
