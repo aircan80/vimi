@@ -59,9 +59,6 @@ final class WorldStreamPackedTile implements AutoCloseable {
     static final long MAX_PAYLOAD_BYTES =
             (long) MAX_GEOMETRY_BYTES + WorldStreamAtlasMips.CHAIN_BYTES;
 
-    // Untextured diagnostic teal (sRGB 20,115,148); not a claim of client liquid appearance.
-    static final float WATER_R = 20, WATER_G = 115, WATER_B = 148;
-
     /** Transferred native input owner. Never freed before all make_ref_release credits drain. */
     static final class Source implements AutoCloseable {
         final WorldStreamTileFile.Header header;

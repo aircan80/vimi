@@ -338,7 +338,9 @@ public final class WorldLiquids {
     private static long directBytes(RawLayer layer) {
         return switch (layer.secondary()) {
             case 0 -> vertexCount(layer) * 5L;
+            case 1 -> vertexCount(layer) * 8L;
             case 2 -> vertexCount(layer);
+            case 3 -> vertexCount(layer) * 9L;
             default -> 0;
         };
     }
@@ -371,7 +373,9 @@ public final class WorldLiquids {
             if (other.ordinal() == ordinal || other.vertexOffset() == 0) {
                 continue;
             }
-            long bytes = directBytes(other);
+            // A neighbour's known stream that runs past the payload is that instance's own fault:
+            // only the part inside the payload can collide with this one.
+            long bytes = Math.min(directBytes(other), owner.payload.length - other.vertexOffset());
             outside(mine, range(other.vertexOffset(), bytes > 0 ? bytes : 1, owner.payload.length));
         }
     }
