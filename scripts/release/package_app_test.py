@@ -329,5 +329,62 @@ class ImageCheckTest(unittest.TestCase):
         self.assertEqual([], self.commands)
 
 
+
+class MainImageOnlyTest(unittest.TestCase):
+    """main() checks the image before --image-only returns, so that path ships nothing unchecked."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name) / 'repo'
+        lib = root / 'gui/build/install/vimi-gui-prototype/lib'
+        lib.mkdir(parents=True)
+        (lib / 'gui-0.1.0-SNAPSHOT.jar').write_bytes(b'jar')
+        (root / 'docs').mkdir()
+        for name in ('LICENSE', 'docs/prereleases.md', 'docs/third-party-runtime.md'):
+            (root / name).write_text('x')
+        inputs = Path(self.temp.name) / 'inputs'
+        for name in ('javafx-native', 'javafx-legal'):
+            (inputs / name).mkdir(parents=True)
+        (inputs / 'libsqlite3.so.0').write_bytes(b'native')
+        self.argv = ['package_app.py', '--tag', 'v0.1.0-alpha.1', '--sqlite', str(inputs / 'libsqlite3.so.0'),
+                     '--output', str(Path(self.temp.name) / 'dist'), '--javafx-native', str(inputs / 'javafx-native'),
+                     '--javafx-legal', str(inputs / 'javafx-legal'), '--image-only']
+        self.events = []
+        self.report = {'version': 'v0.1.0-alpha.1'}
+        for name, value in (('ROOT', root),
+                            ('target', lambda: ('linux', 'x64')),
+                            ('require_class_only_javafx', lambda *args: None),
+                            ('jvm_options', lambda: []),
+                            ('run', lambda args, **options: self.events.append('jpackage')),
+                            ('smoke', lambda *args: self.events.append('smoke') or self.report),
+                            ('check_image', self.check_image)):
+            patcher = mock.patch.object(package_app, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for patcher in (mock.patch.object(sys, 'argv', self.argv),
+                        mock.patch.dict(package_app.os.environ, {'JAVA_HOME': self.temp.name})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.failure = None
+
+    def check_image(self, image, system, report, tag):
+        self.events.append(('check_image', image.name, system, report is self.report, tag))
+        if self.failure:
+            raise self.failure
+
+    def test_image_only_checks_the_image_before_returning(self):
+        with mock.patch('builtins.print', lambda *args: self.events.append('print')):
+            package_app.main()
+        self.assertEqual(['jpackage', 'smoke', ('check_image', 'VibeMiner', 'linux', True, 'v0.1.0-alpha.1'), 'print'],
+                         self.events)
+
+    def test_image_only_fails_when_the_check_fails(self):
+        self.failure = ValueError('Packaged version differs from requested tag')
+        with mock.patch('builtins.print', lambda *args: self.events.append('print')), \
+                self.assertRaisesRegex(ValueError, 'differs from requested tag'):
+            package_app.main()
+        self.assertNotIn('print', self.events)
+
 if __name__ == '__main__':
     unittest.main()

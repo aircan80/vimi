@@ -289,8 +289,18 @@ public final class WorldToastsUiTest {
                     throw new AssertionError(error);
                 }
                 view.toasts().clear();
-                // Once the first is saved, F12 again writes a second file.
+                // A writer that fails to start saves nothing and leaves F12 free for the next try.
                 var viewport = view.lookup("#world-viewport");
+                view.screenshotWriter(save -> {
+                    throw new OutOfMemoryError("unable to create native thread");
+                });
+                Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.F12, false, false, false, false));
+                Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_RELEASED, "", "", KeyCode.F12, false, false, false, false));
+                require(texts(view.toasts()).size() == 1 && texts(view.toasts()).getFirst().startsWith("Screenshot not saved: "),
+                        "A failed start says the screenshot was not saved: " + texts(view.toasts()));
+                view.screenshotWriter(save -> Thread.ofVirtual().name("world-screenshot").start(save));
+                view.toasts().clear();
+                // Once the first is saved, and after the failed start, F12 again writes a second file.
                 Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.F12, false, false, false, false));
                 Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_RELEASED, "", "", KeyCode.F12, false, false, false, false));
                 require(!texts(view.toasts()).contains("Screenshot still saving"),

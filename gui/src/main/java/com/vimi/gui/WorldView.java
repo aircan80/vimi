@@ -161,6 +161,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private java.nio.file.Path screenshots;
     // Opens a folder in the desktop's file manager; tests replace it.
     private java.util.function.Consumer<java.nio.file.Path> folderOpener = this::openFolder;
+    // Starts the screenshot writer off FX; tests replace it to make the start fail.
+    private java.util.function.Consumer<Runnable> screenshotWriter =
+            save -> Thread.ofVirtual().name("world-screenshot").start(save);
     // One screenshot in flight at a time (each holds a full-frame copy); FX-owned.
     private boolean screenshotSaving;
     /** The first-run help is long: it stays up longer than an event toast. */
@@ -4044,6 +4047,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         folderOpener = java.util.Objects.requireNonNull(opener);
     }
 
+    /** Replaces how the screenshot writer is started; for tests. */
+    void screenshotWriter(java.util.function.Consumer<Runnable> writer) {
+        screenshotWriter = java.util.Objects.requireNonNull(writer);
+    }
+
     /** Opens a folder with the desktop, off FX; failures are logged, never thrown. */
     private void openFolder(java.nio.file.Path folder) {
         Thread.ofVirtual().name("world-screenshot-folder").start(() -> {
@@ -4052,7 +4060,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         || !java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.OPEN))
                     throw new UnsupportedOperationException("opening folders is not supported here");
                 java.awt.Desktop.getDesktop().open(folder.toFile());
-            } catch (Exception failed) {
+            } catch (Throwable failed) {
+                // Throwable: an AWTError from Desktop must still reach the toast.
                 Platform.runLater(() -> folderNotOpened(failed));
             }
         });
@@ -4067,7 +4076,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
     }
 
-    private void folderNotOpened(Exception failed) {
+    private void folderNotOpened(Throwable failed) {
         WorldDiagnostics.warn("World screenshot folder could not be opened", failed);
         if (!closed) toasts.show("Could not open the folder");
     }
@@ -4123,7 +4132,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             });
         };
         try {
-            Thread.ofVirtual().name("world-screenshot").start(save);
+            screenshotWriter.accept(save);
         } catch (RuntimeException | Error failed) {
             // Nothing was started: no save is in flight, and the next F12 can try again.
             WorldDiagnostics.warn("World screenshot could not be started", failed);
