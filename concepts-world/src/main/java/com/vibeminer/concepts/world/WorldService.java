@@ -305,7 +305,9 @@ public final class WorldService implements BuildWorld {
                                 }
                                 Long type = number(schema, row, "InstanceType"),
                                         wdt = number(schema, row, "WdtFileDataID");
-                                if (wdt == null && directory != null && directoryWdt(schema)) {
+                                if (wdt == null
+                                        && WorldMapProofs.isWdtDirectory(directory)
+                                        && directoryWdt(schema)) {
                                     byDirectory.add(maps.size());
                                 }
                                 maps.add(
@@ -670,7 +672,7 @@ public final class WorldService implements BuildWorld {
 
     /** The WDT file ID the build's names give a map directory, or null. */
     private Long directoryWdt(String directory, Cancellation token) {
-        if (files == null) {
+        if (files == null || !WorldMapProofs.isWdtDirectory(directory)) {
             return null;
         }
         try {

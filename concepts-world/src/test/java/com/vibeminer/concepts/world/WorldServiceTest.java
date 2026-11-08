@@ -103,11 +103,38 @@ class WorldServiceTest {
         }
     }
 
+    @Test
+    void catalogNeverBuildsADirectoryWdtPathFromAnUnsafeDirectory() {
+        var opens = new AtomicInteger();
+        var paths = new java.util.ArrayList<String>();
+        for (String unsafe : List.of("", "..", "a/b", "..\\Azeroth", "a".repeat(65))) {
+            try (var service =
+                    new WorldService(
+                            tables("B47C6F05", false, unsafe), files(opens, false, paths::add))) {
+                var map = service.catalog(Cancellation.NONE).join().maps().getFirst();
+                assertNull(map.wdtId(), unsafe);
+            }
+        }
+        assertTrue(paths.isEmpty(), paths.toString());
+        try (var service =
+                new WorldService(
+                        tables("B47C6F05", false, "a".repeat(64)),
+                        files(opens, false, paths::add))) {
+            assertEquals(81, service.catalog(Cancellation.NONE).join().maps().getFirst().wdtId());
+            assertEquals(
+                    List.of("world/maps/" + "a".repeat(64) + "/" + "a".repeat(64) + ".wdt"), paths);
+        }
+    }
+
     private static BuildTables tables(String layout) {
         return tables(layout, true);
     }
 
     private static BuildTables tables(String layout, boolean wdtField) {
+        return tables(layout, wdtField, "Authored");
+    }
+
+    private static BuildTables tables(String layout, boolean wdtField, String directory) {
         var names =
                 wdtField
                         ? List.of("Directory", "MapName_lang", "InstanceType", "WdtFileDataID")
@@ -191,7 +218,7 @@ class WorldServiceTest {
                                                                                 false,
                                                                                 null,
                                                                                 List.of(
-                                                                                                "Authored",
+                                                                                                directory,
                                                                                                 "Authored",
                                                                                                 "0",
                                                                                                 "51")

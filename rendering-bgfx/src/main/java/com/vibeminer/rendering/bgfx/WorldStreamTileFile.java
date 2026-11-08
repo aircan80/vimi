@@ -277,6 +277,19 @@ final class WorldStreamTileFile {
         return flags == 0 || flags == 1 || flags == 16 || flags == 17;
     }
 
+    /**
+     * Whether a declared handmade mip chain (mip byte 0x02) has a reviewed encoding tuple: BC2/8/1,
+     * BC3/8/7 and 8-bit-alpha palette (PALETTED/8/8). This module does not depend on the BLP
+     * decoder, so this is the transport's single copy of {@code Blp2Decoder.isHandmadeTuple};
+     * WorldStreamTileFileTest compares the two over every encoding, depth and alpha byte.
+     */
+    static boolean handmadeTuple(Encoding encoding, int depth, int alpha) {
+        return depth == 8
+                && (encoding == Encoding.BC2 && alpha == 1
+                        || encoding == Encoding.BC3 && alpha == 7
+                        || encoding == Encoding.PALETTED && alpha == 8);
+    }
+
     enum Outcome {
         TEXTURED,
         HEIGHT_FALLBACK
@@ -323,12 +336,8 @@ final class WorldStreamTileFile {
                                 && supported(encoding, alphaDepth, alphaEncoding)
                                 && (WorldStreamTileFile.mipFlags(mipFlags)
                                         || mipFlags == 2
-                                                && alphaDepth == 8
-                                                && (encoding == Encoding.BC2 && alphaEncoding == 1
-                                                        || encoding == Encoding.BC3
-                                                                && alphaEncoding == 7
-                                                        || encoding == Encoding.PALETTED
-                                                                && alphaEncoding == 8)),
+                                                && handmadeTuple(
+                                                        encoding, alphaDepth, alphaEncoding)),
                         "Diffuse mip tuple");
             }
         }

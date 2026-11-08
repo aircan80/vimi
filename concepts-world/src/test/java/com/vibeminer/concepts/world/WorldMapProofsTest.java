@@ -220,6 +220,28 @@ class WorldMapProofsTest {
         assertRefused(schema("B47C6F05"), true);
     }
 
+    @Test
+    void wdtPathIsBuiltOnlyFromAPlainBoundedDirectoryName() {
+        assertEquals("world/maps/Azeroth/Azeroth.wdt", WorldMapProofs.wdtPath("Azeroth"));
+        assertTrue(WorldMapProofs.isWdtDirectory("Map_01"));
+        assertTrue(WorldMapProofs.isWdtDirectory("a".repeat(64)));
+        for (String unsafe :
+                java.util.Arrays.asList(
+                        null,
+                        "",
+                        "..",
+                        "a/b",
+                        "a\\b",
+                        "../Azeroth",
+                        "Azeroth.",
+                        "Azer oth",
+                        "Azeröth",
+                        "a".repeat(65))) {
+            assertFalse(WorldMapProofs.isWdtDirectory(unsafe), String.valueOf(unsafe));
+            assertThrows(IllegalArgumentException.class, () -> WorldMapProofs.wdtPath(unsafe));
+        }
+    }
+
     private static void assertRefused(TableTypes.SchemaResult schema, boolean stated) {
         var refused =
                 assertThrows(

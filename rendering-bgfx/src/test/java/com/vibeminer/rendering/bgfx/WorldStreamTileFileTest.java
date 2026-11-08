@@ -590,6 +590,51 @@ final class WorldStreamTileFileTest {
     }
 
     @Test
+    void handmadeSourceGuardAdmitsExactlyTheDecoderHandmadeTuples() {
+        assertEquals(
+                Arrays.stream(Blp2Types.Encoding.values()).map(Enum::name).toList(),
+                Arrays.stream(WorldStreamTileFile.Encoding.values()).map(Enum::name).toList());
+        var admitted = new java.util.ArrayList<String>();
+        for (var encoding : WorldStreamTileFile.Encoding.values()) {
+            for (int depth = 0; depth < 256; depth++) {
+                for (int alpha = 0; alpha < 256; alpha++) {
+                    boolean handmade =
+                            Blp2Decoder.isHandmadeTuple(
+                                    Blp2Types.Encoding.valueOf(encoding.name()), depth, alpha);
+                    assertEquals(
+                            handmade, WorldStreamTileFile.handmadeTuple(encoding, depth, alpha));
+                    if (!WorldStreamTileFile.supported(encoding, depth, alpha)) {
+                        continue;
+                    }
+                    int d = depth, a = alpha;
+                    java.util.function.Supplier<WorldStreamTileFile.Source> source =
+                            () ->
+                                    new WorldStreamTileFile.Source(
+                                            4,
+                                            "04".repeat(16),
+                                            128,
+                                            null,
+                                            1024,
+                                            4,
+                                            0,
+                                            2,
+                                            encoding,
+                                            d,
+                                            a);
+                    if (handmade) {
+                        assertNotNull(source.get());
+                        admitted.add(encoding + "/" + depth + "/" + alpha);
+                    } else {
+                        assertThrows(IllegalArgumentException.class, source::get);
+                    }
+                }
+            }
+        }
+        assertEquals(List.of("PALETTED/8/8", "BC2/8/1", "BC3/8/7"), admitted);
+        assertFalse(WorldStreamTileFile.handmadeTuple(null, 8, 8));
+    }
+
+    @Test
     void pinnedWirePredicatesExactlyMatchExistingDecoderAcrossAllByteCombinations() {
         for (var encoding : WorldStreamTileFile.Encoding.values()) {
             for (int depth = 0; depth < 256; depth++) {

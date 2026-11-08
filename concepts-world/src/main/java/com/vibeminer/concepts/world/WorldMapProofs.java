@@ -59,7 +59,34 @@ final class WorldMapProofs {
     /** The Map column a WDT is bound through, and how. */
     record WdtColumn(WdtSource source, int column) {}
 
+    /**
+     * Whether a Map Directory value is safe to build a WDT path from: 1..64 ASCII letters, digits
+     * or underscores, so it can never be empty or carry a path separator or {@code ..}.
+     */
+    static boolean isWdtDirectory(String directory) {
+        return directory != null
+                && !directory.isEmpty()
+                && directory.length() <= 64
+                && directory
+                        .chars()
+                        .allMatch(
+                                c ->
+                                        (c >= 'A' && c <= 'Z')
+                                                || (c >= 'a' && c <= 'z')
+                                                || (c >= '0' && c <= '9')
+                                                || c == '_');
+    }
+
+    /** The WDT path of a Map Directory; refuses a directory {@link #isWdtDirectory} rejects. */
     static String wdtPath(String directory) {
+        if (!isWdtDirectory(directory)) {
+            throw new IllegalArgumentException("Map Directory is not a plain WDT directory name");
+        }
+        return wdtPathRule(directory);
+    }
+
+    /** The WDT path template, unchecked; only for the stamp's path rule and {@link #wdtPath}. */
+    private static String wdtPathRule(String directory) {
         return "world/maps/" + directory + "/" + directory + ".wdt";
     }
 
@@ -382,9 +409,7 @@ final class WorldMapProofs {
                     } else {
                         var values = row.row().values();
                         String directory = column < values.size() ? values.get(column) : null;
-                        if (directory == null
-                                || directory.length() > 64
-                                || !directory.matches("[A-Za-z0-9_]+")) {
+                        if (!isWdtDirectory(directory)) {
                             throw WorldSourceRefusals.at(
                                     WorldSourceRefusals.Site.NUMERIC_WDT,
                                     "Map row has no usable Directory for its WDT");
@@ -868,7 +893,7 @@ final class WorldMapProofs {
                 // and path rule, so a cached proof never switches binding silently.
                 if (wdt.source() != WdtSource.MAP_COLUMN) {
                     text(out, wdt.source().name());
-                    text(out, wdtPath("<Directory>"));
+                    text(out, wdtPathRule("<Directory>"));
                 }
             }
             return HexFormat.of().formatHex(hash.digest());
