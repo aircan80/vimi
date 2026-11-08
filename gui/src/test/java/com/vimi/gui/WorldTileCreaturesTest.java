@@ -36,6 +36,7 @@ public final class WorldTileCreaturesTest {
         conversionRefusesWhatItCannotDraw();
         texturesReduceToPowerOfTwoOpaqueImages();
         alphaKeyedSurfacesDrawAsCutoutKeepingAlpha();
+        additiveSurfacesDrawInTheAdditivePassUnlit();
         defaultGeosetsDrawWithoutCreatureGeosetData();
         aDenseNeighbourNoLongerStarvesTheTilesOwnSpawns();
         busyOrClosedPreviewsCostNoBudget();
@@ -113,8 +114,8 @@ public final class WorldTileCreaturesTest {
                 == WorldTileCreatures.Count.CHARACTER_APPEARANCE, "Unknown extended display info is refused");
         require(WorldTileCreatures.convert(preview(7, 0L, 3L, null, geosets()), Cancellation.NONE).refusal()
                 == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED, "Recorded geoset data with unknown rows is refused");
-        require(WorldTileCreatures.convert(preview(7, 0L, 0L, additiveOnly()), Cancellation.NONE).refusal()
-                == WorldTileCreatures.Count.NO_OPAQUE_SURFACE, "No opaque or alpha-keyed surface is refused");
+        require(WorldTileCreatures.convert(preview(7, 0L, 0L, unboundOnly()), Cancellation.NONE).refusal()
+                == WorldTileCreatures.Count.NO_OPAQUE_SURFACE, "No drawable textured surface is refused");
         var nothing = WorldTileCreatures.convert(preview(7, 0L, 0L, mesh(102, 103)), Cancellation.NONE);
         require(nothing.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
                         && nothing.detail().equals("the model has no section 0 or x01 section to draw"),
@@ -144,6 +145,66 @@ public final class WorldTileCreaturesTest {
                         == com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(256, 4) * 4
                         && small.rgba().length == (4 + 1) * 4,
                 "Creature images carry their generated mip chain");
+    }
+
+    /**
+     * The creature World binding's unlit additive surfaces (#361) reach the objects file as
+     * additive, unlit ranges whose image keeps its alpha as a blended one; humanoid NPC appearances
+     * keep leaving additive surfaces out.
+     */
+    private static void additiveSurfacesDrawInTheAdditivePassUnlit() {
+        var converted = WorldTileCreatures.convert(preview(7, 0L, 0L, additiveOnly()), Cancellation.NONE);
+        require(converted.model() != null, "An additive-only creature draws: " + converted.detail());
+        var model = converted.model();
+        require(java.util.Arrays.equals(model.blends(),
+                        new int[] {WorldTileCreatures.ADDITIVE | WorldTileCreatures.UNLIT}),
+                "The additive section is an unlit additive range: " + java.util.Arrays.toString(model.blends()));
+        require(com.vibeminer.rendering.world.WorldObjectPicking.kind(model.blends()[0])
+                        == com.vibeminer.rendering.world.WorldObjectPicking.ADDITIVE,
+                "The range kind is the objects file's additive kind");
+        require(model.omittedSurfaces() == 0, "Nothing is left out");
+        // Card triangles on an additive surface are still dropped (their own section is omitted).
+        var cards = WorldTileCreatures.convert(preview(7, 0L, 0L, appearance(true)), Cancellation.NONE).model();
+        require(cards.omittedSurfaces() == 2 && cards.blends().length == 2,
+                "A rigid card stays out even on an additive surface");
+        // Opaque and cutout surfaces of a model with an additive part keep their classes, and one
+        // texture used opaque and additive carries one image per class.
+        var mixed = WorldTileCreatures.convert(preview(7, 0L, 0L, opaqueAndAdditive()), Cancellation.NONE).model();
+        require(mixed != null && java.util.Arrays.equals(mixed.blends(), new int[] {WorldTileCreatures.OPAQUE,
+                WorldTileCreatures.ADDITIVE | WorldTileCreatures.UNLIT}), "Opaque then additive ranges");
+        require(mixed.images().size() == 2, "One image per material class");
+        require((mixed.images().get(0).rgba()[3] & 255) == 255
+                        && (mixed.images().get(1).rgba()[3] & 255) == 0x80,
+                "The opaque image forces alpha, the additive one keeps it");
+        // Humanoid NPC appearances do not take the creature rule's additive surfaces.
+        var npc = WorldTileCreatures.surfaces(additiveOnly(), Set.of(0), Cancellation.NONE);
+        require(npc.refusal() == WorldTileCreatures.Count.NO_OPAQUE_SURFACE,
+                "NPC appearances leave additive surfaces out");
+        // A blended image keeps its alpha, colour weighted by alpha, with no coverage matching.
+        int[] edge = new int[512];
+        edge[255] = 0xffffffff;
+        var reduced = WorldTileCreatures.reduce(new MeshAppearance.Texture(512, 1, edge),
+                WorldTileCreatures.BLENDED, Cancellation.NONE);
+        byte[] r = reduced.rgba();
+        require((r[127 * 4] & 255) == 255 && (r[127 * 4 + 3] & 255) == 128 && (r[3] & 255) == 0,
+                "Blended images keep the plain alpha mean");
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        var creatures = new WorldTileCreatures(token -> index(List.of(
+                WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0))), () -> "r1",
+                (npcId, token) -> qualified(7, null), (display, token) -> preview(display, 0L, 0L, additiveOnly()));
+        require(creatures.append(builder, 0, TILE, Cancellation.NONE).drawn() == 1, "The additive creature is placed");
+    }
+
+    /** Part 0 opaque and part 1 unlit additive, both on one half-transparent texture. */
+    static MeshAppearance opaqueAndAdditive() {
+        var mesh = new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, new int[] {0, 1, 2, 0, 2, 1},
+                List.of(new PreviewMesh.Part(0, 0, 3), new PreviewMesh.Part(0, 3, 3)));
+        var additive = new MeshAppearance.Material(MeshAppearance.Combiner.DIFFUSE,
+                List.of(new MeshAppearance.TextureStage(0, MeshAppearance.Coordinate.UV0, true, true)),
+                MeshAppearance.Lighting.UNLIT, MeshAppearance.Blend.ADDITIVE);
+        return new MeshAppearance(mesh, new float[6],
+                List.of(new MeshAppearance.Surface(0, 0, true, true, false), new MeshAppearance.Surface(1, additive)),
+                List.of(new MeshAppearance.Texture(1, 1, new int[] {0x80ffffff})));
     }
 
     private static void alphaKeyedSurfacesDrawAsCutoutKeepingAlpha() {
@@ -407,7 +468,7 @@ public final class WorldTileCreaturesTest {
                 && all.detail().equals("every drawable triangle is weighted to a camera-facing bone"),
                 "An all-billboard Stand is its own refusal: " + all.refusal() + " " + all.detail());
         // Without billboard triangles an empty model is still a material refusal.
-        require(WorldTileCreatures.convert(preview(7, 0L, 0L, additiveOnly()), Cancellation.NONE).refusal()
+        require(WorldTileCreatures.convert(preview(7, 0L, 0L, unboundOnly()), Cancellation.NONE).refusal()
                 == WorldTileCreatures.Count.NO_OPAQUE_SURFACE, "Material refusals keep their bucket");
         // The World asks the World profile: the preview's refusal does not matter there.
         var world = new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.AVAILABLE, null, lift(appearance),
@@ -1007,6 +1068,14 @@ public final class WorldTileCreaturesTest {
                 List.of(new MeshAppearance.TextureStage(0, MeshAppearance.Coordinate.UV0, true, true)),
                 MeshAppearance.Lighting.UNLIT, MeshAppearance.Blend.ADDITIVE);
         return new MeshAppearance(mesh, new float[6], List.of(new MeshAppearance.Surface(0, additive)),
+                List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})));
+    }
+
+    /** One part with no surface bound. */
+    static MeshAppearance unboundOnly() {
+        var mesh = new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, new int[] {0, 1, 2},
+                List.of(new PreviewMesh.Part(0, 0, 3)));
+        return new MeshAppearance(mesh, new float[6], List.of(),
                 List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})));
     }
 
