@@ -18,6 +18,10 @@ import java.nio.ByteOrder;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 import org.junit.jupiter.api.Test;
 
 class WorldMinimapsTest {
@@ -137,6 +141,120 @@ class WorldMinimapsTest {
         }
     }
 
+    /**
+     * An Error completing the statContent, openRead or decode future reaches join() wrapped in a
+     * CompletionException; it must fail the image and be logged, not read as unavailable artwork.
+     */
+    @Test
+    void errorCompletingAnInnerFutureFailsTheImageAndIsLogged() throws Exception {
+        var logger = Logger.getLogger(WorldMinimaps.class.getName());
+        var records = new java.util.concurrent.CopyOnWriteArrayList<LogRecord>();
+        var handler =
+                new Handler() {
+                    @Override
+                    public void publish(LogRecord record) {
+                        records.add(record);
+                    }
+
+                    @Override
+                    public void flush() {}
+
+                    @Override
+                    public void close() {}
+                };
+        boolean parents = logger.getUseParentHandlers();
+        logger.setUseParentHandlers(false);
+        logger.addHandler(handler);
+        try {
+            for (String stage : List.of("statContent", "openRead", "read")) {
+                records.clear();
+                var source = new Source();
+                source.failing = stage;
+                var images = new WorldMinimaps(source.files());
+                try {
+                    var failure =
+                            assertThrows(
+                                    java.util.concurrent.ExecutionException.class,
+                                    () ->
+                                            images.image(tile(91), Cancellation.NONE)
+                                                    .get(10, java.util.concurrent.TimeUnit.SECONDS),
+                                    stage);
+                    assertSame(source.error, failure.getCause(), stage);
+                    assertEquals(1, records.size(), stage);
+                    assertEquals(Level.SEVERE, records.get(0).getLevel(), stage);
+                    assertSame(source.error, records.get(0).getThrown(), stage);
+                    assertEquals(source.opens.get(), source.closed.get(), stage);
+                } finally {
+                    images.closeAsync().get(10, java.util.concurrent.TimeUnit.SECONDS);
+                }
+            }
+        } finally {
+            logger.removeHandler(handler);
+            logger.setUseParentHandlers(parents);
+        }
+    }
+
+    /** A logger that throws (as under OutOfMemoryError) must not leave the image pending. */
+    @Test
+    void failingLoggerStillSettlesTheFailedImage() throws Exception {
+        var logger = Logger.getLogger(WorldMinimaps.class.getName());
+        var handler =
+                new Handler() {
+                    @Override
+                    public void publish(LogRecord record) {
+                        throw new OutOfMemoryError("scripted logging failure");
+                    }
+
+                    @Override
+                    public void flush() {}
+
+                    @Override
+                    public void close() {}
+                };
+        boolean parents = logger.getUseParentHandlers();
+        logger.setUseParentHandlers(false);
+        logger.addHandler(handler);
+        try {
+            for (String stage : List.of("direct", "statContent")) {
+                var source = new Source();
+                source.failing = stage;
+                BuildFiles files =
+                        stage.equals("direct")
+                                ? (BuildFiles)
+                                        Proxy.newProxyInstance(
+                                                BuildFiles.class.getClassLoader(),
+                                                new Class<?>[] {BuildFiles.class},
+                                                (proxy, method, args) -> {
+                                                    throw source.error;
+                                                })
+                                : source.files();
+                var images = new WorldMinimaps(files);
+                try {
+                    var failure =
+                            assertThrows(
+                                    java.util.concurrent.ExecutionException.class,
+                                    () ->
+                                            images.image(tile(91), Cancellation.NONE)
+                                                    .get(10, java.util.concurrent.TimeUnit.SECONDS),
+                                    stage);
+                    assertSame(source.error, failure.getCause(), stage);
+                    // The worker survives: a second request is still served.
+                    assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () ->
+                                    images.image(tile(91), Cancellation.NONE)
+                                            .get(10, java.util.concurrent.TimeUnit.SECONDS),
+                            stage);
+                } finally {
+                    images.closeAsync().get(10, java.util.concurrent.TimeUnit.SECONDS);
+                }
+            }
+        } finally {
+            logger.removeHandler(handler);
+            logger.setUseParentHandlers(parents);
+        }
+    }
+
     private static WorldFormats.Tile tile(long fid) {
         return new WorldFormats.Tile(17, 23, 0, 0, fid);
     }
@@ -149,6 +267,8 @@ class WorldMinimapsTest {
         int mode;
         int side = 2;
         boolean gradient;
+        String failing = "";
+        final Error error = new AssertionError("scripted Error completing an inner future");
 
         BuildFiles files() {
             return (BuildFiles)
@@ -164,6 +284,9 @@ class WorldMinimapsTest {
                                                     FileTypes.FileLookupState.UNKNOWN_FILE, null));
                                 }
                                 calls.incrementAndGet();
+                                if (method.getName().equals(failing)) {
+                                    return CompletableFuture.failedFuture(error);
+                                }
                                 assertEquals(FileTypes.FileRef.id(91), args[0]);
                                 byte[] data = blp(side, gradient);
                                 if (method.getName().equals("stat")
@@ -223,6 +346,10 @@ class WorldMinimapsTest {
                                                                 ByteBuffer buffer,
                                                                 Cancellation token) {
                                                             token.check();
+                                                            if (failing.equals("read")) {
+                                                                return CompletableFuture
+                                                                        .failedFuture(error);
+                                                            }
                                                             int n =
                                                                     Math.min(
                                                                             buffer.remaining(),
