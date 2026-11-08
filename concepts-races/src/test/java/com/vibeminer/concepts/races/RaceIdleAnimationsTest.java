@@ -91,7 +91,7 @@ final class RaceIdleAnimationsTest {
         assertEquals(
                 List.of(
                         "Bone files: 2 of 4 validated; they name bones 50–60.",
-                        "Stand (sequence 0, 2667 ms) is stored in the model: 120 step/linear keys"
+                        "Stand (plays sequence 0, 2667 ms) is stored in the model: 120 step/linear keys"
                                 + " on 12 bones."),
                 result.facts());
         // An unreadable source is reassessed rather than cached.
@@ -156,7 +156,7 @@ final class RaceIdleAnimationsTest {
         assertTrue(result.reasons().isEmpty());
         assertEquals(
                 List.of(
-                        "Stand (sequence 0, 2667 ms) is stored in the model: 120 step/linear keys"
+                        "Stand (plays sequence 0, 2667 ms) is stored in the model: 120 step/linear keys"
                                 + " on 12 bones."),
                 result.facts());
         assertTrue(result.complete());

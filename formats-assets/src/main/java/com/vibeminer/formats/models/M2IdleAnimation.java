@@ -18,9 +18,10 @@ import java.util.concurrent.CompletableFuture;
 
 /**
  * Bounded reader for one qualified idle sequence: the Stand animation (ID 0, variation 0) whose
- * bone keys are stored in the model itself. External skeletons, external bone or animation files,
- * aliases and curve interpolation are refused as unsupported rather than approximated. Bone flags
- * are left to consumers, which know which bones move rendered vertices.
+ * bone keys are stored in the model itself. An alias Stand plays the sequence its alias chain ends
+ * at. External skeletons, external bone or animation files and curve interpolation are refused as
+ * unsupported rather than approximated. Bone flags are left to consumers, which know which bones
+ * move rendered vertices.
  */
 public final class M2IdleAnimation {
     public static final String REVISION = "m2-idle-local-stand-v1";
@@ -124,6 +125,7 @@ public final class M2IdleAnimation {
             return model;
         }
 
+        /** The sequence whose keys play: Stand itself, or the end of its alias chain. */
         public int sequenceIndex() {
             return sequenceIndex;
         }
@@ -252,24 +254,24 @@ public final class M2IdleAnimation {
         input.records(
                 span(input, model, header, "globalSequences", globals, 4),
                 (row, i) -> globalMillis[i] = u32(row));
-        int[] found = {-1};
-        long[] duration = {0};
-        int[] flags = {0};
+        var sequenceRows = new ArrayList<byte[]>((int) sequences.count());
         input.records(
                 span(input, model, header, "sequences", sequences, 64),
-                (row, i) -> {
-                    if (found[0] < 0 && u16(row) == STAND && u16(row, 2) == 0) {
-                        found[0] = i;
-                        duration[0] = u32(row, 4);
-                        flags[0] = i32(row, 12);
-                    }
-                });
-        if (found[0] < 0) {
+                (row, i) -> sequenceRows.add(row));
+        int stand = -1;
+        for (int i = 0; i < sequenceRows.size() && stand < 0; i++) {
+            byte[] row = sequenceRows.get(i);
+            if (u16(row) == STAND && u16(row, 2) == 0) {
+                stand = i;
+            }
+        }
+        if (stand < 0) {
             throw error("UNSUPPORTED", "The model records no Stand sequence (ID 0, variation 0).");
         }
-        if ((flags[0] & SEQUENCE_ALIAS) != 0) {
-            throw error("UNSUPPORTED", "The Stand sequence is an alias of another sequence.");
-        }
+        int[] found = {aliasTarget(sequenceRows, stand)};
+        byte[] target = sequenceRows.get(found[0]);
+        long[] duration = {u32(target, 4)};
+        int[] flags = {i32(target, 12)};
         if ((flags[0] & SEQUENCE_IN_MODEL) == 0) {
             throw error(
                     "UNSUPPORTED",
@@ -334,6 +336,25 @@ public final class M2IdleAnimation {
         }
         input.finish();
         return new Idle(model, sequence, duration[0], globalMillis, result, budget[0]);
+    }
+
+    /**
+     * Follows the alias chain from {@code start} (flag 0x40, next index at byte 62) to the sequence
+     * that holds the keys. An alias names another sequence whose keys and duration it plays.
+     */
+    static int aliasTarget(List<byte[]> rows, int start) {
+        int at = start;
+        for (int steps = 0; (i32(rows.get(at), 12) & SEQUENCE_ALIAS) != 0; steps++) {
+            if (steps >= rows.size()) {
+                throw error("INVALID", "The Stand sequence alias chain contains a cycle.");
+            }
+            int next = u16(rows.get(at), 62);
+            if (next >= rows.size()) {
+                throw error("INVALID", "The Stand sequence aliases an undeclared sequence.");
+            }
+            at = next;
+        }
+        return at;
     }
 
     private static M2Types.ArrayDeclaration declaration(
@@ -438,10 +459,8 @@ public final class M2IdleAnimation {
         budget[0] += (int) keys;
         // A global sequence of length 0 never advances: its clock stays at 0 and evaluation holds
         // the first key, so its keys may be stamped at any time (client data stamps them past 0).
-        // Stamps are kept as int milliseconds.
         long clock = global < 0 ? sequenceMillis : globalMillis[global];
-        long limit =
-                global >= 0 && clock == 0 ? Integer.MAX_VALUE : Math.min(clock, Integer.MAX_VALUE);
+        long limit = global >= 0 && clock == 0 ? Long.MAX_VALUE : clock;
         int count = (int) keys;
         int[] stamps = new int[count];
         input.records(
@@ -461,6 +480,11 @@ public final class M2IdleAnimation {
                     }
                     if (stamp > limit) {
                         throw error("INVALID", "A bone key time lies beyond its sequence.");
+                    }
+                    // Stamps are kept as int milliseconds.
+                    if (stamp > Integer.MAX_VALUE) {
+                        throw error(
+                                "INVALID", "A bone key time is outside the supported key range.");
                     }
                     stamps[i] = (int) stamp;
                 });

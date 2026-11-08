@@ -850,7 +850,7 @@ final class RacesServiceTest {
                     "Stand idle · 1000 ms loop · 1 bones evaluated in software.", idle.message());
             assertEquals(
                     List.of(
-                            "Stand (sequence 0, 1000 ms) is stored in the model: 2 step/linear keys"
+                            "Stand (plays sequence 0, 1000 ms) is stored in the model: 2 step/linear keys"
                                     + " on 1 bones.",
                             "Stand is bound to 4 rest vertices of SKIN FileDataID 900; 1 bones are"
                                     + " evaluated in software."),
