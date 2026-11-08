@@ -254,6 +254,9 @@ class WorldTerrainTextureSourceTest {
 
         volatile boolean changeAfterRead;
 
+        /** Called with each file id as it is opened for reading, before its stream exists. */
+        volatile java.util.function.LongConsumer onOpenRead = id -> {};
+
         Files() {
             sources.put(1L, wdt(0x3ca));
             sources.put(2L, root());
@@ -362,6 +365,7 @@ class WorldTerrainTextureSourceTest {
                                                                 (Cancellation) args[1]));
                                         case "openRead" -> {
                                             long id = ((FileTypes.FileRef) args[0]).fileDataId();
+                                            onOpenRead.accept(id);
                                             var failed = failedOpens.get(id);
                                             if (failed != null) {
                                                 yield CompletableFuture.completedFuture(failed);
@@ -2005,5 +2009,46 @@ class WorldTerrainTextureSourceTest {
                 WorldTerrainTextureSource.DiffuseRefusal.NONE,
                 new WorldTerrainTextureSource.Issue(WorldTerrainTextureSource.Reason.LIMIT, -1, 10)
                         .diffuseRefusal());
+    }
+
+    @Test
+    void aTileComposesAtTheMaskSideItsReservationWasChargedFor() throws Exception {
+        boolean splat = WorldTerrainTextureSource.splat;
+        int mask = WorldTerrainTextureSource.splatMask;
+        int standard = com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK;
+        int high = com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK;
+        var files = new Files();
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try {
+            WorldTerrainTextureSource.splat = true;
+            WorldTerrainTextureSource.splatMask = standard;
+            // The quality tier rises to HIGH after the tile reserved its atlas (diffuses are
+            // opened between reservation and compose): it still composes at STANDARD, its charge.
+            files.onOpenRead =
+                    id -> {
+                        if (id == 10) {
+                            WorldTerrainTextureSource.splatMask = high;
+                        }
+                    };
+            try (var result = read(source)) {
+                var tile = result.tiles().getFirst();
+                assertEquals(
+                        WorldTerrainTextureSource.State.READY,
+                        tile.state(),
+                        tile.issues().toString());
+                assertEquals(high, WorldTerrainTextureSource.splatMask, "the tier did change");
+                try (var lease = result.retainAtlas(TILE.x(), TILE.y()).orElseThrow()) {
+                    lease.withAtlas(
+                            atlas ->
+                                    assertEquals(standard, atlas.splat().orElseThrow().maskSide()));
+                }
+            }
+        } finally {
+            WorldTerrainTextureSource.splat = splat;
+            WorldTerrainTextureSource.splatMask = mask;
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
     }
 }
