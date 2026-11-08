@@ -105,7 +105,8 @@ public final class WorldStreamWindowProof {
                         }
                     });
             sentAt.put(1L, System.nanoTime());
-            session.camera(new WorldStreamTransport.Camera(1, 1, 800, 500, view(1)));
+            session.camera(
+                    new WorldStreamTransport.Camera(1, 1, 800, 500, view(1)).withSky(RECORDED));
             long commitStart = System.nanoTime();
             var receipt = session.commit(1, resident).get(10, TimeUnit.SECONDS);
             double commitMs = (System.nanoTime() - commitStart) / 1e6;
@@ -121,7 +122,8 @@ public final class WorldStreamWindowProof {
                                             sentAt.put(r, System.nanoTime());
                                             session.camera(
                                                     new WorldStreamTransport.Camera(
-                                                            r, 1, 800, 500, view(r)));
+                                                                    r, 1, 800, 500, view(r))
+                                                            .withSky(RECORDED));
                                             java.util.concurrent.locks.LockSupport.parkNanos(
                                                     4_166_667L);
                                         }
@@ -189,6 +191,20 @@ public final class WorldStreamWindowProof {
                         "WINDOW_TERRAIN_IS_THE_AUTHORED_ATLAS " + (atlas ? "PASS" : "FAIL"));
                 if (!atlas) {
                     throw new AssertionError("The child window does not show the authored terrain");
+                }
+                // The centre looks below the horizon at sky, which is the fog colour there: the
+                // recorded horizon, not the explorer's (#555).
+                var centre =
+                        java.util.regex.Pattern.compile("centre rgb\\((\\d+),(\\d+),(\\d+)\\)")
+                                .matcher(report);
+                float[] horizon = RECORDED.horizon();
+                boolean fogged = centre.find();
+                for (int i = 0; fogged && i < 3; i++) {
+                    fogged = Math.abs(Integer.parseInt(centre.group(i + 1)) - horizon[i]) <= 2;
+                }
+                System.out.println("WINDOW_SKY_IS_THE_RECORDED_FOG " + (fogged ? "PASS" : "FAIL"));
+                if (!fogged) {
+                    throw new AssertionError("The child window does not draw the recorded fog");
                 }
             }
         } finally {
@@ -310,6 +326,14 @@ public final class WorldStreamWindowProof {
         }
         return hwnd;
     }
+
+    /**
+     * A recorded sky unlike the explorer's, with its fog starting well past the terrain 10 yd away,
+     * so the terrain keeps its atlas colour and the sky below the horizon shows the recorded fog.
+     */
+    private static final WorldStreamTransport.Sky RECORDED =
+            new WorldStreamTransport.Sky(
+                    new float[] {200, 120, 60}, new float[] {40, 60, 140}, 1, 300, 900);
 
     /**
      * Facing north at the authored triangle's centroid (-0.69, -1.74, 10) from 9 yd south and 4 yd
