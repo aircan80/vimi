@@ -307,6 +307,9 @@ final class BgfxWorldWmoPass implements AutoCloseable {
                             1, WorldObjectInstances.STRIDE)
                     < 1) {
                 skippedFrames++;
+                // Opt-in, like the stream pass's child.frame.instancesDropped: a skipped frame
+                // draws no WMO at all, so it must not go unnoticed.
+                com.vibeminer.formats.world.WorldStageTimings.add("child.wmo.skippedFrames", 1);
                 return;
             }
             var instance = org.lwjgl.bgfx.BGFXInstanceDataBuffer.malloc(stack);

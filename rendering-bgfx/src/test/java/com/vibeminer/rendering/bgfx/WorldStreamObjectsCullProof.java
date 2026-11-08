@@ -127,6 +127,13 @@ final class WorldStreamObjectsCullProof {
                     perPlacement.objectSubmits() == 3 * (placements - 1) + ladders
                             && perPlacement.instances() == all.instances(),
                     "Per-placement counts " + perPlacement);
+            // The sorted pass's share: one blended range per drawn placement of model 0.
+            require(
+                    culled.sortedSubmits() == 1
+                            && all.sortedSubmits() == placements - 1
+                            && perPlacement.sortedSubmits() == placements - 1
+                            && starved.sortedSubmits() == 0,
+                    "Sorted submits " + culled + " " + all + " " + perPlacement + " " + starved);
             require(
                     starved.objectSubmits() == 0
                             && starved.instances() == 0
@@ -244,6 +251,10 @@ final class WorldStreamObjectsCullProof {
                             + all.objectSubmits()
                             + "/"
                             + perPlacement.objectSubmits()
+                            + " sortedSubmits="
+                            + culled.sortedSubmits()
+                            + "/"
+                            + all.sortedSubmits()
                             + " instances="
                             + all.instances()
                             + " starvedDropped="

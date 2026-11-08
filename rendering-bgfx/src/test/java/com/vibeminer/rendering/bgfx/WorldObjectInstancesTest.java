@@ -2,6 +2,7 @@ package com.vibeminer.rendering.bgfx;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.rendering.world.TerrainScene;
@@ -166,5 +167,35 @@ class WorldObjectInstancesTest {
         assertTrue(budget > bgfxDefault, "raised above bgfx's default");
         // Never below bgfx's own default.
         assertEquals(bgfxDefault, WorldStreamNativeOwner.transientVertexBytes(bgfxDefault, 0));
+    }
+
+    @Test
+    void theSortedPassSkipsWhatTheOpaquePassDropped() {
+        // Model 0: walls (opaque) and glass (blended). Model 1: glass only. Model 2: walls only.
+        boolean[] blended = {true, true, false};
+        boolean[] unsorted = {true, false, true};
+        int[] models = {0, 0, 1, 2, 0};
+        boolean[] visible = {true, true, true, true, false};
+        boolean[] dropped = {false, true, true, false, false};
+        // Visible, kept by the opaque pass: its glass is drawn.
+        assertTrue(
+                BgfxWorldStreamRenderer.sortedPassDraws(
+                        blended, unsorted, models, visible, dropped, 0));
+        // Dropped for lack of instance data: never its glass without its walls (#382).
+        assertFalse(
+                BgfxWorldStreamRenderer.sortedPassDraws(
+                        blended, unsorted, models, visible, dropped, 1));
+        // A glass-only model has no walls to lose; its own allocation decides.
+        assertTrue(
+                BgfxWorldStreamRenderer.sortedPassDraws(
+                        blended, unsorted, models, visible, dropped, 2));
+        // Nothing sorted to draw.
+        assertFalse(
+                BgfxWorldStreamRenderer.sortedPassDraws(
+                        blended, unsorted, models, visible, dropped, 3));
+        // Culled this frame.
+        assertFalse(
+                BgfxWorldStreamRenderer.sortedPassDraws(
+                        blended, unsorted, models, visible, dropped, 4));
     }
 }
