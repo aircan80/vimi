@@ -618,7 +618,15 @@ class M2IdleAnimationTest {
         byte[] bytes = withBoneFiles(authored(version, a -> {}), 1001, 1002);
         var model = M2ModelReader.read(AssetSource.bytes(bytes)).join();
         assertEquals(java.util.List.of(1001L, 1002L), model.boneFileDataIds());
-        M2ReadersTest.failure("MODEL_UNSUPPORTED", () -> read(bytes));
+        var error =
+                assertInstanceOf(
+                        ModelFormatException.class,
+                        AssetTasks.unwrap(assertThrows(RuntimeException.class, () -> read(bytes))));
+        assertEquals("MODEL_UNSUPPORTED", error.code());
+        assertEquals(
+                "The model uses an external skeleton or bone file; idle evaluation reads only"
+                        + " bones stored in the model.",
+                error.getMessage());
         var facts = facts(bytes);
         assertNull(facts.refusal());
         assertEquals(1, facts.sequenceIndex());
