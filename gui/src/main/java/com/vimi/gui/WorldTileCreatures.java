@@ -40,7 +40,8 @@ import java.util.function.Supplier;
  * display is drawn. The display's static preview must need no character appearance, and each
  * geoset group draws one variant decided from recorded facts ({@link #visibleGeosets}: when the
  * model records geoset data, the display's own geoset rows choose and unchosen groups 1 to 8 are
- * hidden; otherwise every group draws its x00 section); only its opaque and alpha-keyed
+ * hidden; otherwise group 0 draws section 0 and every other group its x01 section, or nothing);
+ * only its opaque and alpha-keyed
  * (cutout) diffuse surfaces are drawn, with
  * textures reduced to at most {@value #IMAGE_SIDE} pixels a side. Facing is not recorded by the source, so every
  * model faces native north. Each spawn belongs to exactly one tile (the filename-index rule), and
@@ -718,7 +719,9 @@ final class WorldTileCreatures implements AutoCloseable {
         if (visible.refusal() != null) return Converted.refused(Count.VISIBILITY_UNRESOLVED, visible.refusal());
         // Nothing left to draw is a visibility outcome, not a material one.
         if (mesh.parts().stream().noneMatch(part -> visible.ids().contains(part.id())))
-            return Converted.refused(Count.VISIBILITY_UNRESOLVED, "every geoset is hidden by the display's rows");
+            return Converted.refused(Count.VISIBILITY_UNRESOLVED, rowsDecideSome(reference, mesh)
+                    ? "every geoset is hidden by the display's rows"
+                    : "the model has no section 0 or x01 section to draw");
         return surfaces(appearance, visible.ids(), token);
     }
 
@@ -816,6 +819,20 @@ final class WorldTileCreatures implements AutoCloseable {
                 blends.stream().mapToInt(Integer::intValue).toArray(), images, omitted), null, null);
     }
 
+    /**
+     * Whether the display's rows decide any of the model's sections: the model records geoset data
+     * and has a section in a group from 1 to 8 or in a group a row chose. Otherwise only the
+     * default decided what is hidden.
+     */
+    static boolean rowsDecideSome(DisplayModelTypes.Reference reference, com.vibeminer.rendering.models.PreviewMesh mesh) {
+        if (reference.creatureGeosetDataId() == null || reference.creatureGeosetDataId() <= 0) return false;
+        var chosen = reference.displayGeosets() == null ? Map.<Integer, Integer>of() : reference.displayGeosets();
+        return mesh.parts().stream().anyMatch(part -> {
+            int g = part.id() / 100;
+            return g >= 1 && (g <= 8 || chosen.containsKey(g));
+        });
+    }
+
     /** The geoset IDs a model draws, or why that cannot be decided from recorded facts. */
     record Geosets(Set<Integer> ids, String refusal) {}
 
@@ -826,17 +843,20 @@ final class WorldTileCreatures implements AutoCloseable {
      *   <li>When the model's CreatureGeosetDataID is above 0, the display's own rows
      *       (CreatureDisplayInfoGeosetData: group = GeosetIndex + 1, section = group * 100 + value)
      *       choose: each listed group draws its chosen section, and a group from 1 to 8 without a
-     *       row is hidden. Group 0 draws its x00 section (ID 0), and groups 9 and above without a
-     *       row keep the default below.
-     *   <li>When it is 0, display rows are ignored and every group draws its x00 section.
+     *       row is hidden. Groups 9 and above without a row take the default below.
+     *   <li>When it is 0, display rows are ignored and every group takes the default.
+     *   <li>The default: group 0 draws section 0; every other group draws its x01 section, and a
+     *       group without one draws nothing.
      * </ul>
      *
      * The gating follows wow.export ({@code DBCreatures.js}: rows are used only when the model's ID
      * is above 0, and then every geoset from 1 to 899 not listed is hidden). That is a viewer's
-     * behaviour, not confirmed client behaviour; the x00 default for an ID of 0 waits for real-data
-     * counts (#455). Nothing is guessed: an unreadable ID, unknown or conflicting rows when they
-     * apply, a chosen section the model does not have, and a default group without its x00 section
-     * all refuse.
+     * behaviour, not confirmed client behaviour. The x01 default follows the models themselves:
+     * on build 70862, of 1,900 geoset groups 1 and above in 1,047 creature models without geoset
+     * data, 1,134 have an x01 section (one of them also x00) and the other 766 have neither,
+     * starting at x02 or later (optional pieces); x01 is also the character default. Nothing else is guessed: an unreadable ID,
+     * unknown or conflicting rows when they apply, a chosen section the model does not have, and
+     * a model without section 0 in group 0 all refuse.
      */
     static Geosets visibleGeosets(DisplayModelTypes.Reference reference, com.vibeminer.rendering.models.PreviewMesh mesh) {
         if (reference.creatureGeosetDataId() == null)
@@ -863,12 +883,17 @@ final class WorldTileCreatures implements AutoCloseable {
         }
         for (var group : present.entrySet()) {
             int g = group.getKey();
+            if (g == 0) {
+                if (!group.getValue().contains(0))
+                    return new Geosets(Set.of(), "geoset group 0 has no section 0");
+                ids.add(0);
+                continue;
+            }
             // With rows, a group a row chose draws only that section (added above), and groups
             // 1 to 8 without a row are hidden.
-            if (rows && g >= 1 && (chosen.containsKey(g) || g <= 8)) continue;
-            if (!group.getValue().contains(g * 100))
-                return new Geosets(Set.of(), "geoset group " + g + " has no default x00 section");
-            ids.add(g * 100);
+            if (rows && (chosen.containsKey(g) || g <= 8)) continue;
+            // The default: the x01 section, or nothing when the group has none.
+            if (group.getValue().contains(g * 100 + 1)) ids.add(g * 100 + 1);
         }
         return new Geosets(Set.copyOf(ids), null);
     }

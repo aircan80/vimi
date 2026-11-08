@@ -470,7 +470,7 @@ public final class WorldMeasurementProbe {
         }
 
         /**
-         * For creature displays whose model records no geoset data (the x00 default path): how
+         * For creature displays whose model records no geoset data (the default path): how
          * many of the models' groups 1 and above have x00 only, x01 only, both or neither, how many
          * have one, two or more sections, how many displays draw with an x00 default, an
          * x00-else-x01 default, an x01 default and an "only section, else x01" default, and how

@@ -82,10 +82,10 @@ public final class WorldTileCreaturesTest {
                 == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED, "Recorded geoset data with unknown rows is refused");
         require(WorldTileCreatures.convert(preview(7, 0L, 0L, additiveOnly()), Cancellation.NONE).refusal()
                 == WorldTileCreatures.Count.NO_OPAQUE_SURFACE, "No opaque or alpha-keyed surface is refused");
-        var hidden = WorldTileCreatures.convert(preview(7, 0L, 0L, hiddenGeosets()), Cancellation.NONE);
-        require(hidden.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
-                        && hidden.detail().contains("group 1 has no default"),
-                "A group with only x01 is refused, never drawn as a guessed variant: " + hidden.detail());
+        var nothing = WorldTileCreatures.convert(preview(7, 0L, 0L, mesh(102, 103)), Cancellation.NONE);
+        require(nothing.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
+                        && nothing.detail().equals("the model has no section 0 or x01 section to draw"),
+                "A model with neither section 0 nor any x01 has nothing to draw: " + nothing.detail());
         var missing = new DisplayModelTypes.Preview(DisplayModelTypes.State.UNAVAILABLE, null, null, Set.of(),
                 List.of(), false, "Model read is ABSENT");
         var refused = WorldTileCreatures.convert(missing, Cancellation.NONE);
@@ -147,10 +147,21 @@ public final class WorldTileCreaturesTest {
         var converted = WorldTileCreatures.convert(preview(7, 0L, 0L, geosets()), Cancellation.NONE);
         var model = converted.model();
         require(model != null, "Default geosets draw: " + converted.detail());
-        // Parts 0 (id 0) and 1 (id 100) draw; part 2 (id 101, the x01 variant of group 1) is hidden
-        // and not counted as an omitted surface.
+        // Parts 0 (id 0) and 2 (id 101, group 1's x01) draw; part 1 (id 100) is hidden and not
+        // counted as an omitted surface.
         require(java.util.Arrays.equals(model.ranges(), new int[] {0, 3, 0, 3, 3, 0})
-                && model.omittedSurfaces() == 0, "Only x00 sections draw");
+                && model.omittedSurfaces() == 0, "Only section 0 and x01 sections draw");
+        require(visible(0L, Map.of(), geosets()).equals(java.util.Set.of(0, 101)), "Default: 0 and 101");
+        // A group without x01 (optional pieces from x02 on) draws nothing; it is not refused.
+        require(visible(0L, Map.of(), mesh(0, 102, 103, 201, 202)).equals(java.util.Set.of(0, 201)),
+                "A group without x01 is hidden, another group draws its x01");
+        require(visible(0L, Map.of(), hiddenGeosets()).equals(java.util.Set.of(101)),
+                "A model without group 0 draws its x01 sections");
+        // Group 0 draws only section 0; its other sections stay hidden.
+        require(visible(0L, Map.of(), mesh(0, 1, 101)).equals(java.util.Set.of(0, 101)),
+                "Group 0 sections other than 0 are hidden");
+        require(refusal(0L, Map.of(), mesh(1, 101)).contains("geoset group 0 has no section 0"),
+                "Group 0 without section 0 is refused");
         var unreadable = WorldTileCreatures.convert(preview(7, 0L, null, geosets()), Cancellation.NONE);
         require(unreadable.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
                 && unreadable.detail().contains("could not be read"), "An unreadable CreatureGeosetDataID is refused");
@@ -170,10 +181,10 @@ public final class WorldTileCreaturesTest {
         require(visible(5L, Map.of(), geosets()).equals(java.util.Set.of(0)), "A group 1-8 without a row is hidden");
         require(WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(), geosets()), Cancellation.NONE).model() != null,
                 "A display without rows still draws group 0");
-        // ID > 0: a row for group 9 replaces its default; group 9 without a row keeps x00.
+        // ID > 0: a row for group 9 replaces its default; group 9 without a row takes x01.
         var high = mesh(0, 900, 901);
         require(visible(5L, Map.of(9, 1), high).equals(java.util.Set.of(0, 901)), "A row for group 9 chooses 901");
-        require(visible(5L, Map.of(), high).equals(java.util.Set.of(0, 900)), "Group 9 without a row keeps x00");
+        require(visible(5L, Map.of(), high).equals(java.util.Set.of(0, 901)), "Group 9 without a row takes x01");
         // ID > 0: unknown rows, a missing chosen section or conflicting rows are refused.
         require(refusal(5L, null, geosets()).contains("unknown"), "Unknown rows are refused");
         require(refusal(5L, Map.of(1, 7), geosets()).contains("geoset 107 chosen by the display is not in the model"),
@@ -182,20 +193,27 @@ public final class WorldTileCreaturesTest {
                 "Conflicting rows are refused");
         // ID > 0: a row for a group the model does not have changes nothing.
         require(visible(5L, Map.of(4, 2, 1, 0), geosets()).equals(java.util.Set.of(0, 100)), "Rows for absent groups are ignored");
-        // ID == 0: display rows are ignored, every group draws x00 (unknown rows do not matter).
-        require(visible(0L, Map.of(1, 1), geosets()).equals(java.util.Set.of(0, 100)), "Rows are ignored when the ID is 0");
-        require(visible(0L, null, geosets()).equals(java.util.Set.of(0, 100)), "Unknown rows do not matter when the ID is 0");
-        require(refusal(0L, Map.of(1, 1), hiddenGeosets()).contains("no default x00"),
-                "With the ID 0 a group without x00 is still refused");
+        // ID == 0: display rows are ignored, every group takes the default (unknown rows do not matter).
+        require(visible(0L, Map.of(1, 0), geosets()).equals(java.util.Set.of(0, 101)), "Rows are ignored when the ID is 0");
+        require(visible(0L, null, geosets()).equals(java.util.Set.of(0, 101)), "Unknown rows do not matter when the ID is 0");
         require(visible(0L, Map.of(1, DisplayModelTypes.Reference.CONFLICTING_GEOSET), geosets())
-                .equals(java.util.Set.of(0, 100)), "With the ID 0 even conflicting rows are ignored");
+                .equals(java.util.Set.of(0, 101)), "With the ID 0 even conflicting rows are ignored");
         // ID > 0: group 8 is the last hidden group without a row (801 and 899); a row shows it.
         var eight = mesh(0, 801, 899);
         require(visible(5L, Map.of(), eight).equals(java.util.Set.of(0)), "Group 8 without a row is hidden");
         require(visible(5L, Map.of(8, 99), eight).equals(java.util.Set.of(0, 899)), "A row for group 8 chooses 899");
-        // ID > 0: a group of 9 or more without a row keeps the x00 rule, so without x00 it refuses.
-        require(refusal(5L, Map.of(), mesh(0, 901)).contains("geoset group 9 has no default x00"),
-                "Group 9 without a row and without x00 is refused");
+        // ID > 0: a group of 9 or more without a row takes the default: x01, or nothing.
+        require(visible(5L, Map.of(), mesh(0, 901)).equals(java.util.Set.of(0, 901)), "Group 9 without a row draws 901");
+        require(visible(5L, Map.of(), mesh(0, 902)).equals(java.util.Set.of(0)), "Group 9 without x01 draws nothing");
+        // ID > 0: a row choosing a 9+ group's x00 draws only that section, not also its x01.
+        require(visible(5L, Map.of(9, 0), mesh(0, 900, 901)).equals(java.util.Set.of(0, 900)),
+                "A chosen group 9 draws only its chosen section");
+        // ID > 0: when only the default hides everything (an unlisted 9+ group without x01), the
+        // reason names the default, not the rows.
+        var defaultHid = WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(), mesh(902)), Cancellation.NONE);
+        require(defaultHid.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
+                        && defaultHid.detail().equals("the model has no section 0 or x01 section to draw"),
+                "The default, not the rows, hid it: " + defaultHid.detail());
         // ID > 0: when the rows hide every section there is nothing to draw: a visibility refusal.
         var allHidden = WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(), hiddenGeosets()), Cancellation.NONE);
         require(allHidden.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED

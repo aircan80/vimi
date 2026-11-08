@@ -389,11 +389,11 @@ public final class WorldMeasurementTest {
     /** The probe's geoset census (#455) names each display's case, rule outcome and defaults. */
     private static void displayCensusClassifiesGeosetCasesAndDefaults() {
         var census = new WorldMeasurementProbe.DisplayCensus((display, token) -> null);
-        // ID 0, no rows: group 1 has x00 only, group 2 both: drawn.
+        // ID 0, no rows: group 1 has x00 only (hidden), group 2 both (draws 201): drawn.
         census.facts.put(1L, WorldMeasurementProbe.DisplayModelFacts.of(
                 preview(1, 0L, 0L, java.util.Map.of(), parts(0, 100, 200, 201)).reference(),
                 parts(0, 100, 200, 201).mesh()));
-        // ID 0: group 1 has x01 only: refused by the x00 default; group 3 neither.
+        // ID 0: group 1 has x01 only and draws it (rows ignored); group 3 neither: hidden, drawn.
         census.facts.put(2L, WorldMeasurementProbe.DisplayModelFacts.of(
                 preview(2, 0L, 0L, java.util.Map.of(2, 1), parts(0, 101)).reference(),
                 parts(0, 101).mesh()));
@@ -404,6 +404,10 @@ public final class WorldMeasurementTest {
         census.facts.put(4L, WorldMeasurementProbe.DisplayModelFacts.of(
                 preview(4, 0L, 5L, java.util.Map.of(1, 1), parts(0, 100, 101)).reference(),
                 parts(0, 100, 101).mesh()));
+        // ID > 0 without section 0 in group 0: refused.
+        census.facts.put(6L, WorldMeasurementProbe.DisplayModelFacts.of(
+                preview(6, 0L, 5L, java.util.Map.of(), parts(1, 101)).reference(),
+                parts(1, 101).mesh()));
         // ID unreadable: refused.
         census.facts.put(5L, WorldMeasurementProbe.DisplayModelFacts.of(
                 preview(5, 0L, null, null, parts(0)).reference(), parts(0).mesh()));
@@ -411,9 +415,9 @@ public final class WorldMeasurementTest {
         check(
                 tally.equals(
                         java.util.Map.of(
-                                "ID 0, no rows -> drawn", 1,
-                                "ID 0, rows -> refused: geoset group # has no default x00 section", 1,
-                                "ID 0, no rows -> refused: geoset group # has no default x00 section", 1,
+                                "ID 0, no rows -> drawn", 2,
+                                "ID 0, rows -> drawn", 1,
+                                "ID > 0, no rows -> refused: geoset group # has no section #", 1,
                                 "ID > 0, rows -> drawn", 1,
                                 "ID unreadable -> refused: creature geoset data could not be read", 1)),
                 "Geoset cases: " + tally);
