@@ -323,33 +323,13 @@ final class WorldStreamPackedTile implements AutoCloseable {
             throw new IllegalArgumentException("Packed tile exceeds one-credit geometry limit");
         }
         var indices = tile.indices();
-        var runs = new java.util.ArrayList<int[]>();
-        int runStart = 0, key = -1;
-        for (int at = 0; at < indexCount; at += 3) {
-            int next = indices.get(at) / CHUNK_VERTICES;
-            if (next != key) {
-                if (at != 0) {
-                    runs.add(new int[] {runStart, at - runStart});
-                }
-                runStart = at;
-                key = next;
-            }
-        }
-        if (indexCount != 0) {
-            runs.add(new int[] {runStart, indexCount - runStart});
-        }
-        if (runs.size() > MAX_RUNS) {
-            runs.clear();
-            runs.add(new int[] {0, indexCount});
-        }
+        var flat = runs(indices, indexCount);
+        int runCount = flat.length / 2;
         var positions = tile.vertices();
-        var flat = new int[runs.size() * 2];
-        var spheres = new double[runs.size() * 4];
-        for (int r = 0; r < runs.size(); r++) {
+        var spheres = new double[runCount * 4];
+        for (int r = 0; r < runCount; r++) {
             check(canceled);
-            int first = runs.get(r)[0], count = runs.get(r)[1];
-            flat[r * 2] = first;
-            flat[r * 2 + 1] = count;
+            int first = flat[r * 2], count = flat[r * 2 + 1];
             double minX = Double.POSITIVE_INFINITY, minY = minX, minZ = minX;
             double maxX = Double.NEGATIVE_INFINITY, maxY = maxX, maxZ = maxX;
             for (int i = first; i < first + count; i++) {
@@ -375,6 +355,38 @@ final class WorldStreamPackedTile implements AutoCloseable {
             spheres[r * 4 + 3] = Math.sqrt(radius) + WorldStreamObjectCulling.RADIUS_SLACK;
         }
         return new Mesh(vertices, waterVertices, indexCount, waterIndices, flat, spheres);
+    }
+
+    /**
+     * The terrain runs of {@code indexCount} indices as (first index, index count) pairs: runs of
+     * consecutive triangles whose first vertex lies in the same chunk. A mesh with more than {@link
+     * #MAX_RUNS} runs is one run of every index; the scan stops at the triangle that opens run
+     * {@code MAX_RUNS + 1}, so an unusual mesh builds no more than one fixed array of runs.
+     */
+    static int[] runs(java.nio.IntBuffer indices, int indexCount) {
+        var bounds = new int[MAX_RUNS * 2];
+        int count = 0, runStart = 0, key = -1;
+        for (int at = 0; at < indexCount; at += 3) {
+            int next = indices.get(at) / CHUNK_VERTICES;
+            if (next != key) {
+                if (at != 0) {
+                    bounds[count * 2] = runStart;
+                    bounds[count * 2 + 1] = at - runStart;
+                    if (++count == MAX_RUNS) {
+                        // This triangle opens run MAX_RUNS + 1: too many, stop here.
+                        return new int[] {0, indexCount};
+                    }
+                }
+                runStart = at;
+                key = next;
+            }
+        }
+        if (indexCount != 0) {
+            bounds[count * 2] = runStart;
+            bounds[count * 2 + 1] = indexCount - runStart;
+            count++;
+        }
+        return java.util.Arrays.copyOf(bounds, count * 2);
     }
 
     /**

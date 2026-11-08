@@ -85,6 +85,40 @@ class WorldStreamTerrainMeshTest {
     }
 
     @Test
+    void aMeshWithExactlyTheMostRunsKeepsThem() {
+        int[] runs =
+                WorldStreamPackedTile.runs(
+                        alternating(WorldStreamPackedTile.MAX_RUNS),
+                        WorldStreamPackedTile.MAX_RUNS * 3);
+        assertEquals(WorldStreamPackedTile.MAX_RUNS * 2, runs.length);
+        assertEquals((WorldStreamPackedTile.MAX_RUNS - 1) * 3, runs[runs.length - 2]);
+        assertEquals(3, runs[runs.length - 1]);
+    }
+
+    @Test
+    void oneRunPastTheMostCollapsesAndTheScanStopsThere() {
+        int limit = WorldStreamPackedTile.MAX_RUNS;
+        assertArrayEquals(
+                new int[] {0, (limit + 1) * 3},
+                WorldStreamPackedTile.runs(alternating(limit + 1), (limit + 1) * 3));
+        // Only the triangles up to the first of run MAX_RUNS + 1 are readable: a scan past it
+        // would throw, so the planner stops building runs there.
+        int indexCount = 65_536 * 3;
+        var head = alternating(limit + 1);
+        assertArrayEquals(new int[] {0, indexCount}, WorldStreamPackedTile.runs(head, indexCount));
+    }
+
+    /** {@code triangles} triangles alternating between two chunks: one run each. */
+    private static java.nio.IntBuffer alternating(int triangles) {
+        var indices = java.nio.IntBuffer.allocate(triangles * 3);
+        for (int t = 0; t < triangles; t++) {
+            int base = t % 2 == 0 ? 0 : 145;
+            indices.put(base).put(base + 1).put(base + 17);
+        }
+        return indices.flip();
+    }
+
+    @Test
     void waterCountsFollowTheTerrainsAndPlanningStopsWhenCanceled() {
         var tile = TerrainScene.Tile.copyOf(7, 19, vertices(1), fans(1, 0), 1);
         var mesh =
