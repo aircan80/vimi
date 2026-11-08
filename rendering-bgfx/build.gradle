@@ -318,6 +318,8 @@ tasks.register('nativeGpuWorldStreamSplatUploadProof', JavaExec) {
     systemProperty 'vimi.world.splat.rgba8', providers.gradleProperty('splatProofRgba8').getOrElse('false')
     // -PsplatProofMask=high carries a HIGH (1024) mask map; STANDARD (512) otherwise.
     systemProperty 'vimi.proof.splatMask', providers.gradleProperty('splatProofMask').getOrElse('standard')
+    // -PsplatProofShift=rows,columns misplaces the mask map on purpose; the proof must then fail.
+    systemProperty 'vimi.proof.splatShift', providers.gradleProperty('splatProofShift').getOrElse('0,0')
     args layout.buildDirectory.dir('native-world-stream-splat').get().asFile.absolutePath
 }
 

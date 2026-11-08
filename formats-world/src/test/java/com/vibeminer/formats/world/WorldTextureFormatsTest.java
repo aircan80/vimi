@@ -692,4 +692,23 @@ class WorldTextureFormatsTest {
         assertFalse(duplicate.admitted());
         assertNotEquals(WorldTextureFormats.ChunkIssue.NO_LAYERS, duplicate.issue());
     }
+
+    @Test
+    void aLayerlessChunkStillCarriesItsShadowBits() {
+        byte[] bits = new byte[WorldTextureFormats.SHADOW_BYTES];
+        bits[0] = 0b0000_0010;
+        byte[] source = texture(join(part("MCLY", new byte[0]), part("MCSH", bits)));
+        try (var data = WorldTextureFormats.read(source, () -> false)) {
+            assertEquals(
+                    WorldTextureFormats.ChunkIssue.NO_LAYERS, data.chunks().getFirst().issue());
+            assertEquals(WorldTextureFormats.ShadowState.BITS, data.shadowState(0));
+            var shadow = ByteBuffer.allocate(4096);
+            assertTrue(
+                    data.decodeShadow(
+                            0, WorldTextureFormats.DO_NOT_FIX_ALPHA_MAP, shadow, () -> false));
+            assertEquals(0, shadow.get(0) & 255);
+            assertEquals(255, shadow.get(1) & 255);
+            assertEquals(0, shadow.get(2) & 255);
+        }
+    }
 }

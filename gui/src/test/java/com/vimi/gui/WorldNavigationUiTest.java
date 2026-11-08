@@ -296,7 +296,7 @@ public final class WorldNavigationUiTest {
         require(!full.active() && content.getCenter()==viewport,"Hiding the tab ends full screen");
         view.activate();
         var split=(javafx.scene.control.SplitPane)get(view,"split");
-        var hint=view.lookup("#world-panels-hint");
+        var hint=view.lookup("#world-hud-hint");
         // The HUD's hideable rows; the HUD layer itself stays for the developer overlay's slot.
         var hud=view.lookup("#world-hud-top-left");
         // The map list already left the split for the explorer (HUD step 1); Alt+Z hides the HUD.
@@ -311,7 +311,7 @@ public final class WorldNavigationUiTest {
         press(viewport,KeyCode.Z,true);
         release(viewport,KeyCode.Z);
         require(content.getBottom().isVisible() && hud.isVisible() && !hint.isVisible(),"Alt+Z shows them again");
-        var hide=(javafx.scene.control.Button)view.lookup("#world-hide-panels");
+        var hide=(javafx.scene.control.Button)view.lookup("#world-hide-hud");
         require(hide.getText().equals("Hide HUD (H or Alt+Z)"),"The button names the HUD: "+hide.getText());
         hide.fire();
         require(!hud.isVisible() && !content.getBottom().isVisible(),"The Hide HUD button hides it");
@@ -340,7 +340,7 @@ public final class WorldNavigationUiTest {
         press(viewport,KeyCode.F11,false);
         release(viewport,KeyCode.F11);
         require(full.active() && !hud.isVisible() && hint.isVisible()
-                        && full.stage().getScene().getRoot().lookup("#world-panels-hint")==hint
+                        && full.stage().getScene().getRoot().lookup("#world-hud-hint")==hint
                         && ((javafx.scene.control.Label)hint).getText().equals("H or Alt+Z shows the HUD · F11 or Esc leaves full screen"),
                 "F11 with the HUD hidden: one hint, on the full-screen stage, saying how to leave: "
                         +((javafx.scene.control.Label)hint).getText());
@@ -475,7 +475,7 @@ public final class WorldNavigationUiTest {
                         "#world-layout-azerty","#world-key-bindings-open"},
                 "audio",new String[] {"#world-audio","#world-music","#world-ambience","#world-music-volume",
                         "#world-ambience-volume","#world-audio-variant","#world-audio-status"},
-                "display",new String[] {"#world-show-coordinates","#world-hide-panels","#world-fullscreen","#world-gpu-enabled",
+                "display",new String[] {"#world-show-coordinates","#world-hide-hud","#world-fullscreen","#world-gpu-enabled",
                         "#world-object-textures","#world-gpu-activity","#world-gpu-retry","#world-gpu-status",
                         "#world-texture-activity","#world-texture-status","#world-texture-retry"},
                 "bookmarks",new String[] {"#world-save-bookmark"},
@@ -595,7 +595,7 @@ public final class WorldNavigationUiTest {
     private static void hideHudKeyAndDeveloperSlot(WorldView view,Node viewport,Node hud,Node panel) {
         var rows=view.lookup("#world-hud-top-left");
         var bottom=((javafx.scene.layout.BorderPane)get(view,"content")).getBottom();
-        var hint=view.lookup("#world-panels-hint");
+        var hint=view.lookup("#world-hud-hint");
         var hudNode=(WorldHud)get(view,"hud");
         require(rows.isVisible() && bottom.isVisible() && !hudNode.hidden(),"The HUD starts shown");
         for (int i=0;i<20;i++) key(viewport,KeyCode.H,true);
@@ -672,16 +672,16 @@ public final class WorldNavigationUiTest {
         key(viewport,KeyCode.J,false);
         require(!rows.isVisible(),"A rebound hide HUD key works");
         require(((javafx.scene.control.Label)hint).getText().equals("J or Alt+Z shows the HUD · F11 full screen")
-                        && ((Button)view.lookup("#world-hide-panels")).getText().equals("Hide HUD (J or Alt+Z)"),
+                        && ((Button)view.lookup("#world-hide-hud")).getText().equals("Hide HUD (J or Alt+Z)"),
                 "The hint and the button follow the rebinding: "+((javafx.scene.control.Label)hint).getText());
         key(viewport,KeyCode.J,true);
         key(viewport,KeyCode.J,false);
         view.showControls(controls.unbind(WorldControls.Action.HIDE_HUD));
-        require(((Button)view.lookup("#world-hide-panels")).getText().equals("Hide HUD (Alt+Z)")
+        require(((Button)view.lookup("#world-hide-hud")).getText().equals("Hide HUD (Alt+Z)")
                         && ((javafx.scene.control.Label)hint).getText().equals("Alt+Z shows the HUD · F11 full screen"),
                 "Unbound, they name Alt+Z alone");
         view.showControls(controls);
-        require(((Button)view.lookup("#world-hide-panels")).getText().equals("Hide HUD (H or Alt+Z)"),"H again");
+        require(((Button)view.lookup("#world-hide-hud")).getText().equals("Hide HUD (H or Alt+Z)"),"H again");
         overlay.show(null);
         require(!slot.isVisible(),"Overlay off again");
         commandActionsAreRouted(view);

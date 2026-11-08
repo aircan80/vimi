@@ -56,6 +56,7 @@ public final class WorldExplorerInputTest {
         idleRestartsIntegrationAtZeroSeconds();
         walkAtRestStillReportsTheGround();
         smoothReleaseCoastsThenFramesTheRestingStep();
+        theCameraComingToRestIsReportedOncePerStop();
         walkWheelMovesAlongTheHeadingOnly();
         System.out.println(
                 "World explorer input: key axes, rebinding and AZERTY, walk toggle,"
@@ -83,6 +84,8 @@ public final class WorldExplorerInputTest {
         @Override public void requestFrame() { calls.add("frame"); }
         @Override public void abandonUnusableCandidate() { calls.add("abandon"); }
         @Override public void loadNext() { calls.add("nearby"); }
+        int rests;
+        @Override public void cameraAtRest() { rests++; }
         @Override public void cursorHidden(boolean hidden) { cursor.add(hidden); }
         final List<WorldControls> changed = new ArrayList<>();
         @Override public void controlsChanged(WorldControls controls) { changed.add(controls); }
@@ -1041,6 +1044,45 @@ public final class WorldExplorerInputTest {
         host.calls.clear();
         input.pulse(t += 16_000_000L);
         require(host.camera.equals(rested) && host.calls.isEmpty(), "At rest nothing more is owed: " + host.calls);
+    }
+
+    /**
+     * #528: the end of a movement is reported once, on the pulse the camera stops (released
+     * flight, smoothed coasting decaying, or a walk), never while moving, never again at rest,
+     * and never for a look alone.
+     */
+    private static void theCameraComingToRestIsReportedOncePerStop() {
+        long[] t = {1_000_000_000L};
+        for (int mode = 0; mode < 3; mode++) {
+            var host = new Host();
+            var input = new WorldExplorerInput(host);
+            input.motion(mode == 2, mode == 1);
+            String label = new String[] {"flight", "smooth flight", "walk"}[mode];
+            input.pulse(t[0] += 16_000_000L);
+            require(host.rests == 0, label + ": a camera that never moved is not a stop");
+            for (int stop = 1; stop <= 2; stop++) {
+                input.keyPressed(KeyCode.W);
+                for (int i = 0; i < 20; i++) input.pulse(t[0] += 16_000_000L);
+                require(host.rests == stop - 1, label + ": no stop while moving: " + host.rests);
+                input.keyReleased(KeyCode.W);
+                var before = host.camera;
+                int pulses = 0;
+                while (host.rests < stop && pulses++ < 1000) input.pulse(t[0] += 16_000_000L);
+                require(host.rests == stop, label + ": the stop is reported");
+                var rested = host.camera;
+                if (mode == 1) require(rested.x() != before.x() || rested.y() != before.y(),
+                        label + ": reported only after coasting ends");
+                for (int i = 0; i < 20; i++) input.pulse(t[0] += 16_000_000L);
+                require(host.rests == stop && host.camera.equals(rested),
+                        label + ": at rest it is not reported again: " + host.rests);
+            }
+            input.pointer(new Pointer());
+            input.lookPressed(MouseButton.SECONDARY, 400, 300);
+            for (int i = 1; i <= 20; i++) input.lookMoved(400 + i, 300, VIEW);
+            input.pulse(t[0] += 16_000_000L);
+            input.pulse(t[0] += 16_000_000L);
+            require(host.rests == 2, label + ": a look alone is not a stop: " + host.rests);
+        }
     }
 
     /**

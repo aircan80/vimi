@@ -1236,6 +1236,42 @@ public final class WorldTerrainTextureSource {
         }
     }
 
+    /**
+     * A non-square diffuse whose chain stops before a 4 x 4 level (for example 768 x 128 down to 6
+     * x 1) is reported as NON_SQUARE, the same reason as a non-square diffuse that has one, rather
+     * than as a missing mip. Reads only the 148-byte header again; any other failure is left to the
+     * caller.
+     */
+    private static void refuseNonSquare(
+            com.vibeminer.files.FileReadStream stream,
+            Blp2Types.Limits limits,
+            Request request,
+            RuntimeException failure) {
+        Throwable cause = failure;
+        for (int i = 0; i < 16 && cause.getCause() != null; i++) {
+            cause = cause.getCause();
+        }
+        if (!(cause instanceof BlpFormatException blp)
+                || !"BLP_MIP_UNAVAILABLE".equals(blp.code())) {
+            return;
+        }
+        List<Blp2Types.Mip> mips;
+        try {
+            mips =
+                    Blp2Decoder.readMipsSynchronous(
+                            AssetSources.file(stream),
+                            limits,
+                            request.token,
+                            Blp2Types.MipProfile.DECLARED_HANDMADE_V1);
+        } catch (RuntimeException unreadable) {
+            failure.addSuppressed(unreadable);
+            return;
+        }
+        if (!mips.isEmpty() && mips.getFirst().width() != mips.getFirst().height()) {
+            throw new SourceFailure(Reason.DIFFUSE_PROFILE, DiffuseRefusal.NON_SQUARE);
+        }
+    }
+
     private Decoded decodeTimed(FileBinding before, Request request) {
         var opened = files.openRead(FileTypes.FileRef.id(before.fileId()), request.token).join();
         try (var stream = opened.stream()) {
@@ -1249,15 +1285,21 @@ public final class WorldTerrainTextureSource {
                     before,
                     DIFFUSE_SOURCE_LIMIT,
                     !stream.holes().isEmpty());
-            var image =
-                    Blp2Decoder.decodeLargestWithin(
-                                    AssetSources.file(stream),
-                                    4,
-                                    new Blp2Types.Limits(
-                                            DIFFUSE_SOURCE_LIMIT, 16384, 16, 1 << 20, 64),
-                                    request.token,
-                                    Blp2Types.MipProfile.DECLARED_HANDMADE_V1)
-                            .join();
+            var limits = new Blp2Types.Limits(DIFFUSE_SOURCE_LIMIT, 16384, 16, 1 << 20, 64);
+            Blp2Types.Image image;
+            try {
+                image =
+                        Blp2Decoder.decodeLargestWithin(
+                                        AssetSources.file(stream),
+                                        4,
+                                        limits,
+                                        request.token,
+                                        Blp2Types.MipProfile.DECLARED_HANDMADE_V1)
+                                .join();
+            } catch (RuntimeException unavailable) {
+                refuseNonSquare(stream, limits, request, unavailable);
+                throw unavailable;
+            }
             request.check();
             if (image.baseWidth() != image.baseHeight()) {
                 throw new SourceFailure(Reason.DIFFUSE_PROFILE, DiffuseRefusal.NON_SQUARE);

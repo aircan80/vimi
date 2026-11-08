@@ -66,12 +66,12 @@ final class BlpImagesTest {
         assertEquals(148, files.bytesRead.get() + 148 * files.ranges.get());
         assertEquals(0, files.opens.get());
         assertEquals(2, result.header().declaredMips());
-        b[9] = 0;
+        b[9] = 2;
         files.add(1, CONTENT, b);
         result = images.inspect(files, FileRef.id(1), Cancellation.NONE).join();
         assertEquals(State.UNSUPPORTED, result.state());
-        assertEquals(0, result.header().alphaDepth());
-        assertTrue(result.message().contains("alpha depth 0"));
+        assertEquals(2, result.header().alphaDepth());
+        assertTrue(result.message().contains("alpha depth 2"));
     }
 
     @Test
