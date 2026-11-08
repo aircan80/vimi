@@ -65,6 +65,7 @@ public final class WorldStreamNeighborhoodTest {
                     "Keep is exactly the recorded ring beyond the view distance");
         }
         motionPredictsWithinTheRadiusAndRestartsAfterJumpsAndGaps();
+        orderAfterStoppingMatchesAStillCamera(recorded);
         require(recorded.size() == 81, "Inventory is unchanged");
         System.out.println("World demand ordering: native headings, ring order, nearest tile, sparse inventory and bounds passed");
     }
@@ -101,6 +102,53 @@ public final class WorldStreamNeighborhoodTest {
             int stillBehindAt = still.indexOf(moving.get(behindAt));
             require(behindAt > stillBehindAt, "The tile right behind drops in rank while moving");
         }
+    }
+
+    /**
+     * #528: move, stop, refresh once. The refresh at rest predicts the camera tile, so the order
+     * matches a stationary camera's, even right after a moving sample.
+     */
+    private static void orderAfterStoppingMatchesAStillCamera(List<WorldFormats.Tile> recorded) {
+        var distance = WorldStreamTransport.ViewDistance.values()[0];
+        var motion = new WorldStreamNeighborhood.Motion();
+        long t = 1_000_000_000L, tick = 100_000_000L;
+        double x = 32.1;
+        int[] ahead = motion.ahead(x, 32.5, t, distance.radius());
+        for (int i = 1; i <= 10; i++) {
+            x += 0.08;
+            ahead = motion.ahead(x, 32.5, t + i * tick, distance.radius());
+        }
+        int cx = (int) Math.floor(x);
+        var still = WorldStreamNeighborhood.select(recorded, cx, 32, Math.PI / 2, distance);
+        require(ahead[0] > cx, "Moving: the order is biased ahead of the camera");
+        require(!WorldStreamNeighborhood.select(recorded, cx, 32, Math.PI / 2, distance, ahead[0], ahead[1])
+                        .equals(still),
+                "Moving: the biased order differs from a still camera's");
+        // Without the rest, a refresh 60 ms after the last moving sample still predicts ahead.
+        var unreset = new WorldStreamNeighborhood.Motion();
+        double ux = 32.1;
+        unreset.ahead(ux, 32.5, t, distance.radius());
+        for (int i = 1; i <= 10; i++) unreset.ahead(ux += 0.08, 32.5, t + i * tick, distance.radius());
+        require(unreset.ahead(ux, 32.5, t + 10 * tick + 60_000_000L, distance.radius())[0] > cx,
+                "A plain refresh soon after stopping keeps the motion bias");
+        for (long after : new long[] {10_000_000L, 60_000_000L}) {
+            var rested = new WorldStreamNeighborhood.Motion();
+            double rx = 32.1;
+            rested.ahead(rx, 32.5, t, distance.radius());
+            for (int i = 1; i <= 10; i++) rested.ahead(rx += 0.08, 32.5, t + i * tick, distance.radius());
+            rested.rest();
+            int[] atRest = rested.ahead(rx, 32.5, t + 10 * tick + after, distance.radius());
+            require(atRest[0] == cx && atRest[1] == 32, "At rest the prediction is the camera tile");
+            require(WorldStreamNeighborhood.select(recorded, cx, 32, Math.PI / 2, distance, atRest[0], atRest[1])
+                            .equals(still),
+                    "The order after stopping matches a still camera's");
+        }
+        // Moving again after a rest is measured afresh and predicted ahead again.
+        motion.rest();
+        int[] again = motion.ahead(x, 32.5, t + 20 * tick, distance.radius());
+        require(again[0] == cx, "The first sample after a rest predicts the camera tile");
+        for (int i = 1; i <= 10; i++) again = motion.ahead(x += 0.08, 32.5, t + (20 + i) * tick, distance.radius());
+        require(again[0] > (int) Math.floor(x), "Motion after a rest is predicted ahead again");
     }
 
     private static void motionPredictsWithinTheRadiusAndRestartsAfterJumpsAndGaps() {

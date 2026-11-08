@@ -57,6 +57,12 @@ final class WorldExplorerInput {
 
         void loadNext();
 
+        /**
+         * The camera came to rest after moving: called once per stop, so nearby demand can drop
+         * the order it biased ahead of the motion (#528).
+         */
+        default void cameraAtRest() {}
+
         /** Hides the cursor over the view while mouse look is held; shows it again after. */
         void cursorHidden(boolean hidden);
 
@@ -151,6 +157,8 @@ final class WorldExplorerInput {
     private boolean warpedOnce;
     // The camera moved since the last frame this input requested (cadence held it back).
     private boolean unshown;
+    // Whether the camera moved since it last came to rest.
+    private boolean moving;
 
     WorldExplorerInput(Host host) {
         this.host = Objects.requireNonNull(host);
@@ -441,6 +449,7 @@ final class WorldExplorerInput {
         if (!steering && !motion.coasting() && motion.mode() != ExplorerMotion.Mode.WALK) {
             if (looked) frame();
             else showFinal();
+            rested();
             return;
         }
         var stepped = motion.step(camera, input, dt, speed(), host.ground());
@@ -449,9 +458,11 @@ final class WorldExplorerInput {
             if (looked) frame();
             // Velocity just decayed to zero: the last moving step may still be unframed.
             else if (stepped.resting()) showFinal();
+            rested();
             return;
         }
         host.camera(stepped.camera());
+        moving = true;
         unshown = true;
         long cadence = host.fastCadence() ? FAST_CADENCE_NANOS : SLOW_CADENCE_NANOS;
         // A look and the final settling/coasting step are always shown, not dropped by cadence.
@@ -464,6 +475,14 @@ final class WorldExplorerInput {
             lastNearby = now;
             host.loadNext();
         }
+        if (stepped.resting()) rested();
+    }
+
+    /** Reports the end of a movement once; no-op while already at rest. */
+    private void rested() {
+        if (!moving) return;
+        moving = false;
+        host.cameraAtRest();
     }
 
     private void frame() {

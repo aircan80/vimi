@@ -232,6 +232,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         @Override public void requestFrame() { WorldView.this.requestFrame(); }
         @Override public void abandonUnusableCandidate() { WorldView.this.abandonUnusableCandidate(); }
         @Override public void loadNext() { WorldView.this.loadNext(); }
+        @Override public void cameraAtRest() { WorldView.this.cameraAtRest(); }
         @Override public void cursorHidden(boolean hidden) {
             viewport.setCursor(hidden ? javafx.scene.Cursor.NONE : null);
         }
@@ -3598,6 +3599,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private final WorldStreamNeighborhood.Motion motion = new WorldStreamNeighborhood.Motion();
+
+    /** Once per stop: the demand order drops its bias ahead of the finished motion (#528). */
+    private void cameraAtRest() {
+        motion.rest();
+        if (streamingMode) streamNeighborhood();
+    }
 
     private void streamNeighborhood() {
         if (streaming == null || camera == null || inventory == null) return;
