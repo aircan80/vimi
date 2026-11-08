@@ -22,6 +22,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Shared actual-native Map qualification only; no terrain/WDT proof, cache or worker. The owning
@@ -36,25 +37,112 @@ final class WorldMapProofs {
         OBSERVED_SELECTED_ROW
     }
 
+    /** How a Map row names its WDT. */
+    enum WdtSource {
+        /** The row's admitted numeric WdtFileDataID field. */
+        MAP_COLUMN,
+        /**
+         * {@code world/maps/<Directory>/<Directory>.wdt}, resolved through the build's file names,
+         * for a reviewed Map layout that has no WdtFileDataID field at all.
+         */
+        DIRECTORY_PATH
+    }
+
+    /**
+     * Map layouts without a WdtFileDataID field whose ID and Directory fields were checked against
+     * the definitions: B47C6F05 (classic clients since 1.15.4) stores ID as the non-inline 32-bit
+     * record ID and Directory as a plain string, as D43AFAC3 does. Nothing else of these layouts is
+     * read here.
+     */
+    static final Set<String> DIRECTORY_WDT_LAYOUTS = Set.of("B47C6F05");
+
+    /** The Map column a WDT is bound through, and how. */
+    record WdtColumn(WdtSource source, int column) {}
+
+    static String wdtPath(String directory) {
+        return "world/maps/" + directory + "/" + directory + ".wdt";
+    }
+
+    /**
+     * The admitted WDT binding of a Map schema: its numeric WdtFileDataID column when one is
+     * admitted, else its Directory for a reviewed layout without any WDT field. Refuses otherwise,
+     * saying why.
+     */
+    static WdtColumn wdtColumn(TableTypes.SchemaResult schema) {
+        int column = WorldService.column(schema, "WdtFileDataID", true);
+        if (column >= 0) {
+            return new WdtColumn(WdtSource.MAP_COLUMN, column);
+        }
+        if (schema.schema() == null
+                || schema.schema().columns().stream()
+                        .anyMatch(c -> c.name().equals("WdtFileDataID"))) {
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.NUMERIC_WDT);
+        }
+        String layout =
+                schema.table() == null || schema.table().counts() == null
+                        ? null
+                        : schema.table().counts().layoutHash();
+        String named = layout != null && layout.matches("[0-9A-Fa-f]{8}") ? layout : "(unnamed)";
+        if (layout == null
+                || !DIRECTORY_WDT_LAYOUTS.contains(layout)
+                || !schema.schema().layoutHashes().contains(layout)) {
+            throw WorldSourceRefusals.at(
+                    WorldSourceRefusals.Site.NUMERIC_WDT,
+                    "Map layout "
+                            + named
+                            + " has no WdtFileDataID field and has not been reviewed for a"
+                            + " Directory WDT binding");
+        }
+        int directory = WorldService.column(schema, "Directory", false);
+        var fields =
+                schema.schema().columns().stream()
+                        .filter(c -> c.name().equals("Directory"))
+                        .toList();
+        if (directory < 0
+                || fields.size() != 1
+                || fields.getFirst().kind()
+                        != com.vibeminer.formats.definitions.TableSchema.ColumnKind.STRING) {
+            throw WorldSourceRefusals.at(
+                    WorldSourceRefusals.Site.NUMERIC_WDT,
+                    "Map layout " + named + " has no plain verified Directory field");
+        }
+        return new WdtColumn(WdtSource.DIRECTORY_PATH, directory);
+    }
+
     /** Detached privately minted binding; no receipt/schema/rows/source/MAID owner retained. */
     static final class Binding {
         private final long mapId, wdtId, ordinal;
-        private final String identity, sourceStamp;
+        private final String identity, sourceStamp, wdtPath;
+        private final WdtSource wdtSource;
         private final NativeIdDomainTypes.Witness witness;
 
         private Binding(
                 long mapId,
                 long wdtId,
+                WdtSource wdtSource,
+                String wdtPath,
                 String identity,
                 String sourceStamp,
                 long ordinal,
                 NativeIdDomainTypes.Witness witness) {
             this.mapId = mapId;
             this.wdtId = wdtId;
+            this.wdtSource = wdtSource;
+            this.wdtPath = wdtPath;
             this.identity = identity;
             this.sourceStamp = sourceStamp;
             this.ordinal = ordinal;
             this.witness = witness;
+        }
+
+        /** How the WDT was bound; a revalidation never switches it. */
+        WdtSource wdtSource() {
+            return wdtSource;
+        }
+
+        /** The resolved WDT path for {@link WdtSource#DIRECTORY_PATH}, else null. */
+        String wdtPath() {
+            return wdtPath;
         }
 
         long mapId() {
@@ -116,9 +204,13 @@ final class WorldMapProofs {
     private record MapContext(
             CapturedRowsTypes.Receipt receipt,
             TableTypes.SchemaResult schema,
-            int column,
+            WdtColumn wdt,
             String layout,
-            String stamp) {}
+            String stamp) {
+        int column() {
+            return wdt.column();
+        }
+    }
 
     private CapturedRows openMap(Cancellation token) {
         token.check();
@@ -159,21 +251,24 @@ final class WorldMapProofs {
         validateNative(receipt);
         var schema =
                 new TableTypes.SchemaResult(receipt.table(), receipt.columns(), receipt.schema());
-        int column = WorldService.column(schema, "WdtFileDataID", true);
-        if (column < 0) {
-            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.NUMERIC_WDT);
-        }
-        String layout = mapLayout(schema);
-        return new MapContext(
-                receipt, schema, column, layout, sourceStamp(receipt, column, layout));
+        var wdt = wdtColumn(schema);
+        String layout = mapLayout(schema, wdt);
+        return new MapContext(receipt, schema, wdt, layout, sourceStamp(receipt, wdt, layout));
     }
 
     boolean revalidate(Binding binding, Cancellation token) {
         try (var rows = openMap(token)) {
             var context = qualifyMap(rows, token);
             probeEof(rows, context.receipt(), token);
-            if (!binding.sourceStamp().equals(context.stamp())) {
+            if (!binding.sourceStamp().equals(context.stamp())
+                    || binding.wdtSource() != context.wdt().source()) {
                 return false;
+            }
+            if (binding.wdtSource() == WdtSource.DIRECTORY_PATH) {
+                Long resolved = resolve(binding.wdtPath(), token);
+                if (resolved == null || resolved != binding.wdtId()) {
+                    return false;
+                }
             }
             if (context.receipt().table().state() == TableTypes.State.PARTIAL) {
                 var witness = binding.witness();
@@ -280,7 +375,28 @@ final class WorldMapProofs {
                                                             || issue.columnIndex() == column)) {
                         throw new IllegalStateException("Unqualified Map numeric issue channel");
                     }
-                    Long wdt = WorldService.number(schema, row.row(), "WdtFileDataID");
+                    Long wdt;
+                    String path = null;
+                    if (context.wdt().source() == WdtSource.MAP_COLUMN) {
+                        wdt = WorldService.number(schema, row.row(), "WdtFileDataID");
+                    } else {
+                        var values = row.row().values();
+                        String directory = column < values.size() ? values.get(column) : null;
+                        if (directory == null
+                                || directory.length() > 64
+                                || !directory.matches("[A-Za-z0-9_]+")) {
+                            throw WorldSourceRefusals.at(
+                                    WorldSourceRefusals.Site.NUMERIC_WDT,
+                                    "Map row has no usable Directory for its WDT");
+                        }
+                        path = wdtPath(directory);
+                        wdt = resolve(path, token);
+                        if (wdt == null) {
+                            throw WorldSourceRefusals.at(
+                                    WorldSourceRefusals.Site.NUMERIC_WDT,
+                                    "The build has no WDT at the Map row's directory");
+                        }
+                    }
                     if (wdt == null || wdt <= 0 || wdt > 0xffff_ffffL) {
                         throw WorldSourceRefusals.at(WorldSourceRefusals.Site.NUMERIC_WDT);
                     }
@@ -307,11 +423,14 @@ final class WorldMapProofs {
                                     + ":"
                                     + wdt
                                     + ":"
-                                    + context.stamp();
+                                    + context.stamp()
+                                    + (path == null ? "" : ":DIRECTORY_PATH:" + path);
                     found =
                             new Binding(
                                     requestedId,
                                     wdt,
+                                    context.wdt().source(),
+                                    path,
                                     sha(binding.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
                                     context.stamp(),
                                     row.ordinal(),
@@ -381,6 +500,8 @@ final class WorldMapProofs {
                         new Binding(
                                 found.mapId(),
                                 found.wdtId(),
+                                found.wdtSource(),
+                                found.wdtPath(),
                                 identity,
                                 found.sourceStamp(),
                                 found.ordinal(),
@@ -611,7 +732,8 @@ final class WorldMapProofs {
     }
 
     // Canonical v1 stamp streams into SHA-256; no full-schema serialization buffer is retained.
-    private static String sourceStamp(CapturedRowsTypes.Receipt r, int column, String layout) {
+    private static String sourceStamp(CapturedRowsTypes.Receipt r, WdtColumn wdt, String layout) {
+        int column = wdt.column();
         try {
             var hash = MessageDigest.getInstance("SHA-256");
             try (var out =
@@ -742,6 +864,12 @@ final class WorldMapProofs {
                     text(out, key.name());
                     text(out, key.fingerprint());
                 }
+                // Numeric bindings keep their original v1 stamp; a directory binding adds its kind
+                // and path rule, so a cached proof never switches binding silently.
+                if (wdt.source() != WdtSource.MAP_COLUMN) {
+                    text(out, wdt.source().name());
+                    text(out, wdtPath("<Directory>"));
+                }
             }
             return HexFormat.of().formatHex(hash.digest());
         } catch (IOException impossible) {
@@ -772,16 +900,17 @@ final class WorldMapProofs {
         }
     }
 
-    private static String mapLayout(TableTypes.SchemaResult schema) {
+    private static String mapLayout(TableTypes.SchemaResult schema, WdtColumn wdt) {
         if (schema.table().counts() == null
                 || schema.table().counts().layoutHash() == null
                 || !schema.table().counts().layoutHash().matches("[0-9a-fA-F]{8}")
                 || !schema.schema().layoutHashes().contains(schema.table().counts().layoutHash())) {
             throw new IllegalStateException("Unbound Map layout");
         }
+        boolean numeric = wdt.source() == WdtSource.MAP_COLUMN;
         var field =
                 schema.schema().columns().stream()
-                        .filter(c -> c.name().equals("WdtFileDataID"))
+                        .filter(c -> c.name().equals(numeric ? "WdtFileDataID" : "Directory"))
                         .toList();
         if (field.isEmpty()) {
             throw WorldSourceRefusals.at(WorldSourceRefusals.Site.NUMERIC_WDT);
@@ -791,6 +920,7 @@ final class WorldMapProofs {
         }
         var column = field.getFirst();
         return schema.table().counts().layoutHash()
+                + (numeric ? "" : ":" + wdt.source().name())
                 + ":"
                 + column.kind()
                 + ":"
@@ -813,6 +943,22 @@ final class WorldMapProofs {
                 || !entry.contentKey().matches("[0-9a-f]{32}")) {
             throw new IllegalStateException("Unqualified Map source");
         }
+    }
+
+    /** The file ID the build's names give a path, or null when it names no file there. */
+    private Long resolve(String path, Cancellation token) {
+        token.check();
+        var lookup =
+                WorldSourceFutures.await(files.statContent(FileTypes.FileRef.forPath(path), token));
+        token.check();
+        var file = lookup.file();
+        if (lookup.state() != FileTypes.FileLookupState.FOUND
+                || file == null
+                || file.fileDataId() <= 0
+                || file.fileDataId() > 0xffff_ffffL) {
+            return null;
+        }
+        return file.fileDataId();
     }
 
     private void validateBinding(FileBinding binding, Cancellation token) {

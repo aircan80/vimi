@@ -252,6 +252,13 @@ reads verified Map/AreaTable fields, then WdtFileDataID or a recorded map direct
 Map D43AFAC3 has a narrowly reviewed WdtFileDataID field-name admission: signed32,
 FileData.ID foreign key, no raw physical interpretation. Other unverified fields
 remain unavailable. Definitions do not grant blanket interpretation to raw fields.
+A Map layout with no WdtFileDataID field at all binds its WDT through
+`world/maps/<Directory>/<Directory>.wdt`, resolved by the build's file names, but only
+when the layout is reviewed for it: B47C6F05 (classic clients since 1.15.4), whose
+ID (non-inline 32-bit record ID) and Directory (plain verified string) match the
+definitions. Other layouts without the field are refused with that reason. The Map
+proof's source stamp and binding identity record which binding was used, and a
+revalidation re-resolves the path, so a cached proof never switches binding or file.
 
 `:formats-world` admits bounded WDT18 MAIN/MAID inventories and split-root ADT18
 MCNK/MCVT heights. MAID supplies actual root ADT IDs; its mapTexture overview ID is

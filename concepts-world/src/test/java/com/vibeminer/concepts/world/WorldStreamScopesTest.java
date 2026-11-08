@@ -3523,6 +3523,11 @@ final class WorldStreamScopesTest {
         volatile int rowCount = 1, metadataMode, eofMode, stampMode;
         volatile boolean skipPage, emptyMiddle;
         volatile String wdt = "1", identity = "owned-map-row";
+
+        /** When set, Map7 has no WDT field, only this Directory, under {@link #layout}. */
+        volatile String directory;
+
+        volatile String layout = "B47C6F05";
         volatile boolean duplicate,
                 qualified = true,
                 unsupported,
@@ -3637,8 +3642,7 @@ final class WorldStreamScopesTest {
                             identity,
                             key -> {
                                 try {
-                                    return new AuthoredNativeMap(
-                                            files.files(),
+                                    String contentKey =
                                             java.util.HexFormat.of()
                                                     .formatHex(
                                                             java.security.MessageDigest.getInstance(
@@ -3647,8 +3651,13 @@ final class WorldStreamScopesTest {
                                                                             key.getBytes(
                                                                                     java.nio.charset
                                                                                             .StandardCharsets
-                                                                                            .UTF_8))),
-                                            rowCount);
+                                                                                            .UTF_8)));
+                                    if (directory != null) {
+                                        return AuthoredNativeMap.directory(
+                                                files.files(), contentKey, directory, layout);
+                                    }
+                                    return new AuthoredNativeMap(
+                                            files.files(), contentKey, rowCount);
                                 } catch (java.security.NoSuchAlgorithmException impossible) {
                                     throw new AssertionError(impossible);
                                 }

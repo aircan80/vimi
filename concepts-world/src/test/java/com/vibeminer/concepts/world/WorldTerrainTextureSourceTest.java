@@ -251,6 +251,11 @@ class WorldTerrainTextureSourceTest {
 
         volatile long protectedId, changedId, wrongId;
 
+        /** File IDs the build's names give paths; a path lookup outside it is UNKNOWN_FILE. */
+        final Map<String, Long> paths = new ConcurrentHashMap<>();
+
+        final AtomicInteger pathLookups = new AtomicInteger();
+
         /** Opens that fail with a state and code instead of returning a stream. */
         final java.util.Map<Long, FileTypes.FileOpen> failedOpens = new ConcurrentHashMap<>();
 
@@ -359,12 +364,24 @@ class WorldTerrainTextureSourceTest {
                                     switch (method.getName()) {
                                         case "build" -> BUILD;
                                         case "locale" -> "enUS";
-                                        case "stat", "statContent" ->
-                                                CompletableFuture.completedFuture(
+                                        case "stat", "statContent" -> {
+                                            var ref = (FileTypes.FileRef) args[0];
+                                            if (ref.fileDataId() != null) {
+                                                yield CompletableFuture.completedFuture(
                                                         stat(
-                                                                ((FileTypes.FileRef) args[0])
-                                                                        .fileDataId(),
+                                                                ref.fileDataId(),
                                                                 (Cancellation) args[1]));
+                                            }
+                                            pathLookups.incrementAndGet();
+                                            Long named = paths.get(ref.path());
+                                            yield CompletableFuture.completedFuture(
+                                                    named == null
+                                                            ? new FileTypes.FileStat(
+                                                                    FileTypes.FileLookupState
+                                                                            .UNKNOWN_FILE,
+                                                                    null)
+                                                            : stat(named, (Cancellation) args[1]));
+                                        }
                                         case "openRead" -> {
                                             long id = ((FileTypes.FileRef) args[0]).fileDataId();
                                             onOpenRead.accept(id);

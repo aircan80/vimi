@@ -33,6 +33,35 @@ public final class AuthoredNativeMap implements AutoCloseable {
     }
 
     public AuthoredNativeMap(BuildFiles borrowed, String contentKey, int rowCount) {
+        this(
+                borrowed,
+                contentKey,
+                Db2Fixture.definition(
+                        "int ID\nint WdtFileDataID", "$id,noninline$ID<u32>\nWdtFileDataID<u32>"),
+                numericRows(rowCount));
+    }
+
+    /**
+     * Authored Map7 without any WDT field: one row whose only field is the string {@code
+     * directory}, under {@code layout} (8 hex digits), as classic Map layouts store it.
+     */
+    public static AuthoredNativeMap directory(
+            BuildFiles borrowed, String contentKey, String directory, String layout) {
+        var document =
+                com.vibeminer.formats.definitions.DbdDefinitionReader.parse(
+                        ("COLUMNS\nint ID\nstring Directory\n\nLAYOUT "
+                                        + layout
+                                        + "\nBUILD 1.2.3.4\n$id,noninline$ID<u32>\nDirectory\n")
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return new AuthoredNativeMap(
+                borrowed, contentKey, document, directoryRow(directory, layout));
+    }
+
+    private AuthoredNativeMap(
+            BuildFiles borrowed,
+            String contentKey,
+            com.vibeminer.formats.definitions.DbdDocument document,
+            byte[] rows) {
         var base = new Db2Types.Limits();
         var limits =
                 new Db2Types.Limits(
@@ -53,12 +82,9 @@ public final class AuthoredNativeMap implements AutoCloseable {
                         base.maxRelationshipEntries(),
                         base.definitionSha256(),
                         base.verifiedRawIntegerRules());
-        var document =
-                Db2Fixture.definition(
-                        "int ID\nint WdtFileDataID", "$id,noninline$ID<u32>\nWdtFileDataID<u32>");
         var decoded =
                 Db2Reader.open(
-                                Db2ByteSource.memory(numericRows(rowCount)),
+                                Db2ByteSource.memory(rows),
                                 document,
                                 "1.2.3.4",
                                 limits,
@@ -161,6 +187,27 @@ public final class AuthoredNativeMap implements AutoCloseable {
                         options,
                         new BackgroundBuilds(),
                         new ProtectedIds());
+    }
+
+    /**
+     * One 8-byte record whose 32-bit field is a relative pointer (8) to the string table right
+     * after it, then the terminated directory and the row ID 7.
+     */
+    private static byte[] directoryRow(String directory, String layout) {
+        byte[] template = Db2Fixture.numeric("WDC5", 0, 32, 8, new long[0], false);
+        byte[] text = (directory + "\0").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        int records = 280;
+        byte[] bytes = new byte[template.length + text.length];
+        System.arraycopy(template, 0, bytes, 0, records);
+        System.arraycopy(text, 0, bytes, records, text.length);
+        System.arraycopy(
+                template, records, bytes, records + text.length, template.length - records);
+        java.nio.ByteBuffer.wrap(bytes)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .putInt(148, text.length)
+                .putInt(156, Integer.parseUnsignedInt(layout, 16))
+                .putInt(220, text.length);
+        return bytes;
     }
 
     private static byte[] numericRows(int rows) {
