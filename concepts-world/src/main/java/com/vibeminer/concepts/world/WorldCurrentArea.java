@@ -15,7 +15,13 @@ import java.util.Set;
  * Pure lookup of recorded terrain-area rectangles and exact catalog parent chains; no WMO volumes.
  */
 public final class WorldCurrentArea {
-    public static final int MAX_AREAS = 100000, MAX_DEPTH = 64, MAX_TILES = 12;
+    public static final int MAX_AREAS = 100000, MAX_DEPTH = 64;
+
+    /**
+     * Most tiles one lookup scans: the World stream's FAR 5 x 5 neighbourhood (25 residents, issue
+     * #173) with headroom, the same bound as {@code TerrainGround.MAX_TILES}.
+     */
+    public static final int MAX_TILES = 28;
 
     private WorldCurrentArea() {}
 
