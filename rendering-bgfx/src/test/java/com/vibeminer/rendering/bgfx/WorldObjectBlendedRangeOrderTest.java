@@ -155,6 +155,46 @@ class WorldObjectBlendedRangeOrderTest {
     }
 
     @Test
+    void sortingKeysMatchesArraysSortAtEverySize() {
+        var random = new java.util.Random(552);
+        for (int count = 0; count <= 200; count++) {
+            for (int round = 0; round < 5; round++) {
+                var keys = new long[count + 3];
+                for (int i = 0; i < keys.length; i++) {
+                    // Few distinct values, so duplicates are common.
+                    keys[i] = round % 2 == 0 ? random.nextLong() : random.nextInt(8) - 4;
+                }
+                var expected = keys.clone();
+                java.util.Arrays.sort(expected, 0, count);
+                BgfxWorldStreamRenderer.sortKeys(keys, count);
+                assertArrayEquals(expected, keys, "count " + count);
+            }
+        }
+    }
+
+    @Test
+    void sortingFewKeysAllocatesNothing() {
+        var keys = new long[16];
+        var threads =
+                (com.sun.management.ThreadMXBean)
+                        java.lang.management.ManagementFactory.getThreadMXBean();
+        sortFewKeys(keys);
+        long before = threads.getCurrentThreadAllocatedBytes();
+        sortFewKeys(keys);
+        long allocated = threads.getCurrentThreadAllocatedBytes() - before;
+        assertTrue(allocated < 4096, "allocated " + allocated + " bytes over 20,000 sorts");
+    }
+
+    private static void sortFewKeys(long[] keys) {
+        for (int i = 0; i < 20_000; i++) {
+            for (int k = 0; k < keys.length; k++) {
+                keys[k] = (k * 7L + i) % keys.length;
+            }
+            BgfxWorldStreamRenderer.sortKeys(keys, keys.length);
+        }
+    }
+
+    @Test
     void aBlendedRangesCentreIsTheMiddleOfItsBounds() {
         int floats = WorldStreamObjectsFile.VERTEX_FLOATS;
         var vertices = new float[5 * floats];

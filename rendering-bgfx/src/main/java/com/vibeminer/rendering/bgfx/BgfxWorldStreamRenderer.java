@@ -2725,8 +2725,53 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 keys[count++] = rangeKey(squared, r);
             }
         }
-        java.util.Arrays.sort(keys, 0, count);
+        sortKeys(keys, count);
         return count;
+    }
+
+    /**
+     * Sorts {@code keys[0, count)} ascending in place without allocating. {@code Arrays.sort} on a
+     * {@code long[]} allocates a small pivot array per partition that only a fully optimized JIT
+     * removes, and this runs per placement per frame. Insertion sort for the usual handful of
+     * ranges, heapsort past that.
+     */
+    static void sortKeys(long[] keys, int count) {
+        if (count <= 32) {
+            for (int i = 1; i < count; i++) {
+                long key = keys[i];
+                int j = i - 1;
+                while (j >= 0 && keys[j] > key) {
+                    keys[j + 1] = keys[j];
+                    j--;
+                }
+                keys[j + 1] = key;
+            }
+            return;
+        }
+        for (int i = count / 2 - 1; i >= 0; i--) {
+            siftDown(keys, i, count);
+        }
+        for (int end = count - 1; end > 0; end--) {
+            long top = keys[0];
+            keys[0] = keys[end];
+            keys[end] = top;
+            siftDown(keys, 0, end);
+        }
+    }
+
+    private static void siftDown(long[] keys, int i, int count) {
+        long key = keys[i];
+        for (int child = 2 * i + 1; child < count; child = 2 * i + 1) {
+            if (child + 1 < count && keys[child + 1] > keys[child]) {
+                child++;
+            }
+            if (keys[child] <= key) {
+                break;
+            }
+            keys[i] = keys[child];
+            i = child;
+        }
+        keys[i] = key;
     }
 
     /**
