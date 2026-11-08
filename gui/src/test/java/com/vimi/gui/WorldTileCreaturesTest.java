@@ -400,7 +400,7 @@ public final class WorldTileCreaturesTest {
         require(tile.drawn() == 2 && tile.restPosed() == 0 && tile.billboardsLeftOut() == 2,
                 "Both placements stand with their billboard triangles left out: " + tile.billboardsLeftOut());
         String text = WorldStreamSourceController.creatureDetail(tile, 1);
-        require(text.contains("(Stand pose, facing north), 2 with camera-facing parts left out"), text);
+        require(text.contains("(Stand pose, facing north, first texture per surface), 2 with camera-facing parts left out"), text);
         require(!WorldStreamSourceController.creatureDetail(
                 standingCreatures(() -> new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.AVAILABLE, null,
                         lift(standing()), "Stand")).append(WorldStreamTileWriter.Exterior.builder(), 0, TILE,
@@ -464,13 +464,13 @@ public final class WorldTileCreaturesTest {
         var tile = standingCreatures(() -> available).append(WorldStreamTileWriter.Exterior.builder(), 0, TILE,
                 Cancellation.NONE);
         require(tile.drawn() == 2 && tile.restPosed() == 0, "Both placements stand");
-        require(WorldStreamSourceController.creatureDetail(tile, 1).contains("(Stand pose, facing north)"),
+        require(WorldStreamSourceController.creatureDetail(tile, 1).contains("(Stand pose, facing north, first texture per surface)"),
                 WorldStreamSourceController.creatureDetail(tile, 1));
         // No qualified sequence: the rest pose is drawn and the reason recorded.
         var missing = standingCreatures(() -> DisplayModelTypes.Idle.unavailable("The Stand sequence records no bone keys"));
         var rest = missing.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
         require(rest.drawn() == 2 && rest.restPosed() == 2, "Rest-posed placements are counted");
-        require(WorldStreamSourceController.creatureDetail(rest, 1).contains("(rest pose, facing north)"),
+        require(WorldStreamSourceController.creatureDetail(rest, 1).contains("(rest pose, facing north, first texture per surface)"),
                 WorldStreamSourceController.creatureDetail(rest, 1));
         var otherSurface = new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.AVAILABLE, null, lift(new MeshAppearance(
                 new PreviewMesh(new float[] {0, 0, 1, 1, 0, 1, 0, 1, 1}, new int[] {0, 1, 2},
@@ -680,7 +680,7 @@ public final class WorldTileCreaturesTest {
                 (display, token) -> preview(display, display == 8 ? 4L : 0L, 0L, appearance(true)));
         var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
         String text = WorldStreamSourceController.creatureDetail(summary, 1);
-        require(text.equals("; 1 static creature model on 1 tile (rest pose, facing north)"
+        require(text.equals("; 1 static creature model on 1 tile (rest pose, facing north, first texture per surface)"
                 + "; spawns not drawn: 1 character appearance unavailable"), "Status line: " + text);
         require(WorldStreamSourceController.creatureDetail(WorldTileCreatures.Summary.NONE, 0).isEmpty(),
                 "Nothing to disclose without creatures");
@@ -741,7 +741,7 @@ public final class WorldTileCreaturesTest {
                 "The drawn NPCs' left-out item records, item models and surfaces are counted: " + summary.npcs());
         require(summary.restPosed() == 2, "NPC appearances are static, disclosed as rest pose");
         String text = WorldStreamSourceController.creatureDetail(summary, 1);
-        require(text.equals("; 2 static creature models on 1 tile (rest pose, facing north)"
+        require(text.equals("; 2 static creature models on 1 tile (rest pose, facing north, first texture per surface)"
                         + ", of which 2 humanoid NPCs (1 with 2 surfaces left out;"
                         + " 2 item models and 1 item record not drawn)"
                         + "; spawns not drawn: 1 character appearance unavailable, 2 character appearance not readable yet"),

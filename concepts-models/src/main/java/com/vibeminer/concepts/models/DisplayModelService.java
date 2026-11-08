@@ -96,7 +96,20 @@ public final class DisplayModelService implements BuildDisplayModels {
     public CompletableFuture<DisplayModelTypes.Preview> preview(
             long displayId, Cancellation token) {
         checkDisplay(displayId);
-        return submit(token, request -> load(displayId, request));
+        return submit(token, request -> load(displayId, false, request));
+    }
+
+    /**
+     * The World's binding of the display (#361): each section draws texture 1 of its first batch
+     * that the World objects' batch rule admits ({@link #worldBatch}), as an opaque or alpha-keyed
+     * diffuse surface; {@link #preview} keeps the reviewed material profiles. Saved under its own
+     * key ({@link #WORLD_POLICY}).
+     */
+    @Override
+    public CompletableFuture<DisplayModelTypes.Preview> worldPreview(
+            long displayId, Cancellation token) {
+        checkDisplay(displayId);
+        return submit(token, request -> load(displayId, true, request));
     }
 
     @Override
@@ -421,7 +434,7 @@ public final class DisplayModelService implements BuildDisplayModels {
         return new RestSurface(mesh, normals, uv);
     }
 
-    private DisplayModelTypes.Preview load(long displayId, Cancellation token) {
+    private DisplayModelTypes.Preview load(long displayId, boolean world, Cancellation token) {
         var issues = new ArrayList<String>();
         DisplayModelTypes.Reference reference = null;
         try {
@@ -436,7 +449,8 @@ public final class DisplayModelService implements BuildDisplayModels {
             String content = stat.file().contentKey();
             var identity =
                     new StringBuilder(
-                            POLICY
+                            (world ? WORLD_POLICY + "\n" : "")
+                                    + POLICY
                                     + "\n"
                                     + M2ModelReader.REVISION
                                     + "\n"
@@ -478,6 +492,7 @@ public final class DisplayModelService implements BuildDisplayModels {
             var restored = cache.restore(key, reference.modelFileDataId(), content, token);
             if (restored != null) {
                 limitations(reference, restored.mesh(), issues);
+                if (world) TableProjection.note(issues, WORLD_NOTE);
                 return ready(reference, restored, issues, true);
             }
             var models = new BuildModels(files);
@@ -593,7 +608,11 @@ public final class DisplayModelService implements BuildDisplayModels {
             var pool = new TexturePool(reference, receipts, token, issues);
             var bindings = new ArrayList<MeshAppearance.Surface>();
             var billboards = new ArrayList<MeshAppearance.RigidBillboard>();
-            for (var batch : skin.skin().batches()) {
+            if (world) {
+                worldSurfaces(m, skin.skin().batches(), pool, bindings, token);
+                TableProjection.note(issues, WORLD_NOTE);
+            }
+            for (var batch : world ? List.<M2Types.Batch>of() : skin.skin().batches()) {
                 token.check();
                 var profile = DisplayMaterialProfiles.admit(m, batch, facts);
                 if (counts.get(batch.sectionIndex()) != 1 || profile == null) {
@@ -890,6 +909,78 @@ public final class DisplayModelService implements BuildDisplayModels {
         } catch (IllegalArgumentException unsupported) {
             TableProjection.note(issues, data.name() + "." + field + " is unavailable.");
             return null;
+        }
+    }
+
+    /** The World binding rule's revision; part of the World binding's saved key only. */
+    public static final String WORLD_POLICY = "display-world-batch-rule-v1";
+
+    /** The World binding's stated approximation, noted on every World binding. */
+    public static final String WORLD_NOTE =
+            "World batch rule: each section draws texture 1 of its first Diffuse_T1 opaque or"
+                    + " alpha-keyed batch; environment and add layers, color tracks, texture"
+                    + " weights and transforms, and render flags are not evaluated.";
+
+    /**
+     * Whether a batch is drawn under the World objects' batch rule (#360, {@code
+     * WorldExteriorObjects}): material layer 0, at least one texture, a combiner whose shader ID
+     * names a {@code Diffuse_T1*} vertex shader (texture 1 sampled with UV0) and sets no other bit,
+     * and blend 0 (opaque) or 1 (alpha key). The creature World has no blended pass, so blend 2,
+     * which World objects draw blended, is left out here. Color, texture weight, texture transform,
+     * priority and render flags are not consulted.
+     */
+    static boolean worldBatch(M2Types.Model model, M2Types.Batch batch) {
+        if (batch.materialLayer() != 0
+                || batch.textureCount() < 1
+                || batch.shaderId() < 0
+                || batch.shaderId() > 0xffff
+                || batch.materialIndex() < 0
+                || batch.materialIndex() >= model.materials().size()
+                || batch.textureComboIndex() < 0
+                || batch.textureComboIndex() >= model.textureCombos().size()
+                || model.textureCombos().get(batch.textureComboIndex()) < 0
+                || model.textureCombos().get(batch.textureComboIndex())
+                        >= model.textures().size()) {
+            return false;
+        }
+        var names = M2Combiners.name(batch.textureCount(), batch.shaderId());
+        return names != null
+                && M2Combiners.namedBitsOnly(batch.textureCount(), batch.shaderId())
+                && names.vertexShader().startsWith("Diffuse_T1")
+                && model.materials().get(batch.materialIndex()).blendMode() <= 1;
+    }
+
+    /**
+     * Binds, per section, texture 1 of the first batch {@link #worldBatch} admits whose texture
+     * resolves (file, or the display's monster skin for types 11 to 13); a batch whose texture does
+     * not resolve leaves the section to a later batch, as World objects do.
+     */
+    private static void worldSurfaces(
+            M2Types.Model model,
+            List<M2Types.Batch> batches,
+            TexturePool pool,
+            List<MeshAppearance.Surface> bindings,
+            Cancellation token) {
+        var bound = new java.util.HashSet<Integer>();
+        for (var batch : batches) {
+            token.check();
+            if (bound.contains(batch.sectionIndex()) || !worldBatch(model, batch)) {
+                continue;
+            }
+            var texture =
+                    model.textures().get(model.textureCombos().get(batch.textureComboIndex()));
+            Integer index = pool.texture(texture);
+            if (index == null) {
+                continue;
+            }
+            bindings.add(
+                    new MeshAppearance.Surface(
+                            batch.sectionIndex(),
+                            index,
+                            (texture.flags() & 1) != 0,
+                            (texture.flags() & 2) != 0,
+                            model.materials().get(batch.materialIndex()).blendMode() == 1));
+            bound.add(batch.sectionIndex());
         }
     }
 

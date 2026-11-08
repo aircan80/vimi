@@ -241,6 +241,10 @@ final class WorldTileCreatures implements AutoCloseable {
 
     @FunctionalInterface
     interface Previews {
+        /**
+         * The display's static model as the World binds it ({@link
+         * com.vibeminer.concepts.models.BuildDisplayModels#worldPreview}).
+         */
         DisplayModelTypes.Preview preview(long displayId, Cancellation token) throws Exception;
 
         /**
@@ -432,7 +436,8 @@ final class WorldTileCreatures implements AutoCloseable {
                 return new DisplayModelTypes.Preview(DisplayModelTypes.State.UNAVAILABLE, null, null,
                         java.util.Set.of(), List.of(), false, "Model files are not open");
             }
-            return models.preview(displayId, token).join();
+            // The World's binding (#361): the World objects' batch rule, not the preview's profiles.
+            return models.worldPreview(displayId, token).join();
         }
 
         @Override

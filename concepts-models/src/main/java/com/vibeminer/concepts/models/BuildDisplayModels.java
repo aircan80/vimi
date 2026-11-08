@@ -8,6 +8,17 @@ public interface BuildDisplayModels extends AutoCloseable {
     CompletableFuture<DisplayModelTypes.Preview> preview(long displayId, Cancellation token);
 
     /**
+     * The display's binding for the World (#361), which follows the World objects' batch rule
+     * (#360): each section draws texture 1 of its first {@code Diffuse_T1} opaque or alpha-keyed
+     * batch, without the preview's reviewed material profiles. Implementations without that rule
+     * answer as {@link #preview}.
+     */
+    default CompletableFuture<DisplayModelTypes.Preview> worldPreview(
+            long displayId, Cancellation token) {
+        return preview(displayId, token);
+    }
+
+    /**
      * Lazily qualifies the display's idle (Stand) sequence against the same rest surface that
      * {@link #preview} returns. Implementations without animation support report UNAVAILABLE.
      */

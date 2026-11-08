@@ -20,7 +20,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class NativeMaterialFailureTest {
-    private static MemoryTables.FakeTable table(
+    static MemoryTables.FakeTable table(
             long fid, String name, String field, String target, long value) {
         var locale = WowLocale.parse("enUS");
         var column =
