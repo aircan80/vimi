@@ -162,6 +162,14 @@ public final class WorldWaterPreview {
         }
     }
 
+    /**
+     * The client's ocean rule (#171): a layer whose LiquidObject is 42 or whose LiquidType is 14
+     * draws as ocean; any other water draws as river or lake.
+     */
+    static boolean ocean(int liquidObject, int liquidType) {
+        return liquidObject == 42 || liquidType == 14;
+    }
+
     public static final class CheckedBorrow {
         private WorldTerrainLiquids.Borrow borrow;
         private final Facts facts;
@@ -239,7 +247,7 @@ public final class WorldWaterPreview {
          */
         public boolean ocean(int layer) {
             var b = checked();
-            return b.secondary(layer) == 42 || b.liquidType(layer) == 14;
+            return WorldWaterPreview.ocean(b.secondary(layer), b.liquidType(layer));
         }
 
         public int x(int layer) {
