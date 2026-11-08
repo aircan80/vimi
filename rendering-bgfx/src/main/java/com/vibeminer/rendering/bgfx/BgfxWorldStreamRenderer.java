@@ -414,6 +414,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         /** Per placement world bounding sphere, tested before any of its draws. */
         final double[] spheres;
 
+        /** Per range: model-space centre of a blended range's bounds (#552). */
+        final float[] rangeCentres;
+
+        /** Per range: its mesh. */
+        final int[] rangeMeshes;
+
+        /** The most blended ranges in one model: the per-placement sort's length. */
+        final int maxBlendedRanges;
+
         final short[] textures;
 
         /** Per model: whether any of its ranges is alpha blended (drawn in the sorted pass). */
@@ -460,6 +469,20 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             images = source.images;
             placements = source.placements;
             spheres = source.spheres;
+            rangeCentres = source.rangeCentres;
+            rangeMeshes = new int[ranges.length / WorldStreamObjectsFile.RANGE_INTS];
+            for (int mesh = 0; mesh < meshes.length / 6; mesh++) {
+                for (int r = meshes[mesh * 6 + 4];
+                        r < meshes[mesh * 6 + 4] + meshes[mesh * 6 + 5];
+                        r++) {
+                    rangeMeshes[r] = mesh;
+                }
+            }
+            int most = 0;
+            for (int m = 0; m < models.length / 2; m++) {
+                most = Math.max(most, blendedRangeCount(models, meshes, ranges, m));
+            }
+            maxBlendedRanges = most;
             textures = new short[source.imageCount()];
             java.util.Arrays.fill(textures, INVALID);
             blendedModels = new boolean[models.length / 2];
@@ -509,6 +532,21 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
         }
 
+        /** Model m's blended ranges. */
+        static int blendedRangeCount(int[] models, int[] meshes, int[] ranges, int m) {
+            int count = 0;
+            for (int mesh = models[m * 2]; mesh < models[m * 2] + models[m * 2 + 1]; mesh++) {
+                for (int r = meshes[mesh * 6 + 4];
+                        r < meshes[mesh * 6 + 4] + meshes[mesh * 6 + 5];
+                        r++) {
+                    if (step(ranges[r * WorldStreamObjectsFile.RANGE_INTS + 3]) == STEP_BLENDED) {
+                        count++;
+                    }
+                }
+            }
+            return count;
+        }
+
         void destroy() {
             if (vertices != INVALID) {
                 bgfx_destroy_dynamic_vertex_buffer(vertices);
@@ -532,6 +570,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private final Thread owner = Thread.currentThread();
     // Reused by the blended pass every frame; grows to the most blended placements seen.
     private long[] blendKeys = new long[64];
+
+    /** One placement's blended ranges, sorted back to front (#552); grows, never shrinks. */
+    private long[] rangeKeys = new long[16];
+
     private final WorldStreamEnvelope.Session session;
     private final Slot[] slots;
     // The session tier's shared objects budget; only a native proof lowers it.
@@ -2422,13 +2464,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             // (#383) reuses the groups its opaque pass walked this frame.
             frame.single[0] = p;
             int drawn = instances(frame, objects, frame.single, 0, 1, origin);
-            drawRanges(
+            drawSortedRanges(
                     frame,
                     objects,
-                    objects.placementModels[p],
+                    p,
                     drawn,
-                    true,
-                    view == null ? null : objects.portalVisible[p]);
+                    view == null ? null : objects.portalVisible[p],
+                    origin);
         }
     }
 
@@ -2471,7 +2513,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 if (objects.unsortedModels[m]) {
                     frame.single[0] = p;
                     int drawn = instances(frame, objects, frame.single, 0, 1, origin);
-                    drawRanges(frame, objects, m, drawn, false, groups);
+                    drawRanges(frame, objects, m, drawn, groups);
                 }
             }
         }
@@ -2485,11 +2527,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
             if (objectInstancing) {
                 int drawn = instances(frame, objects, objects.order, first, count, origin);
-                drawRanges(frame, objects, m, drawn, false, null);
+                drawRanges(frame, objects, m, drawn, null);
             } else {
                 for (int i = 0; i < count; i++) {
                     int drawn = instances(frame, objects, objects.order, first + i, 1, origin);
-                    drawRanges(frame, objects, m, drawn, false, null);
+                    drawRanges(frame, objects, m, drawn, null);
                 }
             }
         }
@@ -2584,30 +2626,176 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     }
 
     /**
-     * Model m's ranges of one pass (opaque and cutout, or the sorted classes only), drawn for the
-     * {@code count} instances just written to {@code frame.instances}. With {@code groups} (one
-     * portal root's walk, #383), interior meshes of groups not in it are skipped.
+     * Model m's opaque and cutout ranges, in file order, drawn for the {@code count} instances just
+     * written to {@code frame.instances}. With {@code groups} (one portal root's walk, #383),
+     * interior meshes of groups not in it are skipped.
      */
     private void drawRanges(
-            ObjectFrame frame,
-            SlotObjects objects,
-            int m,
-            int count,
-            boolean blendedPass,
-            java.util.BitSet groups) {
+            ObjectFrame frame, SlotObjects objects, int m, int count, java.util.BitSet groups) {
         if (count == 0) {
             return;
         }
-        // bgfx uniforms persist across submits: the camera is set once per frame and the material
-        // only when its class changes; transforms are per instance.
-        int stride = WorldStreamObjectsFile.RANGE_INTS;
-        // The sorted pass draws a placement's blended ranges before its additive ones (#449):
-        // additive light is order-independent, but a blended range drawn after it would cover it.
-        for (int step = blendedPass ? STEP_BLENDED : STEP_UNSORTED;
-                step <= (blendedPass ? STEP_ADDITIVE : STEP_UNSORTED);
-                step++) {
-            drawRangesStep(frame, objects, m, count, step, blendedPass, stride, groups);
+        drawRangesStep(frame, objects, m, count, STEP_UNSORTED, groups);
+    }
+
+    /**
+     * Placement p's sorted ranges, drawn for its one instance just written to {@code
+     * frame.instances}: its blended ranges back to front by the camera distance of each range's
+     * bounds centre (#552), then its additive ones (#449): additive light is order-independent, but
+     * a blended range drawn after it would cover it. With {@code groups}, as {@link #drawRanges}.
+     * The sort reuses one primitive array; nothing is allocated per frame once it has grown.
+     */
+    private void drawSortedRanges(
+            ObjectFrame frame,
+            SlotObjects objects,
+            int p,
+            int count,
+            java.util.BitSet groups,
+            TerrainScene.Origin origin) {
+        if (count == 0) {
+            return;
         }
+        int m = objects.placementModels[p];
+        if (rangeKeys.length < objects.maxBlendedRanges) {
+            rangeKeys = new long[objects.maxBlendedRanges];
+        }
+        int sorted =
+                blendedRangeKeys(
+                        objects.models,
+                        objects.meshes,
+                        objects.ranges,
+                        objects.rangeCentres,
+                        objects.placements,
+                        m,
+                        p,
+                        origin.x(),
+                        origin.y(),
+                        origin.z(),
+                        rangeKeys);
+        var portals = groups == null ? null : objects.portals[m];
+        for (int i = sorted - 1; i >= 0; i--) {
+            int r = keyRange(rangeKeys[i]);
+            int mesh = objects.rangeMeshes[r];
+            if (portals != null && portalSkipped(objects, portals, groups, mesh)) {
+                continue;
+            }
+            submitRange(frame, objects, mesh, r, count, true);
+        }
+        drawRangesStep(frame, objects, m, count, STEP_ADDITIVE, groups);
+    }
+
+    /**
+     * Model m's blended ranges for placement p as sort keys in {@code keys[0..n)}, sorted
+     * ascending; returns n. Read backwards they are farthest first by the squared distance from
+     * {@code (x, y, z)} to each range's bounds centre under the placement's transform (the one
+     * {@link #objectMatrices} draws). Equal distances keep file order. {@code keys} holds at least
+     * the model's blended ranges.
+     */
+    static int blendedRangeKeys(
+            int[] models,
+            int[] meshes,
+            int[] ranges,
+            float[] centres,
+            double[] placements,
+            int m,
+            int p,
+            double x,
+            double y,
+            double z,
+            long[] keys) {
+        int at = p * WorldStreamObjectsFile.PLACEMENT_DOUBLES;
+        double s = placements[at + 3];
+        int count = 0;
+        for (int mesh = models[m * 2]; mesh < models[m * 2] + models[m * 2 + 1]; mesh++) {
+            for (int r = meshes[mesh * 6 + 4];
+                    r < meshes[mesh * 6 + 4] + meshes[mesh * 6 + 5];
+                    r++) {
+                if (step(ranges[r * WorldStreamObjectsFile.RANGE_INTS + 3]) != STEP_BLENDED) {
+                    continue;
+                }
+                double cx = centres[r * 3], cy = centres[r * 3 + 1], cz = centres[r * 3 + 2];
+                double squared = 0;
+                for (int row = 0; row < 3; row++) {
+                    int rotation = at + 4 + row * 3;
+                    double world =
+                            placements[at + row]
+                                    + s
+                                            * (placements[rotation] * cx
+                                                    + placements[rotation + 1] * cy
+                                                    + placements[rotation + 2] * cz);
+                    double d = world - (row == 0 ? x : row == 1 ? y : z);
+                    squared += d * d;
+                }
+                keys[count++] = rangeKey(squared, r);
+            }
+        }
+        sortKeys(keys, count);
+        return count;
+    }
+
+    /**
+     * Sorts {@code keys[0, count)} ascending in place without allocating. {@code Arrays.sort} on a
+     * {@code long[]} allocates a small pivot array per partition that only a fully optimized JIT
+     * removes, and this runs per placement per frame. Insertion sort for the usual handful of
+     * ranges, heapsort past that.
+     */
+    static void sortKeys(long[] keys, int count) {
+        if (count <= 32) {
+            for (int i = 1; i < count; i++) {
+                long key = keys[i];
+                int j = i - 1;
+                while (j >= 0 && keys[j] > key) {
+                    keys[j + 1] = keys[j];
+                    j--;
+                }
+                keys[j + 1] = key;
+            }
+            return;
+        }
+        for (int i = count / 2 - 1; i >= 0; i--) {
+            siftDown(keys, i, count);
+        }
+        for (int end = count - 1; end > 0; end--) {
+            long top = keys[0];
+            keys[0] = keys[end];
+            keys[end] = top;
+            siftDown(keys, 0, end);
+        }
+    }
+
+    private static void siftDown(long[] keys, int i, int count) {
+        long key = keys[i];
+        for (int child = 2 * i + 1; child < count; child = 2 * i + 1) {
+            if (child + 1 < count && keys[child + 1] > keys[child]) {
+                child++;
+            }
+            if (keys[child] <= key) {
+                break;
+            }
+            keys[i] = keys[child];
+            i = child;
+        }
+        keys[i] = key;
+    }
+
+    /**
+     * A blended range's sort key: the squared distance as float bits above the inverted range
+     * index. Non-negative floats order like their bits, so an ascending sort read backwards is
+     * farthest first, and equal distances read in file order.
+     */
+    static long rangeKey(double squaredDistance, int range) {
+        if (!(squaredDistance >= 0) || range < 0) {
+            throw new IllegalArgumentException("Range key");
+        }
+        // +0.0f for -0.0, so the sign bit never inverts the order; past float range, the largest.
+        float distance = (float) Math.min(squaredDistance, Float.MAX_VALUE) + 0.0f;
+        return (long) Float.floatToRawIntBits(distance) << 32
+                | (Integer.MAX_VALUE - range) & 0xffffffffL;
+    }
+
+    /** The range of a {@link #rangeKey}. */
+    static int keyRange(long key) {
+        return Integer.MAX_VALUE - (int) key;
     }
 
     /** Draw steps of one placement: opaque and cutout; then, sorted, blended and additive. */
@@ -2621,64 +2809,86 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 : kind == WorldStreamObjectsFile.BLENDED ? STEP_BLENDED : STEP_UNSORTED;
     }
 
+    /** Whether a portal root's walk ({@code groups}) leaves out this interior mesh. */
+    private static boolean portalSkipped(
+            SlotObjects objects,
+            com.vibeminer.rendering.world.WmoPortalTraversal portals,
+            java.util.BitSet groups,
+            int mesh) {
+        int group = objects.meshGroups[mesh];
+        return group >= 0 && portals.interior(group) && !groups.get(group);
+    }
+
+    /** Model m's ranges of one step in file order; any step but unsorted is the sorted pass. */
     private void drawRangesStep(
             ObjectFrame frame,
             SlotObjects objects,
             int m,
             int count,
             int step,
-            boolean blendedPass,
-            int stride,
             java.util.BitSet groups) {
+        boolean sortedPass = step != STEP_UNSORTED;
         var portals = groups == null ? null : objects.portals[m];
         for (int mesh = objects.models[m * 2];
                 mesh < objects.models[m * 2] + objects.models[m * 2 + 1];
                 mesh++) {
-            if (portals != null) {
-                int group = objects.meshGroups[mesh];
-                if (group >= 0 && portals.interior(group) && !groups.get(group)) {
-                    if (!blendedPass) {
-                        framePortalCulled++;
-                    }
-                    continue;
+            if (portals != null && portalSkipped(objects, portals, groups, mesh)) {
+                if (!sortedPass) {
+                    framePortalCulled++;
                 }
+                continue;
             }
             int at = mesh * 6;
             for (int r = objects.meshes[at + 4];
                     r < objects.meshes[at + 4] + objects.meshes[at + 5];
                     r++) {
-                int kind = objects.ranges[r * stride + 3];
-                if (step(kind) != step) {
-                    continue;
+                if (step(objects.ranges[r * WorldStreamObjectsFile.RANGE_INTS + 3]) == step) {
+                    submitRange(frame, objects, mesh, r, count, sortedPass);
                 }
-                if (kind != frameMaterial) {
-                    bgfx_set_uniform(wmoMaterial, frame.material(kind), 1);
-                    frameMaterial = kind;
-                }
-                bgfx_set_dynamic_vertex_buffer(
-                        0, objects.vertices, objects.meshes[at], objects.meshes[at + 1]);
-                bgfx_set_dynamic_index_buffer(
-                        objects.indices,
-                        objects.meshes[at + 2] + objects.ranges[r * stride],
-                        objects.ranges[r * stride + 1]);
-                org.lwjgl.bgfx.BGFX.bgfx_set_instance_data_buffer(frame.instances, 0, count);
-                bgfx_set_texture(
-                        0,
-                        wmoSampler,
-                        objects.textures[objects.ranges[r * stride + 2]],
-                        OBJECT_SAMPLER_FLAGS);
-                bgfx_set_state(
-                        blendedPass
-                                ? WorldStreamObjectsFile.kind(kind)
-                                                == WorldStreamObjectsFile.ADDITIVE
-                                        ? ADDITIVE_STATE
-                                        : BLENDED_STATE
-                                : frame.state(kind),
-                        0);
-                bgfx_submit(0, wmoProgram, 0, BGFX_DISCARD_ALL);
-                frameObjectSubmits++;
             }
         }
+    }
+
+    /**
+     * One draw of range r of a mesh for the {@code count} instances in {@code frame.instances}.
+     * bgfx uniforms persist across submits: the camera is set once per frame and the material only
+     * when its class changes; transforms are per instance.
+     */
+    private void submitRange(
+            ObjectFrame frame,
+            SlotObjects objects,
+            int mesh,
+            int r,
+            int count,
+            boolean sortedPass) {
+        int stride = WorldStreamObjectsFile.RANGE_INTS;
+        int at = mesh * 6;
+        int kind = objects.ranges[r * stride + 3];
+        if (kind != frameMaterial) {
+            bgfx_set_uniform(wmoMaterial, frame.material(kind), 1);
+            frameMaterial = kind;
+        }
+        bgfx_set_dynamic_vertex_buffer(
+                0, objects.vertices, objects.meshes[at], objects.meshes[at + 1]);
+        bgfx_set_dynamic_index_buffer(
+                objects.indices,
+                objects.meshes[at + 2] + objects.ranges[r * stride],
+                objects.ranges[r * stride + 1]);
+        org.lwjgl.bgfx.BGFX.bgfx_set_instance_data_buffer(frame.instances, 0, count);
+        bgfx_set_texture(
+                0,
+                wmoSampler,
+                objects.textures[objects.ranges[r * stride + 2]],
+                OBJECT_SAMPLER_FLAGS);
+        bgfx_set_state(
+                sortedPass
+                        ? WorldStreamObjectsFile.kind(kind) == WorldStreamObjectsFile.ADDITIVE
+                                ? ADDITIVE_STATE
+                                : BLENDED_STATE
+                        : frame.state(kind),
+                0);
+        bgfx_submit(0, wmoProgram, 0, BGFX_DISCARD_ALL);
+        frameObjectSubmits++;
     }
 
     /**

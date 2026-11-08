@@ -98,9 +98,9 @@ final class WorldStreamTileWaterTest {
             assertEquals(-10f, data.getFloat(at));
             assertEquals(-10f, data.getFloat(at + 4));
             assertEquals(12.5f, data.getFloat(at + 8));
-            assertEquals((int) WorldStreamPackedTile.WATER_R, data.get(at + 12) & 255);
-            assertEquals((int) WorldStreamPackedTile.WATER_G, data.get(at + 13) & 255);
-            assertEquals((int) WorldStreamPackedTile.WATER_B, data.get(at + 14) & 255);
+            assertEquals(WorldStreamTileFile.WATER_RGB >>> 16, data.get(at + 12) & 255);
+            assertEquals(WorldStreamTileFile.WATER_RGB >>> 8 & 255, data.get(at + 13) & 255);
+            assertEquals(WorldStreamTileFile.WATER_RGB & 255, data.get(at + 14) & 255);
             // Water indices follow the terrain's, relative to the first water vertex.
             int indices = source.indexOffset() + 196608 * 2;
             var mesh = source.geometry.duplicate().order(java.nio.ByteOrder.nativeOrder());

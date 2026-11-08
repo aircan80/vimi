@@ -256,6 +256,9 @@ class WorldTerrainTextureSourceTest {
 
         volatile boolean changeAfterRead;
 
+        /** Called with each file id as it is opened for reading, before its stream exists. */
+        volatile java.util.function.LongConsumer onOpenRead = id -> {};
+
         Files() {
             sources.put(1L, wdt(0x3ca));
             sources.put(2L, root());
@@ -364,6 +367,7 @@ class WorldTerrainTextureSourceTest {
                                                                 (Cancellation) args[1]));
                                         case "openRead" -> {
                                             long id = ((FileTypes.FileRef) args[0]).fileDataId();
+                                            onOpenRead.accept(id);
                                             var failed = failedOpens.get(id);
                                             if (failed != null) {
                                                 yield CompletableFuture.completedFuture(failed);
@@ -2107,17 +2111,51 @@ class WorldTerrainTextureSourceTest {
     @Test
     void nonSquareDiffusesAreDrawnStretchedFromTheirLevelOfShortSideFour() throws Exception {
         // 32 x 8 down to 4 x 1 (no 4 x 4 level), and 16 x 8 down to 1 x 1 (which has 4 x 2).
-        for (byte[] diffuse : new byte[][] {blpBgraHalves(32, 8, 4), blpBgraHalves(16, 8, 5)}) {
+        // Also tall (8 x 32) and a long side that is not a power of two (24 x 4, level 0 itself).
+        // Each is bound at its short side and the level whose short side is 4.
+        int[][] shapes = {{32, 8, 4, 8, 1}, {16, 8, 5, 8, 1}, {8, 32, 4, 8, 1}, {24, 4, 1, 4, 0}};
+        for (int[] shape : shapes) {
             var files = new Files();
-            files.sources.put(10L, diffuse);
+            files.sources.put(10L, blpBgraHalves(shape[0], shape[1], shape[2]));
             var pool = new TerrainAtlasPool();
             var source = new WorldTerrainTextureSource(files.files(), pool);
             try (var result = read(source)) {
                 var tile = result.tiles().getFirst();
+                String name = shape[0] + "x" + shape[1];
                 assertEquals(
                         List.of(),
-                        tile.issues().stream().filter(issue -> issue.fileId() == 10).toList());
-                assertEquals(WorldTerrainTextureSource.State.READY, tile.state());
+                        tile.issues().stream().filter(issue -> issue.fileId() == 10).toList(),
+                        name);
+                assertEquals(WorldTerrainTextureSource.State.READY, tile.state(), name);
+                var binding =
+                        tile.receipt().diffuse().stream()
+                                .filter(b -> b.file().fileId() == 10)
+                                .findFirst()
+                                .orElseThrow();
+                assertEquals(shape[3], binding.originalSide(), name);
+                assertEquals(shape[4], binding.level(), name);
+                // Chunk 200 draws file 10 alone: its cell keeps the red and blue halves.
+                try (var lease = result.retainAtlas(TILE.x(), TILE.y()).orElseThrow()) {
+                    lease.withAtlas(
+                            atlas -> {
+                                var m =
+                                        atlas.mappings().stream()
+                                                .filter(c -> c.ordinal() == 200)
+                                                .findFirst()
+                                                .orElseThrow();
+                                var px = atlas.pixels();
+                                boolean red = false, blue = false;
+                                for (int y = 0; y < 32; y++) {
+                                    for (int x = 0; x < 32; x++) {
+                                        int at = ((m.y() * 32 + y) * 512 + m.x() * 32 + x) * 4;
+                                        int r = px.get(at) & 255, b = px.get(at + 2) & 255;
+                                        red |= r > 200 && b < 50;
+                                        blue |= b > 200 && r < 50;
+                                    }
+                                }
+                                assertTrue(red && blue, name + " cell keeps both halves");
+                            });
+                }
             } finally {
                 source.closeAsync().get(5, TimeUnit.SECONDS);
                 pool.closeAsync().get(5, TimeUnit.SECONDS);
@@ -2150,5 +2188,102 @@ class WorldTerrainTextureSourceTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> WorldTerrainTextureSource.boxAverage(pair, 3, 1, 1, 1));
+        // 6 -> 4 is not a whole ratio: each output pixel weighs 1.5 source pixels by the part it
+        // covers (1 and 1/2, then 1/2 and 1).
+        byte[] six = new byte[6 * 4];
+        int[] values = {0, 30, 60, 90, 120, 150};
+        for (int i = 0; i < 6; i++) {
+            six[i * 4] = (byte) values[i];
+        }
+        byte[] four = WorldTerrainTextureSource.boxAverage(six, 6, 1, 4, 1);
+        int[] expected = {10, 50, 100, 140};
+        for (int i = 0; i < 4; i++) {
+            assertEquals(expected[i], four[i * 4] & 255, "pixel " + i);
+        }
+    }
+
+    @Test
+    void aNonSquareLevelOverItsPixelBoundIsALimit() throws Exception {
+        // 2048 x 4: the level of short side 4 is 8,192 pixels, past the 4,096 bound.
+        assertEquals(
+                WorldTerrainTextureSource.DiffuseRefusal.LIMIT,
+                refusalFor(blpBgraHalves(2048, 4, 1)));
+    }
+
+    @Test
+    void aTileComposesAtTheMaskSideItsReservationWasChargedFor() throws Exception {
+        boolean splat = WorldTerrainTextureSource.splat;
+        int mask = WorldTerrainTextureSource.splatMask;
+        int standard = com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK;
+        int high = com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK;
+        var files = new Files();
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try {
+            WorldTerrainTextureSource.splat = true;
+            WorldTerrainTextureSource.splatMask = standard;
+            // The quality tier rises to HIGH after the tile reserved its atlas (diffuses are
+            // opened between reservation and compose): it still composes at STANDARD, its charge.
+            files.onOpenRead =
+                    id -> {
+                        if (id == 10) {
+                            WorldTerrainTextureSource.splatMask = high;
+                        }
+                    };
+            try (var result = read(source)) {
+                var tile = result.tiles().getFirst();
+                assertEquals(
+                        WorldTerrainTextureSource.State.READY,
+                        tile.state(),
+                        tile.issues().toString());
+                assertEquals(high, WorldTerrainTextureSource.splatMask, "the tier did change");
+                try (var lease = result.retainAtlas(TILE.x(), TILE.y()).orElseThrow()) {
+                    lease.withAtlas(
+                            atlas ->
+                                    assertEquals(standard, atlas.splat().orElseThrow().maskSide()));
+                }
+            }
+        } finally {
+            WorldTerrainTextureSource.splat = splat;
+            WorldTerrainTextureSource.splatMask = mask;
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void aTileWithAnEmptyTextureListIsReadAsChunksWithNoLayers() throws Exception {
+        // An empty MDID and MHID with every MCLY empty: nothing to draw, but not a refusal.
+        var out = new ByteArrayOutputStream();
+        out.writeBytes(part("MVER", ints(18)));
+        out.writeBytes(part("MAMP", ints(0)));
+        out.writeBytes(part("MDID", new byte[0]));
+        out.writeBytes(part("MHID", new byte[0]));
+        for (int i = 0; i < 256; i++) {
+            out.writeBytes(part("MCNK", part("MCLY", new byte[0])));
+        }
+        var files = new Files();
+        files.sources.put(3L, out.toByteArray());
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try (var result = read(source)) {
+            var tile = result.tiles().getFirst();
+            assertEquals(256, tile.issues().size());
+            assertTrue(
+                    tile.issues().stream()
+                            .allMatch(
+                                    issue ->
+                                            issue.reason() == WorldTerrainTextureSource.Reason.CHUNK
+                                                    && issue.maskIssue()
+                                                            == com.vibeminer.formats.world
+                                                                    .WorldTextureFormats.ChunkIssue
+                                                                    .NO_LAYERS));
+            // No chunk is drawn, so the tile keeps the untextured fallback, as before.
+            assertEquals(WorldTerrainTextureSource.State.UNAVAILABLE, tile.state());
+            assertEquals(0, tile.supportedChunks());
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
     }
 }

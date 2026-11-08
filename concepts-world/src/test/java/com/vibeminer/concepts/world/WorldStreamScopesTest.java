@@ -2040,6 +2040,99 @@ final class WorldStreamScopesTest {
         }
     }
 
+    /** The fixture's flat root, with every chunk's MCCV filled with {@code colour}. */
+    private static byte[] rootWithColour(int colour) {
+        var out = new java.io.ByteArrayOutputStream();
+        out.writeBytes(
+                chunk(
+                        "MVER",
+                        java.nio.ByteBuffer.allocate(4)
+                                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                .putInt(18)
+                                .array()));
+        for (int ordinal = 0; ordinal < 256; ordinal++) {
+            var header = java.nio.ByteBuffer.allocate(128).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            int x = ordinal % 16, y = ordinal / 16;
+            header.putInt(4, x)
+                    .putInt(8, y)
+                    .putFloat(104, (float) (-y * WorldFormats.TILE_SIZE / 16))
+                    .putFloat(108, (float) (-x * WorldFormats.TILE_SIZE / 16))
+                    .putFloat(112, 10);
+            var body = new java.io.ByteArrayOutputStream();
+            body.writeBytes(header.array());
+            body.writeBytes(chunk("MCVT", new byte[580]));
+            byte[] colours = new byte[580];
+            java.util.Arrays.fill(colours, (byte) colour);
+            body.writeBytes(chunk("MCCV", colours));
+            out.writeBytes(chunk("MCNK", body.toByteArray()));
+        }
+        return out.toByteArray();
+    }
+
+    private static byte[] chunk(String name, byte[] bytes) {
+        int tag = 0;
+        for (char c : name.toCharArray()) {
+            tag = tag << 8 | c;
+        }
+        return java.nio.ByteBuffer.allocate(8 + bytes.length)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .putInt(tag)
+                .putInt(bytes.length)
+                .put(bytes)
+                .array();
+    }
+
+    /**
+     * #532: geometry reuse is keyed by a fingerprint of positions and indices only, so a re-read
+     * root whose MCCV changed (a hotfixed root, say) must not reuse the previous tile's colours.
+     */
+    @Test
+    void aRereadRootWithNewVertexColoursDoesNotReuseTheOldTile() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        files.sources.put(2L, rootWithColour(0x40));
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        var cache = new WorldGeometryCache();
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            var first =
+                    source.withRecordedTile(
+                            scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                            Cancellation.NONE,
+                            cache::prepare);
+            files.sources.put(2L, rootWithColour(0x80));
+            files.changedId = 2;
+            files.changeAfterRead = true;
+            var refreshed =
+                    source.withRecordedTile(
+                            scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                            Cancellation.NONE,
+                            cache::prepare);
+            assertEquals(first.fingerprint(), refreshed.fingerprint(), "Same positions");
+            first.withTile(
+                    old ->
+                            refreshed.withTile(
+                                    current -> {
+                                        org.junit.jupiter.api.Assertions.assertNotSame(
+                                                old, current);
+                                        // The new MCCV (0x80, as red, green, blue) is carried.
+                                        var colours = current.attributes();
+                                        assertEquals((byte) 0x80, colours.get(4));
+                                        assertEquals((byte) 0x40, old.attributes().get(4));
+                                    }));
+            first.close();
+            refreshed.close();
+        } finally {
+            cache.closeAsync().join();
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
     @Test
     void preparedGeometryOutputCreditRejectsBeforeIoAndCloseDrainsBorrowedFrame() throws Exception {
         var files = new WorldTerrainTextureSourceTest.Files();

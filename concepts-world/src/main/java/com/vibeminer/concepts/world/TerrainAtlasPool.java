@@ -15,17 +15,32 @@ public final class TerrainAtlasPool {
     /**
      * The most one entry may retain: the largest atlas with HIGH splatting inputs. Stats charge
      * each entry less: a published atlas its own {@link TerrainTileAtlas#retainedBytes()}, a
-     * reservation the bound for the current splat setting ({@link #reservedBytes()}).
+     * reservation the largest atlas at the mask side it was taken for ({@link
+     * Reservation#maskSide()}).
      */
     public static final long ENTRY_BYTES = TerrainTileAtlas.MAX_RETAINED_BYTES;
 
     /**
-     * What a reservation is charged until its atlas is published: the largest atlas the source
-     * composes now, with no splat inputs, or with the current tier's mask side.
+     * The most the pool charges in all (issue #491): twenty-two atlases with HIGH splatting inputs,
+     * about 110 MiB. A NEAR stream holds twelve outputs (nine resident, one staged, one pending and
+     * one retiring, as {@link WorldPreparedTerrain#MAX_OUTPUTS} counts them), and a full nine-tile
+     * texture batch may run beside it, plus one spare: 12 + 9 + 1. NEAR on the HIGH tier is the
+     * only setting where HIGH masks are composed. FAR and STANDARD tiles stay bounded by {@link
+     * #MAX_ENTRIES} first (34 x about 2.02 MiB with STANDARD splatting, 34 x about 1.02 MiB
+     * without), so the count bound is unchanged there. Before this bound, NEAR + HIGH could retain
+     * 34 x about 5.02 MiB, about 171 MiB.
      */
-    static long reservedBytes() {
-        return TerrainTileAtlas.maxRetainedBytes(
-                WorldTerrainTextureSource.splat ? WorldTerrainTextureSource.splatMask : 0);
+    public static final long MAX_BYTES =
+            22
+                    * TerrainTileAtlas.maxRetainedBytes(
+                            com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK);
+
+    /**
+     * What a reservation is charged until its atlas is published: the largest atlas with no splat
+     * inputs (mask side 0) or with that mask side.
+     */
+    private static long reservedBytes(int maskSide) {
+        return TerrainTileAtlas.maxRetainedBytes(maskSide);
     }
 
     /**
@@ -48,13 +63,14 @@ public final class TerrainAtlasPool {
     private static final class Entry {
         final int slot;
         boolean reserved = true, cached;
-        long charge = reservedBytes();
+        long charge;
         int claims, borrows;
         TerrainTileAtlas atlas;
         WorldTerrainTextureSource.Receipt receipt;
 
-        Entry(int slot) {
+        Entry(int slot, long charge) {
             this.slot = slot;
+            this.charge = charge;
         }
     }
 
@@ -118,9 +134,20 @@ public final class TerrainAtlasPool {
     // Source-only allocation authority. Reserving must precede compose/output allocation.
     final class Reservation implements AutoCloseable {
         private Entry entry;
+        private final int maskSide;
 
-        private Reservation(Entry entry) {
+        private Reservation(Entry entry, int maskSide) {
             this.entry = entry;
+            this.maskSide = maskSide;
+        }
+
+        /**
+         * The splat mask side this reservation was charged for, 0 for no splatting inputs. The
+         * source composes with it, so the published atlas never retains more than its charge even
+         * if the setting changes while it composes.
+         */
+        int maskSide() {
+            return maskSide;
         }
 
         Lease publish(TerrainTileAtlas atlas, String completeCacheKey) {
@@ -143,6 +170,10 @@ public final class TerrainAtlasPool {
                 if (entry == null) {
                     throw new IllegalStateException("Atlas reservation closed");
                 }
+                if (atlas.retainedBytes() > entry.charge) {
+                    throw new IllegalArgumentException("Atlas exceeds its reservation's charge");
+                }
+                charged += atlas.retainedBytes() - entry.charge;
                 entry.charge = atlas.retainedBytes();
                 if (completeCacheKey != null && cache.containsKey(completeCacheKey)) {
                     throw new IllegalStateException("Duplicate ready atlas cache publication");
@@ -174,6 +205,7 @@ public final class TerrainAtlasPool {
     }
 
     private final Entry[] slots = new Entry[MAX_ENTRIES];
+    private long charged;
     private final LinkedHashMap<String, Entry> cache = new LinkedHashMap<>(MAX_ENTRIES, .75f, true);
     private CompletableFuture<Void> closing;
     private boolean closeCompletionStarted;
@@ -211,27 +243,40 @@ public final class TerrainAtlasPool {
 
     synchronized Optional<Reservation> reserve() {
         requireOpen();
-        int free = freeSlot();
-        if (free < 0) {
-            var oldest = cache.entrySet().iterator();
-            while (oldest.hasNext()) {
-                Entry candidate = oldest.next().getValue();
-                // Removing pinned cache claims cannot free a slot and destroys useful overlap.
-                if (candidate.claims == 0 && candidate.borrows == 0) {
-                    oldest.remove();
-                    candidate.cached = false;
-                    releaseIfUnused(candidate);
-                    free = candidate.slot;
-                    break;
-                }
+        int maskSide = WorldTerrainTextureSource.splat ? WorldTerrainTextureSource.splatMask : 0;
+        long charge = reservedBytes(maskSide);
+        // Evict only when that can make room: if the pinned entries alone leave no slot or too few
+        // bytes, refuse and keep the cache for the next request.
+        long evictableBytes = 0;
+        int evictable = 0;
+        for (Entry candidate : cache.values()) {
+            if (candidate.claims == 0 && candidate.borrows == 0) {
+                evictableBytes += candidate.charge;
+                evictable++;
             }
         }
-        if (free < 0) {
+        if ((freeSlot() < 0 && evictable == 0) || charged - evictableBytes + charge > MAX_BYTES) {
             return Optional.empty();
         }
-        Entry reserved = new Entry(free);
+        var oldest = cache.entrySet().iterator();
+        // Least recently used first, until both a slot and the bytes are free. Removing pinned
+        // cache claims frees neither and destroys useful overlap.
+        while ((freeSlot() < 0 || charged + charge > MAX_BYTES) && oldest.hasNext()) {
+            Entry candidate = oldest.next().getValue();
+            if (candidate.claims == 0 && candidate.borrows == 0) {
+                oldest.remove();
+                candidate.cached = false;
+                releaseIfUnused(candidate);
+            }
+        }
+        int free = freeSlot();
+        if (free < 0 || charged + charge > MAX_BYTES) {
+            return Optional.empty();
+        }
+        Entry reserved = new Entry(free, charge);
         slots[free] = reserved;
-        return Optional.of(new Reservation(reserved));
+        charged += charge;
+        return Optional.of(new Reservation(reserved, maskSide));
     }
 
     synchronized Optional<Lease> cached(String key) {
@@ -312,8 +357,13 @@ public final class TerrainAtlasPool {
     }
 
     private void releaseIfUnused(Entry entry) {
-        if (!entry.reserved && !entry.cached && entry.claims == 0 && entry.borrows == 0) {
+        if (!entry.reserved
+                && !entry.cached
+                && entry.claims == 0
+                && entry.borrows == 0
+                && slots[entry.slot] == entry) {
             slots[entry.slot] = null;
+            charged -= entry.charge;
             entry.atlas = null;
             entry.receipt = null;
         }

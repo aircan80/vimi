@@ -340,4 +340,28 @@ class WorldLiquidsTest {
                 IllegalArgumentException.class,
                 () -> WorldLiquids.decodeHeights(raw, 0, 2, () -> false));
     }
+
+    @Test
+    void aStreamInsideANeighboursMagmaStreamIsRefused() {
+        // Instance 0: direct format 0 (5 bytes per vertex); instance 1: direct format 1 (8 bytes
+        // per vertex). Both cover one cell (four vertices). Instance 0's stream starts 8 bytes
+        // into instance 1's 32-byte stream, so it overlaps that stream past its first byte.
+        int instances = TABLE, magma = TABLE + 48, size = magma + 4 * 8;
+        var b = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0, instances).putInt(4, 2);
+        for (int i = 0; i < 2; i++) {
+            int at = instances + i * 24;
+            b.putShort(at, (short) 1240).putShort(at + 2, (short) (i == 0 ? 0 : 1));
+            b.putFloat(at + 4, 0).putFloat(at + 8, 100);
+            b.put(at + 12, (byte) 0)
+                    .put(at + 13, (byte) 0)
+                    .put(at + 14, (byte) 1)
+                    .put(at + 15, (byte) 1);
+            b.putInt(at + 16, 0).putInt(at + 20, i == 0 ? magma + 8 : magma);
+        }
+        var raw = WorldLiquids.readMh2o(root(b.array()), () -> false);
+        assertThrows(
+                WorldLiquids.FormatException.class,
+                () -> WorldLiquids.decodeHeightDepth0(raw, 0, () -> false));
+    }
 }

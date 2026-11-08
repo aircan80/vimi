@@ -3,6 +3,7 @@ package com.vibeminer.files;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.vibeminer.files.FileTypes.FileReadState;
@@ -153,6 +154,68 @@ final class BlteChunksTest {
                                     () -> decode(e, layout(e, c.decodedSize()), 0, TactKeys.NONE))
                             .state);
         }
+    }
+
+    /** Reused inflaters decode byte-identically, also right after a chunk that failed midway. */
+    @Test
+    void reusedInflaterDecodesIdenticallyAcrossFailedChunks() {
+        var random = new java.util.Random(405);
+        byte[] first = new byte[300_000], second = new byte[70_000];
+        for (int i = 0; i < first.length; i++) {
+            first[i] = (byte) (i % 97 < 40 ? random.nextInt(256) : i % 13);
+        }
+        random.nextBytes(second);
+        var good = FileFixtures.zlib(first);
+        var other = FileFixtures.zlib(second);
+        byte[] midway = good.encoded().clone();
+        midway[midway.length / 2] ^= 0x55;
+        byte[] checksum = good.encoded().clone();
+        checksum[checksum.length - 1] ^= 1;
+        byte[] truncated = Arrays.copyOf(good.encoded(), good.encoded().length / 3);
+        var e =
+                FileFixtures.chunked(
+                        List.of(
+                                good,
+                                new FileFixtures.Chunk(midway, first.length),
+                                other,
+                                new FileFixtures.Chunk(checksum, first.length),
+                                good,
+                                new FileFixtures.Chunk(truncated, first.length),
+                                other));
+        var l = layout(e, 3L * first.length + 2L * second.length + 2L * first.length);
+        for (int round = 0; round < 2; round++) {
+            assertArrayEquals(first, decode(e, l, 0, TactKeys.NONE).bytes());
+            for (int failed : new int[] {1, 3, 5}) {
+                assertEquals(
+                        FileReadState.CORRUPT,
+                        assertThrows(
+                                        BlteChunks.Failure.class,
+                                        () -> decode(e, l, failed, TactKeys.NONE))
+                                .state);
+                assertArrayEquals(
+                        failed == 3 ? first : second,
+                        decode(e, l, failed + 1, TactKeys.NONE).bytes());
+            }
+        }
+    }
+
+    @Test
+    void inflaterIsResetAndReusedAfterAFailure() throws Exception {
+        var inflater = BlteChunks.borrowInflater();
+        inflater.setInput(new byte[] {0x78, (byte) 0x9c, (byte) 0xff, (byte) 0xff});
+        assertThrows(java.util.zip.DataFormatException.class, () -> inflater.inflate(new byte[8]));
+        BlteChunks.releaseInflater(inflater);
+        var reused = BlteChunks.borrowInflater();
+        try {
+            assertSame(inflater, reused);
+            assertEquals(0, reused.getRemaining());
+            assertEquals(0L, reused.getBytesRead());
+        } finally {
+            BlteChunks.releaseInflater(reused);
+        }
+        byte[] data = {9, 8, 7, 6};
+        var e = FileFixtures.chunked(List.of(FileFixtures.zlib(data)));
+        assertArrayEquals(data, decode(e, layout(e, 4), 0, TactKeys.NONE).bytes());
     }
 
     @Test

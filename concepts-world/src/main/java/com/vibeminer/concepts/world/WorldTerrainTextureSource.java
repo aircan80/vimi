@@ -1148,7 +1148,13 @@ public final class WorldTerrainTextureSource {
                 long composing = WorldStageTimings.start();
                 var composition =
                         TerrainAtlasComposer.compose(
-                                tile, grid, data, diffuse, splat, splatMask, request::canceled);
+                                tile,
+                                grid,
+                                data,
+                                diffuse,
+                                reserved.maskSide() > 0,
+                                reserved.maskSide() > 0 ? reserved.maskSide() : splatMask,
+                                request::canceled);
                 WorldStageTimings.stop("terrain.material.atlasCompose", composing);
                 for (var issue : composition.diagnostics()) {
                     issues.add(
@@ -1286,9 +1292,11 @@ public final class WorldTerrainTextureSource {
     }
 
     /**
-     * Resamples tightly packed RGBA to {@code outWidth x outHeight}: each output pixel is the
-     * rounded mean of the source pixels its area covers, and at least the one under it, so
-     * enlarging an axis repeats pixels and shrinking one averages them.
+     * Resamples tightly packed RGBA to {@code outWidth x outHeight} with an exact box filter: each
+     * output pixel is the area-weighted mean of the source pixels its footprint covers, partial
+     * pixels counting by the part covered, rounded once. Shrinking 6 to 4 weighs a column 1, 1/2,
+     * 1/2, 1 into each output pixel's 1.5 columns; enlarging repeats or blends neighbours the same
+     * way.
      */
     static byte[] boxAverage(byte[] rgba, int width, int height, int outWidth, int outHeight) {
         if (width < 1
@@ -1298,26 +1306,36 @@ public final class WorldTerrainTextureSource {
                 || rgba.length != width * height * 4) {
             throw new IllegalArgumentException("Invalid resample bounds");
         }
+        // In units where a source pixel is outWidth (outHeight) long and an output pixel width
+        // (height) long, every footprint and overlap is a whole number.
+        long total = (long) width * height;
         byte[] out = new byte[outWidth * outHeight * 4];
         for (int y = 0; y < outHeight; y++) {
-            int y0 = (int) ((long) y * height / outHeight);
-            int y1 = Math.max(y0 + 1, (int) ((long) (y + 1) * height / outHeight));
+            long top = (long) y * height, bottom = top + height;
             for (int x = 0; x < outWidth; x++) {
-                int x0 = (int) ((long) x * width / outWidth);
-                int x1 = Math.max(x0 + 1, (int) ((long) (x + 1) * width / outWidth));
+                long left = (long) x * width, right = left + width;
                 long[] sum = new long[4];
-                for (int sy = y0; sy < y1; sy++) {
-                    for (int sx = x0; sx < x1; sx++) {
+                for (int sy = (int) (top / outHeight);
+                        sy < height && (long) sy * outHeight < bottom;
+                        sy++) {
+                    long wy =
+                            Math.min(bottom, (long) (sy + 1) * outHeight)
+                                    - Math.max(top, (long) sy * outHeight);
+                    for (int sx = (int) (left / outWidth);
+                            sx < width && (long) sx * outWidth < right;
+                            sx++) {
+                        long wx =
+                                Math.min(right, (long) (sx + 1) * outWidth)
+                                        - Math.max(left, (long) sx * outWidth);
                         int at = (sy * width + sx) * 4;
                         for (int c = 0; c < 4; c++) {
-                            sum[c] += rgba[at + c] & 255;
+                            sum[c] += (rgba[at + c] & 255) * wx * wy;
                         }
                     }
                 }
-                long count = (long) (y1 - y0) * (x1 - x0);
                 int at = (y * outWidth + x) * 4;
                 for (int c = 0; c < 4; c++) {
-                    out[at + c] = (byte) ((sum[c] + count / 2) / count);
+                    out[at + c] = (byte) ((sum[c] + total / 2) / total);
                 }
             }
         }
@@ -1477,6 +1495,12 @@ public final class WorldTerrainTextureSource {
                 request.check();
                 int decoded = image.width();
                 byte[] rgba = image.rgba();
+                int shortSide = Math.min(image.baseWidth(), image.baseHeight());
+                if (image.baseWidth() != image.baseHeight()
+                        && (shortSide < 4 || Integer.bitCount(shortSide) != 1)) {
+                    // The atlas refuses this shape too: both paths draw the same files.
+                    throw new SourceFailure(Reason.DIFFUSE_PROFILE, DiffuseRefusal.NON_SQUARE);
+                }
                 if (image.baseWidth() != image.baseHeight()
                         && image.rowStride() == image.width() * 4) {
                     // Stretched across the chunk like the atlas cell: the level is resampled to
