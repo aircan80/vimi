@@ -40,6 +40,7 @@ public final class WorldTileCreaturesTest {
         aDenseNeighbourNoLongerStarvesTheTilesOwnSpawns();
         busyOrClosedPreviewsCostNoBudget();
         creaturesStandInTheirIdlePoseOrSayWhyNot();
+        billboardTrianglesAreLeftOutOfTheWorldStandAndDisclosed();
         unreadableStandSequencesAreAskedAgainButUnsupportedOnesAreKept();
         cutoutReductionKeepsThinStrands();
         displayGeosetRowsApplyOnlyWhenTheModelRecordsGeosetData();
@@ -333,6 +334,77 @@ public final class WorldTileCreaturesTest {
                 List.of(new PreviewMesh.Part(0, 0, 3)));
         return new MeshAppearance(mesh, new float[6], List.of(new MeshAppearance.Surface(0, 0, true, true, false)),
                 List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})));
+    }
+
+    /** Two opaque one-triangle parts: part 0 (vertices 0-2) and part 1 (vertices 3-5). */
+    static MeshAppearance twoParts() {
+        var mesh = new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0, 3, 0, 0, 4, 0, 0, 3, 1, 0},
+                new int[] {0, 1, 2, 3, 4, 5}, List.of(new PreviewMesh.Part(0, 0, 3), new PreviewMesh.Part(0, 3, 3)));
+        return new MeshAppearance(mesh, new float[12], List.of(new MeshAppearance.Surface(0, 0, true, true, false),
+                new MeshAppearance.Surface(1, 0, true, true, false)),
+                List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})));
+    }
+
+    /**
+     * Part 0 (vertices 0-2) on geoset 0, part 1 (vertices 0-2) on geoset 101, the default of group
+     * 1, and part 2 (vertices 3-5) on geoset 102, which the default hides.
+     */
+    static MeshAppearance hiddenPart() {
+        var mesh = new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0, 3, 0, 0, 4, 0, 0, 3, 1, 0},
+                new int[] {0, 1, 2, 0, 2, 1, 3, 4, 5}, List.of(new PreviewMesh.Part(0, 0, 3),
+                        new PreviewMesh.Part(101, 3, 3), new PreviewMesh.Part(102, 6, 3)));
+        return new MeshAppearance(mesh, new float[12], List.of(new MeshAppearance.Surface(0, 0, true, true, false),
+                new MeshAppearance.Surface(1, 0, true, true, false), new MeshAppearance.Surface(2, 0, true, true, false)),
+                List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})));
+    }
+
+    private static void billboardTrianglesAreLeftOutOfTheWorldStandAndDisclosed() throws Exception {
+        var appearance = twoParts();
+        // A vertex weighted to a camera-facing bone leaves out its triangle; the emptied surface is
+        // an omitted surface, as one made only of rigid cards is.
+        var converted = WorldTileCreatures.convert(preview(7, 0L, 0L, appearance), new int[] {4}, Cancellation.NONE);
+        require(converted.model() != null && converted.model().billboardTriangles() == 1
+                && converted.model().omittedSurfaces() == 1 && converted.model().ranges().length == 3,
+                "One billboard triangle is left out with its surface");
+        require(WorldTileCreatures.convert(preview(7, 0L, 0L, appearance), Cancellation.NONE).model()
+                .billboardTriangles() == 0, "Nothing is left out without a list");
+        // Every drawable triangle on camera-facing bones: refused with its own reason, as World
+        // objects refuse such a model.
+        var all = WorldTileCreatures.convert(preview(7, 0L, 0L, appearance), new int[] {0, 4}, Cancellation.NONE);
+        require(all.refusal() == WorldTileCreatures.Count.ALL_BILLBOARD
+                && all.detail().equals("every drawable triangle is weighted to a camera-facing bone"),
+                "An all-billboard Stand is its own refusal: " + all.refusal() + " " + all.detail());
+        // Without billboard triangles an empty model is still a material refusal.
+        require(WorldTileCreatures.convert(preview(7, 0L, 0L, additiveOnly()), Cancellation.NONE).refusal()
+                == WorldTileCreatures.Count.NO_OPAQUE_SURFACE, "Material refusals keep their bucket");
+        // The World asks the World profile: the preview's refusal does not matter there.
+        var world = new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.AVAILABLE, null, lift(appearance),
+                "Stand", new int[] {4});
+        var creatures = new WorldTileCreatures(token -> index(List.of(WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0),
+                WorldSpawnOverlayTest.spawn(1, 2, -110, -100, 10.0))), () -> "r1",
+                (npc, token) -> qualified(7, null), new WorldTileCreatures.Previews() {
+                    public DisplayModelTypes.Preview preview(long display, Cancellation token) {
+                        return WorldTileCreaturesTest.preview(display, 0L, 0L, appearance);
+                    }
+
+                    public DisplayModelTypes.Idle idle(long display, Cancellation token) {
+                        return new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.UNSUPPORTED, null, null,
+                                "Billboard bone 1 has child bones");
+                    }
+
+                    public DisplayModelTypes.Idle worldIdle(long display, Cancellation token) {
+                        return world;
+                    }
+                });
+        var tile = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(tile.drawn() == 2 && tile.restPosed() == 0 && tile.billboardsLeftOut() == 2,
+                "Both placements stand with their billboard triangles left out: " + tile.billboardsLeftOut());
+        String text = WorldStreamSourceController.creatureDetail(tile, 1);
+        require(text.contains("(Stand pose, facing north), 2 with camera-facing parts left out"), text);
+        require(!WorldStreamSourceController.creatureDetail(
+                standingCreatures(() -> new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.AVAILABLE, null,
+                        lift(standing()), "Stand")).append(WorldStreamTileWriter.Exterior.builder(), 0, TILE,
+                        Cancellation.NONE), 1).contains("camera-facing"), "Nothing to disclose without billboards");
     }
 
     static com.vibeminer.rendering.models.PreviewAnimation lift(MeshAppearance appearance) {

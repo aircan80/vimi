@@ -1,5 +1,6 @@
 package com.vibeminer.concepts.models;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -8,6 +9,7 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.AssetSource;
 import com.vibeminer.formats.models.M2IdleAnimation;
 import com.vibeminer.rendering.models.PreviewAnimation;
+import java.util.List;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 
@@ -235,6 +237,85 @@ class DisplayIdleAnimationsTest {
                     after[vertex * 3 + 2] - pivot.z(),
                     1e-5);
         }
+    }
+
+    private static DisplayIdleAnimations.WorldStand admitWorld(Authored authored) {
+        var parsed = authored.fixture.parse();
+        var surface =
+                DisplayModelService.restSurface(
+                        parsed.model(), parsed.rest().surface(), Cancellation.NONE);
+        var idle =
+                M2IdleAnimation.read(
+                                AssetSource.bytes(authored.fixture.modelBytes()),
+                                parsed.model(),
+                                Cancellation.NONE)
+                        .join();
+        return DisplayIdleAnimations.admitWorld(
+                parsed.model(),
+                parsed.rest().surface().vertexLookup(),
+                idle,
+                surface.mesh(),
+                surface.normals(),
+                Cancellation.NONE);
+    }
+
+    @Test
+    void theServiceAnswersEachProfileWithItsOwnAdmission() throws Exception {
+        // Billboard bone 1 with child bones: the preview refuses, the World admits.
+        var authored = new Authored().translate(0).parent(2, 1);
+        var parsed = authored.fixture.parse();
+        var geometry = parsed.rest().surface();
+        var surface = DisplayModelService.restSurface(parsed.model(), geometry, Cancellation.NONE);
+        var idle =
+                M2IdleAnimation.read(
+                                AssetSource.bytes(authored.fixture.modelBytes()),
+                                parsed.model(),
+                                Cancellation.NONE)
+                        .join();
+        var preview =
+                DisplayModelService.admitted(
+                        null, parsed.model(), geometry, surface, idle, false, Cancellation.NONE);
+        var world =
+                DisplayModelService.admitted(
+                        null, parsed.model(), geometry, surface, idle, true, Cancellation.NONE);
+        assertEquals(DisplayModelTypes.IdleState.UNSUPPORTED, preview.state());
+        assertTrue(preview.message().contains("has child bones"), preview.message());
+        assertEquals(DisplayModelTypes.IdleState.AVAILABLE, world.state());
+        assertArrayEquals(new int[] {2, 3}, world.leftOut());
+        assertTrue(
+                world.message().endsWith("2 vertices weighted to billboard bones left out."),
+                world.message());
+    }
+
+    @Test
+    void theWorldProfilePosesBillboardBonesAndListsTheirVerticesAsLeftOut() throws Exception {
+        // Rotation keys and child bones on billboard bone 1 are refused for the preview but not
+        // for the World, which leaves out the card vertices 2 and 3 weighted to it.
+        for (Consumer<Authored> change :
+                List.<Consumer<Authored>>of(a -> a.rotate(1), a -> a.parent(2, 1), a -> {})) {
+            var authored = new Authored().translate(0);
+            change.accept(authored);
+            var world = admitWorld(authored);
+            assertArrayEquals(new int[] {2, 3}, world.leftOut());
+            assertEquals(3, world.animation().boneCount());
+        }
+        // A descendant of a billboard bone is left out too: vertex 3 moves to bone 2, a child of
+        // the billboard bone 1.
+        var descendant = new Authored().translate(0).parent(2, 1);
+        descendant.fixture.body.putInt(descendant.fixture.vertices + 3 * 48 + 16, 2);
+        assertArrayEquals(new int[] {2, 3}, admitWorld(descendant).leftOut());
+        // A cylindrical billboard (0x40) is left out the same way.
+        assertArrayEquals(
+                new int[] {2, 3},
+                admitWorld(new Authored().translate(0).flags(1, 0x240)).leftOut());
+        // Without a billboard bone nothing is left out.
+        assertArrayEquals(
+                new int[0], admitWorld(new Authored().translate(0).flags(1, 0x200)).leftOut());
+        // Parent-inheritance flags on a bone that is not a billboard are still refused.
+        var inherited = new Authored().translate(0).flags(0, 0x204);
+        var failure =
+                assertThrows(DisplayIdleAnimations.Unsupported.class, () -> admitWorld(inherited));
+        assertTrue(failure.getMessage().contains("0x4"), failure.getMessage());
     }
 
     @Test

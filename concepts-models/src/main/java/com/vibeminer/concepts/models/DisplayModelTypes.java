@@ -108,14 +108,35 @@ public final class DisplayModelTypes {
         UNAVAILABLE
     }
 
+    /**
+     * @param leftOut rest-surface vertices that the World leaves out (weighted to a billboard bone
+     *     or a descendant of one, #384); empty for the preview profile
+     */
     public record Idle(
-            IdleState state, Reference reference, PreviewAnimation animation, String message) {
+            IdleState state,
+            Reference reference,
+            PreviewAnimation animation,
+            String message,
+            int[] leftOut) {
         public Idle {
             if (state == null
                     || (state == IdleState.AVAILABLE) != (animation != null)
-                    || message == null) {
+                    || message == null
+                    || leftOut == null
+                    || leftOut.length != 0 && animation == null) {
                 throw new IllegalArgumentException("Inconsistent idle animation result");
             }
+            leftOut = leftOut.clone();
+        }
+
+        public Idle(
+                IdleState state, Reference reference, PreviewAnimation animation, String message) {
+            this(state, reference, animation, message, new int[0]);
+        }
+
+        @Override
+        public int[] leftOut() {
+            return leftOut.clone();
         }
 
         public static Idle unavailable(String message) {

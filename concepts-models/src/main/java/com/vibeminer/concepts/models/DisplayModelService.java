@@ -102,7 +102,25 @@ public final class DisplayModelService implements BuildDisplayModels {
     @Override
     public CompletableFuture<DisplayModelTypes.Idle> idle(long displayId, Cancellation token) {
         checkDisplay(displayId);
-        return submit(token, request -> loadIdle(displayId, request));
+        return submit(token, request -> loadStands(displayId, Profiles.PREVIEW, request).preview());
+    }
+
+    @Override
+    public CompletableFuture<DisplayModelTypes.Idle> worldIdle(long displayId, Cancellation token) {
+        checkDisplay(displayId);
+        return submit(token, request -> loadStands(displayId, Profiles.WORLD, request).world());
+    }
+
+    @Override
+    public CompletableFuture<List<DisplayModelTypes.Idle>> stands(
+            long displayId, Cancellation token) {
+        checkDisplay(displayId);
+        return submit(
+                token,
+                request -> {
+                    var both = loadStands(displayId, Profiles.BOTH, request);
+                    return List.of(both.preview(), both.world());
+                });
     }
 
     private static void checkDisplay(long displayId) {
@@ -152,25 +170,40 @@ public final class DisplayModelService implements BuildDisplayModels {
         return published;
     }
 
-    private DisplayModelTypes.Idle loadIdle(long displayId, Cancellation token) {
+    /** Which Stand profiles one parse answers. */
+    private enum Profiles {
+        PREVIEW,
+        WORLD,
+        BOTH
+    }
+
+    /** The preview and World Stand answers of one parse; a profile not asked is null. */
+    private record Stands(DisplayModelTypes.Idle preview, DisplayModelTypes.Idle world) {
+        static Stands both(DisplayModelTypes.Idle idle) {
+            return new Stands(idle, idle);
+        }
+    }
+
+    private Stands loadStands(long displayId, Profiles profiles, Cancellation token) {
         var issues = new ArrayList<String>();
         DisplayModelTypes.Reference reference = null;
         try {
             reference = resolve(displayId, token, issues);
             if (reference == null) {
-                return DisplayModelTypes.Idle.unavailable(
-                        "Display-to-model relationship is unavailable.");
+                return Stands.both(
+                        DisplayModelTypes.Idle.unavailable(
+                                "Display-to-model relationship is unavailable."));
             }
             var models = new BuildModels(files);
             var read =
                     models.readModel(FileTypes.FileRef.id(reference.modelFileDataId()), token)
                             .join();
             if (read.state() != BuildModelTypes.ReadState.READ || read.model() == null) {
-                return idleFailed(reference, "Model read is " + read.state());
+                return Stands.both(idleFailed(reference, "Model read is " + read.state()));
             }
             var skin = models.readRestDrawSkin(read, 0, token).join();
             if (skin.state() != BuildModelTypes.ReadState.READ || skin.skin() == null) {
-                return idleFailed(reference, "Model surface is " + skin.state());
+                return Stands.both(idleFailed(reference, "Model surface is " + skin.state()));
             }
             var m = read.model();
             var geometry = skin.skin().surface();
@@ -178,13 +211,13 @@ public final class DisplayModelService implements BuildDisplayModels {
             var opened =
                     files.openRead(FileTypes.FileRef.id(reference.modelFileDataId()), token).join();
             if (opened.stream() == null) {
-                return idleFailed(reference, "Model source is unavailable");
+                return Stands.both(idleFailed(reference, "Model source is unavailable"));
             }
             M2IdleAnimation.Idle idle;
             try (var stream = opened.stream()) {
                 if (opened.state() != FileTypes.FileReadState.COMPLETE
                         || !stream.holes().isEmpty()) {
-                    return idleFailed(reference, "Model source is incomplete");
+                    return Stands.both(idleFailed(reference, "Model source is incomplete"));
                 }
                 try {
                     // A creature display (no extended display info) has no customization choice,
@@ -207,48 +240,89 @@ public final class DisplayModelService implements BuildDisplayModels {
                     var cause = AssetTasks.unwrap(failure);
                     if (cause instanceof ModelFormatException format
                             && format.code().equals("MODEL_UNSUPPORTED")) {
-                        return new DisplayModelTypes.Idle(
-                                DisplayModelTypes.IdleState.UNSUPPORTED,
-                                reference,
-                                null,
-                                format.getMessage());
+                        return Stands.both(
+                                new DisplayModelTypes.Idle(
+                                        DisplayModelTypes.IdleState.UNSUPPORTED,
+                                        reference,
+                                        null,
+                                        format.getMessage()));
                     }
-                    return idleFailed(
-                            reference,
-                            "Idle sequence could not be read"
-                                    + message(cause == null ? null : cause.getMessage()));
+                    return Stands.both(
+                            idleFailed(
+                                    reference,
+                                    "Idle sequence could not be read"
+                                            + message(cause == null ? null : cause.getMessage())));
                 }
             }
-            try {
-                var animation =
-                        DisplayIdleAnimations.admit(
-                                m,
-                                geometry.vertexLookup(),
-                                idle,
-                                surface.mesh(),
-                                surface.normals(),
-                                token);
-                return new DisplayModelTypes.Idle(
-                        DisplayModelTypes.IdleState.AVAILABLE,
-                        reference,
-                        animation,
-                        "Stand idle · "
-                                + animation.durationMillis()
-                                + " ms loop · "
-                                + animation.boneCount()
-                                + " bones evaluated in software.");
-            } catch (DisplayIdleAnimations.Unsupported unsupported) {
-                return new DisplayModelTypes.Idle(
-                        DisplayModelTypes.IdleState.UNSUPPORTED,
-                        reference,
-                        null,
-                        unsupported.getMessage());
-            }
+            return new Stands(
+                    profiles == Profiles.WORLD
+                            ? null
+                            : admitted(reference, m, geometry, surface, idle, false, token),
+                    profiles == Profiles.PREVIEW
+                            ? null
+                            : admitted(reference, m, geometry, surface, idle, true, token));
         } catch (java.util.concurrent.CancellationException canceled) {
             throw canceled;
         } catch (IllegalArgumentException unavailable) {
             token.check();
-            return idleFailed(reference, unavailable.getMessage());
+            return Stands.both(idleFailed(reference, unavailable.getMessage()));
+        }
+    }
+
+    /**
+     * One profile's answer for a read Stand: the preview's strict admission, or the World's ({@link
+     * DisplayIdleAnimations#admitWorld}), which lists the vertices it leaves out.
+     */
+    static DisplayModelTypes.Idle admitted(
+            DisplayModelTypes.Reference reference,
+            M2Types.Model m,
+            M2Types.RestSkin geometry,
+            RestSurface surface,
+            M2IdleAnimation.Idle idle,
+            boolean world,
+            Cancellation token) {
+        try {
+            var admitted =
+                    world
+                            ? DisplayIdleAnimations.admitWorld(
+                                    m,
+                                    geometry.vertexLookup(),
+                                    idle,
+                                    surface.mesh(),
+                                    surface.normals(),
+                                    token)
+                            : new DisplayIdleAnimations.WorldStand(
+                                    DisplayIdleAnimations.admit(
+                                            m,
+                                            geometry.vertexLookup(),
+                                            idle,
+                                            surface.mesh(),
+                                            surface.normals(),
+                                            token),
+                                    new int[0]);
+            var animation = admitted.animation();
+            int leftOut = admitted.leftOut().length;
+            return new DisplayModelTypes.Idle(
+                    DisplayModelTypes.IdleState.AVAILABLE,
+                    reference,
+                    animation,
+                    "Stand idle · "
+                            + animation.durationMillis()
+                            + " ms loop · "
+                            + animation.boneCount()
+                            + " bones evaluated in software"
+                            + (leftOut == 0
+                                    ? "."
+                                    : " · "
+                                            + leftOut
+                                            + " vertices weighted to billboard bones left out."),
+                    admitted.leftOut());
+        } catch (DisplayIdleAnimations.Unsupported unsupported) {
+            return new DisplayModelTypes.Idle(
+                    DisplayModelTypes.IdleState.UNSUPPORTED,
+                    reference,
+                    null,
+                    unsupported.getMessage());
         }
     }
 

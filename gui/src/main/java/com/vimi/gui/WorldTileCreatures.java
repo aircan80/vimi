@@ -80,6 +80,11 @@ final class WorldTileCreatures implements AutoCloseable {
         CHARACTER_RETRY("character appearance not readable yet"),
         VISIBILITY_UNRESOLVED("surface visibility unresolved"),
         NO_OPAQUE_SURFACE("no opaque or alpha-keyed textured surface"),
+        /**
+         * Every drawable triangle of its Stand pose is weighted to a camera-facing bone, which the
+         * World does not draw: refused, as World objects refuse such a model (#360, #384).
+         */
+        ALL_BILLBOARD("only camera-facing surfaces"),
         MODEL_UNAVAILABLE("model unavailable"),
         /** The preview component was busy or closed; not cached and costs no preview budget. */
         PREVIEWS_BUSY("model reader busy or closed"),
@@ -95,28 +100,29 @@ final class WorldTileCreatures implements AutoCloseable {
 
     /** One tile's creature outcome; immutable. */
     static final class Summary {
-        static final Summary NONE = new Summary(new int[Count.values().length], 0, 0, NpcCounts.NONE, null,
+        static final Summary NONE = new Summary(new int[Count.values().length], 0, 0, 0, NpcCounts.NONE, null,
                 List.of());
 
         private final int[] counts;
-        private final int models, restPosed;
+        private final int models, restPosed, billboardsLeftOut;
         private final NpcCounts npcs;
         private final String note;
         private final List<WorldObjectPicks.Creature> placed;
 
-        private Summary(int[] counts, int models, int restPosed, NpcCounts npcs, String note,
-                List<WorldObjectPicks.Creature> placed) {
+        private Summary(int[] counts, int models, int restPosed, int billboardsLeftOut, NpcCounts npcs,
+                String note, List<WorldObjectPicks.Creature> placed) {
             this.counts = counts.clone();
             this.models = models;
             this.restPosed = restPosed;
+            this.billboardsLeftOut = billboardsLeftOut;
             this.npcs = Objects.requireNonNull(npcs);
             this.note = note;
             this.placed = List.copyOf(placed);
         }
 
         static Summary failed(String note) {
-            return new Summary(new int[Count.values().length], 0, 0, NpcCounts.NONE, Objects.requireNonNull(note),
-                    List.of());
+            return new Summary(new int[Count.values().length], 0, 0, 0, NpcCounts.NONE,
+                    Objects.requireNonNull(note), List.of());
         }
 
         /** Drawn humanoid NPC placements and what their items left undrawn (#385). */
@@ -127,6 +133,14 @@ final class WorldTileCreatures implements AutoCloseable {
         /** Drawn placements whose model is in its rest (bind) pose because no Stand pose was baked. */
         int restPosed() {
             return restPosed;
+        }
+
+        /**
+         * Drawn placements whose Stand pose leaves out triangles weighted to camera-facing
+         * (billboard) bones, as World objects do (#360, #384).
+         */
+        int billboardsLeftOut() {
+            return billboardsLeftOut;
         }
 
         int count(Count count) {
@@ -167,7 +181,8 @@ final class WorldTileCreatures implements AutoCloseable {
         Summary plus(Summary other) {
             var sum = counts.clone();
             for (int i = 0; i < sum.length; i++) sum[i] += other.counts[i];
-            return new Summary(sum, models + other.models, restPosed + other.restPosed, npcs.plus(other.npcs),
+            return new Summary(sum, models + other.models, restPosed + other.restPosed,
+                    billboardsLeftOut + other.billboardsLeftOut, npcs.plus(other.npcs),
                     note != null ? note : other.note, List.of());
         }
     }
@@ -236,6 +251,20 @@ final class WorldTileCreatures implements AutoCloseable {
             return new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.UNSUPPORTED, null, null,
                     "Idle animation is not provided by this source.");
         }
+
+        /**
+         * The display's Stand for the World ({@link
+         * com.vibeminer.concepts.models.BuildDisplayModels#worldIdle}): camera-facing bones are
+         * posed as ordinary bones and the vertices weighted to them are listed as left out.
+         */
+        default DisplayModelTypes.Idle worldIdle(long displayId, Cancellation token) throws Exception {
+            return idle(displayId, token);
+        }
+
+        /** {@link #idle} then {@link #worldIdle}, for measurements; may read the model once. */
+        default List<DisplayModelTypes.Idle> stands(long displayId, Cancellation token) throws Exception {
+            return List.of(idle(displayId, token), worldIdle(displayId, token));
+        }
     }
 
     /**
@@ -250,26 +279,28 @@ final class WorldTileCreatures implements AutoCloseable {
      * one material class per range ({@link #OPAQUE} or {@link #CUTOUT}).
      */
     record Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
-            int omittedSurfaces, String restPose, NpcCounts npc) {
+            int omittedSurfaces, String restPose, NpcCounts npc, int billboardTriangles) {
         Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
                 int omittedSurfaces) {
-            this(vertices, indices, ranges, blends, images, omittedSurfaces, null, null);
+            this(vertices, indices, ranges, blends, images, omittedSurfaces, null, null, 0);
         }
 
         Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
                 int omittedSurfaces, String restPose) {
-            this(vertices, indices, ranges, blends, images, omittedSurfaces, restPose, null);
+            this(vertices, indices, ranges, blends, images, omittedSurfaces, restPose, null, 0);
         }
 
         /** The same model with why it stays in its rest pose (null: baked in the Stand pose). */
         Model withRestPose(String reason) {
-            return new Model(vertices, indices, ranges, blends, images, omittedSurfaces, reason, npc);
+            return new Model(vertices, indices, ranges, blends, images, omittedSurfaces, reason, npc,
+                    billboardTriangles);
         }
 
         /** The same model as one humanoid NPC's, with what each placement leaves undrawn. */
         Model withNpc(int omittedItems, int attachments) {
             return new Model(vertices, indices, ranges, blends, images, omittedSurfaces, restPose,
-                    new NpcCounts(1, omittedItems, attachments, omittedSurfaces > 0 ? 1 : 0, omittedSurfaces));
+                    new NpcCounts(1, omittedItems, attachments, omittedSurfaces > 0 ? 1 : 0, omittedSurfaces),
+                    billboardTriangles);
         }
 
         Model {
@@ -411,6 +442,23 @@ final class WorldTileCreatures implements AutoCloseable {
                     : models.idle(displayId, token).join();
         }
 
+        @Override
+        public DisplayModelTypes.Idle worldIdle(long displayId, Cancellation token) {
+            var models = component();
+            return models == null ? DisplayModelTypes.Idle.unavailable("Model files are not open")
+                    : models.worldIdle(displayId, token).join();
+        }
+
+        @Override
+        public List<DisplayModelTypes.Idle> stands(long displayId, Cancellation token) {
+            var models = component();
+            if (models == null) {
+                var closed = DisplayModelTypes.Idle.unavailable("Model files are not open");
+                return List.of(closed, closed);
+            }
+            return models.stands(displayId, token).join();
+        }
+
         private BuildDisplayModels component() {
             synchronized (this) {
                 if (closed) throw new CancellationException("Creature models closed");
@@ -472,7 +520,9 @@ final class WorldTileCreatures implements AutoCloseable {
         // Builder model indices of humanoid NPCs, with what each placement leaves undrawn.
         var npcModels = new HashMap<Integer, NpcCounts>();
         var npcCounts = NpcCounts.NONE;
-        int restPosed = 0;
+        int restPosed = 0, billboardsLeftOut = 0;
+        // Builder model indices whose Stand pose left out billboard triangles.
+        var billboardModels = new HashSet<Integer>();
         for (var spawn : nearby.placed()) {
             token.check();
             if (WorldBookmarks.tileIndex(spawn.x()) != tile.x() || WorldBookmarks.tileIndex(spawn.y()) != tile.y()) continue;
@@ -542,6 +592,7 @@ final class WorldTileCreatures implements AutoCloseable {
                 model = add(builder, m);
                 added.put(display, model);
                 if (m.restPose() != null) restModels.add(model);
+                if (m.billboardTriangles() > 0) billboardModels.add(model);
                 if (m.npc() != null) npcModels.put(model, m.npc());
             }
             if (builder.drawCost(model) > builder.drawRoom()) {
@@ -556,11 +607,12 @@ final class WorldTileCreatures implements AutoCloseable {
                             transform[3])));
             placements++;
             if (restModels.contains(model)) restPosed++;
+            if (billboardModels.contains(model)) billboardsLeftOut++;
             var npc = npcModels.get(model);
             if (npc != null) npcCounts = npcCounts.plus(npc);
             counts[Count.DRAWN.ordinal()]++;
         }
-        return new Summary(counts, added.size(), restPosed, npcCounts, nearby.omitted() == 0 ? null
+        return new Summary(counts, added.size(), restPosed, billboardsLeftOut, npcCounts, nearby.omitted() == 0 ? null
                 : nearby.omitted() + " nearby points beyond the query limit were not considered", placed);
     }
 
@@ -626,8 +678,9 @@ final class WorldTileCreatures implements AutoCloseable {
         String restPose;
         boolean retry = false;
         var appearance = preview.appearance();
+        int[] leftOut = new int[0];
         try {
-            var idle = previews.idle(display, token);
+            var idle = previews.worldIdle(display, token);
             token.check();
             if (idle == null || idle.state() != DisplayModelTypes.IdleState.AVAILABLE) {
                 restPose = idle == null ? "no idle result" : idle.message();
@@ -636,6 +689,7 @@ final class WorldTileCreatures implements AutoCloseable {
                 restPose = "the Stand sequence belongs to another rest surface";
             } else {
                 appearance = idle.animation().pose(appearance, 0);
+                leftOut = idle.leftOut();
                 restPose = null;
             }
         } catch (Exception failed) {
@@ -645,7 +699,7 @@ final class WorldTileCreatures implements AutoCloseable {
             retry = true;
         }
         var converted = convert(new DisplayModelTypes.Preview(preview.state(), preview.reference(), appearance,
-                preview.visibleParts(), preview.issues(), preview.restored(), preview.message()), token);
+                preview.visibleParts(), preview.issues(), preview.restored(), preview.message()), leftOut, token);
         return converted.model() == null || restPose == null ? converted
                 : new Converted(converted.model().withRestPose(restPose), null, null, retry);
     }
@@ -707,6 +761,11 @@ final class WorldTileCreatures implements AutoCloseable {
      * section the display's rows hide. Never a guessed variant.
      */
     static Converted convert(DisplayModelTypes.Preview preview, Cancellation token) {
+        return convert(preview, new int[0], token);
+    }
+
+    /** As {@link #convert(DisplayModelTypes.Preview, Cancellation)}, leaving out {@code leftOut}. */
+    static Converted convert(DisplayModelTypes.Preview preview, int[] leftOut, Cancellation token) {
         if (preview == null || preview.appearance() == null || preview.reference() == null)
             return Converted.refused(Count.MODEL_UNAVAILABLE,
                     preview == null || preview.message() == null ? "no static preview" : preview.message());
@@ -722,7 +781,7 @@ final class WorldTileCreatures implements AutoCloseable {
             return Converted.refused(Count.VISIBILITY_UNRESOLVED, rowsDecideSome(reference, mesh)
                     ? "every geoset is hidden by the display's rows"
                     : "the model has no section 0 or x01 section to draw");
-        return surfaces(appearance, visible.ids(), token);
+        return surfaces(appearance, visible.ids(), leftOut, token);
     }
 
     /**
@@ -730,7 +789,20 @@ final class WorldTileCreatures implements AutoCloseable {
      * appearance, as a model; rigid cards are dropped.
      */
     static Converted surfaces(MeshAppearance appearance, Set<Integer> visibleIds, Cancellation token) {
+        return surfaces(appearance, visibleIds, new int[0], token);
+    }
+
+    /**
+     * As {@link #surfaces(MeshAppearance, Set, Cancellation)}, also leaving out every triangle with
+     * a vertex in {@code leftOut} (weighted to a camera-facing bone, #384), counted on the model. A
+     * surface left with no triangle is an omitted surface, as one made only of rigid cards is.
+     */
+    static Converted surfaces(MeshAppearance appearance, Set<Integer> visibleIds, int[] leftOut,
+            Cancellation token) {
         var mesh = appearance.mesh();
+        var billboard = new HashSet<Integer>();
+        for (int vertex : leftOut) billboard.add(vertex);
+        int billboardTriangles = 0;
         var surfaces = new HashMap<Integer, MeshAppearance.Surface>();
         for (var surface : appearance.surfaces()) surfaces.put(surface.sectionIndex(), surface);
         var cards = new HashSet<Integer>();
@@ -766,6 +838,11 @@ final class WorldTileCreatures implements AutoCloseable {
                 int a = source[at], b = source[at + 1], c = source[at + 2];
                 // Rigid cards face the camera at run time; a fixed card would be a wrong claim.
                 if (cards.contains(a) || cards.contains(b) || cards.contains(c)) continue;
+                // Weighted to a camera-facing bone: left out, as World objects do (#360).
+                if (billboard.contains(a) || billboard.contains(b) || billboard.contains(c)) {
+                    billboardTriangles++;
+                    continue;
+                }
                 for (int vertex : new int[] {a, b, c}) {
                     Integer mapped = remap.get(vertex);
                     if (mapped == null) {
@@ -810,13 +887,17 @@ final class WorldTileCreatures implements AutoCloseable {
             ranges.add(slot);
             blends.add(materialClass);
         }
+        if ((ranges.isEmpty() || remap.size() < 3) && billboardTriangles > 0)
+            return Converted.refused(Count.ALL_BILLBOARD,
+                    "every drawable triangle is weighted to a camera-facing bone");
         if (ranges.isEmpty() || remap.size() < 3)
             return Converted.refused(Count.NO_OPAQUE_SURFACE, "no opaque or alpha-keyed diffuse surface with a texture");
         var vertexArray = new float[vertices.size()];
         for (int i = 0; i < vertexArray.length; i++) vertexArray[i] = vertices.get(i);
         return new Converted(new Model(vertexArray, indices.stream().mapToInt(Integer::intValue).toArray(),
                 ranges.stream().mapToInt(Integer::intValue).toArray(),
-                blends.stream().mapToInt(Integer::intValue).toArray(), images, omitted), null, null);
+                blends.stream().mapToInt(Integer::intValue).toArray(), images, omitted, null, null,
+                billboardTriangles), null, null);
     }
 
     /**
