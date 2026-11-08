@@ -281,4 +281,27 @@ class WorldStreamControlTest {
                         .getBytes(java.nio.charset.StandardCharsets.US_ASCII);
         assertThrows(IOException.class, () -> WorldStreamControl.decode(zero, zero.length));
     }
+
+    /** A light weight that rounds to 0 keeps no light colours, so the sky round-trips. */
+    @Test
+    void aLightWeightThatRoundsToZeroKeepsNoColours() throws IOException {
+        var sky =
+                new WorldStreamTransport.Sky(
+                        new float[] {10, 20, 30},
+                        new float[] {40, 50, 60},
+                        0,
+                        0,
+                        0,
+                        new float[] {255, 224, 192},
+                        new float[] {64, 64, 96},
+                        0.0004);
+        assertEquals(0, sky.lightWeight());
+        org.junit.jupiter.api.Assertions.assertArrayEquals(new float[3], sky.direct());
+        org.junit.jupiter.api.Assertions.assertArrayEquals(new float[3], sky.ambient());
+        var camera =
+                new WorldStreamControl.Camera(
+                        NONCE, 9, 1, 800, 500, new TerrainCamera(1, 2, 3, 0, -0.5), sky);
+        byte[] encoded = WorldStreamControl.encode(camera);
+        assertEquals(camera, WorldStreamControl.decode(encoded, encoded.length));
+    }
 }
