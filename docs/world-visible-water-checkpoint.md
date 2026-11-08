@@ -174,7 +174,14 @@ old 128-layer / 8192-cell owner caps.
   costs 256 quads per tile instead of 16,384 cells. The trailer stays at 8192 quads and the
   renderer at 16,384 water triangles per slot, so #276's 26-slot terrain budget does not grow.
   Layers are copied whole in source order; a layer that would pass 8192 quads is left out and
-  the tile's water note says "capped". `MAX_WATER_LAYERS` (a count in the trailer header) grows
+  the tile's water note says "capped".
+  Since depth shades water (#171), a flat chunk merges only where one quad reproduces its
+  depths within a byte: the bridge splits it as a quadtree (8, 4, 2, 1 cells), so a coastal chunk
+  keeps its shallow-to-deep gradient. A tile that would pass 8192 quads merges blocks regardless
+  of depth at the finest size that fits (its note says "depth coarsened"); only when whole chunks
+  do not fit are layers capped. On 70862, every second tile of Azeroth and Kalimdor (682 with
+  water): no tile capped, 10 coarsened, largest tile 7,891 quads (473,456 and 543,531 quads in all,
+  against 216,746 and 224,814 with depth ignored). `MAX_WATER_LAYERS` (a count in the trailer header) grows
   from 128 to 1024.
 - **Still declined.** Layers of another vertex format (LVF 1 and 3: every magma, slime, fel and
   tar type in this build) stay unsupported. Because their vertex stream length is not
