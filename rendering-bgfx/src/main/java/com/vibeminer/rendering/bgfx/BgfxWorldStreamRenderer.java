@@ -107,8 +107,33 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     static final int MAX_VERTICES = WorldStreamPackedTile.MAX_VERTICES,
             MAX_INDICES = WorldStreamPackedTile.MAX_INDICES;
 
-    /** Constant 0.40 diagonal blend factor for diagnostic water over opaque terrain. */
-    static final int WATER_BLEND_FACTOR = 0x66666666;
+    /**
+     * The water opacity without recorded water light: 0.40, the constant blend water has always
+     * drawn with, now carried by the shader's alpha.
+     */
+    static final float WATER_ALPHA = 0x66 / 255f;
+
+    /**
+     * The water uniform (u_worldWater, four vec4) for a frame's sky (#171): ocean close, ocean far,
+     * river close and river far, each rgb 0..255 with its opacity in w (shallow for close, deep for
+     * far). Without recorded water light every entry is the diagnostic teal at {@link
+     * #WATER_ALPHA}, as water has always drawn; recorded water light is mixed in by its weight.
+     */
+    static float[] waterUniform(WorldStreamTransport.Sky sky) {
+        int teal = WorldStreamTileFile.WATER_RGB;
+        float[] base = {teal >>> 16 & 255, teal >>> 8 & 255, teal & 255};
+        double w = sky == null ? 0 : sky.waterWeight();
+        float[] colours = sky == null ? new float[12] : sky.water();
+        float[] alphas = sky == null ? new float[4] : sky.waterAlphas();
+        float[] out = new float[16];
+        for (int i = 0; i < 4; i++) {
+            for (int c = 0; c < 3; c++) {
+                out[i * 4 + c] = (float) (base[c] + (colours[i * 3 + c] - base[c]) * w);
+            }
+            out[i * 4 + 3] = (float) (WATER_ALPHA + (alphas[i] - WATER_ALPHA) * w);
+        }
+        return out;
+    }
 
     static final int MAX_TICKETS = 64;
 
@@ -553,7 +578,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private short splatDummyArray = INVALID;
     // Fog shared by terrain, objects and the sky's horizon (WorldFog).
     private short worldFog = INVALID, worldFogRange = INVALID, worldSkyTop = INVALID;
-    private short worldLight = INVALID;
+    private short worldLight = INVALID, worldWater = INVALID;
     private WorldLight light = WorldLight.FIXED;
     private boolean terrainLighting = TERRAIN_LIGHTING;
     private short skyTop = INVALID, skyHorizon = INVALID, skyView = INVALID;
@@ -697,6 +722,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             worldFogRange =
                     valid(bgfx_create_uniform("u_worldFogRange", BGFX_UNIFORM_TYPE_VEC4, 1));
             worldLight = valid(bgfx_create_uniform("u_worldLight", BGFX_UNIFORM_TYPE_VEC4, 3));
+            worldWater = valid(bgfx_create_uniform("u_worldWater", BGFX_UNIFORM_TYPE_VEC4, 4));
             skyTop = valid(bgfx_create_uniform("u_skyTop", BGFX_UNIFORM_TYPE_VEC4, 1));
             skyHorizon = valid(bgfx_create_uniform("u_skyHorizon", BGFX_UNIFORM_TYPE_VEC4, 1));
             skyView = valid(bgfx_create_uniform("u_skyView", BGFX_UNIFORM_TYPE_VEC4, 1));
@@ -2087,22 +2113,25 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 if (slot.water == 0) {
                     continue;
                 }
-                bgfx_set_uniform(atlasUniform, stack.floats(slot.anchorX, slot.anchorY, 0, 0), 1);
+                // w = -1 marks a water draw: the shader shades it by liquid kind and depth (#171).
+                bgfx_set_uniform(atlasUniform, stack.floats(slot.anchorX, slot.anchorY, 0, -1), 1);
                 bgfx_set_uniform(splatUniform, stack.floats(0, 0, 0, 0), 1);
+                bgfx_set_uniform(worldWater, stack.floats(waterUniform(recordedSky)), 4);
                 bgfx_set_texture(0, sampler, slot.texture, SAMPLER_FLAGS);
                 bindSplat(slot);
                 // Water vertices follow the terrain's; its indices are relative to them.
                 bgfx_set_dynamic_vertex_buffer(
                         0, slot.vertices, slot.terrainVertices, slot.waterVertices);
                 bgfx_set_dynamic_index_buffer(slot.indices, slot.terrainIndices, slot.waterIndices);
+                // The shader's alpha blends water (its opacity) and keeps flat liquids opaque.
                 bgfx_set_state(
                         BGFX_STATE_WRITE_RGB
                                 | BGFX_STATE_WRITE_Z
                                 | BGFX_STATE_DEPTH_TEST_GREATER
                                 | org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_FUNC(
-                                        org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_FACTOR,
-                                        org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_INV_FACTOR),
-                        WATER_BLEND_FACTOR);
+                                        org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_SRC_ALPHA,
+                                        org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_INV_SRC_ALPHA),
+                        0);
                 bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
             }
             // Alpha-blended object ranges last, after water, farthest placement first.
@@ -2933,6 +2962,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     worldFogRange,
                     worldSkyTop,
                     worldLight,
+                    worldWater,
                     skyTop,
                     skyHorizon,
                     skyView

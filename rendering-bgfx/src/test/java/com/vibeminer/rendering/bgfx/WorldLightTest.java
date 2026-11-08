@@ -105,4 +105,36 @@ class WorldLightTest {
                 mixed.diffuse(),
                 1e-6f);
     }
+
+    /** #171: without recorded water light, water keeps the teal at 0.40; with it, it mixes. */
+    @Test
+    void theWaterUniformMixesTheRecordedWaterLightIntoTheTeal() {
+        float[] teal = {20, 115, 148, 0x66 / 255f};
+        float[] none = BgfxWorldStreamRenderer.waterUniform(null);
+        float[] explorer = BgfxWorldStreamRenderer.waterUniform(WorldStreamTransport.Sky.EXPLORER);
+        for (int i = 0; i < 16; i++) {
+            assertEquals(teal[i % 4], none[i], 1e-6f);
+            assertEquals(teal[i % 4], explorer[i], 1e-6f);
+        }
+        float[] water = new float[12];
+        java.util.Arrays.fill(water, 220);
+        var e = WorldStreamTransport.Sky.EXPLORER;
+        var half =
+                new WorldStreamTransport.Sky(
+                        e.horizon(),
+                        e.top(),
+                        0,
+                        0,
+                        0,
+                        new float[3],
+                        new float[3],
+                        0,
+                        water,
+                        new float[] {1, 1, 0, 0},
+                        0.5);
+        float[] mixed = BgfxWorldStreamRenderer.waterUniform(half);
+        assertEquals((20 + 220) / 2f, mixed[0], 1e-4f);
+        assertEquals((0x66 / 255f + 1) / 2, mixed[3], 1e-6f);
+        assertEquals((0x66 / 255f) / 2, mixed[11], 1e-6f);
+    }
 }

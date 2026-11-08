@@ -463,6 +463,8 @@ final class WorldStreamPackedTile implements AutoCloseable {
         if (water != null) {
             var waterPositions = water.positions();
             var colours = water.colours();
+            var depths = water.depths();
+            var kinds = water.kinds();
             for (int v = 0; v < mesh.waterVertices; v++) {
                 // Each liquid's own colour (#171): water, or a magma or slime flat colour.
                 vertex(
@@ -473,7 +475,9 @@ final class WorldStreamPackedTile implements AutoCloseable {
                         colours[v * 3] & 255,
                         colours[v * 3 + 1] & 255,
                         colours[v * 3 + 2] & 255);
-                out.putInt(0);
+                // Water has no MCCV: that slot carries its depth and liquid kind for the water
+                // shading (#171), read only by water draws.
+                out.put(depths[v]).put(kinds[v]).put((byte) 0).put((byte) 0);
                 out.put(UNLIT_NORMAL).put(UNLIT_NORMAL).put(UNLIT_NORMAL).put((byte) 255);
             }
         }

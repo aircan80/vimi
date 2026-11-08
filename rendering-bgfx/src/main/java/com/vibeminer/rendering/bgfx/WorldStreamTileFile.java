@@ -140,10 +140,19 @@ final class WorldStreamTileFile {
     static final int WATER_HEADER_BYTES = 128, MAX_WATER_CELLS = 8192, MAX_WATER_LAYERS = 1024;
     static final int MAX_WATER_BYTES = waterBytes(MAX_WATER_CELLS * 4, MAX_WATER_CELLS * 6);
 
-    /** Trailer version 2 (#171): each vertex also carries its liquid's RGB colour. */
+    /**
+     * Trailer version 3 (#171): each vertex carries its liquid's RGB colour (version 2) and its
+     * liquid kind ({@link #RIVER}, {@link #OCEAN} or {@link #FLAT}).
+     */
     static int waterBytes(int vertices, int indices) {
-        return WATER_HEADER_BYTES + vertices * 16 + indices * 4;
+        return WATER_HEADER_BYTES + vertices * 17 + indices * 4;
     }
+
+    /**
+     * Liquid kinds: river or lake water and ocean are shaded from the recorded water light by
+     * depth; a flat liquid (magma, fel, tar) is its own colour, opaque.
+     */
+    static final byte RIVER = 0, OCEAN = 1, FLAT = 2;
 
     /** The colour of water that has no liquid colour of its own. */
     static final int WATER_RGB = 0x147394;
@@ -156,10 +165,21 @@ final class WorldStreamTileFile {
      * diagonal indices base,base+2,base+1 / base+1,base+2,base+3. Corner heights may differ. Every
      * vertex carries an RGB colour: its liquid's flat colour (magma, slime) or {@link #WATER_RGB}.
      */
-    record Water(float[] positions, byte[] depths, byte[] colours, int[] indices, int layers) {
-        /** Water in the default water colour. */
+    record Water(
+            float[] positions,
+            byte[] depths,
+            byte[] colours,
+            byte[] kinds,
+            int[] indices,
+            int layers) {
+        /** River water in the default water colour. */
         Water(float[] positions, byte[] depths, int[] indices, int layers) {
             this(positions, depths, fill(depths.length, WATER_RGB), indices, layers);
+        }
+
+        /** River water in the given colours. */
+        Water(float[] positions, byte[] depths, byte[] colours, int[] indices, int layers) {
+            this(positions, depths, colours, new byte[depths.length], indices, layers);
         }
 
         /** {@code vertices} RGB triples of one colour (0xRRGGBB). */
@@ -177,6 +197,7 @@ final class WorldStreamTileFile {
             Objects.requireNonNull(positions);
             Objects.requireNonNull(depths);
             Objects.requireNonNull(colours);
+            Objects.requireNonNull(kinds);
             Objects.requireNonNull(indices);
             int vertices = depths.length;
             require(
@@ -185,6 +206,7 @@ final class WorldStreamTileFile {
                             && vertices <= MAX_WATER_CELLS * 4
                             && positions.length == vertices * 3
                             && colours.length == vertices * 3
+                            && kinds.length == vertices
                             && indices.length == vertices / 4 * 6
                             && layers >= 1
                             && layers <= MAX_WATER_LAYERS
@@ -192,6 +214,9 @@ final class WorldStreamTileFile {
                     "Water counts");
             for (float value : positions) {
                 require(Float.isFinite(value) && Math.abs(value) <= 1_000_000, "Water position");
+            }
+            for (byte kind : kinds) {
+                require(kind == RIVER || kind == OCEAN || kind == FLAT, "Water liquid kind");
             }
             for (int cell = 0; cell < vertices / 4; cell++) {
                 int base = cell * 4, at = cell * 6;
@@ -891,7 +916,7 @@ final class WorldStreamTileFile {
         int cells = in.getInt(12), vertices = in.getInt(16), indexCount = in.getInt(20);
         require(
                 Arrays.equals(WATER_MAGIC, Arrays.copyOf(head, 8))
-                        && in.getInt(8) == 2
+                        && in.getInt(8) == 3
                         && cells >= 1
                         && cells <= MAX_WATER_CELLS
                         && vertices == cells * 4
@@ -908,13 +933,17 @@ final class WorldStreamTileFile {
         float[] positions = new float[vertices * 3];
         byte[] depths = new byte[vertices];
         byte[] colours = new byte[vertices * 3];
+        byte[] kinds = new byte[vertices];
         int[] indices = new int[indexCount];
         bytes.order(ByteOrder.LITTLE_ENDIAN);
         bytes.position(WATER_HEADER_BYTES).asFloatBuffer().get(positions);
-        bytes.position(WATER_HEADER_BYTES + positions.length * 4).get(depths).get(colours);
+        bytes.position(WATER_HEADER_BYTES + positions.length * 4)
+                .get(depths)
+                .get(colours)
+                .get(kinds);
         bytes.asIntBuffer().get(indices);
         check(canceled);
-        var water = new Water(positions, depths, colours, indices, in.getInt(24));
+        var water = new Water(positions, depths, colours, kinds, indices, in.getInt(24));
         require(onFootprint(water, footprint(tile)), "Water outside terrain tile");
         return water;
     }
@@ -960,7 +989,7 @@ final class WorldStreamTileFile {
 
     private static byte[] encodeWater(Header header, Water water) {
         var out = ByteBuffer.allocate(water.bytes()).order(ByteOrder.LITTLE_ENDIAN);
-        out.put(WATER_MAGIC).putInt(2).putInt(water.cells()).putInt(water.vertices());
+        out.put(WATER_MAGIC).putInt(3).putInt(water.cells()).putInt(water.vertices());
         out.putInt(water.indices().length).putInt(water.layers()).putInt(0);
         out.put(HexFormat.of().parseHex(header.geometrySha256()));
         out.putLong(header.root().id());
@@ -971,6 +1000,7 @@ final class WorldStreamTileFile {
         }
         out.put(water.depths());
         out.put(water.colours());
+        out.put(water.kinds());
         for (int value : water.indices()) {
             out.putInt(value);
         }

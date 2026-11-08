@@ -822,6 +822,29 @@ public final class WorldStreamTileWriter {
                             layers);
         }
 
+        /** Liquid kinds per vertex: {@link #RIVER}, {@link #OCEAN} or {@link #FLAT}. */
+        public static final byte RIVER = WorldStreamTileFile.RIVER,
+                OCEAN = WorldStreamTileFile.OCEAN,
+                FLAT = WorldStreamTileFile.FLAT;
+
+        /** As above, with each vertex's liquid kind. */
+        public Water(
+                float[] positions,
+                byte[] depths,
+                byte[] colours,
+                byte[] kinds,
+                int[] indices,
+                int layers) {
+            wire =
+                    new WorldStreamTileFile.Water(
+                            positions.clone(),
+                            depths.clone(),
+                            colours.clone(),
+                            kinds.clone(),
+                            indices.clone(),
+                            layers);
+        }
+
         public int cells() {
             return wire.cells();
         }
@@ -837,6 +860,10 @@ public final class WorldStreamTileWriter {
 
         public byte[] colours() {
             return wire.colours().clone();
+        }
+
+        public byte[] kinds() {
+            return wire.kinds().clone();
         }
 
         public int[] indices() {

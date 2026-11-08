@@ -331,12 +331,12 @@ final class WorldStreamTileWaterTest {
                 assertEquals(v < 4 ? WorldStreamTileFile.WATER_RGB : 0xD06800, rgb, "vertex " + v);
             }
         }
-        // A version 1 trailer (no colours) is refused, not misread.
+        // An older trailer version is refused, not misread.
         byte[] bytes = Files.readAllBytes(path());
         int trailer = bytes.length - WorldStreamTileFile.waterBytes(8, 12);
         java.nio.ByteBuffer.wrap(bytes)
                 .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                .putInt(trailer + 8, 1);
+                .putInt(trailer + 8, 2);
         assertThrows(
                 IllegalArgumentException.class,
                 () ->
@@ -346,5 +346,48 @@ final class WorldStreamTileWaterTest {
                                 header,
                                 tile,
                                 () -> false));
+    }
+
+    /** #171: liquid kinds ride the trailer and reach the packed vertex with each depth. */
+    @Test
+    void liquidKindsRoundTripAndReachThePackedVertexWithTheirDepth() throws Exception {
+        var tile = WorldStreamTileFileTest.full(true);
+        var header = WorldStreamTileFileTest.header(tile, true);
+        var before = terrain(tile, true);
+        var plain = water(3, 0);
+        byte[] kinds = new byte[12];
+        for (int v = 0; v < 12; v++) {
+            kinds[v] = (byte) (v / 4); // RIVER, OCEAN, FLAT
+        }
+        var water =
+                new WorldStreamTileFile.Water(
+                        plain.positions(),
+                        plain.depths(),
+                        WorldStreamTileFile.Water.fill(12, WorldStreamTileFile.WATER_RGB),
+                        kinds,
+                        plain.indices(),
+                        3);
+        var expected = WorldStreamTileFile.appendWater(path(), before, header, water, () -> false);
+        var input = WorldStreamTileFile.read(path(), expected, () -> false);
+        assertArrayEquals(kinds, input.water().kinds());
+        try (var packed = WorldStreamPackedTile.prepare(input, () -> false);
+                var source = packed.take()) {
+            var data = source.geometry.duplicate().order(java.nio.ByteOrder.nativeOrder());
+            for (int v = 0; v < 12; v++) {
+                int at = (source.terrainVertices + v) * WorldStreamPackedTile.VERTEX_BYTES + 16;
+                assertEquals(plain.depths()[v], data.get(at), "depth at vertex " + v);
+                assertEquals(kinds[v], data.get(at + 1), "kind at vertex " + v);
+            }
+        }
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new WorldStreamTileFile.Water(
+                                plain.positions(),
+                                plain.depths(),
+                                WorldStreamTileFile.Water.fill(12, WorldStreamTileFile.WATER_RGB),
+                                new byte[] {3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                                plain.indices(),
+                                3));
     }
 }

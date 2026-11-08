@@ -959,6 +959,9 @@ final class WorldStreamSourceBridge {
             /** The layer's flat colour, 0xRRGGBB, or -1 for the water colour. */
             int colour(int layer);
 
+            /** True when the client draws this water layer as ocean (#171). */
+            boolean ocean(int layer);
+
             float north(int vertex);
 
             float west(int vertex);
@@ -978,6 +981,7 @@ final class WorldStreamSourceBridge {
                 @Override public long mask(int layer) { return borrow.mask(layer); }
                 @Override public boolean planar(int layer) { return borrow.planar(layer); }
                 @Override public int colour(int layer) { return borrow.colour(layer); }
+                @Override public boolean ocean(int layer) { return borrow.ocean(layer); }
                 @Override public float north(int vertex) { return borrow.north(vertex); }
                 @Override public float west(int vertex) { return borrow.west(vertex); }
                 @Override public float up(int vertex) { return borrow.up(vertex); }
@@ -1019,6 +1023,7 @@ final class WorldStreamSourceBridge {
             var positions = new float[quads * 12];
             var depths = new byte[quads * 4];
             var colours = new byte[quads * 4 * 3];
+            var kinds = new byte[quads * 4];
             var indices = new int[quads * 6];
             int source = 0, quad = 0;
             for (int l = 0; l < copied; l++) {
@@ -1028,6 +1033,14 @@ final class WorldStreamSourceBridge {
                 if (rgb < -1 || rgb > 0xFFFFFF) {
                     throw new IllegalArgumentException("Water colour");
                 }
+                // A layer with its own flat colour (magma, fel, tar) is drawn flat and opaque; water
+                // is shaded as ocean or river.
+                byte kind =
+                        rgb >= 0
+                                ? WorldStreamTileWriter.Water.FLAT
+                                : borrow.ocean(l)
+                                        ? WorldStreamTileWriter.Water.OCEAN
+                                        : WorldStreamTileWriter.Water.RIVER;
                 rgb = rgb < 0 ? WorldStreamTileWriter.Water.WATER_RGB : rgb;
                 int first = quad;
                 if (mergeable(borrow, l)) {
@@ -1051,6 +1064,7 @@ final class WorldStreamSourceBridge {
                     colours[v * 3] = (byte) (rgb >>> 16);
                     colours[v * 3 + 1] = (byte) (rgb >>> 8);
                     colours[v * 3 + 2] = (byte) rgb;
+                    kinds[v] = kind;
                 }
                 source += cells * 4;
             }
@@ -1065,7 +1079,8 @@ final class WorldStreamSourceBridge {
                 indices[q * 6 + 5] = b + 3;
             }
             return new WaterCopy(
-                    new WorldStreamTileWriter.Water(positions, depths, colours, indices, copied),
+                    new WorldStreamTileWriter.Water(
+                            positions, depths, colours, kinds, indices, copied),
                     sourceCells, copied, capped);
         }
 

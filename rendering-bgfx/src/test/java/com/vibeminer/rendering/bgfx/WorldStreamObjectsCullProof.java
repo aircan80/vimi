@@ -22,7 +22,7 @@ final class WorldStreamObjectsCullProof {
     private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(321, -654);
     private static final int WIDTH = 800, HEIGHT = 500;
     private static long camera, sequence;
-    private static int farFogPixel, waterBlendPixel;
+    private static int farFogPixel, waterBlendPixel, recordedWaterPixel;
 
     private WorldStreamObjectsCullProof() {}
 
@@ -272,7 +272,9 @@ final class WorldStreamObjectsCullProof {
                         + " fogAt2190="
                         + Integer.toHexString(farFogPixel)
                         + " water="
-                        + Integer.toHexString(waterBlendPixel));
+                        + Integer.toHexString(waterBlendPixel)
+                        + " recordedWater="
+                        + Integer.toHexString(recordedWaterPixel));
         System.out.println(
                 "WORLD_OBJECT_MATERIAL_CLASSES_PASS " + WorldStreamMaterialClassProof.run(base));
         System.out.println("WORLD_PORTAL_CULL_PASS " + WorldStreamPortalCullProof.run(base));
@@ -494,6 +496,40 @@ final class WorldStreamObjectsCullProof {
                     water,
                     "Water blend at " + wx + "," + wy + ": " + Integer.toHexString(waterPixel));
             waterBlendPixel = waterPixel;
+            // #171: a sky with recorded water light shades the same river water from it: an
+            // opaque red at every depth replaces the teal at 0.4.
+            var explorer = WorldStreamTransport.Sky.EXPLORER;
+            float[] riverRed = new float[12];
+            for (int i = 2; i < 4; i++) {
+                riverRed[i * 3] = 200;
+            }
+            var wet =
+                    new WorldStreamTransport.Sky(
+                            explorer.horizon(),
+                            explorer.top(),
+                            0,
+                            0,
+                            0,
+                            new float[3],
+                            new float[3],
+                            0,
+                            riverRed,
+                            new float[] {1, 1, 1, 1},
+                            1);
+            var shaded = frame(owner, reader, COVERAGE_NONCE, COVERAGE_VIEW, wet).pixels;
+            int recorded = shaded.get(wy * WIDTH + wx);
+            int[] recordedRgb = rgb(recorded, 200);
+            require(
+                    Math.abs(recordedRgb[0] - 200) <= 3
+                            && recordedRgb[1] <= 3
+                            && recordedRgb[2] <= 3,
+                    "Recorded water light at "
+                            + wx
+                            + ","
+                            + wy
+                            + ": "
+                            + Integer.toHexString(recorded));
+            recordedWaterPixel = recorded;
             return partial;
         }
     }
@@ -526,9 +562,19 @@ final class WorldStreamObjectsCullProof {
             WorldStreamState.Nonce nonce,
             TerrainCamera view)
             throws Exception {
+        return frame(owner, reader, nonce, view, null);
+    }
+
+    private static Drawn frame(
+            WorldStreamNativeOwner owner,
+            WorldFrameFileV2 reader,
+            WorldStreamState.Nonce nonce,
+            TerrainCamera view,
+            WorldStreamTransport.Sky sky)
+            throws Exception {
         long revision = ++camera;
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        var command = new WorldStreamControl.Camera(nonce, revision, 1, WIDTH, HEIGHT, view);
+        var command = new WorldStreamControl.Camera(nonce, revision, 1, WIDTH, HEIGHT, view, sky);
         while (!owner.submit(command)) {
             owner.advance();
             require(System.nanoTime() < deadline, "Camera submit");

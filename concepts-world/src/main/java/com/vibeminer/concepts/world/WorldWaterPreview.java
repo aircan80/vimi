@@ -232,6 +232,16 @@ public final class WorldWaterPreview {
             return checked().secondary(layer);
         }
 
+        /**
+         * True when the client draws this layer as ocean rather than river or lake water (#171):
+         * its LiquidObject is 42, or its LiquidType is 14, as public notes on the client's liquid
+         * registration give it. On 1.60.1 every LiquidObject 42 layer is Generic Ocean.
+         */
+        public boolean ocean(int layer) {
+            var b = checked();
+            return b.secondary(layer) == 42 || b.liquidType(layer) == 14;
+        }
+
         public int x(int layer) {
             return checked().x(layer);
         }

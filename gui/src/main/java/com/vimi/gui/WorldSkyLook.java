@@ -37,20 +37,37 @@ final class WorldSkyLook {
         double lit = sample.hasLight() ? Math.min(1, cover * sample.lightShare()) : 0;
         float[] direct = lit > 0 ? rgb(sample.lighting().direct()) : new float[3];
         float[] ambient = lit > 0 ? rgb(sample.lighting().ambient()) : new float[3];
+        // The recorded water light (#171), weighed the same way.
+        double wet = sample.hasWater() ? Math.min(1, cover * sample.waterShare()) : 0;
+        float[] water = new float[12], alphas = new float[4];
+        if (wet > 0) {
+            var w = sample.water();
+            int[] colours = {w.oceanClose(), w.oceanFar(), w.riverClose(), w.riverFar()};
+            for (int i = 0; i < 4; i++) {
+                System.arraycopy(rgb(colours[i]), 0, water, i * 3, 3);
+            }
+            alphas[0] = (float) w.oceanShallowAlpha();
+            alphas[1] = (float) w.oceanDeepAlpha();
+            alphas[2] = (float) w.riverShallowAlpha();
+            alphas[3] = (float) w.riverDeepAlpha();
+        }
         double fog = cover * sample.fogShare();
         if (!(fog > 0 && sample.fogEnd() > 0)) {
-            return new WorldStreamTransport.Sky(horizon, top, 0, 0, 0, direct, ambient, lit);
+            return new WorldStreamTransport.Sky(
+                    horizon, top, 0, 0, 0, direct, ambient, lit, water, alphas, wet);
         }
         // Whole yards, as the camera line carries them; the start stays at least a yard before
         // the end so the fog remains a ramp, and an end under a yard is no fog.
         long end = Math.min(Math.round(sample.fogEnd()), WorldStreamTransport.Sky.MAX_YARDS);
         if (end < 1) {
-            return new WorldStreamTransport.Sky(horizon, top, 0, 0, 0, direct, ambient, lit);
+            return new WorldStreamTransport.Sky(
+                    horizon, top, 0, 0, 0, direct, ambient, lit, water, alphas, wet);
         }
         long start =
                 Math.min(Math.round(end * Math.clamp(sample.fogScaler(), 0, 1)), end - 1);
         return new WorldStreamTransport.Sky(
-                horizon, top, Math.min(1, fog), start, end, direct, ambient, lit);
+                horizon, top, Math.min(1, fog), start, end, direct, ambient, lit, water, alphas,
+                wet);
     }
 
     /** A local clock time as LightData half-minutes (0..2879). */

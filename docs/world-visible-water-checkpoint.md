@@ -37,7 +37,7 @@ terrain header total.
   | Offset | Content |
   | --- | --- |
   | 0 | magic `VIMIWTR1` |
-  | 8 | version 2 (version 1 had no colours and is refused) |
+  | 8 | version 3 (older versions are refused) |
   | 12 | cells |
   | 16 | vertices (= 4 × cells) |
   | 20 | indices (= 6 × cells) |
@@ -50,7 +50,8 @@ terrain header total.
 
 - **Body:** float32 positions as native x north, y west, z up; then u8 depths; then u8 RGB per
   vertex (the liquid's colour: water teal, or a magma, fel or tar LiquidType colour, #171); then
-  u32 indices. That is 16 bytes per vertex plus 4 per index.
+  a u8 liquid kind per vertex (0 river or lake, 1 ocean, 2 flat liquid; version 3); then u32
+  indices. That is 17 bytes per vertex plus 4 per index.
 - **Child-side validation:**
   - geometry SHA, ROOT FDID and ROOT CKey equal the terrain header;
   - counts are exact;
@@ -64,9 +65,10 @@ terrain header total.
   - If the restore is confirmed, the producer moves terrain-only, because water never removes
     terrain.
   - Otherwise the producer fails and the packet is deleted.
-- **Bound:** the maximum water trailer is 721,024 B (622,720 B before version 2's per-vertex
-  colours added 98,304 B). With the terrain packet at 2,581,504 B since packet version 4 (#373),
-  `MAX_PACKET_BYTES` is 3,302,528 B plus the optional splat trailer. (The first water version
+- **Bound:** the maximum water trailer is 753,792 B (622,720 B, plus 98,304 B for version 2's
+  per-vertex colours and 32,768 B for version 3's liquid kinds). With the terrain packet at
+  2,581,504 B since packet version 4 (#373), `MAX_PACKET_BYTES` is 3,335,296 B plus the optional
+  splat trailer. (The first water version
   grew it 2,284,544 → 2,907,264.)
 
 ## Memory (logical)

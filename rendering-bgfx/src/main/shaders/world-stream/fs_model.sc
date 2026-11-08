@@ -6,11 +6,15 @@ uniform vec4 u_worldAtlas;
 // The World light (#373): [0] direction toward the light, w 1 when lighting is on; [1] diffuse rgb;
 // [2] ambient rgb. A surface is its albedo times ambient + diffuse * max(0, n . direction).
 uniform vec4 u_worldLight[3];
+// The water light (#171): ocean close, ocean far, river close, river far; rgb 0..255 and the
+// opacity in w (shallow for close, deep for far). Used only by water draws (u_worldAtlas.w < 0).
+uniform vec4 u_worldWater[4];
 // No discard, so terrain keeps early depth testing. Chunks wholly past the cut are culled on the
 // CPU; the few triangles of a straddling chunk drawn past it are fully fogged into the sky.
 void main()
 {
     float fade = splatFade(v_uvFog.xy);
+    float alpha = 1.0;
     float maskLod = splatMaskLod(v_uvFog.xy);
     vec3 base = v_color.rgb * 255.0;
     if (u_worldAtlas.w > 0.5) {
@@ -25,11 +29,23 @@ void main()
             base = mix(min(tinted, vec3_splat(255.0)), texel.rgb * 255.0, max(fade, 1.0 - splat.a));
         }
     }
+    if (u_worldAtlas.w < -0.5) {
+        // Water draws carry depth (0..1) and the liquid kind (0 river, 1 ocean, 2 flat) in the
+        // MCCV slot. Water blends its close and far colour and opacity by depth; a flat liquid
+        // (magma, fel, tar) is its own colour, opaque.
+        float kind = floor(v_mccv.g * 255.0 + 0.5);
+        float depth = v_mccv.r;
+        vec4 close = kind > 0.5 ? u_worldWater[0] : u_worldWater[2];
+        vec4 far = kind > 0.5 ? u_worldWater[1] : u_worldWater[3];
+        vec4 water = mix(close, far, depth);
+        base = kind > 1.5 ? v_color.rgb * 255.0 : water.rgb;
+        alpha = kind > 1.5 ? 1.0 : water.a;
+    }
     float squared = dot(v_normal, v_normal);
     float lambert = max(0.0, dot(v_normal * inversesqrt(max(squared, 1e-6)), u_worldLight[0].xyz));
     // Lit only when lighting is on and the vertex has a normal (water has none).
     float lit = u_worldLight[0].w * step(0.25, squared);
     base *= mix(vec3_splat(1.0), u_worldLight[2].rgb + u_worldLight[1].rgb * lambert, lit);
     vec3 rgb = floor(base * (1.0 - v_uvFog.z) + v_fogColor * v_uvFog.z);
-    gl_FragColor = vec4(rgb / 255.0, 1.0);
+    gl_FragColor = vec4(rgb / 255.0, alpha);
 }
