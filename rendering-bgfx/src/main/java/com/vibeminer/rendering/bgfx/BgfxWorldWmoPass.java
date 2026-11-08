@@ -96,7 +96,8 @@ final class BgfxWorldWmoPass implements AutoCloseable {
             material = INVALID,
             fog = INVALID,
             fogRange = INVALID,
-            skyTop = INVALID;
+            skyTop = INVALID,
+            light = INVALID;
     private long meshBytes, textureBytes;
     private int liveStaging, peakMeshStaging, peakTextureStaging, skippedFrames;
     private boolean closed;
@@ -155,6 +156,9 @@ final class BgfxWorldWmoPass implements AutoCloseable {
             fog = valid(bgfx_create_uniform("u_wmoFog", BGFX_UNIFORM_TYPE_VEC4, 1));
             skyTop = valid(bgfx_create_uniform("u_wmoSkyTop", BGFX_UNIFORM_TYPE_VEC4, 1));
             fogRange = valid(bgfx_create_uniform("u_wmoFogRange", BGFX_UNIFORM_TYPE_VEC4, 1));
+            // The shared object shader takes the World light (#373); this pass keeps the fixed
+            // light it always drew.
+            light = valid(bgfx_create_uniform("u_worldLight", BGFX_UNIFORM_TYPE_VEC4, 3));
             uploadMesh(canceled);
             uploadTextures(canceled, textureAccepted);
             batches = decoded.batches();
@@ -314,6 +318,7 @@ final class BgfxWorldWmoPass implements AutoCloseable {
             bgfx_set_uniform(fog, stack.floats(WorldFog.LEGACY.fogUniform()), 1);
             bgfx_set_uniform(skyTop, stack.floats(WorldFog.LEGACY.topUniform()), 1);
             bgfx_set_uniform(fogRange, stack.floats(WorldFog.LEGACY.rangeUniform()), 1);
+            bgfx_set_uniform(light, stack.floats(WorldLight.FIXED.uniform(true)), 3);
             for (var batch : batches) {
                 bgfx_set_uniform(material, opaque, 1);
                 bgfx_set_uniform(eye, e, 1);
@@ -396,12 +401,13 @@ final class BgfxWorldWmoPass implements AutoCloseable {
             bgfx_destroy_program(program);
             program = INVALID;
         }
-        for (short u : new short[] {eye, projection, sampler, material, fog, fogRange, skyTop}) {
+        for (short u :
+                new short[] {eye, projection, sampler, material, fog, fogRange, skyTop, light}) {
             if (u != INVALID) {
                 bgfx_destroy_uniform(u);
             }
         }
-        eye = projection = sampler = material = fog = fogRange = skyTop = INVALID;
+        eye = projection = sampler = material = fog = fogRange = skyTop = light = INVALID;
         data = null;
         batches = List.of();
         materialImages = new int[0];

@@ -22,9 +22,12 @@ public final class WorldMeasurementTest {
         npcAnswersNameAppearanceResults();
         choiceReasonsCountOnlyUnqualifiedNpcs();
         waterIssueKindsKeepTheirTextAndGroupByNumber();
+        displayCensusCountsStandOutcomesPerCreatureDisplay();
+        displayCensusClassifiesGeosetCasesAndDefaults();
+        displayTableCensusCountsCasesAndSampleOrderIsFixed();
         System.out.println(
                 "World measurement: helper options, GC log pauses, the measurement World, NPC"
-                        + " outcomes, choice reasons and water issue kinds passed");
+                        + " outcomes, choice reasons, water issue kinds and the creature display census passed");
     }
 
     private static void waterIssueKindsKeepTheirTextAndGroupByNumber() {
@@ -288,5 +291,170 @@ public final class WorldMeasurementTest {
         worldRef[0] = new com.vibeminer.concepts.world.WorldService(tables, null, null);
         new NativePreparationWork.MeasurementWorld(tables, worldRef[0]).close();
         check(tablesClosed.get(), "tables closed after the World");
+    }
+
+    private static com.vibeminer.rendering.models.MeshAppearance parts(int... ids) {
+        var list = new java.util.ArrayList<com.vibeminer.rendering.models.PreviewMesh.Part>();
+        var surfaces = new java.util.ArrayList<com.vibeminer.rendering.models.MeshAppearance.Surface>();
+        int[] indices = new int[ids.length * 3];
+        for (int i = 0; i < ids.length; i++) {
+            list.add(new com.vibeminer.rendering.models.PreviewMesh.Part(ids[i], i * 3, 3));
+            surfaces.add(new com.vibeminer.rendering.models.MeshAppearance.Surface(i, 0, true, true, false));
+            indices[i * 3 + 1] = 1;
+            indices[i * 3 + 2] = 2;
+        }
+        return new com.vibeminer.rendering.models.MeshAppearance(
+                new com.vibeminer.rendering.models.PreviewMesh(
+                        new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, indices, list),
+                new float[6],
+                surfaces,
+                List.of(new com.vibeminer.rendering.models.MeshAppearance.Texture(1, 1, new int[] {-1})));
+    }
+
+    private static com.vibeminer.concepts.models.DisplayModelTypes.Preview preview(
+            long display, Long extended, Long geosetDataId, java.util.Map<Integer, Integer> rows,
+            com.vibeminer.rendering.models.MeshAppearance appearance) {
+        var reference =
+                new com.vibeminer.concepts.models.DisplayModelTypes.Reference(
+                        display, 1, 2, List.of(), extended, geosetDataId, rows);
+        return new com.vibeminer.concepts.models.DisplayModelTypes.Preview(
+                com.vibeminer.concepts.models.DisplayModelTypes.State.READY,
+                reference, appearance, java.util.Set.of(), List.of(), false, null);
+    }
+
+    /** The probe's Stand census (#377) counts each creature display's latest idle outcome. */
+    private static void displayCensusCountsStandOutcomesPerCreatureDisplay() {
+        var standing = WorldTileCreaturesTest.standing();
+        // The same triangle one unit higher: a different rest surface.
+        var other =
+                new com.vibeminer.rendering.models.MeshAppearance(
+                        new com.vibeminer.rendering.models.PreviewMesh(
+                                new float[] {0, 0, 1, 1, 0, 1, 0, 1, 1},
+                                new int[] {0, 1, 2},
+                                List.of(new com.vibeminer.rendering.models.PreviewMesh.Part(0, 0, 3))),
+                        new float[6],
+                        List.of(new com.vibeminer.rendering.models.MeshAppearance.Surface(0, 0, true, true, false)),
+                        List.of(new com.vibeminer.rendering.models.MeshAppearance.Texture(1, 1, new int[] {-1})));
+        var previews = new java.util.HashMap<Long, com.vibeminer.concepts.models.DisplayModelTypes.Preview>();
+        var idles = new java.util.HashMap<Long, com.vibeminer.concepts.models.DisplayModelTypes.Idle>();
+        previews.put(1L, preview(1, 0L, 0L, java.util.Map.of(), standing));
+        idles.put(1L, new com.vibeminer.concepts.models.DisplayModelTypes.Idle(
+                com.vibeminer.concepts.models.DisplayModelTypes.IdleState.AVAILABLE, null,
+                WorldTileCreaturesTest.lift(standing), "ok"));
+        previews.put(2L, preview(2, 0L, 0L, java.util.Map.of(), standing));
+        idles.put(2L, new com.vibeminer.concepts.models.DisplayModelTypes.Idle(
+                com.vibeminer.concepts.models.DisplayModelTypes.IdleState.UNSUPPORTED, null, null,
+                "Stand uses 3 global sequences"));
+        previews.put(3L, preview(3, 0L, 0L, java.util.Map.of(), other));
+        idles.put(3L, new com.vibeminer.concepts.models.DisplayModelTypes.Idle(
+                com.vibeminer.concepts.models.DisplayModelTypes.IdleState.AVAILABLE, null,
+                WorldTileCreaturesTest.lift(standing), "ok"));
+        // A character display: not a creature, not counted.
+        previews.put(4L, preview(4, 9L, 0L, java.util.Map.of(), standing));
+        idles.put(4L, idles.get(1L));
+        var census =
+                new WorldMeasurementProbe.DisplayCensus(
+                        new WorldTileCreatures.Previews() {
+                            @Override
+                            public com.vibeminer.concepts.models.DisplayModelTypes.Preview preview(
+                                    long display, Cancellation token) {
+                                return previews.get(display);
+                            }
+
+                            @Override
+                            public com.vibeminer.concepts.models.DisplayModelTypes.Idle idle(
+                                    long display, Cancellation token) {
+                                return idles.get(display);
+                            }
+                        });
+        try {
+            for (long display = 1; display <= 4; display++) {
+                census.preview(display, Cancellation.NONE);
+                census.idle(display, Cancellation.NONE);
+            }
+        } catch (Exception unexpected) {
+            throw new AssertionError(unexpected);
+        }
+        var tally = census.standTally(false);
+        check(
+                tally.equals(
+                        java.util.Map.of(
+                                "Stand pose", 1,
+                                "rest pose: UNSUPPORTED Stand uses # global sequences", 1,
+                                "rest pose: the Stand sequence belongs to another rest surface", 1)),
+                "Stand outcomes per creature display: " + tally);
+        check(census.standTally(true).equals(tally), "All three resolve their geosets: " + census.standTally(true));
+    }
+
+    /** The probe's geoset census (#455) names each display's case, rule outcome and defaults. */
+    private static void displayCensusClassifiesGeosetCasesAndDefaults() {
+        var census = new WorldMeasurementProbe.DisplayCensus((display, token) -> null);
+        // ID 0, no rows: group 1 has x00 only, group 2 both: drawn.
+        census.facts.put(1L, WorldMeasurementProbe.DisplayModelFacts.of(
+                preview(1, 0L, 0L, java.util.Map.of(), parts(0, 100, 200, 201)).reference(),
+                parts(0, 100, 200, 201).mesh()));
+        // ID 0: group 1 has x01 only: refused by the x00 default; group 3 neither.
+        census.facts.put(2L, WorldMeasurementProbe.DisplayModelFacts.of(
+                preview(2, 0L, 0L, java.util.Map.of(2, 1), parts(0, 101)).reference(),
+                parts(0, 101).mesh()));
+        census.facts.put(3L, WorldMeasurementProbe.DisplayModelFacts.of(
+                preview(3, 0L, 0L, java.util.Map.of(), parts(0, 302)).reference(),
+                parts(0, 302).mesh()));
+        // ID > 0 with a row choosing 101: drawn.
+        census.facts.put(4L, WorldMeasurementProbe.DisplayModelFacts.of(
+                preview(4, 0L, 5L, java.util.Map.of(1, 1), parts(0, 100, 101)).reference(),
+                parts(0, 100, 101).mesh()));
+        // ID unreadable: refused.
+        census.facts.put(5L, WorldMeasurementProbe.DisplayModelFacts.of(
+                preview(5, 0L, null, null, parts(0)).reference(), parts(0).mesh()));
+        var tally = census.geosetTally();
+        check(
+                tally.equals(
+                        java.util.Map.of(
+                                "ID 0, no rows -> drawn", 1,
+                                "ID 0, rows -> refused: geoset group # has no default x00 section", 1,
+                                "ID 0, no rows -> refused: geoset group # has no default x00 section", 1,
+                                "ID > 0, rows -> drawn", 1,
+                                "ID unreadable -> refused: creature geoset data could not be read", 1)),
+                "Geoset cases: " + tally);
+        var defaults = census.defaultCensus();
+        check(
+                defaults.equals(
+                        "3 displays; groups 1+: x00 only 1, x01 only 1, both 1, neither 1; with one"
+                                + " section 3, two 1, three or more 0; displays whose every group 1+ has"
+                                + " x00 1, x00 or x01 2, x01 1, x01 or a single section 3; displays with"
+                                + " group 0 sections other than 0: 0"),
+                "Default census: " + defaults);
+        check(
+                census.groupPatterns().equals(java.util.Map.of("0", 1, "0,1", 1, "1", 1, "2", 1)),
+                "Group patterns: " + census.groupPatterns());
+    }
+
+    /** The displays mode's table census and its fixed sample order (#377, #455). */
+    private static void displayTableCensusCountsCasesAndSampleOrderIsFixed() {
+        var census = new WorldMeasurementProbe.DisplayTableCensus();
+        census.add(false, 0L, false);
+        census.add(false, 0L, true);
+        census.add(false, 3L, true);
+        census.add(false, 3L, false);
+        census.add(false, 3L, false);
+        census.add(false, null, false);
+        census.add(true, 0L, false);
+        check(
+                census.counts.equals(
+                        java.util.Map.of(
+                                "ID 0, no rows", 1,
+                                "ID 0, rows", 1,
+                                "ID > 0, rows", 1,
+                                "ID > 0, no rows", 2,
+                                "model not in CreatureModelData", 1,
+                                "character display (extended display info), not counted by case", 1)),
+                "Table census: " + census.counts);
+        var ids = List.of(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L);
+        var order = WorldMeasurementProbe.sampleOrder(ids);
+        check(new java.util.HashSet<>(order).equals(new java.util.HashSet<>(ids)), "Every ID once: " + order);
+        check(!order.equals(ids), "Not ID order: " + order);
+        check(order.equals(WorldMeasurementProbe.sampleOrder(List.of(8L, 7L, 6L, 5L, 4L, 3L, 2L, 1L))),
+                "The same order whatever the input order");
     }
 }

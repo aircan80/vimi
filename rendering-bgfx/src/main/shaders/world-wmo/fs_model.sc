@@ -12,6 +12,10 @@ uniform vec4 u_wmoFog;
 uniform vec4 u_wmoSkyTop;
 // x: fog start depth, y: depth where fog reaches z, z: maximum fog, w: cut depth.
 uniform vec4 u_wmoFogRange;
+// The World light shared with terrain (#373, #177): [0] direction toward the light (w is terrain's
+// lighting switch, unused here), [1] diffuse rgb, [2] ambient rgb. A lit surface is its albedo
+// times ambient + diffuse * max(0, n . direction).
+uniform vec4 u_worldLight[3];
 void main()
 {
     vec4 sampled = texture2D(s_wmoDiffuse, v_wmoUv);
@@ -33,14 +37,15 @@ void main()
     float diffuse = 0.0;
     if (squared > 1e-12) {
         vec3 n = v_wmoNormal * inversesqrt(squared);
-        diffuse = max(0.0, dot(n, vec3(-0.408248290463863, -0.408248290463863, 0.816496580927726)));
+        diffuse = max(0.0, dot(n, u_worldLight[0].xyz));
     }
     float additive = step(1.5, u_wmoMaterial.w);
     float unlit = step(0.5, u_wmoMaterial.w - 2.0 * additive);
-    float intensity = mix((1.0 / 3.0) + (2.0 / 3.0) * diffuse, 1.0, unlit);
+    vec3 lit = u_worldLight[2].rgb + u_worldLight[1].rgb * diffuse;
+    vec3 intensity = mix(lit, vec3_splat(1.0), unlit);
     // Exterior groups start from the world light and add the texture times the vertex colour
     // (MOCV, #375) when u_wmoSkyTop.w is 1; a vertex without a colour adds nothing.
-    vec3 light = vec3_splat(intensity) + v_wmoColour * u_wmoSkyTop.w;
+    vec3 light = intensity + v_wmoColour * u_wmoSkyTop.w;
     float fog = clamp((v_wmoDepth - u_wmoFogRange.x) / (u_wmoFogRange.y - u_wmoFogRange.x), 0.0, u_wmoFogRange.z);
     // Fog toward the sky at this fragment's own elevation above the camera.
     float elevation = atan2(v_wmoRelative.z, max(length(v_wmoRelative.xy), 1e-6));

@@ -116,6 +116,23 @@ appearances, with no helper, GPU or JavaFX. It differs from the other modes in t
   generated store, as the application does, so a second run starts warm. Nothing is staged,
   published or downloaded.
 
+It also reports, per distinct creature display it previewed (#377, #455), the Stand pose outcome
+(Stand pose, or rest pose with the reason), the geoset case (the model's
+`CreatureGeosetDataID` 0 or above 0, with or without the display's own geoset rows) with the
+production geoset rule's outcome, and for displays whose model records no geoset data, how many
+of the model's geoset groups have an x00 section, an x01 section, both or neither.
+
+**Displays mode** (#377, #455, `-Pprobe.mode=displays`) is the same display census over the whole
+build, independent of spawns and of the Creature table:
+- from the tables, every creature display (no extended display info) by geoset case;
+- then the production preview and Stand sequence of one creature display per creature model
+  (its lowest display ID), in a fixed pseudo-random model order, until `-Pprobe.limit` models
+  or the deadline, with the reasons models have no static preview (for example, model files the
+  copy does not store).
+
+Like creatures mode, it uses the copy's loaded community keys and may add derived entries to the
+copy's generated store.
+
 **Prep mode** (#422) times the real source path one tile at a time, for a `probe.size` square
 (default 3) around each scenario centre. Per tile it runs:
 - `WorldTerrainStreaming.prepareAndWrite`, with a no-op output (`prep.terrain`);

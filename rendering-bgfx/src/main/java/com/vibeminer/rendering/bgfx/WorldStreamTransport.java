@@ -211,6 +211,11 @@ public final class WorldStreamTransport {
                 throw new IllegalArgumentException("Invalid recorded light");
             }
             lightWeight = Math.round(lightWeight * 1000) / 1000.0;
+            if (lightWeight == 0) {
+                // No recorded light: the line carries no colours, so none are kept either.
+                direct = new float[3];
+                ambient = new float[3];
+            }
             if (!(fogWeight >= 0 && fogWeight <= 1)
                     || !(recordedStart >= 0 && recordedStart <= MAX_YARDS)
                     || !(recordedEnd >= 0 && recordedEnd <= MAX_YARDS)) {

@@ -866,7 +866,9 @@ check.dependsOn preparedBuildReaderTest
 // JavaFX toolkit, and ends within ten minutes. -Pprobe.mode=creatures counts creature and humanoid
 // NPC outcomes per scenario through the production bridge, without a helper (#553); it uses the
 // copy's loaded community keys and may add decoded images or previews to the copy's generated
-// store, so a second run starts warm; -Pprobe.mode=refusals
+// store, so a second run starts warm; -Pprobe.mode=displays counts creature display Stand pose
+// and geoset outcomes over the whole build, one display per model until -Pprobe.limit or the
+// deadline (#377, #455), with the same keys and store use; -Pprobe.mode=refusals
 // counts terrain texture refusals over whole maps; -Pprobe.mode=water counts water outcomes over
 // every -Pprobe.stride-th tile (#171); -Pprobe.mode=prep times tile prep alone (#422).
 tasks.register('worldMeasurementProbe', JavaExec) {
@@ -892,7 +894,7 @@ tasks.register('worldMeasurementProbe', JavaExec) {
      'probe.rotateSeconds', 'probe.flySeconds', 'probe.settleSeconds', 'probe.mapSeconds',
      'probe.deadlineSeconds', 'probe.size', 'probe.passes', 'probe.objects',
      'vimi.world.objectTextures', 'vimi.world.creatures',
-     'vimi.gpu.backend', 'probe.stride'].each { name ->
+     'vimi.gpu.backend', 'probe.stride', 'probe.limit'].each { name ->
         def value = providers.gradleProperty(name)
         if (value.isPresent()) systemProperty name, value.get()
     }
