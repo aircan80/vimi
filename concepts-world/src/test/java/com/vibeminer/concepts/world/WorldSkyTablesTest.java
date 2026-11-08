@@ -366,4 +366,126 @@ final class WorldSkyTablesTest {
             good.closeAsync().join();
         }
     }
+
+    private static final List<Field> WATER_COLOURS =
+            List.of(
+                    new Field("OceanCloseColor", 1, false),
+                    new Field("OceanFarColor", 1, false),
+                    new Field("RiverCloseColor", 1, false),
+                    new Field("RiverFarColor", 1, false));
+    private static final List<Field> WATER_ALPHAS =
+            List.of(
+                    new Field("OceanShallowAlpha", 1, true),
+                    new Field("OceanDeepAlpha", 1, true),
+                    new Field("WaterShallowAlpha", 1, true),
+                    new Field("WaterDeepAlpha", 1, true));
+
+    /**
+     * The authored tables with the water light fields (#171): every LightData row gets ocean and
+     * river colours, and each LightParams row the given four opacities.
+     */
+    private static List<MemoryTables.FakeTable> withWater(String[] params100, String[] params200) {
+        var changed = tables(TableTypes.State.READY);
+        var paramFields = new ArrayList<>(PARAMS);
+        paramFields.addAll(WATER_ALPHAS);
+        var paramRows = new ArrayList<Db2Types.Row>();
+        for (var entry : List.of(Map.entry(100L, params100), Map.entry(200L, params200))) {
+            var values = new ArrayList<String>(List.of("0"));
+            values.addAll(List.of(entry.getValue()));
+            paramRows.add(row(entry.getKey(), values.toArray(String[]::new)));
+        }
+        changed.set(1, table(2, "LightParams", paramFields, paramRows));
+        var dataFields = new ArrayList<>(DATA);
+        dataFields.addAll(WATER_COLOURS);
+        var dataRows = new ArrayList<Db2Types.Row>();
+        for (var row : changed.get(2).rows()) {
+            var values = new ArrayList<>(row.values());
+            // 0x102030, 0x405060, 0x708090, 0xA0B0C0
+            values.addAll(List.of("1056816", "4214880", "7372944", "10531008"));
+            dataRows.add(row(row.id(), values.toArray(String[]::new)));
+        }
+        changed.set(2, table(3, "LightData", dataFields, dataRows));
+        return changed;
+    }
+
+    @Test
+    void waterColoursAndOpacitiesComeWithTheirLightDataAndLightParamsRows() {
+        String[] alphas = {"0.25", "0.75", "0.5", "1"};
+        try (var tables = open(withWater(alphas, alphas))) {
+            var sky = WorldSky.load(tables, Cancellation.NONE);
+            var near = sky.at(0, 1000, 0, 0, 600);
+            assertEquals(List.of(11L), near.contributions().getFirst().dataRows());
+            assertTrue(near.sample().hasWater(), String.join("\n", sky.sourceIssues()));
+            assertEquals(1, near.sample().waterShare(), 0);
+            assertEquals(
+                    new WorldSky.Water(0x102030, 0x405060, 0x708090, 0xA0B0C0, 0.25, 0.75, 0.5, 1),
+                    near.sample().water());
+            assertTrue(
+                    sky.sourceIssues().stream().noneMatch(i -> i.contains("Water light")),
+                    String.join("\n", sky.sourceIssues()));
+        }
+    }
+
+    @Test
+    void anOpacityOutsideZeroToOneDropsOnlyThatParameterSetsWaterLight() {
+        try (var tables =
+                open(
+                        withWater(
+                                new String[] {"0", "0", "0", "0"},
+                                new String[] {"0", "1.5", "0", "0"}))) {
+            var sky = WorldSky.load(tables, Cancellation.NONE);
+            assertTrue(
+                    sky.sourceIssues()
+                            .contains("1 LightParams rows have unreadable water opacities."),
+                    String.join("\n", sky.sourceIssues()));
+            var near = sky.at(0, 1000, 0, 0, 600);
+            // Row 11 belongs to parameter set 200: its sky and light stay, its water light does
+            // not.
+            assertEquals(0xCC88FF, near.sample().skyTop());
+            assertTrue(near.sample().hasLight());
+            assertFalse(near.sample().hasWater());
+            assertNull(near.sample().water());
+        }
+    }
+
+    @Test
+    void aSchemaWithoutWaterFieldsKeepsSkyFogAndLight() {
+        try (var tables = open(tables(TableTypes.State.READY))) {
+            var sky = WorldSky.load(tables, Cancellation.NONE);
+            assertTrue(
+                    sky.sourceIssues().stream()
+                            .anyMatch(
+                                    i ->
+                                            i.startsWith("Water light is unavailable")
+                                                    && i.contains("OceanCloseColor")),
+                    String.join("\n", sky.sourceIssues()));
+            var near = sky.at(0, 1000, 0, 0, 600);
+            assertTrue(near.sample().hasLight());
+            assertFalse(near.sample().hasWater());
+        }
+    }
+
+    @Test
+    void allZeroWaterColoursRecordNoWaterLight() {
+        String[] alphas = {"0.25", "0.75", "0.5", "1"};
+        var changed = withWater(alphas, alphas);
+        var rows = new ArrayList<Db2Types.Row>();
+        for (var row : changed.get(2).rows()) {
+            var values = new ArrayList<>(row.values());
+            if (row.id() == 11) {
+                for (int i = values.size() - 4; i < values.size(); i++) {
+                    values.set(i, "0");
+                }
+            }
+            rows.add(row(row.id(), values.toArray(String[]::new)));
+        }
+        var dataFields = new ArrayList<>(DATA);
+        dataFields.addAll(WATER_COLOURS);
+        changed.set(2, table(3, "LightData", dataFields, rows));
+        try (var tables = open(changed)) {
+            var near = WorldSky.load(tables, Cancellation.NONE).at(0, 1000, 0, 0, 600);
+            assertTrue(near.sample().hasLight());
+            assertFalse(near.sample().hasWater());
+        }
+    }
 }
