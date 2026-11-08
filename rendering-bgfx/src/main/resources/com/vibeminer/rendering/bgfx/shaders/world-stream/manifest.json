@@ -7,7 +7,7 @@
       "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
       "platform": "windows",
       "profile": "s_5_0",
-      "sha256": "7579e42ae5f9d792163c95f53b9aa2c45cd23833a897bccc8b66b6b466882447",
+      "sha256": "62df20ffc9f5705a13f190e3f1abb6234bb8c0e71f1bc65a311f1c00b299b855",
       "stage": "fragment"
     },
     "dx11/vs_model.bin": {
@@ -19,48 +19,48 @@
       "stage": "vertex"
     },
     "glsl/fs_model.bin": {
-      "compilerHost": "windows-x64",
-      "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
+      "compilerHost": "linux-x64",
+      "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
       "platform": "linux",
       "profile": "330",
-      "sha256": "cc554f0974602c65f2e2367b8889c2efcea8dc72210123e11d35f7f31cb5a5a1",
+      "sha256": "e9238db54d456e020337e9b1909f380faf0a867ce7b1f7589c3f9ec6e7b87ef3",
       "stage": "fragment"
     },
     "glsl/vs_model.bin": {
-      "compilerHost": "windows-x64",
-      "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
+      "compilerHost": "linux-x64",
+      "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
       "platform": "linux",
       "profile": "330",
       "sha256": "ce601288455b39c7d0f6448cec38cbf115cefe860a6cd4ba13ba18ed6caf75f8",
       "stage": "vertex"
     },
     "metal/fs_model.bin": {
-      "compilerHost": "windows-x64",
-      "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
+      "compilerHost": "linux-x64",
+      "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
       "platform": "osx",
       "profile": "metal",
-      "sha256": "61749f9ffe0a79fb0fd67011c21f5ffe5ce0b83f80e564e12885b528dc211642",
+      "sha256": "7bab1bd925f7b2cd7e46087eba174210b88682ef5fdf1ae6751d4b00aa61e319",
       "stage": "fragment"
     },
     "metal/vs_model.bin": {
-      "compilerHost": "windows-x64",
-      "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
+      "compilerHost": "linux-x64",
+      "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
       "platform": "osx",
       "profile": "metal",
       "sha256": "696bbb2650da095a1cd4f0bf0cd88e05af756f769744208fb6cb503bead89de5",
       "stage": "vertex"
     },
     "spirv/fs_model.bin": {
-      "compilerHost": "windows-x64",
-      "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
+      "compilerHost": "linux-x64",
+      "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
       "platform": "linux",
       "profile": "spirv",
-      "sha256": "007a086f01c4335795dd3b9aabad3c5b141fb90cd1a4470a23e31e775d2c1f3b",
+      "sha256": "7cc675943c80680e739abd6fe0364d6e7213e87bbf962faf2b0e1fff7bab9d67",
       "stage": "fragment"
     },
     "spirv/vs_model.bin": {
-      "compilerHost": "windows-x64",
-      "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
+      "compilerHost": "linux-x64",
+      "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
       "platform": "linux",
       "profile": "spirv",
       "sha256": "6d7716415dee71631ae06e4233eebe28734eade1242101d077eb70d5cca8d381",
@@ -70,8 +70,8 @@
   "format": "vimi-bgfx-shaders-v1",
   "inputs": {
     "bgfx_shader.sh": "5ad79a2ff5d1b1fd1f22d986f2b0b5dc49f89ffd5ce18e57966b6ab894094508",
-    "fs_model.sc": "be8daa84256330fc3c5ef9cb1bd3ed1b0b9e2fbbf4b984a5fe12557da095752a",
-    "splat.sh": "5559fae6172481cea5c867a0d71732ba50610036c77cb6089276a6c4a6c5ce85",
+    "fs_model.sc": "e33f5844085a79274f695168f0b762d8fae86870f1475a09c74197665b1a3c85",
+    "splat.sh": "ec22a589ae43557c83110eafff930769bf5b12e73aed312b5a3d296bf2097575",
     "varying.def.sc": "c5c1f013684df5b511e82f452b3a221214a761ca3e81431b40fcc4f3e00ffff8",
     "vs_model.sc": "4c42b8c2fbcbf38a22f463ffa44f733f59aaf72cf08d6df7265027248c3b6966"
   },
