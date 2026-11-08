@@ -436,8 +436,8 @@ public final class WorldTextureFormats {
             }
             input.position(s.end());
         }
-        if (heights == null && diffuse != null) {
-            // No height textures declared: carried as zero IDs, one per diffuse.
+        if ((heights == null || heights.isEmpty()) && diffuse != null) {
+            // No height textures declared (or an empty MHID): carried as zero IDs, one per diffuse.
             heights = Collections.nCopies(diffuse.size(), 0L);
         }
         if (!version
@@ -604,7 +604,8 @@ public final class WorldTextureFormats {
     }
 
     private static List<Long> ids(ByteBuffer input, Slice bounds) {
-        if (bounds.length() < 4 || bounds.length() > 64 * 4 || bounds.length() % 4 != 0) {
+        // An empty list is valid: a tile whose chunks declare no layers needs no textures.
+        if (bounds.length() > 64 * 4 || bounds.length() % 4 != 0) {
             throw invalid("Texture ID array bound");
         }
         var result = new ArrayList<Long>();
