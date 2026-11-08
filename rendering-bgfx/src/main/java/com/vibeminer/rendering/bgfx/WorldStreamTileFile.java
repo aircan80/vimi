@@ -326,7 +326,9 @@ final class WorldStreamTileFile {
                                                 && alphaDepth == 8
                                                 && (encoding == Encoding.BC2 && alphaEncoding == 1
                                                         || encoding == Encoding.BC3
-                                                                && alphaEncoding == 7)),
+                                                                && alphaEncoding == 7
+                                                        || encoding == Encoding.PALETTED
+                                                                && alphaEncoding == 8)),
                         "Diffuse mip tuple");
             }
         }
