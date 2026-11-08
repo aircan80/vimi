@@ -232,7 +232,14 @@ class M2IdleAnimationTest {
     void unsupportedProfilesAreExplicit(int version) {
         refused("MODEL_UNSUPPORTED", a -> a.buffer.putShort(a.sequence(1), (short) 5), version);
         refused("MODEL_UNSUPPORTED", a -> a.buffer.putShort(a.sequence(1) + 2, (short) 1), version);
-        refused("MODEL_UNSUPPORTED", a -> a.buffer.putInt(a.sequence(1) + 12, 0x60), version);
+        // An alias Stand whose target keeps its keys outside the model.
+        refused(
+                "MODEL_UNSUPPORTED",
+                a -> {
+                    a.buffer.putInt(a.sequence(1) + 12, 0x60);
+                    a.buffer.putInt(a.sequence(0) + 12, 0);
+                },
+                version);
         refused("MODEL_UNSUPPORTED", a -> a.buffer.putInt(a.sequence(1) + 12, 0), version);
         refused("MODEL_UNSUPPORTED", a -> a.buffer.putInt(a.sequence(1) + 4, 0), version);
         refused("MODEL_UNSUPPORTED", a -> a.buffer.putShort(a.track(0, 16), (short) 2), version);
@@ -382,6 +389,76 @@ class M2IdleAnimationTest {
                                 }
                             },
                             12);
+                },
+                version);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void aliasStandPlaysTheSequenceItsChainEndsAt(int version) {
+        // Stand (index 1) aliases Walk (index 0): Walk's keys and duration play.
+        var idle =
+                read(
+                        authored(
+                                version,
+                                a -> {
+                                    a.buffer.putInt(a.sequence(1) + 12, 0x60);
+                                    a.buffer.putShort(a.sequence(1) + 62, (short) 0);
+                                    a.keys(
+                                            0,
+                                            16,
+                                            1,
+                                            -1,
+                                            2,
+                                            0,
+                                            new int[] {0, 800},
+                                            v ->
+                                                    v.putFloat(0)
+                                                            .putFloat(0)
+                                                            .putFloat(0)
+                                                            .putFloat(0)
+                                                            .putFloat(4)
+                                                            .putFloat(0),
+                                            12);
+                                }));
+        assertEquals(0, idle.sequenceIndex());
+        assertEquals(800, idle.durationMillis());
+        var translation = idle.bones().get(0).translation();
+        assertArrayEquals(new int[] {0, 800}, translation.times());
+        assertArrayEquals(new float[] {0, 0, 0, 0, 4, 0}, translation.values());
+        // Walk's rotation track has no slice 0 keys; Stand's own slice is not used.
+        assertNull(idle.bones().get(0).rotation());
+        // Global tracks keep their own clock whichever sequence plays.
+        assertEquals(0, idle.bones().get(1).scale().globalSequence());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void brokenAliasChainsAreInvalid(int version) {
+        // Self alias.
+        refused(
+                "MODEL_INVALID",
+                a -> {
+                    a.buffer.putInt(a.sequence(1) + 12, 0x60);
+                    a.buffer.putShort(a.sequence(1) + 62, (short) 1);
+                },
+                version);
+        // Two sequences aliasing each other.
+        refused(
+                "MODEL_INVALID",
+                a -> {
+                    a.buffer.putInt(a.sequence(1) + 12, 0x60);
+                    a.buffer.putShort(a.sequence(1) + 62, (short) 0);
+                    a.buffer.putInt(a.sequence(0) + 12, 0x60);
+                    a.buffer.putShort(a.sequence(0) + 62, (short) 1);
+                },
+                version);
+        // An alias past the declared sequences.
+        refused(
+                "MODEL_INVALID",
+                a -> {
+                    a.buffer.putInt(a.sequence(1) + 12, 0x60);
+                    a.buffer.putShort(a.sequence(1) + 62, (short) 2);
                 },
                 version);
     }
