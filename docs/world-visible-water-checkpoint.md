@@ -37,7 +37,7 @@ terrain header total.
   | Offset | Content |
   | --- | --- |
   | 0 | magic `VIMIWTR1` |
-  | 8 | version 1 |
+  | 8 | version 2 (version 1 had no colours and is refused) |
   | 12 | cells |
   | 16 | vertices (= 4 × cells) |
   | 20 | indices (= 6 × cells) |
@@ -48,7 +48,9 @@ terrain header total.
   | 72 | ROOT CKey |
   | 88 onward | zero |
 
-- **Body:** float32 positions as native x north, y west, z up; then u8 depths; then u32 indices.
+- **Body:** float32 positions as native x north, y west, z up; then u8 depths; then u8 RGB per
+  vertex (the liquid's colour: water teal, or a magma, fel or tar LiquidType colour, #171); then
+  u32 indices. That is 16 bytes per vertex plus 4 per index.
 - **Child-side validation:**
   - geometry SHA, ROOT FDID and ROOT CKey equal the terrain header;
   - counts are exact;
@@ -62,8 +64,10 @@ terrain header total.
   - If the restore is confirmed, the producer moves terrain-only, because water never removes
     terrain.
   - Otherwise the producer fails and the packet is deleted.
-- **Bound:** `MAX_PACKET_BYTES` grows 2,284,544 → 2,907,264. The extra 622,720 B is the maximum
-  water trailer.
+- **Bound:** the maximum water trailer is 721,024 B (622,720 B before version 2's per-vertex
+  colours added 98,304 B). With the terrain packet at 2,581,504 B since packet version 4 (#373),
+  `MAX_PACKET_BYTES` is 3,302,528 B plus the optional splat trailer. (The first water version
+  grew it 2,284,544 → 2,907,264.)
 
 ## Memory (logical)
 
@@ -225,8 +229,9 @@ no frame within its window, which is a probe settle issue to retry on the measur
   structure errors (headers, instance tables, attributes, bitmaps, direct format-0 streams) still
   make the root MALFORMED.
 - **Formats 1 and 3 have known lengths** (8 and 9 bytes per vertex), so magma and slime instances
-  are overlap- and bounds-checked and stated UNSUPPORTED_LAYOUT. They no longer hide the tile's
-  water as UNRESOLVED_FOOTPRINT. Only an unknown format still does.
+  are overlap- and bounds-checked. They are drawn in their LiquidType's `MinimapStaticCol` when
+  that row was observed (#171), and stated UNSUPPORTED_LAYOUT otherwise. They never hide the
+  tile's water as UNRESOLVED_FOOTPRINT. Only an unknown format still does.
 - **Issues are visible.** `WorldWaterPreview.Facts.issues()` carries the owner's notes: refused
   instances, a disagreeing LiquidType row 2, and declared levels other than 0. The bridge appends
   them to the tile's water note, and the World summary reports "water source notes on N tiles"

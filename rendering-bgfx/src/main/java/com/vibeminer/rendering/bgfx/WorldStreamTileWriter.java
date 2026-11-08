@@ -801,11 +801,25 @@ public final class WorldStreamTileWriter {
         public static final int MAX_CELLS = WorldStreamTileFile.MAX_WATER_CELLS;
         private final WorldStreamTileFile.Water wire;
 
+        /** The colour of water without a liquid colour of its own, 0xRRGGBB. */
+        public static final int WATER_RGB = WorldStreamTileFile.WATER_RGB;
+
         /** Copies every array. Native axes: x north, y west, z up; fixed per-cell indices. */
         public Water(float[] positions, byte[] depths, int[] indices, int layers) {
             wire =
                     new WorldStreamTileFile.Water(
                             positions.clone(), depths.clone(), indices.clone(), layers);
+        }
+
+        /** As above, with each vertex's RGB colour (three bytes per vertex). */
+        public Water(float[] positions, byte[] depths, byte[] colours, int[] indices, int layers) {
+            wire =
+                    new WorldStreamTileFile.Water(
+                            positions.clone(),
+                            depths.clone(),
+                            colours.clone(),
+                            indices.clone(),
+                            layers);
         }
 
         public int cells() {
@@ -819,6 +833,10 @@ public final class WorldStreamTileWriter {
 
         public byte[] depths() {
             return wire.depths().clone();
+        }
+
+        public byte[] colours() {
+            return wire.colours().clone();
         }
 
         public int[] indices() {
