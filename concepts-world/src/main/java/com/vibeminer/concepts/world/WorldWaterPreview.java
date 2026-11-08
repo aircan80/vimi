@@ -257,6 +257,14 @@ public final class WorldWaterPreview {
             return checked().planar(layer);
         }
 
+        /**
+         * The layer's flat colour as 0xRRGGBB (LiquidType MinimapStaticCol) for magma, slime and
+         * tar layers (vertex formats 1 and 3), or -1 for water.
+         */
+        public int colour(int layer) {
+            return checked().colour(layer);
+        }
+
         /** Actual height at one sample of the layer's (width + 1) x (height + 1) grid. */
         public float usedHeight(int layer, int vertex) {
             return checked().actualUsedHeight(layer, vertex);

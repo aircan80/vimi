@@ -299,4 +299,52 @@ final class WorldStreamTileWaterTest {
                 IllegalArgumentException.class,
                 () -> new WorldStreamTileFile.Water(new float[0], new byte[0], new int[0], 1));
     }
+
+    /**
+     * #171: each water vertex's liquid colour survives the trailer and reaches its packed vertex.
+     */
+    @Test
+    void liquidColoursRoundTripAndColourTheirPackedVertices() throws Exception {
+        var tile = WorldStreamTileFileTest.full(true);
+        var header = WorldStreamTileFileTest.header(tile, true);
+        var before = terrain(tile, true);
+        var plain = water(2, 0);
+        // Cell 0 water, cell 1 magma orange.
+        byte[] colours = WorldStreamTileFile.Water.fill(8, WorldStreamTileFile.WATER_RGB);
+        byte[] magma = WorldStreamTileFile.Water.fill(4, 0xD06800);
+        System.arraycopy(magma, 0, colours, 12, 12);
+        var water =
+                new WorldStreamTileFile.Water(
+                        plain.positions(), plain.depths(), colours, plain.indices(), 2);
+        var expected = WorldStreamTileFile.appendWater(path(), before, header, water, () -> false);
+        var input = WorldStreamTileFile.read(path(), expected, () -> false);
+        assertArrayEquals(colours, input.water().colours());
+        try (var packed = WorldStreamPackedTile.prepare(input, () -> false);
+                var source = packed.take()) {
+            var data = source.geometry.duplicate().order(java.nio.ByteOrder.nativeOrder());
+            for (int v = 0; v < 8; v++) {
+                int at = (source.terrainVertices + v) * WorldStreamPackedTile.VERTEX_BYTES + 12;
+                int rgb =
+                        (data.get(at) & 255) << 16
+                                | (data.get(at + 1) & 255) << 8
+                                | data.get(at + 2) & 255;
+                assertEquals(v < 4 ? WorldStreamTileFile.WATER_RGB : 0xD06800, rgb, "vertex " + v);
+            }
+        }
+        // A version 1 trailer (no colours) is refused, not misread.
+        byte[] bytes = Files.readAllBytes(path());
+        int trailer = bytes.length - WorldStreamTileFile.waterBytes(8, 12);
+        java.nio.ByteBuffer.wrap(bytes)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .putInt(trailer + 8, 1);
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        WorldStreamTileFile.readWater(
+                                java.nio.ByteBuffer.wrap(bytes, trailer, bytes.length - trailer)
+                                        .slice(),
+                                header,
+                                tile,
+                                () -> false));
+    }
 }

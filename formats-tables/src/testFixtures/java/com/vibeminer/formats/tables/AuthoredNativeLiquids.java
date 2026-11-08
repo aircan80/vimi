@@ -43,6 +43,16 @@ public final class AuthoredNativeLiquids implements AutoCloseable {
      */
     public AuthoredNativeLiquids(
             BuildFiles borrowed, int materialId, boolean includeCopy, boolean oceanRow) {
+        this(borrowed, materialId, includeCopy, oceanRow, 0);
+    }
+
+    /** As above, with every LiquidType row's MinimapStaticCol set to {@code minimapColour}. */
+    public AuthoredNativeLiquids(
+            BuildFiles borrowed,
+            int materialId,
+            boolean includeCopy,
+            boolean oceanRow,
+            int minimapColour) {
         if (materialId < 0 || materialId > 255) {
             throw new IllegalArgumentException("Authored material ID");
         }
@@ -86,7 +96,8 @@ public final class AuthoredNativeLiquids implements AutoCloseable {
                             Long.parseUnsignedLong(layout, 16),
                             materialId,
                             includeCopy,
-                            oceanRow);
+                            oceanRow,
+                            minimapColour);
             raw.put(type ? 1371380L : 1132538L, bytes);
             var decoded =
                     Db2Reader.open(
@@ -223,7 +234,8 @@ public final class AuthoredNativeLiquids implements AutoCloseable {
             long layout,
             int materialId,
             boolean includeCopy,
-            boolean oceanRow) {
+            boolean oceanRow,
+            int minimapColour) {
         var fields = new ArrayList<Field>();
         int prefix = 0, packedBits = 0;
         for (var f : definitions) {
@@ -306,6 +318,13 @@ public final class AuthoredNativeLiquids implements AutoCloseable {
             }
             for (int octet = 0; octet < (packedBits + 7) / 8; octet++) {
                 b.put(start + row * recordSize + prefix + octet, (byte) (packed >>> (octet * 8)));
+            }
+            for (var f : fields) {
+                if (type
+                        && f.kind() == 0
+                        && f.definition().column().name().equals("MinimapStaticCol")) {
+                    b.putInt(start + row * recordSize + f.offset(), minimapColour);
+                }
             }
         }
         b.position(start + records * recordSize + 1);

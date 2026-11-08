@@ -956,6 +956,9 @@ final class WorldStreamSourceBridge {
 
             boolean planar(int layer);
 
+            /** The layer's flat colour, 0xRRGGBB, or -1 for the water colour. */
+            int colour(int layer);
+
             float north(int vertex);
 
             float west(int vertex);
@@ -974,6 +977,7 @@ final class WorldStreamSourceBridge {
                 @Override public int height(int layer) { return borrow.height(layer); }
                 @Override public long mask(int layer) { return borrow.mask(layer); }
                 @Override public boolean planar(int layer) { return borrow.planar(layer); }
+                @Override public int colour(int layer) { return borrow.colour(layer); }
                 @Override public float north(int vertex) { return borrow.north(vertex); }
                 @Override public float west(int vertex) { return borrow.west(vertex); }
                 @Override public float up(int vertex) { return borrow.up(vertex); }
@@ -1014,11 +1018,18 @@ final class WorldStreamSourceBridge {
             }
             var positions = new float[quads * 12];
             var depths = new byte[quads * 4];
+            var colours = new byte[quads * 4 * 3];
             var indices = new int[quads * 6];
             int source = 0, quad = 0;
             for (int l = 0; l < copied; l++) {
                 token.check();
                 int cells = Long.bitCount(borrow.mask(l));
+                int rgb = borrow.colour(l);
+                if (rgb < -1 || rgb > 0xFFFFFF) {
+                    throw new IllegalArgumentException("Water colour");
+                }
+                rgb = rgb < 0 ? WorldStreamTileWriter.Water.WATER_RGB : rgb;
+                int first = quad;
                 if (mergeable(borrow, l)) {
                     // Cells are Y-major: NW of cell 0, NE of cell 7, SW of 56 and SE of 63.
                     int[] corners = {source, source + 4 * 7 + 1, source + 4 * 56 + 2,
@@ -1036,6 +1047,11 @@ final class WorldStreamSourceBridge {
                         quad++;
                     }
                 }
+                for (int v = first * 4; v < quad * 4; v++) {
+                    colours[v * 3] = (byte) (rgb >>> 16);
+                    colours[v * 3 + 1] = (byte) (rgb >>> 8);
+                    colours[v * 3 + 2] = (byte) rgb;
+                }
                 source += cells * 4;
             }
             // The source's explicit NE--SW diagonal for every quad.
@@ -1049,7 +1065,7 @@ final class WorldStreamSourceBridge {
                 indices[q * 6 + 5] = b + 3;
             }
             return new WaterCopy(
-                    new WorldStreamTileWriter.Water(positions, depths, indices, copied),
+                    new WorldStreamTileWriter.Water(positions, depths, colours, indices, copied),
                     sourceCells, copied, capped);
         }
 

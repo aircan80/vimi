@@ -14,7 +14,7 @@ import java.util.function.BooleanSupplier;
  * Raw ADT18 MH2O declarations. Layout decoding does not qualify LiquidType/Material or source IO.
  */
 public final class WorldLiquids {
-    public static final String REVISION = "adt18-mh2o-raw-height-depth0-declared-v2";
+    public static final String REVISION = "adt18-mh2o-raw-heights-013-declared-v3";
     public static final int MAX_PAYLOAD_BYTES = 2 << 20;
     private static final int HEADERS = 256 * 12;
 
@@ -236,6 +236,21 @@ public final class WorldLiquids {
      */
     public static DecodedLayer decodeHeightDepth0(
             RawLiquids owner, int ordinal, BooleanSupplier canceled) {
+        return decodeHeights(owner, ordinal, 0, canceled);
+    }
+
+    /**
+     * Low-level reader for a layer whose caller-qualified vertex format carries heights: 0 (height
+     * then depth, 5 bytes per vertex), 1 (height then two u16 texture coordinates, 8 bytes, as
+     * magma uses) or 3 (height, texture coordinates, then depth, 9 bytes, as slime uses). Each
+     * stream is a block per field over all vertices. Texture coordinates are not read; format 1 has
+     * no depth, which reads as zero.
+     */
+    public static DecodedLayer decodeHeights(
+            RawLiquids owner, int ordinal, int format, BooleanSupplier canceled) {
+        if (format != 0 && format != 1 && format != 3) {
+            throw new IllegalArgumentException("MH2O format without heights");
+        }
         Objects.requireNonNull(owner);
         Objects.requireNonNull(canceled);
         check(canceled);
@@ -246,9 +261,12 @@ public final class WorldLiquids {
         if (layer.vertexOffset() == 0) {
             throw new UnsupportedOperationException("MH2O vertex data absent");
         }
-        checkStreams(owner, ordinal, vertexCount(layer) * 5L, canceled);
+        long stride = format == 0 ? 5 : format == 1 ? 8 : 9;
+        checkStreams(owner, ordinal, vertexCount(layer) * stride, canceled);
         var input = ByteBuffer.wrap(owner.payload).order(ByteOrder.LITTLE_ENDIAN);
         int vertices = vertexCount(layer), p = (int) layer.vertexOffset();
+        // Depth follows the heights (format 0) or the heights and texture coordinates (format 3).
+        int depthAt = format == 0 ? p + vertices * 4 : format == 3 ? p + vertices * 8 : -1;
         long mask = presentCells(input, layer);
         var heights = new float[vertices];
         var depths = new byte[vertices];
@@ -256,7 +274,7 @@ public final class WorldLiquids {
             check(canceled);
             heights[v] = input.getFloat(p + v * 4);
             finite(heights[v]);
-            depths[v] = input.get(p + vertices * 4 + v);
+            depths[v] = depthAt < 0 ? 0 : input.get(depthAt + v);
         }
         int cells = layer.width() * layer.height();
         for (int c = 0; c < cells; c++) {

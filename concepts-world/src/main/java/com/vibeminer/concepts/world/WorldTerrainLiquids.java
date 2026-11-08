@@ -17,7 +17,7 @@ import java.util.concurrent.CompletableFuture;
  * all kept, as the source declares them.
  */
 final class WorldTerrainLiquids {
-    static final String REVISION = "source-mh2o-local-root-inspection-v3";
+    static final String REVISION = "source-mh2o-local-root-inspection-v4";
 
     /**
      * One root: 256 chunk headers with at most four instances each. Cells are bounded as if every
@@ -91,7 +91,8 @@ final class WorldTerrainLiquids {
             long mask,
             boolean planar,
             float[] heights,
-            byte[] depth) {}
+            byte[] depth,
+            int colour) {}
 
     @FunctionalInterface
     interface Read<T> {
@@ -340,6 +341,15 @@ final class WorldTerrainLiquids {
         float actualUsedHeight(int ordinal, int vertex) {
             var l = layer(ordinal);
             return l.heights()[Objects.checkIndex(vertex, l.heights().length)];
+        }
+
+        /**
+         * The layer's flat colour as 0xRRGGBB, the client's LiquidType MinimapStaticCol, for the
+         * non-water liquids (vertex formats 1 and 3: magma, slime, tar); -1 for water, which keeps
+         * the renderer's water colour.
+         */
+        int colour(int ordinal) {
+            return layer(ordinal).colour();
         }
 
         int depth(int ordinal, int vertex) {
@@ -708,9 +718,11 @@ final class WorldTerrainLiquids {
             // value below 42 is the format itself; LiquidType 2 with a LiquidObject is depth-only
             // (format 2) without a table lookup; any other type takes its qualified
             // LiquidType -> LiquidMaterial LVF. Formats 0 (height and depth) and 2 (depth only)
-            // are water; the rest (magma, slime) stay unsupported.
+            // are water. Formats 1 and 3 (magma, slime, tar) are drawn in their LiquidType's flat
+            // colour when that row was observed; otherwise they stay unsupported.
             var formats = new int[raw.layers().size()];
             var supported = new boolean[raw.layers().size()];
+            var colours = new int[raw.layers().size()];
             boolean unknown = false;
             for (var l : raw.layers()) {
                 token.check();
@@ -723,9 +735,15 @@ final class WorldTerrainLiquids {
                                                 ? materials.value(types.value(l.liquidType()))
                                                 : -1;
                 formats[l.ordinal()] = format;
-                supported[l.ordinal()] = format == 0 || format == 2;
-                // Formats 1 and 3 (magma, slime) are not drawn, but their stream lengths are
-                // known, so they are still checked for overlaps instead of hiding the tile.
+                boolean coloured =
+                        (format == 1 || format == 3)
+                                && types != null
+                                && types.ids().contains((long) l.liquidType());
+                supported[l.ordinal()] = format == 0 || format == 2 || coloured;
+                colours[l.ordinal()] =
+                        coloured ? types.minimapColour(l.liquidType()) & 0xFFFFFF : -1;
+                // Every known format's stream length is checked for overlaps, drawn or not, so an
+                // undrawn instance never hides the tile.
                 if (stride(format) == 0 && l.vertexOffset() != 0) {
                     unknown = true;
                 }
@@ -744,7 +762,7 @@ final class WorldTerrainLiquids {
                 // All nonzero streams have a known footprint. A pair of overlapping streams
                 // refuses both instances; the rest of the tile still decodes.
                 var refused = validateKnownStreams(raw, supported, formats);
-                decode(output, root, supported, formats, refused, token);
+                decode(output, root, supported, formats, colours, refused, token);
             }
         } catch (WorldLiquidTables.Unavailable optional) {
             if (optional.reason == WorldLiquidTables.Reason.SOURCE_CHANGED) {
@@ -894,6 +912,7 @@ final class WorldTerrainLiquids {
             Root root,
             boolean[] supported,
             int[] formats,
+            int[] colours,
             boolean[] refused,
             Cancellation token) {
         var result = new ArrayList<Layer>();
@@ -914,11 +933,12 @@ final class WorldTerrainLiquids {
                 continue;
             }
             WorldLiquids.DecodedLayer d;
-            if (formats[layer.ordinal()] == 0 && layer.vertexOffset() != 0) {
+            int format = formats[layer.ordinal()];
+            if (format != 2 && layer.vertexOffset() != 0) {
                 try {
                     d =
-                            WorldLiquids.decodeHeightDepth0(
-                                    root.raw(), layer.ordinal(), token::isCanceled);
+                            WorldLiquids.decodeHeights(
+                                    root.raw(), layer.ordinal(), format, token::isCanceled);
                 } catch (WorldLiquids.FormatException bad) {
                     // A bad instance (aliased stream, used height outside its bounds) is
                     // refused alone.
@@ -1006,7 +1026,8 @@ final class WorldTerrainLiquids {
                             mask,
                             planar,
                             heights,
-                            depth));
+                            depth,
+                            colours[layer.ordinal()]));
         }
         State state =
                 result.isEmpty()

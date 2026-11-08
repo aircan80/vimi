@@ -102,6 +102,47 @@ public final class WorldSky {
     }
 
     /**
+     * Recorded water light (#171): the close and far colours (0xRRGGBB) of ocean ({@code
+     * OceanCloseColor}, {@code OceanFarColor}) and of rivers and lakes ({@code RiverCloseColor},
+     * {@code RiverFarColor}) from LightData, and the shallow and deep opacities (0..1) from the
+     * row's LightParams: {@code OceanShallowAlpha}, {@code OceanDeepAlpha}, and {@code
+     * WaterShallowAlpha} and {@code WaterDeepAlpha} for rivers and lakes.
+     */
+    public record Water(
+            int oceanClose,
+            int oceanFar,
+            int riverClose,
+            int riverFar,
+            double oceanShallowAlpha,
+            double oceanDeepAlpha,
+            double riverShallowAlpha,
+            double riverDeepAlpha) {
+        public Water {
+            if (((oceanClose | oceanFar | riverClose | riverFar) & 0xff00_0000) != 0) {
+                throw new IllegalArgumentException("Colour is not 0xRRGGBB");
+            }
+            for (double alpha :
+                    new double[] {
+                        oceanShallowAlpha, oceanDeepAlpha, riverShallowAlpha, riverDeepAlpha
+                    }) {
+                if (!(alpha >= 0 && alpha <= 1)) {
+                    throw new IllegalArgumentException("Water opacity is not 0..1");
+                }
+            }
+        }
+
+        private int[] colours() {
+            return new int[] {oceanClose, oceanFar, riverClose, riverFar};
+        }
+
+        private double[] alphas() {
+            return new double[] {
+                oceanShallowAlpha, oceanDeepAlpha, riverShallowAlpha, riverDeepAlpha
+            };
+        }
+    }
+
+    /**
      * Sky, fog and light channels; colours are recorded 0xRRGGBB values. A recorded {@code FogEnd}
      * of 0 (or less) means the row records no distance fog. {@code fogShare} is how much of this
      * value had recorded fog (0..1): fog distance and scaler are averaged over that share only, so
@@ -110,7 +151,7 @@ public final class WorldSky {
      * lighting} and {@code lightShare} work the same way for the recorded light: {@code lighting}
      * is null exactly when {@code lightShare} is 0 (no recorded light here, for example when the
      * build's LightData has no light fields), and a key without light never pulls the light toward
-     * black.
+     * black. {@code water} and {@code waterShare} work the same way for the recorded water light.
      */
     public record Sample(
             int skyTop,
@@ -123,7 +164,9 @@ public final class WorldSky {
             double fogScaler,
             double fogShare,
             Lighting lighting,
-            double lightShare) {
+            double lightShare,
+            Water water,
+            double waterShare) {
         /** Number of sky colour channels, in {@link #colours()} order. */
         static final int COLOURS = 6;
 
@@ -141,6 +184,38 @@ public final class WorldSky {
             if (!(lightShare >= 0 && lightShare <= 1) || (lighting == null) != (lightShare == 0)) {
                 throw new IllegalArgumentException("Invalid light values");
             }
+            if (!(waterShare >= 0 && waterShare <= 1) || (water == null) != (waterShare == 0)) {
+                throw new IllegalArgumentException("Invalid water light values");
+            }
+        }
+
+        /** Sky, fog and light without recorded water light. */
+        public Sample(
+                int skyTop,
+                int skyMiddle,
+                int skyBand1,
+                int skyBand2,
+                int skySmog,
+                int skyFog,
+                double fogEnd,
+                double fogScaler,
+                double fogShare,
+                Lighting lighting,
+                double lightShare) {
+            this(
+                    skyTop,
+                    skyMiddle,
+                    skyBand1,
+                    skyBand2,
+                    skySmog,
+                    skyFog,
+                    fogEnd,
+                    fogScaler,
+                    fogShare,
+                    lighting,
+                    lightShare,
+                    null,
+                    0);
         }
 
         /** Sky and fog without recorded light. */
@@ -187,6 +262,26 @@ public final class WorldSky {
                 double fogEnd,
                 double fogScaler) {
             this(
+                    skyTop, skyMiddle, skyBand1, skyBand2, skySmog, skyFog, lighting, null, fogEnd,
+                    fogScaler);
+        }
+
+        /**
+         * A recorded LightData row with its water light, or none when {@code water} is null (the
+         * build has no water fields, or this row's are unreadable).
+         */
+        public Sample(
+                int skyTop,
+                int skyMiddle,
+                int skyBand1,
+                int skyBand2,
+                int skySmog,
+                int skyFog,
+                Lighting lighting,
+                Water water,
+                double fogEnd,
+                double fogScaler) {
+            this(
                     skyTop,
                     skyMiddle,
                     skyBand1,
@@ -197,7 +292,9 @@ public final class WorldSky {
                     fogEnd > 0 ? fogScaler : 0,
                     fogEnd > 0 ? 1 : 0,
                     lighting,
-                    lighting == null ? 0 : 1);
+                    lighting == null ? 0 : 1,
+                    water,
+                    water == null ? 0 : 1);
         }
 
         private Sample(
@@ -206,7 +303,10 @@ public final class WorldSky {
                 double fogScaler,
                 double fogShare,
                 int[] light,
-                double lightShare) {
+                double lightShare,
+                int[] waterColours,
+                double[] waterAlphas,
+                double waterShare) {
             this(
                     c[0],
                     c[1],
@@ -218,7 +318,46 @@ public final class WorldSky {
                     fogScaler,
                     fogShare,
                     lightShare > 0 ? new Lighting(light[0], light[1]) : null,
-                    lightShare > 0 ? Math.min(1, lightShare) : 0);
+                    lightShare > 0 ? Math.min(1, lightShare) : 0,
+                    waterShare > 0
+                            ? new Water(
+                                    waterColours[0],
+                                    waterColours[1],
+                                    waterColours[2],
+                                    waterColours[3],
+                                    Math.clamp(waterAlphas[0], 0, 1),
+                                    Math.clamp(waterAlphas[1], 0, 1),
+                                    Math.clamp(waterAlphas[2], 0, 1),
+                                    Math.clamp(waterAlphas[3], 0, 1))
+                            : null,
+                    waterShare > 0 ? Math.min(1, waterShare) : 0);
+        }
+
+        /** True when part of this value has recorded water light. */
+        public boolean hasWater() {
+            return waterShare > 0;
+        }
+
+        private int[] waterColours() {
+            return water == null ? new int[4] : water.colours();
+        }
+
+        private double[] waterAlphas() {
+            return water == null ? new double[4] : water.alphas();
+        }
+
+        private static void addAlphas(double[] sum, double[] alphas, double weight) {
+            for (int i = 0; i < alphas.length; i++) {
+                sum[i] += alphas[i] * weight;
+            }
+        }
+
+        private static double[] averaged(double[] sum, double share) {
+            double[] out = new double[sum.length];
+            for (int i = 0; i < sum.length; i++) {
+                out[i] = share > 0 ? sum[i] / share : 0;
+            }
+            return out;
         }
 
         /** True when part of this value has recorded distance fog. */
@@ -248,7 +387,8 @@ public final class WorldSky {
             }
             double[] sum = new double[COLOURS * 3];
             double[] lightSum = new double[2 * 3];
-            double fogEnd = 0, fogScaler = 0, fogShare = 0, lightShare = 0;
+            double fogEnd = 0, fogScaler = 0, fogShare = 0, lightShare = 0, waterShare = 0;
+            double[] waterSum = new double[4 * 3], alphaSum = new double[4];
             for (int i = 0; i < samples.size(); i++) {
                 var s = samples.get(i);
                 add(sum, s.colours(), weights[i]);
@@ -260,6 +400,10 @@ public final class WorldSky {
                 double lit = s.lightShare * weights[i];
                 add(lightSum, s.light(), lit);
                 lightShare += lit;
+                double wet = s.waterShare * weights[i];
+                add(waterSum, s.waterColours(), wet);
+                addAlphas(alphaSum, s.waterAlphas(), wet);
+                waterShare += wet;
             }
             return new Sample(
                     rounded(sum, 1),
@@ -267,7 +411,10 @@ public final class WorldSky {
                     fogShare > 0 ? fogScaler / fogShare : 0,
                     Math.min(1, fogShare),
                     lightShare > 0 ? rounded(lightSum, lightShare) : null,
-                    lightShare);
+                    lightShare,
+                    waterShare > 0 ? rounded(waterSum, waterShare) : null,
+                    averaged(alphaSum, waterShare),
+                    waterShare);
         }
 
         private static void add(double[] sum, int[] colours, double weight) {
@@ -305,13 +452,23 @@ public final class WorldSky {
             add(lightSum, a.light(), la);
             add(lightSum, b.light(), lb);
             int[] light = lit > 0 ? rounded(lightSum, lit) : null;
+            // Water light averages over the share of each key that records it, like light.
+            double ra = (1 - f) * a.waterShare, rb = f * b.waterShare, wet = ra + rb;
+            double[] waterSum = new double[4 * 3], alphaSum = new double[4];
+            add(waterSum, a.waterColours(), ra);
+            add(waterSum, b.waterColours(), rb);
+            addAlphas(alphaSum, a.waterAlphas(), ra);
+            addAlphas(alphaSum, b.waterAlphas(), rb);
             return new Sample(
                     out,
                     share > 0 ? (a.fogEnd * wa + b.fogEnd * wb) / share : 0,
                     share > 0 ? (a.fogScaler * wa + b.fogScaler * wb) / share : 0,
                     Math.min(1, share),
                     light,
-                    lit);
+                    lit,
+                    wet > 0 ? rounded(waterSum, wet) : null,
+                    averaged(alphaSum, wet),
+                    wet);
         }
 
         private static int colour(int a, int b, double f) {

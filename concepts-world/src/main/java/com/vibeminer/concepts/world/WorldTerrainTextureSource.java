@@ -1236,40 +1236,106 @@ public final class WorldTerrainTextureSource {
         }
     }
 
+    /** Most pixels read for a non-square diffuse's cell: a level of 4 x 1024 or 1024 x 4. */
+    static final int NON_SQUARE_PIXELS = 4096;
+
+    /** A non-square diffuse's 4 x 4 cell, with the level it was averaged from. */
+    private record NonSquare(byte[] pixels, int shortSide, Blp2Types.Image level) {}
+
     /**
-     * A non-square diffuse whose chain stops before a 4 x 4 level (for example 768 x 128 down to 6
-     * x 1) is reported as NON_SQUARE, the same reason as a non-square diffuse that has one, rather
-     * than as a missing mip. Reads only the 148-byte header again; any other failure is left to the
-     * caller.
+     * The atlas cell of a non-square diffuse, or null when the base is square. The client maps the
+     * whole texture across the chunk, stretched, so the cell is the box average of the level whose
+     * short side is 4 (for example 24 x 4 of a 768 x 128 chain). That level's index is
+     * log2(shortSide / 4), so the binding's {@code originalSide == 4 << level} rule holds with the
+     * short side. A short side that is not a power of two of at least 4, a missing level, or a
+     * level over {@link #NON_SQUARE_PIXELS} keeps a named refusal.
      */
-    private static void refuseNonSquare(
-            com.vibeminer.files.FileReadStream stream,
-            Blp2Types.Limits limits,
-            Request request,
-            RuntimeException failure) {
+    private static NonSquare nonSquare(com.vibeminer.files.FileReadStream stream, Request request) {
+        var source = AssetSources.file(stream);
+        var mips =
+                Blp2Decoder.readMipsSynchronous(
+                        source,
+                        new Blp2Types.Limits(
+                                DIFFUSE_SOURCE_LIMIT, 16384, 16384L * 16384, 1 << 20, 64),
+                        request.token,
+                        Blp2Types.MipProfile.DECLARED_HANDMADE_V1);
+        var base = mips.getFirst();
+        if (base.width() == base.height()) {
+            return null;
+        }
+        int shortSide = Math.min(base.width(), base.height());
+        int level = Integer.numberOfTrailingZeros(Math.max(1, shortSide / 4));
+        if (shortSide < 4 || Integer.bitCount(shortSide) != 1 || level > 12) {
+            throw new SourceFailure(Reason.DIFFUSE_PROFILE, DiffuseRefusal.NON_SQUARE);
+        }
+        if (level >= mips.size()) {
+            throw new SourceFailure(Reason.DIFFUSE_PROFILE, DiffuseRefusal.MIP_UNAVAILABLE);
+        }
+        var image =
+                Blp2Decoder.decodeSynchronous(
+                        source,
+                        level,
+                        new Blp2Types.Limits(
+                                DIFFUSE_SOURCE_LIMIT,
+                                16384,
+                                NON_SQUARE_PIXELS,
+                                1 << 20,
+                                NON_SQUARE_PIXELS * 4L),
+                        request.token,
+                        Blp2Types.MipProfile.DECLARED_HANDMADE_V1);
+        request.check();
+        if (Math.min(image.width(), image.height()) != 4) {
+            throw new SourceFailure(Reason.DIFFUSE_PROFILE, DiffuseRefusal.MIP_SHAPE);
+        }
+        return new NonSquare(
+                boxAverage(image.rgba(), image.width(), image.height(), 4, 4), shortSide, image);
+    }
+
+    /**
+     * Resamples tightly packed RGBA to {@code outWidth x outHeight}: each output pixel is the
+     * rounded mean of the source pixels its area covers, and at least the one under it, so
+     * enlarging an axis repeats pixels and shrinking one averages them.
+     */
+    static byte[] boxAverage(byte[] rgba, int width, int height, int outWidth, int outHeight) {
+        if (width < 1
+                || height < 1
+                || outWidth < 1
+                || outHeight < 1
+                || rgba.length != width * height * 4) {
+            throw new IllegalArgumentException("Invalid resample bounds");
+        }
+        byte[] out = new byte[outWidth * outHeight * 4];
+        for (int y = 0; y < outHeight; y++) {
+            int y0 = (int) ((long) y * height / outHeight);
+            int y1 = Math.max(y0 + 1, (int) ((long) (y + 1) * height / outHeight));
+            for (int x = 0; x < outWidth; x++) {
+                int x0 = (int) ((long) x * width / outWidth);
+                int x1 = Math.max(x0 + 1, (int) ((long) (x + 1) * width / outWidth));
+                long[] sum = new long[4];
+                for (int sy = y0; sy < y1; sy++) {
+                    for (int sx = x0; sx < x1; sx++) {
+                        int at = (sy * width + sx) * 4;
+                        for (int c = 0; c < 4; c++) {
+                            sum[c] += rgba[at + c] & 255;
+                        }
+                    }
+                }
+                long count = (long) (y1 - y0) * (x1 - x0);
+                int at = (y * outWidth + x) * 4;
+                for (int c = 0; c < 4; c++) {
+                    out[at + c] = (byte) ((sum[c] + count / 2) / count);
+                }
+            }
+        }
+        return out;
+    }
+
+    private static boolean mipUnavailable(Throwable failure) {
         Throwable cause = failure;
         for (int i = 0; i < 16 && cause.getCause() != null; i++) {
             cause = cause.getCause();
         }
-        if (!(cause instanceof BlpFormatException blp)
-                || !"BLP_MIP_UNAVAILABLE".equals(blp.code())) {
-            return;
-        }
-        List<Blp2Types.Mip> mips;
-        try {
-            mips =
-                    Blp2Decoder.readMipsSynchronous(
-                            AssetSources.file(stream),
-                            limits,
-                            request.token,
-                            Blp2Types.MipProfile.DECLARED_HANDMADE_V1);
-        } catch (RuntimeException unreadable) {
-            failure.addSuppressed(unreadable);
-            return;
-        }
-        if (!mips.isEmpty() && mips.getFirst().width() != mips.getFirst().height()) {
-            throw new SourceFailure(Reason.DIFFUSE_PROFILE, DiffuseRefusal.NON_SQUARE);
-        }
+        return cause instanceof BlpFormatException blp && "BLP_MIP_UNAVAILABLE".equals(blp.code());
     }
 
     private Decoded decodeTimed(FileBinding before, Request request) {
@@ -1286,7 +1352,8 @@ public final class WorldTerrainTextureSource {
                     DIFFUSE_SOURCE_LIMIT,
                     !stream.holes().isEmpty());
             var limits = new Blp2Types.Limits(DIFFUSE_SOURCE_LIMIT, 16384, 16, 1 << 20, 64);
-            Blp2Types.Image image;
+            Blp2Types.Image image = null;
+            RuntimeException unavailable = null;
             try {
                 image =
                         Blp2Decoder.decodeLargestWithin(
@@ -1296,16 +1363,37 @@ public final class WorldTerrainTextureSource {
                                         request.token,
                                         Blp2Types.MipProfile.DECLARED_HANDMADE_V1)
                                 .join();
-            } catch (RuntimeException unavailable) {
-                refuseNonSquare(stream, limits, request, unavailable);
-                throw unavailable;
+                request.check();
+            } catch (RuntimeException failure) {
+                if (!mipUnavailable(failure)) {
+                    throw failure;
+                }
+                unavailable = failure;
             }
-            request.check();
-            if (image.baseWidth() != image.baseHeight()) {
-                throw new SourceFailure(Reason.DIFFUSE_PROFILE, DiffuseRefusal.NON_SQUARE);
-            }
-            if (image.width() != 4 || image.height() != 4) {
-                throw new SourceFailure(Reason.DIFFUSE_PROFILE, DiffuseRefusal.MIP_SHAPE);
+            byte[] pixels;
+            int originalSide;
+            if (image != null && image.baseWidth() == image.baseHeight()) {
+                if (image.width() != 4 || image.height() != 4) {
+                    throw new SourceFailure(Reason.DIFFUSE_PROFILE, DiffuseRefusal.MIP_SHAPE);
+                }
+                pixels = image.rgba();
+                originalSide = image.baseWidth();
+            } else {
+                NonSquare cell;
+                try {
+                    cell = nonSquare(stream, request);
+                } catch (RuntimeException failure) {
+                    if (unavailable != null) {
+                        failure.addSuppressed(unavailable);
+                    }
+                    throw failure;
+                }
+                if (cell == null) {
+                    throw unavailable;
+                }
+                image = cell.level();
+                pixels = cell.pixels();
+                originalSide = cell.shortSide();
             }
             // Revalidated with the tile's other sources before publication.
             FileBinding actual =
@@ -1324,12 +1412,12 @@ public final class WorldTerrainTextureSource {
                             before.fileId(),
                             before.contentKey(),
                             profile,
-                            image.baseWidth(),
+                            originalSide,
                             image.mipLevel(),
-                            image.rgba()),
+                            pixels),
                     new MipBinding(
                             actual,
-                            image.baseWidth(),
+                            originalSide,
                             image.mipLevel(),
                             image.mipFlags(),
                             image.encoding().name(),
@@ -1394,16 +1482,26 @@ public final class WorldTerrainTextureSource {
                                 .join();
                 request.check();
                 int decoded = image.width();
-                if (decoded != image.height()
+                byte[] rgba = image.rgba();
+                if (image.baseWidth() != image.baseHeight()
+                        && image.rowStride() == image.width() * 4) {
+                    // Stretched across the chunk like the atlas cell: the level is resampled to
+                    // a square of its long side's power of two, at most one layer side.
+                    decoded =
+                            Math.min(
+                                    side,
+                                    Integer.highestOneBit(Math.max(image.width(), image.height())));
+                    rgba = boxAverage(rgba, image.width(), image.height(), decoded, decoded);
+                } else if (decoded != image.height()
                         || decoded > side
                         || Integer.bitCount(decoded) != 1
                         || image.baseWidth() != image.baseHeight()
                         || image.rowStride() != decoded * 4) {
-                    throw new SourceFailure(Reason.DIFFUSE_PROFILE);
+                    throw new SourceFailure(Reason.DIFFUSE_PROFILE, DiffuseRefusal.MIP_SHAPE);
                 }
                 chain =
                         com.vibeminer.rendering.world.TerrainLayerBlocks.encode(
-                                java.nio.ByteBuffer.wrap(image.rgba()), decoded);
+                                java.nio.ByteBuffer.wrap(rgba), decoded);
                 encoding[0] = image.encoding().name();
             }
             request.check();
