@@ -25,6 +25,8 @@ public final class WorldMeasurementTest {
         displayCensusCountsStandOutcomesPerCreatureDisplay();
         displayCensusClassifiesGeosetCasesAndDefaults();
         displayTableCensusCountsCasesAndSampleOrderIsFixed();
+        displayCensusSeparatesUnresolvedGeosetsAndGroupZeroVariants();
+        displaySampleCountsFailuresAndGoesOn();
         System.out.println(
                 "World measurement: helper options, GC log pauses, the measurement World, NPC"
                         + " outcomes, choice reasons, water issue kinds and the creature display census passed");
@@ -453,8 +455,106 @@ public final class WorldMeasurementTest {
         var ids = List.of(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L);
         var order = WorldMeasurementProbe.sampleOrder(ids);
         check(new java.util.HashSet<>(order).equals(new java.util.HashSet<>(ids)), "Every ID once: " + order);
-        check(!order.equals(ids), "Not ID order: " + order);
+        check(order.equals(List.of(1L, 6L, 3L, 8L, 5L, 2L, 7L, 4L)), "The golden-ratio order: " + order);
         check(order.equals(WorldMeasurementProbe.sampleOrder(List.of(8L, 7L, 6L, 5L, 4L, 3L, 2L, 1L))),
                 "The same order whatever the input order");
+    }
+
+    /**
+     * The census's "geosets resolved" Stand tally leaves out displays whose geosets refuse; group
+     * 0 sections other than 0 are counted; unknown rows and an unknown extended display ID are
+     * classified (#377, #455).
+     */
+    private static void displayCensusSeparatesUnresolvedGeosetsAndGroupZeroVariants() {
+        var resolved = parts(0, 1, 100); // resolves under the x00 and the x01 default
+        var refused = parts(1, 101); // group 0 without section 0
+        var previews = new java.util.HashMap<Long, com.vibeminer.concepts.models.DisplayModelTypes.Preview>();
+        previews.put(1L, preview(1, 0L, 0L, java.util.Map.of(), resolved));
+        previews.put(2L, preview(2, 0L, 0L, java.util.Map.of(), refused));
+        previews.put(3L, preview(3, 0L, 0L, null, parts(0)));
+        previews.put(4L, preview(4, null, 0L, java.util.Map.of(), parts(0)));
+        var census =
+                new WorldMeasurementProbe.DisplayCensus(
+                        new WorldTileCreatures.Previews() {
+                            @Override
+                            public com.vibeminer.concepts.models.DisplayModelTypes.Preview preview(
+                                    long display, Cancellation token) {
+                                return previews.get(display);
+                            }
+
+                            @Override
+                            public com.vibeminer.concepts.models.DisplayModelTypes.Idle idle(
+                                    long display, Cancellation token) {
+                                return new com.vibeminer.concepts.models.DisplayModelTypes.Idle(
+                                        com.vibeminer.concepts.models.DisplayModelTypes.IdleState.AVAILABLE,
+                                        null,
+                                        WorldTileCreaturesTest.lift(previews.get(display).appearance()),
+                                        "ok");
+                            }
+                        });
+        try {
+            for (long display = 1; display <= 4; display++) {
+                census.preview(display, Cancellation.NONE);
+                census.idle(display, Cancellation.NONE);
+            }
+        } catch (Exception unexpected) {
+            throw new AssertionError(unexpected);
+        }
+        check(census.standTally(false).equals(java.util.Map.of("Stand pose", 3)),
+                "All creature displays: " + census.standTally(false));
+        check(census.standTally(true).equals(java.util.Map.of("Stand pose", 2)),
+                "Only displays whose geosets resolve: " + census.standTally(true));
+        var cases = census.geosetTally();
+        check(cases.containsKey("ID 0, rows unknown -> drawn") && cases.values().stream().mapToInt(i -> i).sum() == 3,
+                "Unknown rows are their own case and an unknown extended display ID is not a creature: " + cases);
+        check(census.defaultCensus().endsWith("displays with group 0 sections other than 0: 2"),
+                "Group 0 variants: " + census.defaultCensus());
+    }
+
+    /** One failing preview or idle call is counted and the census goes on (#377). */
+    private static void displaySampleCountsFailuresAndGoesOn() {
+        var good = WorldTileCreaturesTest.standing();
+        var census =
+                new WorldMeasurementProbe.DisplayCensus(
+                        new WorldTileCreatures.Previews() {
+                            @Override
+                            public com.vibeminer.concepts.models.DisplayModelTypes.Preview preview(
+                                    long display, Cancellation token) {
+                                if (display == 1) throw new IllegalStateException("broken");
+                                return display == 2 ? null : WorldMeasurementTest.preview(display, 0L, 0L, java.util.Map.of(), good);
+                            }
+
+                            @Override
+                            public com.vibeminer.concepts.models.DisplayModelTypes.Idle idle(
+                                    long display, Cancellation token) {
+                                if (display == 3) throw new IllegalArgumentException("broken");
+                                if (display == 5)
+                                    throw new java.util.concurrent.CancellationException("closed");
+                                return new com.vibeminer.concepts.models.DisplayModelTypes.Idle(
+                                        com.vibeminer.concepts.models.DisplayModelTypes.IdleState.AVAILABLE,
+                                        null, WorldTileCreaturesTest.lift(good), "ok");
+                            }
+                        });
+        var unavailable = new java.util.TreeMap<String, Integer>();
+        try {
+            for (long display = 1; display <= 4; display++)
+                WorldMeasurementProbe.sample(census, display, unavailable);
+        } catch (Exception unexpected) {
+            throw new AssertionError(unexpected);
+        }
+        check(unavailable.equals(java.util.Map.of("preview failed: IllegalStateException", 1, "no static preview", 1)),
+                "Preview failures and missing previews: " + unavailable);
+        check(census.standTally(false).equals(
+                        java.util.Map.of("Stand pose", 1, "rest pose: Stand pose failed: IllegalArgumentException", 1)),
+                "Idle failure is a rest pose: " + census.standTally(false));
+        boolean canceled = false;
+        try {
+            WorldMeasurementProbe.sample(census, 5, unavailable);
+        } catch (java.util.concurrent.CancellationException expected) {
+            canceled = true;
+        } catch (Exception unexpected) {
+            throw new AssertionError(unexpected);
+        }
+        check(canceled, "Cancellation propagates");
     }
 }

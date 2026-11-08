@@ -585,6 +585,10 @@ public final class WorldMeasurementProbe {
         var displayData = tables.read("CreatureDisplayInfo", bound, Cancellation.NONE, issues);
         var modelData = tables.read("CreatureModelData", bound, Cancellation.NONE, issues);
         var rowData = tables.read("CreatureDisplayInfoGeosetData", bound, Cancellation.NONE, issues);
+        if (!modelData.has("CreatureGeosetDataID"))
+            issues.add(
+                    "CreatureModelData has no CreatureGeosetDataID column; every model reads as 0, as"
+                            + " the production reference does");
         var geosetDataId = new java.util.HashMap<Long, Long>();
         for (var row : modelData.rows())
             geosetDataId.put(
@@ -632,19 +636,7 @@ public final class WorldMeasurementProbe {
             for (long model : order) {
                 if (asked >= limit || !beforeDeadline()) break;
                 asked++;
-                long id = perModel.get(model);
-                var preview = display.preview(id, Cancellation.NONE);
-                if (preview == null || preview.appearance() == null) {
-                    unavailable.merge(
-                            DisplayCensus.reasonKind(
-                                    preview == null || preview.message() == null
-                                            ? "no static preview"
-                                            : preview.message()),
-                            1,
-                            Integer::sum);
-                    continue;
-                }
-                display.idle(id, Cancellation.NONE);
+                sample(display, perModel.get(model), unavailable);
             }
         } finally {
             previews.close();
@@ -675,6 +667,41 @@ public final class WorldMeasurementProbe {
         say("PROBE displays: sampled geoset groups 1+ by section values (ID 0)");
         for (var entry : display.groupPatterns().entrySet())
             say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+    }
+
+    /**
+     * Asks one display's preview and Stand sequence through the census. A preview without an
+     * appearance, or a preview call that throws, is counted in {@code unavailable} by reason; an
+     * idle call that throws is a rest pose with its failure, as the World's conversion records it.
+     * One failing model never ends the census; cancellation still propagates.
+     */
+    static void sample(DisplayCensus census, long id, Map<String, Integer> unavailable) throws Exception {
+        com.vibeminer.concepts.models.DisplayModelTypes.Preview preview;
+        try {
+            preview = census.preview(id, Cancellation.NONE);
+        } catch (java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        } catch (Exception failed) {
+            unavailable.merge("preview failed: " + failed.getClass().getSimpleName(), 1, Integer::sum);
+            return;
+        }
+        if (preview == null || preview.appearance() == null) {
+            unavailable.merge(
+                    DisplayCensus.reasonKind(
+                            preview == null || preview.message() == null
+                                    ? "no static preview"
+                                    : preview.message()),
+                    1,
+                    Integer::sum);
+            return;
+        }
+        try {
+            census.idle(id, Cancellation.NONE);
+        } catch (java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        } catch (Exception failed) {
+            census.stand.put(id, "rest pose: Stand pose failed: " + failed.getClass().getSimpleName());
+        }
     }
 
     /** Creature displays (no extended display info) per geoset case, from the tables alone. */
