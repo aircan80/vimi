@@ -130,7 +130,8 @@ final class WorldAudioDirector {
         var channel = playback.channel(kind);
         if (kind == WorldAreaAudio.Kind.MUSIC) musicOn = on;
         else ambienceOn = on;
-        // A previously resolved area may be stale; enabling waits for the current area.
+        // A previously resolved area may be stale: nothing plays until the current area's plan
+        // arrives, which is requested at once below.
         if (on) channel.track(null, null);
         channel.enabled(on);
         if (on) {

@@ -1580,11 +1580,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     /**
      * The horizon's draws this frame: every tile not drawn at full detail now, and the skirts that
      * face one. Chosen per frame from the active slots, so a tile committed or evicted since the
-     * last rebuild is handled at once.
+     * last rebuild is handled at once. {@code drawn} is this frame's {@link #horizonDrawn}, taken
+     * once with its fog: the horizon's failure flag can flip mid-frame, and the fog and the horizon
+     * must agree.
      */
-    private void drawHorizon(MemoryStack stack) {
+    private void drawHorizon(MemoryStack stack, boolean drawn) {
         var ranges = horizonRanges;
-        if (!horizonDrawn()) {
+        if (!drawn) {
             frameHorizonSubmits = 0;
             return;
         }
@@ -1605,7 +1607,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /** Whether this frame draws the horizon: one is uploaded and its rebuilds have not failed. */
     private boolean horizonDrawn() {
-        return horizon != null && horizonRanges != null && !horizon.failed();
+        return horizonDrawn(horizon, horizonRanges);
+    }
+
+    /** {@link #horizonDrawn} for a horizon and its uploaded ranges, either possibly null. */
+    static boolean horizonDrawn(
+            WorldStreamHorizon horizon, com.vibeminer.rendering.world.HorizonMesh.Ranges ranges) {
+        return horizon != null && ranges != null && !horizon.failed();
     }
 
     /**
@@ -1970,7 +1978,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             refreshHorizon(camera);
         }
         // With a drawn horizon, one fog range reaches out to it for every pass (#372, option (a)).
-        var fog = frameFog(recordedSky, horizonDrawn());
+        // Taken once: the fog and the horizon draw must agree for the whole frame.
+        boolean horizonThisFrame = horizonDrawn();
+        var fog = frameFog(recordedSky, horizonThisFrame);
         try (var stack = MemoryStack.stackPush()) {
             var origin =
                     new TerrainScene.Origin(
@@ -2032,7 +2042,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             // The horizon right after the streamed terrain, before objects and the sky, with the
             // terrain state and the vertex-colour path (no atlas).
             if (horizon != null) {
-                drawHorizon(stack);
+                drawHorizon(stack, horizonThisFrame);
             }
             // One fixed set of object uniform buffers per frame: per-placement work allocates
             // nothing on the frame's MemoryStack, whatever the number of placements.

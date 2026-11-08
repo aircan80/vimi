@@ -371,8 +371,6 @@ final class WorldStreamSourceController {
     // Test seam: runs on the worker after a RETRY_LATER tile-preparation refusal, before it is
     // recorded.
     volatile Runnable tileRefusalSeam;
-    // Test seam: runs at the top of each streaming step, before demand is read.
-    volatile Runnable demandSeam;
     // Helper rejections that arrived for tiles already out of demand (not counted, #365).
     private final java.util.concurrent.atomic.AtomicInteger rejectionsOutOfDemand =
             new java.util.concurrent.atomic.AtomicInteger();
@@ -980,8 +978,6 @@ final class WorldStreamSourceController {
         pollFrame();
         updateArea();
         stepExterior();
-        var stepSeam = demandSeam;
-        if (stepSeam != null) stepSeam.run();
         var wanted = demand();
         if(creditTarget!=null && !contains(wanted,creditTarget)) creditTarget=null;
         unavailable.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
@@ -2145,8 +2141,9 @@ final class WorldStreamSourceController {
     }
 
     /**
-     * Test seam, controller thread only (from {@link #demandSeam}): whether the pending
-     * preparation has already ended in a helper rejection, so this step handles it.
+     * Test seam: whether the pending preparation has already ended in a helper rejection, so the
+     * next step handles it. Called from the test thread while the controller worker is held, so
+     * no step can replace {@code pending}; the read is unsynchronized and callers poll it.
      */
     boolean pendingRejectedByHelper() {
         var current = pending;

@@ -289,6 +289,31 @@ public final class WorldToastsUiTest {
                     throw new AssertionError(error);
                 }
                 view.toasts().clear();
+                // Once the first is saved, F12 again writes a second file.
+                var viewport = view.lookup("#world-viewport");
+                Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.F12, false, false, false, false));
+                Event.fireEvent(viewport, new KeyEvent(KeyEvent.KEY_RELEASED, "", "", KeyCode.F12, false, false, false, false));
+                require(!texts(view.toasts()).contains("Screenshot still saving"),
+                        "After the first save the next F12 is not refused: " + texts(view.toasts()));
+            });
+            await(() -> texts(view.toasts()).stream().anyMatch(t -> t.startsWith("Screenshot saved: ")));
+            fx(() -> {
+                try (var files = java.nio.file.Files.list(WorldScreenshots.folder(root))) {
+                    require(files.filter(f -> f.toString().endsWith(".png")).count() == 2,
+                            "The second F12 wrote a second file");
+                } catch (java.io.IOException error) {
+                    throw new AssertionError(error);
+                }
+                // Open folder that is refused or fails says so instead of doing nothing.
+                var toast = view.toasts().toasts().getLast();
+                view.folderOpener(folder -> {
+                    throw new UnsupportedOperationException("opening folders is not supported here");
+                });
+                toast.run().run();
+                require(texts(view.toasts()).contains("Could not open the folder"),
+                        "A failed Open folder shows a toast: " + texts(view.toasts()));
+                view.folderOpener(opened::add);
+                view.toasts().clear();
             });
         } finally {
             try (var walk = java.nio.file.Files.walk(root)) {

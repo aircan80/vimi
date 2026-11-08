@@ -158,6 +158,23 @@ final class WorldStreamHorizonProof {
                     counts.lastBuildNanos() / 1e6,
                     changed,
                     before.length);
+            // The horizon's two vertex and two index buffers live beside the slots' and are
+            // released with the renderer.
+            var stats = owner.stats();
+            int slots = session.slots();
+            if (stats.dynamicBuffers() != slots + 2 || stats.dynamicIndexBuffers() != slots + 2) {
+                throw new AssertionError("Horizon dynamic buffers " + stats);
+            }
+            var released = owner.releaseRendererForProof();
+            if (released.vertex() != 0 || released.index() != 0) {
+                throw new AssertionError("Dynamic buffers left after close " + released);
+            }
+            System.out.printf(
+                    "World horizon buffers released PASS open %d/%d closed %d/%d%n",
+                    stats.dynamicBuffers(),
+                    stats.dynamicIndexBuffers(),
+                    released.vertex(),
+                    released.index());
         }
         measure(output);
     }

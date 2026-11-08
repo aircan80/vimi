@@ -67,11 +67,14 @@ final class WorldHud extends StackPane {
 
     /**
      * {@code onMap} runs when the Map button is pressed (the view opens or closes the panel);
-     * {@code refocus} gives keyboard focus back to the viewport.
+     * {@code refocus} gives keyboard focus back to the viewport. {@code hiddenState} is the view's
+     * one "HUD hidden" state; the HUD follows it and nothing else sets it.
      */
-    WorldHud(Runnable onMap, Runnable refocus) {
+    WorldHud(Runnable onMap, Runnable refocus, javafx.beans.value.ObservableBooleanValue hiddenState) {
         Objects.requireNonNull(onMap);
         this.refocus = Objects.requireNonNull(refocus);
+        hidden.set(hiddenState.get());
+        hiddenState.addListener((o, was, now) -> hidden(now));
         setId("world-hud");
         setFocusTraversable(false);
         setPickOnBounds(false);
@@ -321,8 +324,9 @@ final class WorldHud extends StackPane {
     }
 
     /**
-     * The single "HUD hidden" state (Alt+Z or the hide HUD key, H by default), read-only: only the view sets it, through
-     * {@link #hidden(boolean)}. See the class notes for how followers should use it.
+     * The single "HUD hidden" state (Alt+Z or the hide HUD key, H by default), read-only: it
+     * follows the view's state given to the constructor. See the class notes for how followers
+     * should use it.
      */
     ReadOnlyBooleanProperty hiddenProperty() {
         return hidden.getReadOnlyProperty();
@@ -333,10 +337,9 @@ final class WorldHud extends StackPane {
     }
 
     /**
-     * Sets the hidden state. Only the view's {@code applyPanels()} calls this, mirroring its one
-     * "HUD hidden" state; followers read {@link #hiddenProperty()} and must never call it.
+     * Follows the view's "HUD hidden" state; followers read {@link #hiddenProperty()}.
      */
-    void hidden(boolean value) {
+    private void hidden(boolean value) {
         // The panel is not under the hidden binding (it shares the column with the developer
         // slot), so hiding closes it; the view closes it first and resets what it held.
         if (value) hidePanel();

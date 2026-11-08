@@ -111,6 +111,16 @@ final class WorldStreamNeighborhood {
             return predict(x, y, radius);
         }
 
+        /**
+         * The camera came to rest: forget the measured velocity and the last sample, so the next
+         * prediction is the camera tile and nearby demand falls back to plain nearest-first.
+         */
+        void rest() {
+            velocityX = 0;
+            velocityY = 0;
+            seeded = false;
+        }
+
         private int[] predict(double x, double y, int radius) {
             double dx = Math.clamp(velocityX * LEAD_SECONDS, -radius, radius);
             double dy = Math.clamp(velocityY * LEAD_SECONDS, -radius, radius);

@@ -138,7 +138,11 @@ public final class Blp2Decoder {
                 return Encoding.BC3;
             }
         }
-        if (encoding == 3 && (depth == 8 && alpha == 0 || depth == 1 && alpha == 8)) {
+        // Uncompressed BGRA always stores four bytes per pixel; the alpha encoding byte only names
+        // a
+        // block format, so it does not change the layout. Alpha depth 0 means the alpha byte is
+        // not meaningful and the pixel is opaque (as for palette and BC1 depth 0).
+        if (encoding == 3 && (depth == 0 || depth == 1 || depth == 4 || depth == 8)) {
             return Encoding.BGRA8;
         }
         return null;
@@ -342,7 +346,7 @@ public final class Blp2Decoder {
         if (encoding == Encoding.PALETTED) {
             palette(payload, palette, rgba, selected.width(), selected.height(), depth, token);
         } else if (encoding == Encoding.BGRA8) {
-            bgra(payload, rgba, selected.width(), selected.height(), token);
+            bgra(payload, rgba, selected.width(), selected.height(), depth == 0, token);
         } else {
             blocks(payload, rgba, selected.width(), selected.height(), encoding, depth, token);
         }
@@ -516,7 +520,12 @@ public final class Blp2Decoder {
     }
 
     private static void bgra(
-            byte[] payload, byte[] rgba, int width, int height, Cancellation token) {
+            byte[] payload,
+            byte[] rgba,
+            int width,
+            int height,
+            boolean opaque,
+            Cancellation token) {
         for (int y = 0; y < height; y++) {
             token.check();
             for (int x = 0; x < width; x++) {
@@ -524,7 +533,7 @@ public final class Blp2Decoder {
                 rgba[at] = payload[at + 2];
                 rgba[at + 1] = payload[at + 1];
                 rgba[at + 2] = payload[at];
-                rgba[at + 3] = payload[at + 3];
+                rgba[at + 3] = opaque ? (byte) 255 : payload[at + 3];
             }
         }
     }

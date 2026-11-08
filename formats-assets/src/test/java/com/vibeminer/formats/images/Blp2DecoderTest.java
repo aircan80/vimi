@@ -2,6 +2,7 @@ package com.vibeminer.formats.images;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -509,6 +510,35 @@ final class Blp2DecoderTest {
     }
 
     @Test
+    void bgraAlphaDepthZeroIsOpaqueAndTheAlphaEncodingByteDoesNotChangeTheLayout() {
+        byte[] pixels = {20, 10, (byte) 200, (byte) 128, (byte) 240, 60, 50, 0};
+        // Depth 0: the stored alpha byte is not meaningful, so the pixel is opaque.
+        for (int alpha : new int[] {0, 2, 7, 8}) {
+            var opaque =
+                    Blp2Decoder.decode(AssetSource.bytes(build(3, 0, alpha, 1, 2, pixels))).join();
+            assertArrayEquals(
+                    new byte[] {(byte) 200, 10, 20, (byte) 255, 50, 60, (byte) 240, (byte) 255},
+                    opaque.rgba());
+            assertEquals(Encoding.BGRA8, opaque.encoding());
+        }
+        // Depths 1, 4 and 8 keep the stored straight alpha whatever the alpha encoding byte says.
+        for (int depth : new int[] {1, 4, 8}) {
+            for (int alpha : new int[] {0, 2, 8}) {
+                var image =
+                        Blp2Decoder.decode(AssetSource.bytes(build(3, depth, alpha, 1, 2, pixels)))
+                                .join();
+                assertArrayEquals(
+                        new byte[] {(byte) 200, 10, 20, (byte) 128, 50, 60, (byte) 240, 0},
+                        image.rgba());
+                assertEquals(depth, image.alphaDepth());
+                assertEquals(alpha, image.alphaEncoding());
+                assertTrue(Blp2Decoder.isSupported(Encoding.BGRA8, depth, alpha));
+            }
+        }
+        assertFalse(Blp2Decoder.isSupported(Encoding.BGRA8, 2, 0));
+    }
+
+    @Test
     void selectedMipOnlyReadsHeaderPaletteAndOwnPayload() {
         byte[] bytes = build(1, 0, 0, 4, 4, new byte[16], new byte[4]);
         AtomicInteger reads = new AtomicInteger();
@@ -572,7 +602,7 @@ final class Blp2DecoderTest {
 
     @Test
     void unsupportedProfilesAndFlagsStayExplicit() {
-        for (int[] p : new int[][] {{1, 1, 8}, {2, 71, 7}, {2, 72, 1}, {3, 0, 0}, {3, 8, 8}}) {
+        for (int[] p : new int[][] {{1, 1, 8}, {2, 71, 7}, {2, 72, 1}, {3, 2, 0}, {3, 72, 2}}) {
             code("BLP_UNSUPPORTED", build(p[0], p[1], p[2], 1, 1, new byte[16]), 0);
         }
         byte[] b = build(3, 8, 0, 1, 1, new byte[4]);

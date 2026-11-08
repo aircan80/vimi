@@ -404,7 +404,8 @@ public final class WorldHudUiTest {
      * stays, and the left column stays above the placed widgets.
      */
     private static void placedWidgetsHideWithTheHud() {
-        var hud = new WorldHud(() -> {}, () -> {});
+        var hiddenState = new javafx.beans.property.SimpleBooleanProperty();
+        var hud = new WorldHud(() -> {}, () -> {}, hiddenState);
         var zone = new javafx.scene.control.Label("zone");
         var icons = new javafx.scene.control.Label("icons");
         var pill = new javafx.scene.control.Label("pill");
@@ -425,11 +426,11 @@ public final class WorldHudUiTest {
         require(icons.getParent() == bottomLeft && bottomLeft.getParent() == widgets, "The icon row is in the bottom-left stack");
         for (var node : List.of(zone, icons, pill, banner))
             require(isWithin(node, widgets) && node.isVisible() && widgets.isVisible(), "Placed and shown: " + node.getText());
-        hud.hidden(true);
+        hiddenState.set(true);
         for (var node : List.of(zone, icons, pill, banner))
             require(isWithin(node, widgets) && !widgets.isVisible(), "Hidden with the HUD: " + node.getText());
         require(dev.getParent().isVisible() && hud.isVisible(), "The developer slot stays while hidden");
-        hud.hidden(false);
+        hiddenState.set(false);
         require(widgets.isVisible(), "Shown again with the HUD");
     }
 

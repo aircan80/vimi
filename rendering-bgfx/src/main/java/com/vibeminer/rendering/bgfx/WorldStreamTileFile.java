@@ -215,7 +215,10 @@ final class WorldStreamTileFile {
             case BC1 -> alpha == 0 && (depth == 0 || depth == 1);
             case BC2 -> alpha == 1 && (depth == 4 || depth == 8);
             case BC3 -> alpha == 7 && (depth == 8 || depth == 72);
-            case BGRA8 -> alpha == 0 && depth == 8 || alpha == 8 && depth == 1;
+            case BGRA8 ->
+                    alpha >= 0
+                            && alpha <= 255
+                            && (depth == 0 || depth == 1 || depth == 4 || depth == 8);
         };
     }
 
