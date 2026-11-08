@@ -1087,11 +1087,13 @@ final class WorldStreamObjectsFileTest {
             assertEquals(reference, payload.header().objects());
         }
         byte[] bytes =
+                // Header bytes only: an all-zero attribute digest, which no packet reads back.
                 WorldStreamTileFile.encodeHeader(
                         named(
                                 WorldStreamTileFileTest.header(
                                         WorldStreamTileFileTest.full(false), false),
-                                null));
+                                null),
+                        "00".repeat(32));
         for (int i = 656; i < 1024; i++) {
             assertEquals(0, bytes[i]);
         }

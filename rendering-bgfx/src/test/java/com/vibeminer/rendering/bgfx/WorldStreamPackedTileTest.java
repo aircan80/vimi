@@ -163,4 +163,64 @@ final class WorldStreamPackedTileTest {
         assertThrows(IllegalStateException.class, input::tile);
         input.close();
     }
+
+    /** A flat root ADT of 256 chunks with heights only (no MCNR or MCCV), at tile 32, 32. */
+    private static byte[] flatRoot() {
+        var out = new java.io.ByteArrayOutputStream();
+        out.writeBytes(
+                part(
+                        "MVER",
+                        java.nio.ByteBuffer.allocate(4)
+                                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                .putInt(18)
+                                .array()));
+        for (int ordinal = 0; ordinal < 256; ordinal++) {
+            var header = java.nio.ByteBuffer.allocate(128).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            int x = ordinal % 16, y = ordinal / 16;
+            float side = (float) (com.vibeminer.formats.world.WorldFormats.TILE_SIZE / 16);
+            header.putInt(4, x).putInt(8, y).putFloat(104, -y * side).putFloat(108, -x * side);
+            header.putFloat(112, 10);
+            var chunk = new java.io.ByteArrayOutputStream();
+            chunk.writeBytes(header.array());
+            chunk.writeBytes(part("MCVT", new byte[580]));
+            out.writeBytes(part("MCNK", chunk.toByteArray()));
+        }
+        return out.toByteArray();
+    }
+
+    private static byte[] part(String name, byte[] bytes) {
+        int tag = 0;
+        for (char c : name.toCharArray()) {
+            tag = tag << 8 | c;
+        }
+        return java.nio.ByteBuffer.allocate(8 + bytes.length)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .putInt(tag)
+                .putInt(bytes.length)
+                .put(bytes)
+                .array();
+    }
+
+    /**
+     * #532: without MCNR the normal is derived from the triangles, signed, so it depends on the
+     * winding of the parser's fan. Flat ADT ground must light as straight up, (128, 128, 255), at
+     * every vertex: a flipped fan would point down and leave those chunks ambient-only.
+     */
+    @Test
+    void flatAdtGroundWithoutMcnrPacksStraightUpNormals() throws Exception {
+        var terrain = com.vibeminer.formats.world.WorldFormats.adt(flatRoot(), () -> false);
+        var tile = new TerrainScene.Tile(32, 32, terrain);
+        var input = read(tile, false);
+        try (var packed = WorldStreamPackedTile.prepare(input, () -> false);
+                var source = packed.take()) {
+            var data = source.geometry.duplicate().order(java.nio.ByteOrder.nativeOrder());
+            assertTrue(source.terrainVertices > 256 * 100);
+            for (int v = 0; v < source.terrainVertices; v++) {
+                int at = v * 24 + 20;
+                assertEquals(128, data.get(at) & 255, "x at vertex " + v);
+                assertEquals(128, data.get(at + 1) & 255, "y at vertex " + v);
+                assertEquals(255, data.get(at + 2) & 255, "z at vertex " + v);
+            }
+        }
+    }
 }

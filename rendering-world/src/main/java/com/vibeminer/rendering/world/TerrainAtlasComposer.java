@@ -139,7 +139,8 @@ public final class TerrainAtlasComposer {
 
     /**
      * Also returns the shader-side splatting inputs when {@code splat} is set (issue #174 step 2):
-     * the same supported chunks, their layer diffuse ids and masks, and MCCV brightness.
+     * the same supported chunks, their layer diffuse ids and masks (mask A stays 0; see {@link
+     * TerrainTileSplat}).
      */
     public static Composition compose(
             WorldFormats.Tile tile,
