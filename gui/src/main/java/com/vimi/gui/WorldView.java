@@ -8,6 +8,7 @@ import com.vibeminer.concepts.world.WorldCurrentArea;
 import com.vibeminer.concepts.world.WorldInstanceLinks;
 import com.vibeminer.concepts.world.WorldService;
 import com.vibeminer.formats.world.WorldFormats;
+import com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance;
 import com.vibeminer.rendering.world.ExplorerMotion;
 import com.vibeminer.rendering.world.TerrainGround;
 import com.vibeminer.rendering.world.TerrainRenderer;
@@ -204,10 +205,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail>
             objectTextures = new javafx.scene.control.ChoiceBox<>();
     // View distance (#173): remembered with the controls; a change restreams at the new size.
-    private final javafx.scene.control.ChoiceBox<com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance> viewDistance =
+    private final javafx.scene.control.ChoiceBox<ViewDistance> viewDistance =
             new javafx.scene.control.ChoiceBox<>();
     // The distance the current stream controller was started with.
-    private com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance streamingDistance = WorldStreamGpuOwner.VIEW_DISTANCE;
+    private ViewDistance streamingDistance = WorldStreamGpuOwner.VIEW_DISTANCE;
     private final CheckBox walkMode = new CheckBox("Walk on terrain (F)");
     private final CheckBox smoothMotion = new CheckBox("Smooth motion");
     private final javafx.scene.control.Slider lookSensitivity = new javafx.scene.control.Slider(
@@ -707,23 +708,23 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     /** Whether {@code -Dvimi.world.viewDistance=far} forces FAR for this session. */
     private static boolean viewDistanceForced() {
-        return WorldStreamGpuOwner.VIEW_DISTANCE == com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.FAR;
+        return WorldStreamGpuOwner.VIEW_DISTANCE == ViewDistance.FAR;
     }
 
     private void viewDistanceSetup(boolean gpuAvailable) {
         viewDistance.setId("world-view-distance");
         viewDistance.setFocusTraversable(false);
-        viewDistance.getItems().setAll(com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.values());
+        viewDistance.getItems().setAll(ViewDistance.values());
         viewDistance.setValue(WorldStreamGpuOwner.VIEW_DISTANCE);
         viewDistance.setConverter(new javafx.util.StringConverter<>() {
             @Override
-            public String toString(com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance distance) {
-                return distance == null ? "" : distance == com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.FAR
+            public String toString(ViewDistance distance) {
+                return distance == null ? "" : distance == ViewDistance.FAR
                         ? "View distance: Far (5 x 5 tiles)" : "View distance: Near (3 x 3 tiles)";
             }
 
             @Override
-            public com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance fromString(String text) {
+            public ViewDistance fromString(String text) {
                 return null;
             }
         });
@@ -753,7 +754,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     /** Proof observation: the view distance the current stream was started with. */
-    com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance streamingViewDistance() {
+    ViewDistance streamingViewDistance() {
         return streamingDistance;
     }
 
@@ -3396,8 +3397,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var distance = viewDistance.getValue();
         streamingDistance = distance;
         // FAR keeps 512 masks on any tier, as its terrain budget assumes (#173, #174 step 2b-2).
-        com.vibeminer.concepts.world.WorldTerrainStreaming.splatMasks(
-                detail, distance == com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.FAR);
+        WorldStreamGpuOwner.splatMasks(detail, distance);
         // Dungeon and raid maps (Map.InstanceType 1 or 2) draw their WMO interiors too (#280).
         boolean interiors = instanceInteriors(inventory.map());
         WorldStreamSourceBridge.ExteriorPreparer preparer = creatureSource == null
