@@ -10,9 +10,10 @@ import java.util.Objects;
  *
  * <p>Each bone's local transform is {@code T(pivot + translation) * R(rotation) * S(scale) *
  * T(-pivot)}, composed under its parent. Vertices use up to four linear-blend influences. A
- * spherical billboard bone keeps its card members at their rest offsets around the evaluated pivot,
- * so the existing camera-facing card renderer stays responsible for orientation. No IK, blending
- * between sequences, attachments, particles or material tracks are evaluated.
+ * spherical billboard bone keeps its card members at their rest offsets, scaled by its own scale
+ * keys, around its evaluated pivot (moved by its own translation keys), so the existing
+ * camera-facing card renderer stays responsible for orientation. Its rotation is the camera's. No
+ * IK, blending between sequences, attachments, particles or material tracks are evaluated.
  */
 public final class PreviewAnimation {
     public static final int MAX_BONES = 256;
@@ -163,7 +164,8 @@ public final class PreviewAnimation {
 
     /**
      * One bone. A null track is an identity component. {@code billboard} marks a spherical
-     * billboard bone whose own transform is not evaluated; only its evaluated pivot moves.
+     * billboard bone: its translation moves its pivot and its scale sizes its card around that
+     * pivot; it has no rotation track, since the camera sets its orientation.
      */
     public record Bone(
             int parent,
@@ -184,7 +186,7 @@ public final class PreviewAnimation {
                     || translation != null && translation.components != 3
                     || rotation != null && rotation.components != 4
                     || scale != null && scale.components != 3
-                    || billboard && (translation != null || rotation != null || scale != null)) {
+                    || billboard && rotation != null) {
                 throw new IllegalArgumentException("Invalid animation bone");
             }
         }
@@ -299,10 +301,11 @@ public final class PreviewAnimation {
         }
         float[] scratch = new float[rest.length];
         double[] matrices = new double[this.bones.size() * 12];
+        double[] scales = new double[this.bones.size() * 3];
         for (int sample = 0; sample < FRAMING_SAMPLES; sample++) {
             long time = durationMillis * sample / FRAMING_SAMPLES;
-            matrices(time, matrices);
-            skin(matrices, scratch, null);
+            matrices(time, matrices, scales);
+            skin(matrices, scales, scratch, null);
             for (int i = 0; i < scratch.length; i++) {
                 frameMin[i % 3] = Math.min(frameMin[i % 3], scratch[i]);
                 frameMax[i % 3] = Math.max(frameMax[i % 3], scratch[i]);
@@ -376,10 +379,11 @@ public final class PreviewAnimation {
             throw new IllegalArgumentException("Animation belongs to another rest surface");
         }
         double[] matrices = new double[bones.size() * 12];
-        matrices(Math.max(0, millis), matrices);
+        double[] scales = new double[bones.size() * 3];
+        matrices(Math.max(0, millis), matrices, scales);
         float[] positions = new float[rest.length];
         float[] normals = restNormals.length == 0 ? new float[0] : new float[restNormals.length];
-        skin(matrices, positions, normals.length == 0 ? null : normals);
+        skin(matrices, scales, positions, normals.length == 0 ? null : normals);
         var pivots = new ArrayList<MeshAppearance.Vec3>(bones.size());
         for (int b = 0; b < bones.size(); b++) {
             var bone = bones.get(b);
@@ -422,13 +426,23 @@ public final class PreviewAnimation {
                 cards);
     }
 
-    private void matrices(long millis, double[] out) {
+    /**
+     * Bone matrices at {@code millis}; for a billboard bone, {@code scales} receives its own scale,
+     * which sizes its card instead of entering its matrix.
+     */
+    private void matrices(long millis, double[] out, double[] scales) {
         long sequence = millis % durationMillis;
         double[] t = new double[4], r = new double[4], s = new double[4], local = new double[12];
+        double[] none = {0, 0, 0, 1}, unit = {1, 1, 1, 1};
         for (int b : order) {
             var bone = bones.get(b);
             if (bone.billboard()) {
-                identity(local);
+                sample(bone.translation(), sequence, millis, t, 0);
+                sample(bone.scale(), sequence, millis, s, 2);
+                scales[b * 3] = s[0];
+                scales[b * 3 + 1] = s[1];
+                scales[b * 3 + 2] = s[2];
+                compose(bone, t, none, unit, local);
             } else {
                 sample(bone.translation(), sequence, millis, t, 0);
                 sample(bone.rotation(), sequence, millis, r, 1);
@@ -515,7 +529,7 @@ public final class PreviewAnimation {
         };
     }
 
-    private void skin(double[] m, float[] positions, float[] normals) {
+    private void skin(double[] m, double[] scales, float[] positions, float[] normals) {
         for (int v = 0; v < rest.length / 3; v++) {
             double x = rest[v * 3], y = rest[v * 3 + 1], z = rest[v * 3 + 2];
             int billboard = rigidBillboard[v];
@@ -523,9 +537,11 @@ public final class PreviewAnimation {
                 var bone = bones.get(billboard);
                 double[] pivot =
                         transform(m, billboard, bone.pivotX(), bone.pivotY(), bone.pivotZ());
-                positions[v * 3] = (float) (pivot[0] + x - bone.pivotX());
-                positions[v * 3 + 1] = (float) (pivot[1] + y - bone.pivotY());
-                positions[v * 3 + 2] = (float) (pivot[2] + z - bone.pivotZ());
+                positions[v * 3] = (float) (pivot[0] + scales[billboard * 3] * (x - bone.pivotX()));
+                positions[v * 3 + 1] =
+                        (float) (pivot[1] + scales[billboard * 3 + 1] * (y - bone.pivotY()));
+                positions[v * 3 + 2] =
+                        (float) (pivot[2] + scales[billboard * 3 + 2] * (z - bone.pivotZ()));
                 if (normals != null) {
                     System.arraycopy(restNormals, v * 3, normals, v * 3, 3);
                 }

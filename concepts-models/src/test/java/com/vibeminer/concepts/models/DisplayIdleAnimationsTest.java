@@ -169,8 +169,22 @@ class DisplayIdleAnimationsTest {
         unsupported("0x1", a -> a.flags(0, 0x201));
         unsupported("0xc", a -> a.flags(1, 0xc));
         unsupported("0x10", a -> a.flags(1, 0x10));
-        unsupported("keyless leaf", a -> a.rotate(1));
-        unsupported("keyless leaf", a -> a.parent(2, 1));
+        unsupported("has rotation keys", a -> a.rotate(1));
+        unsupported("has child bones", a -> a.parent(2, 1));
+    }
+
+    @Test
+    void billboardTranslationKeysMoveTheCardPivot() throws Exception {
+        // Bone 1 is the 0x8 card leaf; its own translation keys are admitted now.
+        var authored = new Authored().translate(0).translate(1);
+        var animation = authored.admit();
+        var parsed = authored.fixture.parse();
+        var rest =
+                DisplayModelService.restSurface(
+                        parsed.model(), parsed.rest().surface(), Cancellation.NONE);
+        var pose = animation.pose(rest.mesh(), 500);
+        // Its parent lifts it by 2 at half time and its own keys by 2 more.
+        assertEquals(4, pose.pivots().get(1).z() - parsed.model().bones().get(1).pivot().z(), 1e-5);
     }
 
     @Test

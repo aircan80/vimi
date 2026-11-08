@@ -296,6 +296,31 @@ class PreviewAnimationTest {
         near(new float[] {0, 2, 3}, pose.mesh().positions(), 2);
     }
 
+    @Test
+    void billboardTranslationMovesThePivotAndScaleSizesTheCard() {
+        var root =
+                new Bone(-1, 0, 0, 0, constant(3, 0, 0, 3), constant(4, 0, 0, S, S), null, false);
+        var card = new Bone(0, 1, 0, 1, constant(3, 0, 0, 1), null, constant(3, 2, 2, 2), true);
+        var rest = mesh(1.5f, 0, 1, 1, .5f, 1, 2, 0, 0);
+        var animation =
+                new PreviewAnimation(
+                        "Stand",
+                        1000,
+                        new long[0],
+                        List.of(root, card),
+                        rest,
+                        new float[0],
+                        rigid(1, 1, 0),
+                        full(3));
+        var pose = animation.pose(rest, 0);
+        // Pivot (1,0,1) + translation (0,0,1) rotates to (0,1,2) and lifts by 3.
+        assertEquals(new MeshAppearance.Vec3(0, 1, 5), round(pose.pivots().get(1)));
+        // Card offsets double around the pivot; they are neither rotated nor translated.
+        near(new float[] {1, 1, 5}, pose.mesh().positions(), 0);
+        near(new float[] {0, 2, 5}, pose.mesh().positions(), 1);
+        near(new float[] {0, 2, 3}, pose.mesh().positions(), 2);
+    }
+
     private static MeshAppearance.Vec3 round(MeshAppearance.Vec3 v) {
         return new MeshAppearance.Vec3(
                 Math.round(v.x() * 1e4f) / 1e4f,
