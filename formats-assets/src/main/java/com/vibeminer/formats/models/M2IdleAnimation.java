@@ -436,7 +436,12 @@ public final class M2IdleAnimation {
             throw error("LIMIT", "Stand bone keys exceed the idle evaluation budget.");
         }
         budget[0] += (int) keys;
-        long limit = global >= 0 ? globalMillis[global] : sequenceMillis;
+        // A global sequence of length 0 never advances: its clock stays at 0 and evaluation holds
+        // the first key, so its keys may be stamped at any time (client data stamps them past 0).
+        // Stamps are kept as int milliseconds.
+        long clock = global < 0 ? sequenceMillis : globalMillis[global];
+        long limit =
+                global >= 0 && clock == 0 ? Integer.MAX_VALUE : Math.min(clock, Integer.MAX_VALUE);
         int count = (int) keys;
         int[] stamps = new int[count];
         input.records(
@@ -451,10 +456,11 @@ public final class M2IdleAnimation {
                         header),
                 (key, i) -> {
                     long stamp = u32(key);
-                    if (stamp > limit || i > 0 && stamp < stamps[i - 1]) {
-                        throw error(
-                                "INVALID",
-                                "Bone key times are unordered or outside their sequence.");
+                    if (i > 0 && stamp < stamps[i - 1]) {
+                        throw error("INVALID", "Bone key times are unordered.");
+                    }
+                    if (stamp > limit) {
+                        throw error("INVALID", "A bone key time lies beyond its sequence.");
                     }
                     stamps[i] = (int) stamp;
                 });
