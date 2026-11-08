@@ -74,7 +74,7 @@ public final class DisplayIdleAnimations {
                 if (weight == 0) {
                     bone = 0;
                 } else if (bone >= boneCount) {
-                    throw new IllegalArgumentException("A vertex names a bone outside the model");
+                    throw new IllegalArgumentException("A vertex names a bone outside the rig");
                 } else {
                     influencing.set(bone);
                 }

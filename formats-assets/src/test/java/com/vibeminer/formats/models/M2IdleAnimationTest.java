@@ -879,6 +879,33 @@ class M2IdleAnimationTest {
 
     @ParameterizedTest
     @ValueSource(ints = {272, 274})
+    void skeletonStandAdmitsAtMost256Bones(int version) {
+        // 257 root bones without tracks, and one Stand.
+        var b = ByteBuffer.allocate(16 + 257 * 88).order(ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0, 257).putInt(4, 16);
+        for (int bone = 0; bone < 257; bone++) {
+            int row = 16 + bone * 88;
+            b.putInt(row, -1).putShort(row + 8, (short) -1);
+            for (int track : new int[] {16, 36, 56}) {
+                b.putShort(row + track + 2, (short) -1);
+            }
+        }
+        var s = ByteBuffer.allocate(32 + 64).order(ByteOrder.LITTLE_ENDIAN);
+        s.putInt(8, 1).putInt(12, 32).putInt(32 + 4, 1000).putInt(32 + 12, 0x20);
+        var out = new java.io.ByteArrayOutputStream();
+        out.writeBytes(skeletonChunk("SKL1", new byte[16]));
+        out.writeBytes(skeletonChunk("SKS1", s.array()));
+        out.writeBytes(skeletonChunk("SKB1", b.array()));
+        skeletonRefused(
+                version,
+                "MODEL_UNSUPPORTED",
+                "The skeleton has 257 bones; idle evaluation admits at most 256 directly indexed"
+                        + " bones.",
+                out.toByteArray());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
     void skeletonStandNeedsAModelWithoutBonesAndTheMatchingSource(int version) {
         byte[] skeletonBytes = skeleton(s -> {}, b -> {}, 0);
         var skeleton =

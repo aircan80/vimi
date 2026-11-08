@@ -35,7 +35,7 @@ public final class M2IdleAnimation {
 
     private static final int SEQUENCE_IN_MODEL = 0x20;
     private static final int SEQUENCE_ALIAS = 0x40;
-    private static final int SKB1_HEADER = 16;
+    private static final int SKS1_HEADER = 32, SKB1_HEADER = 16;
 
     private M2IdleAnimation() {}
 
@@ -260,16 +260,27 @@ public final class M2IdleAnimation {
         }
         var sequenceRows = new ArrayList<byte[]>(skeleton.sequences().size());
         input.records(
-                new M2Input.Span(
+                input.span(
                         "skeleton sequences",
-                        sks1.offset() + u32(sequenceHead, 12),
                         skeleton.sequences().size(),
-                        64),
+                        u32(sequenceHead, 12),
+                        64,
+                        MAX_SEQUENCES,
+                        sks1.offset(),
+                        sks1.byteLength(),
+                        SKS1_HEADER),
                 (row, i) -> sequenceRows.add(row));
         var rows = new ArrayList<byte[]>(rig.size());
         input.records(
-                new M2Input.Span(
-                        "skeleton bones", skb1.offset() + u32(boneHead, 4), rig.size(), 88),
+                input.span(
+                        "skeleton bones",
+                        rig.size(),
+                        u32(boneHead, 4),
+                        88,
+                        MAX_BONES,
+                        skb1.offset(),
+                        skb1.byteLength(),
+                        SKB1_HEADER),
                 (row, i) -> rows.add(row));
         long[] globalMillis =
                 skeleton.globalSequenceMillis().stream().mapToLong(Long::longValue).toArray();

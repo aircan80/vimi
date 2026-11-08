@@ -192,7 +192,7 @@ class DisplayIdleAnimationsTest {
     /**
      * A skeleton: one Stand (1000 ms); bone 0 a root translating (0,0,0)-(0,0,4), bone 1 its child.
      */
-    private static byte[] skeleton() {
+    static byte[] skeleton() {
         var s = java.nio.ByteBuffer.allocate(32 + 64).order(java.nio.ByteOrder.LITTLE_ENDIAN);
         s.putInt(8, 1).putInt(12, 32);
         s.putInt(32 + 4, 1000).putInt(32 + 12, 0x20);
@@ -224,17 +224,11 @@ class DisplayIdleAnimationsTest {
     @Test
     void skeletonModelsAnimateWithTheSkeletonsBones() throws Exception {
         // The model stores no bones; its vertices name bone 1 of its external skeleton.
-        var fixture = new NativeMaterialFixture(274, 0x90, 14, 2, 0, 0);
-        fixture.declaration(44, 0, fixture.bones);
-        byte[] plain = fixture.modelBytes();
-        byte[] bytes = java.util.Arrays.copyOf(plain, plain.length + 12);
-        java.nio.ByteBuffer.wrap(bytes)
-                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                .put(plain.length, "SKID".getBytes(java.nio.charset.StandardCharsets.US_ASCII))
-                .putInt(plain.length + 4, 4)
-                .putInt(plain.length + 8, 4242);
+        var fixture = skeletonFixture();
         var model =
-                com.vibeminer.formats.models.M2ModelReader.read(AssetSource.bytes(bytes)).join();
+                com.vibeminer.formats.models.M2ModelReader.read(
+                                AssetSource.bytes(skeletonModel(fixture)))
+                        .join();
         assertEquals(0, model.bones().size());
         var rest =
                 com.vibeminer.formats.models.M2RestDrawSkinReader.read(
@@ -265,5 +259,24 @@ class DisplayIdleAnimationsTest {
             // Bone 1 follows its parent, bone 0, which lifts by 2 at half time.
             assertEquals(before[vertex * 3 + 2] + 2, after[vertex * 3 + 2], 1e-5);
         }
+    }
+
+    /** The material fixture with no bones of its own; its vertices name bone 1. */
+    static NativeMaterialFixture skeletonFixture() throws Exception {
+        var fixture = new NativeMaterialFixture(274, 0x90, 14, 2, 0, 0);
+        fixture.declaration(44, 0, fixture.bones);
+        return fixture;
+    }
+
+    /** The fixture's model bytes naming external skeleton 4242. */
+    static byte[] skeletonModel(NativeMaterialFixture fixture) {
+        byte[] plain = fixture.modelBytes();
+        byte[] bytes = java.util.Arrays.copyOf(plain, plain.length + 12);
+        java.nio.ByteBuffer.wrap(bytes)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .put(plain.length, "SKID".getBytes(java.nio.charset.StandardCharsets.US_ASCII))
+                .putInt(plain.length + 4, 4)
+                .putInt(plain.length + 8, 4242);
+        return bytes;
     }
 }

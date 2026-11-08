@@ -193,12 +193,11 @@ public final class DisplayModelService implements BuildDisplayModels {
                             routeStand(
                                             reference,
                                             () ->
-                                                    m.skeletonFileDataId() != 0
-                                                            ? readSkeletonStand(m, token)
-                                                            : M2IdleAnimation.readBaseRig(
-                                                                    AssetSources.file(stream),
-                                                                    m,
-                                                                    token),
+                                                    baseRigStand(
+                                                            files,
+                                                            m,
+                                                            AssetSources.file(stream),
+                                                            token),
                                             () ->
                                                     M2IdleAnimation.read(
                                                             AssetSources.file(stream), m, token))
@@ -265,11 +264,25 @@ public final class DisplayModelService implements BuildDisplayModels {
     }
 
     /**
+     * The base rig's Stand: from the external skeleton file when the model names one, otherwise
+     * from the model source.
+     */
+    static java.util.concurrent.CompletableFuture<M2IdleAnimation.Idle> baseRigStand(
+            BuildFiles files,
+            M2Types.Model m,
+            com.vibeminer.formats.AssetSource modelSource,
+            Cancellation token) {
+        return m.skeletonFileDataId() != 0
+                ? readSkeletonStand(files, m, token)
+                : M2IdleAnimation.readBaseRig(modelSource, m, token);
+    }
+
+    /**
      * The base rig's Stand from the model's external skeleton file (#384). A skeleton that is not
      * stored completely is unavailable rather than refused.
      */
-    private java.util.concurrent.CompletableFuture<M2IdleAnimation.Idle> readSkeletonStand(
-            M2Types.Model m, Cancellation token) {
+    static java.util.concurrent.CompletableFuture<M2IdleAnimation.Idle> readSkeletonStand(
+            BuildFiles files, M2Types.Model m, Cancellation token) {
         var opened = files.openRead(FileTypes.FileRef.id(m.skeletonFileDataId()), token).join();
         if (opened.stream() == null) {
             throw new IllegalArgumentException("Skeleton source is " + opened.state());
