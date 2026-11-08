@@ -189,7 +189,9 @@ public final class WorldMeasurementProbe {
                                         issue -> say("PROBE " + issue),
                                         DEADLINE - System.nanoTime(),
                                         List.of("creatures", "displays")
-                                                .contains(System.getProperty("probe.mode"))));
+                                                .contains(
+                                                        System.getProperty(
+                                                                "probe.mode", "stream"))));
         try {
             BuildWorld handle = opened.world();
             var catalog =
@@ -1074,11 +1076,12 @@ public final class WorldMeasurementProbe {
             say(
                     String.format(
                             Locale.ROOT,
-                            "PROBE scenario %s map %d centre tile %d,%d (exteriors %s, creatures %s, object textures %s)",
+                            "PROBE scenario %s map %d centre tile %d,%d (view distance %s, exteriors %s, creatures %s, object textures %s)",
                             scenario.name(),
                             scenario.map(),
                             scenario.x(),
                             scenario.y(),
+                            WorldStreamGpuOwner.VIEW_DISTANCE,
                             WorldStreamGpuOwner.EXTERIORS,
                             WorldStreamGpuOwner.CREATURES,
                             WorldStreamGpuOwner.IMAGE_DETAIL));
@@ -1303,7 +1306,12 @@ public final class WorldMeasurementProbe {
             int x = origin.x() + (int) Math.floor((originX - camera.x()) / WorldFormats.TILE_SIZE);
             int y = origin.y() + (int) Math.floor((originY - camera.y()) / WorldFormats.TILE_SIZE);
             var next =
-                    WorldStreamNeighborhood.select(inventory.world().tiles(), x, y, camera.yaw());
+                    WorldStreamNeighborhood.select(
+                            inventory.world().tiles(),
+                            x,
+                            y,
+                            camera.yaw(),
+                            WorldStreamGpuOwner.VIEW_DISTANCE);
             if (!next.equals(lastNeighborhood)) {
                 lastNeighborhood = next;
                 controller.neighborhood(next);

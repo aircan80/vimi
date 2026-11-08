@@ -83,6 +83,26 @@ class WorldCurrentAreaTest {
     }
 
     @Test
+    void retainedLookupCoversTheFarFiveByFiveNeighbourhood() {
+        // The World stream's FAR view distance keeps 25 residents (#173); the lookup over their
+        // metadata must answer, not refuse its bounds, wherever the camera tile sits in the list.
+        var index = index(area(1, "Elwynn Forest", 0), area(10, "Goldshire", 1));
+        var far = new java.util.ArrayList<WorldFormats.AreaMetadata>();
+        for (int i = 0; i < 24; i++) {
+            far.add(null);
+        }
+        far.add(tile(chunk(0, 0, 10, 1000, 2000)).areas());
+        assertEquals(10, WorldCurrentArea.locateIn(0, 990, 1990, far, index).areaId());
+        assertTrue(WorldCurrentArea.MAX_TILES >= 25);
+        while (far.size() <= WorldCurrentArea.MAX_TILES) {
+            far.add(null);
+        }
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldCurrentArea.locateIn(0, 990, 1990, far, index));
+    }
+
+    @Test
     void hierarchyCyclesUnknownParentsAndMapMismatchNeverInventARootZone() {
         var tiles = List.of(tile(chunk(0, 0, 10, 1000, 2000)));
         assertEquals(

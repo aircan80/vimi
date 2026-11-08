@@ -384,7 +384,7 @@ final class RaceIdleAnimations {
         } else {
             var standFacts = stand.stand();
             facts.add(
-                    "Stand (sequence "
+                    "Stand (plays sequence "
                             + standFacts.sequenceIndex()
                             + ", "
                             + standFacts.durationMillis()

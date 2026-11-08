@@ -871,6 +871,7 @@ check.dependsOn preparedBuildReaderTest
 // deadline (#377, #455), with the same keys and store use; -Pprobe.mode=refusals
 // counts terrain texture refusals over whole maps; -Pprobe.mode=water counts water outcomes over
 // every -Pprobe.stride-th tile (#171); -Pprobe.mode=prep times tile prep alone (#422).
+// -Pvimi.world.viewDistance=far streams the 5x5 neighbourhood instead of the 3x3 (#173).
 tasks.register('worldMeasurementProbe', JavaExec) {
     group = 'verification'
     description = 'Measures the real World pipeline on the local build; see docs/world-measurement-baseline.md.'
@@ -893,7 +894,7 @@ tasks.register('worldMeasurementProbe', JavaExec) {
     ['probe.mode', 'probe.build', 'probe.scenarios', 'probe.maps', 'probe.fillSeconds',
      'probe.rotateSeconds', 'probe.flySeconds', 'probe.settleSeconds', 'probe.mapSeconds',
      'probe.deadlineSeconds', 'probe.size', 'probe.passes', 'probe.objects',
-     'vimi.world.objectTextures', 'vimi.world.creatures',
+     'vimi.world.objectTextures', 'vimi.world.creatures', 'vimi.world.viewDistance',
      'vimi.gpu.backend', 'probe.stride', 'probe.limit'].each { name ->
         def value = providers.gradleProperty(name)
         if (value.isPresent()) systemProperty name, value.get()
