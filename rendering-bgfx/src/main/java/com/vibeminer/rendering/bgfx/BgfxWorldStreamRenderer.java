@@ -461,11 +461,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         final boolean[] unsortedModels;
 
         /**
-         * Per-frame grouping scratch (#382), sized once per tile generation: visibility, placements
-         * dropped this frame for lack of instance data (so the sorted pass skips them too), visible
+         * Per-frame grouping scratch (#382), sized once per tile generation: this frame's cull
+         * result (the sorted pass reads it too, so both passes agree), the visible placements the
+         * model groups draw (all but portal roots, #383, which draw on their own), placements
+         * dropped this frame for lack of instance data (so the sorted pass skips them too), grouped
          * placements by model, and each model's start in that order.
          */
-        final boolean[] visible, dropped;
+        final boolean[] visible, grouped, dropped;
 
         final int[] order, starts;
 
@@ -541,6 +543,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 }
             }
             visible = new boolean[placementModels.length];
+            grouped = new boolean[placementModels.length];
             dropped = new boolean[placementModels.length];
             order = new int[placementModels.length];
             starts = new int[models.length / 2 + 1];
@@ -2472,12 +2475,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 continue;
             }
             for (int p = 0; p < objects.placementModels.length; p++) {
-                int m = objects.placementModels[p];
-                // A placement the opaque/cutout pass dropped for lack of instance data is skipped
-                // here too, so it never draws its glass without its walls (#382).
-                if (!objects.blendedModels[m]
-                        || view != null && !view.visible(objects.spheres, p)
-                        || objects.unsortedModels[m] && objects.dropped[p]) {
+                // drawObjects ran over the same active slots this frame, so visible and dropped
+                // hold this frame's answers.
+                if (!sortedPassDraws(
+                        objects.blendedModels,
+                        objects.unsortedModels,
+                        objects.placementModels,
+                        objects.visible,
+                        objects.dropped,
+                        p)) {
                     continue;
                 }
                 int at = p * WorldStreamObjectsFile.PLACEMENT_DOUBLES;
@@ -2510,6 +2516,23 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     }
 
     /**
+     * Whether the sorted pass draws placement p: its model has blended or additive ranges, this
+     * frame's cull kept it, and the opaque/cutout pass did not drop it for lack of instance data. A
+     * dropped placement is skipped here too, so it never draws its glass without its walls (#382);
+     * a model with only sorted ranges has no walls to lose.
+     */
+    static boolean sortedPassDraws(
+            boolean[] blendedModels,
+            boolean[] unsortedModels,
+            int[] placementModels,
+            boolean[] visible,
+            boolean[] dropped,
+            int p) {
+        int m = placementModels[p];
+        return blendedModels[m] && visible[p] && !(unsortedModels[m] && dropped[p]);
+    }
+
+    /**
      * Opaque and cutout BASIC exterior objects after all terrain and before water, sharing
      * terrain's camera, reversed depth and float origin. The visible placements are grouped by
      * model (#382) and each model's opaque and cutout ranges are drawn once, with all its visible
@@ -2525,6 +2548,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         for (int p = 0; p < placements; p++) {
             framePlacements++;
             objects.visible[p] = view == null || view.visible(objects.spheres, p);
+            objects.grouped[p] = objects.visible[p];
             objects.dropped[p] = false;
             if (!objects.visible[p]) {
                 frameCulled++;
@@ -2540,7 +2564,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 if (groups == null || !objects.visible[p]) {
                     continue;
                 }
-                objects.visible[p] = false;
+                objects.grouped[p] = false;
                 int m = objects.placementModels[p];
                 if (portalCulling.walk(objects.portals[m], objects.placements, p, groups)) {
                     framePortalWalks++;
@@ -2554,7 +2578,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
         int models = objects.models.length / 2;
         WorldObjectInstances.groupByModel(
-                objects.placementModels, objects.visible, models, objects.starts, objects.order);
+                objects.placementModels, objects.grouped, models, objects.starts, objects.order);
         for (int m = 0; m < models; m++) {
             int first = objects.starts[m], count = objects.starts[m + 1] - first;
             if (count == 0 || !objects.unsortedModels[m]) {
