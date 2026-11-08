@@ -17,8 +17,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>Vertices use the terrain mesh layout and its shared program ({@link #VERTEX_BYTES}, the stride
  * of {@link WorldStreamPackedTile#VERTEX_BYTES}): float position, then the RGBA8 colour, a plain
- * earth tone lit here by the surface slope; no MCCV (all zero); and the unlit normal marker, so the
- * terrain light (#373) leaves the colour as it is. The shared fog does the rest.
+ * earth tone; no MCCV (all zero); and the surface normal from the faces around the vertex, so the
+ * shared World light (#373, #177) lights the horizon as it lights terrain. The shared fog does the
+ * rest.
  */
 final class WorldStreamHorizon implements AutoCloseable {
     /** Tiles around the camera tile: a 13 x 13 window, at most 169 tiles. */
@@ -227,7 +228,7 @@ final class WorldStreamHorizon implements AutoCloseable {
         }
         var positions = mesh.positions();
         var indices = mesh.indices();
-        // Per-vertex normals from the faces around each vertex, for slope lighting only.
+        // Per-vertex normals from the faces around each vertex, for the World light.
         float[] normals = new float[vertices * 3];
         for (int t = 0; t < indexCount; t += 3) {
             int a = indices.get(t), b = indices.get(t + 1), c = indices.get(t + 2);
@@ -257,25 +258,27 @@ final class WorldStreamHorizon implements AutoCloseable {
         for (int v = 0; v < vertices; v++) {
             float nx = normals[v * 3], ny = normals[v * 3 + 1], nz = normals[v * 3 + 2];
             double length = Math.sqrt(nx * nx + ny * ny + nz * nz);
-            // Light from high in the south-west; flat ground keeps most of the base colour.
-            double light =
-                    length == 0
-                            ? 1
-                            : 0.55 + 0.45 * Math.max(0, (0.3 * nx + 0.3 * ny + 0.9 * nz) / length);
+            if (length == 0) {
+                // A degenerate vertex faces straight up, as terrain's derived normals do.
+                nx = ny = 0;
+                nz = 1;
+                length = 1;
+            }
             vertexBytes
                     .putFloat(positions.get(v * 3))
                     .putFloat(positions.get(v * 3 + 1))
                     .putFloat(positions.get(v * 3 + 2));
+            // The albedo: the World light in the shader lights it, as it lights terrain.
             for (int channel : EARTH) {
-                vertexBytes.put((byte) Math.min(255, Math.round(channel * light)));
+                vertexBytes.put((byte) channel);
             }
             vertexBytes.put((byte) 255);
-            // No MCCV, and the unlit marker: the slope light above is the horizon's only light.
+            // No MCCV; the normal as unsigned normalized bytes, like terrain's.
             vertexBytes.putInt(0);
             vertexBytes
-                    .put(WorldStreamPackedTile.UNLIT_NORMAL)
-                    .put(WorldStreamPackedTile.UNLIT_NORMAL)
-                    .put(WorldStreamPackedTile.UNLIT_NORMAL)
+                    .put(WorldStreamPackedTile.normal(nx / length))
+                    .put(WorldStreamPackedTile.normal(ny / length))
+                    .put(WorldStreamPackedTile.normal(nz / length))
                     .put((byte) 255);
         }
         var indexBytes = ByteBuffer.allocateDirect(indexCount * 4).order(ByteOrder.nativeOrder());

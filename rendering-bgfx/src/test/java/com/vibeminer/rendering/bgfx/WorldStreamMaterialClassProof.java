@@ -276,6 +276,32 @@ final class WorldStreamMaterialClassProof {
             require(
                     relit[row * WIDTH + unlitX] == off[row * WIDTH + unlitX],
                     "An unlit surface ignores the World light");
+            // Diffuse only, per channel: a light shining along the lit quad's normal gives its
+            // texel times the diffuse colour (1, 0.5, 0.25); the same light from the other side
+            // (the fixed direction, which the quad faces away from) gives black.
+            float[] fixed = WorldLight.FIXED.direction();
+            float[] toward = {-fixed[0], -fixed[1], -fixed[2]};
+            float[] diffuseColour = {1, 0.5f, 0.25f};
+            owner.light(new WorldLight(toward, diffuseColour, new float[] {0, 0, 0}));
+            int facing = frame(owner, reader, 5, new long[] {0})[row * WIDTH + WIDTH / 2];
+            owner.light(new WorldLight(fixed, diffuseColour, new float[] {0, 0, 0}));
+            int fromBehind = frame(owner, reader, 6, new long[] {0})[row * WIDTH + WIDTH / 2];
+            owner.light(WorldLight.FIXED);
+            for (int c = 0; c < 3; c++) {
+                int expected = (int) Math.floor(texel[c] * diffuseColour[c]);
+                require(
+                        Math.abs((facing >>> shift[c] & 255) - expected) <= 1,
+                        "Diffuse light per channel: "
+                                + Integer.toHexString(facing)
+                                + " channel "
+                                + c
+                                + " expected "
+                                + expected);
+                require(
+                        (fromBehind >>> shift[c] & 255) <= 1,
+                        "Light from behind the surface adds nothing: "
+                                + Integer.toHexString(fromBehind));
+            }
             return "unlit="
                     + Integer.toHexString(unlit)
                     + " blendedThenAdditive="
@@ -291,7 +317,11 @@ final class WorldStreamMaterialClassProof {
                     + " colouredOff="
                     + Integer.toHexString(plain)
                     + " worldLight="
-                    + Integer.toHexString(shared);
+                    + Integer.toHexString(shared)
+                    + " diffuse="
+                    + Integer.toHexString(facing)
+                    + " fromBehind="
+                    + Integer.toHexString(fromBehind);
         }
     }
 

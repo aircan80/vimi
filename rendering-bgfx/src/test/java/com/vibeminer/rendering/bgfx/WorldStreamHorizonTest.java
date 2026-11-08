@@ -245,12 +245,19 @@ class WorldStreamHorizonTest {
                 assertTrue(Math.abs(x - centre(36)) <= limit, "x " + x);
                 assertTrue(Math.abs(y - centre(32)) <= limit, "y " + y);
                 assertEquals((byte) 255, vertices.get(v * stride + 15));
-                // No MCCV, and the unlit normal marker: terrain lighting leaves the horizon as is.
+                // The earth albedo, no MCCV, and a unit normal facing up: the World light (#177)
+                // lights the horizon in the shader, as it lights terrain.
+                assertEquals(104, vertices.get(v * stride + 12) & 255, "red of vertex " + v);
+                assertEquals(100, vertices.get(v * stride + 13) & 255, "green of vertex " + v);
+                assertEquals(76, vertices.get(v * stride + 14) & 255, "blue of vertex " + v);
                 assertEquals(0, vertices.getInt(v * stride + 16), "MCCV of vertex " + v);
-                for (int n = 0; n < 3; n++) {
-                    assertEquals(
-                            WorldStreamPackedTile.UNLIT_NORMAL, vertices.get(v * stride + 20 + n));
+                double[] n = new double[3];
+                for (int c = 0; c < 3; c++) {
+                    n[c] = ((vertices.get(v * stride + 20 + c) & 255) - 127.5) / 127.5;
                 }
+                double length = Math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                assertTrue(Math.abs(length - 1) < 0.02, "unit normal at vertex " + v);
+                assertTrue(n[2] > 0, "normal faces up at vertex " + v);
                 assertEquals((byte) 255, vertices.get(v * stride + 23));
             }
         }
