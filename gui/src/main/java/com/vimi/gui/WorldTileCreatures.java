@@ -80,6 +80,11 @@ final class WorldTileCreatures implements AutoCloseable {
         CHARACTER_RETRY("character appearance not readable yet"),
         VISIBILITY_UNRESOLVED("surface visibility unresolved"),
         NO_OPAQUE_SURFACE("no opaque or alpha-keyed textured surface"),
+        /**
+         * Every drawable triangle of its Stand pose is weighted to a camera-facing bone, which the
+         * World does not draw: refused, as World objects refuse such a model (#360, #384).
+         */
+        ALL_BILLBOARD("only camera-facing surfaces"),
         MODEL_UNAVAILABLE("model unavailable"),
         /** The preview component was busy or closed; not cached and costs no preview budget. */
         PREVIEWS_BUSY("model reader busy or closed"),
@@ -254,6 +259,11 @@ final class WorldTileCreatures implements AutoCloseable {
          */
         default DisplayModelTypes.Idle worldIdle(long displayId, Cancellation token) throws Exception {
             return idle(displayId, token);
+        }
+
+        /** {@link #idle} then {@link #worldIdle}, for measurements; may read the model once. */
+        default List<DisplayModelTypes.Idle> stands(long displayId, Cancellation token) throws Exception {
+            return List.of(idle(displayId, token), worldIdle(displayId, token));
         }
     }
 
@@ -437,6 +447,16 @@ final class WorldTileCreatures implements AutoCloseable {
             var models = component();
             return models == null ? DisplayModelTypes.Idle.unavailable("Model files are not open")
                     : models.worldIdle(displayId, token).join();
+        }
+
+        @Override
+        public List<DisplayModelTypes.Idle> stands(long displayId, Cancellation token) {
+            var models = component();
+            if (models == null) {
+                var closed = DisplayModelTypes.Idle.unavailable("Model files are not open");
+                return List.of(closed, closed);
+            }
+            return models.stands(displayId, token).join();
         }
 
         private BuildDisplayModels component() {
@@ -867,6 +887,9 @@ final class WorldTileCreatures implements AutoCloseable {
             ranges.add(slot);
             blends.add(materialClass);
         }
+        if ((ranges.isEmpty() || remap.size() < 3) && billboardTriangles > 0)
+            return Converted.refused(Count.ALL_BILLBOARD,
+                    "every drawable triangle is weighted to a camera-facing bone");
         if (ranges.isEmpty() || remap.size() < 3)
             return Converted.refused(Count.NO_OPAQUE_SURFACE, "no opaque or alpha-keyed diffuse surface with a texture");
         var vertexArray = new float[vertices.size()];

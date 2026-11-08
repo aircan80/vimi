@@ -29,6 +29,15 @@ public interface BuildDisplayModels extends AutoCloseable {
         return idle(displayId, token);
     }
 
+    /**
+     * Both answers, {@link #idle} then {@link #worldIdle}, for measurements; implementations may
+     * read the model once for both.
+     */
+    default CompletableFuture<java.util.List<DisplayModelTypes.Idle>> stands(
+            long displayId, Cancellation token) {
+        return idle(displayId, token).thenCombine(worldIdle(displayId, token), java.util.List::of);
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

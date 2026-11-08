@@ -345,6 +345,19 @@ public final class WorldTileCreaturesTest {
                 List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})));
     }
 
+    /**
+     * Part 0 (vertices 0-2) on geoset 0, part 1 (vertices 0-2) on geoset 101, the default of group
+     * 1, and part 2 (vertices 3-5) on geoset 102, which the default hides.
+     */
+    static MeshAppearance hiddenPart() {
+        var mesh = new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0, 3, 0, 0, 4, 0, 0, 3, 1, 0},
+                new int[] {0, 1, 2, 0, 2, 1, 3, 4, 5}, List.of(new PreviewMesh.Part(0, 0, 3),
+                        new PreviewMesh.Part(101, 3, 3), new PreviewMesh.Part(102, 6, 3)));
+        return new MeshAppearance(mesh, new float[12], List.of(new MeshAppearance.Surface(0, 0, true, true, false),
+                new MeshAppearance.Surface(1, 0, true, true, false), new MeshAppearance.Surface(2, 0, true, true, false)),
+                List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})));
+    }
+
     private static void billboardTrianglesAreLeftOutOfTheWorldStandAndDisclosed() throws Exception {
         var appearance = twoParts();
         // A vertex weighted to a camera-facing bone leaves out its triangle; the emptied surface is
@@ -355,6 +368,15 @@ public final class WorldTileCreaturesTest {
                 "One billboard triangle is left out with its surface");
         require(WorldTileCreatures.convert(preview(7, 0L, 0L, appearance), Cancellation.NONE).model()
                 .billboardTriangles() == 0, "Nothing is left out without a list");
+        // Every drawable triangle on camera-facing bones: refused with its own reason, as World
+        // objects refuse such a model.
+        var all = WorldTileCreatures.convert(preview(7, 0L, 0L, appearance), new int[] {0, 4}, Cancellation.NONE);
+        require(all.refusal() == WorldTileCreatures.Count.ALL_BILLBOARD
+                && all.detail().equals("every drawable triangle is weighted to a camera-facing bone"),
+                "An all-billboard Stand is its own refusal: " + all.refusal() + " " + all.detail());
+        // Without billboard triangles an empty model is still a material refusal.
+        require(WorldTileCreatures.convert(preview(7, 0L, 0L, additiveOnly()), Cancellation.NONE).refusal()
+                == WorldTileCreatures.Count.NO_OPAQUE_SURFACE, "Material refusals keep their bucket");
         // The World asks the World profile: the preview's refusal does not matter there.
         var world = new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.AVAILABLE, null, lift(appearance),
                 "Stand", new int[] {4});

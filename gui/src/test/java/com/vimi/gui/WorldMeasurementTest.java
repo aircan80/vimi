@@ -23,6 +23,7 @@ public final class WorldMeasurementTest {
         choiceReasonsCountOnlyUnqualifiedNpcs();
         waterIssueKindsKeepTheirTextAndGroupByNumber();
         displayCensusCountsStandOutcomesPerCreatureDisplay();
+        worldOutcomesFollowTheWorldConversion();
         displayCensusClassifiesGeosetCasesAndDefaults();
         displayTableCensusCountsCasesAndSampleOrderIsFixed();
         displayCensusSeparatesUnresolvedGeosetsAndGroupZeroVariants();
@@ -386,6 +387,30 @@ public final class WorldMeasurementTest {
                                 "rest pose: the Stand sequence belongs to another rest surface", 1)),
                 "Stand outcomes per creature display: " + tally);
         check(census.standTally(true).equals(tally), "All three resolve their geosets: " + census.standTally(true));
+    }
+
+    /** The World bucket follows the converted model, not the left-out list alone (#384). */
+    private static void worldOutcomesFollowTheWorldConversion() {
+        var appearance = WorldTileCreaturesTest.twoParts();
+        var preview = WorldTileCreaturesTest.preview(7, 0L, 0L, appearance);
+        var animation = WorldTileCreaturesTest.lift(appearance);
+        java.util.function.Function<int[], String> outcome = leftOut -> WorldMeasurementProbe.DisplayCensus.worldOutcome(
+                new com.vibeminer.concepts.models.DisplayModelTypes.Idle(
+                        com.vibeminer.concepts.models.DisplayModelTypes.IdleState.AVAILABLE, null, animation, "Stand",
+                        leftOut), preview, Cancellation.NONE);
+        check(outcome.apply(new int[0]).equals("Stand pose"), outcome.apply(new int[0]));
+        check(outcome.apply(new int[] {4}).equals("Stand pose, billboard triangles left out"),
+                outcome.apply(new int[] {4}));
+        check(outcome.apply(new int[] {0, 4}).equals("Stand pose, not drawn: only camera-facing surfaces"),
+                outcome.apply(new int[] {0, 4}));
+        // A geoset the World hides draws nothing either way: its left-out vertices change nothing.
+        var hidden = WorldTileCreaturesTest.preview(7, 0L, 0L, java.util.Map.of(), WorldTileCreaturesTest.hiddenPart());
+        var hiddenAnimation = WorldTileCreaturesTest.lift(hidden.appearance());
+        String unchanged = WorldMeasurementProbe.DisplayCensus.worldOutcome(
+                new com.vibeminer.concepts.models.DisplayModelTypes.Idle(
+                        com.vibeminer.concepts.models.DisplayModelTypes.IdleState.AVAILABLE, null, hiddenAnimation,
+                        "Stand", new int[] {4}), hidden, Cancellation.NONE);
+        check(unchanged.equals("Stand pose"), unchanged);
     }
 
     /** The probe's geoset census (#455) names each display's case, rule outcome and defaults. */

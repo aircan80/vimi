@@ -260,6 +260,34 @@ class DisplayIdleAnimationsTest {
     }
 
     @Test
+    void theServiceAnswersEachProfileWithItsOwnAdmission() throws Exception {
+        // Billboard bone 1 with child bones: the preview refuses, the World admits.
+        var authored = new Authored().translate(0).parent(2, 1);
+        var parsed = authored.fixture.parse();
+        var geometry = parsed.rest().surface();
+        var surface = DisplayModelService.restSurface(parsed.model(), geometry, Cancellation.NONE);
+        var idle =
+                M2IdleAnimation.read(
+                                AssetSource.bytes(authored.fixture.modelBytes()),
+                                parsed.model(),
+                                Cancellation.NONE)
+                        .join();
+        var preview =
+                DisplayModelService.admitted(
+                        null, parsed.model(), geometry, surface, idle, false, Cancellation.NONE);
+        var world =
+                DisplayModelService.admitted(
+                        null, parsed.model(), geometry, surface, idle, true, Cancellation.NONE);
+        assertEquals(DisplayModelTypes.IdleState.UNSUPPORTED, preview.state());
+        assertTrue(preview.message().contains("has child bones"), preview.message());
+        assertEquals(DisplayModelTypes.IdleState.AVAILABLE, world.state());
+        assertArrayEquals(new int[] {2, 3}, world.leftOut());
+        assertTrue(
+                world.message().endsWith("2 vertices weighted to billboard bones left out."),
+                world.message());
+    }
+
+    @Test
     void theWorldProfilePosesBillboardBonesAndListsTheirVerticesAsLeftOut() throws Exception {
         // Rotation keys and child bones on billboard bone 1 are refused for the preview but not
         // for the World, which leaves out the card vertices 2 and 3 weighted to it.
@@ -271,6 +299,11 @@ class DisplayIdleAnimationsTest {
             assertArrayEquals(new int[] {2, 3}, world.leftOut());
             assertEquals(3, world.animation().boneCount());
         }
+        // A descendant of a billboard bone is left out too: vertex 3 moves to bone 2, a child of
+        // the billboard bone 1.
+        var descendant = new Authored().translate(0).parent(2, 1);
+        descendant.fixture.body.putInt(descendant.fixture.vertices + 3 * 48 + 16, 2);
+        assertArrayEquals(new int[] {2, 3}, admitWorld(descendant).leftOut());
         // A cylindrical billboard (0x40) is left out the same way.
         assertArrayEquals(
                 new int[] {2, 3},
