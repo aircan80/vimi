@@ -11,8 +11,11 @@ import java.util.Objects;
 
 /** Bounded v2 command codec only. Does not open packet files or execute commands. */
 final class WorldStreamControl {
-    /** The longest camera line with its sky and light tails is 273 bytes (#177 step 2c). */
-    static final int MAX_LINE_BYTES = 320;
+    /**
+     * The longest camera line with its sky, light and water tails is 333 bytes with its newline
+     * (#171, #177).
+     */
+    static final int MAX_LINE_BYTES = 384;
 
     sealed interface Command
             permits Camera, Offer, Commit, Cancel, CancelUnused, LateObjects, Horizon, Close {
@@ -149,7 +152,9 @@ final class WorldStreamControl {
      * as one 12-digit hex token (horizon then top, red-green-blue), the fog weight in thousandths
      * (0..1000) and the recorded start and end in whole yards. Sky values are already quantized to
      * exactly these steps. A recorded light (#177 step 2c) adds {@code LIGHT}, the direct and
-     * ambient colours as one 12-digit hex token, and the light weight in thousandths.
+     * ambient colours as one 12-digit hex token, and the light weight in thousandths. A recorded
+     * water light (#171) then adds {@code WATER}, the four water colours as one 24-digit hex token,
+     * the four opacities in thousandths and the water weight in thousandths.
      */
     private static String sky(WorldStreamTransport.Sky sky) {
         if (sky == null) {
@@ -165,6 +170,18 @@ final class WorldStreamControl {
             }
             light = " LIGHT " + lights + " " + Math.round(sky.lightWeight() * 1000);
         }
+        String water = "";
+        if (sky.waterWeight() > 0) {
+            var hex = new StringBuilder(24);
+            for (float channel : sky.water()) {
+                hex.append(HexFormat.of().toHexDigits((byte) (int) channel));
+            }
+            var tail = new StringBuilder(" WATER ").append(hex);
+            for (float alpha : sky.waterAlphas()) {
+                tail.append(' ').append(Math.round(alpha * 1000));
+            }
+            water = tail.append(' ').append(Math.round(sky.waterWeight() * 1000)).toString();
+        }
         var colours = new StringBuilder(12);
         for (float[] rgb : new float[][] {sky.horizon(), sky.top()}) {
             for (float channel : rgb) {
@@ -179,7 +196,8 @@ final class WorldStreamControl {
                 + (long) sky.recordedStart()
                 + " "
                 + (long) sky.recordedEnd()
-                + light;
+                + light
+                + water;
     }
 
     private static WorldStreamTransport.Sky sky(String[] parts) {
@@ -195,8 +213,12 @@ final class WorldStreamControl {
         long end = bounded(parts[16], WorldStreamTransport.Sky.MAX_YARDS);
         float[] light = new float[6];
         long lightWeight = 0;
-        if (parts.length == 20) {
-            if (!parts[17].equals("LIGHT") || !parts[18].matches("[0-9a-f]{12}")) {
+        int at = 17;
+        if (parts.length > at && parts[at].equals("LIGHT")) {
+            if (parts.length < at + 3) {
+                throw new IllegalArgumentException("Invalid camera light");
+            }
+            if (!parts[18].matches("[0-9a-f]{12}")) {
                 throw new IllegalArgumentException("Invalid camera light");
             }
             for (int i = 0; i < 6; i++) {
@@ -205,6 +227,26 @@ final class WorldStreamControl {
             lightWeight = bounded(parts[19], 1000);
             if (lightWeight == 0) {
                 throw new IllegalArgumentException("Invalid camera light");
+            }
+            at += 3;
+        }
+        float[] water = new float[12], alphas = new float[4];
+        long waterWeight = 0;
+        if (parts.length > at) {
+            if (parts.length != at + 7
+                    || !parts[at].equals("WATER")
+                    || !parts[at + 1].matches("[0-9a-f]{24}")) {
+                throw new IllegalArgumentException("Invalid camera water light");
+            }
+            for (int i = 0; i < 12; i++) {
+                water[i] = Integer.parseInt(parts[at + 1].substring(2 * i, 2 * i + 2), 16);
+            }
+            for (int i = 0; i < 4; i++) {
+                alphas[i] = bounded(parts[at + 2 + i], 1000) / 1000f;
+            }
+            waterWeight = bounded(parts[at + 6], 1000);
+            if (waterWeight == 0) {
+                throw new IllegalArgumentException("Invalid camera water light");
             }
         }
         return new WorldStreamTransport.Sky(
@@ -215,7 +257,10 @@ final class WorldStreamControl {
                 end,
                 new float[] {light[0], light[1], light[2]},
                 new float[] {light[3], light[4], light[5]},
-                lightWeight / 1000.0);
+                lightWeight / 1000.0,
+                water,
+                alphas,
+                waterWeight / 1000.0);
     }
 
     /** A canonical decimal integer in 0..max. */
@@ -373,7 +418,10 @@ final class WorldStreamControl {
                         case "CAM" -> {
                             // An optional sky tail: SKY colours weight start end.
                             if (parts.length != 12) {
-                                if (parts.length != 20) {
+                                // SKY, then an optional LIGHT (3 more) and WATER (7 more).
+                                if (parts.length != 20
+                                        && parts.length != 24
+                                        && parts.length != 27) {
                                     arity(parts, 17);
                                 }
                                 if (!parts[12].equals("SKY")) {

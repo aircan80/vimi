@@ -780,6 +780,8 @@ final class WorldStreamSourceBridge {
                 lastWaterIssues = facts.issues();
                 waterNote = "water " + facts.state() + " cells=" + facts.cells()
                         + " quads=" + copy[0].water().cells()
+                        + (copy[0].finest() > 1
+                                ? " depth coarsened to " + copy[0].finest() + "-cell blocks" : "")
                         + (copy[0].capped() ? " capped at " + copy[0].layers() + " of "
                                 + facts.admittedLayers() + " layers" : "")
                         + (facts.issues().isEmpty() ? "" : "; " + String.join("; ", facts.issues()));
@@ -933,13 +935,17 @@ final class WorldStreamSourceBridge {
 
     /**
      * Inert writer result: a detached validated copy; closing it releases nothing. A full chunk
-     * (8 x 8 cells) whose used heights are all equal is copied as one quad over the whole chunk,
-     * which draws exactly the same plane: open sea and large lakes then cost one quad per chunk
-     * instead of 64. Layers are copied in source order until the packet's quad bound, and a layer
-     * that would pass it is left out whole ({@code capped}).
+     * (8 x 8 cells) whose used heights are all equal draws one plane, so its cells merge into
+     * larger quads (a whole chunk, 4 x 4 or 2 x 2 cells) wherever one quad still reproduces
+     * their depths within a byte: open sea and large lakes cost one quad per chunk instead of 64,
+     * while a coastal chunk keeps its shallow-to-deep gradient. When the tile would pass the
+     * packet's quad bound, blocks up to {@code finest} cells merge regardless of depth, using the
+     * finest size that fits. If even whole chunks do not fit, layers are copied in source order
+     * until the bound, and a layer that would pass it is left out whole ({@code capped}).
      */
-    record WaterCopy(WorldStreamTileWriter.Water water, int sourceCells, int layers, boolean capped)
-            implements AutoCloseable {
+    record WaterCopy(
+            WorldStreamTileWriter.Water water, int sourceCells, int layers, boolean capped,
+            int finest) implements AutoCloseable {
         /** The scalar water facts the copy reads: one actual Source borrow, or a test fixture. */
         interface Cells {
             int vertices();
@@ -958,6 +964,9 @@ final class WorldStreamSourceBridge {
 
             /** The layer's flat colour, 0xRRGGBB, or -1 for the water colour. */
             int colour(int layer);
+
+            /** True when the client draws this water layer as ocean (#171). */
+            boolean ocean(int layer);
 
             float north(int vertex);
 
@@ -978,6 +987,7 @@ final class WorldStreamSourceBridge {
                 @Override public long mask(int layer) { return borrow.mask(layer); }
                 @Override public boolean planar(int layer) { return borrow.planar(layer); }
                 @Override public int colour(int layer) { return borrow.colour(layer); }
+                @Override public boolean ocean(int layer) { return borrow.ocean(layer); }
                 @Override public float north(int vertex) { return borrow.north(vertex); }
                 @Override public float west(int vertex) { return borrow.west(vertex); }
                 @Override public float up(int vertex) { return borrow.up(vertex); }
@@ -985,12 +995,94 @@ final class WorldStreamSourceBridge {
             }, token);
         }
 
-        /** One copied quad: a source cell, or a merged full flat chunk. */
-        static boolean mergeable(Cells borrow, int layer) {
+        /** Depth bytes a merged block's drawn depth may differ from a source vertex's. */
+        static final float MERGE_DEPTH_TOLERANCE = 1f;
+
+        /** Block sizes in cells, finest first, that a tile's flat full chunks may be kept at. */
+        private static final int[] BLOCKS = {1, 2, 4, 8};
+
+        /** A full 8 x 8 layer whose used heights are all equal: its blocks can merge. */
+        static boolean flatFull(Cells borrow, int layer) {
             return borrow.width(layer) == 8
                     && borrow.height(layer) == 8
                     && borrow.mask(layer) == -1L
                     && borrow.planar(layer);
+        }
+
+        /**
+         * Quads one layer costs when blocks finer than {@code finest} cells always merge. A flat
+         * full chunk is split as a quadtree (8, 4, 2, 1 cells): a block becomes one quad when it
+         * is {@code finest} cells or when that quad draws every source depth in it within
+         * {@link #MERGE_DEPTH_TOLERANCE}. The depth byte drives the water's colour and opacity,
+         * so a coastal chunk keeps its shallow strip. Any other layer keeps every cell.
+         * {@code source} is the layer's first vertex.
+         */
+        static int layerQuads(Cells borrow, int layer, int source, int finest) {
+            return flatFull(borrow, layer)
+                    ? blockQuads(borrow, source, 0, 0, 8, finest, null)
+                    : Long.bitCount(borrow.mask(layer));
+        }
+
+        /**
+         * Counts, and with {@code out} also copies, the quads of one block of a flat full chunk:
+         * {@code size} cells from row {@code row}, column {@code column}.
+         */
+        private static int blockQuads(Cells borrow, int source, int row, int column, int size,
+                int finest, Out out) {
+            if (size <= finest || depthMatches(borrow, source, row, column, size)) {
+                if (out != null) {
+                    int last = size - 1;
+                    out.quad(new int[] {
+                        vertex(source, row, column, 0),
+                        vertex(source, row, column + last, 1),
+                        vertex(source, row + last, column, 2),
+                        vertex(source, row + last, column + last, 3)});
+                }
+                return 1;
+            }
+            int half = size / 2;
+            return blockQuads(borrow, source, row, column, half, finest, out)
+                    + blockQuads(borrow, source, row, column + half, half, finest, out)
+                    + blockQuads(borrow, source, row + half, column, half, finest, out)
+                    + blockQuads(borrow, source, row + half, column + half, half, finest, out);
+        }
+
+        /** Cells are Y-major, each emitting NW, NE, SW, SE. */
+        private static int vertex(int source, int row, int column, int corner) {
+            return source + (row * 8 + column) * 4 + corner;
+        }
+
+        /**
+         * True when one quad over the block, split on the NE--SW diagonal like every quad,
+         * interpolates each of its cells' corner depths within the tolerance.
+         */
+        private static boolean depthMatches(Cells borrow, int source, int row, int column,
+                int size) {
+            if (size == 1) return true;
+            int last = size - 1;
+            float nw = borrow.depth(vertex(source, row, column, 0));
+            float ne = borrow.depth(vertex(source, row, column + last, 1));
+            float sw = borrow.depth(vertex(source, row + last, column, 2));
+            float se = borrow.depth(vertex(source, row + last, column + last, 3));
+            for (int r = 0; r < size; r++) {
+                for (int c = 0; c < size; c++) {
+                    for (int corner = 0; corner < 4; corner++) {
+                        // u runs west to east and v north to south over the block, 0..1.
+                        float u = (c + (corner & 1)) / (float) size;
+                        float v = (r + (corner >> 1)) / (float) size;
+                        float drawn = u + v <= 1
+                                ? nw + u * (ne - nw) + v * (sw - nw)
+                                : se + (1 - u) * (sw - se) + (1 - v) * (ne - se);
+                        float actual = borrow.depth(vertex(source, row + r, column + c, corner));
+                        if (Math.abs(actual - drawn) > MERGE_DEPTH_TOLERANCE) return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        private interface Out {
+            void quad(int[] corners);
         }
 
         static WaterCopy of(Cells borrow, Cancellation token) {
@@ -998,29 +1090,55 @@ final class WorldStreamSourceBridge {
             if (vertices < 4 || vertices % 4 != 0 || indexCount != vertices / 4 * 6 || layers < 1) {
                 throw new IllegalArgumentException("Water exceeds packet profile");
             }
-            // First pass: quads per layer in source order, up to the packet bound.
-            int quads = 0, copied = 0, sourceCells = 0, consumed = 0;
+            var sources = new int[layers];
+            for (int l = 0, at = 0; l < layers; l++) {
+                sources[l] = at;
+                at += Long.bitCount(borrow.mask(l)) * 4;
+                if (at > vertices) throw new IllegalArgumentException("Water exceeds packet profile");
+            }
+            // The finest block size at which every layer fits the packet bound. A tile that fits
+            // only at whole chunks (8) copies layers in source order up to the bound, and a layer
+            // that would pass it is left out whole.
+            int finest = BLOCKS[BLOCKS.length - 1];
+            var counts = new int[layers];
+            for (int block : BLOCKS) {
+                token.check();
+                long total = 0;
+                for (int l = 0; l < layers; l++) {
+                    counts[l] = layerQuads(borrow, l, sources[l], block);
+                    total += counts[l];
+                }
+                if (total <= WorldStreamTileWriter.Water.MAX_CELLS) {
+                    finest = block;
+                    break;
+                }
+            }
+            int quads = 0, copied = 0, sourceCells = 0;
             boolean capped = false;
             for (int l = 0; l < layers; l++) {
-                int cells = Long.bitCount(borrow.mask(l));
-                int layerQuads = mergeable(borrow, l) ? 1 : cells;
-                if (quads + layerQuads > WorldStreamTileWriter.Water.MAX_CELLS) {
+                if (quads + counts[l] > WorldStreamTileWriter.Water.MAX_CELLS) {
                     capped = true;
                     break;
                 }
-                quads += layerQuads;
-                sourceCells += cells;
-                consumed += cells * 4;
+                quads += counts[l];
+                sourceCells += Long.bitCount(borrow.mask(l));
                 copied++;
             }
-            if (consumed > vertices || quads == 0) {
+            if (quads == 0) {
                 throw new IllegalArgumentException("Water exceeds packet profile");
             }
             var positions = new float[quads * 12];
             var depths = new byte[quads * 4];
             var colours = new byte[quads * 4 * 3];
+            var kinds = new byte[quads * 4];
             var indices = new int[quads * 6];
-            int source = 0, quad = 0;
+            int[] quad = {0};
+            Out out = corners -> {
+                for (int c = 0; c < 4; c++) {
+                    put(borrow, corners[c], positions, depths, quad[0] * 4 + c);
+                }
+                quad[0]++;
+            };
             for (int l = 0; l < copied; l++) {
                 token.check();
                 int cells = Long.bitCount(borrow.mask(l));
@@ -1028,31 +1146,30 @@ final class WorldStreamSourceBridge {
                 if (rgb < -1 || rgb > 0xFFFFFF) {
                     throw new IllegalArgumentException("Water colour");
                 }
+                // A layer with its own flat colour (magma, fel, tar) is drawn flat and opaque; water
+                // is shaded as ocean or river.
+                byte kind =
+                        rgb >= 0
+                                ? WorldStreamTileWriter.Water.FLAT
+                                : borrow.ocean(l)
+                                        ? WorldStreamTileWriter.Water.OCEAN
+                                        : WorldStreamTileWriter.Water.RIVER;
                 rgb = rgb < 0 ? WorldStreamTileWriter.Water.WATER_RGB : rgb;
-                int first = quad;
-                if (mergeable(borrow, l)) {
-                    // Cells are Y-major: NW of cell 0, NE of cell 7, SW of 56 and SE of 63.
-                    int[] corners = {source, source + 4 * 7 + 1, source + 4 * 56 + 2,
-                            source + 4 * 63 + 3};
-                    for (int c = 0; c < 4; c++) {
-                        put(borrow, corners[c], positions, depths, quad * 4 + c);
-                    }
-                    quad++;
+                int first = quad[0];
+                if (flatFull(borrow, l)) {
+                    blockQuads(borrow, sources[l], 0, 0, 8, finest, out);
                 } else {
                     for (int c = 0; c < cells; c++) {
-                        for (int corner = 0; corner < 4; corner++) {
-                            put(borrow, source + c * 4 + corner, positions, depths,
-                                    quad * 4 + corner);
-                        }
-                        quad++;
+                        int v = sources[l] + c * 4;
+                        out.quad(new int[] {v, v + 1, v + 2, v + 3});
                     }
                 }
-                for (int v = first * 4; v < quad * 4; v++) {
+                for (int v = first * 4; v < quad[0] * 4; v++) {
                     colours[v * 3] = (byte) (rgb >>> 16);
                     colours[v * 3 + 1] = (byte) (rgb >>> 8);
                     colours[v * 3 + 2] = (byte) rgb;
+                    kinds[v] = kind;
                 }
-                source += cells * 4;
             }
             // The source's explicit NE--SW diagonal for every quad.
             for (int q = 0; q < quads; q++) {
@@ -1065,8 +1182,9 @@ final class WorldStreamSourceBridge {
                 indices[q * 6 + 5] = b + 3;
             }
             return new WaterCopy(
-                    new WorldStreamTileWriter.Water(positions, depths, colours, indices, copied),
-                    sourceCells, copied, capped);
+                    new WorldStreamTileWriter.Water(
+                            positions, depths, colours, kinds, indices, copied),
+                    sourceCells, copied, capped, finest);
         }
 
         private static void put(Cells borrow, int vertex,

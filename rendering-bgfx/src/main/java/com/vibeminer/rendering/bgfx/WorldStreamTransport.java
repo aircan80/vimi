@@ -164,8 +164,41 @@ public final class WorldStreamTransport {
             float recordedEnd,
             float[] direct,
             float[] ambient,
-            double lightWeight) {
+            double lightWeight,
+            float[] water,
+            float[] waterAlphas,
+            double waterWeight) {
         private static final float[] NO_LIGHT = {0, 0, 0};
+        private static final float[] NO_WATER = new float[12], NO_ALPHAS = new float[4];
+
+        /**
+         * A sky with recorded light but no recorded water light. The water light (#171) is
+         * LightData's ocean close, ocean far, river close and river far colours (0..255, twelve
+         * values in that order) and LightParams' ocean shallow, ocean deep, river shallow and river
+         * deep opacities (0..1), with {@code waterWeight}.
+         */
+        public Sky(
+                float[] horizon,
+                float[] top,
+                double fogWeight,
+                float recordedStart,
+                float recordedEnd,
+                float[] direct,
+                float[] ambient,
+                double lightWeight) {
+            this(
+                    horizon,
+                    top,
+                    fogWeight,
+                    recordedStart,
+                    recordedEnd,
+                    direct,
+                    ambient,
+                    lightWeight,
+                    NO_WATER,
+                    NO_ALPHAS,
+                    0);
+        }
 
         /** The explorer's own sky, with no recorded fog or light. */
         public static final Sky EXPLORER = new Sky(WorldFog.FOG_COLOUR, WorldFog.SKY_TOP, 0, 0, 0);
@@ -192,15 +225,19 @@ public final class WorldStreamTransport {
             if (horizon.length != 3
                     || top.length != 3
                     || direct.length != 3
-                    || ambient.length != 3) {
+                    || ambient.length != 3
+                    || water.length != 12
+                    || waterAlphas.length != 4) {
                 throw new IllegalArgumentException("Invalid sky colours");
             }
             horizon = horizon.clone();
             top = top.clone();
             direct = direct.clone();
             ambient = ambient.clone();
-            for (float[] colour : new float[][] {horizon, top, direct, ambient}) {
-                for (int i = 0; i < 3; i++) {
+            water = water.clone();
+            waterAlphas = waterAlphas.clone();
+            for (float[] colour : new float[][] {horizon, top, direct, ambient, water}) {
+                for (int i = 0; i < colour.length; i++) {
                     if (!(colour[i] >= 0 && colour[i] <= 255)) {
                         throw new IllegalArgumentException("Invalid sky colours");
                     }
@@ -215,6 +252,20 @@ public final class WorldStreamTransport {
                 // No recorded light: the line carries no colours, so none are kept either.
                 direct = new float[3];
                 ambient = new float[3];
+            }
+            for (int i = 0; i < 4; i++) {
+                if (!(waterAlphas[i] >= 0 && waterAlphas[i] <= 1)) {
+                    throw new IllegalArgumentException("Invalid recorded water light");
+                }
+                waterAlphas[i] = Math.round(waterAlphas[i] * 1000) / 1000f;
+            }
+            if (!(waterWeight >= 0 && waterWeight <= 1)) {
+                throw new IllegalArgumentException("Invalid recorded water light");
+            }
+            waterWeight = Math.round(waterWeight * 1000) / 1000.0;
+            if (waterWeight == 0) {
+                water = new float[12];
+                waterAlphas = new float[4];
             }
             if (!(fogWeight >= 0 && fogWeight <= 1)
                     || !(recordedStart >= 0 && recordedStart <= MAX_YARDS)
@@ -250,6 +301,16 @@ public final class WorldStreamTransport {
         }
 
         @Override
+        public float[] water() {
+            return water.clone();
+        }
+
+        @Override
+        public float[] waterAlphas() {
+            return waterAlphas.clone();
+        }
+
+        @Override
         public boolean equals(Object other) {
             return other instanceof Sky o
                     && java.util.Arrays.equals(horizon, o.horizon)
@@ -259,7 +320,10 @@ public final class WorldStreamTransport {
                     && Float.compare(recordedEnd, o.recordedEnd) == 0
                     && java.util.Arrays.equals(direct, o.direct)
                     && java.util.Arrays.equals(ambient, o.ambient)
-                    && Double.compare(lightWeight, o.lightWeight) == 0;
+                    && Double.compare(lightWeight, o.lightWeight) == 0
+                    && java.util.Arrays.equals(water, o.water)
+                    && java.util.Arrays.equals(waterAlphas, o.waterAlphas)
+                    && Double.compare(waterWeight, o.waterWeight) == 0;
         }
 
         @Override
@@ -272,7 +336,10 @@ public final class WorldStreamTransport {
                     recordedEnd,
                     java.util.Arrays.hashCode(direct),
                     java.util.Arrays.hashCode(ambient),
-                    lightWeight);
+                    lightWeight,
+                    java.util.Arrays.hashCode(water),
+                    java.util.Arrays.hashCode(waterAlphas),
+                    waterWeight);
         }
     }
 

@@ -34,7 +34,7 @@ final class WorldStreamEnvelopeTest {
         assertEquals(9, values.getInt(100));
         assertEquals(WorldStreamEnvelope.MAX_PACKET_BYTES, values.getInt(104));
         assertEquals(
-                3_302_528 + WorldStreamTileFile.MAX_SPLAT_BYTES,
+                3_335_296 + WorldStreamTileFile.MAX_SPLAT_BYTES,
                 WorldStreamEnvelope.MAX_PACKET_BYTES);
         assertEquals(1, values.getInt(108), "STANDARD object textures by default");
         assertEquals(

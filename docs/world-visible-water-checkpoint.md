@@ -37,7 +37,7 @@ terrain header total.
   | Offset | Content |
   | --- | --- |
   | 0 | magic `VIMIWTR1` |
-  | 8 | version 2 (version 1 had no colours and is refused) |
+  | 8 | version 3 (older versions are refused) |
   | 12 | cells |
   | 16 | vertices (= 4 × cells) |
   | 20 | indices (= 6 × cells) |
@@ -50,7 +50,8 @@ terrain header total.
 
 - **Body:** float32 positions as native x north, y west, z up; then u8 depths; then u8 RGB per
   vertex (the liquid's colour: water teal, or a magma, fel or tar LiquidType colour, #171); then
-  u32 indices. That is 16 bytes per vertex plus 4 per index.
+  a u8 liquid kind per vertex (0 river or lake, 1 ocean, 2 flat liquid; version 3); then u32
+  indices. That is 17 bytes per vertex plus 4 per index.
 - **Child-side validation:**
   - geometry SHA, ROOT FDID and ROOT CKey equal the terrain header;
   - counts are exact;
@@ -64,9 +65,10 @@ terrain header total.
   - If the restore is confirmed, the producer moves terrain-only, because water never removes
     terrain.
   - Otherwise the producer fails and the packet is deleted.
-- **Bound:** the maximum water trailer is 721,024 B (622,720 B before version 2's per-vertex
-  colours added 98,304 B). With the terrain packet at 2,581,504 B since packet version 4 (#373),
-  `MAX_PACKET_BYTES` is 3,302,528 B plus the optional splat trailer. (The first water version
+- **Bound:** the maximum water trailer is 753,792 B (622,720 B, plus 98,304 B for version 2's
+  per-vertex colours and 32,768 B for version 3's liquid kinds). With the terrain packet at
+  2,581,504 B since packet version 4 (#373), `MAX_PACKET_BYTES` is 3,335,296 B plus the optional
+  splat trailer. (The first water version
   grew it 2,284,544 → 2,907,264.)
 
 ## Memory (logical)
@@ -172,7 +174,14 @@ old 128-layer / 8192-cell owner caps.
   costs 256 quads per tile instead of 16,384 cells. The trailer stays at 8192 quads and the
   renderer at 16,384 water triangles per slot, so #276's 26-slot terrain budget does not grow.
   Layers are copied whole in source order; a layer that would pass 8192 quads is left out and
-  the tile's water note says "capped". `MAX_WATER_LAYERS` (a count in the trailer header) grows
+  the tile's water note says "capped".
+  Since depth shades water (#171), a flat chunk merges only where one quad reproduces its
+  depths within a byte: the bridge splits it as a quadtree (8, 4, 2, 1 cells), so a coastal chunk
+  keeps its shallow-to-deep gradient. A tile that would pass 8192 quads merges blocks regardless
+  of depth at the finest size that fits (its note says "depth coarsened"); only when whole chunks
+  do not fit are layers capped. On 70862, every second tile of Azeroth and Kalimdor (682 with
+  water): no tile capped, 10 coarsened, largest tile 7,891 quads (473,456 and 543,531 quads in all,
+  against 216,746 and 224,814 with depth ignored). `MAX_WATER_LAYERS` (a count in the trailer header) grows
   from 128 to 1024.
 - **Still declined.** Layers of another vertex format (LVF 1 and 3: every magma, slime, fel and
   tar type in this build) stay unsupported. Because their vertex stream length is not

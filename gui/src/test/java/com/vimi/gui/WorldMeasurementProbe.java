@@ -188,7 +188,8 @@ public final class WorldMeasurementProbe {
                                         null,
                                         issue -> say("PROBE " + issue),
                                         DEADLINE - System.nanoTime(),
-                                        "creatures".equals(System.getProperty("probe.mode"))));
+                                        List.of("creatures", "displays")
+                                                .contains(System.getProperty("probe.mode"))));
         try {
             BuildWorld handle = opened.world();
             var catalog =
@@ -215,6 +216,7 @@ public final class WorldMeasurementProbe {
                             case "water" -> water(handle, catalog);
                             case "prep" -> prep(handle, catalog);
                             case "creatures" -> creatures(opened, handle, catalog);
+                            case "displays" -> displays(opened);
                             default -> stream(handle, catalog);
                         }
                         return null;
@@ -389,6 +391,315 @@ public final class WorldMeasurementProbe {
     }
 
     /**
+     * The production display previews, recording per distinct creature display (#377, #455) its
+     * Stand pose outcome and its geoset facts: the model's CreatureGeosetDataID, whether the
+     * display has geoset rows, the outcome of the production geoset rule, and for each geoset
+     * group of the model whether it has an x00 and an x01 section. Aggregate counts only.
+     */
+    static final class DisplayCensus implements WorldTileCreatures.Previews {
+        final WorldTileCreatures.Previews inner;
+        final Map<Long, DisplayModelFacts> facts = new ConcurrentHashMap<>();
+        final Map<Long, String> stand = new ConcurrentHashMap<>();
+        private final Map<Long, com.vibeminer.rendering.models.MeshAppearance> appearances =
+                new ConcurrentHashMap<>();
+
+        DisplayCensus(WorldTileCreatures.Previews inner) {
+            this.inner = inner;
+        }
+
+        @Override
+        public com.vibeminer.concepts.models.DisplayModelTypes.Preview preview(
+                long displayId, Cancellation token) throws Exception {
+            var preview = inner.preview(displayId, token);
+            if (preview != null && preview.appearance() != null && preview.reference() != null) {
+                facts.put(displayId, DisplayModelFacts.of(preview.reference(), preview.appearance().mesh()));
+                appearances.put(displayId, preview.appearance());
+            }
+            return preview;
+        }
+
+        @Override
+        public com.vibeminer.concepts.models.DisplayModelTypes.Idle idle(
+                long displayId, Cancellation token) throws Exception {
+            var idle = inner.idle(displayId, token);
+            stand.put(displayId, standOutcome(idle, appearances.get(displayId)));
+            return idle;
+        }
+
+        /** "Stand pose", or "rest pose: <reason kind>" as the World's conversion decides it. */
+        static String standOutcome(
+                com.vibeminer.concepts.models.DisplayModelTypes.Idle idle,
+                com.vibeminer.rendering.models.MeshAppearance appearance) {
+            if (idle == null) return "rest pose: no idle result";
+            if (idle.state() != com.vibeminer.concepts.models.DisplayModelTypes.IdleState.AVAILABLE)
+                return "rest pose: " + idle.state() + " " + reasonKind(idle.message());
+            if (appearance != null && !idle.animation().matches(appearance))
+                return "rest pose: the Stand sequence belongs to another rest surface";
+            return "Stand pose";
+        }
+
+        /** A reason with its standalone numbers as #, so names such as x00 stay readable. */
+        static String reasonKind(String reason) {
+            return reason.replaceAll("\\b\\d+\\b", "#").strip();
+        }
+
+        /** Distinct creature displays (no extended display info) per Stand outcome. */
+        Map<String, Integer> standTally(boolean resolvedGeosetsOnly) {
+            var counts = new TreeMap<String, Integer>();
+            stand.forEach(
+                    (display, outcome) -> {
+                        var f = facts.get(display);
+                        if (f == null || !f.creature()) return;
+                        if (resolvedGeosetsOnly && f.rule() != null) return;
+                        counts.merge(outcome, 1, Integer::sum);
+                    });
+            return counts;
+        }
+
+        /** Distinct creature displays per geoset case and production rule outcome. */
+        Map<String, Integer> geosetTally() {
+            var counts = new TreeMap<String, Integer>();
+            for (var f : facts.values()) {
+                if (!f.creature()) continue;
+                counts.merge(
+                        f.geosetCase() + " -> " + (f.rule() == null ? "drawn" : "refused: " + reasonKind(f.rule())),
+                        1,
+                        Integer::sum);
+            }
+            return counts;
+        }
+
+        /**
+         * For creature displays whose model records no geoset data (the x00 default path): how
+         * many of the models' groups 1 and above have x00 only, x01 only, both or neither, how many
+         * have one, two or more sections, how many displays draw with an x00 default, an
+         * x00-else-x01 default, an x01 default and an "only section, else x01" default, and how
+         * many models have group 0 sections other than 0 (hidden by every rule above).
+         */
+        String defaultCensus() {
+            int displays = 0, x00 = 0, x01Fallback = 0, x01 = 0, onlyOrX01 = 0, group0Variants = 0;
+            int onlyX00 = 0, onlyX01 = 0, both = 0, neither = 0, one = 0, two = 0, more = 0;
+            for (var f : facts.values()) {
+                if (!f.creature() || f.geosetDataId() == null || f.geosetDataId() > 0) continue;
+                displays++;
+                boolean allX00 = true, allX00OrX01 = true, allX01 = true, allOnlyOrX01 = true;
+                for (var group : f.groups().entrySet()) {
+                    var values = group.getValue();
+                    if (group.getKey() < 1) {
+                        if (values.stream().anyMatch(v -> v != 0)) group0Variants++;
+                        continue;
+                    }
+                    boolean a = values.contains(0), b = values.contains(1);
+                    if (a && b) both++;
+                    else if (a) onlyX00++;
+                    else if (b) onlyX01++;
+                    else neither++;
+                    if (values.size() == 1) one++;
+                    else if (values.size() == 2) two++;
+                    else more++;
+                    allX00 &= a;
+                    allX00OrX01 &= a || b;
+                    allX01 &= b;
+                    allOnlyOrX01 &= b || values.size() == 1;
+                }
+                if (allX00) x00++;
+                if (allX00OrX01) x01Fallback++;
+                if (allX01) x01++;
+                if (allOnlyOrX01) onlyOrX01++;
+            }
+            return String.format(
+                    Locale.ROOT,
+                    "%d displays; groups 1+: x00 only %d, x01 only %d, both %d, neither %d; with one"
+                            + " section %d, two %d, three or more %d; displays whose every group 1+ has"
+                            + " x00 %d, x00 or x01 %d, x01 %d, x01 or a single section %d; displays with"
+                            + " group 0 sections other than 0: %d",
+                    displays, onlyX00, onlyX01, both, neither, one, two, more, x00, x01Fallback, x01,
+                    onlyOrX01, group0Variants);
+        }
+
+        /**
+         * The section values of each geoset group 1 and above (for example "1,2,3"), over creature
+         * displays whose model records no geoset data: groups per value set.
+         */
+        Map<String, Integer> groupPatterns() {
+            var counts = new TreeMap<String, Integer>();
+            for (var f : facts.values()) {
+                if (!f.creature() || f.geosetDataId() == null || f.geosetDataId() > 0) continue;
+                for (var group : f.groups().entrySet()) {
+                    if (group.getKey() < 1) continue;
+                    var text = new StringBuilder();
+                    for (int v : group.getValue()) text.append(text.isEmpty() ? "" : ",").append(v);
+                    counts.merge(text.toString(), 1, Integer::sum);
+                }
+            }
+            return counts;
+        }
+    }
+
+    /**
+     * One display's geoset facts: the model's CreatureGeosetDataID (null when unreadable), its own
+     * geoset rows (null when unknown), the production rule's refusal (null when it draws), and per
+     * geoset group the section values (ID % 100) the model has.
+     */
+    record DisplayModelFacts(
+            boolean creature,
+            Long geosetDataId,
+            Map<Integer, Integer> rows,
+            String rule,
+            Map<Integer, java.util.SortedSet<Integer>> groups) {
+        static DisplayModelFacts of(
+                com.vibeminer.concepts.models.DisplayModelTypes.Reference reference,
+                com.vibeminer.rendering.models.PreviewMesh mesh) {
+            var groups = new TreeMap<Integer, java.util.SortedSet<Integer>>();
+            for (var part : mesh.parts())
+                groups.computeIfAbsent(part.id() / 100, k -> new java.util.TreeSet<>()).add(part.id() % 100);
+            boolean creature =
+                    reference.extendedDisplayInfoId() != null && reference.extendedDisplayInfoId() == 0;
+            return new DisplayModelFacts(
+                    creature,
+                    reference.creatureGeosetDataId(),
+                    reference.displayGeosets(),
+                    WorldTileCreatures.visibleGeosets(reference, mesh).refusal(),
+                    groups);
+        }
+
+        String geosetCase() {
+            if (geosetDataId == null) return "ID unreadable";
+            String id = geosetDataId > 0 ? "ID > 0" : "ID 0";
+            String own = rows == null ? "rows unknown" : rows.isEmpty() ? "no rows" : "rows";
+            return id + ", " + own;
+        }
+    }
+
+    /**
+     * A build-wide census of creature displays (#377, #455), independent of spawns: the tables'
+     * geoset cases for every creature display (no extended display info), then the production
+     * preview and Stand sequence of one creature display per creature model, in a fixed
+     * pseudo-random model order, until {@code -Pprobe.limit} models or the deadline. Like the
+     * creatures mode, it may add derived entries to the copy's generated store.
+     */
+    private static void displays(WorldMeasurementOpen opened) throws Exception {
+        var issues = new ArrayList<String>();
+        var tables = new com.vibeminer.concepts.models.TableProjection(opened.tables());
+        int bound = 1 << 21;
+        var displayData = tables.read("CreatureDisplayInfo", bound, Cancellation.NONE, issues);
+        var modelData = tables.read("CreatureModelData", bound, Cancellation.NONE, issues);
+        var rowData = tables.read("CreatureDisplayInfoGeosetData", bound, Cancellation.NONE, issues);
+        var geosetDataId = new java.util.HashMap<Long, Long>();
+        for (var row : modelData.rows())
+            geosetDataId.put(
+                    row.id(),
+                    modelData.has("CreatureGeosetDataID")
+                            ? modelData.number(row, "CreatureGeosetDataID")
+                            : 0L);
+        var withRows = new java.util.HashSet<Long>();
+        for (var row : rowData.rows()) withRows.add(rowData.number(row, "CreatureDisplayInfoID"));
+        var census = new DisplayTableCensus();
+        // One creature display per model: the lowest display ID.
+        var perModel = new TreeMap<Long, Long>();
+        for (var row : displayData.rows()) {
+            long model = displayData.number(row, "ModelID");
+            long extended =
+                    displayData.has("ExtendedDisplayInfoID")
+                            ? displayData.number(row, "ExtendedDisplayInfoID")
+                            : 0L;
+            census.add(extended != 0, geosetDataId.get(model), withRows.contains(row.id()));
+            if (extended == 0 && geosetDataId.containsKey(model)) perModel.merge(model, row.id(), Math::min);
+        }
+        say(
+                String.format(
+                        Locale.ROOT,
+                        "PROBE displays: tables CreatureDisplayInfo %d rows, CreatureModelData %d rows (%d with"
+                                + " CreatureGeosetDataID > 0), CreatureDisplayInfoGeosetData %d rows for %d displays;"
+                                + " issues %s",
+                        displayData.rows().size(),
+                        modelData.rows().size(),
+                        geosetDataId.values().stream().filter(v -> v > 0).count(),
+                        rowData.rows().size(),
+                        withRows.size(),
+                        issues));
+        say("PROBE displays: creature displays by geoset case (tables, every display)");
+        for (var entry : census.counts.entrySet())
+            say(String.format(Locale.ROOT, "PROBE   %6d  %s", entry.getValue(), entry.getKey()));
+        var order = sampleOrder(perModel.keySet());
+        int limit = Integer.getInteger("probe.limit", Integer.MAX_VALUE);
+        var previews = new WorldTileCreatures.DisplayPreviews(opened::displays, () -> "probe");
+        var display = new DisplayCensus(previews);
+        var unavailable = new TreeMap<String, Integer>();
+        int asked = 0;
+        long began = System.nanoTime();
+        try {
+            for (long model : order) {
+                if (asked >= limit || !beforeDeadline()) break;
+                asked++;
+                long id = perModel.get(model);
+                var preview = display.preview(id, Cancellation.NONE);
+                if (preview == null || preview.appearance() == null) {
+                    unavailable.merge(
+                            DisplayCensus.reasonKind(
+                                    preview == null || preview.message() == null
+                                            ? "no static preview"
+                                            : preview.message()),
+                            1,
+                            Integer::sum);
+                    continue;
+                }
+                display.idle(id, Cancellation.NONE);
+            }
+        } finally {
+            previews.close();
+        }
+        if (asked < order.size()) incomplete = true;
+        say(
+                String.format(
+                        Locale.ROOT,
+                        "PROBE displays: sampled %d of %d creature models (one display each) in %.1f s;"
+                                + " %d with a static preview",
+                        asked,
+                        order.size(),
+                        seconds(System.nanoTime() - began),
+                        display.facts.size()));
+        say("PROBE displays: sampled models without a static preview");
+        for (var entry : unavailable.entrySet())
+            say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+        say("PROBE displays: sampled creature displays by Stand outcome (all with a preview)");
+        for (var entry : display.standTally(false).entrySet())
+            say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+        say("PROBE displays: sampled creature displays by Stand outcome (geosets resolved)");
+        for (var entry : display.standTally(true).entrySet())
+            say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+        say("PROBE displays: sampled creature displays by geoset case and rule outcome");
+        for (var entry : display.geosetTally().entrySet())
+            say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+        say("PROBE displays: sampled geoset default census (ID 0): " + display.defaultCensus());
+        say("PROBE displays: sampled geoset groups 1+ by section values (ID 0)");
+        for (var entry : display.groupPatterns().entrySet())
+            say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+    }
+
+    /** Creature displays (no extended display info) per geoset case, from the tables alone. */
+    static final class DisplayTableCensus {
+        final Map<String, Integer> counts = new TreeMap<>();
+
+        void add(boolean character, Long geosetDataId, boolean rows) {
+            String key;
+            if (character) key = "character display (extended display info), not counted by case";
+            else if (geosetDataId == null) key = "model not in CreatureModelData";
+            else key = (geosetDataId > 0 ? "ID > 0" : "ID 0") + ", " + (rows ? "rows" : "no rows");
+            counts.merge(key, 1, Integer::sum);
+        }
+    }
+
+    /** A fixed pseudo-random order of the given IDs (the same on every run). */
+    static List<Long> sampleOrder(java.util.Collection<Long> ids) {
+        var order = new ArrayList<>(ids);
+        order.sort(
+                java.util.Comparator.comparingLong((Long id) -> id * 0x9E3779B97F4A7C15L)
+                        .thenComparingLong(id -> id));
+        return order;
+    }
+
+    /**
      * Prepares each scenario's tiles as the World does, buildings and doodads first and then
      * creatures in what they leave (the production bridge and caps), with the production creature
      * chooser, display previews and humanoid NPC appearances, and counts what is drawn and why the
@@ -427,12 +738,15 @@ public final class WorldMeasurementProbe {
 
             var npcs = new NpcAnswers(WorldTileCreatures.npcs(measured::races));
             var choices = new ChoiceReasons(WorldTileCreatures.chooser(measured::creatures));
+            var displays =
+                    new DisplayCensus(
+                            new WorldTileCreatures.DisplayPreviews(opened::displays, () -> "probe"));
             var tiles =
                     new WorldTileCreatures(
                             token -> sources.worldSpawns(build, token),
                             () -> "probe",
                             choices,
-                            new WorldTileCreatures.DisplayPreviews(opened::displays, () -> "probe"),
+                            displays,
                             npcs);
             try {
                 for (var scenario : scenarios) {
@@ -517,6 +831,19 @@ public final class WorldMeasurementProbe {
                                     choices.examples.get(entry.getKey())));
                 say("PROBE creatures: distinct humanoid NPC displays asked " + npcs.outcomes.size());
                 for (var entry : npcs.tally().entrySet())
+                    say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+                say("PROBE creatures: distinct creature displays by Stand outcome (all with a preview)");
+                for (var entry : displays.standTally(false).entrySet())
+                    say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+                say("PROBE creatures: distinct creature displays by Stand outcome (geosets resolved)");
+                for (var entry : displays.standTally(true).entrySet())
+                    say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+                say("PROBE creatures: distinct creature displays by geoset case and rule outcome");
+                for (var entry : displays.geosetTally().entrySet())
+                    say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+                say("PROBE creatures: geoset default census (ID 0): " + displays.defaultCensus());
+                say("PROBE creatures: geoset groups 1+ by section values (ID 0)");
+                for (var entry : displays.groupPatterns().entrySet())
                     say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
             } finally {
                 tiles.close();
@@ -1117,6 +1444,10 @@ public final class WorldMeasurementProbe {
             var states = new TreeMap<String, Integer>();
             var issues = new TreeMap<String, Integer>();
             long declared = 0, admitted = 0, unresolved = 0, cells = 0;
+            // The bridge's copy: quads, the tile maximum, capped tiles, and the quads a
+            // planar-only merge (ignoring depth) would have drawn.
+            // total, max, capped tiles, planar-only total, planar-only max, tiles with coarsened depth
+            long[] quads = new long[6];
             // The tiles this map's stride selects; fewer done means the budget ran out.
             int tiles = 0, sampled = (all.size() + stride - 1) / stride;
             long began = System.nanoTime();
@@ -1128,7 +1459,23 @@ public final class WorldMeasurementProbe {
                         source.prepareAndWrite(
                                 scope, all.get(at), Cancellation.NONE, (borrow, token) -> () -> {})) {
                     try (var prepared =
-                            water.prepareAndWrite(written, Cancellation.NONE, (borrow, token) -> () -> {})) {
+                            water.prepareAndWrite(written, Cancellation.NONE, (borrow, token) -> {
+                                var copy = WorldStreamSourceBridge.WaterCopy.of(borrow, token);
+                                int drawn = copy.water().cells();
+                                quads[0] += drawn;
+                                quads[1] = Math.max(quads[1], drawn);
+                                if (copy.capped()) quads[2]++;
+                                if (copy.finest() > 1) quads[5]++;
+                                int planarOnly = 0;
+                                for (int l = 0; l < borrow.layers(); l++) {
+                                    boolean full = borrow.width(l) == 8 && borrow.height(l) == 8
+                                            && borrow.mask(l) == -1L && borrow.planar(l);
+                                    planarOnly += full ? 1 : Long.bitCount(borrow.mask(l));
+                                }
+                                quads[3] += planarOnly;
+                                quads[4] = Math.max(quads[4], planarOnly);
+                                return copy;
+                            })) {
                         var facts = prepared.facts();
                         key = facts.state() + "/" + facts.reason();
                         declared += facts.declaredLayers();
@@ -1167,6 +1514,18 @@ public final class WorldMeasurementProbe {
                             cells));
             say("PROBE   water states/reasons (one per tile) " + states);
             say("PROBE   water issue kinds " + issues);
+            say(
+                    String.format(
+                            Locale.ROOT,
+                            "PROBE   water quads %d (tile max %d of %d, capped tiles %d, coarsened depth tiles %d);"
+                                    + " planar-only merge would draw %d (tile max %d)",
+                            quads[0],
+                            quads[1],
+                            com.vibeminer.rendering.bgfx.WorldStreamTileWriter.Water.MAX_CELLS,
+                            quads[2],
+                            quads[5],
+                            quads[3],
+                            quads[4]));
         }
     }
 
