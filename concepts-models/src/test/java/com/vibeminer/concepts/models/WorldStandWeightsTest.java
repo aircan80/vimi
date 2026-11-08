@@ -263,4 +263,60 @@ class WorldStandWeightsTest {
         assertFalse(weights.getFirst().resolved());
         assertTrue(weights.getFirst().refusal().contains("external skeleton"));
     }
+
+    @Test
+    void aLinearTrackWhoseFirstKeyIsAfterZeroHoldsThatKeyAtTheSample() throws Exception {
+        var f = glow();
+        stand(f, false, true);
+        weight(f, 1, -1, 1, 0, FULL / 4, FULL);
+        // Keys at 500 and 1000 ms. Like PreviewAnimation, which holds times[0] for time <=
+        // times[0], time 0 takes the first key's value, not one interpolated towards it.
+        int keyTimes = f.body.getInt(88 + 4) + 20 + 8 + 8;
+        f.body.putInt(keyTimes, 500).putInt(keyTimes + 4, 1000);
+        var world = WorldBatchRuleTest.worldBinding(f);
+        var surfaces = world.appearance().surfaces();
+        assertEquals(1, surfaces.size(), world.issues().toString());
+        var textures = world.appearance().textures();
+        int index = surfaces.getFirst().material().stages().getFirst().textureIndex();
+        assertEquals(1, index, "the surface samples the scaled copy");
+        int alpha = Math.round(FULL / 4 / (float) FULL * 255);
+        int[] source = textures.get(0).argb(), scaled = textures.get(index).argb();
+        for (int at = 0; at < source.length; at++) {
+            assertEquals(((source[at] >>> 24) * alpha + 127) / 255, scaled[at] >>> 24, "alpha");
+        }
+    }
+
+    @Test
+    void aBindingIsNotSavedWhileTheStandIsUnavailable() throws Exception {
+        var f = glow();
+        stand(f, false, true);
+        weight(f, 1, -1, 1, 0, FULL, 0);
+        // Bone 0's Stand key values lie outside the source: the Stand cannot be read (UNAVAILABLE).
+        int outerValues = f.body.getInt(f.bones + 16 + 16);
+        f.body.putInt(outerValues + 4, 0x7fff0000);
+        var both = WorldBatchRuleTest.worldBindings(f, 2);
+        var world = both.get(0);
+        assertTrue(world.appearance().surfaces().isEmpty(), world.issues().toString());
+        assertTrue(
+                noted(world, "not drawn without a Stand pose: Idle sequence could not be read"),
+                world.issues().toString());
+        assertFalse(both.get(1).restored(), "an unavailable Stand is read again, not saved");
+    }
+
+    @Test
+    void aMalformedTrackIsReadAgainNotSaved() throws Exception {
+        var f = glow();
+        stand(f, false, true);
+        weight(f, 1, -1, 1, 0, FULL, 0);
+        // The played slice's keys lie outside the source.
+        int outerValues = f.body.getInt(88 + 4) + 20 + 8;
+        f.body.putInt(outerValues + 4, 0x7fff0000);
+        var both = WorldBatchRuleTest.worldBindings(f, 2);
+        var world = both.get(0);
+        assertTrue(world.appearance().surfaces().isEmpty(), world.issues().toString());
+        // The static opacity facts already fail on it; like the Stand texture weights read, they
+        // cannot tell a lasting malformation from a source a later read can clear.
+        assertTrue(noted(world, "Static opacity facts are unavailable"), world.issues().toString());
+        assertFalse(both.get(1).restored(), "read again on every load, not saved");
+    }
 }
