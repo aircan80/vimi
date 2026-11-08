@@ -292,6 +292,7 @@ public final class WorldService implements BuildWorld {
                     var maps = new ArrayList<MapInfo>();
                     var areas = new ArrayList<Area>();
                     var issues = new ArrayList<String>();
+                    var byDirectory = new ArrayList<Integer>();
                     read(
                             "Map",
                             10000,
@@ -304,6 +305,9 @@ public final class WorldService implements BuildWorld {
                                 }
                                 Long type = number(schema, row, "InstanceType"),
                                         wdt = number(schema, row, "WdtFileDataID");
+                                if (wdt == null && directory != null && directoryWdt(schema)) {
+                                    byDirectory.add(maps.size());
+                                }
                                 maps.add(
                                         new MapInfo(
                                                 row.id(),
@@ -312,6 +316,20 @@ public final class WorldService implements BuildWorld {
                                                 type == null ? null : type.intValue(),
                                                 wdt));
                             });
+                    for (int index : byDirectory) {
+                        var map = maps.get(index);
+                        Long wdt = directoryWdt(map.directory(), cancel);
+                        if (wdt != null) {
+                            maps.set(
+                                    index,
+                                    new MapInfo(
+                                            map.id(),
+                                            map.name(),
+                                            map.directory(),
+                                            map.type(),
+                                            wdt));
+                        }
+                    }
                     read(
                             "AreaTable",
                             100000,
@@ -637,6 +655,42 @@ public final class WorldService implements BuildWorld {
         } catch (RuntimeException failure) {
             token.check();
             issues.add(table + ": " + reason(failure));
+        }
+    }
+
+    /** Whether this Map layout binds its WDT through the map directory (no WDT field). */
+    private static boolean directoryWdt(TableTypes.SchemaResult schema) {
+        try {
+            return WorldMapProofs.wdtColumn(schema).source()
+                    == WorldMapProofs.WdtSource.DIRECTORY_PATH;
+        } catch (WorldTerrainStreaming.Refusal refused) {
+            return false;
+        }
+    }
+
+    /** The WDT file ID the build's names give a map directory, or null. */
+    private Long directoryWdt(String directory, Cancellation token) {
+        if (files == null) {
+            return null;
+        }
+        try {
+            var lookup =
+                    files.statContent(
+                                    FileTypes.FileRef.forPath(WorldMapProofs.wdtPath(directory)),
+                                    token)
+                            .join();
+            var file = lookup.file();
+            return lookup.state() == FileTypes.FileLookupState.FOUND
+                            && file != null
+                            && file.fileDataId() > 0
+                            && file.fileDataId() <= 0xffff_ffffL
+                    ? file.fileDataId()
+                    : null;
+        } catch (java.util.concurrent.CancellationException e) {
+            throw e;
+        } catch (RuntimeException unavailable) {
+            token.check();
+            return null;
         }
     }
 

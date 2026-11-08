@@ -77,8 +77,41 @@ class WorldServiceTest {
         }
     }
 
+    @Test
+    void mapLayoutWithoutWdtFieldResolvesTheCatalogWdtThroughTheDirectoryPath() {
+        var opens = new AtomicInteger();
+        var paths = new java.util.ArrayList<String>();
+        try (var service =
+                new WorldService(tables("B47C6F05", false), files(opens, false, paths::add))) {
+            var map = service.catalog(Cancellation.NONE).join().maps().getFirst();
+            assertEquals(81, map.wdtId());
+            assertEquals(List.of("world/maps/Authored/Authored.wdt"), paths);
+            assertEquals(0, opens.get(), "Resolving the name never opens the WDT");
+        }
+        paths.clear();
+        // An unreviewed layout without a WDT field keeps no WDT ID and resolves nothing.
+        try (var service =
+                new WorldService(tables("OTHER", false), files(opens, false, paths::add))) {
+            assertNull(service.catalog(Cancellation.NONE).join().maps().getFirst().wdtId());
+            assertTrue(paths.isEmpty());
+        }
+        // A layout with a WDT field never uses the directory, even when that field is unusable.
+        try (var service =
+                new WorldService(tables("B47C6F05", true), files(opens, false, paths::add))) {
+            assertNull(service.catalog(Cancellation.NONE).join().maps().getFirst().wdtId());
+            assertTrue(paths.isEmpty());
+        }
+    }
+
     private static BuildTables tables(String layout) {
-        var names = List.of("Directory", "MapName_lang", "InstanceType", "WdtFileDataID");
+        return tables(layout, true);
+    }
+
+    private static BuildTables tables(String layout, boolean wdtField) {
+        var names =
+                wdtField
+                        ? List.of("Directory", "MapName_lang", "InstanceType", "WdtFileDataID")
+                        : List.of("Directory", "MapName_lang", "InstanceType");
         var columns =
                 names.stream()
                         .map(
@@ -158,10 +191,14 @@ class WorldServiceTest {
                                                                                 false,
                                                                                 null,
                                                                                 List.of(
-                                                                                        "Authored",
-                                                                                        "Authored",
-                                                                                        "0",
-                                                                                        "51"),
+                                                                                                "Authored",
+                                                                                                "Authored",
+                                                                                                "0",
+                                                                                                "51")
+                                                                                        .subList(
+                                                                                                0,
+                                                                                                names
+                                                                                                        .size()),
                                                                                 List.of())))
                                                         : List.of(),
                                                 null,
@@ -176,6 +213,13 @@ class WorldServiceTest {
     }
 
     private static BuildFiles files(AtomicInteger opens, boolean protectedFile) {
+        return files(opens, protectedFile, path -> {});
+    }
+
+    private static BuildFiles files(
+            AtomicInteger opens,
+            boolean protectedFile,
+            java.util.function.Consumer<String> pathLookups) {
         return (BuildFiles)
                 Proxy.newProxyInstance(
                         BuildFiles.class.getClassLoader(),
@@ -184,6 +228,10 @@ class WorldServiceTest {
                             var data = adt();
                             if (method.getName().equals("stat")
                                     || method.getName().equals("statContent")) {
+                                var ref = (FileTypes.FileRef) args[0];
+                                if (ref.path() != null) {
+                                    pathLookups.accept(ref.path());
+                                }
                                 return CompletableFuture.completedFuture(
                                         new FileTypes.FileStat(
                                                 FileTypes.FileLookupState.FOUND,
