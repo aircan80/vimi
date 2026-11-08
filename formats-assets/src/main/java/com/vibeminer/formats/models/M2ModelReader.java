@@ -2,8 +2,6 @@ package com.vibeminer.formats.models;
 
 import static com.vibeminer.formats.models.M2Input.bounds;
 import static com.vibeminer.formats.models.M2Input.error;
-import static com.vibeminer.formats.models.M2Input.i16;
-import static com.vibeminer.formats.models.M2Input.i32;
 import static com.vibeminer.formats.models.M2Input.u16;
 import static com.vibeminer.formats.models.M2Input.u32;
 import static com.vibeminer.formats.models.M2Input.v2;
@@ -302,14 +300,7 @@ public final class M2ModelReader {
         List<Bone> bones = new ArrayList<>();
         input.records(
                 spans.get("bones"),
-                (row, i) -> {
-                    int parent = i16(row, 8);
-                    if (parent < -1 || parent >= boneCount || parent == i) {
-                        throw error("INVALID", "A bone has an invalid parent index.");
-                    }
-                    bones.add(
-                            new Bone(i32(row, 0), u32(row, 4), parent, u16(row, 10), v3(row, 76)));
-                });
+                (row, i) -> bones.add(M2Input.bone(row, i, boneCount, "model")));
         List<Integer> combos = words("textureCombos", input, spans, budget),
                 coordWords = words("textureCoordinates", input, spans, budget);
         budget.add(coordWords.size(), 2);

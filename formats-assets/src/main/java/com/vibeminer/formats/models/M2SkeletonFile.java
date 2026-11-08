@@ -1,11 +1,9 @@
 package com.vibeminer.formats.models;
 
 import static com.vibeminer.formats.models.M2Input.error;
-import static com.vibeminer.formats.models.M2Input.i16;
 import static com.vibeminer.formats.models.M2Input.i32;
 import static com.vibeminer.formats.models.M2Input.u16;
 import static com.vibeminer.formats.models.M2Input.u32;
-import static com.vibeminer.formats.models.M2Input.v3;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.AssetSource;
@@ -41,7 +39,7 @@ public final class M2SkeletonFile {
     public static final int MAX_SEQUENCES = 4096;
     public static final int MAX_GLOBAL_SEQUENCES = 1024;
     public static final int MAX_FILE_IDS = 65_536;
-    private static final int SKS1_HEADER = 24, SKB1_HEADER = 16, SKPD_BYTES = 12;
+    private static final int SKS1_HEADER = 32, SKB1_HEADER = 16, SKPD_BYTES = 12;
 
     private M2SkeletonFile() {}
 
@@ -89,7 +87,7 @@ public final class M2SkeletonFile {
         if (source.length() < 8) {
             throw error("INVALID", "The skeleton ends inside a chunk header.");
         }
-        var input = new M2Input(source, new M2Types.Limits(), token);
+        var input = new M2Input(source, new M2Types.Limits(), token, "skeleton");
         var chunks = new ArrayList<M2Types.Chunk>();
         Map<String, M2Types.Chunk> known = new HashMap<>();
         for (long at = 0; at < input.length; ) {
@@ -164,21 +162,7 @@ public final class M2SkeletonFile {
             byte[] head = header(input, skb1, SKB1_HEADER);
             var span = array(skb1, head, 0, 88, MAX_BONES, SKB1_HEADER, "bones");
             int count = span.count();
-            input.records(
-                    span,
-                    (row, i) -> {
-                        int parentBone = i16(row, 8);
-                        if (parentBone < -1 || parentBone >= count || parentBone == i) {
-                            throw error("INVALID", "A skeleton bone has an invalid parent index.");
-                        }
-                        bones.add(
-                                new M2Types.Bone(
-                                        i32(row, 0),
-                                        u32(row, 4),
-                                        parentBone,
-                                        u16(row, 10),
-                                        v3(row, 76)));
-                    });
+            input.records(span, (row, i) -> bones.add(M2Input.bone(row, i, count, "skeleton")));
             array(skb1, head, 8, 2, MAX_BONES, SKB1_HEADER, "key-bone lookups");
         }
 
