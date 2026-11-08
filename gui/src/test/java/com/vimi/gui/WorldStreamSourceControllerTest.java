@@ -383,8 +383,13 @@ public final class WorldStreamSourceControllerTest {
             check(entered.await(3,TimeUnit.SECONDS),"Parent file lane held");
             var session = fixture.gpu.session;
             var seamRan = new java.util.concurrent.atomic.AtomicBoolean();
+            // Commits recorded before the retry: read on the controller worker, inside the seam,
+            // so the retried commit cannot land first however late the test thread wakes up. A
+            // refused commit is never sent, so it is not in the log.
+            var committedBeforeRetry = new java.util.concurrent.atomic.AtomicInteger(-1);
             fixture.controller.refusalSeam = () -> {
                 if (!seamRan.compareAndSet(false,true)) return;
+                committedBeforeRetry.set(fixture.commitLines().size());
                 long before = session.capacityRevision();
                 release.countDown();
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
@@ -398,8 +403,8 @@ public final class WorldStreamSourceControllerTest {
             var returning = new ArrayList<>(fixture.tiles.subList(4,12));
             returning.addFirst(fixture.tiles.get(1));
             fixture.controller.neighborhood(returning);
-            fixture.until(seamRan::get);
-            int before = fixture.commitLines().size();
+            fixture.until(() -> committedBeforeRetry.get() >= 0);
+            int before = committedBeforeRetry.get();
             // No presenting here: each accepted frame is a kick that would mask a missing re-run.
             fixture.until(() -> fixture.commitLines().size() > before);
             fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY
