@@ -41,7 +41,7 @@ import org.lwjgl.system.MemoryUtil;
 /** Opt-in actual hardware pixels; authored presentation only, never game-source qualification. */
 public final class WorldWmoNativeProof {
     private static final int SIDE = 256;
-    private static int acceptedFrames;
+    private static int acceptedFrames, skippedFrames;
 
     private WorldWmoNativeProof() {}
 
@@ -261,6 +261,8 @@ public final class WorldWmoNativeProof {
         System.out.println(
                 "WORLD_WMO_NATIVE_PASS acceptedFrames="
                         + acceptedFrames
+                        + " skippedFrames="
+                        + skippedFrames
                         + " sameContextCameraReuse=true maxMesh=21504 maxRgba=1572864 maxDirectTexture=262144 sourceIndependent=true");
     }
 
@@ -383,7 +385,11 @@ public final class WorldWmoNativeProof {
             bgfx_set_view_frame_buffer(0, target);
             terrain.render(camera, SIDE, SIDE);
             if (wmo != null) {
+                int skipped = wmo.skippedFrames();
                 wmo.draw(camera, SIDE, SIDE);
+                // A frame without transient instance data would silently omit the WMO (#382).
+                skippedFrames += wmo.skippedFrames() - skipped;
+                require(skippedFrames == 0, "WMO frame skipped for lack of instance data");
             }
             bgfx_blit(1, staging, 0, 0, 0, 0, color, 0, 0, 0, 0, SIDE, SIDE, 1);
             int ready = bgfx_read_texture(staging, pixels, 0, 0);
