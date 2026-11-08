@@ -111,35 +111,15 @@ public final class WorldStreamSplatUploadProof {
             require(frame != null, "The splatted tile renders");
             // Only the splatted tile from here: the plain one covers the same ground.
             owner.commit(2, 3, List.of(splatted));
+            // The near camera still sees one layered chunk's blend at its centre.
             int[] near = centre(owner, reader, new TerrainCamera(-100, -10, 14, 0, -1.2));
-            int[] first = blended(MASKS[0]), other = blended(MASKS[1]);
             require(
-                    close(near, first) || close(near, other),
+                    close(near, blended(maskOf(2, 0))),
                     "Near splat pixel "
                             + java.util.Arrays.toString(near)
-                            + ", blends "
-                            + java.util.Arrays.toString(first)
-                            + " / "
-                            + java.util.Arrays.toString(other));
-            int[] mine = close(near, first) ? first : other, theirs = mine == first ? other : first;
-            // Layered chunks alternate their mask in a checkerboard. The next layered chunk along
-            // the columns (two chunks over) and the next one along the rows (one chunk over) each
-            // show the other mask, so a transposed or offset mask map can't pass.
-            int[] across =
-                    centre(owner, reader, new TerrainCamera(-100, -10 - 2 * CHUNK, 14, 0, -1.2));
-            require(
-                    close(across, theirs),
-                    "Two chunks along the columns: "
-                            + java.util.Arrays.toString(across)
-                            + ", expected "
-                            + java.util.Arrays.toString(theirs));
-            int[] down = centre(owner, reader, new TerrainCamera(-100 + CHUNK, -10, 14, 0, -1.2));
-            require(
-                    close(down, theirs),
-                    "One chunk along the rows: "
-                            + java.util.Arrays.toString(down)
-                            + ", expected "
-                            + java.util.Arrays.toString(theirs));
+                            + ", chunk 2,0 blend "
+                            + java.util.Arrays.toString(blended(maskOf(2, 0))));
+            String placement = placement(frame(owner, reader, PLACEMENT));
             int[] missing = centre(owner, reader, new TerrainCamera(-100, -45, 14, 0, -1.2));
             require(
                     close(missing, ATLAS),
@@ -163,10 +143,8 @@ public final class WorldStreamSplatUploadProof {
                             + maskBytes
                             + " near="
                             + rgb(near)
-                            + " across="
-                            + rgb(across)
-                            + " down="
-                            + rgb(down)
+                            + " "
+                            + placement
                             + " missing="
                             + rgb(missing)
                             + " far="
@@ -187,15 +165,40 @@ public final class WorldStreamSplatUploadProof {
     private static final int[] LAYER_565 = {0xf800, 0x07e0, 0x001f, 0xffe0};
 
     /**
-     * The two mask texels of the splatted chunks, layers 1 to 3 weights, in a checkerboard; A (the
-     * old MCCV brightness) is no longer read (#373).
+     * Every chunk's mask texel encodes its own place: layer 1 weighs 8 x row, layer 2 8 x column,
+     * layer 3 nothing. A pixel's blend then names the chunk whose mask it read, unambiguously.
      */
-    private static final int[][] MASKS = {{64, 32, 0}, {0, 96, 160}};
+    static int[] maskOf(int row, int column) {
+        return new int[] {8 * row, 8 * column, 0};
+    }
 
     private static final int MASK_A = 192;
 
-    /** One chunk's side in yards. */
+    /**
+     * Chunks with layers: even columns, except anchor rows and columns around the placement view
+     * (rows 4 and 5, columns 3 to 5). The view's layered chunks are then rows 4 and 5 of column 4,
+     * ringed by chunks without layers: a mask map read one row off shows row 3 or 6, one column off
+     * an odd column, and two columns off column 2 or 6, all of which have no layers.
+     */
+    static final int[] ROW_ANCHORS = {3, 6}, COLUMN_ANCHORS = {2, 6};
+
+    static boolean layered(int row, int column) {
+        return column % 2 == 0
+                && java.util.Arrays.stream(ROW_ANCHORS).noneMatch(anchor -> anchor == row)
+                && java.util.Arrays.stream(COLUMN_ANCHORS).noneMatch(anchor -> anchor == column);
+    }
+
+    /**
+     * One chunk's side in yards; chunk (row, column) spans x and y of -(index + 1) to -index sides.
+     */
     private static final double CHUNK = 533.3333 / 16;
+
+    /**
+     * Looking almost straight down from 30 yards at the corner of rows 4 and 5 and columns 3 and 4:
+     * the atlas stays magnified at least two times, so no pixel is in the fade band.
+     */
+    private static final TerrainCamera PLACEMENT =
+            new TerrainCamera(-5 * CHUNK, -4 * CHUNK, 30, 0, -1.5);
 
     /**
      * Every vertex's MCCV (#373): the splat takes the vertex colour, 2 x colour / 255 per channel,
@@ -204,15 +207,15 @@ public final class WorldStreamSplatUploadProof {
     private static final int[] MCCV = {192, 96, 160};
 
     /**
-     * A trailer whose chunks in even atlas columns draw array layers 0 to 3, and whose odd columns
-     * have no layers (255, as the parent writes for a missing layer). The layered chunks take the
-     * two {@link #MASKS} in a checkerboard: along a row they alternate every layered chunk, and
-     * along a column every chunk.
+     * A trailer whose {@link #layered} chunks draw array layers 0 to 3, and whose other chunks have
+     * no layers (255, as the parent writes for a missing layer). Every chunk's mask block is {@link
+     * #maskOf} its own place; {@code -Dvimi.proof.splatShift=rows,columns} writes each block from
+     * another chunk instead, to show the proof fails when the mask map is misplaced.
      */
     static WorldStreamTileFile.Splat blendSplat(int maskSide) {
         byte[] table = new byte[WorldStreamTileFile.SPLAT_TABLE_BYTES];
         for (int chunk = 0; chunk < 256; chunk++) {
-            boolean layers = chunk % 2 == 0;
+            boolean layers = layered(chunk / 16, chunk % 16);
             for (int layer = 0; layer < 4; layer++) {
                 table[chunk * 4 + layer] = (byte) (layers ? layer : WorldStreamTileFile.SPLAT_NONE);
             }
@@ -220,10 +223,14 @@ public final class WorldStreamSplatUploadProof {
         byte[] alpha =
                 new byte[com.vibeminer.rendering.world.TerrainTileSplat.alphaBytes(maskSide)];
         int per = maskSide / 16;
+        String[] shift = System.getProperty("vimi.proof.splatShift", "0,0").split(",");
+        int shiftRows = Integer.parseInt(shift[0].strip()),
+                shiftColumns = Integer.parseInt(shift[1].strip());
         for (int y = 0; y < maskSide; y++) {
             for (int x = 0; x < maskSide; x++) {
-                int row = y / per, column = x / per;
-                int[] mask = MASKS[(row + column / 2) % 2];
+                int row = Math.floorMod(y / per + shiftRows, 16),
+                        column = Math.floorMod(x / per + shiftColumns, 16);
+                int[] mask = maskOf(row, column);
                 int at = (y * maskSide + x) * 4;
                 alpha[at] = (byte) mask[0];
                 alpha[at + 1] = (byte) mask[1];
@@ -287,6 +294,17 @@ public final class WorldStreamSplatUploadProof {
     private static int[] centre(
             WorldStreamNativeOwner owner, WorldFrameFileV2 reader, TerrainCamera view)
             throws Exception {
+        return rgbOf(frame(owner, reader, view)[128 * 256 + 128]);
+    }
+
+    private static int[] rgbOf(int pixel) {
+        return new int[] {pixel >>> 16 & 255, pixel >>> 8 & 255, pixel & 255};
+    }
+
+    /** Every pixel of a 256 x 256 frame drawn from {@code view}, row by row. */
+    private static int[] frame(
+            WorldStreamNativeOwner owner, WorldFrameFileV2 reader, TerrainCamera view)
+            throws Exception {
         long revision = ++cameraRevision;
         owner.submit(new WorldStreamControl.Camera(NONCE, revision, 1, 256, 256, view));
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
@@ -296,11 +314,135 @@ public final class WorldStreamSplatUploadProof {
                     reader.readLatest(
                             0, new WorldFrameFileV2.Barrier(1, 256, 256, 1, Long.MAX_VALUE, 3, 3));
             if (frame != null && frame.metadata().camera() == revision) {
-                int pixel = frame.pixels().get(128 * 256 + 128);
-                return new int[] {pixel >>> 16 & 255, pixel >>> 8 & 255, pixel & 255};
+                int[] pixels = new int[256 * 256];
+                frame.pixels().get(0, pixels);
+                return pixels;
             }
         }
         throw new AssertionError("No frame for camera " + view);
+    }
+
+    private static final int ATLAS_PIXEL = -1, OTHER_PIXEL = -2;
+
+    /**
+     * The chunk (row x 16 + column) whose mask a pixel's splat blend shows, {@link #ATLAS_PIXEL}
+     * for the atlas colour, or {@link #OTHER_PIXEL} for anything else (the fade band, fog).
+     */
+    private static int classify(int pixel) {
+        int[] value = rgbOf(pixel);
+        if (close(value, ATLAS)) {
+            return ATLAS_PIXEL;
+        }
+        int found = OTHER_PIXEL;
+        for (int chunk = 0; chunk < 256; chunk++) {
+            if (close(value, blended(maskOf(chunk / 16, chunk % 16)))) {
+                if (found != OTHER_PIXEL) {
+                    throw new AssertionError("Two chunks' blends match " + rgb(value));
+                }
+                found = chunk;
+            }
+        }
+        return found;
+    }
+
+    /**
+     * Checks every pixel of the near frame against the table: each splat pixel's blend names the
+     * chunk whose mask it read, which must be a chunk with layers, and two neighbouring pixels on
+     * each side of a chunk border must name neighbouring chunks. Both kinds of border (splat to
+     * splat across rows, splat to atlas across columns) and both anchors must be in view.
+     */
+    private static String placement(int[] pixels) {
+        int[] chunks = new int[pixels.length];
+        int decoded = 0, minRow = 16, maxRow = -1, minColumn = 16, maxColumn = -1;
+        for (int i = 0; i < pixels.length; i++) {
+            chunks[i] = classify(pixels[i]);
+            if (chunks[i] >= 0) {
+                decoded++;
+                int row = chunks[i] / 16, column = chunks[i] % 16;
+                minRow = Math.min(minRow, row);
+                maxRow = Math.max(maxRow, row);
+                minColumn = Math.min(minColumn, column);
+                maxColumn = Math.max(maxColumn, column);
+                require(
+                        layered(row, column),
+                        "Pixel "
+                                + (i % 256)
+                                + ","
+                                + (i / 256)
+                                + " shows the mask of chunk "
+                                + row
+                                + ","
+                                + column
+                                + ", which has no layers: the mask map is misplaced");
+            }
+        }
+        String seen = "rows " + minRow + "-" + maxRow + " columns " + minColumn + "-" + maxColumn;
+        require(
+                decoded >= 4096,
+                "Too few splat pixels to check placement: " + decoded + ", " + seen);
+        int splatBorders = 0, atlasBorders = 0;
+        boolean[] rowAnchor = new boolean[ROW_ANCHORS.length],
+                columnAnchor = new boolean[COLUMN_ANCHORS.length];
+        for (int y = 0; y < 256; y++) {
+            for (int x = 0; x < 256; x++) {
+                int here = chunks[y * 256 + x];
+                if (here >= 0) {
+                    int row = here / 16, column = here % 16;
+                    for (int a = 0; a < ROW_ANCHORS.length; a++) {
+                        rowAnchor[a] |= Math.abs(row - ROW_ANCHORS[a]) == 1;
+                    }
+                    for (int a = 0; a < COLUMN_ANCHORS.length; a++) {
+                        columnAnchor[a] |= Math.abs(column - COLUMN_ANCHORS[a]) == 2;
+                    }
+                }
+                for (int[] step : new int[][] {{1, 0}, {0, 1}}) {
+                    int nx = x + step[0], ny = y + step[1];
+                    if (nx > 255 || ny > 255) {
+                        continue;
+                    }
+                    int there = chunks[ny * 256 + nx];
+                    if (here >= 0 && there >= 0 && here != there) {
+                        int rows = Math.abs(here / 16 - there / 16),
+                                columns = Math.abs(here % 16 - there % 16);
+                        require(
+                                rows + columns == 1,
+                                "Pixels "
+                                        + x
+                                        + ","
+                                        + y
+                                        + " and "
+                                        + nx
+                                        + ","
+                                        + ny
+                                        + " show chunks "
+                                        + here
+                                        + " and "
+                                        + there
+                                        + ", which are not neighbours");
+                        splatBorders++;
+                    } else if (here >= 0 && there == ATLAS_PIXEL
+                            || here == ATLAS_PIXEL && there >= 0) {
+                        atlasBorders++;
+                    }
+                }
+            }
+        }
+        require(splatBorders > 0, "No splat-to-splat chunk border in view, " + seen);
+        require(atlasBorders > 0, "No splat-to-atlas chunk border in view, " + seen);
+        for (boolean inView : rowAnchor) {
+            require(inView, "A row anchor's neighbour is not in view, " + seen);
+        }
+        for (boolean inView : columnAnchor) {
+            require(inView, "A column anchor's neighbour is not in view, " + seen);
+        }
+        return "decoded="
+                + decoded
+                + " splatBorders="
+                + splatBorders
+                + " atlasBorders="
+                + atlasBorders
+                + " "
+                + seen.replace(' ', '_');
     }
 
     private static void upload(
