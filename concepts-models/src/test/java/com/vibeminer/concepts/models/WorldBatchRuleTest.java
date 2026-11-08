@@ -56,7 +56,8 @@ class WorldBatchRuleTest {
     @Test
     void blendedAdditiveAndNonUv0BatchesStayOut() throws Exception {
         assertFalse(
-                world(new NativeMaterialFixture(274, 16, 0, 1, 0, 2)), "blended: no creature pass");
+                world(new NativeMaterialFixture(274, 16, 0, 1, 0, 2)),
+                "blended: the blended rule's, not this one");
         assertFalse(
                 world(new NativeMaterialFixture(274, 16, 16, 1, 17, 4)),
                 "additive glow: the additive rule's, not this one");
@@ -146,6 +147,15 @@ class WorldBatchRuleTest {
     /** The World binding of display 1 over the fixture, with the given texture files left out. */
     private static DisplayModelTypes.Preview worldBinding(NativeMaterialFixture f, long... missing)
             throws Exception {
+        return worldBindings(f, 1, missing).getFirst();
+    }
+
+    /**
+     * {@code calls} World bindings of display 1 over the fixture from one service and store, so a
+     * later call restores what an earlier one saved.
+     */
+    private static List<DisplayModelTypes.Preview> worldBindings(
+            NativeMaterialFixture f, int calls, long... missing) throws Exception {
         var files =
                 new AssetFilesFixture()
                         .add(100, "1".repeat(32), f.modelBytes())
@@ -185,7 +195,11 @@ class WorldBatchRuleTest {
                         .tables()) {
             var service = new DisplayModelService(tables, files, new MemoryGeneratedStore());
             try {
-                return service.worldPreview(1, Cancellation.NONE).join();
+                var out = new java.util.ArrayList<DisplayModelTypes.Preview>();
+                for (int i = 0; i < calls; i++) {
+                    out.add(service.worldPreview(1, Cancellation.NONE).join());
+                }
+                return out;
             } finally {
                 service.closeAsync().join();
             }
@@ -356,5 +370,142 @@ class WorldBatchRuleTest {
         assertEquals(
                 MeshAppearance.Blend.ADDITIVE,
                 fallback.appearance().surfaces().getFirst().material().blend());
+    }
+
+    @Test
+    void anAdditiveBindingWhoseWeightCannotBeReadIsNotSaved() throws Exception {
+        var f = glow();
+        weightTrack(f, 0);
+        // Track 0's sequence slices point past the model: its weight facts cannot be read.
+        int track = f.body.getInt(88 + 4);
+        f.body.putInt(track + 16, 0x7fff_0000);
+        var both = worldBindings(f, 2);
+        for (var world : both) {
+            assertNotNull(world.appearance(), world.message());
+            assertTrue(
+                    world.appearance().surfaces().isEmpty(), "an undecided weight draws nothing");
+            assertTrue(
+                    world.issues().stream().anyMatch(s -> s.startsWith("Static opacity facts")),
+                    world.issues().toString());
+        }
+        assertFalse(both.get(0).restored());
+        assertFalse(both.get(1).restored(), "not saved, so it is reassessed");
+
+        // The same model with readable facts is saved.
+        var readable = glow();
+        weightTrack(readable, 0);
+        var saved = worldBindings(readable, 2);
+        assertEquals(
+                1, saved.get(0).appearance().surfaces().size(), saved.get(0).issues().toString());
+        assertFalse(saved.get(0).restored());
+        assertTrue(saved.get(1).restored(), "decided bindings are saved");
+    }
+
+    private static boolean blended(NativeMaterialFixture f, boolean withFacts) {
+        var parsed = f.parse();
+        return DisplayModelService.worldBlendedBatch(
+                parsed.model(),
+                parsed.rest().batches().getFirst(),
+                withFacts ? parsed.appearance() : null);
+    }
+
+    /** An alpha-blended batch: Combiners_Opaque / Diffuse_T1, blend 2, with the material flags. */
+    private static NativeMaterialFixture veil(int materialFlags) throws Exception {
+        return new NativeMaterialFixture(274, 16, 0, 1, materialFlags, 2);
+    }
+
+    @Test
+    void blendedBatchesDrawOnlyWithAWeightThatStaysFull() throws Exception {
+        var none = veil(0);
+        noWeight(none);
+        assertFalse(world(none), "not an opaque or alpha-keyed batch");
+        assertFalse(additive(none, true), "not additive");
+        assertTrue(blended(none, true), "no weight track");
+        assertTrue(blended(none, false), "no weight track needs no facts");
+
+        var steady = veil(0);
+        weightTrack(steady, 0);
+        assertTrue(blended(steady, true), "a weight track without keys never fades");
+        assertFalse(blended(steady, false), "a weight track without facts is not drawn");
+
+        var fading = veil(0);
+        weightTrack(fading, 1);
+        assertFalse(blended(fading, true), "a weight key below full scales the alpha");
+
+        for (int blend : new int[] {0, 1, 3, 4, 5, 6, 7}) {
+            var other = new NativeMaterialFixture(274, 16, 0, 1, 0, blend);
+            noWeight(other);
+            assertFalse(blended(other, true), "blend " + blend);
+        }
+        var env = new NativeMaterialFixture(274, 16, 0x80, 1, 0, 2);
+        noWeight(env);
+        assertFalse(blended(env, true), "Diffuse_Env");
+        var layered = veil(0);
+        noWeight(layered);
+        layered.skin.putShort(152, (short) 1);
+        assertFalse(blended(layered, true), "material layer 1");
+    }
+
+    @Test
+    void aBlendedOnlySectionBindsABlendedSurfaceLitUnlessTheMaterialIsUnlit() throws Exception {
+        var lit = veil(0);
+        noWeight(lit);
+        var world = worldBinding(lit);
+        var surfaces = world.appearance().surfaces();
+        assertEquals(1, surfaces.size(), world.issues().toString());
+        var material = surfaces.getFirst().material();
+        assertEquals(MeshAppearance.Combiner.DIFFUSE, material.combiner());
+        assertEquals(MeshAppearance.Blend.BLENDED, material.blend());
+        assertEquals(MeshAppearance.Lighting.LIT, material.lighting());
+        assertEquals(1, material.stages().size(), "texture 1 only");
+        assertTrue(world.issues().contains(DisplayModelService.WORLD_NOTE));
+
+        var unlit = veil(0x11);
+        noWeight(unlit);
+        var glowing = worldBinding(unlit).appearance().surfaces().getFirst().material();
+        assertEquals(MeshAppearance.Blend.BLENDED, glowing.blend());
+        assertEquals(MeshAppearance.Lighting.UNLIT, glowing.lighting());
+
+        var fading = veil(0);
+        weightTrack(fading, 1);
+        assertTrue(worldBinding(fading).appearance().surfaces().isEmpty(), "fading: no surface");
+    }
+
+    @Test
+    void opaqueAndAdditiveBatchesClaimTheirSectionAheadOfAnEarlierBlendedOne() throws Exception {
+        for (int second : new int[] {0, 4}) {
+            var f = veil(0);
+            noWeight(f);
+            // Material 1 (opaque or unlit additive); a second batch on section 0 with material 1
+            // and texture combo 1.
+            int materials = f.body.position();
+            f.declaration(112, 2, materials);
+            f.body.putShort((short) 0).putShort((short) 2);
+            f.body.putShort((short) (second == 4 ? 0x11 : 0)).putShort((short) second);
+            byte[] batch = Arrays.copyOfRange(f.skin.array(), 140, 164);
+            f.skin.position(164);
+            f.skin.put(batch);
+            f.skin.putShort(164 + 10, (short) 1);
+            f.skin.putShort(164 + 16, (short) 1);
+            f.skin.putInt(36, 2);
+            var parsed = f.parse();
+            assertEquals(2, parsed.model().materials().get(0).blendMode());
+            assertEquals(second, parsed.model().materials().get(1).blendMode());
+
+            var world = worldBinding(f);
+            var surfaces = world.appearance().surfaces();
+            assertEquals(1, surfaces.size(), world.issues().toString());
+            assertEquals(
+                    second == 0 ? MeshAppearance.Blend.OPAQUE : MeshAppearance.Blend.ADDITIVE,
+                    surfaces.getFirst().material().blend());
+            assertEquals(1, world.appearance().textures().size(), "only texture 9002 is decoded");
+
+            // With texture 9002 missing, the blended batch draws the section.
+            var fallback = worldBinding(f, 9002);
+            assertEquals(1, fallback.appearance().surfaces().size(), fallback.issues().toString());
+            assertEquals(
+                    MeshAppearance.Blend.BLENDED,
+                    fallback.appearance().surfaces().getFirst().material().blend());
+        }
     }
 }

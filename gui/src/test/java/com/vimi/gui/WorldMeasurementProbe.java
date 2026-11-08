@@ -468,9 +468,34 @@ public final class WorldMeasurementProbe {
         }
 
         /**
+         * Drawn static models by the sorted range kinds they draw (#361): "with blended", "with
+         * additive", both, or neither.
+         */
+        Map<String, Integer> sortedKinds(Cancellation token) {
+            var out = new TreeMap<String, Integer>();
+            for (var entry : material.entrySet()) {
+                if (!"drawn".equals(entry.getValue())) continue;
+                var preview = previews.get(entry.getKey());
+                var f = facts.get(entry.getKey());
+                if (preview == null || f == null || !f.creature()) continue;
+                var model = WorldTileCreatures.convert(preview, token).model();
+                if (model == null) continue;
+                boolean blended = false, additive = false;
+                for (int range : model.blends()) {
+                    int kind = range & 0xff;
+                    blended |= kind == WorldTileCreatures.BLENDED;
+                    additive |= kind == WorldTileCreatures.ADDITIVE;
+                }
+                out.merge(blended && additive ? "blended and additive" : blended ? "blended"
+                        : additive ? "additive" : "neither", 1, Integer::sum);
+            }
+            return out;
+        }
+
+        /**
          * For each sampled creature display the World refuses for want of a surface: the fewest
          * blockers any material-layer-0 batch has against the World batch rule (combiner, blend,
-         * an additive texture weight that is not full in every key, texture type, empty monster
+         * an additive or blended texture weight that is not full in every key, texture type, empty monster
          * skin slot, texture file), as one label per display.
          */
         Map<String, Integer> refusalBlockers(com.vibeminer.files.BuildFiles files) {
@@ -528,11 +553,11 @@ public final class WorldMeasurementProbe {
                     set.add("combiner " + (names == null ? "unnamed" : names.vertexShader()));
                 }
                 int blend = m.materials().get(batch.materialIndex()).blendMode();
-                if (blend == 4) {
+                if (blend == 2 || blend == 4) {
                     int weight = m.textureWeights().get(batch.textureWeightComboIndex());
                     if (weight != 65535 && (facts == null || weight >= facts.staticWeights().size()
                             || !facts.staticWeights().get(weight)))
-                        set.add("additive with a fading texture weight");
+                        set.add((blend == 4 ? "additive" : "blended") + " with a fading texture weight");
                 } else if (blend > 1) set.add("blend " + blend);
                 var texture = m.textures().get(m.textureCombos().get(batch.textureComboIndex()));
                 long type = texture.type();
@@ -828,6 +853,9 @@ public final class WorldMeasurementProbe {
             say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
         say("PROBE displays: World material refusals by the fewest blockers of any layer-0 batch");
         for (var entry : display.refusalBlockers(opened.files()).entrySet())
+            say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+        say("PROBE displays: drawn static models by sorted surfaces (blend 2 blended, blend 4 additive)");
+        for (var entry : display.sortedKinds(Cancellation.NONE).entrySet())
             say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
         say("PROBE displays: sampled creature displays by World Stand outcome (all with a preview)");
         for (var entry : display.worldStandTally().entrySet())
