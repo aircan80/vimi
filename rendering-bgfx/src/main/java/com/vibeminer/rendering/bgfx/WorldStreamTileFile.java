@@ -1111,10 +1111,6 @@ final class WorldStreamTileFile {
                 TerrainTextureBinding.borrow(metadata, atlas), canceled);
     }
 
-    static byte[] encodeHeader(Header h) {
-        return encodeHeader(h, "00".repeat(32));
-    }
-
     /** SHA-256 of a packet's vertex attribute bytes, bound in the header at 260 (#373). */
     static String attributeSha256(byte[] attributes) {
         return HexFormat.of().formatHex(digest().digest(attributes));

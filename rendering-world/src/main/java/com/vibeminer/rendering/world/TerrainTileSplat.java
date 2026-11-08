@@ -15,8 +15,9 @@ import java.util.Arrays;
  *   <li>{@code alpha}: a square RGBA8 mask map of {@link #STANDARD_MASK} (32 texels per chunk,
  *       every other alpha-map texel, like the atlas) or {@link #HIGH_MASK} (the native 64 x 64
  *       alpha map per chunk) texels per side, chosen by the texture quality tier (issue #174 step
- *       2b-2); R, G, B are the layer 1 to 3 masks, A is the MCCV brightness (128 = 1.0, 255 = 2.0)
- *       of that texel.
+ *       2b-2); R, G, B are the layer 1 to 3 masks. A is always 0: MCCV moved to the vertex in #373
+ *       part 2, and the channel is kept (an RGBA8 mask uploads with no conversion on every backend)
+ *       for the MCSH shadow that #373 part 3 plans to put there.
  * </ul>
  */
 public final class TerrainTileSplat {
