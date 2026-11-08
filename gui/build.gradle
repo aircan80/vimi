@@ -842,6 +842,14 @@ tasks.register('worldMeasurementTest', JavaExec) {
 }
 check.dependsOn worldMeasurementTest
 
+// The renderer-child count the GPU UI proofs wait on: an exiting (zombie) child is not live.
+tasks.register('rendererChildrenTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.RendererChildrenTest'
+}
+check.dependsOn rendererChildrenTest
+
 // The probe's open path over an authored offline library: refusals and no stored-object writes.
 tasks.register('worldMeasurementLibraryTest', JavaExec) {
     dependsOn testClasses
