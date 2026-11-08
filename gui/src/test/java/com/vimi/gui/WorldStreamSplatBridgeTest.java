@@ -19,22 +19,36 @@ public final class WorldStreamSplatBridgeTest {
     public static void main(String[] args) throws Exception {
         check(Boolean.getBoolean("vimi.world.splat"), "Run with -Dvimi.world.splat=true");
         try {
-            run(com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.STANDARD);
-            run(com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH);
+            var near = com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.NEAR;
+            var far = com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.FAR;
+            run(com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.STANDARD, near);
+            run(com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH, near);
+            // FAR keeps 512 masks on either tier (#173): its terrain budget counts 512.
+            run(com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH, far);
+            run(com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.STANDARD, far);
         } finally {
             com.vibeminer.concepts.world.WorldTerrainStreaming.splatMasks(
                     com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.STANDARD);
         }
     }
 
-    /** One authored tile composed at {@code detail}'s mask side, through the bridge. */
-    private static void run(com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail)
+    /**
+     * One authored tile composed through the bridge at the mask side the World view sets for
+     * {@code detail} at {@code distance}.
+     */
+    private static void run(
+            com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail,
+            com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance distance)
             throws Exception {
-        com.vibeminer.concepts.world.WorldTerrainStreaming.splatMasks(detail);
         int side =
                 detail == com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH
+                                && distance
+                                        == com.vibeminer.rendering.bgfx.WorldStreamTransport
+                                                .ViewDistance.NEAR
                         ? com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK
                         : com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK;
+        check(WorldStreamGpuOwner.splatMasks(detail, distance) == side,
+                "The session's mask side: " + detail + " " + distance);
         var fixture = new WorldStreamSourceBridgeTest.Fixture();
         var path = Files.createTempDirectory("bridge-splat-").resolve("tile-1.wst");
         var layers = new AtomicInteger();
@@ -54,7 +68,7 @@ public final class WorldStreamSplatBridgeTest {
                                 var splat = borrow.splat().orElseThrow();
                                 var material = borrow.material();
                                 check(material != null, "Textured authored tile");
-                                check(splat.maskSide() == side, "Mask side follows the tier");
+                                check(splat.maskSide() == side, "Mask side follows the tier and view distance");
                                 var input =
                                         WorldStreamSourceBridge.splatInput(
                                                 borrow, material, splat, () -> false);

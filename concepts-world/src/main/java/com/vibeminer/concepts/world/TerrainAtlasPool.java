@@ -242,8 +242,12 @@ public final class TerrainAtlasPool {
     public TerrainAtlasPool() {}
 
     synchronized Optional<Reservation> reserve() {
+        return reserve(WorldTerrainTextureSource.splat ? WorldTerrainTextureSource.splatMask : 0);
+    }
+
+    /** A slot charged for an atlas with splat masks of {@code maskSide} (0: no splat inputs). */
+    synchronized Optional<Reservation> reserve(int maskSide) {
         requireOpen();
-        int maskSide = WorldTerrainTextureSource.splat ? WorldTerrainTextureSource.splatMask : 0;
         long charge = reservedBytes(maskSide);
         // Evict only when that can make room: if the pinned entries alone leave no slot or too few
         // bytes, refuse and keep the cache for the next request.

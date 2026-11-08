@@ -476,7 +476,7 @@ public final class WorldNavigationUiTest {
                 "audio",new String[] {"#world-audio","#world-music","#world-ambience","#world-music-volume",
                         "#world-ambience-volume","#world-audio-variant","#world-audio-status"},
                 "display",new String[] {"#world-show-coordinates","#world-hide-hud","#world-fullscreen","#world-gpu-enabled",
-                        "#world-object-textures","#world-gpu-activity","#world-gpu-retry","#world-gpu-status",
+                        "#world-object-textures","#world-view-distance","#world-gpu-activity","#world-gpu-retry","#world-gpu-status",
                         "#world-texture-activity","#world-texture-status","#world-texture-retry"},
                 "bookmarks",new String[] {"#world-save-bookmark"},
                 "instances",new String[] {"#world-instance-status","#world-instance-entrances","#world-instance-enter",
@@ -1067,6 +1067,22 @@ public final class WorldNavigationUiTest {
         invert.fire();
         require(saved.size()==1 && WorldControls.decode(saved.getFirst()).equals(stored.withInvertY(false)),
                 "A user change saves the whole value: "+saved);
+        // #173: the view distance is remembered with the controls; loading it never saves.
+        @SuppressWarnings("unchecked")
+        var distance=(javafx.scene.control.ChoiceBox<com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance>)
+                view.lookup("#world-view-distance");
+        var far=com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.FAR;
+        var near=com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.NEAR;
+        require(distance.getValue()==near,"The view distance opens NEAR");
+        view.showControls(stored.withInvertY(false).withViewDistance(far));
+        require(saved.size()==1 && distance.getValue()==far,"A stored FAR shows without saving: "+saved);
+        distance.setValue(near);
+        require(saved.size()==2 && WorldControls.decode(saved.getLast()).viewDistance()==near
+                        && WorldControls.decode(saved.getLast()).equals(stored.withInvertY(false)),
+                "Choosing NEAR saves the whole value: "+saved);
+        require(distance.getConverter().toString(far).equals("View distance: Far (5 x 5 tiles)")
+                        && distance.getConverter().toString(near).equals("View distance: Near (3 x 3 tiles)"),
+                "The choices name their neighbourhoods");
         view.showControls(WorldControls.DEFAULTS);
         view.controls(WorldControls.memory());
         controlsLoadRace(view, invert);

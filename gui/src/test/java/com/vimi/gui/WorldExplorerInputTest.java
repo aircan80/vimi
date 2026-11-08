@@ -43,6 +43,7 @@ public final class WorldExplorerInputTest {
         owedLookIsDroppedWhileNoPulseApplies();
         wheelReadyCoversStreamingMode();
         controlsEncodeDecodeLeniently();
+        viewDistanceIsRememberedWithTheControls();
         onlyAStillPrimaryClickInspects();
         shiftWheelStepsTheSpeedPresets();
         reboundKeysDriveTheirActions();
@@ -741,6 +742,23 @@ public final class WorldExplorerInputTest {
         require(WorldExplorerInput.wheelReady(false, true, true), "GPU streaming with a controller");
         require(!WorldExplorerInput.wheelReady(false, true, false), "Streaming without a controller");
         require(!WorldExplorerInput.wheelReady(false, false, true), "No scene outside streaming");
+    }
+
+    private static void viewDistanceIsRememberedWithTheControls() {
+        var near = com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.NEAR;
+        var far = com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.FAR;
+        require(WorldControls.DEFAULTS.viewDistance() == near, "NEAR is the default view distance");
+        var chosen = WorldControls.DEFAULTS.withSpeed(WorldControls.Speed.TURBO).withViewDistance(far);
+        require(WorldControls.decode(chosen.encode()).equals(chosen), "FAR round-trips: " + chosen.encode());
+        require(chosen.withInvertY(true).withSensitivity(.01).withKeys(WorldControls.Layout.AZERTY.keys())
+                        .viewDistance() == far, "Other edits keep the view distance");
+        require(WorldControls.decode("v1;sensitivity=0.01;speed=TURBO").viewDistance() == near,
+                "A value saved before the setting existed opens NEAR");
+        require(WorldControls.decode("v1;view=HUGE").viewDistance() == near
+                        && WorldControls.decode("v1;view=").viewDistance() == near,
+                "An unknown view distance opens NEAR");
+        require(new WorldControls(.006, false, null, java.util.Map.of(), null).viewDistance() == near,
+                "A null view distance is NEAR");
     }
 
     private static void controlsEncodeDecodeLeniently() {

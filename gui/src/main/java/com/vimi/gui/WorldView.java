@@ -8,6 +8,7 @@ import com.vibeminer.concepts.world.WorldCurrentArea;
 import com.vibeminer.concepts.world.WorldInstanceLinks;
 import com.vibeminer.concepts.world.WorldService;
 import com.vibeminer.formats.world.WorldFormats;
+import com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance;
 import com.vibeminer.rendering.world.ExplorerMotion;
 import com.vibeminer.rendering.world.TerrainGround;
 import com.vibeminer.rendering.world.TerrainRenderer;
@@ -203,6 +204,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final javafx.scene.control.ChoiceBox<
                     com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail>
             objectTextures = new javafx.scene.control.ChoiceBox<>();
+    // View distance (#173): remembered with the controls; a change restreams at the new size.
+    private final javafx.scene.control.ChoiceBox<ViewDistance> viewDistance =
+            new javafx.scene.control.ChoiceBox<>();
+    // The distance the current stream controller was started with.
+    private ViewDistance streamingDistance = WorldStreamGpuOwner.VIEW_DISTANCE;
     private final CheckBox walkMode = new CheckBox("Walk on terrain (F)");
     private final CheckBox smoothMotion = new CheckBox("Smooth motion");
     private final javafx.scene.control.Slider lookSensitivity = new javafx.scene.control.Slider(
@@ -670,6 +676,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         showingControls = true;
         try {
             input.controls(controls);
+            if (!viewDistanceForced()) viewDistance.setValue(controls.viewDistance());
             keyHelp.setText(controls.help());
             showLayoutChoice(controls);
             hud.mapKey(mapKey(controls));
@@ -697,6 +704,58 @@ final class WorldView extends BorderPane implements AutoCloseable {
         controlsEdited = true;
         input.controls(next);
         controlsStore.save(next.encode());
+    }
+
+    /** Whether {@code -Dvimi.world.viewDistance=far} forces FAR for this session. */
+    private static boolean viewDistanceForced() {
+        return WorldStreamGpuOwner.VIEW_DISTANCE == ViewDistance.FAR;
+    }
+
+    private void viewDistanceSetup(boolean gpuAvailable) {
+        viewDistance.setId("world-view-distance");
+        viewDistance.setFocusTraversable(false);
+        viewDistance.getItems().setAll(ViewDistance.values());
+        viewDistance.setValue(WorldStreamGpuOwner.VIEW_DISTANCE);
+        viewDistance.setConverter(new javafx.util.StringConverter<>() {
+            @Override
+            public String toString(ViewDistance distance) {
+                return distance == null ? "" : distance == ViewDistance.FAR
+                        ? "View distance: Far (5 x 5 tiles)" : "View distance: Near (3 x 3 tiles)";
+            }
+
+            @Override
+            public ViewDistance fromString(String text) {
+                return null;
+            }
+        });
+        viewDistance.setTooltip(new javafx.scene.control.Tooltip(viewDistanceForced()
+                ? "Started with -Dvimi.world.viewDistance=far: Far for this session."
+                : "Tiles kept loaded around the camera. Near keeps 3 x 3; Far keeps 5 x 5, so the"
+                        + " ground reaches about twice as far, for about 76 MiB more GPU memory"
+                        + " for terrain plus the extra buildings, and a longer first fill."));
+        viewDistance.setDisable(!gpuAvailable || !gpuEnabled.isSelected() || viewDistanceForced());
+        gpuEnabled.selectedProperty().addListener((o, was, on) ->
+                viewDistance.setDisable(!gpuAvailable || !on || viewDistanceForced()));
+        viewDistance.valueProperty().addListener((o, previous, next) -> {
+            if (next == null || next == previous) return;
+            if (!showingControls) {
+                var controls = input.controls().withViewDistance(next);
+                if (!controls.equals(input.controls())) {
+                    controlsEdited = true;
+                    input.controls(controls);
+                    controlsStore.save(controls.encode());
+                }
+            }
+            if (!streamingMode || streaming == null || next == streamingDistance) return;
+            // Every slot count is fixed per session: restart the stream at the new size.
+            retireStreaming();
+            startStreaming();
+        });
+    }
+
+    /** Proof observation: the view distance the current stream was started with. */
+    ViewDistance streamingViewDistance() {
+        return streamingDistance;
     }
 
     /**
@@ -801,6 +860,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             retireStreaming();
             startStreaming();
         });
+        viewDistanceSetup(gpu != null);
         gpuEnabled.setSelected(gpu != null);
         gpuEnabled.setDisable(gpu == null);
         gpuEnabled.setId("world-gpu-enabled");
@@ -2177,7 +2237,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var display = menu.page(WorldGameMenu.Page.DISPLAY);
         display.getChildren().setAll(
                 WorldGameMenu.section("View", showCoordinates, hudButton, fullscreenButton),
-                WorldGameMenu.section("Renderer", new HBox(8, gpuEnabled, objectTextures),
+                WorldGameMenu.section("Renderer", new HBox(8, gpuEnabled, objectTextures), viewDistance,
                         new HBox(8, gpuActivity, retryGpu, gpuStatus),
                         new HBox(8, textureActivity, textureStatus, retryTextures)));
         // Map layers stay here until a tracking popup takes them; never steal them from one.
@@ -3334,7 +3394,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var creatureSource = WorldStreamGpuOwner.CREATURES ? creatures : null;
         long creatureMap = inventory.map().id();
         var detail = objectTextures.getValue();
-        com.vibeminer.concepts.world.WorldTerrainStreaming.splatMasks(detail);
+        var distance = viewDistance.getValue();
+        streamingDistance = distance;
+        // FAR keeps 512 masks on any tier, as its terrain budget assumes (#173, #174 step 2b-2).
+        WorldStreamGpuOwner.splatMasks(detail, distance);
         // Dungeon and raid maps (Map.InstanceType 1 or 2) draw their WMO interiors too (#280).
         boolean interiors = instanceInteriors(inventory.map());
         WorldStreamSourceBridge.ExteriorPreparer preparer = creatureSource == null
@@ -3352,15 +3415,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
         nativeStream = presentParent != 0;
         nativeSequence = 0;
         streaming = new WorldStreamSourceController(request, scope -> {
-            var owner = new WorldStreamGpuOwner(gpuService, scope, detail, presentParent);
+            var owner = new WorldStreamGpuOwner(gpuService, scope, detail, presentParent, distance);
             return new WorldStreamSourceController.GpuOwner() {
                 public CompletableFuture<com.vibeminer.rendering.bgfx.WorldStreamTransport.Session> session() {
                     return owner.session();
                 }
                 public CompletableFuture<Void> closeAsync() { return owner.closeAsync(); }
             };
-        }, streamingEvents, Platform::runLater, System::nanoTime, preparer,
-                WorldStreamGpuOwner.VIEW_DISTANCE.residents());
+        }, streamingEvents, Platform::runLater, System::nanoTime, preparer, distance.residents());
         if (nativeStream) {
             var controller = streaming;
             controller.onPresented(revision -> nativePresented(controller, revision));
@@ -3612,7 +3674,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void streamNeighborhood() {
         if (streaming == null || camera == null || inventory == null) return;
         int x = tileX(), y = tileY();
-        var distance = WorldStreamGpuOwner.VIEW_DISTANCE;
+        var distance = streamingDistance;
         // Fractional tile position, same axes as tileX/tileY; tiles ahead of a moving camera
         // load first (#366).
         var ahead =

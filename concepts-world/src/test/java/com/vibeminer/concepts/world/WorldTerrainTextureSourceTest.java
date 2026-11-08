@@ -2252,6 +2252,57 @@ class WorldTerrainTextureSourceTest {
     }
 
     @Test
+    void aCachedAtlasOfAnotherMaskSideIsAMissOnTheSamePool() throws Exception {
+        // The pool outlives sessions: after NEAR + HIGH (1024 masks), a FAR session (512) must not
+        // get the cached 1024 atlas back, nor a splat-less atlas once splatting is on (#173).
+        boolean splat = WorldTerrainTextureSource.splat;
+        int mask = WorldTerrainTextureSource.splatMask;
+        int standard = com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK;
+        int high = com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK;
+        var files = new Files();
+        var pool = new TerrainAtlasPool();
+        try {
+            WorldTerrainTextureSource.splat = false;
+            assertEquals(java.util.Optional.empty(), splatSide(files, pool), "no splat inputs");
+            WorldTerrainTextureSource.splat = true;
+            WorldTerrainTextureSource.splatMask = high;
+            assertEquals(java.util.Optional.of(high), splatSide(files, pool), "first read at 1024");
+            WorldTerrainTextureSource.splatMask = standard;
+            assertEquals(
+                    java.util.Optional.of(standard),
+                    splatSide(files, pool),
+                    "re-read at 512 from a new source on the same pool");
+            WorldTerrainTextureSource.splatMask = high;
+            assertEquals(java.util.Optional.of(high), splatSide(files, pool), "and back at 1024");
+            WorldTerrainTextureSource.splat = false;
+            assertEquals(java.util.Optional.empty(), splatSide(files, pool), "splat off again");
+        } finally {
+            WorldTerrainTextureSource.splat = splat;
+            WorldTerrainTextureSource.splatMask = mask;
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    /** One read through a fresh source on {@code pool}: the atlas's splat mask side, if any. */
+    private static java.util.Optional<Integer> splatSide(Files files, TerrainAtlasPool pool)
+            throws Exception {
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try (var result = read(source)) {
+            var tile = result.tiles().getFirst();
+            assertEquals(
+                    WorldTerrainTextureSource.State.READY, tile.state(), tile.issues().toString());
+            var side =
+                    new java.util.concurrent.atomic.AtomicReference<java.util.Optional<Integer>>();
+            try (var lease = result.retainAtlas(TILE.x(), TILE.y()).orElseThrow()) {
+                lease.withAtlas(atlas -> side.set(atlas.splat().map(s -> s.maskSide())));
+            }
+            return side.get();
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void aTileWithAnEmptyTextureListIsReadAsChunksWithNoLayers() throws Exception {
         // An empty MDID and MHID with every MCLY empty: nothing to draw, but not a refusal.
         var out = new ByteArrayOutputStream();

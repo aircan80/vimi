@@ -74,8 +74,33 @@ public final class WorldHotLifecycleUiProof {
                     && fx(() -> get(owner.get(),"terrainScene") != null), "software after actual child retirement");
             fx(() -> { ((CheckBox)get(owner.get(),"gpuEnabled")).fire(); return null; });
             await(() -> ready(owner.get()), "HOT reentry after legacy drains");
+            long reentered = onlyChild();
+            check(reentered != initial, "Software toggle uses a newly owned native session");
+            // #173: the Display page's view distance restarts the stream at the new size.
+            var near = com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.NEAR;
+            var far = com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.FAR;
+            check(fx(() -> owner.get().streamingViewDistance()) == near, "NEAR is the default view distance");
+            // On HIGH object textures NEAR composes 1024 splat masks; FAR keeps 512 on any tier.
+            var high = com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH;
+            var standard = com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.STANDARD;
+            fx(() -> { textures(owner.get()).setValue(high); return null; });
+            await(() -> ready(owner.get()) && onlyChild() != reentered, "NEAR + HIGH restream presents");
+            check(com.vibeminer.concepts.world.WorldTerrainStreaming.splatMaskSide() == 1024, "NEAR + HIGH masks are 1024");
+            long nearHigh = onlyChild();
+            fx(() -> { distance(owner.get()).setValue(far); return null; });
+            await(() -> ready(owner.get()) && fx(() -> owner.get().streamingViewDistance()) == far
+                    && fx(() -> sessionDistance(owner.get())) == far, "FAR restream presents");
+            check(com.vibeminer.concepts.world.WorldTerrainStreaming.splatMaskSide() == 512, "FAR + HIGH masks stay 512");
+            long farChild = onlyChild();
+            check(farChild != nearHigh, "FAR runs in a newly owned session after the NEAR one drained");
+            fx(() -> { distance(owner.get()).setValue(near); return null; });
+            await(() -> ready(owner.get()) && fx(() -> sessionDistance(owner.get())) == near, "NEAR restream presents");
+            check(com.vibeminer.concepts.world.WorldTerrainStreaming.splatMaskSide() == 1024, "Back on NEAR + HIGH, 1024 again");
+            long nearAgain = onlyChild();
+            check(nearAgain != farChild, "Back to NEAR is a fresh session too");
+            fx(() -> { textures(owner.get()).setValue(standard); return null; });
+            await(() -> ready(owner.get()) && onlyChild() != nearAgain, "NEAR + STANDARD restream presents");
             long second = onlyChild();
-            check(second != initial, "Software toggle uses a newly owned native session");
             fx(() -> { owner.get().setVisible(false); return null; });
             await(() -> children().isEmpty() && pool.stats().leaseClaims() == 0, "hidden owner and source claims drain");
             fx(() -> { owner.get().setVisible(true); return null; });
@@ -86,7 +111,7 @@ public final class WorldHotLifecycleUiProof {
             world.closeAsync().get(10, TimeUnit.SECONDS);
             pool.closeAsync().get(5, TimeUnit.SECONDS);
             check(children().isEmpty() && pool.stats().leaseClaims() == 0, "Final child/source ownership is empty");
-            System.out.println("Actual authored HOT World UI: initial qualification/frame, software/on, hide/resume, final drain PASS");
+            System.out.println("Actual authored HOT World UI: initial qualification/frame, software/on, NEAR/FAR restream, hide/resume, final drain PASS");
         } finally {
             files.release.countDown();
             if (owner.get() != null) fx(() -> { owner.get().close(); if(window.get()!=null)window.get().close(); return null; });
@@ -119,6 +144,19 @@ public final class WorldHotLifecycleUiProof {
             return controller != null && controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
                     && ((ImageView)get(view,"image")).getImage() != null;
         });
+    }
+    @SuppressWarnings("unchecked")
+    private static javafx.scene.control.ChoiceBox<com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance> distance(WorldView view) {
+        return (javafx.scene.control.ChoiceBox<com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance>)get(view,"viewDistance");
+    }
+    @SuppressWarnings("unchecked")
+    private static javafx.scene.control.ChoiceBox<com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail> textures(WorldView view) {
+        return (javafx.scene.control.ChoiceBox<com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail>)get(view,"objectTextures");
+    }
+    private static com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance sessionDistance(WorldView view) {
+        var controller=(WorldStreamSourceController)get(view,"streaming");
+        var session=controller==null?null:(com.vibeminer.rendering.bgfx.WorldStreamTransport.Session)get(controller,"session");
+        return session==null?null:session.viewDistance();
     }
     private static long onlyChild() { var values=children();check(values.size()==1,"Exactly one actual child: "+values);return values.iterator().next(); }
     private static Set<Long> children() { return RendererChildren.live(); }
