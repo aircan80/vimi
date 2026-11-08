@@ -202,6 +202,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             int placements,
             int culled,
             int objectSubmits,
+            int sortedSubmits,
             int cameraUniforms,
             int chunks,
             int chunksCulled,
@@ -664,7 +665,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private int peakStepBytes;
     private boolean closed, callbackFreed, objectCulling = true, objectInstancing = true;
     private boolean vertexColours = VERTEX_COLOURS;
-    private FrameCounts lastFrame = new FrameCounts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    private FrameCounts lastFrame = new FrameCounts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     private int frameInstances, frameInstancesDropped;
     // Proof seam: at most this many instances per frame (bgfx's own budget still applies).
     private int instanceLimit = Integer.MAX_VALUE;
@@ -675,6 +676,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private int framePortalWalks, framePortalCulled;
     private int frameChunks, frameChunksCulled, frameTerrainSubmits;
     private int framePlacements, frameCulled, frameObjectSubmits, frameCameraUniforms;
+
+    /** Object submits of the sorted (blended, then additive) pass: a part of frameObjectSubmits. */
+    private int frameSortedSubmits;
+
     // The u_wmoMaterial class last set this frame, or -1.
     private int frameMaterial;
 
@@ -2119,7 +2124,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             // One fixed set of object uniform buffers per frame: per-placement work allocates
             // nothing on the frame's MemoryStack, whatever the number of placements.
             var frame = wmoProgram == INVALID ? null : ObjectFrame.on(stack, targetSamples > 1);
-            framePlacements = frameCulled = frameObjectSubmits = 0;
+            framePlacements = frameCulled = frameObjectSubmits = frameSortedSubmits = 0;
             frameInstances = frameInstancesDropped = 0;
             framePortalWalks = framePortalCulled = 0;
             portalCulling.frame(view);
@@ -2186,6 +2191,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         framePlacements,
                         frameCulled,
                         frameObjectSubmits,
+                        frameSortedSubmits,
                         frameCameraUniforms,
                         frameChunks,
                         frameChunksCulled,
@@ -2918,6 +2924,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 0);
         bgfx_submit(0, wmoProgram, 0, BGFX_DISCARD_ALL);
         frameObjectSubmits++;
+        if (sortedPass) {
+            frameSortedSubmits++;
+        }
     }
 
     /**

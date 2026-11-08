@@ -792,7 +792,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     /**
      * What the CPU cull kept and skipped in the frame just submitted (opt-in only), so a change in
      * {@code child.frame.draws} can be told apart from a change in what was resident: exterior
-     * placements tested and culled, object submits, terrain chunk runs tested and culled, terrain
+     * placements tested and culled, object submits and the sorted pass's share of them (blended and
+     * additive ranges, one placement per draw), terrain chunk runs tested and culled, terrain
      * submits, object instances drawn and dropped (#382), and portal walks with the interior meshes
      * they culled (#383).
      */
@@ -800,6 +801,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         WorldStageTimings.value("child.frame.placements", counts.placements());
         WorldStageTimings.value("child.frame.placementsCulled", counts.culled());
         WorldStageTimings.value("child.frame.objectSubmits", counts.objectSubmits());
+        WorldStageTimings.value("child.frame.sortedSubmits", counts.sortedSubmits());
         WorldStageTimings.value("child.frame.terrainChunks", counts.chunks());
         WorldStageTimings.value("child.frame.terrainChunksCulled", counts.chunksCulled());
         WorldStageTimings.value("child.frame.terrainSubmits", counts.terrainSubmits());
