@@ -83,6 +83,43 @@ final class WorldStreamNeighborhoodBudgetTest {
     }
 
     @Test
+    void terrainBudgetChargesSplatMasksPerSlotAndTheSharedArrayAndHorizonOnce() {
+        var near = WorldStreamTransport.ViewDistance.NEAR;
+        var far = WorldStreamTransport.ViewDistance.FAR;
+        // Mask sides (#174 step 2b-2): 1024 only on NEAR with HIGH textures.
+        assertEquals(512, near.splatMaskSide(false));
+        assertEquals(1024, near.splatMaskSide(true));
+        assertEquals(512, far.splatMaskSide(false));
+        assertEquals(512, far.splatMaskSide(true));
+        // Per slot: mesh buffers, atlas chain, mask chain (1,398,100 at 512, 5,592,404 at 1024)
+        // and the 1 KiB layer table.
+        long mesh = WorldStreamPackedTile.MAX_GEOMETRY_BYTES;
+        long atlas = WorldStreamAtlasMips.CHAIN_BYTES;
+        assertEquals(1_398_100, atlas);
+        assertEquals(mesh + atlas + 1_398_100 + 1_024, near.slotGpuBytes(false));
+        assertEquals(4_966_056, near.slotGpuBytes(false));
+        assertEquals(9_160_360, near.slotGpuBytes(true));
+        assertEquals(near.slotGpuBytes(false), far.slotGpuBytes(true));
+        // Once per session: the RGBA8 fallback splat array (larger than BC1's 11,144,520) and the
+        // horizon's two buffer sets.
+        assertEquals(11_144_520, WorldStreamDiffuseArray.ARRAY_BYTES);
+        assertEquals(22_281_900, WorldStreamDiffuseArray.FALLBACK_ARRAY_BYTES);
+        assertEquals(9_645_168, WorldStreamHorizon.GPU_BUDGET_BYTES);
+        assertEquals(31_927_068, WorldStreamTransport.SHARED_TERRAIN_GPU_BYTES);
+        // Session bounds: NEAR 77.8 MiB (117.8 MiB HIGH), FAR 153.6 MiB on either tier.
+        assertEquals(81_587_628, near.terrainGpuBytes(false));
+        assertEquals(123_530_668, near.terrainGpuBytes(true));
+        assertEquals(161_044_524, far.terrainGpuBytes(false));
+        assertEquals(far.terrainGpuBytes(false), far.terrainGpuBytes(true));
+        // FAR's 512 masks keep it within 40 MiB of NEAR + HIGH, so with either objects budget the
+        // whole World session stays under 420 MiB.
+        assertTrue(far.terrainGpuBytes(true) - near.terrainGpuBytes(true) < 40L << 20);
+        assertTrue(
+                far.terrainGpuBytes(true) + WorldStreamTransport.ObjectTextures.HIGH.budgetBytes()
+                        < 420L << 20);
+    }
+
+    @Test
     void objectTextureTiersSelectAPinnedSessionBudget() {
         var standard = WorldStreamTransport.ObjectTextures.STANDARD;
         var high = WorldStreamTransport.ObjectTextures.HIGH;
