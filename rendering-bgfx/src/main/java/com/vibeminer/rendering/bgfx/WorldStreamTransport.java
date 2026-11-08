@@ -662,6 +662,11 @@ public final class WorldStreamTransport {
         private volatile boolean stop;
         private volatile WorldStreamProducerCancellation.Producer cancellation;
         private boolean produced, offerOutstanding, cancelOutstanding;
+        // Guarded by the session lock: the outcome of a tile that ended before its offer (a
+        // refusal or a stop), set before its unused cancel is sent. The child's CANCELED reply can
+        // be read before the producer completes the result; it completes it with this outcome, so
+        // a refusal is never replaced by a plain cancellation.
+        private Throwable unusedOutcome;
         // Opt-in hand-off stamps (-Dvimi.world.stageTimings); 0 while timings are off.
         private volatile long reservedAt, producedAt, producerStartedAt, offeredAt, consumedAt;
         // Guarded by the session lock: the capacity revision when this reservation was issued and
@@ -906,6 +911,9 @@ public final class WorldStreamTransport {
         // Test seam: runs on the status reader after the parent state accepted a message and
         // before this session handles it.
         volatile java.util.function.Consumer<WorldStreamParentState.Change> statusSeam;
+        // Test seam: runs on the file worker after a tile that ended before its offer queued its
+        // unused cancel, and before the worker completes the tile's result.
+        volatile Runnable unusedCancelSeam;
         private WorldStreamPacketFile.Moved input;
         private boolean commitRequested;
         private CommitOperation commitOperation;
@@ -2098,18 +2106,24 @@ public final class WorldStreamTransport {
                     }
                     state.retireTileFile(reservation.ticket);
                     capacityChanged(reservation);
+                    Throwable outcome =
+                            error instanceof PreparationRefusal refusal
+                                    ? refusal
+                                    : new java.util.concurrent.CancellationException(
+                                            "Tile stopped");
                     synchronized (lock) {
+                        // Before the cancel is sent: its CANCELED reply may be read first.
+                        reservation.unusedOutcome = outcome;
                         var command = state.cancel(reservation.ticket);
                         if (command != null) {
                             enqueueCommand(command);
                         }
                     }
-                    if (error instanceof PreparationRefusal refusal) {
-                        reservation.result.completeExceptionally(refusal);
-                    } else {
-                        reservation.result.completeExceptionally(
-                                new java.util.concurrent.CancellationException("Tile stopped"));
+                    var seam = unusedCancelSeam;
+                    if (seam != null) {
+                        seam.run();
                     }
+                    reservation.result.completeExceptionally(outcome);
                     return;
                 }
                 boolean published = false;
@@ -2145,15 +2159,17 @@ public final class WorldStreamTransport {
                     packet = null;
                     state.retireTileFile(reservation.ticket);
                     capacityChanged(reservation);
+                    var outcome =
+                            new java.util.concurrent.CancellationException(
+                                    "Tile stopped before offer");
                     synchronized (lock) {
+                        reservation.unusedOutcome = outcome;
                         var command = state.cancel(reservation.ticket);
                         if (command != null) {
                             enqueueCommand(command);
                         }
                     }
-                    reservation.result.completeExceptionally(
-                            new java.util.concurrent.CancellationException(
-                                    "Tile stopped before offer"));
+                    reservation.result.completeExceptionally(outcome);
                 }
 
             } catch (Throwable failed) {
@@ -2516,6 +2532,7 @@ public final class WorldStreamTransport {
                         }
                         case CANCELED -> {
                             TileReservation current = reservationFor(transaction(message));
+                            Throwable outcome;
                             synchronized (lock) {
                                 if (!current.cancelOutstanding) {
                                     throw new IllegalStateException(
@@ -2527,11 +2544,14 @@ public final class WorldStreamTransport {
                                 }
                                 current.cancelOutstanding = false;
                                 retireReliable();
+                                outcome = current.unusedOutcome;
                             }
                             publishCancellation(current);
                             current.result.completeExceptionally(
-                                    new java.util.concurrent.CancellationException(
-                                            "Tile canceled"));
+                                    outcome != null
+                                            ? outcome
+                                            : new java.util.concurrent.CancellationException(
+                                                    "Tile canceled"));
                         }
                         case REJECTED -> {
                             CommitOperation operation;
