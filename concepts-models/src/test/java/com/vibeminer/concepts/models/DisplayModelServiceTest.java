@@ -179,6 +179,17 @@ class DisplayModelServiceTest {
         assertFalse(
                 DisplayModelService.creatureDisplay(
                         new DisplayModelTypes.Reference(1, 2, 3, List.of(), null, 0L)));
+        // The Stand read is routed the same way: ID 0 to the base rig, 7 and null to the gate.
+        assertEquals("base rig", route(0L));
+        assertEquals("gated", route(7L));
+        assertEquals("gated", route(null));
+    }
+
+    private static String route(Long extendedDisplayInfoId) {
+        return DisplayModelService.routeStand(
+                new DisplayModelTypes.Reference(1, 2, 3, List.of(), extendedDisplayInfoId, 0L),
+                () -> "base rig",
+                () -> "gated");
     }
 
     @Test
