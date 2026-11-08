@@ -34,6 +34,11 @@ public final class WorldTerrainStreaming {
                         far);
     }
 
+    /** The mask side newly composed tiles get, as {@link #splatMasks} last set it. */
+    public static int splatMaskSide() {
+        return WorldTerrainTextureSource.splatMask;
+    }
+
     public enum Outcome {
         TEXTURED,
         HEIGHT_FALLBACK
