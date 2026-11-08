@@ -82,6 +82,87 @@ class WorldCurrentAreaTest {
                 WorldCurrentArea.locateIn(0, 5000, 5000, List.of(tile.areas()), index).reason());
     }
 
+    private static WorldFormats.AreaMetadata metadata(WorldFormats.AreaChunk... chunks) {
+        return new WorldFormats.AreaMetadata(List.of(chunks));
+    }
+
+    @Test
+    void recordedFloatSlackAtATileCentreCornerResolvesTheOneArea() {
+        // Elwynn tile 49,31 on 1.60.1.70862: the stream seed sits at the tile centre, a chunk
+        // corner, and chunk 7,7's computed far edge (-9333.333008) passes chunk 7,8's recorded
+        // origin (-9333.332031), so both held the point and the lookup reported OVERLAP.
+        var index = index(area(1, "Elwynn Forest", 0), area(12, "Elwynn Forest", 0));
+        var tile =
+                metadata(
+                        chunk(7, 7, 12, -9300f, 300f),
+                        chunk(8, 7, 12, -9300f, 266.666016f),
+                        chunk(7, 8, 12, -9333.332031f, 300f),
+                        chunk(8, 8, 12, -9333.332031f, 266.666016f));
+        var result =
+                WorldCurrentArea.locateIn(
+                        0, -9333.33203125, 266.6673278808594, List.of(tile), index);
+        assertEquals(WorldCurrentArea.State.KNOWN, result.state());
+        assertEquals(12, result.areaId());
+    }
+
+    @Test
+    void anExactCornerOfFourAreasMapsToExactlyOneChunk() {
+        var index =
+                index(
+                        area(1, "Root", 0),
+                        area(21, "A", 1),
+                        area(22, "B", 1),
+                        area(23, "C", 1),
+                        area(24, "D", 1));
+        float side = (float) (WorldFormats.TILE_SIZE / 16);
+        var tile =
+                metadata(
+                        chunk(0, 0, 21, 2 * side, 2 * side),
+                        chunk(0, 1, 22, side, 2 * side),
+                        chunk(1, 0, 23, 2 * side, side),
+                        chunk(1, 1, 24, side, side));
+        // The half-open rule (origin minus one chunk, origin]: the corner belongs to the chunk
+        // whose origin it is, the smaller origin on both axes.
+        assertEquals(24, WorldCurrentArea.locateIn(0, side, side, List.of(tile), index).areaId());
+        // Within the slack of the corner the answer stays one chunk, never AMBIGUOUS.
+        for (double dx : new double[] {-0.004, 0.004}) {
+            for (double dy : new double[] {-0.004, 0.004}) {
+                assertEquals(
+                        WorldCurrentArea.State.KNOWN,
+                        WorldCurrentArea.locateIn(0, side + dx, side + dy, List.of(tile), index)
+                                .state());
+            }
+        }
+        // Clearly inside a chunk, that chunk.
+        assertEquals(
+                21,
+                WorldCurrentArea.locateIn(0, 1.5 * side, 1.5 * side, List.of(tile), index)
+                        .areaId());
+    }
+
+    @Test
+    void genuineOverlapsOfDistinctAreasStayAmbiguousAndOfOneAreaResolve() {
+        var index = index(area(1, "Root", 0), area(31, "A", 1), area(32, "B", 1));
+        float side = (float) (WorldFormats.TILE_SIZE / 16);
+        // Two recorded chunks half a chunk apart: the point is deep inside both.
+        var distinct =
+                metadata(chunk(0, 0, 31, side, side), chunk(0, 1, 32, side + side / 2, side));
+        var result = WorldCurrentArea.locateIn(0, side - 1, side / 2, List.of(distinct), index);
+        assertEquals(WorldCurrentArea.State.AMBIGUOUS, result.state());
+        assertEquals(WorldCurrentArea.Reason.OVERLAP, result.reason());
+        var same = metadata(chunk(0, 0, 31, side, side), chunk(0, 1, 31, side + side / 2, side));
+        assertEquals(
+                31,
+                WorldCurrentArea.locateIn(0, side - 1, side / 2, List.of(same), index).areaId());
+        // Deep inside one area and only within the slack of another's edge: the deep one.
+        var touching =
+                metadata(chunk(0, 0, 31, side, side), chunk(0, 1, 32, side - 1 + 0.005f, side));
+        assertEquals(
+                31,
+                WorldCurrentArea.locateIn(0, side - 1, side / 2, List.of(touching), index)
+                        .areaId());
+    }
+
     @Test
     void hierarchyCyclesUnknownParentsAndMapMismatchNeverInventARootZone() {
         var tiles = List.of(tile(chunk(0, 0, 10, 1000, 2000)));

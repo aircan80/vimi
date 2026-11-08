@@ -125,35 +125,84 @@ public final class WorldCurrentArea {
                 || loaded.size() > MAX_TILES) {
             throw new IllegalArgumentException("Invalid terrain-area query bounds");
         }
-        WorldFormats.AreaChunk selected = null;
         boolean metadata = false;
+        var candidates = new ArrayList<WorldFormats.AreaChunk>();
         for (var areas : loaded) {
             if (areas == null) {
                 continue;
             }
             metadata = true;
             for (var chunk : areas.chunks()) {
-                // The same float endpoint arithmetic as the original 17-row geometry grid.
-                float minX = (float) (chunk.originX() - 16 * (WorldFormats.TILE_SIZE / 256));
-                float minY = (float) (chunk.originY() - 8 * (WorldFormats.TILE_SIZE / 128));
-                if (nativeX > minX
-                        && nativeX <= chunk.originX()
-                        && nativeY > minY
-                        && nativeY <= chunk.originY()) {
-                    if (selected != null) {
-                        return failure(State.AMBIGUOUS, Reason.OVERLAP, 0);
-                    }
-                    selected = chunk;
+                if (depth(chunk, nativeX, nativeY) > -EDGE_SLACK) {
+                    candidates.add(chunk);
                 }
             }
         }
+        var selected = select(candidates, nativeX, nativeY);
         if (selected == null) {
-            return failure(
-                    State.UNAVAILABLE,
-                    metadata ? Reason.NO_COVERAGE : Reason.NO_LOADED_METADATA,
-                    0);
+            return candidates.isEmpty()
+                    ? failure(
+                            State.UNAVAILABLE,
+                            metadata ? Reason.NO_COVERAGE : Reason.NO_LOADED_METADATA,
+                            0)
+                    : failure(State.AMBIGUOUS, Reason.OVERLAP, 0);
         }
         return resolve(mapId, selected.areaId(), index);
+    }
+
+    /**
+     * Yards of float slack at a chunk edge. Neighbouring chunks' recorded origins are floats, so a
+     * chunk's computed far edge and its neighbour's origin can disagree by about a thousandth of a
+     * yard; a point within this of an edge (such as the stream seed at a tile centre, a chunk
+     * corner) is on the edge, not inside two chunks.
+     */
+    static final double EDGE_SLACK = 0.01;
+
+    /**
+     * How far inside a chunk's half-open rectangle (origin minus one chunk, origin] a native point
+     * is: the distance to its nearest edge, negative outside. Uses the original 17-row geometry
+     * grid's float endpoint arithmetic.
+     */
+    static double depth(WorldFormats.AreaChunk chunk, double nativeX, double nativeY) {
+        float minX = (float) (chunk.originX() - 16 * (WorldFormats.TILE_SIZE / 256));
+        float minY = (float) (chunk.originY() - 8 * (WorldFormats.TILE_SIZE / 128));
+        return Math.min(
+                Math.min(nativeX - minX, chunk.originX() - nativeX),
+                Math.min(nativeY - minY, chunk.originY() - nativeY));
+    }
+
+    /**
+     * The one chunk a point maps to among the chunks within {@link #EDGE_SLACK} of containing it,
+     * or null when the overlap is genuine: two chunks of distinct areas both hold the point deeper
+     * than the slack. Otherwise a chunk holding it deeper than the slack wins (the others only
+     * touch it within float slack), and a point on edges alone goes to the chunk it is deepest in,
+     * then, as the half-open rule does, to the smaller origin. Chunks of one area always resolve to
+     * that area.
+     */
+    static WorldFormats.AreaChunk select(
+            List<WorldFormats.AreaChunk> candidates, double nativeX, double nativeY) {
+        WorldFormats.AreaChunk best = null, deep = null;
+        double bestDepth = Double.NEGATIVE_INFINITY;
+        for (var chunk : candidates) {
+            double at = depth(chunk, nativeX, nativeY);
+            if (at > EDGE_SLACK) {
+                if (deep != null && deep.areaId() != chunk.areaId()) {
+                    // Inside two areas by more than the slack: a recorded overlap.
+                    return null;
+                }
+                deep = chunk;
+            }
+            if (best == null
+                    || at > bestDepth
+                    || (at == bestDepth
+                            && (chunk.originX() < best.originX()
+                                    || (chunk.originX() == best.originX()
+                                            && chunk.originY() < best.originY())))) {
+                best = chunk;
+                bestDepth = at;
+            }
+        }
+        return deep != null ? deep : best;
     }
 
     /**
