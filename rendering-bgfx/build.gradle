@@ -318,6 +318,8 @@ tasks.register('nativeGpuWorldStreamSplatUploadProof', JavaExec) {
     systemProperty 'vimi.world.splat.rgba8', providers.gradleProperty('splatProofRgba8').getOrElse('false')
     // -PsplatProofMask=high carries a HIGH (1024) mask map; STANDARD (512) otherwise.
     systemProperty 'vimi.proof.splatMask', providers.gradleProperty('splatProofMask').getOrElse('standard')
+    // -PsplatProofShift=rows,columns misplaces the mask map on purpose; the proof must then fail.
+    systemProperty 'vimi.proof.splatShift', providers.gradleProperty('splatProofShift').getOrElse('0,0')
     args layout.buildDirectory.dir('native-world-stream-splat').get().asFile.absolutePath
 }
 
@@ -489,6 +491,9 @@ tasks.register('nativeGpuWorldAppearanceProof', JavaExec) {
 
 // Isolated candidate recipe: eight test-resource blobs, hardware proof remains separate.
 tasks.register('verifyGlobalCandidateShaders', Exec) {
+    group = 'verification'
+    description = 'Verifies isolated global candidate shader blobs, including Direct3D 11, offline.'
+    workingDir rootProject.layout.projectDirectory
     commandLine pythonExecutable.get(), rootProject.file('scripts/rendering/compile_bgfx_world_global_candidate.py').absolutePath, '--include-dx11', '--verify'
     inputs.dir('src/main/shaders/world-global')
     inputs.dir('src/test/resources/com/vibeminer/rendering/bgfx/shaders/global-candidate')

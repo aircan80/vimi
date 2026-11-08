@@ -324,4 +324,62 @@ final class WorldSkyTest {
         // 1800 -> 600 spans 1680; 2400 is 600 of them past 1800.
         assertEquals(Math.round(240 * (1 - 600.0 / 1680)), late.sample().skyTop() & 0xff);
     }
+
+    @Test
+    void waterLightBlendsOverTheShareThatRecordsIt() {
+        var wet =
+                new WorldSky.Sample(
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        null,
+                        new WorldSky.Water(
+                                0x204060, 0x406080, 0x608000, 0x80A0C0, 0.2, 0.8, 0.4, 1),
+                        0,
+                        0);
+        var dry = new WorldSky.Sample(0xFFFFFF, 0, 0, 0, 0, 0, 0, 0);
+        // A key without water light never pulls the colours toward black: only the share drops.
+        var half = WorldSky.Sample.mix(wet, dry, 0.5);
+        assertEquals(wet.water(), half.water());
+        assertEquals(0.5, half.waterShare(), 1e-9);
+        var other =
+                new WorldSky.Sample(
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        null,
+                        new WorldSky.Water(0x000000, 0x000000, 0x000000, 0x000000, 0, 0, 0, 0),
+                        0,
+                        0);
+        var blended = WorldSky.Sample.blend(java.util.List.of(wet, other), new double[] {0.5, 0.5});
+        assertEquals(0x102030, blended.water().oceanClose());
+        assertEquals(0.1, blended.water().oceanShallowAlpha(), 1e-9);
+        assertEquals(0.5, blended.water().riverDeepAlpha(), 1e-9);
+        assertEquals(1, blended.waterShare(), 1e-9);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorldSky.Water(0, 0, 0, 0, 0, 1.01, 0, 0));
+    }
+
+    @Test
+    void blendingWetAndDrySamplesKeepsTheWetOnesWaterLight() {
+        var water = new WorldSky.Water(0x204060, 0x406080, 0x608000, 0x80A0C0, 0.2, 0.8, 0.4, 1);
+        var wet = new WorldSky.Sample(0, 0, 0, 0, 0, 0, null, water, 0, 0);
+        var dry = new WorldSky.Sample(0xFFFFFF, 0, 0, 0, 0, 0, 0, 0);
+        // Water light averages over the share that records it: half the weight, the same colours
+        // and opacities, never halved toward black or zero.
+        var blended = WorldSky.Sample.blend(java.util.List.of(wet, dry), new double[] {0.5, 0.5});
+        assertEquals(water, blended.water());
+        assertEquals(0.5, blended.waterShare(), 1e-9);
+        var weighted =
+                WorldSky.Sample.blend(java.util.List.of(dry, wet), new double[] {0.75, 0.25});
+        assertEquals(water, weighted.water());
+        assertEquals(0.25, weighted.waterShare(), 1e-9);
+    }
 }

@@ -163,4 +163,109 @@ final class WorldStreamPackedTileTest {
         assertThrows(IllegalStateException.class, input::tile);
         input.close();
     }
+
+    /** A flat root ADT of 256 chunks with heights only (no MCNR or MCCV), at tile 32, 32. */
+    private static byte[] flatRoot() {
+        return root(false);
+    }
+
+    /**
+     * The flat root, or with {@code tiltFirst} chunk 0 sloping along its columns (native y): each
+     * vertex 2 yards higher per column, so its derived normals lean in y and keep an up part.
+     */
+    private static byte[] root(boolean tiltFirst) {
+        var out = new java.io.ByteArrayOutputStream();
+        out.writeBytes(
+                part(
+                        "MVER",
+                        java.nio.ByteBuffer.allocate(4)
+                                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                .putInt(18)
+                                .array()));
+        for (int ordinal = 0; ordinal < 256; ordinal++) {
+            var header = java.nio.ByteBuffer.allocate(128).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            int x = ordinal % 16, y = ordinal / 16;
+            float side = (float) (com.vibeminer.formats.world.WorldFormats.TILE_SIZE / 16);
+            header.putInt(4, x).putInt(8, y).putFloat(104, -y * side).putFloat(108, -x * side);
+            header.putFloat(112, 10);
+            var chunk = new java.io.ByteArrayOutputStream();
+            chunk.writeBytes(header.array());
+            var heights = java.nio.ByteBuffer.allocate(580).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            if (tiltFirst && ordinal == 0) {
+                for (int row = 0, at = 0; row < 17; row++) {
+                    for (int col = 0; col < (row % 2 == 0 ? 9 : 8); col++, at++) {
+                        heights.putFloat(at * 4, 2f * (col + (row % 2) * 0.5f));
+                    }
+                }
+            }
+            chunk.writeBytes(part("MCVT", heights.array()));
+            out.writeBytes(part("MCNK", chunk.toByteArray()));
+        }
+        return out.toByteArray();
+    }
+
+    private static byte[] part(String name, byte[] bytes) {
+        int tag = 0;
+        for (char c : name.toCharArray()) {
+            tag = tag << 8 | c;
+        }
+        return java.nio.ByteBuffer.allocate(8 + bytes.length)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .putInt(tag)
+                .putInt(bytes.length)
+                .put(bytes)
+                .array();
+    }
+
+    /**
+     * #532: without MCNR the normal is derived from the triangles, signed, so it depends on the
+     * winding of the parser's fan. Flat ADT ground must light as straight up, (128, 128, 255), at
+     * every vertex: a flipped fan would point down and leave those chunks ambient-only.
+     */
+    @Test
+    void flatAdtGroundWithoutMcnrPacksStraightUpNormals() throws Exception {
+        var terrain = com.vibeminer.formats.world.WorldFormats.adt(flatRoot(), () -> false);
+        var tile = new TerrainScene.Tile(32, 32, terrain);
+        var input = read(tile, false);
+        try (var packed = WorldStreamPackedTile.prepare(input, () -> false);
+                var source = packed.take()) {
+            var data = source.geometry.duplicate().order(java.nio.ByteOrder.nativeOrder());
+            assertTrue(source.terrainVertices > 256 * 100);
+            for (int v = 0; v < source.terrainVertices; v++) {
+                int at = v * 24 + 20;
+                assertEquals(128, data.get(at) & 255, "x at vertex " + v);
+                assertEquals(128, data.get(at + 1) & 255, "y at vertex " + v);
+                assertEquals(255, data.get(at + 2) & 255, "z at vertex " + v);
+            }
+        }
+    }
+
+    /**
+     * #532: one sloped chunk among flat ones. Its derived normals lean in y but keep an up part (a
+     * normal that lost its vertical component would pack z = 128), and the flat chunks stay
+     * straight up.
+     */
+    @Test
+    void aSlopedChunkWithoutMcnrLeansItsNormalsAndKeepsThemUp() throws Exception {
+        var terrain = com.vibeminer.formats.world.WorldFormats.adt(root(true), () -> false);
+        var input = read(new TerrainScene.Tile(32, 32, terrain), false);
+        try (var packed = WorldStreamPackedTile.prepare(input, () -> false);
+                var source = packed.take()) {
+            var data = source.geometry.duplicate().order(java.nio.ByteOrder.nativeOrder());
+            for (int v = 0; v < source.terrainVertices; v++) {
+                int at = v * 24 + 20;
+                int x = data.get(at) & 255, y = data.get(at + 1) & 255, z = data.get(at + 2) & 255;
+                if (v < 145) {
+                    // Rounding 127.5 + 127.5 x n puts an exact 0 at 127 or 128.
+                    assertTrue(Math.abs(x - 128) <= 1, "sloped chunk x at vertex " + v);
+                    assertTrue(Math.abs(y - 128) >= 10, "sloped chunk leans in y at vertex " + v);
+                    assertTrue(z > 128 && z < 255, "sloped chunk keeps an up part at vertex " + v);
+                } else {
+                    assertEquals(128, x, "x at vertex " + v);
+                    assertEquals(128, y, "y at vertex " + v);
+                    assertEquals(255, z, "z at vertex " + v);
+                }
+            }
+        }
+    }
 }

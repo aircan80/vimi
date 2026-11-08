@@ -692,4 +692,69 @@ class WorldTextureFormatsTest {
         assertFalse(duplicate.admitted());
         assertNotEquals(WorldTextureFormats.ChunkIssue.NO_LAYERS, duplicate.issue());
     }
+
+    @Test
+    void aLayerlessChunkStillCarriesItsShadowBits() {
+        byte[] bits = new byte[WorldTextureFormats.SHADOW_BYTES];
+        bits[0] = 0b0000_0010;
+        byte[] source = texture(join(part("MCLY", new byte[0]), part("MCSH", bits)));
+        try (var data = WorldTextureFormats.read(source, () -> false)) {
+            assertEquals(
+                    WorldTextureFormats.ChunkIssue.NO_LAYERS, data.chunks().getFirst().issue());
+            assertEquals(WorldTextureFormats.ShadowState.BITS, data.shadowState(0));
+            var shadow = ByteBuffer.allocate(4096);
+            assertTrue(
+                    data.decodeShadow(
+                            0, WorldTextureFormats.DO_NOT_FIX_ALPHA_MAP, shadow, () -> false));
+            assertEquals(0, shadow.get(0) & 255);
+            assertEquals(255, shadow.get(1) & 255);
+            assertEquals(0, shadow.get(2) & 255);
+        }
+    }
+
+    @Test
+    void emptyTextureAndHeightListsAreValid() {
+        // Empty MDID and MHID, every chunk without layers: read, with no texture IDs.
+        var out = new ByteArrayOutputStream();
+        out.writeBytes(
+                join(part("MVER", ints(18)), part("MDID", new byte[0]), part("MHID", new byte[0])));
+        for (int i = 0; i < 256; i++) {
+            out.writeBytes(part("MCNK", part("MCLY", new byte[0])));
+        }
+        try (var data = WorldTextureFormats.read(out.toByteArray(), () -> false)) {
+            assertEquals(List.of(), data.diffuseIds());
+            assertEquals(List.of(), data.heightIds());
+            assertTrue(
+                    data.chunks().stream()
+                            .allMatch(c -> c.issue() == WorldTextureFormats.ChunkIssue.NO_LAYERS));
+        }
+        // A layer that names a texture the empty list lacks is a chunk issue, not a tile refusal.
+        var referenced = new ByteArrayOutputStream();
+        referenced.writeBytes(join(part("MVER", ints(18)), part("MDID", new byte[0])));
+        for (int i = 0; i < 256; i++) {
+            referenced.writeBytes(part("MCNK", part("MCLY", ints(0, 0, 0, 0))));
+        }
+        try (var data = WorldTextureFormats.read(referenced.toByteArray(), () -> false)) {
+            assertEquals(
+                    WorldTextureFormats.ChunkIssue.TEXTURE_REFERENCE,
+                    data.chunks().getFirst().issue());
+        }
+        // An empty MHID beside a non-empty MDID means no height textures: zero IDs.
+        var heights = new ByteArrayOutputStream();
+        heights.writeBytes(
+                join(part("MVER", ints(18)), part("MDID", ints(12345)), part("MHID", new byte[0])));
+        for (int i = 0; i < 256; i++) {
+            heights.writeBytes(part("MCNK", chunk(0, false)));
+        }
+        try (var data = WorldTextureFormats.read(heights.toByteArray(), () -> false)) {
+            assertEquals(List.of(12345L), data.diffuseIds());
+            assertEquals(List.of(0L), data.heightIds());
+        }
+        // A list that is not whole 4-byte IDs stays refused.
+        var ragged = new ByteArrayOutputStream();
+        ragged.writeBytes(join(part("MVER", ints(18)), part("MDID", new byte[3])));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldTextureFormats.read(ragged.toByteArray(), () -> false));
+    }
 }

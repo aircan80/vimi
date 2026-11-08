@@ -170,6 +170,52 @@ class WorldStreamHorizonTest {
         }
     }
 
+    @Test
+    void aFailedHorizonTakesTheFrameFogBackToTheStreamCut() throws Exception {
+        var failing = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        WorldStreamHorizon.Builder builder =
+                (lowRes, x, y, generation, canceled) -> {
+                    calls.incrementAndGet();
+                    if (failing.get()) {
+                        throw new IllegalStateException("test");
+                    }
+                    return WorldStreamHorizon.build(lowRes, x, y, generation, canceled);
+                };
+        var sky =
+                new WorldStreamTransport.Sky(
+                        new float[] {200, 120, 60}, new float[] {40, 60, 140}, 0, 0, 0);
+        try (var horizon = new WorldStreamHorizon(lowRes(), builder)) {
+            horizon.request(centre(32), centre(32));
+            var ranges = await(horizon).ranges();
+            // Nothing uploaded, or no horizon: the stream cut.
+            assertTrue(!BgfxWorldStreamRenderer.horizonDrawn(horizon, null));
+            assertTrue(!BgfxWorldStreamRenderer.horizonDrawn(null, ranges));
+            assertEquals(
+                    WorldStreamHorizon.FOG_END,
+                    BgfxWorldStreamRenderer.frameFog(
+                                    sky, BgfxWorldStreamRenderer.horizonDrawn(horizon, ranges))
+                            .cut());
+            failing.set(true);
+            for (int i = 0; i < WorldStreamHorizon.MAX_FAILURES; i++) {
+                int before = calls.get();
+                horizon.request(centre(33 + i), centre(32));
+                awaitCalls(calls, before + 1);
+            }
+            for (int i = 0; i < 200 && !horizon.failed(); i++) {
+                Thread.sleep(5);
+            }
+            assertTrue(horizon.failed());
+            // The uploaded ranges stay, but the frame neither draws the horizon nor fogs out to it.
+            assertTrue(!BgfxWorldStreamRenderer.horizonDrawn(horizon, ranges));
+            assertEquals(
+                    WorldFog.STREAM.cut(),
+                    BgfxWorldStreamRenderer.frameFog(
+                                    sky, BgfxWorldStreamRenderer.horizonDrawn(horizon, ranges))
+                            .cut());
+        }
+    }
+
     private static void awaitCalls(java.util.concurrent.atomic.AtomicInteger calls, int count)
             throws InterruptedException {
         for (int i = 0; i < 2000 && calls.get() < count; i++) {

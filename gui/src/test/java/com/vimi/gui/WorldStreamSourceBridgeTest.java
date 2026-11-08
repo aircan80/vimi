@@ -7,6 +7,7 @@ import com.vibeminer.concepts.world.WorldTerrainStreaming;
 import com.vibeminer.formats.tables.AuthoredNativeMap;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.rendering.bgfx.AuthoredPacketDestination;
+import com.vibeminer.rendering.bgfx.WorldStreamTileWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.CancellationException;
@@ -74,6 +75,8 @@ public final class WorldStreamSourceBridgeTest {
         @Override public int height(int layer) { return shape[layer][1]; }
         @Override public long mask(int layer) { return masks[layer]; }
         @Override public boolean planar(int layer) { return planar[layer]; }
+        /** Layer 2 is a magma layer with its own flat colour; the rest are water. */
+        @Override public int colour(int layer) { return layer == 2 ? 0xD06800 : -1; }
         @Override public float north(int vertex) {
             var at = locate(vertex);
             return at[1] / width(at[0]) + at[2] / 2;
@@ -112,6 +115,14 @@ public final class WorldStreamSourceBridgeTest {
         // The sloped chunk's first cell keeps its own corner heights.
         check(p[4 * 3 + 2] == 5f && p[5 * 3 + 2] == 5.1f && p[7 * 3 + 2] == 5.3f,
                 "Sloped cells keep their heights");
+        // Water layers take the water colour; the magma layer's three quads its own (#171).
+        var colours = water.colours();
+        for (int v = 0; v < water.cells() * 4; v++) {
+            int rgb = (colours[v * 3] & 255) << 16 | (colours[v * 3 + 1] & 255) << 8
+                    | colours[v * 3 + 2] & 255;
+            int expected = v >= (1 + 64) * 4 ? 0xD06800 : WorldStreamTileWriter.Water.WATER_RGB;
+            check(rgb == expected, "Vertex " + v + " colour " + Integer.toHexString(rgb));
+        }
         var indices = water.indices();
         for (int q = 0; q < water.cells(); q++) {
             int b = q * 4;

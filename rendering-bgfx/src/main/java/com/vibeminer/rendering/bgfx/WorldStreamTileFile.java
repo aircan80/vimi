@@ -140,21 +140,43 @@ final class WorldStreamTileFile {
     static final int WATER_HEADER_BYTES = 128, MAX_WATER_CELLS = 8192, MAX_WATER_LAYERS = 1024;
     static final int MAX_WATER_BYTES = waterBytes(MAX_WATER_CELLS * 4, MAX_WATER_CELLS * 6);
 
+    /** Trailer version 2 (#171): each vertex also carries its liquid's RGB colour. */
     static int waterBytes(int vertices, int indices) {
-        return WATER_HEADER_BYTES + vertices * 13 + indices * 4;
+        return WATER_HEADER_BYTES + vertices * 16 + indices * 4;
     }
+
+    /** The colour of water that has no liquid colour of its own. */
+    static final int WATER_RGB = 0x147394;
 
     /**
      * Optional static water trailer. Structural only: the closed application bridge is the sole
      * producer from an actual Source water preparation joined to this exact terrain payload.
      * Positions use native terrain axes (x north, y west, z up); every quad (a source cell, or a
      * whole flat chunk the bridge merged) is four corners NW,NE,SW,SE with the fixed NE--SW
-     * diagonal indices base,base+2,base+1 / base+1,base+2,base+3. Corner heights may differ.
+     * diagonal indices base,base+2,base+1 / base+1,base+2,base+3. Corner heights may differ. Every
+     * vertex carries an RGB colour: its liquid's flat colour (magma, slime) or {@link #WATER_RGB}.
      */
-    record Water(float[] positions, byte[] depths, int[] indices, int layers) {
+    record Water(float[] positions, byte[] depths, byte[] colours, int[] indices, int layers) {
+        /** Water in the default water colour. */
+        Water(float[] positions, byte[] depths, int[] indices, int layers) {
+            this(positions, depths, fill(depths.length, WATER_RGB), indices, layers);
+        }
+
+        /** {@code vertices} RGB triples of one colour (0xRRGGBB). */
+        static byte[] fill(int vertices, int rgb) {
+            var colours = new byte[vertices * 3];
+            for (int v = 0; v < vertices; v++) {
+                colours[v * 3] = (byte) (rgb >>> 16);
+                colours[v * 3 + 1] = (byte) (rgb >>> 8);
+                colours[v * 3 + 2] = (byte) rgb;
+            }
+            return colours;
+        }
+
         Water {
             Objects.requireNonNull(positions);
             Objects.requireNonNull(depths);
+            Objects.requireNonNull(colours);
             Objects.requireNonNull(indices);
             int vertices = depths.length;
             require(
@@ -162,6 +184,7 @@ final class WorldStreamTileFile {
                             && vertices >= 4
                             && vertices <= MAX_WATER_CELLS * 4
                             && positions.length == vertices * 3
+                            && colours.length == vertices * 3
                             && indices.length == vertices / 4 * 6
                             && layers >= 1
                             && layers <= MAX_WATER_LAYERS
@@ -215,7 +238,10 @@ final class WorldStreamTileFile {
             case BC1 -> alpha == 0 && (depth == 0 || depth == 1);
             case BC2 -> alpha == 1 && (depth == 4 || depth == 8);
             case BC3 -> alpha == 7 && (depth == 8 || depth == 72);
-            case BGRA8 -> alpha == 0 && depth == 8 || alpha == 8 && depth == 1;
+            case BGRA8 ->
+                    alpha >= 0
+                            && alpha <= 255
+                            && (depth == 0 || depth == 1 || depth == 4 || depth == 8);
         };
     }
 
@@ -865,7 +891,7 @@ final class WorldStreamTileFile {
         int cells = in.getInt(12), vertices = in.getInt(16), indexCount = in.getInt(20);
         require(
                 Arrays.equals(WATER_MAGIC, Arrays.copyOf(head, 8))
-                        && in.getInt(8) == 1
+                        && in.getInt(8) == 2
                         && cells >= 1
                         && cells <= MAX_WATER_CELLS
                         && vertices == cells * 4
@@ -881,13 +907,14 @@ final class WorldStreamTileFile {
         zero(head, 88, WATER_HEADER_BYTES);
         float[] positions = new float[vertices * 3];
         byte[] depths = new byte[vertices];
+        byte[] colours = new byte[vertices * 3];
         int[] indices = new int[indexCount];
         bytes.order(ByteOrder.LITTLE_ENDIAN);
         bytes.position(WATER_HEADER_BYTES).asFloatBuffer().get(positions);
-        bytes.position(WATER_HEADER_BYTES + positions.length * 4).get(depths);
+        bytes.position(WATER_HEADER_BYTES + positions.length * 4).get(depths).get(colours);
         bytes.asIntBuffer().get(indices);
         check(canceled);
-        var water = new Water(positions, depths, indices, in.getInt(24));
+        var water = new Water(positions, depths, colours, indices, in.getInt(24));
         require(onFootprint(water, footprint(tile)), "Water outside terrain tile");
         return water;
     }
@@ -933,7 +960,7 @@ final class WorldStreamTileFile {
 
     private static byte[] encodeWater(Header header, Water water) {
         var out = ByteBuffer.allocate(water.bytes()).order(ByteOrder.LITTLE_ENDIAN);
-        out.put(WATER_MAGIC).putInt(1).putInt(water.cells()).putInt(water.vertices());
+        out.put(WATER_MAGIC).putInt(2).putInt(water.cells()).putInt(water.vertices());
         out.putInt(water.indices().length).putInt(water.layers()).putInt(0);
         out.put(HexFormat.of().parseHex(header.geometrySha256()));
         out.putLong(header.root().id());
@@ -943,6 +970,7 @@ final class WorldStreamTileFile {
             out.putFloat(value);
         }
         out.put(water.depths());
+        out.put(water.colours());
         for (int value : water.indices()) {
             out.putInt(value);
         }
@@ -1081,10 +1109,6 @@ final class WorldStreamTileFile {
         require(metadata.maxSourceUvErrorTexels() <= h.uvError(), "Understated source UV error");
         TerrainTextureBinding.validatePixels(
                 TerrainTextureBinding.borrow(metadata, atlas), canceled);
-    }
-
-    static byte[] encodeHeader(Header h) {
-        return encodeHeader(h, "00".repeat(32));
     }
 
     /** SHA-256 of a packet's vertex attribute bytes, bound in the header at 260 (#373). */

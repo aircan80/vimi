@@ -1591,6 +1591,61 @@ public final class WorldAudioPlaybackTest {
         await(() -> streams.size() == 2, "no look-ahead opened");
         unused.closeAsync().get(10, TimeUnit.SECONDS);
         await(() -> streams.stream().allMatch(s -> s.closed), "an unused look-ahead leaked");
+
+        // An open but unused look-ahead is closed by a track change, before any close.
+        var opened = new java.util.concurrent.CopyOnWriteArrayList<FakePcm>();
+        var changed = new WorldAudioPlayback(lines::open, (bytes, canceled) -> {
+            var pcm = opened.isEmpty() ? new EndingPcm(80_000, 80_000, 0x40)
+                    : new FakePcm(Long.MAX_VALUE);
+            opened.add(pcm);
+            return pcm;
+        }, status -> {});
+        changed.ambience.track(weighted(WorldAreaAudio.Kind.AMBIENCE, 100, List.of(1L, 2L),
+                List.of(1, 1), 1, 0), FILES);
+        changed.ambience.enabled(true);
+        await(() -> opened.size() == 2, "no look-ahead opened before the track change");
+        var lookAhead = opened.get(1);
+        changed.ambience.track(weighted(WorldAreaAudio.Kind.AMBIENCE, 200, List.of(3L, 4L),
+                List.of(1, 1), 1, 0), FILES);
+        await(() -> lookAhead.closed, "a track change left the unused look-ahead open");
+        changed.closeAsync().get(10, TimeUnit.SECONDS);
+
+        // A look-ahead whose source read ignores cancellation does not hold the next track; it
+        // is closed once its open completes.
+        var stuck = new java.util.concurrent.CountDownLatch(1);
+        var late = new java.util.concurrent.atomic.AtomicReference<FakePcm>();
+        var opens = new AtomicInteger();
+        var held = new WorldAudioPlayback(lines::open, (bytes, canceled) -> {
+            int n = opens.incrementAndGet();
+            if (n == 2) {
+                try {
+                    stuck.await(); // ignores cancellation
+                } catch (InterruptedException interrupted) {
+                    throw new IOException("interrupted");
+                }
+                var pcm = new FakePcm(Long.MAX_VALUE);
+                late.set(pcm);
+                return pcm;
+            }
+            return n == 1 ? new EndingPcm(80_000, 80_000, 0x40) : new FakePcm(Long.MAX_VALUE);
+        }, status -> {});
+        try {
+            held.ambience.track(weighted(WorldAreaAudio.Kind.AMBIENCE, 100, List.of(1L, 2L),
+                    List.of(1, 1), 1, 0), FILES);
+            held.ambience.enabled(true);
+            await(() -> opens.get() == 2, "no look-ahead started");
+            long changedAt = System.nanoTime();
+            held.ambience.track(weighted(WorldAreaAudio.Kind.AMBIENCE, 200, List.of(3L, 4L),
+                    List.of(1, 1), 1, 0), FILES);
+            await(() -> opens.get() >= 3, "the next track never opened");
+            long waited = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - changedAt);
+            if (waited > 1000)
+                throw new AssertionError("A stuck look-ahead held the next track for " + waited + " ms");
+        } finally {
+            stuck.countDown();
+        }
+        await(() -> late.get() != null && late.get().closed, "the late look-ahead was not closed");
+        held.closeAsync().get(10, TimeUnit.SECONDS);
     }
 
     /** A failed look-ahead falls back to opening at the end of the file; the status recovers. */

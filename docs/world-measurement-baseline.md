@@ -140,6 +140,11 @@ The camera follows a fixed script:
 The vimi tile coordinate is (x, y) = (filename second, filename first). Goldshire is tile
 `49,31`, and Stormwind City is `48,30`.
 
+**Water mode** (#171, `-Pprobe.mode=water`) prepares every `probe.stride`-th recorded tile (default
+every 4th) of each map in `probe.maps` through the production terrain and water preparation, with
+no helper, GPU or JavaFX. It counts the water facts: tile states and reasons, declared, admitted
+and unresolved MH2O layers, cells, and issue kinds.
+
 **Refusals mode** calls the real `BuildWorld.terrainTextures` over every recorded tile of each
 map, in batches of 9. It counts:
 - tile states;
@@ -315,7 +320,12 @@ On 1.60.1.70862 (Linux, same scenarios, rotating in place; single runs), p50:
 | `child.frame.bgfxCpuRender` p50 | 0.67 ms | 4.34 ms | 0.28 ms | 2.80 ms |
 
 With the cull off, the draw count matches this baseline's 6,508 and 4,872 to within about 1%, and
-the per-tile placement counts match section 4. The resident objects are unchanged.
+the placement counts match the object counts in section 4. The resident objects are unchanged.
+
+These 1.60.1.70862 numbers come from a different build, machine and backend (Linux, Vulkan) than
+this baseline (1.60.1.70790, Windows, D3D11). Compare the draw and placement counts, not the times:
+for example, the cull-off `bgfxCpuRender` of 4.34 ms against the baseline's 3.7 ms is not a
+regression.
 
 **Reading:**
 - The helper's own per-frame CPU work is about 5 ms, at 800x500, for ~5-6.5k draws and ~1 M

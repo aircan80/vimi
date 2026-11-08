@@ -1,5 +1,6 @@
 package com.vibeminer.concepts.world;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -19,6 +20,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.AbstractList;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -254,6 +256,9 @@ class WorldTerrainTextureSourceTest {
 
         volatile boolean changeAfterRead;
 
+        /** Called with each file id as it is opened for reading, before its stream exists. */
+        volatile java.util.function.LongConsumer onOpenRead = id -> {};
+
         Files() {
             sources.put(1L, wdt(0x3ca));
             sources.put(2L, root());
@@ -362,6 +367,7 @@ class WorldTerrainTextureSourceTest {
                                                                 (Cancellation) args[1]));
                                         case "openRead" -> {
                                             long id = ((FileTypes.FileRef) args[0]).fileDataId();
+                                            onOpenRead.accept(id);
                                             var failed = failedOpens.get(id);
                                             if (failed != null) {
                                                 yield CompletableFuture.completedFuture(failed);
@@ -1949,6 +1955,68 @@ class WorldTerrainTextureSourceTest {
         return data.array();
     }
 
+    /** An uncompressed BGRA 8 x 8 chain down to 1 x 1 with the given alpha depth and encoding. */
+    private static byte[] blpBgra(int alphaDepth, int alphaEncoding) {
+        int total = 148 + (64 + 16 + 4 + 1) * 4;
+        var data = ByteBuffer.allocate(total).order(ByteOrder.LITTLE_ENDIAN);
+        data.put(new byte[] {'B', 'L', 'P', '2'})
+                .putInt(1)
+                .put((byte) 3)
+                .put((byte) alphaDepth)
+                .put((byte) alphaEncoding)
+                .put((byte) 1)
+                .putInt(8)
+                .putInt(8);
+        int at = 148;
+        for (int level = 0; level < 4; level++) {
+            int side = 8 >> level;
+            data.putInt(20 + level * 4, at).putInt(84 + level * 4, side * side * 4);
+            data.position(at);
+            for (int pixel = 0; pixel < side * side; pixel++) {
+                data.put((byte) 0x20).put((byte) 0x60).put((byte) 0xa0).put((byte) 0x10);
+            }
+            at += side * side * 4;
+        }
+        return data.array();
+    }
+
+    /**
+     * An uncompressed chain of {@code levels} from {@code width x height}, left half of each level
+     * red and right half blue, like the real 768 x 128 diffuses that stop at 6 x 1.
+     */
+    static byte[] blpBgraHalves(int width, int height, int levels) {
+        int total = 148;
+        for (int level = 0; level < levels; level++) {
+            total += Math.max(1, width >> level) * Math.max(1, height >> level) * 4;
+        }
+        var data = ByteBuffer.allocate(total).order(ByteOrder.LITTLE_ENDIAN);
+        data.put(new byte[] {'B', 'L', 'P', '2'})
+                .putInt(1)
+                .put((byte) 3)
+                .put((byte) 8)
+                .put((byte) 0)
+                .put((byte) 1)
+                .putInt(width)
+                .putInt(height);
+        int at = 148;
+        for (int level = 0; level < levels; level++) {
+            int w = Math.max(1, width >> level), h = Math.max(1, height >> level);
+            data.putInt(20 + level * 4, at).putInt(84 + level * 4, w * h * 4);
+            data.position(at);
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    // BGRA: red on the left, blue on the right.
+                    data.put(
+                            x < w / 2
+                                    ? new byte[] {0, 0, (byte) 255, (byte) 255}
+                                    : new byte[] {(byte) 255, 0, 0, (byte) 255});
+                }
+            }
+            at += w * h * 4;
+        }
+        return data.array();
+    }
+
     private static WorldTerrainTextureSource.DiffuseRefusal refusalFor(byte[] diffuse)
             throws Exception {
         var files = new Files();
@@ -1972,14 +2040,22 @@ class WorldTerrainTextureSourceTest {
 
     @Test
     void diffuseProfileRefusalsSayWhy() throws Exception {
-        // 16 x 8 down to 1 x 1: the small mip exists but the base is not square.
+        // 16 x 12: a short side that is not a power of two has no level of short side 4.
         assertEquals(
                 WorldTerrainTextureSource.DiffuseRefusal.NON_SQUARE,
-                refusalFor(blpShape(2, 16, 8, 5)));
+                refusalFor(blpShape(0, 16, 12, 1)));
+        // 16 x 8 alone: the level of short side 4 (8 x 4) is not declared.
+        assertEquals(
+                WorldTerrainTextureSource.DiffuseRefusal.MIP_UNAVAILABLE,
+                refusalFor(blpShape(0, 16, 8, 1)));
         // A single 16 x 16 level: no mip of 4 pixels or less.
         assertEquals(
                 WorldTerrainTextureSource.DiffuseRefusal.MIP_UNAVAILABLE,
                 refusalFor(blpShape(0, 16, 16, 1)));
+        // A square chain that stops at 8 x 8 is still MIP_UNAVAILABLE.
+        assertEquals(
+                WorldTerrainTextureSource.DiffuseRefusal.MIP_UNAVAILABLE,
+                refusalFor(blpShape(1, 16, 16, 2)));
         // Not a BLP2 container.
         byte[] blp1 = blpShape(2, 8, 8, 4);
         blp1[3] = '1';
@@ -2005,5 +2081,209 @@ class WorldTerrainTextureSourceTest {
                 WorldTerrainTextureSource.DiffuseRefusal.NONE,
                 new WorldTerrainTextureSource.Issue(WorldTerrainTextureSource.Reason.LIMIT, -1, 10)
                         .diffuseRefusal());
+    }
+
+    @Test
+    void uncompressedDiffusesWithAnyAlphaDepthAndEncodingByteAreDrawn() throws Exception {
+        // Recorded on real terrain diffuses: BGRA with alpha depth 0 or 4 and alpha encoding 2.
+        for (int[] profile : new int[][] {{0, 2}, {4, 2}, {8, 0}, {1, 8}}) {
+            var files = new Files();
+            files.sources.put(10L, blpBgra(profile[0], profile[1]));
+            var pool = new TerrainAtlasPool();
+            var source = new WorldTerrainTextureSource(files.files(), pool);
+            try (var result = read(source)) {
+                var tile = result.tiles().getFirst();
+                assertEquals(
+                        List.of(),
+                        tile.issues().stream().filter(issue -> issue.fileId() == 10).toList(),
+                        Arrays.toString(profile));
+                assertEquals(WorldTerrainTextureSource.State.READY, tile.state());
+            } finally {
+                source.closeAsync().get(5, TimeUnit.SECONDS);
+                pool.closeAsync().get(5, TimeUnit.SECONDS);
+            }
+        }
+        // A BGRA alpha depth the format does not define stays a named refusal.
+        assertEquals(
+                WorldTerrainTextureSource.DiffuseRefusal.UNSUPPORTED, refusalFor(blpBgra(2, 2)));
+    }
+
+    @Test
+    void nonSquareDiffusesAreDrawnStretchedFromTheirLevelOfShortSideFour() throws Exception {
+        // 32 x 8 down to 4 x 1 (no 4 x 4 level), and 16 x 8 down to 1 x 1 (which has 4 x 2).
+        // Also tall (8 x 32) and a long side that is not a power of two (24 x 4, level 0 itself).
+        // Each is bound at its short side and the level whose short side is 4.
+        int[][] shapes = {{32, 8, 4, 8, 1}, {16, 8, 5, 8, 1}, {8, 32, 4, 8, 1}, {24, 4, 1, 4, 0}};
+        for (int[] shape : shapes) {
+            var files = new Files();
+            files.sources.put(10L, blpBgraHalves(shape[0], shape[1], shape[2]));
+            var pool = new TerrainAtlasPool();
+            var source = new WorldTerrainTextureSource(files.files(), pool);
+            try (var result = read(source)) {
+                var tile = result.tiles().getFirst();
+                String name = shape[0] + "x" + shape[1];
+                assertEquals(
+                        List.of(),
+                        tile.issues().stream().filter(issue -> issue.fileId() == 10).toList(),
+                        name);
+                assertEquals(WorldTerrainTextureSource.State.READY, tile.state(), name);
+                var binding =
+                        tile.receipt().diffuse().stream()
+                                .filter(b -> b.file().fileId() == 10)
+                                .findFirst()
+                                .orElseThrow();
+                assertEquals(shape[3], binding.originalSide(), name);
+                assertEquals(shape[4], binding.level(), name);
+                // Chunk 200 draws file 10 alone: its cell keeps the red and blue halves.
+                try (var lease = result.retainAtlas(TILE.x(), TILE.y()).orElseThrow()) {
+                    lease.withAtlas(
+                            atlas -> {
+                                var m =
+                                        atlas.mappings().stream()
+                                                .filter(c -> c.ordinal() == 200)
+                                                .findFirst()
+                                                .orElseThrow();
+                                var px = atlas.pixels();
+                                boolean red = false, blue = false;
+                                for (int y = 0; y < 32; y++) {
+                                    for (int x = 0; x < 32; x++) {
+                                        int at = ((m.y() * 32 + y) * 512 + m.x() * 32 + x) * 4;
+                                        int r = px.get(at) & 255, b = px.get(at + 2) & 255;
+                                        red |= r > 200 && b < 50;
+                                        blue |= b > 200 && r < 50;
+                                    }
+                                }
+                                assertTrue(red && blue, name + " cell keeps both halves");
+                            });
+                }
+            } finally {
+                source.closeAsync().get(5, TimeUnit.SECONDS);
+                pool.closeAsync().get(5, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    @Test
+    void boxAverageShrinksByMeansAndEnlargesByRepeats() {
+        // 8 x 2: left half red, right half blue, to 4 x 4.
+        byte[] source = new byte[8 * 2 * 4];
+        for (int i = 0; i < 16; i++) {
+            source[i * 4 + ((i % 8) < 4 ? 0 : 2)] = (byte) 255;
+            source[i * 4 + 3] = (byte) 255;
+        }
+        byte[] cell = WorldTerrainTextureSource.boxAverage(source, 8, 2, 4, 4);
+        for (int y = 0; y < 4; y++) {
+            for (int x = 0; x < 4; x++) {
+                int at = (y * 4 + x) * 4;
+                assertEquals(x < 2 ? 255 : 0, cell[at] & 255);
+                assertEquals(x < 2 ? 0 : 255, cell[at + 2] & 255);
+                assertEquals(255, cell[at + 3] & 255);
+            }
+        }
+        // Rounded mean: 0 and 255 over one output pixel give 128.
+        byte[] pair = {0, 0, 0, 0, (byte) 255, (byte) 255, (byte) 255, (byte) 255};
+        assertArrayEquals(
+                new byte[] {(byte) 128, (byte) 128, (byte) 128, (byte) 128},
+                WorldTerrainTextureSource.boxAverage(pair, 2, 1, 1, 1));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldTerrainTextureSource.boxAverage(pair, 3, 1, 1, 1));
+        // 6 -> 4 is not a whole ratio: each output pixel weighs 1.5 source pixels by the part it
+        // covers (1 and 1/2, then 1/2 and 1).
+        byte[] six = new byte[6 * 4];
+        int[] values = {0, 30, 60, 90, 120, 150};
+        for (int i = 0; i < 6; i++) {
+            six[i * 4] = (byte) values[i];
+        }
+        byte[] four = WorldTerrainTextureSource.boxAverage(six, 6, 1, 4, 1);
+        int[] expected = {10, 50, 100, 140};
+        for (int i = 0; i < 4; i++) {
+            assertEquals(expected[i], four[i * 4] & 255, "pixel " + i);
+        }
+    }
+
+    @Test
+    void aNonSquareLevelOverItsPixelBoundIsALimit() throws Exception {
+        // 2048 x 4: the level of short side 4 is 8,192 pixels, past the 4,096 bound.
+        assertEquals(
+                WorldTerrainTextureSource.DiffuseRefusal.LIMIT,
+                refusalFor(blpBgraHalves(2048, 4, 1)));
+    }
+
+    @Test
+    void aTileComposesAtTheMaskSideItsReservationWasChargedFor() throws Exception {
+        boolean splat = WorldTerrainTextureSource.splat;
+        int mask = WorldTerrainTextureSource.splatMask;
+        int standard = com.vibeminer.rendering.world.TerrainTileSplat.STANDARD_MASK;
+        int high = com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK;
+        var files = new Files();
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try {
+            WorldTerrainTextureSource.splat = true;
+            WorldTerrainTextureSource.splatMask = standard;
+            // The quality tier rises to HIGH after the tile reserved its atlas (diffuses are
+            // opened between reservation and compose): it still composes at STANDARD, its charge.
+            files.onOpenRead =
+                    id -> {
+                        if (id == 10) {
+                            WorldTerrainTextureSource.splatMask = high;
+                        }
+                    };
+            try (var result = read(source)) {
+                var tile = result.tiles().getFirst();
+                assertEquals(
+                        WorldTerrainTextureSource.State.READY,
+                        tile.state(),
+                        tile.issues().toString());
+                assertEquals(high, WorldTerrainTextureSource.splatMask, "the tier did change");
+                try (var lease = result.retainAtlas(TILE.x(), TILE.y()).orElseThrow()) {
+                    lease.withAtlas(
+                            atlas ->
+                                    assertEquals(standard, atlas.splat().orElseThrow().maskSide()));
+                }
+            }
+        } finally {
+            WorldTerrainTextureSource.splat = splat;
+            WorldTerrainTextureSource.splatMask = mask;
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void aTileWithAnEmptyTextureListIsReadAsChunksWithNoLayers() throws Exception {
+        // An empty MDID and MHID with every MCLY empty: nothing to draw, but not a refusal.
+        var out = new ByteArrayOutputStream();
+        out.writeBytes(part("MVER", ints(18)));
+        out.writeBytes(part("MAMP", ints(0)));
+        out.writeBytes(part("MDID", new byte[0]));
+        out.writeBytes(part("MHID", new byte[0]));
+        for (int i = 0; i < 256; i++) {
+            out.writeBytes(part("MCNK", part("MCLY", new byte[0])));
+        }
+        var files = new Files();
+        files.sources.put(3L, out.toByteArray());
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try (var result = read(source)) {
+            var tile = result.tiles().getFirst();
+            assertEquals(256, tile.issues().size());
+            assertTrue(
+                    tile.issues().stream()
+                            .allMatch(
+                                    issue ->
+                                            issue.reason() == WorldTerrainTextureSource.Reason.CHUNK
+                                                    && issue.maskIssue()
+                                                            == com.vibeminer.formats.world
+                                                                    .WorldTextureFormats.ChunkIssue
+                                                                    .NO_LAYERS));
+            // No chunk is drawn, so the tile keeps the untextured fallback, as before.
+            assertEquals(WorldTerrainTextureSource.State.UNAVAILABLE, tile.state());
+            assertEquals(0, tile.supportedChunks());
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
     }
 }

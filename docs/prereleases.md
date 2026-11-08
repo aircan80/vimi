@@ -98,17 +98,23 @@ The packager refuses JavaFX JARs that embed natives, since they would extract in
 `-Djavafx.cachedir` through `JAVA_TOOL_OPTIONS`. It fails if the sentinel cache
 appears, if any native loads from a JAR resource, or (for the UI smoke) if glass and
 the other JavaFX natives do not load from inside the app image. On macOS it also
-verifies the bundle seal and the signature of every bundled native library, just
-before archiving.
+verifies the bundle seal and the signature of every bundled native library, after the
+smoke run and before anything ships, `--image-only` included.
 
 The `.deb` `Depends` is pinned through a jpackage `--resource-dir` control template to
-the direct runtime needs of the bundled JDK and JavaFX natives (GTK 3, X11, GL, ALSA,
-Pango/Cairo, fontconfig/freetype, xdg-utils), with `t64` alternatives. Left alone,
-jpackage derives `Depends` from the whole shared-library closure using the build
-runner's Ubuntu 24.04 package names, which do not install on Debian or Ubuntu 22.04.
-The packager fails if the built deb's `Depends` or the rpm's `Requires` differ from
-their allowlists. The pinned set was checked with `apt-get install -s` on Debian 12,
-Debian 13, Ubuntu 22.04 and Ubuntu 24.04 for amd64 and arm64.
+the direct runtime needs of the bundled JDK, JavaFX and bgfx natives (GTK 3, X11, GL,
+ALSA, Pango/Cairo, fontconfig/freetype/HarfBuzz, the C++ runtime, xdg-utils), with
+`t64` alternatives, and `Recommends: libvulkan1` because bgfx loads Vulkan with
+`dlopen`. Left alone, jpackage derives `Depends` from the whole shared-library closure
+using the build runner's Ubuntu 24.04 package names, which do not install on Debian or
+Ubuntu 22.04. Before building the deb, the packager reads the `NEEDED` libraries of
+every ELF file in the app image and in its JARs that loads on the target (ELF class,
+CPU and Linux OS ABI; JARs such as zstd-jni also carry FreeBSD and other-CPU natives,
+which are skipped and counted), and fails naming any library that is neither bundled
+in the image nor mapped to a package in `DEB_SONAME_PACKAGES`. It also
+fails if the built deb's `Depends`/`Recommends` or the rpm's `Requires` differ from
+their allowlists. The original pinned set was checked with `apt-get install -s` on
+Debian 12, Debian 13, Ubuntu 22.04 and Ubuntu 24.04 for amd64 and arm64.
 
 The packaged application image is launched on every platform. Installer creation is
 checked, but installing/uninstalling the MSI/DMG/DEB/RPM is not automated yet.

@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -105,6 +106,30 @@ class WorldStreamParentStateTest {
         assertNull(state.reserve(8, 19));
         state.retireTileFile(ticket);
         assertNotNull(state.reserve(8, 19));
+    }
+
+    /** #534: each CREDIT names the ticket whose lease it returned; the first credit has none. */
+    @Test
+    void creditedTicketIsTheReservationWhoseLeaseTheLatestCreditReturned() {
+        var state = ready();
+        assertNull(state.creditedTicket());
+        var first = state.reserve(7, 19);
+        assertNull(state.creditedTicket()); // Reserving alone attributes nothing.
+        assertInstanceOf(WorldStreamControl.CancelUnused.class, state.cancel(first));
+        state.status(new WorldStreamStatus.Canceled(NONCE, first.transaction, first.lease));
+        assertNull(state.creditedTicket()); // The CANCELED ack is not the credit.
+        assertEquals(
+                WorldStreamParentState.Change.CREDIT,
+                state.status(
+                        new WorldStreamStatus.Credit(NONCE, new WorldStreamState.Lease(0, 2, 2))));
+        assertSame(first, state.creditedTicket());
+        assertTrue(first.credited);
+        var second = state.reserve(8, 19);
+        assertSame(first, state.creditedTicket()); // Until the next CREDIT, still the first.
+        assertInstanceOf(WorldStreamControl.CancelUnused.class, state.cancel(second));
+        state.status(new WorldStreamStatus.Canceled(NONCE, second.transaction, second.lease));
+        state.status(new WorldStreamStatus.Credit(NONCE, new WorldStreamState.Lease(0, 3, 3)));
+        assertSame(second, state.creditedTicket());
     }
 
     @Test

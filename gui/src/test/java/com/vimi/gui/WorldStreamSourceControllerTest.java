@@ -67,6 +67,7 @@ public final class WorldStreamSourceControllerTest {
         bumpBetweenIssueAndRefusalStillWakesRetry("output", true, true);
         busyGeometryLaneIsNotPolledAndItsReleaseWakesTheTile();
         heldSourceWorkerIsNotRetriedByItsOwnCredit();
+        capacityChangeFromElsewhereWakesASourceWorkerRefusal();
         sameResidentCameraFrameDoesNotRetryMaterialPool();
         transportFrameSignalQueuesPresentationWithoutAnyPulse();
         steadyCameraFramesReuseAFewPixelArrays();
@@ -1162,11 +1163,13 @@ public final class WorldStreamSourceControllerTest {
     }
 
     /**
-     * Lost wake-up regression (#283): a tile preparation refused with RETRY_LATER for a non-pool
-     * reason (the geometry lane) waits for a capacity change. Here the change, the refused
-     * reservation's unused-credit CREDIT, lands after the refusal but before the controller records
-     * it. With the frozen test clock the controller must still retry, because capacity changed
-     * after the refused reservation was issued.
+     * Lost wake-up regression (#283): a tile preparation refused with RETRY_LATER for the geometry
+     * lane is retried although the lane's release lands after the refusal but before the
+     * controller records it. The refused reservation's own unused-credit CREDIT also lands inside
+     * that window; it is excluded from the refusal's capacity check (#366 review), so it is not
+     * what wakes the retry. With the frozen test clock, the retry comes from the geometry release,
+     * which a GEOMETRY_CREDIT refusal waits on (#304). A capacity change from elsewhere waking a
+     * capacity-path refusal is {@link #capacityChangeFromElsewhereWakesASourceWorkerRefusal}.
      */
     private static void capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation()
             throws Exception {
@@ -1179,8 +1182,8 @@ public final class WorldStreamSourceControllerTest {
             Runnable seam = () -> {
                 if (!seamRan.compareAndSet(false, true)) return;
                 try {
-                    // Inside the window: free the geometry lane and let the refused
-                    // reservation's credit arrive, then wait for its capacity change.
+                    // Inside the window: free the geometry lane (what wakes the retry) and let
+                    // the refused reservation's own credit arrive (which must not).
                     geometry.close();
                     var session = fixture.gpu.session;
                     long before = session.capacityRevision();
@@ -1207,7 +1210,7 @@ public final class WorldStreamSourceControllerTest {
             blocked.setAccessible(true);
             check(!blocked.getBoolean(fixture.controller),
                     "A geometry-lane refusal waits on capacity, not on the material pool");
-            // The clock never advances: only the observed capacity change may trigger the retry.
+            // The clock never advances: only the geometry release may trigger the retry.
             fixture.until(() -> fixture.controller.snapshot().seed() != null);
             fixture.camera(1);
             fixture.untilPresented(() -> fixture.controller.snapshot().phase()
@@ -1363,6 +1366,67 @@ public final class WorldStreamSourceControllerTest {
             check(attempts <= 1, "A refusal's own credit does not retry it: " + attempts);
             held.close();
             fixture.clock.addAndGet(600_000_000L);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 2);
+        } finally {
+            held.close();
+            fixture.close();
+            if (water == null) System.clearProperty("vimi.world.water");
+            else System.setProperty("vimi.world.water", water);
+        }
+    }
+
+    /**
+     * #534: a SOURCE_WORKER refusal waits on capacity changed by anything other than the refused
+     * reservation. With the clock frozen and no frame presented (a presentation would also wake
+     * it), its own unused credit and the worker's release do not retry it; an unrelated capacity
+     * change (the session's commit-file retirement wake-up) does.
+     */
+    private static void capacityChangeFromElsewhereWakesASourceWorkerRefusal() throws Exception {
+        String water = System.getProperty("vimi.world.water");
+        System.setProperty("vimi.world.water", "false");
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        var refusals = new java.util.concurrent.atomic.AtomicInteger();
+        var issues = new java.util.concurrent.atomic.AtomicInteger();
+        AutoCloseable held = () -> {};
+        try {
+            fixture.start(scope -> {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (fixture.controller == null && System.nanoTime() < deadline)
+                    java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                fixture.controller.tileRefusalSeam = refusals::incrementAndGet;
+                fixture.controller.tileIssueSeam = issues::incrementAndGet;
+                return fixture.gpu.start(scope);
+            });
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+            held = com.vibeminer.concepts.world.AuthoredSourceWorkerPressure.hold(
+                    fixture.world.terrainStreaming().orElseThrow());
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 2));
+            long first = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (refusals.get() < 1 && System.nanoTime() < first) Thread.sleep(1);
+            check(refusals.get() >= 1, "The held source worker refuses the new tile");
+            // Free the worker, then let the refusal's own credit land; no pulse, no presentation,
+            // frozen clock.
+            held.close();
+            int issued = issues.get();
+            long window = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500);
+            while (System.nanoTime() < window) Thread.sleep(2);
+            check(issues.get() == issued,
+                    "Neither the refusal's own credit nor the worker release retries it: "
+                            + (issues.get() - issued));
+            var session = fixture.gpu.session;
+            var elsewhere = session.getClass().getDeclaredMethod("capacityChanged");
+            elsewhere.setAccessible(true);
+            long revision = session.capacityRevision();
+            elsewhere.invoke(session);
+            check(session.capacityRevision() > revision, "The unrelated capacity change was counted");
+            long retry = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (issues.get() == issued && System.nanoTime() < retry) Thread.sleep(1);
+            check(issues.get() > issued, "The unrelated capacity change retries the tile");
             fixture.untilPresented(() -> fixture.controller.snapshot().phase()
                     == WorldStreamSourceController.Phase.READY
                     && fixture.controller.snapshot().prepared() == 2);
