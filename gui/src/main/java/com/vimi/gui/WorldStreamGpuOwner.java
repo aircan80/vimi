@@ -101,6 +101,19 @@ final class WorldStreamGpuOwner {
                 objectTextures(detail));
     }
 
+    /**
+     * Sets the splat mask side tiles composed from now on get, for a session at {@code distance}
+     * (#173, #174 step 2b-2): 1024 only for NEAR with HIGH detail, 512 otherwise, as the view
+     * distance terrain budget assumes. Returns that side.
+     */
+    static int splatMasks(
+            com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail,
+            WorldStreamTransport.ViewDistance distance) {
+        com.vibeminer.concepts.world.WorldTerrainStreaming.splatMasks(
+                detail, Objects.requireNonNull(distance) == WorldStreamTransport.ViewDistance.FAR);
+        return com.vibeminer.concepts.world.WorldTerrainStreaming.splatMaskSide();
+    }
+
     /** HIGH image detail selects the HIGH objects budget; anything else is STANDARD. */
     static WorldStreamTransport.ObjectTextures objectTextures(
             com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail) {
