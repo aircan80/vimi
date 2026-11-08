@@ -116,6 +116,29 @@ class NativeMaterialAdmissionTest {
     }
 
     @Test
+    void cylindricalLeavesBecomeCardsOfTheirKind() throws Exception {
+        assertEquals(
+                com.vibeminer.rendering.models.MeshAppearance.CardKind.SPHERICAL,
+                card().parse().cards().getFirst().kind());
+        var aboutZ = card();
+        aboutZ.body.putInt(aboutZ.bones + 88 + 4, 0x40);
+        assertEquals(
+                com.vibeminer.rendering.models.MeshAppearance.CardKind.CYLINDRICAL_Z,
+                aboutZ.parse().cards().getFirst().kind());
+        var aboutY = card();
+        aboutY.body.putInt(aboutY.bones + 88 + 4, 0x20);
+        assertEquals(
+                com.vibeminer.rendering.models.MeshAppearance.CardKind.CYLINDRICAL_Y,
+                aboutY.parse().cards().getFirst().kind());
+        // Lock X (0x10) and mixed billboard flags are not cards.
+        for (int flags : new int[] {0x10, 0x48, 0x60}) {
+            var other = card();
+            other.body.putInt(other.bones + 88 + 4, flags);
+            assertNull(other.parse().cards(), "flags 0x" + Integer.toHexString(flags));
+        }
+    }
+
+    @Test
     void ownTracksAndHierarchyAreCheckedWithoutRejectingAnimatedOrdinaryAncestors()
             throws Exception {
         var ancestor = card();

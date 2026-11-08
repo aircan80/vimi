@@ -15,7 +15,7 @@
       "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
       "platform": "windows",
       "profile": "s_5_0",
-      "sha256": "f13e54f040a34eef0940f8cc328d70ca9538a59261ea1809a2670321acd5bc67",
+      "sha256": "2fff492f5aa880d99bc74c34db5c9d1d1a2c2e040c2c02a9b7898e2d3593b905",
       "stage": "vertex"
     },
     "glsl/fs_model.bin": {
@@ -31,7 +31,7 @@
       "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
       "platform": "linux",
       "profile": "330",
-      "sha256": "6ebaddb2be1e8b86dcc3f51a3154223e138912bc3ce7f046250cd43cf86814f7",
+      "sha256": "ef756f70ac2fcb7a01df799c54f0e4c97a54a5878de800f02ce69465f14373fd",
       "stage": "vertex"
     },
     "metal/fs_model.bin": {
@@ -47,7 +47,7 @@
       "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
       "platform": "osx",
       "profile": "metal",
-      "sha256": "a323c39bc381578cb975af390a6b5290bc1a39030e4f227131eac44c29b036c3",
+      "sha256": "3913925039f9b423c9744adb28f7cc9d105b92acf86cf861a7152606ac46a2e1",
       "stage": "vertex"
     },
     "spirv/fs_model.bin": {
@@ -63,7 +63,7 @@
       "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
       "platform": "linux",
       "profile": "spirv",
-      "sha256": "b45c359a762732c31e1e73e0a5911b91f0f1cabf53b689dbbeec9bc897dd94e7",
+      "sha256": "d8bc5a405b09f493003bb10c94f8fb6ff15604f83a51fe29734252b58e6815ce",
       "stage": "vertex"
     }
   },
@@ -72,7 +72,7 @@
     "bgfx_shader.sh": "5ad79a2ff5d1b1fd1f22d986f2b0b5dc49f89ffd5ce18e57966b6ab894094508",
     "fs_model.sc": "fe6f3c71427d81852d8d654fad55365bbfbb360c42e7726b5ccf9385f9738e7d",
     "varying.def.sc": "0eaba8d7cdf0cf3fd231ee88b4f1f2cdaac8702ed3b5358258b8f21b154a2c88",
-    "vs_model.sc": "d19ce3b48ae705d34e850632b715f9a347956f19fd82cc8ab978ee4b1aafd931"
+    "vs_model.sc": "13db2cefb07a2b237ca67ebe593c35be916c1b5502759b5f1ce0d56546322d0d"
   },
   "lwjglVersion": "3.4.3",
   "shadercVersion": "shaderc, bgfx shader compiler tool, version 1.19.156."

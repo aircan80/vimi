@@ -322,6 +322,51 @@ class PreviewAnimationTest {
         near(new float[] {0, 2, 3}, pose.mesh().positions(), 2);
     }
 
+    @Test
+    void posedCardsKeepTheirKind() {
+        var root = new Bone(-1, 0, 0, 0, constant(3, 0, 0, 3), null, null, false);
+        var card = new Bone(0, 1, 0, 1, null, null, null, true);
+        var rest =
+                new PreviewMesh(
+                        new float[] {1, -.5f, .5f, 1, .5f, .5f, 1, .5f, 1.5f, 1, -.5f, 1.5f},
+                        new int[] {0, 1, 2, 0, 2, 3},
+                        List.of(new PreviewMesh.Part(0, 0, 6)));
+        var additive =
+                new MeshAppearance.Material(
+                        MeshAppearance.Combiner.DIFFUSE,
+                        List.of(
+                                new MeshAppearance.TextureStage(
+                                        0, MeshAppearance.Coordinate.UV0, false, false)),
+                        MeshAppearance.Lighting.UNLIT,
+                        MeshAppearance.Blend.ADDITIVE);
+        var appearance =
+                new MeshAppearance(
+                        rest,
+                        new float[8],
+                        new float[0],
+                        List.of(new MeshAppearance.Surface(0, additive)),
+                        List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})),
+                        List.of(
+                                new MeshAppearance.RigidBillboard(
+                                        1,
+                                        new MeshAppearance.Vec3(1, 0, 1),
+                                        new int[] {0, 1, 2, 3},
+                                        MeshAppearance.CardKind.CYLINDRICAL_Z)));
+        var animation =
+                new PreviewAnimation(
+                        "Stand",
+                        1000,
+                        new long[0],
+                        List.of(root, card),
+                        rest,
+                        new float[0],
+                        rigid(1, 1, 1, 1),
+                        full(4));
+        var posed = animation.pose(appearance, 0).billboards().getFirst();
+        assertEquals(MeshAppearance.CardKind.CYLINDRICAL_Z, posed.kind());
+        assertEquals(new MeshAppearance.Vec3(1, 0, 4), round(posed.modelPivot()));
+    }
+
     private static MeshAppearance.Vec3 round(MeshAppearance.Vec3 v) {
         return new MeshAppearance.Vec3(
                 Math.round(v.x() * 1e4f) / 1e4f,

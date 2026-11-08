@@ -112,7 +112,7 @@ public final class GpuModelScene {
                     vertices[target + 8] = pivot.x();
                     vertices[target + 9] = pivot.y();
                     vertices[target + 10] = pivot.z();
-                    vertices[target + 11] = 1;
+                    vertices[target + 11] = appearance.billboards().get(group).kind().code();
                 }
             }
         }

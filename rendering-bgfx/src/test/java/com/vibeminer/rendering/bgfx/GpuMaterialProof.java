@@ -72,6 +72,7 @@ public final class GpuMaterialProof {
             proof.checkAdditiveDepthAndOrder();
             proof.checkRichOrdinalFirstWins();
             proof.checkRigidCardCameraAndDiagnostics(directory);
+            proof.checkCylindricalCards(directory);
             var caps = bgfx_get_caps();
             GpuViewerMain.requireHardware(
                     Short.toUnsignedInt(caps.vendorId()), Short.toUnsignedInt(caps.deviceId()));
@@ -88,7 +89,8 @@ public final class GpuMaterialProof {
                             + " \"reverse-winding\", \"alpha-127-128-depth\", \"opaque-alpha-zero\","
                             + " \"equal-depth-first-wins\", \"part-id-ordinal\", \"empty-sentinel\", \"independent-wrap-clamp\","
                             + " \"maximum-index-65535\", \"rich-unlit-NA\", \"vertex-ENV-oracle\","
-                            + " \"additive-alpha-depth-order\", \"rigid-camera-card\", \"rich-neutral-diagnostic\"]\n}\n";
+                            + " \"additive-alpha-depth-order\", \"rigid-camera-card\", \"rich-neutral-diagnostic\","
+                            + " \"cylindrical-card-z\", \"cylindrical-card-y\"]\n}\n";
             Files.writeString(directory.resolve("gpu-material-proof.json"), report);
             System.out.println("GPU material proof passed: " + proof.frames + " authored frames");
         }
@@ -565,6 +567,86 @@ public final class GpuMaterialProof {
             writeImage(directory.resolve("gpu-rich-billboard-neutral.png"), neutral);
         }
 
+        /**
+         * Cylindrical cards keep one model axis fixed. About Z: level views draw exactly the
+         * spherical card at every yaw, and a view from above foreshortens its height (its width
+         * changes only with perspective, its edges lying at different depths). About Y: level views
+         * foreshorten its width as the yaw turns while its height changes only with perspective.
+         */
+        private void checkCylindricalCards(Path directory) throws IOException {
+            var spherical = rigidCard(.002f);
+            var aboutZ = rigidCard(.002f, MeshAppearance.CardKind.CYLINDRICAL_Z);
+            var aboutY = rigidCard(.002f, MeshAppearance.CardKind.CYLINDRICAL_Y);
+            for (double yaw : new double[] {0, .7, -1.1}) {
+                var level = new StaticMeshRenderer.View(yaw, 0, 1, false, Set.of());
+                require(
+                        java.util.Arrays.equals(
+                                render(spherical.mesh(), spherical, level, true),
+                                render(aboutZ.mesh(), aboutZ, level, true)),
+                        "A card about Z draws as the spherical card from a level eye, yaw " + yaw);
+            }
+            var above = new StaticMeshRenderer.View(.3, .9, 1, false, Set.of());
+            int[] sphericalAbove = render(spherical.mesh(), spherical, above, true);
+            int[] zAbove = render(aboutZ.mesh(), aboutZ, above, true);
+            int[] s = box(sphericalAbove), z = box(zAbove);
+            require(
+                    z[1] > 0 && z[1] < s[1] * .85 && z[0] >= s[0] * .9 && z[0] <= s[0] * 1.25,
+                    "From above, a card about Z keeps about its width and loses height: spherical "
+                            + s[0]
+                            + "x"
+                            + s[1]
+                            + ", about Z "
+                            + z[0]
+                            + "x"
+                            + z[1]);
+            int minWidth = Integer.MAX_VALUE,
+                    maxWidth = 0,
+                    minHeight = Integer.MAX_VALUE,
+                    maxHeight = 0;
+            int[] yImage = null;
+            for (double yaw : new double[] {0, .5, 1, 1.3}) {
+                yImage =
+                        render(
+                                aboutY.mesh(),
+                                aboutY,
+                                new StaticMeshRenderer.View(yaw, 0, 1, false, Set.of()),
+                                true);
+                int[] b = box(yImage);
+                minWidth = Math.min(minWidth, b[0]);
+                maxWidth = Math.max(maxWidth, b[0]);
+                minHeight = Math.min(minHeight, b[1]);
+                maxHeight = Math.max(maxHeight, b[1]);
+            }
+            require(
+                    minWidth > 0 && minWidth < maxWidth * .5 && maxHeight <= minHeight * 1.15,
+                    "Level views keep a card about Y at its height and turn its width: widths "
+                            + minWidth
+                            + ".."
+                            + maxWidth
+                            + ", heights "
+                            + minHeight
+                            + ".."
+                            + maxHeight);
+            writeImage(directory.resolve("gpu-cylindrical-z-above.png"), zAbove);
+            writeImage(directory.resolve("gpu-cylindrical-y.png"), yImage);
+        }
+
+        /** Width and height of the drawn (non-clear) pixels' bounding box; 0 when none. */
+        private static int[] box(int[] image) {
+            int minX = WIDTH, maxX = -1, minY = HEIGHT, maxY = -1;
+            for (int y = 0; y < HEIGHT; y++) {
+                for (int x = 0; x < WIDTH; x++) {
+                    if (image[y * WIDTH + x] != CLEAR) {
+                        minX = Math.min(minX, x);
+                        maxX = Math.max(maxX, x);
+                        minY = Math.min(minY, y);
+                        maxY = Math.max(maxY, y);
+                    }
+                }
+            }
+            return maxX < 0 ? new int[] {0, 0} : new int[] {maxX - minX + 1, maxY - minY + 1};
+        }
+
         @Override
         public void close() {
             if (initialized) {
@@ -661,6 +743,10 @@ public final class GpuMaterialProof {
     }
 
     private static MeshAppearance rigidCard(float offsetX) {
+        return rigidCard(offsetX, MeshAppearance.CardKind.SPHERICAL);
+    }
+
+    private static MeshAppearance rigidCard(float offsetX, MeshAppearance.CardKind kind) {
         var mesh =
                 new PreviewMesh(
                         new float[] {
@@ -693,7 +779,10 @@ public final class GpuMaterialProof {
                 List.of(new MeshAppearance.Texture(2, 2, QUADRANTS)),
                 List.of(
                         new MeshAppearance.RigidBillboard(
-                                36, new MeshAppearance.Vec3(1, 2, 3), new int[] {0, 1, 2, 3})));
+                                36,
+                                new MeshAppearance.Vec3(1, 2, 3),
+                                new int[] {0, 1, 2, 3},
+                                kind)));
     }
 
     private static void assertPixel(

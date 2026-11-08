@@ -13,17 +13,19 @@ import java.util.List;
  * Admits one reader-qualified Stand sequence for the compact preview surface.
  *
  * <p>Only bones that influence a preview vertex, and their ancestors, are checked. Those bones may
- * carry no parent-inheritance or cylindrical-billboard flags. A spherical billboard bone (flags
- * exactly 0x8 within the inspected bits) is admitted as a childless leaf without rotation keys
- * whose vertices are rigidly bound to it: its card follows its evaluated pivot, which its own
- * translation keys move, and its own scale keys size the card. The camera orients the card. Flags
- * of bones that move no rendered vertex (attachments, effect emitters) do not matter.
+ * carry no parent-inheritance flags. A billboard bone whose inspected bits are exactly one
+ * billboard flag (0x8 spherical, 0x40 cylindrical about Z, 0x20 about Y; not 0x10) is admitted as a
+ * childless leaf without rotation keys whose vertices are rigidly bound to it: its card follows its
+ * evaluated pivot, which its own translation keys move, and its own scale keys size the card. The
+ * camera orients the card. Flags of bones that move no rendered vertex (attachments, effect
+ * emitters) do not matter.
  *
  * <p>Public so Races previews admit their Stand through the same bone-flag profile as Mounts.
  */
 public final class DisplayIdleAnimations {
     public static final String POLICY = "display-idle-stand-local-v1";
     private static final long INHERITANCE = 0x7, SPHERICAL = 0x8, CYLINDRICAL = 0x70;
+    private static final long CYLINDRICAL_Y = 0x20, CYLINDRICAL_Z = 0x40;
 
     private DisplayIdleAnimations() {}
 
@@ -155,7 +157,7 @@ public final class DisplayIdleAnimations {
             long flags = bone.flags() & (INHERITANCE | SPHERICAL | CYLINDRICAL);
             boolean billboard = false;
             if (chain.get(index) && flags != 0 && !billboardTree.get(index)) {
-                if (flags != SPHERICAL) {
+                if (flags != SPHERICAL && flags != CYLINDRICAL_Z && flags != CYLINDRICAL_Y) {
                     throw new Unsupported(
                             "Bone "
                                     + index
