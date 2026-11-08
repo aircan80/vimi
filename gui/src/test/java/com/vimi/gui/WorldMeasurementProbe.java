@@ -511,6 +511,11 @@ public final class WorldMeasurementProbe {
                 } catch (RuntimeException failed) {
                     label = "unreadable: " + failed.getClass().getSimpleName();
                 }
+                // A fading weight's answer at the Stand sample (#384), from the binding's notes.
+                if (label.contains("fading texture weight")) {
+                    var notes = standWeightNotes(preview);
+                    if (!notes.isEmpty()) label += " [" + String.join("; ", notes) + "]";
+                }
                 if (label.startsWith("no blocker"))
                     label = preview.issues().stream().filter(issue -> issue.startsWith("Texture "))
                             .findFirst().map(issue -> "no blocker; " + reasonKind(issue))
@@ -580,6 +585,39 @@ public final class WorldMeasurementProbe {
             }
             if (best == null) return "no layer-0 batch";
             return best.isEmpty() ? "no blocker (geosets or hidden sections)" : String.join(" + ", best);
+        }
+
+        /**
+         * The distinct Stand texture weight notes of one World binding (#384), as reason kinds:
+         * hidden, full or alpha-scaled at the Stand sample, no Stand pose, or undecided. A binding
+         * restored from the store carries no such notes, so a census after a policy change counts
+         * them on its first (cold) run only.
+         */
+        static java.util.TreeSet<String> standWeightNotes(
+                com.vibeminer.concepts.models.DisplayModelTypes.Preview preview) {
+            var notes = new java.util.TreeSet<String>();
+            for (var issue : preview.issues())
+                if (issue.startsWith("Stand texture weight") || issue.startsWith("A fading texture weight"))
+                    notes.add(reasonKind(issue));
+            return notes;
+        }
+
+        /**
+         * Sampled creature displays whose World binding met a fading additive or blended weight, by
+         * the notes {@link #standWeightNotes} lists, split by the World material outcome.
+         */
+        Map<String, Integer> standWeightTally() {
+            var out = new TreeMap<String, Integer>();
+            for (var entry : material.entrySet()) {
+                var preview = previews.get(entry.getKey());
+                var f = facts.get(entry.getKey());
+                if (preview == null || f == null || !f.creature()) continue;
+                var notes = standWeightNotes(preview);
+                if (notes.isEmpty()) continue;
+                out.merge((entry.getValue().equals("drawn") ? "drawn: " : "not drawn: ")
+                        + String.join("; ", notes), 1, Integer::sum);
+            }
+            return out;
         }
 
         /** Distinct creature displays (no extended display info) per World material outcome. */
@@ -853,6 +891,9 @@ public final class WorldMeasurementProbe {
             say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
         say("PROBE displays: World material refusals by the fewest blockers of any layer-0 batch");
         for (var entry : display.refusalBlockers(opened.files()).entrySet())
+            say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+        say("PROBE displays: models with a fading additive or blended weight, by its Stand-sample notes");
+        for (var entry : display.standWeightTally().entrySet())
             say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
         say("PROBE displays: drawn static models by sorted surfaces (blend 2 blended, blend 4 additive)");
         for (var entry : display.sortedKinds(Cancellation.NONE).entrySet())
