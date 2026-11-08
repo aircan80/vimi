@@ -37,7 +37,8 @@ import javax.management.openmbean.CompositeData;
  * WorldStreamSourceController}, GPU helper and JavaFX presentation over fixed tile
  * neighbourhoods; {@code prep} times the real source path alone (terrain prepareAndWrite and
  * exterior preparation per tile, no helper or FX); {@code refusals} counts terrain texture
- * refusals over whole maps; {@code water} counts water outcomes over sampled tiles (#171). All report per-stage timings ({@code -Dvimi.world.stageTimings=true}).
+ * refusals over whole maps; {@code water} counts water outcomes over sampled tiles (#171). All
+ * report per-stage timings ({@code -Dvimi.world.stageTimings=true}).
  *
  * <p>What it touches: see {@link WorldMeasurementOpen} and docs/world-measurement-baseline.md. It
  * runs only on a copy of the library ({@code -PdataDirectory}), never prepares anything, and
@@ -1085,6 +1086,11 @@ public final class WorldMeasurementProbe {
 
     // ---- Water outcomes over whole maps (#171) ----------------------------------------------
 
+    /** An issue's kind: its text with every number replaced by {@code #}, so counts group it. */
+    static String issueKind(String issue) {
+        return issue.replaceAll("\\d+", "#").strip();
+    }
+
     /**
      * Prepares every {@code probe.stride}-th recorded tile of each map (default every 4th) through
      * the production terrain and water preparation, without a helper, and counts the water facts:
@@ -1111,11 +1117,11 @@ public final class WorldMeasurementProbe {
             var states = new TreeMap<String, Integer>();
             var issues = new TreeMap<String, Integer>();
             long declared = 0, admitted = 0, unresolved = 0, cells = 0;
-            int tiles = 0, sampled = 0;
+            // The tiles this map's stride selects; fewer done means the budget ran out.
+            int tiles = 0, sampled = (all.size() + stride - 1) / stride;
             long began = System.nanoTime();
             long budget = TimeUnit.SECONDS.toNanos(Long.getLong("probe.mapSeconds", 240));
             for (int at = 0; at < all.size(); at += stride) {
-                sampled++;
                 if (System.nanoTime() - began > budget || !beforeDeadline()) break;
                 String key;
                 try (var written =
@@ -1131,7 +1137,7 @@ public final class WorldMeasurementProbe {
                         cells += facts.cells();
                         for (String issue : facts.issues()) {
                             // Kinds only: the text before any number.
-                            issues.merge(issue.replaceAll("[-0-9.,]+.*", "").strip(), 1, Integer::sum);
+                            issues.merge(issueKind(issue), 1, Integer::sum);
                         }
                     } catch (RuntimeException refused) {
                         key = "refused/" + refused.getClass().getSimpleName();

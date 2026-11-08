@@ -21,9 +21,25 @@ public final class WorldMeasurementTest {
         npcAnswersAreClassifiedByOutcome();
         npcAnswersNameAppearanceResults();
         choiceReasonsCountOnlyUnqualifiedNpcs();
+        waterIssueKindsKeepTheirTextAndGroupByNumber();
         System.out.println(
                 "World measurement: helper options, GC log pauses, the measurement World, NPC"
-                        + " outcomes and choice reasons passed");
+                        + " outcomes, choice reasons and water issue kinds passed");
+    }
+
+    private static void waterIssueKindsKeepTheirTextAndGroupByNumber() {
+        check(
+                WorldMeasurementProbe.issueKind("3 malformed liquid instance(s) were left out")
+                        .equals("# malformed liquid instance(s) were left out"),
+                "malformed kind");
+        check(
+                WorldMeasurementProbe.issueKind("12 layer(s) without vertex heights at 0.5")
+                        .equals(WorldMeasurementProbe.issueKind("7 layer(s) without vertex heights at 2.25")),
+                "counts and levels group into one kind");
+        check(
+                WorldMeasurementProbe.issueKind("LiquidType 2 resolves to depth-only")
+                        .equals("LiquidType # resolves to depth-only"),
+                "text after a number is kept");
     }
 
     private static void check(boolean value, String message) {
