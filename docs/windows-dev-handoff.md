@@ -53,7 +53,8 @@ was published on 2026-11-05 from the #242 merge (`37dd876`); it predates #243–
 which ship in alpha.28. Nothing remains in flight on Linux.
 
 Packaging follow-ups from the #238 review (low priority):
-- On macOS, `--image-only` skips `codesign --verify`.
+- Done in #568: `--image-only` now runs the same image checks as full packaging,
+  including `codesign --verify` of the bundle and every bundled native on macOS.
 
 ## Windows issues to work on
 
