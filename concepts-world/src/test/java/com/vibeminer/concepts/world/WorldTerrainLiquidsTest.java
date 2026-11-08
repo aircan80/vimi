@@ -442,7 +442,9 @@ class WorldTerrainLiquidsTest {
                             return null;
                         });
             }
-            assertEquals(0, f.liquidCaptures);
+            // Only the direct format 1 layer looks up its own LiquidType row (once, then once
+            // more to revalidate it); direct water layers need no table.
+            assertEquals(2, f.liquidCaptures);
         }
     }
 
@@ -1499,6 +1501,22 @@ class WorldTerrainLiquidsTest {
                             liquids(2, 0, 1, false), 3072 + 2 * 24 + 2 * 8 + 405 + 81 * 8);
             ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN).putShort(3072 + 24 + 2, (short) 1);
             f.payload(p);
+            try (var tile = f.inspect()) {
+                // Its own LiquidType row (1250) is observed for it, so it is drawn in that
+                // row's colour (the fixture's 0) beside the water.
+                assertEquals(WorldTerrainLiquids.State.READY, tile.summary().state());
+                assertEquals(2, tile.summary().admitted());
+                tile.withBorrow(
+                        v -> {
+                            assertEquals(-1, v.colour(0));
+                            assertEquals(0, v.colour(1));
+                            return null;
+                        });
+            }
+            // A direct magma layer whose LiquidType row is absent stays undrawn, alone.
+            byte[] absent = p.clone();
+            ByteBuffer.wrap(absent).order(ByteOrder.LITTLE_ENDIAN).putShort(3072 + 24, (short) 999);
+            f.payload(absent);
             try (var tile = f.inspect()) {
                 assertEquals(WorldTerrainLiquids.State.PARTIAL, tile.summary().state());
                 assertEquals(1, tile.summary().admitted());

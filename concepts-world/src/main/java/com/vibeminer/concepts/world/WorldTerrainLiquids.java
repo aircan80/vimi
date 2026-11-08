@@ -704,6 +704,7 @@ final class WorldTerrainLiquids {
             }
         }
         WorldLiquidTables.Observed types = null, materials = null, failedContext = null;
+        WorldLiquidTables.Observed directTypes = null;
         var oceanProof = new WorldLiquidTables.Observed[2];
         try {
             if (!selected.isEmpty()) {
@@ -713,6 +714,26 @@ final class WorldTerrainLiquids {
                     ids.add((long) types.value(id));
                 }
                 materials = tables.observe(WorldLiquidTables.Profile.MATERIAL, ids, token);
+            }
+            // A direct format 1 or 3 layer (secondary below 42) is coloured by its own LiquidType
+            // row, looked up apart so a missing row leaves only that layer undrawn, never the
+            // tile's water.
+            var direct = new java.util.HashSet<Long>();
+            for (var l : raw.layers()) {
+                long type = l.liquidType();
+                if ((l.secondary() == 1 || l.secondary() == 3)
+                        && (types == null || !types.ids().contains(type))) {
+                    direct.add(type);
+                }
+            }
+            if (!direct.isEmpty()) {
+                try {
+                    directTypes = tables.observe(WorldLiquidTables.Profile.TYPE, direct, token);
+                } catch (WorldLiquidTables.Unavailable missing) {
+                    if (missing.reason == WorldLiquidTables.Reason.SOURCE_CHANGED) {
+                        throw new Changed();
+                    }
+                }
             }
             // Each layer's vertex format follows the established extractor convention: a secondary
             // value below 42 is the format itself; LiquidType 2 with a LiquidObject is depth-only
@@ -735,13 +756,17 @@ final class WorldTerrainLiquids {
                                                 ? materials.value(types.value(l.liquidType()))
                                                 : -1;
                 formats[l.ordinal()] = format;
-                boolean coloured =
-                        (format == 1 || format == 3)
-                                && types != null
-                                && types.ids().contains((long) l.liquidType());
+                var rows =
+                        types != null && types.ids().contains((long) l.liquidType())
+                                ? types
+                                : directTypes != null
+                                                && directTypes.ids().contains((long) l.liquidType())
+                                        ? directTypes
+                                        : null;
+                boolean coloured = (format == 1 || format == 3) && rows != null;
                 supported[l.ordinal()] = format == 0 || format == 2 || coloured;
                 colours[l.ordinal()] =
-                        coloured ? types.minimapColour(l.liquidType()) & 0xFFFFFF : -1;
+                        coloured ? rows.minimapColour(l.liquidType()) & 0xFFFFFF : -1;
                 // Every known format's stream length is checked for overlaps, drawn or not, so an
                 // undrawn instance never hides the tile.
                 if (stride(format) == 0 && l.vertexOffset() != 0) {
@@ -791,7 +816,7 @@ final class WorldTerrainLiquids {
         // Even known-negative selected-row observations must stay tied to unchanged source.
         for (var proof :
                 new WorldLiquidTables.Observed[] {
-                    types, materials, failedContext, oceanProof[0], oceanProof[1]
+                    types, materials, directTypes, failedContext, oceanProof[0], oceanProof[1]
                 }) {
             if (proof == null) {
                 continue;
