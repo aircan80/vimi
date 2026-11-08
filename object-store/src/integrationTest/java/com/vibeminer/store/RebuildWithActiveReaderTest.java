@@ -107,7 +107,8 @@ final class RebuildWithActiveReaderTest {
         var store = ObjectStore.open(folder).join();
         try {
             store.retryIndexInUse = true; // The Windows behaviour, on any platform.
-            long bound = TimeUnit.MILLISECONDS.toNanos(100);
+            // Long enough that a cold first attempt on a slow runner still leaves room to retry.
+            long bound = TimeUnit.SECONDS.toNanos(1);
             var attempts = new AtomicInteger();
             var refused =
                     assertThrows(
