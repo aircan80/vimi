@@ -156,7 +156,21 @@ public final class M2IdleAnimation {
             AssetSource source, M2Types.Model model, Cancellation token) {
         Objects.requireNonNull(model);
         Objects.requireNonNull(token);
-        return AssetTasks.run(() -> readCore(source, model, token, true));
+        return AssetTasks.run(() -> readCore(source, model, token, true, true));
+    }
+
+    /**
+     * As {@link #read}, but plays the base rig's Stand when the model names bone files (BFID). Bone
+     * files are character customization options: the client applies one only through a
+     * customization choice ({@code ChrCustomizationElement} to {@code ChrCustomizationBoneSet}), so
+     * an appearance without a choice, such as a creature display, plays the rig without them.
+     * External skeletons are still refused.
+     */
+    public static CompletableFuture<Idle> readBaseRig(
+            AssetSource source, M2Types.Model model, Cancellation token) {
+        Objects.requireNonNull(model);
+        Objects.requireNonNull(token);
+        return AssetTasks.run(() -> readCore(source, model, token, true, false));
     }
 
     /**
@@ -185,7 +199,7 @@ public final class M2IdleAnimation {
         return AssetTasks.run(
                 () -> {
                     try {
-                        var idle = readCore(source, model, token, false);
+                        var idle = readCore(source, model, token, false, false);
                         int animated =
                                 (int) idle.bones().stream().filter(BoneTracks::animated).count();
                         return new StandFacts(
@@ -205,18 +219,28 @@ public final class M2IdleAnimation {
     }
 
     private static Idle readCore(
-            AssetSource source, M2Types.Model model, Cancellation token, boolean localBonesOnly) {
+            AssetSource source,
+            M2Types.Model model,
+            Cancellation token,
+            boolean refuseSkeleton,
+            boolean refuseBoneFiles) {
         token.check();
         if (!model.isChunked() || model.version() != 272 && model.version() != 274) {
             throw error("UNSUPPORTED", "Idle animation requires a chunked 272/274 model.");
         }
-        if (localBonesOnly
-                && (model.skeletonFileDataId() != 0
-                        || model.boneFileDataIds().stream().anyMatch(id -> id != 0))) {
+        boolean skeleton = model.skeletonFileDataId() != 0;
+        boolean boneFiles = model.boneFileDataIds().stream().anyMatch(id -> id != 0);
+        if (refuseBoneFiles && (skeleton || boneFiles)) {
             throw error(
                     "UNSUPPORTED",
                     "The model uses an external skeleton or bone file; idle evaluation reads"
                             + " only bones stored in the model.");
+        }
+        if (refuseSkeleton && skeleton) {
+            throw error(
+                    "UNSUPPORTED",
+                    "The model uses an external skeleton; idle evaluation reads only bones stored"
+                            + " in the model.");
         }
         if (model.bones().isEmpty()) {
             throw error("UNSUPPORTED", "The model has no bones to animate.");

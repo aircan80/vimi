@@ -186,7 +186,18 @@ public final class DisplayModelService implements BuildDisplayModels {
                     return idleFailed(reference, "Model source is incomplete");
                 }
                 try {
-                    idle = M2IdleAnimation.read(AssetSources.file(stream), m, token).join();
+                    // A creature display (no extended display info) has no customization choice,
+                    // so no bone file applies and the base rig's Stand plays (#384).
+                    idle =
+                            routeStand(
+                                            reference,
+                                            () ->
+                                                    M2IdleAnimation.readBaseRig(
+                                                            AssetSources.file(stream), m, token),
+                                            () ->
+                                                    M2IdleAnimation.read(
+                                                            AssetSources.file(stream), m, token))
+                                    .join();
                 } catch (RuntimeException failure) {
                     token.check();
                     var cause = AssetTasks.unwrap(failure);
@@ -235,6 +246,22 @@ public final class DisplayModelService implements BuildDisplayModels {
             token.check();
             return idleFailed(reference, unavailable.getMessage());
         }
+    }
+
+    /**
+     * Runs {@code baseRig} for a creature display and {@code gated} (bone files refused) for any
+     * other display, including one whose extended display info is unread.
+     */
+    static <T> T routeStand(
+            DisplayModelTypes.Reference reference,
+            java.util.function.Supplier<T> baseRig,
+            java.util.function.Supplier<T> gated) {
+        return creatureDisplay(reference) ? baseRig.get() : gated.get();
+    }
+
+    /** A display without extended (character) appearance: no customization choice applies. */
+    static boolean creatureDisplay(DisplayModelTypes.Reference reference) {
+        return reference.extendedDisplayInfoId() != null && reference.extendedDisplayInfoId() == 0;
     }
 
     private static DisplayModelTypes.Idle idleFailed(

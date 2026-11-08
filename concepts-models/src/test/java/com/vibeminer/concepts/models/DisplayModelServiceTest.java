@@ -167,6 +167,32 @@ class DisplayModelServiceTest {
     }
 
     @Test
+    void onlyCreatureDisplaysPlayTheBaseRigWithoutBoneFiles() {
+        // No extended display info: no customization choice, so no bone file applies.
+        assertTrue(
+                DisplayModelService.creatureDisplay(
+                        new DisplayModelTypes.Reference(1, 2, 3, List.of(), 0L, 0L)));
+        // A character display, or one whose extended info is unread, keeps the bone-file gate.
+        assertFalse(
+                DisplayModelService.creatureDisplay(
+                        new DisplayModelTypes.Reference(1, 2, 3, List.of(), 7L, 0L)));
+        assertFalse(
+                DisplayModelService.creatureDisplay(
+                        new DisplayModelTypes.Reference(1, 2, 3, List.of(), null, 0L)));
+        // The Stand read is routed the same way: ID 0 to the base rig, 7 and null to the gate.
+        assertEquals("base rig", route(0L));
+        assertEquals("gated", route(7L));
+        assertEquals("gated", route(null));
+    }
+
+    private static String route(Long extendedDisplayInfoId) {
+        return DisplayModelService.routeStand(
+                new DisplayModelTypes.Reference(1, 2, 3, List.of(), extendedDisplayInfoId, 0L),
+                () -> "base rig",
+                () -> "gated");
+    }
+
+    @Test
     void replacementTexturesUseDisplayVariationsWhileTypeZeroUsesExactTxid() {
         var variations = List.of(100L, 200L, 300L, 400L);
         assertEquals(

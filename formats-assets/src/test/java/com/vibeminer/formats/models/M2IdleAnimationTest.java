@@ -618,13 +618,80 @@ class M2IdleAnimationTest {
         byte[] bytes = withBoneFiles(authored(version, a -> {}), 1001, 1002);
         var model = M2ModelReader.read(AssetSource.bytes(bytes)).join();
         assertEquals(java.util.List.of(1001L, 1002L), model.boneFileDataIds());
-        M2ReadersTest.failure("MODEL_UNSUPPORTED", () -> read(bytes));
+        var error =
+                assertInstanceOf(
+                        ModelFormatException.class,
+                        AssetTasks.unwrap(assertThrows(RuntimeException.class, () -> read(bytes))));
+        assertEquals("MODEL_UNSUPPORTED", error.code());
+        assertEquals(
+                "The model uses an external skeleton or bone file; idle evaluation reads only"
+                        + " bones stored in the model.",
+                error.getMessage());
         var facts = facts(bytes);
         assertNull(facts.refusal());
         assertEquals(1, facts.sequenceIndex());
         assertEquals(1000, facts.durationMillis());
         assertEquals(5, facts.keyCount());
         assertEquals(2, facts.animatedBones());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void baseRigReadsTheStandOfModelsWithBoneFiles(int version) {
+        byte[] bytes = withBoneFiles(authored(version, a -> {}), 1001, 1002);
+        var model = M2ModelReader.read(AssetSource.bytes(bytes)).join();
+        var idle =
+                M2IdleAnimation.readBaseRig(AssetSource.bytes(bytes), model, Cancellation.NONE)
+                        .join();
+        // The same Stand as the model without bone files.
+        var plain = read(authored(version, a -> {}));
+        assertEquals(plain.sequenceIndex(), idle.sequenceIndex());
+        assertEquals(plain.durationMillis(), idle.durationMillis());
+        assertEquals(plain.keyCount(), idle.keyCount());
+        assertArrayEquals(
+                plain.bones().get(0).translation().values(),
+                idle.bones().get(0).translation().values());
+        // The base rig still applies every other check.
+        byte[] curve =
+                withBoneFiles(
+                        authored(version, a -> a.buffer.putShort(a.track(0, 16), (short) 2)), 1001);
+        var curveModel = M2ModelReader.read(AssetSource.bytes(curve)).join();
+        M2ReadersTest.failure(
+                "MODEL_UNSUPPORTED",
+                () ->
+                        M2IdleAnimation.readBaseRig(
+                                        AssetSource.bytes(curve), curveModel, Cancellation.NONE)
+                                .join());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void baseRigStillRefusesExternalSkeletons(int version) {
+        byte[] bytes = authored(version, a -> {});
+        byte[] extended = java.util.Arrays.copyOf(bytes, bytes.length + 12);
+        var buffer = ByteBuffer.wrap(extended).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.put(bytes.length, "SKID".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        buffer.putInt(bytes.length + 4, 4);
+        buffer.putInt(bytes.length + 8, 123456);
+        for (byte[] source : new byte[][] {extended, withBoneFiles(extended, 1001)}) {
+            var model = M2ModelReader.read(AssetSource.bytes(source)).join();
+            var error =
+                    AssetTasks.unwrap(
+                            assertThrows(
+                                    RuntimeException.class,
+                                    () ->
+                                            M2IdleAnimation.readBaseRig(
+                                                            AssetSource.bytes(source),
+                                                            model,
+                                                            Cancellation.NONE)
+                                                    .join()));
+            var format = assertInstanceOf(ModelFormatException.class, error);
+            assertEquals("MODEL_UNSUPPORTED", format.code());
+            assertEquals(
+                    "The model uses an external skeleton; idle evaluation reads only bones stored"
+                            + " in the model.",
+                    format.getMessage());
+        }
     }
 
     @ParameterizedTest
