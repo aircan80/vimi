@@ -217,7 +217,7 @@ public final class WorldNavigationUiTest {
             controls(view);
             streamingSizeIsDebouncedPerPulse(view);
             viewportTakesThePage(view);
-            fullscreenAndPanels(view);
+            fullscreenAndHud(view);
             invoke(view,"requestFrame");
             await(fixture,() -> !view.lookup("#world-minimap-activity").isVisible(),() -> {
                 int before = fixture.minimapCalls.get();
@@ -237,7 +237,7 @@ public final class WorldNavigationUiTest {
             });
     }
 
-    /** F11 / Alt+Enter move the viewport to its own stage and back; Alt+Z hides the panels. */
+    /** Fires a key press on the target, with or without Alt. */
     private static void press(Node target, KeyCode code, boolean alt) {
         Event.fireEvent(target, new KeyEvent(KeyEvent.KEY_PRESSED, "", "", code, false, false, alt, false));
     }
@@ -246,8 +246,8 @@ public final class WorldNavigationUiTest {
         Event.fireEvent(target, new KeyEvent(KeyEvent.KEY_RELEASED, "", "", code, false, false, false, false));
     }
 
-    /** F11 / Alt+Enter move the viewport to its own stage and back; Alt+Z hides the panels. */
-    private static void fullscreenAndPanels(WorldView view) {
+    /** F11 / Alt+Enter move the viewport to its own stage and back; Alt+Z hides the HUD. */
+    private static void fullscreenAndHud(WorldView view) {
         var viewport=(javafx.scene.layout.Region)view.lookup("#world-viewport");
         var full=(WorldFullscreen)get(view,"fullscreen");
         full.windowed(true);

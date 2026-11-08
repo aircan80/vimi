@@ -201,21 +201,35 @@ final class BlteChunksTest {
 
     @Test
     void inflaterIsResetAndReusedAfterAFailure() throws Exception {
-        var inflater = BlteChunks.borrowInflater();
+        // A test-local pool: the shared pool's FIFO contents depend on which tests ran before.
+        var pool = new BlteChunks.InflaterPool(2);
+        var inflater = pool.borrow();
         inflater.setInput(new byte[] {0x78, (byte) 0x9c, (byte) 0xff, (byte) 0xff});
         assertThrows(java.util.zip.DataFormatException.class, () -> inflater.inflate(new byte[8]));
-        BlteChunks.releaseInflater(inflater);
-        var reused = BlteChunks.borrowInflater();
+        pool.release(inflater);
+        var reused = pool.borrow();
         try {
             assertSame(inflater, reused);
             assertEquals(0, reused.getRemaining());
             assertEquals(0L, reused.getBytesRead());
         } finally {
-            BlteChunks.releaseInflater(reused);
+            reused.end();
         }
         byte[] data = {9, 8, 7, 6};
         var e = FileFixtures.chunked(List.of(FileFixtures.zlib(data)));
         assertArrayEquals(data, decode(e, layout(e, 4), 0, TactKeys.NONE).bytes());
+    }
+
+    @Test
+    void inflaterPoolEndsInflatersPastItsBound() {
+        var pool = new BlteChunks.InflaterPool(1);
+        var kept = pool.borrow();
+        var extra = pool.borrow();
+        pool.release(kept);
+        pool.release(extra);
+        assertThrows(RuntimeException.class, () -> extra.inflate(new byte[1]));
+        assertSame(kept, pool.borrow());
+        kept.end();
     }
 
     @Test
