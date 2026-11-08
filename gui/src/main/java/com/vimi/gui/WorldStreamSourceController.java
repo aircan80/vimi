@@ -1858,39 +1858,14 @@ final class WorldStreamSourceController {
         areaScans.incrementAndGet();
         updateGround();
         if (latest == null) return;
-        long[] selected = {0};
-        int[] count = {0};
-        for (var entry : current)
-            entry.source()
-                    .withPayload(
-                            borrow -> {
-                                for (var chunk : borrow.areas().chunks()) {
-                                    float minX =
-                                            (float) (chunk.originX() - WorldFormats.TILE_SIZE / 16);
-                                    float minY =
-                                            (float) (chunk.originY() - WorldFormats.TILE_SIZE / 16);
-                                    if (latest.view().x() > minX
-                                            && latest.view().x() <= chunk.originX()
-                                            && latest.view().y() > minY
-                                            && latest.view().y() <= chunk.originY()) {
-                                        selected[0] = chunk.areaId();
-                                        count[0]++;
-                                    }
-                                }
-                            });
+        // The same chunk rule as a click's areaAt, over the metadata updateGround just retained.
         var result =
-                count[0] == 1
-                        ? WorldCurrentArea.resolve(
-                                request.map().id(), selected[0], request.areaIndex())
-                        : new WorldCurrentArea.Result(
-                                count[0] > 1
-                                        ? WorldCurrentArea.State.AMBIGUOUS
-                                        : WorldCurrentArea.State.UNAVAILABLE,
-                                count[0] > 1
-                                        ? WorldCurrentArea.Reason.OVERLAP
-                                        : WorldCurrentArea.Reason.NO_COVERAGE,
-                                0,
-                                List.of());
+                WorldCurrentArea.locateIn(
+                        request.map().id(),
+                        latest.view().x(),
+                        latest.view().y(),
+                        areas,
+                        request.areaIndex());
         synchronized (lock) {
             snapshot =
                     new Snapshot(
