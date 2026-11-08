@@ -96,6 +96,8 @@ mkdir ../.realdata-lock && {    # shared real-data lock, next to the worktrees
   ./gradlew :gui:worldMeasurementProbe --max-workers=2 "-PsqliteLibrary=<sqlite3.dll>" \
       -PdataDirectory=<copy> -Pprobe.scenarios=elwynn:0:49:31,stormwind:0:48:30   # about 4 min
   ./gradlew :gui:worldMeasurementProbe --max-workers=2 "-PsqliteLibrary=<sqlite3.dll>" \
+      -PdataDirectory=<copy> -Pprobe.scenarios=elwynn:0:49:31 -Pvimi.world.viewDistance=far  # 5x5
+  ./gradlew :gui:worldMeasurementProbe --max-workers=2 "-PsqliteLibrary=<sqlite3.dll>" \
       -PdataDirectory=<copy> -Pprobe.mode=prep                                     # about 3 min
   ./gradlew :gui:worldMeasurementProbe --max-workers=2 "-PsqliteLibrary=<sqlite3.dll>" \
       -PdataDirectory=<copy> -Pprobe.mode=refusals -Pprobe.maps=0,1
@@ -411,6 +413,40 @@ Accepting the extra MCSH/MCMT sub-chunks raises textured terrain from ~60% to ~9
 that residual is tracked in #398. The alpha-sum and MCCV-alpha refusals the review suspected do
 not occur on these maps.
 
+### 8. View distance: 3x3 against 5x5 (#173)
+
+Measured 2026-11-07 on 1.60.1.70862, Linux, Vulkan, 32 hardware threads; STANDARD object
+textures, creatures off; one run per cell. NEAR is the default; FAR is
+`-Pvimi.world.viewDistance=far`. GPU memory and render times are p50 over the whole helper
+session, rotate and fly figures are from those phases.
+
+| | Elwynn NEAR | Elwynn FAR | Stormwind NEAR | Stormwind FAR |
+| --- | ---: | ---: | ---: | ---: |
+| Tiles resident at READY | 9/9 | 25/25 | 9/9 | 25/25 |
+| First accepted frame | 1.07 s | 1.00 s | 0.94 s | 0.96 s |
+| All terrain tiles resident | 3.02 s | 6.52 s | 3.02 s | 6.27 s |
+| Objects settled (deliveries) | 14.8 s (18) | 35.4 s (50) | 12.5 s (18) | 27.3 s (45) |
+| `child.gpu.memoryUsedMiB` | 182 | 336 | 180 | 303 |
+| `child.gpu.textureMemoryMiB` | 53 | 128 | 47 | 102 |
+| `child.frame.bgfxCpuRender` p50 / p95 | 0.40 / 0.69 ms | 0.50 / 0.86 ms | 0.23 / 0.51 ms | 0.30 / 0.80 ms |
+| `child.frame.draws` p50 | 383 | 456 | 198 | 211 |
+| Rotate `fx.frame.acceptInterval` p50 / p95 | 16.8 / 30.4 ms | 17.4 / 30.3 ms | 16.7 / 18.0 ms | 16.7 / 18.0 ms |
+| Rotate `fx.frame.cameraToAccepted` p50 / p95 | 31.1 / 47.9 ms | 40.1 / 50.8 ms | 18.0 / 25.4 ms | 19.2 / 26.6 ms |
+| Fly `fx.frame.acceptInterval` p50 / p95 / max | 16.5 / 31.2 / 94 ms | 18.3 / 21.3 / 76 ms | 16.8 / 17.9 / 30 ms | 16.8 / 18.4 / 118 ms |
+| Fly: one tile, then READY again | 0.25 s | 0.25 s | 0.25 s | 0.25 s |
+
+Every run also has one ~3 s accept gap right after the stationary phase, as in section 5.
+
+**Reading:**
+- 5x5 fills: all 25 tiles are resident in about 6.5 s, about 0.22 s per extra tile after the
+  3x3's 3.0 s. Objects take 2.2 to 2.4 times as long, in line with 2.5 to 2.8 times the
+  deliveries. No objects set was refused for budget.
+- Frame cadence holds: accept intervals are unchanged, the helper's render CPU grows by about
+  0.1 ms, and camera-to-pixel latency grows by 1 to 9 ms p50.
+- GPU memory grows by 123 to 154 MiB. About 76 MiB is the fixed terrain bound
+  (`ViewDistance.terrainGpuBytes`, #606: 153.6 MiB FAR against 77.8 MiB NEAR); the rest is the extra
+  object sets, inside the 192 MiB STANDARD objects budget.
+
 ## What this means for Phase 2
 
 0. **Terrain texture LAYER_SHAPE** brings textured chunks from ~60% to ~96%. Fixed by #397;
@@ -442,8 +478,7 @@ not occur on these maps.
 - **Presentation and refresh:** the FX side is the production image presentation without a
   visible window, so compositor and display scanout are not included. Live-app fps and latency
   with a window are for the owner to confirm visually.
-- **5x5 fill:** not run here. #276's macOS WAITING_CAPACITY hypothesis (serial pipeline) is
-  consistent with ~1 s/tile serial terrain plus objects taking the lane, but this doc does not
-  prove it. A follow-up run on the #276 branch with this probe would.
+- **5x5 fill:** measured on 1.60.1.70862 in section 8 (Linux, Vulkan). #276's macOS
+  WAITING_CAPACITY hypothesis is not re-checked there: both runs reached READY with every tile.
 - **Scope:** one build, one machine, one run per scenario. Creatures are off. HIGH object
   textures are not measured.
