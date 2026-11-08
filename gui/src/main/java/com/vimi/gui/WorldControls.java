@@ -22,7 +22,12 @@ import javafx.scene.input.KeyCode;
  * QWERTY W/A/S/D positions report other codes on AZERTY; the layout presets and per-action
  * rebinding cover that.
  */
-record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCode, Action> keys) {
+record WorldControls(
+        double sensitivity,
+        boolean invertY,
+        Speed speed,
+        Map<KeyCode, Action> keys,
+        com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance viewDistance) {
     /** Radians of look per pixel of mouse movement. */
     static final double MIN_SENSITIVITY = .001, MAX_SENSITIVITY = .02, DEFAULT_SENSITIVITY = .006;
 
@@ -205,6 +210,9 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
                         ? Math.clamp(sensitivity, MIN_SENSITIVITY, MAX_SENSITIVITY)
                         : DEFAULT_SENSITIVITY;
         speed = speed == null ? Speed.FLY : speed;
+        // The Display page's view distance (#173): NEAR unless chosen.
+        viewDistance = viewDistance == null
+                ? com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.NEAR : viewDistance;
         var copy = new LinkedHashMap<KeyCode, Action>();
         Objects.requireNonNull(keys)
                 .forEach(
@@ -214,20 +222,30 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         keys = Collections.unmodifiableMap(copy);
     }
 
+    /** Controls at the default view distance (NEAR). */
+    WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCode, Action> keys) {
+        this(sensitivity, invertY, speed, keys, null);
+    }
+
     WorldControls withSensitivity(double next) {
-        return new WorldControls(next, invertY, speed, keys);
+        return new WorldControls(next, invertY, speed, keys, viewDistance);
     }
 
     WorldControls withInvertY(boolean next) {
-        return new WorldControls(sensitivity, next, speed, keys);
+        return new WorldControls(sensitivity, next, speed, keys, viewDistance);
     }
 
     WorldControls withSpeed(Speed next) {
-        return new WorldControls(sensitivity, invertY, next, keys);
+        return new WorldControls(sensitivity, invertY, next, keys, viewDistance);
     }
 
     WorldControls withKeys(Map<KeyCode, Action> next) {
-        return new WorldControls(sensitivity, invertY, speed, next);
+        return new WorldControls(sensitivity, invertY, speed, next, viewDistance);
+    }
+
+    WorldControls withViewDistance(
+            com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance next) {
+        return new WorldControls(sensitivity, invertY, speed, keys, next);
     }
 
     /** Adds {@code code} to {@code action}, taking it from whatever it drove before. */
@@ -302,11 +320,12 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
     String encode() {
         return String.format(
                 Locale.ROOT,
-                "%s;sensitivity=%s;invertY=%b;speed=%s;keys=%s;actions=%s",
+                "%s;sensitivity=%s;invertY=%b;speed=%s;view=%s;keys=%s;actions=%s",
                 VERSION,
                 sensitivity,
                 invertY,
                 speed.name(),
+                viewDistance.name(),
                 keys.entrySet().stream()
                         .map(e -> e.getKey().name() + ":" + e.getValue().name())
                         .collect(Collectors.joining(",")),
@@ -326,6 +345,7 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
         double sensitivity = DEFAULT_SENSITIVITY;
         boolean invertY = false;
         Speed speed = Speed.FLY;
+        var view = com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.NEAR;
         Map<KeyCode, Action> keys = DEFAULTS.keys;
         String storedKeys = null, storedActions = null;
         for (int i = 1; i < parts.length; i++) {
@@ -342,13 +362,16 @@ record WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCo
                 }
                 case "invertY" -> invertY = value.equals("true");
                 case "speed" -> speed = named(Speed.class, value, Speed.FLY);
+                case "view" -> view = named(
+                        com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.class,
+                        value, view);
                 case "keys" -> storedKeys = value;
                 case "actions" -> storedActions = value;
                 default -> {}
             }
         }
         if (storedKeys != null) keys = merged(storedKeys, storedActions);
-        return new WorldControls(sensitivity, invertY, speed, keys);
+        return new WorldControls(sensitivity, invertY, speed, keys, view);
     }
 
     private static Map<KeyCode, Action> merged(String storedKeys, String storedActions) {

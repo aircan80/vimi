@@ -17,9 +17,11 @@ final class WorldStreamGpuOwner {
     static final boolean EXTERIORS = exteriorsEnabled(System.getProperty("vimi.world.exteriors"));
 
     /**
-     * Resident neighborhood (issue #173). NEAR (3 x 3) is the default, safe on integrated GPUs;
-     * {@code -Dvimi.world.viewDistance=far} opts into the 5 x 5 neighborhood, which needs about
-     * 2.6 times the terrain GPU memory. A settings control is a follow-up.
+     * Launch view distance (issue #173). NEAR (3 x 3) is the default, safe on integrated GPUs;
+     * {@code -Dvimi.world.viewDistance=far} starts on the 5 x 5 neighborhood: at most 153.6 MiB of
+     * terrain GPU memory against NEAR's 77.8 MiB ({@link
+     * WorldStreamTransport.ViewDistance#terrainGpuBytes}). The World view's Display page chooses
+     * it at runtime and remembers the choice; this flag forces FAR for the session.
      */
     static final WorldStreamTransport.ViewDistance VIEW_DISTANCE =
             viewDistance(System.getProperty("vimi.world.viewDistance"));
@@ -87,8 +89,29 @@ final class WorldStreamGpuOwner {
     /** The session follows the runtime object texture choice, which selects its objects budget. */
     static WorldStreamTransport.Spec spec(
             String scopeSha256, com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail) {
+        return spec(scopeSha256, detail, VIEW_DISTANCE);
+    }
+
+    /** As above, at the view distance the World view chose (#173). */
+    static WorldStreamTransport.Spec spec(
+            String scopeSha256, com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail,
+            WorldStreamTransport.ViewDistance distance) {
         return new WorldStreamTransport.Spec(
-                scopeSha256, 1, configuredBackend(), EXTERIORS, VIEW_DISTANCE, objectTextures(detail));
+                scopeSha256, 1, configuredBackend(), EXTERIORS, Objects.requireNonNull(distance),
+                objectTextures(detail));
+    }
+
+    /**
+     * Sets the splat mask side tiles composed from now on get, for a session at {@code distance}
+     * (#173, #174 step 2b-2): 1024 only for NEAR with HIGH detail, 512 otherwise, as the view
+     * distance terrain budget assumes. Returns that side.
+     */
+    static int splatMasks(
+            com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail,
+            WorldStreamTransport.ViewDistance distance) {
+        com.vibeminer.concepts.world.WorldTerrainStreaming.splatMasks(
+                detail, Objects.requireNonNull(distance) == WorldStreamTransport.ViewDistance.FAR);
+        return com.vibeminer.concepts.world.WorldTerrainStreaming.splatMaskSide();
     }
 
     /** HIGH image detail selects the HIGH objects budget; anything else is STANDARD. */
@@ -139,9 +162,16 @@ final class WorldStreamGpuOwner {
     /** #381: {@code presentParent} non-zero asks for native presentation into that window. */
     WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256,
             com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail, long presentParent) {
+        this(service, scopeSha256, detail, presentParent, VIEW_DISTANCE);
+    }
+
+    /** The session at {@code distance}, the World view's chosen view distance (#173). */
+    WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256,
+            com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail, long presentParent,
+            WorldStreamTransport.ViewDistance distance) {
         this.service = Objects.requireNonNull(service);
         lifetime = service.openStreaming(owner,
-                spec(scopeSha256, detail),
+                spec(scopeSha256, detail, distance),
                 presentParent,
                 opened::complete,
                 status -> {

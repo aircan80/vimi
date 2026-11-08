@@ -1059,9 +1059,13 @@ public final class WorldTerrainTextureSource {
                     }
                 }
             }
+            // One mask side for this tile, read once: it keys the cached atlas and sizes the
+            // reservation, so a cached atlas of another side (or without splat inputs) is a miss.
+            int maskSide = splat ? splatMask : 0;
             String key =
                     issues.isEmpty()
                             ? cacheKey(
+                                    maskSide,
                                     request.map.id(),
                                     tile,
                                     wdt,
@@ -1108,7 +1112,7 @@ public final class WorldTerrainTextureSource {
                             hit.lease());
                 }
             }
-            var reservation = pool.reserve();
+            var reservation = pool.reserve(maskSide);
             if (reservation.isEmpty()) {
                 return new Outcome(
                         new TileResult(
@@ -1761,6 +1765,7 @@ public final class WorldTerrainTextureSource {
     }
 
     private String cacheKey(
+            int maskSide,
             long mapId,
             WorldFormats.Tile tile,
             FileBinding wdt,
@@ -1782,7 +1787,8 @@ public final class WorldTerrainTextureSource {
                             locale,
                             Long.toString(mapId),
                             tile.toString(),
-                            geometry)) {
+                            geometry,
+                            "SPLAT_MASK=" + maskSide)) {
                 text(hash, text);
             }
             var all = new ArrayList<FileBinding>(3 + diffuse.size());
