@@ -363,6 +363,28 @@ public final class WorldStreamNativeProof {
         throw new AssertionError("No accepted committed content frame");
     }
 
+    /** As {@link #accepted}, for one given camera command (one carrying a sky, say). */
+    static WorldFrameFileV2.Frame acceptedWith(
+            WorldStreamNativeOwner owner,
+            WorldFrameFileV2 reader,
+            long content,
+            WorldStreamControl.Camera command)
+            throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        boolean submitted = owner.submit(command);
+        while (System.nanoTime() < deadline) {
+            if (!submitted) {
+                submitted = owner.submit(command);
+            }
+            owner.advance();
+            var frame = read(reader, content, content);
+            if (frame != null && frame.metadata().camera() == command.revision()) {
+                return frame;
+            }
+        }
+        throw new AssertionError("No accepted frame for camera " + command.revision());
+    }
+
     private static void color(WorldFrameFileV2.Frame frame, int red) {
         int pixel = frame.pixels().get(128 * WIDTH + 128);
         require(
@@ -412,6 +434,41 @@ public final class WorldStreamNativeProof {
         int off = accepted(owner, reader, 1).pixels().get(128 * WIDTH + 128);
         owner.terrainLighting(true);
         owner.light(WorldLight.FIXED);
+        // #177 step 2c: a camera sky carrying recorded light, no direct and a mid-grey ambient at
+        // full weight, replaces the fixed light: every channel is the albedo times 128 / 255.
+        var explorer = WorldStreamTransport.Sky.EXPLORER;
+        var recordedSky =
+                new WorldStreamTransport.Sky(
+                        explorer.horizon(),
+                        explorer.top(),
+                        0,
+                        0,
+                        0,
+                        new float[] {0, 0, 0},
+                        new float[] {128, 128, 128},
+                        1);
+        int recorded =
+                acceptedWith(
+                                owner,
+                                reader,
+                                1,
+                                new WorldStreamControl.Camera(
+                                        NONCE, ++camera, 1, WIDTH, HEIGHT, CAMERA, recordedSky))
+                        .pixels()
+                        .get(128 * WIDTH + 128);
+        double grey = 128 / 255.0;
+        int[] dimmed = {
+            (int) Math.floor(180 * grey), (int) Math.floor(20 * grey), (int) Math.floor(30 * grey)
+        };
+        require(
+                Math.abs((recorded >>> 16 & 255) - dimmed[0]) <= 1
+                        && Math.abs((recorded >>> 8 & 255) - dimmed[1]) <= 1
+                        && Math.abs((recorded & 255) - dimmed[2]) <= 1,
+                "Recorded-light terrain "
+                        + Integer.toHexString(recorded)
+                        + " expected "
+                        + java.util.Arrays.toString(dimmed));
+        // A camera without a sky goes back to the renderer's own light.
         owner.submit(command(++camera, WIDTH, HEIGHT, 1));
         color(accepted(owner, reader, 1), 180);
         require(
@@ -423,7 +480,9 @@ public final class WorldStreamNativeProof {
                 " terrainLit="
                         + Integer.toHexString(lit)
                         + " terrainUnlit="
-                        + Integer.toHexString(off);
+                        + Integer.toHexString(off)
+                        + " terrainRecorded="
+                        + Integer.toHexString(recorded);
     }
 
     private static void geographicSides(

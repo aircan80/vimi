@@ -32,19 +32,25 @@ final class WorldSkyLook {
         double cover = result.coverage();
         float[] horizon = mix(explorer.horizon(), rgb(sample.skyFog()), cover);
         float[] top = mix(explorer.top(), rgb(sample.skyTop()), cover);
+        // The recorded direct and ambient light (#177 step 2c), weighted like the fog by how much
+        // of the position records it; the renderer mixes it into its own light.
+        double lit = sample.hasLight() ? Math.min(1, cover * sample.lightShare()) : 0;
+        float[] direct = lit > 0 ? rgb(sample.lighting().direct()) : new float[3];
+        float[] ambient = lit > 0 ? rgb(sample.lighting().ambient()) : new float[3];
         double fog = cover * sample.fogShare();
         if (!(fog > 0 && sample.fogEnd() > 0)) {
-            return new WorldStreamTransport.Sky(horizon, top, 0, 0, 0);
+            return new WorldStreamTransport.Sky(horizon, top, 0, 0, 0, direct, ambient, lit);
         }
         // Whole yards, as the camera line carries them; the start stays at least a yard before
         // the end so the fog remains a ramp, and an end under a yard is no fog.
         long end = Math.min(Math.round(sample.fogEnd()), WorldStreamTransport.Sky.MAX_YARDS);
         if (end < 1) {
-            return new WorldStreamTransport.Sky(horizon, top, 0, 0, 0);
+            return new WorldStreamTransport.Sky(horizon, top, 0, 0, 0, direct, ambient, lit);
         }
         long start =
                 Math.min(Math.round(end * Math.clamp(sample.fogScaler(), 0, 1)), end - 1);
-        return new WorldStreamTransport.Sky(horizon, top, Math.min(1, fog), start, end);
+        return new WorldStreamTransport.Sky(
+                horizon, top, Math.min(1, fog), start, end, direct, ambient, lit);
     }
 
     /** A local clock time as LightData half-minutes (0..2879). */

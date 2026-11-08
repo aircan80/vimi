@@ -69,6 +69,26 @@ record WorldLight(float[] direction, float[] diffuse, float[] ambient) {
         };
     }
 
+    /**
+     * This light with a sky's recorded light mixed in by its weight (#177 step 2c): LightData's
+     * direct colour becomes the diffuse and its ambient colour the ambient (0..255 to 0..1). The
+     * direction stays: LightData records colours, not where the light comes from. Weight 0 (no
+     * recorded light, or no sky) keeps this light.
+     */
+    WorldLight withRecorded(WorldStreamTransport.Sky sky) {
+        if (sky == null || sky.lightWeight() <= 0) {
+            return this;
+        }
+        double w = sky.lightWeight();
+        float[] direct = sky.direct(), recordedAmbient = sky.ambient();
+        float[] d = new float[3], a = new float[3];
+        for (int i = 0; i < 3; i++) {
+            d[i] = (float) (diffuse[i] + (direct[i] / 255 - diffuse[i]) * w);
+            a[i] = (float) (ambient[i] + (recordedAmbient[i] / 255 - ambient[i]) * w);
+        }
+        return new WorldLight(direction, d, a);
+    }
+
     /** The light factor of one channel for a unit normal, as the shader computes it. */
     float factor(int channel, double nx, double ny, double nz) {
         double lambert = Math.max(0, nx * direction[0] + ny * direction[1] + nz * direction[2]);

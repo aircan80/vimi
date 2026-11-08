@@ -1,6 +1,7 @@
 package com.vibeminer.rendering.bgfx;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -116,12 +117,14 @@ class WorldStreamControlTest {
 
                     @Override
                     public int read() {
-                        assertTrue(++count <= 256, "reader exceeded bound");
+                        assertTrue(
+                                ++count <= WorldStreamControl.MAX_LINE_BYTES,
+                                "reader exceeded bound");
                         return 'A';
                     }
                 };
         assertThrows(IOException.class, () -> WorldStreamControl.read(endless));
-        assertEquals(256, endless.count);
+        assertEquals(WorldStreamControl.MAX_LINE_BYTES, endless.count);
     }
 
     @Test
@@ -194,7 +197,10 @@ class WorldStreamControlTest {
                         new float[] {255, 255, 255},
                         0.999,
                         WorldStreamTransport.Sky.MAX_YARDS - 1,
-                        WorldStreamTransport.Sky.MAX_YARDS);
+                        WorldStreamTransport.Sky.MAX_YARDS,
+                        new float[] {255, 255, 255},
+                        new float[] {255, 255, 255},
+                        0.999);
         var worst =
                 new WorldStreamControl.Camera(
                         NONCE,
@@ -232,5 +238,47 @@ class WorldStreamControlTest {
         assertEquals(0.123, quantized.fogWeight());
         assertEquals(250, quantized.recordedStart());
         assertEquals(1000, quantized.recordedEnd());
+    }
+
+    /** #177 step 2c: a sky's recorded light rides the camera line exactly, and only with weight. */
+    @Test
+    void aSkysRecordedLightRoundTripsAndAZeroWeightLightIsRefused() throws IOException {
+        var sky =
+                new WorldStreamTransport.Sky(
+                        new float[] {10, 20, 30},
+                        new float[] {40, 50, 60},
+                        0.5,
+                        100,
+                        900,
+                        new float[] {255, 224, 192},
+                        new float[] {64, 64, 96},
+                        0.75);
+        var camera =
+                new WorldStreamControl.Camera(
+                        NONCE, 7, 1, 800, 500, new TerrainCamera(1, 2, 3, 0, -0.5), sky);
+        byte[] encoded = WorldStreamControl.encode(camera);
+        String line = new String(encoded, java.nio.charset.StandardCharsets.US_ASCII);
+        assertTrue(line.contains(" LIGHT ffe0c0404060 750"), line);
+        assertEquals(camera, WorldStreamControl.decode(encoded, encoded.length));
+        // A sky without recorded light writes no LIGHT tail.
+        var dry =
+                new WorldStreamControl.Camera(
+                        NONCE,
+                        8,
+                        1,
+                        800,
+                        500,
+                        new TerrainCamera(1, 2, 3, 0, -0.5),
+                        new WorldStreamTransport.Sky(
+                                new float[] {10, 20, 30}, new float[] {40, 50, 60}, 0, 0, 0));
+        assertFalse(
+                new String(
+                                WorldStreamControl.encode(dry),
+                                java.nio.charset.StandardCharsets.US_ASCII)
+                        .contains("LIGHT"));
+        byte[] zero =
+                line.replace(" LIGHT ffe0c0404060 750", " LIGHT ffe0c0404060 0")
+                        .getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        assertThrows(IOException.class, () -> WorldStreamControl.decode(zero, zero.length));
     }
 }
