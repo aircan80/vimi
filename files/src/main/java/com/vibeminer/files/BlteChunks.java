@@ -20,12 +20,34 @@ final class BlteChunks {
             MAX_HEADER = 12 + 24 * MAX_CHUNKS,
             ENVELOPE = 16;
 
+    /** Shared pool of idle inflaters used by every chunk decode. */
+    private static final InflaterPool INFLATERS =
+            new InflaterPool(Math.max(2, Runtime.getRuntime().availableProcessors()));
+
     /**
      * Idle inflaters, reset and reused across chunks and reads instead of one native zlib stream
      * per chunk. Bounded: callers past the bound get a fresh inflater that is ended after use.
      */
-    private static final ArrayBlockingQueue<Inflater> IDLE_INFLATERS =
-            new ArrayBlockingQueue<>(Math.max(2, Runtime.getRuntime().availableProcessors()));
+    static final class InflaterPool {
+        private final ArrayBlockingQueue<Inflater> idle;
+
+        InflaterPool(int capacity) {
+            idle = new ArrayBlockingQueue<>(capacity);
+        }
+
+        Inflater borrow() {
+            Inflater inflater = idle.poll();
+            return inflater != null ? inflater : new Inflater();
+        }
+
+        /** Resets the inflater (also after a failed chunk) and keeps it for reuse, or ends it. */
+        void release(Inflater inflater) {
+            inflater.reset();
+            if (!idle.offer(inflater)) {
+                inflater.end();
+            }
+        }
+    }
 
     record Chunk(
             int ordinal,
@@ -278,16 +300,11 @@ final class BlteChunks {
     }
 
     static Inflater borrowInflater() {
-        Inflater idle = IDLE_INFLATERS.poll();
-        return idle != null ? idle : new Inflater();
+        return INFLATERS.borrow();
     }
 
-    /** Resets the inflater (also after a failed chunk) and keeps it for reuse, or ends it. */
     static void releaseInflater(Inflater inflater) {
-        inflater.reset();
-        if (!IDLE_INFLATERS.offer(inflater)) {
-            inflater.end();
-        }
+        INFLATERS.release(inflater);
     }
 
     static MessageDigest md5() {
