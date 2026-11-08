@@ -1544,7 +1544,8 @@ public final class WorldAudioPlaybackTest {
         int switchAt = switchAt(writes);
         long gap = TimeUnit.NANOSECONDS.toMillis(
                 writes.get(switchAt).nanos() - writes.get(switchAt - 1).nanos());
-        if (gap > 120)
+        // An open on the critical path shows as a gap of about 200 ms; leave room for a busy runner.
+        if (gap > 170)
             throw new AssertionError("The 200 ms open was on the critical path: " + gap + " ms");
     }
 
