@@ -59,6 +59,11 @@ final class WorldMeasurementOpen implements AutoCloseable {
         return work.openCreaturesForMeasurement(measured.tables(), token);
     }
 
+    /** The measured World's tables (read-only table censuses). */
+    com.vibeminer.formats.tables.BuildTables tables() {
+        return measured.tables();
+    }
+
     /** A new display preview component over the measured tables and files; caller closes it. */
     com.vibeminer.concepts.models.BuildDisplayModels displays() {
         return new com.vibeminer.concepts.models.DisplayModelService(
