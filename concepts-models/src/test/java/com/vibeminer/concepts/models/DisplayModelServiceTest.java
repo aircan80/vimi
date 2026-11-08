@@ -193,6 +193,82 @@ class DisplayModelServiceTest {
     }
 
     @Test
+    void creatureBaseRigReadsTheSkeletonFileWhenTheModelNamesOne() throws Exception {
+        byte[] modelBytes =
+                DisplayIdleAnimationsTest.skeletonModel(
+                        DisplayIdleAnimationsTest.skeletonFixture());
+        var model = M2ModelReader.read(AssetSource.bytes(modelBytes)).join();
+        var files =
+                new AssetFilesFixture()
+                        .add(4242, "4".repeat(32), DisplayIdleAnimationsTest.skeleton());
+        var idle =
+                DisplayModelService.baseRigStand(
+                                files, model, AssetSource.bytes(modelBytes), Cancellation.NONE)
+                        .join();
+        assertEquals(2, idle.rig().size());
+        assertEquals(1000, idle.durationMillis());
+        assertEquals(1, files.opens.get());
+        // A model without a skeleton reads its own source and opens no file.
+        byte[] plainBytes = new NativeMaterialFixture(274, 0x90, 14, 2, 0, 0).modelBytes();
+        var plain = M2ModelReader.read(AssetSource.bytes(plainBytes)).join();
+        var noStand =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        RuntimeException.class,
+                        () ->
+                                DisplayModelService.baseRigStand(
+                                                files,
+                                                plain,
+                                                AssetSource.bytes(plainBytes),
+                                                Cancellation.NONE)
+                                        .join());
+        // The fixture's own Stand record is refused by the model path, not by a skeleton read.
+        assertEquals(
+                "The Stand sequence duration is outside the idle playback range.",
+                com.vibeminer.formats.AssetTasks.unwrap(noStand).getMessage());
+        assertEquals(1, files.opens.get());
+        files.close();
+    }
+
+    @Test
+    void skeletonFilesThatAreNotFullyStoredAreUnavailable() throws Exception {
+        byte[] modelBytes =
+                DisplayIdleAnimationsTest.skeletonModel(
+                        DisplayIdleAnimationsTest.skeletonFixture());
+        var model = M2ModelReader.read(AssetSource.bytes(modelBytes)).join();
+        byte[] skeleton = DisplayIdleAnimationsTest.skeleton();
+        var holed =
+                new AssetFilesFixture()
+                        .add(
+                                new com.vibeminer.files.FileTypes.BuildFile(
+                                        4242,
+                                        null,
+                                        com.vibeminer.files.FileTypes.FilePathSource.NONE,
+                                        (long) skeleton.length,
+                                        "4".repeat(32),
+                                        com.vibeminer.files.FileTypes.FileFormat.UNKNOWN,
+                                        com.vibeminer.files.FileTypes.FileFormatSource.NONE,
+                                        com.vibeminer.files.FileTypes.FileStorage.STORED,
+                                        false),
+                                skeleton,
+                                List.of(new com.vibeminer.files.FileTypes.FileHole(8, 16, "key")),
+                                List.of());
+        var incomplete =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalArgumentException.class,
+                        () ->
+                                DisplayModelService.readSkeletonStand(
+                                        holed, model, Cancellation.NONE));
+        assertEquals("Skeleton source is incomplete", incomplete.getMessage());
+        var missing =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalArgumentException.class,
+                        () ->
+                                DisplayModelService.readSkeletonStand(
+                                        new AssetFilesFixture(), model, Cancellation.NONE));
+        assertEquals("Skeleton source is UNKNOWN_FILE", missing.getMessage());
+    }
+
+    @Test
     void replacementTexturesUseDisplayVariationsWhileTypeZeroUsesExactTxid() {
         var variations = List.of(100L, 200L, 300L, 400L);
         assertEquals(

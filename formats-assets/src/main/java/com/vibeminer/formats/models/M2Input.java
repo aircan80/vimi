@@ -18,22 +18,32 @@ final class M2Input {
     final Cancellation token;
     final long length;
 
+    /** "model", or "skeleton" for skeleton files: the noun in source-level refusals. */
+    final String subject;
+
     M2Input(AssetSource source, Limits limits, Cancellation token) {
+        this(source, limits, token, "model");
+    }
+
+    M2Input(AssetSource source, Limits limits, Cancellation token, String subject) {
         this.source = Objects.requireNonNull(source);
         this.token = Objects.requireNonNull(token);
+        this.subject = Objects.requireNonNull(subject);
         checkLimits(limits);
         token.check();
         if (source.protectedRanges()) {
             throw error(
                     "UNSUPPORTED",
-                    "The initial model profile requires a complete decoded source, not protected ranges.");
+                    "The initial "
+                            + subject
+                            + " profile requires a complete decoded source, not protected ranges.");
         }
         length = source.length();
         if (length > limits.maxSourceBytes()) {
-            throw error("LIMIT", "The model source exceeds its byte budget.");
+            throw error("LIMIT", "The " + subject + " source exceeds its byte budget.");
         }
         if (length < 4) {
-            throw error("INVALID", "The model magic is truncated.");
+            throw error("INVALID", "The " + subject + " magic is truncated.");
         }
     }
 
@@ -87,19 +97,19 @@ final class M2Input {
                 || count > 65536
                 || offset > length
                 || count > length - offset) {
-            throw error("INVALID", "A model read lies outside its source.");
+            throw error("INVALID", "A " + subject + " read lies outside its source.");
         }
         byte[] bytes;
         try {
             bytes = source.readAt(offset, count, token).join();
         } catch (RuntimeException e) {
             if (AssetTasks.unwrap(e) instanceof java.io.EOFException) {
-                throw error("INVALID", "A model structure ended unexpectedly.");
+                throw error("INVALID", "A " + subject + " structure ended unexpectedly.");
             }
             throw e;
         }
         if (bytes.length != count) {
-            throw error("INVALID", "A model structure ended unexpectedly.");
+            throw error("INVALID", "A " + subject + " structure ended unexpectedly.");
         }
         return bytes;
     }
@@ -124,7 +134,7 @@ final class M2Input {
                     words.append(c);
                 }
             }
-            String owner = skin ? "The SKIN file" : "The model";
+            String owner = skin ? "The SKIN file" : "The " + subject;
             String fact =
                     stride == 1
                             ? owner + "'s " + words + " is " + number(count) + " bytes"
@@ -148,7 +158,11 @@ final class M2Input {
                         || count * Math.max(1, stride) > bytes - offset)) {
             throw error(
                     "INVALID",
-                    "The " + name + " span lies outside its model section or overlaps its header.");
+                    "The "
+                            + name
+                            + " span lies outside its "
+                            + subject
+                            + " section or overlaps its header.");
         }
         return new Span(name, origin + offset, (int) count, stride);
     }
@@ -184,6 +198,38 @@ final class M2Input {
         if (source.length() != length) {
             throw error("INVALID", "The source length changed during decoding.");
         }
+    }
+
+    /**
+     * One 88-byte bone record (key-bone ID, flags, parent, submesh, pivot) at {@code index} of
+     * {@code count}; the parent must be -1 or another bone of the same array.
+     */
+    static M2Types.Bone bone(byte[] row, int index, int count, String subject) {
+        int parent = i16(row, 8);
+        if (parent < -1 || parent >= count || parent == index) {
+            throw error(
+                    "INVALID",
+                    subject.equals("model")
+                            ? "A bone has an invalid parent index."
+                            : "A " + subject + " bone has an invalid parent index.");
+        }
+        float[] pivot = new float[3];
+        for (int c = 0; c < 3; c++) {
+            pivot[c] = Float.intBitsToFloat(i32(row, 76 + 4 * c));
+            if (!Float.isFinite(pivot[c])) {
+                throw error(
+                        "INVALID",
+                        subject.equals("model")
+                                ? "A model geometry value is not finite."
+                                : "A " + subject + " bone pivot is not finite.");
+            }
+        }
+        return new M2Types.Bone(
+                i32(row, 0),
+                u32(row, 4),
+                parent,
+                u16(row, 10),
+                new Vec3(pivot[0], pivot[1], pivot[2]));
     }
 
     static int u16(byte[] b) {

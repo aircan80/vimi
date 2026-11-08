@@ -179,4 +179,104 @@ class DisplayIdleAnimationsTest {
         var failure = assertThrows(DisplayIdleAnimations.Unsupported.class, authored::admit);
         assertTrue(failure.getMessage().contains("no bone keys"));
     }
+
+    private static byte[] chunk(String id, byte[] payload) {
+        return java.nio.ByteBuffer.allocate(8 + payload.length)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .put(id.getBytes(java.nio.charset.StandardCharsets.US_ASCII))
+                .putInt(payload.length)
+                .put(payload)
+                .array();
+    }
+
+    /**
+     * A skeleton: one Stand (1000 ms); bone 0 a root translating (0,0,0)-(0,0,4), bone 1 its child.
+     */
+    static byte[] skeleton() {
+        var s = java.nio.ByteBuffer.allocate(32 + 64).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        s.putInt(8, 1).putInt(12, 32);
+        s.putInt(32 + 4, 1000).putInt(32 + 12, 0x20);
+        var b =
+                java.nio.ByteBuffer.allocate(16 + 2 * 88 + 48)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0, 2).putInt(4, 16);
+        for (int bone = 0; bone < 2; bone++) {
+            int row = 16 + bone * 88;
+            b.putInt(row, -1).putInt(row + 4, 512).putShort(row + 8, (short) (bone - 1));
+            for (int track : new int[] {16, 36, 56}) {
+                b.putShort(row + track + 2, (short) -1);
+            }
+        }
+        int data = 16 + 2 * 88, row = 16 + TRACK_TRANSLATION;
+        b.putShort(row, (short) 1).putInt(row + 4, 1).putInt(row + 8, data);
+        b.putInt(row + 12, 1).putInt(row + 16, data + 8);
+        b.putInt(data, 2).putInt(data + 4, data + 16);
+        b.putInt(data + 8, 2).putInt(data + 12, data + 24);
+        b.putInt(data + 16, 0).putInt(data + 20, 1000);
+        b.putFloat(data + 24 + 20, 4);
+        var out = new java.io.ByteArrayOutputStream();
+        out.writeBytes(chunk("SKL1", new byte[16]));
+        out.writeBytes(chunk("SKS1", s.array()));
+        out.writeBytes(chunk("SKB1", b.array()));
+        return out.toByteArray();
+    }
+
+    @Test
+    void skeletonModelsAnimateWithTheSkeletonsBones() throws Exception {
+        // The model stores no bones; its vertices name bone 1 of its external skeleton.
+        var fixture = skeletonFixture();
+        var model =
+                com.vibeminer.formats.models.M2ModelReader.read(
+                                AssetSource.bytes(skeletonModel(fixture)))
+                        .join();
+        assertEquals(0, model.bones().size());
+        var rest =
+                com.vibeminer.formats.models.M2RestDrawSkinReader.read(
+                                AssetSource.bytes(
+                                        java.util.Arrays.copyOf(
+                                                fixture.skin.array(), fixture.skin.position())),
+                                model,
+                                null,
+                                Cancellation.NONE)
+                        .join();
+        var surface = DisplayModelService.restSurface(model, rest.surface(), Cancellation.NONE);
+        var source = AssetSource.bytes(skeleton());
+        var skeleton =
+                com.vibeminer.formats.models.M2SkeletonFile.read(source, Cancellation.NONE).join();
+        var idle = M2IdleAnimation.readSkeleton(source, skeleton, model, Cancellation.NONE).join();
+        var animation =
+                DisplayIdleAnimations.admit(
+                        model,
+                        rest.surface().vertexLookup(),
+                        idle,
+                        surface.mesh(),
+                        surface.normals(),
+                        Cancellation.NONE);
+        assertEquals(2, animation.boneCount());
+        float[] before = surface.mesh().positions();
+        float[] after = animation.pose(surface.mesh(), 500).mesh().positions();
+        for (int vertex = 0; vertex < surface.mesh().vertexCount(); vertex++) {
+            // Bone 1 follows its parent, bone 0, which lifts by 2 at half time.
+            assertEquals(before[vertex * 3 + 2] + 2, after[vertex * 3 + 2], 1e-5);
+        }
+    }
+
+    /** The material fixture with no bones of its own; its vertices name bone 1. */
+    static NativeMaterialFixture skeletonFixture() throws Exception {
+        var fixture = new NativeMaterialFixture(274, 0x90, 14, 2, 0, 0);
+        fixture.declaration(44, 0, fixture.bones);
+        return fixture;
+    }
+
+    /** The fixture's model bytes naming external skeleton 4242. */
+    static byte[] skeletonModel(NativeMaterialFixture fixture) {
+        byte[] plain = fixture.modelBytes();
+        byte[] bytes = java.util.Arrays.copyOf(plain, plain.length + 12);
+        java.nio.ByteBuffer.wrap(bytes)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .put(plain.length, "SKID".getBytes(java.nio.charset.StandardCharsets.US_ASCII))
+                .putInt(plain.length + 4, 4)
+                .putInt(plain.length + 8, 4242);
+        return bytes;
+    }
 }

@@ -42,7 +42,7 @@ class M2SkeletonFileTest {
         return chunk("SKL1", le(16).putInt(flags).array());
     }
 
-    /** SKS1: 32-byte header, then globals (500, 0), Walk (4) and Stand (0, alias of 0). */
+    /** SKS1: 32-byte header, then globals (500, 0), Walk (4) and Stand (0, alias of 1). */
     private static byte[] sks1(Consumer<ByteBuffer> change) {
         var b = le(32 + 8 + 2 * 64 + 4);
         b.putInt(0, 2).putInt(4, 32);
@@ -51,7 +51,8 @@ class M2SkeletonFileTest {
         b.putInt(32, 500).putInt(36, 0);
         b.putShort(40, (short) 4).putInt(44, 800).putInt(52, 0x20);
         b.putShort(104, (short) 0).putShort(106, (short) 1).putInt(108, 1333);
-        b.putInt(116, 0x1060).putShort(166, (short) 0);
+        // Byte 60 (next variation) differs from byte 62 (alias index), which is the one read.
+        b.putInt(116, 0x1060).putShort(164, (short) 7).putShort(166, (short) 1);
         b.putShort(168, (short) 1).putShort(170, (short) 0);
         change.accept(b);
         return chunk("SKS1", b.array());
@@ -130,7 +131,7 @@ class M2SkeletonFileTest {
         assertEquals(
                 List.of(
                         new M2SkeletonFile.Sequence(4, 0, 800, 0x20, 0),
-                        new M2SkeletonFile.Sequence(0, 1, 1333, 0x1060, 0)),
+                        new M2SkeletonFile.Sequence(0, 1, 1333, 0x1060, 1)),
                 skeleton.sequences());
         assertEquals(
                 List.of(
@@ -148,6 +149,8 @@ class M2SkeletonFileTest {
         assertEquals(8 + 16 + 8 + 32 + 8 + 2 * 64 + 4 + 8, skb1.offset());
         assertEquals(16 + 2 * 88 + 4, skb1.byteLength());
         assertNull(skeleton.chunk("SKID"));
+        // 'Z' is the top of the identifier range.
+        assertEquals("SKZ1", read(file(skl1(0), chunk("SKZ1", new byte[0]))).chunks().get(1).id());
     }
 
     @Test
@@ -204,6 +207,21 @@ class M2SkeletonFileTest {
                 "MODEL_INVALID",
                 "The skeleton's sequences lie outside its SKS1 chunk.",
                 file(skl1(0), sks1(b -> b.putInt(12, 8))));
+        // The SKS1 array headers take 32 bytes; an array may not start inside them.
+        refused(
+                "MODEL_INVALID",
+                "The skeleton's sequences lie outside its SKS1 chunk.",
+                file(skl1(0), sks1(b -> b.putInt(12, 24))));
+        // Chunk identifiers are '0'..'Z'; '[' is just above the range.
+        refused(
+                "MODEL_INVALID",
+                "The skeleton has a malformed chunk identifier.",
+                file(skl1(0), chunk("SK[1", new byte[0])));
+        // A non-finite bone pivot, worded for the skeleton.
+        refused(
+                "MODEL_INVALID",
+                "A skeleton bone pivot is not finite.",
+                file(skl1(0), skb1(b -> b.putFloat(16 + 88 + 80, Float.NaN))));
         refused(
                 "MODEL_INVALID",
                 "The skeleton's sequence lookups lie outside its SKS1 chunk.",
