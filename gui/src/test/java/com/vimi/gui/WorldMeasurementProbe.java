@@ -189,7 +189,9 @@ public final class WorldMeasurementProbe {
                                         issue -> say("PROBE " + issue),
                                         DEADLINE - System.nanoTime(),
                                         List.of("creatures", "displays")
-                                                .contains(System.getProperty("probe.mode"))));
+                                                .contains(
+                                                        System.getProperty(
+                                                                "probe.mode", "stream"))));
         try {
             BuildWorld handle = opened.world();
             var catalog =
