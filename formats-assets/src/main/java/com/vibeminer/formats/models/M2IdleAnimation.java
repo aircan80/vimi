@@ -35,6 +35,7 @@ public final class M2IdleAnimation {
 
     private static final int SEQUENCE_IN_MODEL = 0x20;
     private static final int SEQUENCE_ALIAS = 0x40;
+    private static final int SKB1_HEADER = 16;
 
     private M2IdleAnimation() {}
 
@@ -100,6 +101,7 @@ public final class M2IdleAnimation {
 
     public static final class Idle {
         private final M2Types.Model model;
+        private final List<M2Types.Bone> rig;
         private final int sequenceIndex;
         private final long durationMillis;
         private final long[] globalSequenceMillis;
@@ -108,12 +110,14 @@ public final class M2IdleAnimation {
 
         private Idle(
                 M2Types.Model model,
+                List<M2Types.Bone> rig,
                 int sequenceIndex,
                 long durationMillis,
                 long[] globalSequenceMillis,
                 List<BoneTracks> bones,
                 int keys) {
             this.model = model;
+            this.rig = List.copyOf(rig);
             this.sequenceIndex = sequenceIndex;
             this.durationMillis = durationMillis;
             this.globalSequenceMillis = globalSequenceMillis;
@@ -123,6 +127,14 @@ public final class M2IdleAnimation {
 
         public M2Types.Model model() {
             return model;
+        }
+
+        /**
+         * The bones the tracks belong to: {@link M2Types.Model#bones()}, or the external skeleton's
+         * bones for a skeleton model. Vertex bone indices name these bones.
+         */
+        public List<M2Types.Bone> rig() {
+            return rig;
         }
 
         /** The sequence whose keys play: Stand itself, or the end of its alias chain. */
@@ -138,7 +150,7 @@ public final class M2IdleAnimation {
             return globalSequenceMillis.clone();
         }
 
-        /** Same order and size as {@link M2Types.Model#bones()}. */
+        /** Same order and size as {@link #rig()}. */
         public List<BoneTracks> bones() {
             return bones;
         }
@@ -171,6 +183,106 @@ public final class M2IdleAnimation {
         Objects.requireNonNull(model);
         Objects.requireNonNull(token);
         return AssetTasks.run(() -> readCore(source, model, token, true, false));
+    }
+
+    /**
+     * Reads the base rig's Stand of a model whose bones live in an external skeleton (#384): the
+     * skeleton's own bones (SKB1), sequences and global sequences (SKS1), with track arrays inside
+     * the SKB1 chunk. A parent skeleton (SKPD) is not read: the skeleton must carry its own bones
+     * and its own Stand keys. Bone files are not applied, as for {@link #readBaseRig}; every other
+     * check of {@link #read} applies.
+     *
+     * @param source the skeleton file that {@code skeleton} was read from
+     */
+    public static CompletableFuture<Idle> readSkeleton(
+            AssetSource source,
+            M2SkeletonFile.Skeleton skeleton,
+            M2Types.Model model,
+            Cancellation token) {
+        Objects.requireNonNull(source);
+        Objects.requireNonNull(skeleton);
+        Objects.requireNonNull(model);
+        Objects.requireNonNull(token);
+        return AssetTasks.run(() -> readSkeletonCore(source, skeleton, model, token));
+    }
+
+    private static Idle readSkeletonCore(
+            AssetSource source,
+            M2SkeletonFile.Skeleton skeleton,
+            M2Types.Model model,
+            Cancellation token) {
+        token.check();
+        if (!model.isChunked() || model.version() != 272 && model.version() != 274) {
+            throw error("UNSUPPORTED", "Idle animation requires a chunked 272/274 model.");
+        }
+        if (model.skeletonFileDataId() == 0) {
+            throw new IllegalArgumentException("The model names no external skeleton");
+        }
+        if (!model.bones().isEmpty()) {
+            throw error(
+                    "UNSUPPORTED",
+                    "The model stores bones of its own beside its external skeleton.");
+        }
+        var rig = skeleton.bones();
+        var sks1 = skeleton.chunk("SKS1");
+        var skb1 = skeleton.chunk("SKB1");
+        if (rig.isEmpty() || sks1 == null || skb1 == null) {
+            throw error(
+                    "UNSUPPORTED",
+                    skeleton.parentFileDataId() != 0
+                            ? "The skeleton keeps its bones or sequences in its parent skeleton,"
+                                    + " which idle evaluation does not read."
+                            : "The skeleton has no bones or sequences to animate.");
+        }
+        if (rig.size() > MAX_BONES) {
+            throw error(
+                    "UNSUPPORTED",
+                    "The skeleton has "
+                            + rig.size()
+                            + " bones; idle evaluation admits at most "
+                            + MAX_BONES
+                            + " directly indexed bones.");
+        }
+        if (skeleton.sequences().size() > MAX_SEQUENCES
+                || skeleton.globalSequenceMillis().size() > MAX_GLOBAL_SEQUENCES) {
+            throw error("LIMIT", "The skeleton's sequence declarations exceed idle policy.");
+        }
+        var input = new M2Input(source, new M2Types.Limits(), token, "skeleton");
+        if (input.length != skeleton.sourceBytes()) {
+            throw error("INVALID", "Animation source differs from the parsed skeleton.");
+        }
+        byte[] sequenceHead = input.at(sks1.offset(), 16);
+        byte[] boneHead = input.at(skb1.offset(), 8);
+        if (u32(sequenceHead, 8) != skeleton.sequences().size()
+                || u32(sequenceHead, 0) != skeleton.globalSequenceMillis().size()
+                || u32(boneHead, 0) != rig.size()) {
+            throw error("INVALID", "Animation source header differs from the parsed skeleton.");
+        }
+        var sequenceRows = new ArrayList<byte[]>(skeleton.sequences().size());
+        input.records(
+                new M2Input.Span(
+                        "skeleton sequences",
+                        sks1.offset() + u32(sequenceHead, 12),
+                        skeleton.sequences().size(),
+                        64),
+                (row, i) -> sequenceRows.add(row));
+        var rows = new ArrayList<byte[]>(rig.size());
+        input.records(
+                new M2Input.Span(
+                        "skeleton bones", skb1.offset() + u32(boneHead, 4), rig.size(), 88),
+                (row, i) -> rows.add(row));
+        long[] globalMillis =
+                skeleton.globalSequenceMillis().stream().mapToLong(Long::longValue).toArray();
+        return stand(
+                input,
+                new Section(skb1.offset(), skb1.byteLength(), SKB1_HEADER),
+                model,
+                rig,
+                sequenceRows,
+                globalMillis,
+                rows,
+                "skeleton",
+                token);
     }
 
     /**
@@ -282,6 +394,34 @@ public final class M2IdleAnimation {
         input.records(
                 span(input, model, header, "sequences", sequences, 64),
                 (row, i) -> sequenceRows.add(row));
+        var rows = new ArrayList<byte[]>();
+        input.records(span(input, model, header, "bones", bones, 88), (row, i) -> rows.add(row));
+        return stand(
+                input,
+                new Section(model.baseOffset(), model.baseBytes(), header),
+                model,
+                model.bones(),
+                sequenceRows,
+                globalMillis,
+                rows,
+                "model",
+                token);
+    }
+
+    /**
+     * Finds Stand among {@code sequenceRows}, follows its alias chain and reads every bone's own
+     * tracks for it. {@code rows} are the raw bone records, checked against {@code rig}.
+     */
+    private static Idle stand(
+            M2Input input,
+            Section section,
+            M2Types.Model model,
+            List<M2Types.Bone> rig,
+            List<byte[]> sequenceRows,
+            long[] globalMillis,
+            List<byte[]> rows,
+            String owner,
+            Cancellation token) {
         int stand = -1;
         for (int i = 0; i < sequenceRows.size() && stand < 0; i++) {
             byte[] row = sequenceRows.get(i);
@@ -290,32 +430,31 @@ public final class M2IdleAnimation {
             }
         }
         if (stand < 0) {
-            throw error("UNSUPPORTED", "The model records no Stand sequence (ID 0, variation 0).");
+            throw error(
+                    "UNSUPPORTED",
+                    "The " + owner + " records no Stand sequence (ID 0, variation 0).");
         }
-        int[] found = {aliasTarget(sequenceRows, stand)};
-        byte[] target = sequenceRows.get(found[0]);
-        long[] duration = {u32(target, 4)};
-        int[] flags = {i32(target, 12)};
-        if ((flags[0] & SEQUENCE_IN_MODEL) == 0) {
+        int sequence = aliasTarget(sequenceRows, stand);
+        byte[] target = sequenceRows.get(sequence);
+        long duration = u32(target, 4);
+        int flags = i32(target, 12);
+        if ((flags & SEQUENCE_IN_MODEL) == 0) {
             throw error(
                     "UNSUPPORTED",
                     "Stand keys are stored in an external animation file, which idle evaluation"
                             + " does not read.");
         }
-        if (duration[0] <= 0 || duration[0] > MAX_DURATION_MILLIS) {
+        if (duration <= 0 || duration > MAX_DURATION_MILLIS) {
             throw error(
                     "UNSUPPORTED",
                     "The Stand sequence duration is outside the idle playback range.");
         }
-        int sequence = found[0];
         var budget = new int[] {0};
-        var rows = new ArrayList<byte[]>();
-        input.records(span(input, model, header, "bones", bones, 88), (row, i) -> rows.add(row));
         var result = new ArrayList<BoneTracks>(rows.size());
         for (int index = 0; index < rows.size(); index++) {
             token.check();
             byte[] row = rows.get(index);
-            var bone = model.bones().get(index);
+            var bone = rig.get(index);
             if (bone.keyBoneId() != i32(row, 0)
                     || bone.flags() != u32(row, 4)
                     || bone.parent() != i16(row, 8)
@@ -326,40 +465,37 @@ public final class M2IdleAnimation {
                     new BoneTracks(
                             track(
                                     input,
-                                    model,
-                                    header,
+                                    section,
                                     row,
                                     16,
                                     3,
                                     sequence,
                                     globalMillis,
-                                    duration[0],
+                                    duration,
                                     budget),
                             track(
                                     input,
-                                    model,
-                                    header,
+                                    section,
                                     row,
                                     36,
                                     4,
                                     sequence,
                                     globalMillis,
-                                    duration[0],
+                                    duration,
                                     budget),
                             track(
                                     input,
-                                    model,
-                                    header,
+                                    section,
                                     row,
                                     56,
                                     3,
                                     sequence,
                                     globalMillis,
-                                    duration[0],
+                                    duration,
                                     budget)));
         }
         input.finish();
-        return new Idle(model, sequence, duration[0], globalMillis, result, budget[0]);
+        return new Idle(model, rig, sequence, duration, globalMillis, result, budget[0]);
     }
 
     /**
@@ -412,10 +548,12 @@ public final class M2IdleAnimation {
                 header);
     }
 
+    /** Where track arrays may lie: offsets count from {@code origin}, after {@code header}. */
+    private record Section(long origin, long bytes, int header) {}
+
     private static Track track(
             M2Input input,
-            M2Types.Model model,
-            int header,
+            Section section,
             byte[] row,
             int at,
             int components,
@@ -448,9 +586,9 @@ public final class M2IdleAnimation {
                         timeOffset,
                         8,
                         MAX_SEQUENCES,
-                        model.baseOffset(),
-                        model.baseBytes(),
-                        header);
+                        section.origin(),
+                        section.bytes(),
+                        section.header());
         var outerValues =
                 input.span(
                         "bone track values",
@@ -458,9 +596,9 @@ public final class M2IdleAnimation {
                         valueOffset,
                         8,
                         MAX_SEQUENCES,
-                        model.baseOffset(),
-                        model.baseBytes(),
-                        header);
+                        section.origin(),
+                        section.bytes(),
+                        section.header());
         byte[] times = input.at(outerTimes.offset() + 8L * slice, 8);
         byte[] values = input.at(outerValues.offset() + 8L * slice, 8);
         long keys = u32(times);
@@ -494,9 +632,9 @@ public final class M2IdleAnimation {
                         u32(times, 4),
                         4,
                         MAX_KEYS_PER_TRACK,
-                        model.baseOffset(),
-                        model.baseBytes(),
-                        header),
+                        section.origin(),
+                        section.bytes(),
+                        section.header()),
                 (key, i) -> {
                     long stamp = u32(key);
                     if (i > 0 && stamp < stamps[i - 1]) {
@@ -521,9 +659,9 @@ public final class M2IdleAnimation {
                         u32(values, 4),
                         stride,
                         MAX_KEYS_PER_TRACK,
-                        model.baseOffset(),
-                        model.baseBytes(),
-                        header),
+                        section.origin(),
+                        section.bytes(),
+                        section.header()),
                 (key, i) -> {
                     if (components == 3) {
                         packed[i * 3] = f(key, 0);
