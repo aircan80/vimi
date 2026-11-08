@@ -43,6 +43,7 @@ public final class WorldStreamSourceControllerTest {
         fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(true);
         backDemandDoesNotTreatPresentedOnlySourceAsLiveGpuResident();
         pickedAreaUsesRetainedResidentMetadataWithoutBorrowing();
+        areaLookupCoversEveryResident();
         uncoveredCameraFrameKeepsOldPixelsWhileNearestTileLoads();
         cameraPublicationSerializesInitialAndFxForwarding();
         initialSeedHeldReplacementCameraAndPresentationDrain();
@@ -1808,6 +1809,14 @@ public final class WorldStreamSourceControllerTest {
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
             check(fixture.files.opens(1002)>0,"Actual nearest tile readiness unblocks presentation");
         } finally { release.complete(null); fixture.close(); }
+    }
+
+    private static void areaLookupCoversEveryResident() {
+        // The camera area and picks scan every current resident's metadata (#173): the FAR 5 x 5
+        // neighbourhood must stay inside the lookup's tile bound.
+        check(WorldStreamTransport.MAX_RESIDENTS <= WorldCurrentArea.MAX_TILES,
+                "Area lookup bound covers every resident: " + WorldStreamTransport.MAX_RESIDENTS
+                        + " > " + WorldCurrentArea.MAX_TILES);
     }
 
     private static void pickedAreaUsesRetainedResidentMetadataWithoutBorrowing() throws Exception {
