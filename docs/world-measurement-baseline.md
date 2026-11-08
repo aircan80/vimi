@@ -150,6 +150,10 @@ as stream mode, so before and after runs compare directly.
 - the real exterior preparer;
 - `WorldStreamImagePresentation` on the JavaFX thread, pulsed by an `AnimationTimer`.
 
+After the fill, a `PROBE sky:` line reports the recorded sky at the camera at 00:00 and 12:00
+through the build's sky index: its state, coverage, whether it has fog, light and water, and the
+index's source issues, or why the light tables were refused.
+
 The camera follows a fixed script:
 1. Stationary at the seed until every tile and its late objects are done (budget 150 s).
 2. Rotating in place at 1 rad/s for 12 s.
