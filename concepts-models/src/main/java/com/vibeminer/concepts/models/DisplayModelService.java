@@ -492,7 +492,9 @@ public final class DisplayModelService implements BuildDisplayModels {
             var restored = cache.restore(key, reference.modelFileDataId(), content, token);
             if (restored != null) {
                 limitations(reference, restored.mesh(), issues);
-                if (world) TableProjection.note(issues, WORLD_NOTE);
+                if (world) {
+                    TableProjection.note(issues, WORLD_NOTE);
+                }
                 return ready(reference, restored, issues, true);
             }
             var models = new BuildModels(files);
