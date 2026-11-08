@@ -70,6 +70,11 @@ final class WorldMeasurementOpen implements AutoCloseable {
                 measured.tables(), work.filesHandle(), work.generatedHandle());
     }
 
+    /** The measured build's local-only files (read-only censuses). */
+    com.vibeminer.files.BuildFiles files() {
+        return work.filesHandle();
+    }
+
     /** Fingerprints of the keys the work actually decrypts with, by key name (tests). */
     java.util.Map<String, String> keyFingerprints() {
         return work.effectiveKeyFingerprints();

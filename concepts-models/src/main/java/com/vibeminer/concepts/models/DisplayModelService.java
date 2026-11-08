@@ -102,8 +102,9 @@ public final class DisplayModelService implements BuildDisplayModels {
     /**
      * The World's binding of the display (#361): each section draws texture 1 of its first batch
      * that the World objects' batch rule admits ({@link #worldBatch}), as an opaque or alpha-keyed
-     * diffuse surface; {@link #preview} keeps the reviewed material profiles. Saved under its own
-     * key ({@link #WORLD_POLICY}).
+     * diffuse surface; a section with none draws its first constant-weight additive batch ({@link
+     * #worldAdditiveBatch}) as an unlit additive surface. {@link #preview} keeps the reviewed
+     * material profiles. Saved under its own key ({@link #WORLD_POLICY}).
      */
     @Override
     public CompletableFuture<DisplayModelTypes.Preview> worldPreview(
@@ -609,9 +610,11 @@ public final class DisplayModelService implements BuildDisplayModels {
             }
             var pool = new TexturePool(reference, receipts, token, issues);
             var bindings = new ArrayList<MeshAppearance.Surface>();
+            boolean worldFactsMissing = false;
             var billboards = new ArrayList<MeshAppearance.RigidBillboard>();
             if (world) {
-                worldSurfaces(m, skin.skin().batches(), pool, bindings, token);
+                worldFactsMissing =
+                        !worldSurfaces(m, skin.skin().batches(), facts, pool, bindings, token);
                 TableProjection.note(issues, WORLD_NOTE);
             }
             for (var batch : world ? List.<M2Types.Batch>of() : skin.skin().batches()) {
@@ -680,8 +683,9 @@ public final class DisplayModelService implements BuildDisplayModels {
             var appearance =
                     new MeshAppearance(mesh, uv, normals, bindings, pool.textures, billboards);
             limitations(reference, mesh, issues);
-            // The World rule reads no material source facts, so their absence does not stop a save.
-            if ((world || sourceFactsComplete) && pool.complete) {
+            // The World rule reads material source facts only for additive texture weights, so
+            // their absence stops a save only when an additive batch needed them.
+            if ((world ? !worldFactsMissing : sourceFactsComplete) && pool.complete) {
                 cache.save(key, appearance, receipts, token, issues);
             }
             return ready(reference, appearance, issues, false);
@@ -916,12 +920,13 @@ public final class DisplayModelService implements BuildDisplayModels {
     }
 
     /** The World binding rule's revision; part of the World binding's saved key only. */
-    public static final String WORLD_POLICY = "display-world-batch-rule-v1";
+    public static final String WORLD_POLICY = "display-world-batch-rule-v2";
 
     /** The World binding's stated approximation, noted on every World binding. */
     public static final String WORLD_NOTE =
             "World batch rule: each section draws texture 1 of its first Diffuse_T1 opaque or"
-                    + " alpha-keyed batch; environment and add layers, color tracks, texture"
+                    + " alpha-keyed batch, else of its first additive one whose texture weight stays"
+                    + " full, unlit; environment and add layers, color tracks, opaque texture"
                     + " weights and transforms, and render flags are not evaluated.";
 
     /**
@@ -931,17 +936,62 @@ public final class DisplayModelService implements BuildDisplayModels {
      * objects), and blend 0 (opaque) or 1 (alpha key). Color, texture weight, texture transform,
      * priority and render flags are not consulted, as for objects.
      *
-     * <p>Three intended differences from World objects ({@link #worldSurfaces}):
+     * <p>Four intended differences from World objects ({@link #worldSurfaces}):
      *
      * <ul>
      *   <li>Blend 2 is skipped rather than claiming the section: creatures have no blended pass, so
      *       a later opaque or alpha-keyed batch on the section may draw instead.
      *   <li>Texture types 11 to 13 resolve to the display's monster skin; objects take type 0 only.
+     *   <li>A section with no such batch may draw an additive one ({@link #worldAdditiveBatch});
+     *       World objects draw no M2 additive batch.
      *   <li>A batch whose texture does not resolve or decode leaves the section to a later batch;
      *       objects claim the section before decoding.
      * </ul>
      */
     static boolean worldBatch(M2Types.Model model, M2Types.Batch batch) {
+        return worldShape(model, batch)
+                && model.materials().get(batch.materialIndex()).blendMode() <= 1;
+    }
+
+    /** M2 blend mode 4, GxBlend_Add (source alpha, one): the World's additive pass. */
+    static final int ADD_BLEND = 4;
+
+    /**
+     * Whether a batch is drawn as an additive surface by the World: the shape {@link #worldBatch}
+     * requires, blend mode 4 (source colour times alpha added, the World objects' additive pass),
+     * and a texture weight that is absent or full in every key ({@code facts}), so a part the
+     * client fades in or pulses is not drawn at full strength. {@code facts} may be null (not
+     * readable): a batch with a weight track is then not drawn. Colour tracks are not consulted, as
+     * for opaque batches.
+     */
+    static boolean worldAdditiveBatch(
+            M2Types.Model model, M2Types.Batch batch, M2Appearance.ModelFacts facts) {
+        if (!worldShape(model, batch)
+                || model.materials().get(batch.materialIndex()).blendMode() != ADD_BLEND) {
+            return false;
+        }
+        return constantWeight(model, batch, facts) == Boolean.TRUE;
+    }
+
+    /** Whether the batch's texture weight is absent or full in every key; null without facts. */
+    private static Boolean constantWeight(
+            M2Types.Model model, M2Types.Batch batch, M2Appearance.ModelFacts facts) {
+        int lookup = batch.textureWeightComboIndex();
+        if (lookup < 0 || lookup >= model.textureWeights().size()) {
+            return false;
+        }
+        int weight = model.textureWeights().get(lookup);
+        if (weight == 65535) {
+            return true;
+        }
+        if (facts == null || facts.model() != model) {
+            return null;
+        }
+        return weight < facts.staticWeights().size() && facts.staticWeights().get(weight);
+    }
+
+    /** The World rule's shape: layer 0, a UV0 texture 1 and in-range references. */
+    private static boolean worldShape(M2Types.Model model, M2Types.Batch batch) {
         if (batch.materialLayer() != 0
                 || batch.textureCount() < 1
                 || batch.shaderId() < 0
@@ -955,18 +1005,21 @@ public final class DisplayModelService implements BuildDisplayModels {
                         >= model.textures().size()) {
             return false;
         }
-        return M2Combiners.firstTextureUsesUv0(batch.textureCount(), batch.shaderId())
-                && model.materials().get(batch.materialIndex()).blendMode() <= 1;
+        return M2Combiners.firstTextureUsesUv0(batch.textureCount(), batch.shaderId());
     }
 
     /**
      * Binds, per section, texture 1 of the first batch {@link #worldBatch} admits whose texture
      * resolves (file, or the display's monster skin for types 11 to 13); a batch whose texture does
-     * not resolve leaves the section to a later batch, as World objects do.
+     * not resolve leaves the section to a later batch, as World objects do. A section left unbound
+     * then takes the first {@link #worldAdditiveBatch} whose texture resolves, as an unlit additive
+     * surface, so an opaque or alpha-keyed batch always claims its section first. False when an
+     * additive candidate's weight could not be decided (no facts): the binding is then not saved.
      */
-    private static void worldSurfaces(
+    private static boolean worldSurfaces(
             M2Types.Model model,
             List<M2Types.Batch> batches,
+            M2Appearance.ModelFacts facts,
             TexturePool pool,
             List<MeshAppearance.Surface> bindings,
             Cancellation token) {
@@ -991,6 +1044,43 @@ public final class DisplayModelService implements BuildDisplayModels {
                             model.materials().get(batch.materialIndex()).blendMode() == 1));
             bound.add(batch.sectionIndex());
         }
+        boolean decided = true;
+        for (var batch : batches) {
+            token.check();
+            if (bound.contains(batch.sectionIndex())
+                    || !worldShape(model, batch)
+                    || model.materials().get(batch.materialIndex()).blendMode() != ADD_BLEND) {
+                continue;
+            }
+            var constant = constantWeight(model, batch, facts);
+            if (constant == null) {
+                decided = false;
+            }
+            if (constant != Boolean.TRUE) {
+                continue;
+            }
+            var texture =
+                    model.textures().get(model.textureCombos().get(batch.textureComboIndex()));
+            Integer index = pool.texture(texture);
+            if (index == null) {
+                continue;
+            }
+            bindings.add(
+                    new MeshAppearance.Surface(
+                            batch.sectionIndex(),
+                            new MeshAppearance.Material(
+                                    MeshAppearance.Combiner.DIFFUSE,
+                                    List.of(
+                                            new MeshAppearance.TextureStage(
+                                                    index,
+                                                    MeshAppearance.Coordinate.UV0,
+                                                    (texture.flags() & 1) != 0,
+                                                    (texture.flags() & 2) != 0)),
+                                    MeshAppearance.Lighting.UNLIT,
+                                    MeshAppearance.Blend.ADDITIVE)));
+            bound.add(batch.sectionIndex());
+        }
+        return decided;
     }
 
     static long textureId(M2Types.Texture texture, List<Long> variations) {

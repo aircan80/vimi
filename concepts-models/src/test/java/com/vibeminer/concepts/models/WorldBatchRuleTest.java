@@ -57,7 +57,9 @@ class WorldBatchRuleTest {
     void blendedAdditiveAndNonUv0BatchesStayOut() throws Exception {
         assertFalse(
                 world(new NativeMaterialFixture(274, 16, 0, 1, 0, 2)), "blended: no creature pass");
-        assertFalse(world(new NativeMaterialFixture(274, 16, 16, 1, 17, 4)), "additive glow");
+        assertFalse(
+                world(new NativeMaterialFixture(274, 16, 16, 1, 17, 4)),
+                "additive glow: the additive rule's, not this one");
         assertFalse(world(new NativeMaterialFixture(274, 16, 0x80, 1, 0, 0)), "Diffuse_Env");
         assertFalse(world(new NativeMaterialFixture(274, 16, 0x4000, 1, 0, 0)), "Diffuse_T2");
         assertFalse(world(new NativeMaterialFixture(274, 16, 0x7fff, 1, 0, 0)), "Diffuse_Env bit");
@@ -226,5 +228,133 @@ class WorldBatchRuleTest {
 
         var none = worldBinding(f, 9001, 9002);
         assertTrue(none.appearance().surfaces().isEmpty(), "no texture, no surface");
+    }
+
+    /** Points batch 0's texture weight at nothing (65535). */
+    private static void noWeight(NativeMaterialFixture f) {
+        int lookup = f.body.position();
+        f.declaration(144, 1, lookup);
+        f.body.putShort((short) -1).putShort((short) 0);
+    }
+
+    /**
+     * Points batch 0's texture weight at track 0, whose one sequence slice holds {@code keys} keys
+     * of weight 0 (no keys: the track never fades).
+     */
+    private static void weightTrack(NativeMaterialFixture f, int keys) {
+        int track = f.body.position();
+        f.declaration(88, 1, track);
+        f.body.putShort((short) 0).putShort((short) -1).putInt(0).putInt(0);
+        f.body.putInt(1).putInt(track + 20);
+        f.body.putInt(keys).putInt(track + 28);
+        for (int i = 0; i < keys; i++) {
+            f.body.putShort((short) 0);
+        }
+        f.body.position((f.body.position() + 3) & ~3);
+        int lookup = f.body.position();
+        f.declaration(144, 1, lookup);
+        f.body.putShort((short) 0).putShort((short) 0);
+    }
+
+    private static boolean additive(NativeMaterialFixture f, boolean withFacts) {
+        var parsed = f.parse();
+        return DisplayModelService.worldAdditiveBatch(
+                parsed.model(),
+                parsed.rest().batches().getFirst(),
+                withFacts ? parsed.appearance() : null);
+    }
+
+    /** An additive glow batch: Combiners_Mod / Diffuse_T1, unlit, blend 4. */
+    private static NativeMaterialFixture glow() throws Exception {
+        return new NativeMaterialFixture(274, 16, 16, 1, 0x11, 4);
+    }
+
+    @Test
+    void additiveBatchesDrawOnlyWithAWeightThatStaysFull() throws Exception {
+        var none = glow();
+        noWeight(none);
+        assertEquals(65535, none.parse().model().textureWeights().getFirst());
+        assertFalse(world(none), "not an opaque or alpha-keyed batch");
+        assertTrue(additive(none, true), "no weight track");
+        assertTrue(additive(none, false), "no weight track needs no facts");
+
+        var steady = glow();
+        weightTrack(steady, 0);
+        assertEquals(0, steady.parse().model().textureWeights().getFirst());
+        assertTrue(additive(steady, true), "a weight track without keys never fades");
+        assertFalse(additive(steady, false), "a weight track without facts is not drawn");
+
+        var fading = glow();
+        weightTrack(fading, 1);
+        assertFalse(additive(fading, true), "a weight key below full may hide the part");
+
+        var opaque = new NativeMaterialFixture(274, 16, 16, 1, 0x11, 0);
+        noWeight(opaque);
+        assertFalse(additive(opaque, true), "blend 0 is the opaque rule's");
+        for (int blend : new int[] {2, 3, 5, 6, 7}) {
+            var other = new NativeMaterialFixture(274, 16, 16, 1, 0x11, blend);
+            noWeight(other);
+            assertFalse(additive(other, true), "blend " + blend);
+        }
+        var env = new NativeMaterialFixture(274, 16, 0x80, 1, 0x11, 4);
+        noWeight(env);
+        assertFalse(additive(env, true), "Diffuse_Env");
+        var layered = glow();
+        noWeight(layered);
+        layered.skin.putShort(152, (short) 1);
+        assertFalse(additive(layered, true), "material layer 1");
+    }
+
+    @Test
+    void anAdditiveOnlySectionBindsAnUnlitAdditiveSurfaceUnderTheWorldKey() throws Exception {
+        var f = glow();
+        noWeight(f);
+        var world = worldBinding(f);
+        var surfaces = world.appearance().surfaces();
+        assertEquals(1, surfaces.size(), world.issues().toString());
+        var material = surfaces.getFirst().material();
+        assertEquals(MeshAppearance.Combiner.DIFFUSE, material.combiner());
+        assertEquals(MeshAppearance.Blend.ADDITIVE, material.blend());
+        assertEquals(MeshAppearance.Lighting.UNLIT, material.lighting());
+        assertEquals(1, material.stages().size(), "texture 1 only");
+        assertTrue(world.appearance().billboards().isEmpty(), "no rigid cards");
+        assertTrue(world.issues().contains(DisplayModelService.WORLD_NOTE));
+
+        var fading = glow();
+        weightTrack(fading, 1);
+        assertTrue(worldBinding(fading).appearance().surfaces().isEmpty(), "fading: no surface");
+    }
+
+    @Test
+    void anOpaqueBatchClaimsItsSectionAheadOfAnEarlierAdditiveOne() throws Exception {
+        var f = glow();
+        noWeight(f);
+        // Material 1 opaque; a second batch on section 0 with material 1 and texture combo 1.
+        int materials = f.body.position();
+        f.declaration(112, 2, materials);
+        f.body.putShort((short) 0x11).putShort((short) 4).putShort((short) 0).putShort((short) 0);
+        byte[] batch = Arrays.copyOfRange(f.skin.array(), 140, 164);
+        f.skin.position(164);
+        f.skin.put(batch);
+        f.skin.putShort(164 + 10, (short) 1);
+        f.skin.putShort(164 + 16, (short) 1);
+        f.skin.putInt(36, 2);
+        var parsed = f.parse();
+        assertEquals(2, parsed.rest().batches().size());
+        assertEquals(4, parsed.model().materials().get(0).blendMode());
+        assertEquals(0, parsed.model().materials().get(1).blendMode());
+
+        var world = worldBinding(f);
+        var surfaces = world.appearance().surfaces();
+        assertEquals(1, surfaces.size(), world.issues().toString());
+        assertEquals(MeshAppearance.Blend.OPAQUE, surfaces.getFirst().material().blend());
+        assertEquals(1, world.appearance().textures().size(), "only the opaque texture is decoded");
+
+        // With the opaque texture missing, the additive batch draws the section.
+        var fallback = worldBinding(f, 9002);
+        assertEquals(1, fallback.appearance().surfaces().size(), fallback.issues().toString());
+        assertEquals(
+                MeshAppearance.Blend.ADDITIVE,
+                fallback.appearance().surfaces().getFirst().material().blend());
     }
 }

@@ -467,6 +467,96 @@ public final class WorldMeasurementProbe {
             return converted.model() != null ? "drawn" : "not drawn: " + converted.refusal().label;
         }
 
+        /**
+         * For each sampled creature display the World refuses for want of a surface: the fewest
+         * blockers any material-layer-0 batch has against the World batch rule (combiner, blend,
+         * an additive texture weight that is not full in every key, texture type, empty monster
+         * skin slot, texture file), as one label per display.
+         */
+        Map<String, Integer> refusalBlockers(com.vibeminer.files.BuildFiles files) {
+            var out = new TreeMap<String, Integer>();
+            var models = new com.vibeminer.formats.models.BuildModels(files);
+            for (var entry : material.entrySet()) {
+                if (!entry.getValue().startsWith("not drawn: no opaque")) continue;
+                var preview = previews.get(entry.getKey());
+                if (preview == null || preview.reference() == null) continue;
+                String label;
+                try {
+                    label = blockers(models, files, preview.reference());
+                } catch (RuntimeException failed) {
+                    label = "unreadable: " + failed.getClass().getSimpleName();
+                }
+                if (label.startsWith("no blocker"))
+                    label = preview.issues().stream().filter(issue -> issue.startsWith("Texture "))
+                            .findFirst().map(issue -> "no blocker; " + reasonKind(issue))
+                            .orElse(label);
+                out.merge(label, 1, Integer::sum);
+            }
+            return out;
+        }
+
+        static String blockers(com.vibeminer.formats.models.BuildModels models,
+                com.vibeminer.files.BuildFiles files,
+                com.vibeminer.concepts.models.DisplayModelTypes.Reference reference) {
+            var token = Cancellation.NONE;
+            var read = models.readModel(
+                    com.vibeminer.files.FileTypes.FileRef.id(reference.modelFileDataId()), token).join();
+            if (read.model() == null) return "model " + read.state();
+            var skin = models.readRestDrawSkin(read, 0, token).join();
+            if (skin.skin() == null) return "skin " + skin.state();
+            var m = read.model();
+            com.vibeminer.formats.models.M2Appearance.ModelFacts facts = null;
+            try {
+                var opened = files.openRead(
+                        com.vibeminer.files.FileTypes.FileRef.id(reference.modelFileDataId()), token).join();
+                try (var stream = opened.stream()) {
+                    facts = com.vibeminer.formats.models.M2Appearance.readModel(
+                            com.vibeminer.formats.AssetSources.file(stream), m, token).join();
+                }
+            } catch (Exception unavailable) {
+                facts = null;
+            }
+            java.util.TreeSet<String> best = null;
+            for (var batch : skin.skin().batches()) {
+                if (batch.materialLayer() != 0) continue;
+                var set = new java.util.TreeSet<String>();
+                if (!com.vibeminer.formats.models.M2Combiners.firstTextureUsesUv0(
+                        batch.textureCount(), batch.shaderId())) {
+                    var names = batch.shaderId() < 0 || batch.shaderId() > 0xffff ? null
+                            : com.vibeminer.formats.models.M2Combiners.name(
+                                    batch.textureCount(), batch.shaderId());
+                    set.add("combiner " + (names == null ? "unnamed" : names.vertexShader()));
+                }
+                int blend = m.materials().get(batch.materialIndex()).blendMode();
+                if (blend == 4) {
+                    int weight = m.textureWeights().get(batch.textureWeightComboIndex());
+                    if (weight != 65535 && (facts == null || weight >= facts.staticWeights().size()
+                            || !facts.staticWeights().get(weight)))
+                        set.add("additive with a fading texture weight");
+                } else if (blend > 1) set.add("blend " + blend);
+                var texture = m.textures().get(m.textureCombos().get(batch.textureComboIndex()));
+                long type = texture.type();
+                if (type != 0 && (type < 11 || type > 13)) set.add("texture type " + type);
+                else {
+                    long fid = type == 0 ? (texture.fileDataId() == null ? 0 : texture.fileDataId())
+                            : type - 11 < reference.textureVariations().size()
+                                    ? reference.textureVariations().get((int) type - 11) : 0;
+                    if (fid <= 0) set.add(type == 0 ? "no texture file" : "empty monster skin slot");
+                    else {
+                        var stat = files.stat(com.vibeminer.files.FileTypes.FileRef.id(fid), token).join();
+                        if (stat.state() != com.vibeminer.files.FileTypes.FileLookupState.FOUND)
+                            set.add("texture " + stat.state());
+                    }
+                }
+                if (best == null || set.size() < best.size()
+                        || set.size() == best.size()
+                                && String.join("+", set).compareTo(String.join("+", best)) < 0)
+                    best = set;
+            }
+            if (best == null) return "no layer-0 batch";
+            return best.isEmpty() ? "no blocker (geosets or hidden sections)" : String.join(" + ", best);
+        }
+
         /** Distinct creature displays (no extended display info) per World material outcome. */
         Map<String, Integer> materialTally() {
             return tally(material, false);
@@ -735,6 +825,9 @@ public final class WorldMeasurementProbe {
             say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
         say("PROBE displays: sampled creature displays by World material outcome (static model)");
         for (var entry : display.materialTally().entrySet())
+            say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+        say("PROBE displays: World material refusals by the fewest blockers of any layer-0 batch");
+        for (var entry : display.refusalBlockers(opened.files()).entrySet())
             say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
         say("PROBE displays: sampled creature displays by World Stand outcome (all with a preview)");
         for (var entry : display.worldStandTally().entrySet())
