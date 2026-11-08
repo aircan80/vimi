@@ -145,7 +145,7 @@ class WorldBatchRuleTest {
     }
 
     /** The World binding of display 1 over the fixture, with the given texture files left out. */
-    private static DisplayModelTypes.Preview worldBinding(NativeMaterialFixture f, long... missing)
+    static DisplayModelTypes.Preview worldBinding(NativeMaterialFixture f, long... missing)
             throws Exception {
         return worldBindings(f, 1, missing).getFirst();
     }
@@ -154,7 +154,7 @@ class WorldBatchRuleTest {
      * {@code calls} World bindings of display 1 over the fixture from one service and store, so a
      * later call restores what an earlier one saved.
      */
-    private static List<DisplayModelTypes.Preview> worldBindings(
+    static List<DisplayModelTypes.Preview> worldBindings(
             NativeMaterialFixture f, int calls, long... missing) throws Exception {
         var files =
                 new AssetFilesFixture()

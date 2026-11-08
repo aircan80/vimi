@@ -19,6 +19,7 @@ import com.vibeminer.formats.models.M2ModelReader;
 import com.vibeminer.formats.models.M2RestDrawSkinReader;
 import com.vibeminer.formats.models.M2RestSkinReader;
 import com.vibeminer.formats.models.M2SkeletonFile;
+import com.vibeminer.formats.models.M2StandWeights;
 import com.vibeminer.formats.models.M2Types;
 import com.vibeminer.formats.models.ModelFormatException;
 import com.vibeminer.formats.tables.BuildTables;
@@ -104,8 +105,10 @@ public final class DisplayModelService implements BuildDisplayModels {
      * that the World objects' batch rule admits ({@link #worldBatch}), as an opaque or alpha-keyed
      * diffuse surface; a section with none draws its first constant-weight additive batch ({@link
      * #worldAdditiveBatch}) as an unlit additive surface, else its first constant-weight
-     * alpha-blended batch ({@link #worldBlendedBatch}) as a blended surface. {@link #preview} keeps
-     * the reviewed material profiles. Saved under its own key ({@link #WORLD_POLICY}).
+     * alpha-blended batch ({@link #worldBlendedBatch}) as a blended surface. With a Stand pose, an
+     * additive or blended batch whose weight fades is taken at the Stand sample instead ({@link
+     * #standAlpha}). {@link #preview} keeps the reviewed material profiles. Saved under its own key
+     * ({@link #WORLD_POLICY}).
      */
     @Override
     public CompletableFuture<DisplayModelTypes.Preview> worldPreview(
@@ -223,52 +226,11 @@ public final class DisplayModelService implements BuildDisplayModels {
             var m = read.model();
             var geometry = skin.skin().surface();
             var surface = restSurface(m, geometry, token);
-            var opened =
-                    files.openRead(FileTypes.FileRef.id(reference.modelFileDataId()), token).join();
-            if (opened.stream() == null) {
-                return Stands.both(idleFailed(reference, "Model source is unavailable"));
+            var stand = readStand(reference, m, token);
+            if (stand.idle() == null) {
+                return Stands.both(stand.answer());
             }
-            M2IdleAnimation.Idle idle;
-            try (var stream = opened.stream()) {
-                if (opened.state() != FileTypes.FileReadState.COMPLETE
-                        || !stream.holes().isEmpty()) {
-                    return Stands.both(idleFailed(reference, "Model source is incomplete"));
-                }
-                try {
-                    // A creature display (no extended display info) has no customization choice,
-                    // so no bone file applies and the base rig's Stand plays (#384).
-                    idle =
-                            routeStand(
-                                            reference,
-                                            () ->
-                                                    baseRigStand(
-                                                            files,
-                                                            m,
-                                                            AssetSources.file(stream),
-                                                            token),
-                                            () ->
-                                                    M2IdleAnimation.read(
-                                                            AssetSources.file(stream), m, token))
-                                    .join();
-                } catch (RuntimeException failure) {
-                    token.check();
-                    var cause = AssetTasks.unwrap(failure);
-                    if (cause instanceof ModelFormatException format
-                            && format.code().equals("MODEL_UNSUPPORTED")) {
-                        return Stands.both(
-                                new DisplayModelTypes.Idle(
-                                        DisplayModelTypes.IdleState.UNSUPPORTED,
-                                        reference,
-                                        null,
-                                        format.getMessage()));
-                    }
-                    return Stands.both(
-                            idleFailed(
-                                    reference,
-                                    "Idle sequence could not be read"
-                                            + message(cause == null ? null : cause.getMessage())));
-                }
-            }
+            var idle = stand.idle();
             return new Stands(
                     profiles == Profiles.WORLD
                             ? null
@@ -281,6 +243,63 @@ public final class DisplayModelService implements BuildDisplayModels {
         } catch (IllegalArgumentException unavailable) {
             token.check();
             return Stands.both(idleFailed(reference, unavailable.getMessage()));
+        }
+    }
+
+    /** A read Stand, or (idle null) the answer that stands for every profile instead. */
+    record StandRead(M2IdleAnimation.Idle idle, DisplayModelTypes.Idle answer) {}
+
+    /**
+     * Reads the display's Stand sequence from the model source: the base rig's for a creature
+     * display, otherwise with bone files refused ({@link #routeStand}). The pose the previews and
+     * the World draw and the World binding's Stand texture weights ({@link #standWeights}) both
+     * come from here.
+     */
+    private StandRead readStand(
+            DisplayModelTypes.Reference reference, M2Types.Model m, Cancellation token) {
+        var opened =
+                files.openRead(FileTypes.FileRef.id(reference.modelFileDataId()), token).join();
+        if (opened.stream() == null) {
+            return new StandRead(null, idleFailed(reference, "Model source is unavailable"));
+        }
+        try (var stream = opened.stream()) {
+            if (opened.state() != FileTypes.FileReadState.COMPLETE || !stream.holes().isEmpty()) {
+                return new StandRead(null, idleFailed(reference, "Model source is incomplete"));
+            }
+            try {
+                // A creature display (no extended display info) has no customization choice,
+                // so no bone file applies and the base rig's Stand plays (#384).
+                return new StandRead(
+                        routeStand(
+                                        reference,
+                                        () ->
+                                                baseRigStand(
+                                                        files, m, AssetSources.file(stream), token),
+                                        () ->
+                                                M2IdleAnimation.read(
+                                                        AssetSources.file(stream), m, token))
+                                .join(),
+                        null);
+            } catch (RuntimeException failure) {
+                token.check();
+                var cause = AssetTasks.unwrap(failure);
+                if (cause instanceof ModelFormatException format
+                        && format.code().equals("MODEL_UNSUPPORTED")) {
+                    return new StandRead(
+                            null,
+                            new DisplayModelTypes.Idle(
+                                    DisplayModelTypes.IdleState.UNSUPPORTED,
+                                    reference,
+                                    null,
+                                    format.getMessage()));
+                }
+                return new StandRead(
+                        null,
+                        idleFailed(
+                                reference,
+                                "Idle sequence could not be read"
+                                        + message(cause == null ? null : cause.getMessage())));
+            }
         }
     }
 
@@ -451,7 +470,16 @@ public final class DisplayModelService implements BuildDisplayModels {
             String content = stat.file().contentKey();
             var identity =
                     new StringBuilder(
-                            (world ? WORLD_POLICY + "\n" : "")
+                            (world
+                                            ? WORLD_POLICY
+                                                    + "\n"
+                                                    + M2StandWeights.REVISION
+                                                    + "\n"
+                                                    + M2IdleAnimation.REVISION
+                                                    + "\n"
+                                                    + DisplayIdleAnimations.POLICY
+                                                    + "\n"
+                                            : "")
                                     + POLICY
                                     + "\n"
                                     + M2ModelReader.REVISION
@@ -614,8 +642,22 @@ public final class DisplayModelService implements BuildDisplayModels {
             boolean worldFactsMissing = false;
             var billboards = new ArrayList<MeshAppearance.RigidBillboard>();
             if (world) {
+                // Fading additive or blended weights are taken at the Stand sample (#384).
+                var stand =
+                        fading(m, skin.skin().batches(), facts)
+                                ? standWeights(reference, m, geometry, surface, token)
+                                : StandSample.NONE;
                 worldFactsMissing =
-                        !worldSurfaces(m, skin.skin().batches(), facts, pool, bindings, token);
+                        !worldSurfaces(
+                                        m,
+                                        skin.skin().batches(),
+                                        facts,
+                                        stand,
+                                        pool,
+                                        bindings,
+                                        issues,
+                                        token)
+                                || stand.retry();
                 TableProjection.note(issues, WORLD_NOTE);
             }
             for (var batch : world ? List.<M2Types.Batch>of() : skin.skin().batches()) {
@@ -684,8 +726,9 @@ public final class DisplayModelService implements BuildDisplayModels {
             var appearance =
                     new MeshAppearance(mesh, uv, normals, bindings, pool.textures, billboards);
             limitations(reference, mesh, issues);
-            // The World rule reads material source facts only for additive texture weights, so
-            // their absence stops a save only when an additive batch needed them.
+            // The World rule reads material source facts only for additive and blended texture
+            // weights, so their absence (or a Stand sample that may still be read) stops a save
+            // only when such a batch needed them.
             if ((world ? !worldFactsMissing : sourceFactsComplete) && pool.complete) {
                 cache.save(key, appearance, receipts, token, issues);
             }
@@ -921,13 +964,14 @@ public final class DisplayModelService implements BuildDisplayModels {
     }
 
     /** The World binding rule's revision; part of the World binding's saved key only. */
-    public static final String WORLD_POLICY = "display-world-batch-rule-v3";
+    public static final String WORLD_POLICY = "display-world-batch-rule-v4";
 
     /** The World binding's stated approximation, noted on every World binding. */
     public static final String WORLD_NOTE =
             "World batch rule: each section draws texture 1 of its first Diffuse_T1 opaque or"
                     + " alpha-keyed batch, else of its first additive one (unlit), else of its"
-                    + " first alpha-blended one, whose texture weight stays full; environment and"
+                    + " first alpha-blended one, whose texture weight stays full or, with a Stand"
+                    + " pose, is not zero at the Stand sample (alpha scaled by it); environment and"
                     + " add layers, color tracks, opaque texture weights and transforms, and render"
                     + " flags other than unlit on blended batches are not evaluated.";
 
@@ -1013,6 +1057,123 @@ public final class DisplayModelService implements BuildDisplayModels {
         return weight < facts.staticWeights().size() && facts.staticWeights().get(weight);
     }
 
+    /**
+     * Whether a batch the additive or blended pass could take has a weight that is not constant
+     * full: only then does the World binding read the Stand sample.
+     */
+    private static boolean fading(
+            M2Types.Model model, List<M2Types.Batch> batches, M2Appearance.ModelFacts facts) {
+        for (var batch : batches) {
+            if (worldShape(model, batch)) {
+                int blend = model.materials().get(batch.materialIndex()).blendMode();
+                if ((blend == ADD_BLEND || blend == ALPHA_BLEND)
+                        && constantWeight(model, batch, facts) == Boolean.FALSE) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The World binding's texture weights at the Stand sample, or {@link #NONE} (weights null): the
+     * display has no Stand pose, or it could not be read, with the reason. {@code retry}: the
+     * answer may change when read again (a source not stored yet), so the binding is not saved.
+     */
+    record StandSample(List<M2StandWeights.Weight> weights, String reason, boolean retry) {
+        static final StandSample NONE = new StandSample(null, null, false);
+    }
+
+    /**
+     * Reads the Stand the World draws the display in ({@link #readStand} then the World admission
+     * {@link #admitted}, as {@link #worldIdle} answers it) and every texture weight at its sample
+     * ({@link M2StandWeights}). A display whose World Stand is not available has no Stand pose: the
+     * World draws its rest pose, and fading weights keep the constant-weight rule.
+     */
+    private StandSample standWeights(
+            DisplayModelTypes.Reference reference,
+            M2Types.Model m,
+            M2Types.RestSkin geometry,
+            RestSurface surface,
+            Cancellation token) {
+        var stand = readStand(reference, m, token);
+        if (stand.idle() == null) {
+            return new StandSample(
+                    null,
+                    stand.answer().message(),
+                    stand.answer().state() == DisplayModelTypes.IdleState.UNAVAILABLE);
+        }
+        var world = admitted(reference, m, geometry, surface, stand.idle(), true, token);
+        if (world.state() != DisplayModelTypes.IdleState.AVAILABLE) {
+            return new StandSample(null, world.message(), false);
+        }
+        var opened =
+                files.openRead(FileTypes.FileRef.id(reference.modelFileDataId()), token).join();
+        if (opened.stream() == null) {
+            return new StandSample(null, "Model source is unavailable", true);
+        }
+        try (var stream = opened.stream()) {
+            if (opened.state() != FileTypes.FileReadState.COMPLETE || !stream.holes().isEmpty()) {
+                return new StandSample(null, "Model source is incomplete", true);
+            }
+            return new StandSample(
+                    M2StandWeights.read(AssetSources.file(stream), m, stand.idle(), token).join(),
+                    null,
+                    false);
+        } catch (RuntimeException failure) {
+            token.check();
+            var cause = AssetTasks.unwrap(failure);
+            return new StandSample(
+                    null,
+                    "Stand texture weights could not be read"
+                            + message(cause == null ? null : cause.getMessage()),
+                    true);
+        }
+    }
+
+    /**
+     * The 8-bit alpha scale of a batch whose weight is not constant full, at the Stand sample: 0
+     * (not drawn) without a Stand pose, for an undecided weight or one that rounds to 0 there; 255
+     * for one that rounds to full; otherwise the rounded weight, which scales the texture's alpha.
+     * Each case that leaves the batch out is noted.
+     */
+    static int standAlpha(
+            M2Types.Model model, M2Types.Batch batch, StandSample stand, List<String> issues) {
+        if (stand.weights() == null) {
+            TableProjection.note(
+                    issues,
+                    "A fading texture weight is not drawn without a Stand pose"
+                            + (stand.reason() == null ? "." : ": " + stand.reason()));
+            return 0;
+        }
+        int track = model.textureWeights().get(batch.textureWeightComboIndex());
+        if (track >= stand.weights().size()) {
+            TableProjection.note(
+                    issues, "A texture weight names a track the model does not declare.");
+            return 0;
+        }
+        var weight = stand.weights().get(track);
+        if (!weight.resolved()) {
+            TableProjection.note(
+                    issues,
+                    "A fading texture weight is not drawn: at the Stand sample, "
+                            + weight.refusal()
+                            + ".");
+            return 0;
+        }
+        int alpha = Math.round(weight.value() * 255);
+        TableProjection.note(
+                issues,
+                alpha == 0
+                        ? "Stand texture weight: a fading section is hidden at the Stand sample."
+                        : alpha == 255
+                                ? "Stand texture weight: a fading section is full at the Stand"
+                                        + " sample."
+                                : "Stand texture weight: a fading section draws with its Stand"
+                                        + " weight scaling its alpha.");
+        return alpha;
+    }
+
     /** The World rule's shape: layer 0, a UV0 texture 1 and in-range references. */
     private static boolean worldShape(M2Types.Model model, M2Types.Batch batch) {
         if (batch.materialLayer() != 0
@@ -1038,15 +1199,18 @@ public final class DisplayModelService implements BuildDisplayModels {
      * then takes the first {@link #worldAdditiveBatch} whose texture resolves, as an unlit additive
      * surface, and a section still unbound its first {@link #worldBlendedBatch} whose texture
      * resolves, as a blended surface; so an opaque or alpha-keyed batch always claims its section
-     * first, and no additive binding changes. False when an additive or blended candidate's weight
-     * could not be decided (no facts): the binding is then not saved.
+     * first, and no additive binding changes. An additive or blended batch whose weight fades is
+     * taken at the Stand sample ({@code stand}, {@link #standAlpha}). False when an additive or
+     * blended candidate's weight could not be decided (no facts): the binding is then not saved.
      */
     private static boolean worldSurfaces(
             M2Types.Model model,
             List<M2Types.Batch> batches,
             M2Appearance.ModelFacts facts,
+            StandSample stand,
             TexturePool pool,
             List<MeshAppearance.Surface> bindings,
+            List<String> issues,
             Cancellation token) {
         var bound = new java.util.HashSet<Integer>();
         for (var batch : batches) {
@@ -1070,24 +1234,41 @@ public final class DisplayModelService implements BuildDisplayModels {
             bound.add(batch.sectionIndex());
         }
         boolean additive =
-                sortedSurfaces(model, batches, facts, pool, bindings, bound, ADD_BLEND, token);
+                sortedSurfaces(
+                        model, batches, facts, stand, pool, bindings, issues, bound, ADD_BLEND,
+                        token);
         boolean blended =
-                sortedSurfaces(model, batches, facts, pool, bindings, bound, ALPHA_BLEND, token);
+                sortedSurfaces(
+                        model,
+                        batches,
+                        facts,
+                        stand,
+                        pool,
+                        bindings,
+                        issues,
+                        bound,
+                        ALPHA_BLEND,
+                        token);
         return additive && blended;
     }
 
     /**
-     * Binds each section not yet in {@code bound} to texture 1 of its first constant-weight batch
-     * of the given blend mode ({@link #ADD_BLEND}: unlit additive; {@link #ALPHA_BLEND}: blended,
-     * lit unless the material is unlit) whose texture resolves. False when a candidate's weight
+     * Binds each section not yet in {@code bound} to texture 1 of its first batch of the given
+     * blend mode ({@link #ADD_BLEND}: unlit additive; {@link #ALPHA_BLEND}: blended, lit unless the
+     * material is unlit) whose texture resolves and whose weight is constant full or, with a Stand
+     * pose ({@code stand}), not zero at the Stand sample ({@link #standAlpha}): a weight that fades
+     * to zero there is hidden in the pose the World draws, and a partial one scales the texture's
+     * alpha. Without a Stand pose a fading weight is not drawn. False when a candidate's weight
      * could not be decided.
      */
     private static boolean sortedSurfaces(
             M2Types.Model model,
             List<M2Types.Batch> batches,
             M2Appearance.ModelFacts facts,
+            StandSample stand,
             TexturePool pool,
             List<MeshAppearance.Surface> bindings,
+            List<String> issues,
             java.util.Set<Integer> bound,
             int blend,
             Cancellation token) {
@@ -1102,13 +1283,21 @@ public final class DisplayModelService implements BuildDisplayModels {
             var constant = constantWeight(model, batch, facts);
             if (constant == null) {
                 decided = false;
-            }
-            if (constant != Boolean.TRUE) {
                 continue;
+            }
+            int alpha = 255;
+            if (!constant) {
+                alpha = standAlpha(model, batch, stand, issues);
+                if (alpha == 0) {
+                    continue;
+                }
             }
             var texture =
                     model.textures().get(model.textureCombos().get(batch.textureComboIndex()));
             Integer index = pool.texture(texture);
+            if (index != null && alpha < 255) {
+                index = pool.scaled(index, alpha);
+            }
             if (index == null) {
                 continue;
             }
@@ -1212,6 +1401,7 @@ public final class DisplayModelService implements BuildDisplayModels {
     private final class TexturePool {
         final List<MeshAppearance.Texture> textures = new ArrayList<>();
         final Map<Long, Integer> decoded = new HashMap<>();
+        final Map<Long, Integer> scaledCopies = new HashMap<>();
         final DisplayModelTypes.Reference reference;
         final Map<Long, String> receipts;
         final Cancellation token;
@@ -1272,6 +1462,38 @@ public final class DisplayModelService implements BuildDisplayModels {
             decoded.put(fid, index);
             receipts.put(fid, stat.file().contentKey());
             return index;
+        }
+
+        /**
+         * Texture {@code index} with its alpha scaled by {@code alpha} / 255 (a Stand texture
+         * weight), as one more texture of the binding; one copy per texture and scale.
+         */
+        Integer scaled(int index, int alpha) {
+            Integer existing = scaledCopies.get((long) index << 8 | alpha);
+            if (existing != null) {
+                return existing;
+            }
+            if (textures.size() >= 16) {
+                return unavailable("Additional textures exceed the preview budget.");
+            }
+            var source = textures.get(index);
+            long count = (long) source.width() * source.height();
+            if (count > 8_388_608L - pixels) {
+                return unavailable("Additional textures exceed the preview pixel budget.");
+            }
+            int[] argb = source.argb();
+            for (int at = 0; at < argb.length; at++) {
+                if ((at & 16383) == 0) {
+                    token.check();
+                }
+                int a = ((argb[at] >>> 24) * alpha + 127) / 255;
+                argb[at] = a << 24 | argb[at] & 0xffffff;
+            }
+            pixels += count;
+            int copy = textures.size();
+            textures.add(MeshAppearance.Texture.adopt(source.width(), source.height(), argb));
+            scaledCopies.put((long) index << 8 | alpha, copy);
+            return copy;
         }
 
         private Integer unavailable(String message) {
