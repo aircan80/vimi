@@ -48,10 +48,16 @@ public final class MeshAppearance {
         }
     }
 
+    /**
+     * How a surface combines with what is behind it. {@link #BLENDED} (source-alpha over) is
+     * produced only by the World's creature binding and drawn only by the World; the model preview
+     * renderers have no blended pass.
+     */
     public enum Blend {
         OPAQUE(1),
         ALPHA_KEY(2),
-        ADDITIVE(3);
+        ADDITIVE(3),
+        BLENDED(4);
         private final int code;
 
         Blend(int code) {
@@ -81,9 +87,13 @@ public final class MeshAppearance {
                             && stages.size() == 1
                             && stages.getFirst().coordinate() == Coordinate.UV0
                             && (lighting == Lighting.LIT
-                                            && (blend == Blend.OPAQUE || blend == Blend.ALPHA_KEY)
+                                            && (blend == Blend.OPAQUE
+                                                    || blend == Blend.ALPHA_KEY
+                                                    || blend == Blend.BLENDED)
                                     || lighting == Lighting.UNLIT
-                                            && (blend == Blend.OPAQUE || blend == Blend.ADDITIVE));
+                                            && (blend == Blend.OPAQUE
+                                                    || blend == Blend.ADDITIVE
+                                                    || blend == Blend.BLENDED));
             boolean environment =
                     combiner == Combiner.OPAQUE_MOD2X_NA
                             && stages.size() == 2

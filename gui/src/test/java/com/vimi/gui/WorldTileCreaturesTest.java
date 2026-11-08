@@ -37,6 +37,7 @@ public final class WorldTileCreaturesTest {
         texturesReduceToPowerOfTwoOpaqueImages();
         alphaKeyedSurfacesDrawAsCutoutKeepingAlpha();
         additiveSurfacesDrawInTheAdditivePassUnlit();
+        blendedSurfacesDrawInTheBlendedPassLitOrUnlit();
         defaultGeosetsDrawWithoutCreatureGeosetData();
         aDenseNeighbourNoLongerStarvesTheTilesOwnSpawns();
         busyOrClosedPreviewsCostNoBudget();
@@ -193,6 +194,56 @@ public final class WorldTileCreaturesTest {
                 WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0))), () -> "r1",
                 (npcId, token) -> qualified(7, null), (display, token) -> preview(display, 0L, 0L, additiveOnly()));
         require(creatures.append(builder, 0, TILE, Cancellation.NONE).drawn() == 1, "The additive creature is placed");
+    }
+
+    /**
+     * Blended surfaces (the creature World binding's blend 2, #361) draw as blended ranges in the
+     * World objects' sorted blended pass, unlit only when the binding says so.
+     */
+    private static void blendedSurfacesDrawInTheBlendedPassLitOrUnlit() {
+        var lit = WorldTileCreatures.convert(preview(7, 0L, 0L, blendedAndAdditive(MeshAppearance.Lighting.LIT)),
+                Cancellation.NONE);
+        require(lit.model() != null, "A blended creature draws: " + lit.detail());
+        var model = lit.model();
+        require(java.util.Arrays.equals(model.blends(), new int[] {WorldTileCreatures.BLENDED,
+                        WorldTileCreatures.ADDITIVE | WorldTileCreatures.UNLIT}),
+                "Blended then additive ranges: " + java.util.Arrays.toString(model.blends()));
+        require(com.vibeminer.rendering.world.WorldObjectPicking.kind(model.blends()[0])
+                        == com.vibeminer.rendering.world.WorldObjectPicking.BLENDED
+                        && com.vibeminer.rendering.world.WorldObjectPicking.validClass(model.blends()[0]),
+                "The range kind is the objects file's blended kind");
+        require(model.images().size() == 1 && (model.images().get(0).rgba()[3] & 255) == 0x80,
+                "Blended and additive uses of one texture share one blended image, alpha kept");
+        var unlit = WorldTileCreatures.convert(preview(7, 0L, 0L,
+                blendedAndAdditive(MeshAppearance.Lighting.UNLIT)), Cancellation.NONE).model();
+        require(unlit != null && unlit.blends()[0] == (WorldTileCreatures.BLENDED | WorldTileCreatures.UNLIT)
+                        && com.vibeminer.rendering.world.WorldObjectPicking.validClass(unlit.blends()[0]),
+                "An unlit blended surface is an unlit blended range");
+        // Humanoid NPC appearances do not take the creature rule's blended surfaces.
+        var npc = WorldTileCreatures.surfaces(blendedAndAdditive(MeshAppearance.Lighting.LIT), Set.of(0),
+                Cancellation.NONE);
+        require(npc.refusal() == WorldTileCreatures.Count.NO_OPAQUE_SURFACE,
+                "NPC appearances leave blended surfaces out");
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        var creatures = new WorldTileCreatures(token -> index(List.of(
+                WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0))), () -> "r1",
+                (npcId, token) -> qualified(7, null),
+                (display, token) -> preview(display, 0L, 0L, blendedAndAdditive(MeshAppearance.Lighting.LIT)));
+        require(creatures.append(builder, 0, TILE, Cancellation.NONE).drawn() == 1, "The blended creature is placed");
+    }
+
+    /** Part 0 blended (with the given lighting) and part 1 unlit additive, on one texture. */
+    static MeshAppearance blendedAndAdditive(MeshAppearance.Lighting lighting) {
+        var mesh = new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, new int[] {0, 1, 2, 0, 2, 1},
+                List.of(new PreviewMesh.Part(0, 0, 3), new PreviewMesh.Part(0, 3, 3)));
+        var stage = List.of(new MeshAppearance.TextureStage(0, MeshAppearance.Coordinate.UV0, true, true));
+        var blended = new MeshAppearance.Material(MeshAppearance.Combiner.DIFFUSE, stage, lighting,
+                MeshAppearance.Blend.BLENDED);
+        var additive = new MeshAppearance.Material(MeshAppearance.Combiner.DIFFUSE, stage,
+                MeshAppearance.Lighting.UNLIT, MeshAppearance.Blend.ADDITIVE);
+        return new MeshAppearance(mesh, new float[6],
+                List.of(new MeshAppearance.Surface(0, blended), new MeshAppearance.Surface(1, additive)),
+                List.of(new MeshAppearance.Texture(1, 1, new int[] {0x80ffffff})));
     }
 
     /** Part 0 opaque and part 1 unlit additive, both on one half-transparent texture. */

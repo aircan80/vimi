@@ -103,8 +103,9 @@ public final class DisplayModelService implements BuildDisplayModels {
      * The World's binding of the display (#361): each section draws texture 1 of its first batch
      * that the World objects' batch rule admits ({@link #worldBatch}), as an opaque or alpha-keyed
      * diffuse surface; a section with none draws its first constant-weight additive batch ({@link
-     * #worldAdditiveBatch}) as an unlit additive surface. {@link #preview} keeps the reviewed
-     * material profiles. Saved under its own key ({@link #WORLD_POLICY}).
+     * #worldAdditiveBatch}) as an unlit additive surface, else its first constant-weight
+     * alpha-blended batch ({@link #worldBlendedBatch}) as a blended surface. {@link #preview} keeps
+     * the reviewed material profiles. Saved under its own key ({@link #WORLD_POLICY}).
      */
     @Override
     public CompletableFuture<DisplayModelTypes.Preview> worldPreview(
@@ -920,14 +921,15 @@ public final class DisplayModelService implements BuildDisplayModels {
     }
 
     /** The World binding rule's revision; part of the World binding's saved key only. */
-    public static final String WORLD_POLICY = "display-world-batch-rule-v2";
+    public static final String WORLD_POLICY = "display-world-batch-rule-v3";
 
     /** The World binding's stated approximation, noted on every World binding. */
     public static final String WORLD_NOTE =
             "World batch rule: each section draws texture 1 of its first Diffuse_T1 opaque or"
-                    + " alpha-keyed batch, else of its first additive one whose texture weight stays"
-                    + " full, unlit; environment and add layers, color tracks, opaque texture"
-                    + " weights and transforms, and render flags are not evaluated.";
+                    + " alpha-keyed batch, else of its first additive one (unlit), else of its"
+                    + " first alpha-blended one, whose texture weight stays full; environment and"
+                    + " add layers, color tracks, opaque texture weights and transforms, and render"
+                    + " flags other than unlit on blended batches are not evaluated.";
 
     /**
      * Whether a batch is drawn under the World objects' batch rule (#360, {@code
@@ -939,8 +941,9 @@ public final class DisplayModelService implements BuildDisplayModels {
      * <p>Four intended differences from World objects ({@link #worldSurfaces}):
      *
      * <ul>
-     *   <li>Blend 2 is skipped rather than claiming the section: creatures have no blended pass, so
-     *       a later opaque or alpha-keyed batch on the section may draw instead.
+     *   <li>Blend 2 is skipped rather than claiming the section, so a later opaque or alpha-keyed
+     *       batch on the section may draw instead; a section with none may draw it in the blended
+     *       pass ({@link #worldBlendedBatch}).
      *   <li>Texture types 11 to 13 resolve to the display's monster skin; objects take type 0 only.
      *   <li>A section with no such batch may draw an additive one ({@link #worldAdditiveBatch});
      *       World objects draw no M2 additive batch.
@@ -966,8 +969,28 @@ public final class DisplayModelService implements BuildDisplayModels {
      */
     static boolean worldAdditiveBatch(
             M2Types.Model model, M2Types.Batch batch, M2Appearance.ModelFacts facts) {
+        return worldSortedBatch(model, batch, facts, ADD_BLEND);
+    }
+
+    /** M2 blend mode 2, GxBlend_Alpha (source alpha, one minus source alpha): the blended pass. */
+    static final int ALPHA_BLEND = 2;
+
+    /**
+     * Whether a batch is drawn as a blended surface by the World: the shape {@link #worldBatch}
+     * requires, blend mode 2 (source-alpha over, the World objects' blended pass, which draws M2
+     * blend 2 for objects too) and, as for additive batches, a texture weight that is absent or
+     * full in every key, since the weight scales the batch's alpha. Lit unless the material's unlit
+     * flag (0x1) is set. Colour tracks are not consulted.
+     */
+    static boolean worldBlendedBatch(
+            M2Types.Model model, M2Types.Batch batch, M2Appearance.ModelFacts facts) {
+        return worldSortedBatch(model, batch, facts, ALPHA_BLEND);
+    }
+
+    private static boolean worldSortedBatch(
+            M2Types.Model model, M2Types.Batch batch, M2Appearance.ModelFacts facts, int blend) {
         if (!worldShape(model, batch)
-                || model.materials().get(batch.materialIndex()).blendMode() != ADD_BLEND) {
+                || model.materials().get(batch.materialIndex()).blendMode() != blend) {
             return false;
         }
         return constantWeight(model, batch, facts) == Boolean.TRUE;
@@ -1013,8 +1036,10 @@ public final class DisplayModelService implements BuildDisplayModels {
      * resolves (file, or the display's monster skin for types 11 to 13); a batch whose texture does
      * not resolve leaves the section to a later batch, as World objects do. A section left unbound
      * then takes the first {@link #worldAdditiveBatch} whose texture resolves, as an unlit additive
-     * surface, so an opaque or alpha-keyed batch always claims its section first. False when an
-     * additive candidate's weight could not be decided (no facts): the binding is then not saved.
+     * surface, and a section still unbound its first {@link #worldBlendedBatch} whose texture
+     * resolves, as a blended surface; so an opaque or alpha-keyed batch always claims its section
+     * first, and no additive binding changes. False when an additive or blended candidate's weight
+     * could not be decided (no facts): the binding is then not saved.
      */
     private static boolean worldSurfaces(
             M2Types.Model model,
@@ -1044,12 +1069,34 @@ public final class DisplayModelService implements BuildDisplayModels {
                             model.materials().get(batch.materialIndex()).blendMode() == 1));
             bound.add(batch.sectionIndex());
         }
+        boolean additive =
+                sortedSurfaces(model, batches, facts, pool, bindings, bound, ADD_BLEND, token);
+        boolean blended =
+                sortedSurfaces(model, batches, facts, pool, bindings, bound, ALPHA_BLEND, token);
+        return additive && blended;
+    }
+
+    /**
+     * Binds each section not yet in {@code bound} to texture 1 of its first constant-weight batch
+     * of the given blend mode ({@link #ADD_BLEND}: unlit additive; {@link #ALPHA_BLEND}: blended,
+     * lit unless the material is unlit) whose texture resolves. False when a candidate's weight
+     * could not be decided.
+     */
+    private static boolean sortedSurfaces(
+            M2Types.Model model,
+            List<M2Types.Batch> batches,
+            M2Appearance.ModelFacts facts,
+            TexturePool pool,
+            List<MeshAppearance.Surface> bindings,
+            java.util.Set<Integer> bound,
+            int blend,
+            Cancellation token) {
         boolean decided = true;
         for (var batch : batches) {
             token.check();
             if (bound.contains(batch.sectionIndex())
                     || !worldShape(model, batch)
-                    || model.materials().get(batch.materialIndex()).blendMode() != ADD_BLEND) {
+                    || model.materials().get(batch.materialIndex()).blendMode() != blend) {
                 continue;
             }
             var constant = constantWeight(model, batch, facts);
@@ -1065,6 +1112,9 @@ public final class DisplayModelService implements BuildDisplayModels {
             if (index == null) {
                 continue;
             }
+            boolean unlit =
+                    blend == ADD_BLEND
+                            || (model.materials().get(batch.materialIndex()).flags() & 1) != 0;
             bindings.add(
                     new MeshAppearance.Surface(
                             batch.sectionIndex(),
@@ -1076,8 +1126,12 @@ public final class DisplayModelService implements BuildDisplayModels {
                                                     MeshAppearance.Coordinate.UV0,
                                                     (texture.flags() & 1) != 0,
                                                     (texture.flags() & 2) != 0)),
-                                    MeshAppearance.Lighting.UNLIT,
-                                    MeshAppearance.Blend.ADDITIVE)));
+                                    unlit
+                                            ? MeshAppearance.Lighting.UNLIT
+                                            : MeshAppearance.Lighting.LIT,
+                                    blend == ADD_BLEND
+                                            ? MeshAppearance.Blend.ADDITIVE
+                                            : MeshAppearance.Blend.BLENDED)));
             bound.add(batch.sectionIndex());
         }
         return decided;

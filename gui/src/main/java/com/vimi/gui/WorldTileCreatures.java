@@ -53,8 +53,9 @@ final class WorldTileCreatures implements AutoCloseable {
     static final int IMAGE_SIDE = 256;
 
     /**
-     * Range material classes, as in the objects file: opaque, alpha-key cutout and additive (drawn
-     * in the World objects' sorted additive pass, its images prepared as blended ones).
+     * Range material classes, as in the objects file: opaque, alpha-key cutout, blended and additive
+     * (drawn in the World objects' sorted blended and additive passes, both with images prepared as
+     * blended ones).
      */
     static final int OPAQUE = com.vibeminer.rendering.world.ObjectTextureMips.OPAQUE,
             CUTOUT = com.vibeminer.rendering.world.ObjectTextureMips.CUTOUT,
@@ -87,7 +88,7 @@ final class WorldTileCreatures implements AutoCloseable {
          */
         CHARACTER_RETRY("character appearance not readable yet"),
         VISIBILITY_UNRESOLVED("surface visibility unresolved"),
-        NO_OPAQUE_SURFACE("no opaque, alpha-keyed or additive textured surface"),
+        NO_OPAQUE_SURFACE("no opaque, alpha-keyed, additive or blended textured surface"),
         /**
          * Every drawable triangle of its Stand pose is weighted to a camera-facing bone, which the
          * World does not draw: refused, as World objects refuse such a model (#360, #384).
@@ -288,8 +289,8 @@ final class WorldTileCreatures implements AutoCloseable {
     /**
      * A converted static model in M2 model space (Z up, +X forward): 8 floats per vertex
      * (position, normal, uv), u16-range indices, (first index, index count, local image) ranges and
-     * one material class per range ({@link #OPAQUE}, {@link #CUTOUT} or {@link #ADDITIVE} with
-     * {@link #UNLIT}).
+     * one material class per range ({@link #OPAQUE}, {@link #CUTOUT}, {@link #BLENDED} with or
+     * without {@link #UNLIT}, or {@link #ADDITIVE} with {@link #UNLIT}).
      */
     record Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
             int omittedSurfaces, String restPose, NpcCounts npc, int billboardTriangles) {
@@ -770,9 +771,9 @@ final class WorldTileCreatures implements AutoCloseable {
 
     /**
      * The tile-independent BASIC conversion of one display's static preview. Refuses character
-     * appearance, models without an opaque, alpha-keyed or additive diffuse surface, and every
-     * geoset choice it cannot make from recorded facts ({@link #visibleGeosets}), including a model
-     * whose every section the display's rows hide. Never a guessed variant.
+     * appearance, models without an opaque, alpha-keyed, additive or blended diffuse surface, and
+     * every geoset choice it cannot make from recorded facts ({@link #visibleGeosets}), including a
+     * model whose every section the display's rows hide. Never a guessed variant.
      */
     static Converted convert(DisplayModelTypes.Preview preview, Cancellation token) {
         return convert(preview, new int[0], token);
@@ -810,11 +811,12 @@ final class WorldTileCreatures implements AutoCloseable {
      * As {@link #surfaces(MeshAppearance, Set, Cancellation)}, also leaving out every triangle with
      * a vertex in {@code leftOut} (weighted to a camera-facing bone, #384), counted on the model. A
      * surface left with no triangle is an omitted surface, as one made only of rigid cards is. With
-     * {@code additive}, unlit additive surfaces (the creature World binding's, #361) draw as
-     * {@link #ADDITIVE} ranges; humanoid NPC appearances keep leaving them out.
+     * {@code sorted}, unlit additive surfaces and blended surfaces (the creature World binding's,
+     * #361) draw as {@link #ADDITIVE} and {@link #BLENDED} ranges; humanoid NPC appearances keep
+     * leaving them out.
      */
     static Converted surfaces(MeshAppearance appearance, Set<Integer> visibleIds, int[] leftOut,
-            boolean additive, Cancellation token) {
+            boolean sorted, Cancellation token) {
         var mesh = appearance.mesh();
         var billboard = new HashSet<Integer>();
         for (int vertex : leftOut) billboard.add(vertex);
@@ -844,18 +846,25 @@ final class WorldTileCreatures implements AutoCloseable {
             if (surface == null
                     || surface.material().combiner() != MeshAppearance.Combiner.DIFFUSE
                     || blend == MeshAppearance.Blend.ADDITIVE
-                            && (!additive || surface.material().lighting() != MeshAppearance.Lighting.UNLIT)
+                            && (!sorted || surface.material().lighting() != MeshAppearance.Lighting.UNLIT)
+                    || blend == MeshAppearance.Blend.BLENDED && !sorted
                     || surface.textureIndex() >= textures.size()) {
                 omitted++;
                 continue;
             }
-            // Additive surfaces are the World binding's unlit additive ones (GxBlend_Add).
+            // Additive surfaces are the World binding's unlit additive ones (GxBlend_Add), blended
+            // ones its alpha-blended ones (GxBlend_Alpha), lit or unlit.
             int materialClass = switch (blend) {
                 case ALPHA_KEY -> CUTOUT;
-                case ADDITIVE -> BLENDED;
+                case ADDITIVE, BLENDED -> BLENDED;
                 case OPAQUE -> OPAQUE;
             };
-            int rangeClass = blend == MeshAppearance.Blend.ADDITIVE ? ADDITIVE | UNLIT : materialClass;
+            int rangeClass = switch (blend) {
+                case ADDITIVE -> ADDITIVE | UNLIT;
+                case BLENDED -> surface.material().lighting() == MeshAppearance.Lighting.UNLIT
+                        ? BLENDED | UNLIT : BLENDED;
+                default -> materialClass;
+            };
             int first = indices.size();
             for (int at = part.firstIndex(); at + 2 < part.firstIndex() + part.indexCount(); at += 3) {
                 int a = source[at], b = source[at + 1], c = source[at + 2];
@@ -915,7 +924,7 @@ final class WorldTileCreatures implements AutoCloseable {
                     "every drawable triangle is weighted to a camera-facing bone");
         if (ranges.isEmpty() || remap.size() < 3)
             return Converted.refused(Count.NO_OPAQUE_SURFACE,
-                    "no opaque, alpha-keyed or additive diffuse surface with a texture");
+                    "no opaque, alpha-keyed, additive or blended diffuse surface with a texture");
         var vertexArray = new float[vertices.size()];
         for (int i = 0; i < vertexArray.length; i++) vertexArray[i] = vertices.get(i);
         return new Converted(new Model(vertexArray, indices.stream().mapToInt(Integer::intValue).toArray(),
@@ -1013,8 +1022,8 @@ final class WorldTileCreatures implements AutoCloseable {
      * chain for the material class. Opaque images become alpha 255; cutout images keep alpha, with
      * colour weighted by alpha so transparent texels do not darken the edges, and their chain keeps
      * the top level's alpha-test coverage ({@link com.vibeminer.rendering.world.ObjectTextureMips}).
-     * Blended images (for additive surfaces) keep alpha weighted the same way, without coverage
-     * matching, as the objects' blended chains do.
+     * Blended images (for additive and blended surfaces) keep alpha weighted the same way, without
+     * coverage matching, as the objects' blended chains do.
      */
     static Image reduce(MeshAppearance.Texture texture, int materialClass, Cancellation token) {
         if (materialClass != OPAQUE && materialClass != CUTOUT && materialClass != BLENDED)
