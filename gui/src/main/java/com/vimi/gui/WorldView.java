@@ -4052,7 +4052,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         || !java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.OPEN))
                     throw new UnsupportedOperationException("opening folders is not supported here");
                 java.awt.Desktop.getDesktop().open(folder.toFile());
-            } catch (Exception failed) {
+            } catch (Throwable failed) {
+                // Throwable: an AWTError from Desktop must still reach the toast.
                 Platform.runLater(() -> folderNotOpened(failed));
             }
         });
@@ -4067,7 +4068,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
     }
 
-    private void folderNotOpened(Exception failed) {
+    private void folderNotOpened(Throwable failed) {
         WorldDiagnostics.warn("World screenshot folder could not be opened", failed);
         if (!closed) toasts.show("Could not open the folder");
     }
