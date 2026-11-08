@@ -1554,6 +1554,10 @@ final class WorldStreamSourceController {
                     .append(tiles == 1 ? " tile" : " tiles").append(creatures.restPosed() == 0 ? " (Stand pose, facing north)"
                             : creatures.restPosed() == creatures.drawn() ? " (rest pose, facing north)"
                             : " (" + creatures.restPosed() + " in rest pose, facing north)");
+        // Camera-facing parts are not drawn in the World (#360, #384): disclosed per placement.
+        if (creatures.billboardsLeftOut() > 0)
+            text.append(", ").append(creatures.billboardsLeftOut())
+                    .append(" with camera-facing parts left out");
         var npcs = creatures.npcs();
         if (npcs.drawn() > 0) {
             // Humanoid NPCs (#385): their item models and item records left out are disclosed.

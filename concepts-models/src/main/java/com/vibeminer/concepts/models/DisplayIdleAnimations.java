@@ -49,6 +49,40 @@ public final class DisplayIdleAnimations {
             PreviewMesh mesh,
             float[] normals,
             Cancellation token) {
+        return admit(model, vertexLookup, idle, mesh, normals, false, token).animation();
+    }
+
+    /** A World admission: the animation and the rest-surface vertices the World leaves out. */
+    public record WorldStand(PreviewAnimation animation, int[] leftOut) {}
+
+    /**
+     * Binds {@code idle} for the World, which draws no camera-facing parts. As World objects do
+     * (#360), every bone that billboards (spherical or cylindrical, flags 0x78) and every
+     * descendant of one is evaluated as an ordinary bone, and each vertex with a non-zero weight on
+     * one of them is listed as left out. Parent-inheritance flags on the other bones that move
+     * rendered vertices are still refused.
+     *
+     * @throws Unsupported for a readable source outside the World profile
+     * @throws IllegalArgumentException when the inputs do not belong together
+     */
+    public static WorldStand admitWorld(
+            M2Types.Model model,
+            List<Integer> vertexLookup,
+            M2IdleAnimation.Idle idle,
+            PreviewMesh mesh,
+            float[] normals,
+            Cancellation token) {
+        return admit(model, vertexLookup, idle, mesh, normals, true, token);
+    }
+
+    private static WorldStand admit(
+            M2Types.Model model,
+            List<Integer> vertexLookup,
+            M2IdleAnimation.Idle idle,
+            PreviewMesh mesh,
+            float[] normals,
+            boolean world,
+            Cancellation token) {
         if (idle.model() != model) {
             throw new IllegalArgumentException("Idle facts belong to another parsed model");
         }
@@ -95,6 +129,19 @@ public final class DisplayIdleAnimations {
                 chain.set(at);
             }
         }
+        // Bones that billboard or descend from one (World profile only).
+        var billboardTree = new BitSet(boneCount);
+        if (world) {
+            for (int index = 0; index < boneCount; index++) {
+                int steps = 0;
+                for (int at = index; at >= 0 && steps++ <= boneCount; at = rig.get(at).parent()) {
+                    if ((rig.get(at).flags() & (SPHERICAL | CYLINDRICAL)) != 0) {
+                        billboardTree.set(index);
+                        break;
+                    }
+                }
+            }
+        }
         boolean[] parents = new boolean[boneCount];
         for (var bone : rig) {
             if (bone.parent() >= 0) {
@@ -107,7 +154,7 @@ public final class DisplayIdleAnimations {
             var tracks = idle.bones().get(index);
             long flags = bone.flags() & (INHERITANCE | SPHERICAL | CYLINDRICAL);
             boolean billboard = false;
-            if (chain.get(index) && flags != 0) {
+            if (chain.get(index) && flags != 0 && !billboardTree.get(index)) {
                 if (flags != SPHERICAL) {
                     throw new Unsupported(
                             "Bone "
@@ -144,16 +191,31 @@ public final class DisplayIdleAnimations {
                             track(tracks.scale()),
                             billboard));
         }
+        int[] leftOut = new int[0];
+        if (!billboardTree.isEmpty()) {
+            var out = new ArrayList<Integer>();
+            for (int v = 0; v < mesh.vertexCount(); v++) {
+                for (int k = 0; k < 4; k++) {
+                    if (weights[v * 4 + k] > 0 && billboardTree.get(bones[v * 4 + k])) {
+                        out.add(v);
+                        break;
+                    }
+                }
+            }
+            leftOut = out.stream().mapToInt(Integer::intValue).toArray();
+        }
         try {
-            return new PreviewAnimation(
-                    "Stand",
-                    idle.durationMillis(),
-                    idle.globalSequenceMillis(),
-                    result,
-                    mesh,
-                    normals,
-                    bones,
-                    weights);
+            return new WorldStand(
+                    new PreviewAnimation(
+                            "Stand",
+                            idle.durationMillis(),
+                            idle.globalSequenceMillis(),
+                            result,
+                            mesh,
+                            normals,
+                            bones,
+                            weights),
+                    leftOut);
         } catch (IllegalArgumentException invalid) {
             throw new Unsupported("Idle evaluation refused this sequence: " + invalid.getMessage());
         }

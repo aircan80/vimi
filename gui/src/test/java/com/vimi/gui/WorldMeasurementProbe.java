@@ -402,7 +402,11 @@ public final class WorldMeasurementProbe {
         final WorldTileCreatures.Previews inner;
         final Map<Long, DisplayModelFacts> facts = new ConcurrentHashMap<>();
         final Map<Long, String> stand = new ConcurrentHashMap<>();
+        /** The World profile's Stand outcome (#384): billboard triangles left out. */
+        final Map<Long, String> worldStand = new ConcurrentHashMap<>();
         private final Map<Long, com.vibeminer.rendering.models.MeshAppearance> appearances =
+                new ConcurrentHashMap<>();
+        private final Map<Long, com.vibeminer.concepts.models.DisplayModelTypes.Preview> previews =
                 new ConcurrentHashMap<>();
 
         DisplayCensus(WorldTileCreatures.Previews inner) {
@@ -416,6 +420,7 @@ public final class WorldMeasurementProbe {
             if (preview != null && preview.appearance() != null && preview.reference() != null) {
                 facts.put(displayId, DisplayModelFacts.of(preview.reference(), preview.appearance().mesh()));
                 appearances.put(displayId, preview.appearance());
+                previews.put(displayId, preview);
             }
             return preview;
         }
@@ -426,6 +431,43 @@ public final class WorldMeasurementProbe {
             var idle = inner.idle(displayId, token);
             stand.put(displayId, standOutcome(idle, appearances.get(displayId)));
             return idle;
+        }
+
+        /**
+         * Both Stand answers from one model read: the preview's, and the World's as the World
+         * converts it (frame 0, its geoset rule and the triangles it leaves out).
+         */
+        @Override
+        public List<com.vibeminer.concepts.models.DisplayModelTypes.Idle> stands(
+                long displayId, Cancellation token) throws Exception {
+            var both = inner.stands(displayId, token);
+            var appearance = appearances.get(displayId);
+            stand.put(displayId, standOutcome(both.get(0), appearance));
+            worldStand.put(displayId, worldOutcome(both.get(1), previews.get(displayId), token));
+            return both;
+        }
+
+        /** The World's own call (creatures mode): the World profile, recorded as the World draws it. */
+        @Override
+        public com.vibeminer.concepts.models.DisplayModelTypes.Idle worldIdle(
+                long displayId, Cancellation token) throws Exception {
+            var idle = inner.worldIdle(displayId, token);
+            worldStand.put(displayId, worldOutcome(idle, previews.get(displayId), token));
+            return idle;
+        }
+
+        /** The World's outcome for one display: its Stand outcome, refined by the conversion. */
+        static String worldOutcome(com.vibeminer.concepts.models.DisplayModelTypes.Idle idle,
+                com.vibeminer.concepts.models.DisplayModelTypes.Preview preview, Cancellation token) {
+            var outcome = standOutcome(idle, preview == null ? null : preview.appearance());
+            if (!outcome.equals("Stand pose")) return outcome;
+            var converted = WorldTileCreatures.convert(new com.vibeminer.concepts.models.DisplayModelTypes.Preview(
+                    preview.state(), preview.reference(), idle.animation().pose(preview.appearance(), 0),
+                    preview.visibleParts(), preview.issues(), preview.restored(), preview.message()),
+                    idle.leftOut(), token);
+            if (converted.model() == null) return "Stand pose, not drawn: " + converted.refusal().label;
+            return converted.model().billboardTriangles() > 0 ? "Stand pose, billboard triangles left out"
+                    : "Stand pose";
         }
 
         /** "Stand pose", or "rest pose: <reason kind>" as the World's conversion decides it. */
@@ -445,10 +487,23 @@ public final class WorldMeasurementProbe {
             return reason.replaceAll("\\b\\d+\\b", "#").strip();
         }
 
+        /** Distinct creature displays (no extended display info) per World Stand outcome. */
+        Map<String, Integer> worldStandTally() {
+            return worldStandTally(false);
+        }
+
+        Map<String, Integer> worldStandTally(boolean resolvedGeosetsOnly) {
+            return tally(worldStand, resolvedGeosetsOnly);
+        }
+
         /** Distinct creature displays (no extended display info) per Stand outcome. */
         Map<String, Integer> standTally(boolean resolvedGeosetsOnly) {
+            return tally(stand, resolvedGeosetsOnly);
+        }
+
+        private Map<String, Integer> tally(Map<Long, String> outcomes, boolean resolvedGeosetsOnly) {
             var counts = new TreeMap<String, Integer>();
-            stand.forEach(
+            outcomes.forEach(
                     (display, outcome) -> {
                         var f = facts.get(display);
                         if (f == null || !f.creature()) return;
@@ -659,6 +714,9 @@ public final class WorldMeasurementProbe {
         say("PROBE displays: sampled creature displays by Stand outcome (all with a preview)");
         for (var entry : display.standTally(false).entrySet())
             say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+        say("PROBE displays: sampled creature displays by World Stand outcome (all with a preview)");
+        for (var entry : display.worldStandTally().entrySet())
+            say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
         say("PROBE displays: sampled creature displays by Stand outcome (geosets resolved)");
         for (var entry : display.standTally(true).entrySet())
             say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
@@ -698,11 +756,12 @@ public final class WorldMeasurementProbe {
             return;
         }
         try {
-            census.idle(id, Cancellation.NONE);
+            census.stands(id, Cancellation.NONE);
         } catch (java.util.concurrent.CancellationException canceled) {
             throw canceled;
         } catch (Exception failed) {
             census.stand.put(id, "rest pose: Stand pose failed: " + failed.getClass().getSimpleName());
+            census.worldStand.put(id, "rest pose: Stand pose failed: " + failed.getClass().getSimpleName());
         }
     }
 
@@ -861,11 +920,12 @@ public final class WorldMeasurementProbe {
                 say("PROBE creatures: distinct humanoid NPC displays asked " + npcs.outcomes.size());
                 for (var entry : npcs.tally().entrySet())
                     say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
-                say("PROBE creatures: distinct creature displays by Stand outcome (all with a preview)");
-                for (var entry : displays.standTally(false).entrySet())
+                // The World asks the World profile (#384): its outcomes are what the tiles drew.
+                say("PROBE creatures: distinct creature displays by World Stand outcome (all with a preview)");
+                for (var entry : displays.worldStandTally(false).entrySet())
                     say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
-                say("PROBE creatures: distinct creature displays by Stand outcome (geosets resolved)");
-                for (var entry : displays.standTally(true).entrySet())
+                say("PROBE creatures: distinct creature displays by World Stand outcome (geosets resolved)");
+                for (var entry : displays.worldStandTally(true).entrySet())
                     say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
                 say("PROBE creatures: distinct creature displays by geoset case and rule outcome");
                 for (var entry : displays.geosetTally().entrySet())

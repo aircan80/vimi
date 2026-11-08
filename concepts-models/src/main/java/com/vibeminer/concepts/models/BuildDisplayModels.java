@@ -17,6 +17,27 @@ public interface BuildDisplayModels extends AutoCloseable {
                         "Idle animation is not provided by this source."));
     }
 
+    /**
+     * The display's Stand for the World, which draws no camera-facing parts (#384, following the
+     * World objects' rule from #360): bones that billboard, and their descendants, are evaluated as
+     * ordinary bones and every vertex weighted to them is listed in {@link
+     * DisplayModelTypes.Idle#leftOut()} for the World to leave out. Implementations without that
+     * profile answer as {@link #idle}.
+     */
+    default CompletableFuture<DisplayModelTypes.Idle> worldIdle(
+            long displayId, Cancellation token) {
+        return idle(displayId, token);
+    }
+
+    /**
+     * Both answers, {@link #idle} then {@link #worldIdle}, for measurements; implementations may
+     * read the model once for both.
+     */
+    default CompletableFuture<java.util.List<DisplayModelTypes.Idle>> stands(
+            long displayId, Cancellation token) {
+        return idle(displayId, token).thenCombine(worldIdle(displayId, token), java.util.List::of);
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override
