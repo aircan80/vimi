@@ -260,6 +260,59 @@ class DisplayIdleAnimationsTest {
     }
 
     @Test
+    void theServiceWiresIdleWorldIdleAndStandsToTheirProfiles() throws Exception {
+        // Billboard bone 1 with child bones: the preview refuses it, the World admits it.
+        var authored = new Authored().translate(0).parent(2, 1);
+        var f = authored.fixture;
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture()
+                        .add(100, "1".repeat(32), f.modelBytes())
+                        .add(
+                                9000,
+                                "2".repeat(32),
+                                java.util.Arrays.copyOf(f.skin.array(), f.skin.position()));
+        try (var tables =
+                new com.vibeminer.formats.tables.MemoryTables()
+                        .add(
+                                files.build(),
+                                "enUS",
+                                List.of(
+                                        NativeMaterialFailureTest.table(
+                                                10,
+                                                "CreatureDisplayInfo",
+                                                "ModelID",
+                                                "CreatureModelData",
+                                                1),
+                                        NativeMaterialFailureTest.table(
+                                                11,
+                                                "CreatureModelData",
+                                                "FileDataID",
+                                                "FileData",
+                                                100)))
+                        .forBuild(files.build(), "enUS", Cancellation.NONE)
+                        .join()
+                        .tables()) {
+            var service = new DisplayModelService(tables, files, null);
+            try {
+                var preview = service.idle(1, Cancellation.NONE).join();
+                var world = service.worldIdle(1, Cancellation.NONE).join();
+                var both = service.stands(1, Cancellation.NONE).join();
+                assertEquals(
+                        DisplayModelTypes.IdleState.UNSUPPORTED,
+                        preview.state(),
+                        preview.message());
+                assertEquals(DisplayModelTypes.IdleState.AVAILABLE, world.state(), world.message());
+                assertArrayEquals(new int[] {2, 3}, world.leftOut());
+                assertEquals(DisplayModelTypes.IdleState.UNSUPPORTED, both.get(0).state());
+                assertEquals(DisplayModelTypes.IdleState.AVAILABLE, both.get(1).state());
+                assertArrayEquals(new int[] {2, 3}, both.get(1).leftOut());
+            } finally {
+                service.close();
+            }
+        }
+    }
+
+    @Test
     void theServiceAnswersEachProfileWithItsOwnAdmission() throws Exception {
         // Billboard bone 1 with child bones: the preview refuses, the World admits.
         var authored = new Authored().translate(0).parent(2, 1);

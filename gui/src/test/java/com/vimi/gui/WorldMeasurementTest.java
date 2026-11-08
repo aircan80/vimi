@@ -411,6 +411,17 @@ public final class WorldMeasurementTest {
                         com.vibeminer.concepts.models.DisplayModelTypes.IdleState.AVAILABLE, null, hiddenAnimation,
                         "Stand", new int[] {4}), hidden, Cancellation.NONE);
         check(unchanged.equals("Stand pose"), unchanged);
+        // A Stand without a recorded preview or reference is reported, not converted.
+        var available = new com.vibeminer.concepts.models.DisplayModelTypes.Idle(
+                com.vibeminer.concepts.models.DisplayModelTypes.IdleState.AVAILABLE, null, animation, "Stand",
+                new int[] {4});
+        String noPreview = WorldMeasurementProbe.DisplayCensus.worldOutcome(available, null, Cancellation.NONE);
+        check(noPreview.equals("Stand pose, preview not recorded"), noPreview);
+        var noReference = new com.vibeminer.concepts.models.DisplayModelTypes.Preview(preview.state(), null,
+                preview.appearance(), preview.visibleParts(), preview.issues(), preview.restored(), preview.message());
+        String unreferenced = WorldMeasurementProbe.DisplayCensus.worldOutcome(available, noReference,
+                Cancellation.NONE);
+        check(unreferenced.equals("Stand pose, preview not recorded"), unreferenced);
     }
 
     /** The probe's geoset census (#455) names each display's case, rule outcome and defaults. */

@@ -461,6 +461,9 @@ public final class WorldMeasurementProbe {
                 com.vibeminer.concepts.models.DisplayModelTypes.Preview preview, Cancellation token) {
             var outcome = standOutcome(idle, preview == null ? null : preview.appearance());
             if (!outcome.equals("Stand pose")) return outcome;
+            // Without the display's preview (or its reference) the World converts nothing here.
+            if (preview == null || preview.reference() == null || preview.appearance() == null)
+                return "Stand pose, preview not recorded";
             var converted = WorldTileCreatures.convert(new com.vibeminer.concepts.models.DisplayModelTypes.Preview(
                     preview.state(), preview.reference(), idle.animation().pose(preview.appearance(), 0),
                     preview.visibleParts(), preview.issues(), preview.restored(), preview.message()),
