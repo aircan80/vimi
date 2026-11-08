@@ -106,9 +106,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final Label fullscreenStatus = new Label();
     // HUD over the viewport: Map button and map name, status rows, the map panel (M).
     // Its refocus is shared by every HUD widget (the minimap too); only while exploring.
+    // The one "HUD hidden" state (Alt+Z or the hide HUD key): only hideHud() sets it.
+    private final javafx.beans.property.BooleanProperty hudHidden =
+            new javafx.beans.property.SimpleBooleanProperty(this, "hudHidden");
     private final WorldHud hud = new WorldHud(this::toggleMapPanel, () -> {
         if (this.explorer) focusViewport();
-    });
+    }, hudHidden);
     private final Button panelBack = new Button();
     // HUD step 2: zone text and banner top-centre, coordinates pill bottom-right.
     // Both refocus through the HUD's one refocus, which acts only while exploring.
@@ -129,20 +132,19 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final WorldFullscreen fullscreen = new WorldFullscreen(viewport, node -> {
         // During an instance switch the switch owns the layout: never put the world back over it.
         if (this.explorer && !this.instances.engaged()) content.setCenter(node);
-        applyPanels(); // the hint names the keys for the window again
+        applyHudHidden(); // the hint names the keys for the window again
         placeToasts();
     }, this::layoutKeys, fullscreenStatus);
     // Layout toggles fire once per physical press: held keys repeat KEY_PRESSED.
-    private boolean fullscreenKeyHeld, panelsKeyHeld;
+    private boolean fullscreenKeyHeld, hideHudKeyHeld;
     private final Button fullscreenButton = new Button("Full screen (F11)");
-    private final Button panelsButton = new Button(hideHudButton("H"));
-    private final Label panelsHint = new Label(panelsHint("H", false));
+    private final Button hudButton = new Button(hideHudButton("H"));
+    private final Label hudHint = new Label(hudHint("H", false));
     // The keys bound to HIDE_HUD ("H" by default), for the hint and the button; null when unbound.
     private String hideHudKey = "H";
     private SplitPane split;
     private javafx.scene.Node sidebarPane;
     private double sidebarDivider = .23;
-    private boolean panelsHidden;
     private final WorldMinimap minimap = new WorldMinimap();
     // The last pick as a card over the viewport (HUD step 6); the inspection label keeps its text.
     private final WorldInspectCard inspectCard = new WorldInspectCard();
@@ -158,7 +160,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // Where viewport screenshots go: the data directory's screenshots folder; null without one.
     private java.nio.file.Path screenshots;
     // Opens a folder in the desktop's file manager; tests replace it.
-    private java.util.function.Consumer<java.nio.file.Path> folderOpener = WorldView::openFolder;
+    private java.util.function.Consumer<java.nio.file.Path> folderOpener = this::openFolder;
     // One screenshot in flight at a time (each holds a full-frame copy); FX-owned.
     private boolean screenshotSaving;
     /** The first-run help is long: it stays up longer than an event toast. */
@@ -668,8 +670,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
             showLayoutChoice(controls);
             hud.mapKey(mapKey(controls));
             hideHudKey = boundKeys(controls, WorldControls.Action.HIDE_HUD);
-            panelsButton.setText(hideHudButton(hideHudKey));
-            panelsHint.setText(panelsHint(hideHudKey, fullscreen.active()));
+            hudButton.setText(hideHudButton(hideHudKey));
+            hudHint.setText(hudHint(hideHudKey, fullscreen.active()));
             devOverlay.key(controls.byAction().get(WorldControls.Action.DEV_OVERLAY).stream()
                     .map(javafx.scene.input.KeyCode::getName)
                     .collect(java.util.stream.Collectors.joining("/")));
@@ -1189,16 +1191,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
         fullscreenButton.setId("world-fullscreen");
         fullscreenButton.setFocusTraversable(false);
         fullscreenButton.setOnAction(e -> toggleFullscreen());
-        panelsButton.setId("world-hide-panels");
-        panelsButton.setFocusTraversable(false);
-        panelsButton.setOnAction(e -> panels(true));
-        panelsHint.setId("world-panels-hint");
-        panelsHint.setMouseTransparent(true);
-        panelsHint.setVisible(false);
-        panelsHint.setStyle("-fx-background-color: rgba(16,24,28,.6); -fx-text-fill: #e8eeee;"
+        hudButton.setId("world-hide-hud");
+        hudButton.setFocusTraversable(false);
+        hudButton.setOnAction(e -> hideHud(true));
+        hudHint.setId("world-hud-hint");
+        hudHint.setMouseTransparent(true);
+        hudHint.setVisible(false);
+        hudHint.setStyle("-fx-background-color: rgba(16,24,28,.6); -fx-text-fill: #e8eeee;"
                 + " -fx-padding: 4 8; -fx-background-radius: 4;");
         // In the HUD's left column, above the developer overlay, so the two never overlap.
-        hud.hiddenHint(panelsHint);
+        hud.hiddenHint(hudHint);
         inventoryMessage.setId("world-inventory-message");
         inventoryMessage.setWrapText(true);
         inventoryMessage.setMaxWidth(400);
@@ -2028,7 +2030,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         // A Retry belongs to the explorer session it was raised in; plain notices may stay.
         toasts.clearActions();
         fullscreen.exit();
-        panels(false);
+        hideHud(false);
         if (spawns != null) spawns.suspend();
         resumeCamera = null;
         minimap.hide();
@@ -2151,7 +2153,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         // these controls for its own layout.
         fillMenuPages();
         content.setBottom(new VBox(6, inspection));
-        applyPanels();
+        applyHudHidden();
     }
 
     private void fillMenuPages() {
@@ -2170,7 +2172,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 WorldGameMenu.section("Music, ambience and day / night", audio.node()));
         var display = menu.page(WorldGameMenu.Page.DISPLAY);
         display.getChildren().setAll(
-                WorldGameMenu.section("View", showCoordinates, panelsButton, fullscreenButton),
+                WorldGameMenu.section("View", showCoordinates, hudButton, fullscreenButton),
                 WorldGameMenu.section("Renderer", new HBox(8, gpuEnabled, objectTextures),
                         new HBox(8, gpuActivity, retryGpu, gpuStatus),
                         new HBox(8, textureActivity, textureStatus, retryTextures)));
@@ -2287,7 +2289,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         fullscreen.exit();
         nativeAfterFullscreen();
         clearKeys();
-        applyPanels();
+        applyHudHidden();
     }
 
     /**
@@ -2328,7 +2330,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             return;
         }
         if (!explorer || instances.engaged()) return;
-        panels(false);
+        hideHud(false);
         // The tile inventory comes along, scaled to the panel: a picked tile opens with "Open".
         tileInventory.setScaleX(MAP_PANEL_TILES);
         tileInventory.setScaleY(MAP_PANEL_TILES);
@@ -2373,7 +2375,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     boolean command(WorldControls.Action action) {
         switch (action) {
             case MAP_PANEL -> toggleMapPanel();
-            case HIDE_HUD -> panels(!panelsHidden);
+            case HIDE_HUD -> hideHud(!hudHidden.get());
             case DEV_OVERLAY -> devOverlay.cycle();
             case SPAWNS -> {
                 if (spawns != null && !spawns.toggle().isDisabled()) spawns.toggle().fire();
@@ -2433,7 +2435,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         boolean panel = code == KeyCode.Z && e.isAltDown();
         if (e.getEventType() == javafx.scene.input.KeyEvent.KEY_RELEASED) {
             if (code == KeyCode.F11 || code == KeyCode.ENTER) fullscreenKeyHeld = false;
-            if (code == KeyCode.Z) panelsKeyHeld = false;
+            if (code == KeyCode.Z) hideHudKeyHeld = false;
             return;
         }
         if (e.getEventType() != javafx.scene.input.KeyEvent.KEY_PRESSED || !(full || panel)) return;
@@ -2443,8 +2445,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (!fullscreenKeyHeld) toggleFullscreen();
             fullscreenKeyHeld = true;
         } else {
-            if (!panelsKeyHeld) panels(!panelsHidden);
-            panelsKeyHeld = true;
+            if (!hideHudKeyHeld) hideHud(!hudHidden.get());
+            hideHudKeyHeld = true;
         }
     }
 
@@ -2498,7 +2500,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         else if (!entering) nativeAfterFullscreen();
         placeToasts();
         clearKeys();
-        applyPanels();
+        applyHudHidden();
     }
 
     /**
@@ -2525,7 +2527,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void viewportFocusLost() {
         clearKeys();
         if (System.nanoTime() - layoutToggledAt > LAYOUT_FOCUS_SETTLE_NANOS)
-            fullscreenKeyHeld = panelsKeyHeld = escapeKeyHeld = bookmarksKeyHeld = false;
+            fullscreenKeyHeld = hideHudKeyHeld = escapeKeyHeld = bookmarksKeyHeld = false;
     }
 
     /**
@@ -2533,32 +2535,32 @@ final class WorldView extends BorderPane implements AutoCloseable {
      * and the slim bar under it. The map list is already out of the way while exploring. Works in
      * full screen too, since the HUD lives in the viewport.
      */
-    private void panels(boolean hidden) {
+    private void hideHud(boolean hidden) {
         if (hidden && (!explorer || instances.engaged())) return;
-        if (hidden == panelsHidden) return;
-        panelsHidden = hidden;
-        // A hidden HUD closes the map panel, so the next M opens it again.
+        if (hidden == hudHidden.get()) return;
+        // A hidden HUD closes the map panel, so the next M opens it again; the view closes it
+        // before the HUD follows the state, so what the panel held is reset first.
         if (hidden) closeMapPanel();
-        applyPanels();
+        hudHidden.set(hidden);
+        applyHudHidden();
         if (explorer) focusViewport();
     }
 
-    private void applyPanels() {
-        hud.hidden(panelsHidden);
+    private void applyHudHidden() {
         var bottom = content.getBottom();
         if (bottom != null) {
-            bottom.setVisible(!panelsHidden);
-            bottom.setManaged(!panelsHidden);
+            bottom.setVisible(!hudHidden.get());
+            bottom.setManaged(!hudHidden.get());
         }
-        panelsHint.setVisible(panelsHidden);
-        panelsHint.setText(panelsHint(hideHudKey, fullscreen.active()));
+        hudHint.setVisible(hudHidden.get());
+        hudHint.setText(hudHint(hideHudKey, fullscreen.active()));
     }
 
     /**
      * The hint shown while the HUD is hidden: the hide HUD key (null when unbound) and Alt+Z, which
      * always works, then how to enter or leave full screen.
      */
-    static String panelsHint(String hideKey, boolean fullscreen) {
+    static String hudHint(String hideKey, boolean fullscreen) {
         return hideHudKeys(hideKey) + " shows the HUD · "
                 + (fullscreen ? "F11 or Esc leaves full screen" : "F11 full screen");
     }
@@ -4036,7 +4038,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     /** Opens a folder with the desktop, off FX; failures are logged, never thrown. */
-    private static void openFolder(java.nio.file.Path folder) {
+    private void openFolder(java.nio.file.Path folder) {
         Thread.ofVirtual().name("world-screenshot-folder").start(() -> {
             try {
                 if (!java.awt.Desktop.isDesktopSupported()
@@ -4044,9 +4046,23 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     throw new UnsupportedOperationException("opening folders is not supported here");
                 java.awt.Desktop.getDesktop().open(folder.toFile());
             } catch (Exception failed) {
-                WorldDiagnostics.warn("World screenshot folder could not be opened", failed);
+                Platform.runLater(() -> folderNotOpened(failed));
             }
         });
+    }
+
+    /** The screenshot toast's Open folder: a refused or failed open says so in a toast. */
+    private void openScreenshotFolder(java.nio.file.Path folder) {
+        try {
+            folderOpener.accept(folder);
+        } catch (RuntimeException failed) {
+            folderNotOpened(failed);
+        }
+    }
+
+    private void folderNotOpened(Exception failed) {
+        WorldDiagnostics.warn("World screenshot folder could not be opened", failed);
+        if (!closed) toasts.show("Could not open the folder");
     }
 
     /**
@@ -4077,8 +4093,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         for (int i = 0; i < argb.length; i++) argb[i] |= 0xff000000;
         String name = WorldScreenshots.fileName(inventory == null ? null : inventory.map().name(),
                 java.time.ZonedDateTime.now());
-        screenshotSaving = true;
-        Thread.ofVirtual().name("world-screenshot").start(() -> {
+        Runnable save = () -> {
             java.nio.file.Path saved = null;
             Throwable failure = null;
             try {
@@ -4096,10 +4111,20 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     toasts.show("Screenshot not saved: " + WorldDiagnostics.brief(problem));
                 } else {
                     toasts.show("Screenshot saved: " + file.getFileName(), "Open folder",
-                            () -> folderOpener.accept(file.getParent()));
+                            () -> openScreenshotFolder(file.getParent()));
                 }
             });
-        });
+        };
+        try {
+            Thread.ofVirtual().name("world-screenshot").start(save);
+        } catch (RuntimeException | Error failed) {
+            // Nothing was started: no save is in flight, and the next F12 can try again.
+            WorldDiagnostics.warn("World screenshot could not be started", failed);
+            toasts.show("Screenshot not saved: " + WorldDiagnostics.brief(failed));
+            return;
+        }
+        // Set on FX after the writer started; its completion clears it in a later FX turn.
+        screenshotSaving = true;
     }
 
     /** Keeps the toasts just above the bottom edge of the content's centre node. */
@@ -4442,7 +4467,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             leaveInstance.setVisible(true);
             leaveInstance.setManaged(true);
             fullscreen.exit();
-            panels(false);
+            hideHud(false);
             explorerChrome(false);
             content.setBottom(new VBox(8, new HBox(10, leaveInstance, instanceStatus),
                     audio.node()));
