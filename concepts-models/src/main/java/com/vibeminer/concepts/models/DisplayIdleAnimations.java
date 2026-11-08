@@ -58,7 +58,9 @@ public final class DisplayIdleAnimations {
             throw new Unsupported(
                     "The Stand sequence records no bone keys; the rest pose is shown.");
         }
-        int boneCount = model.bones().size();
+        // The rig: the model's bones, or its external skeleton's bones.
+        var rig = idle.rig();
+        int boneCount = rig.size();
         int[] bones = new int[mesh.vertexCount() * 4], weights = new int[bones.length];
         var influencing = new BitSet(boneCount);
         for (int v = 0; v < vertexLookup.size(); v++) {
@@ -85,7 +87,7 @@ public final class DisplayIdleAnimations {
                 bone >= 0;
                 bone = influencing.nextSetBit(bone + 1)) {
             int steps = 0;
-            for (int at = bone; at >= 0 && !chain.get(at); at = model.bones().get(at).parent()) {
+            for (int at = bone; at >= 0 && !chain.get(at); at = rig.get(at).parent()) {
                 if (++steps > boneCount) {
                     throw new IllegalArgumentException("Bone hierarchy contains a cycle");
                 }
@@ -93,14 +95,14 @@ public final class DisplayIdleAnimations {
             }
         }
         boolean[] parents = new boolean[boneCount];
-        for (var bone : model.bones()) {
+        for (var bone : rig) {
             if (bone.parent() >= 0) {
                 parents[bone.parent()] = true;
             }
         }
         var result = new ArrayList<PreviewAnimation.Bone>(boneCount);
         for (int index = 0; index < boneCount; index++) {
-            var bone = model.bones().get(index);
+            var bone = rig.get(index);
             var tracks = idle.bones().get(index);
             long flags = bone.flags() & (INHERITANCE | SPHERICAL | CYLINDRICAL);
             boolean billboard = false;

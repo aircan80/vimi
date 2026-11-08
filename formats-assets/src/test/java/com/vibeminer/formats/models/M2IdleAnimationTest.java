@@ -694,6 +694,237 @@ class M2IdleAnimationTest {
         }
     }
 
+    private static byte[] skeletonChunk(String id, byte[] payload) {
+        return ByteBuffer.allocate(8 + payload.length)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .put(id.getBytes(java.nio.charset.StandardCharsets.US_ASCII))
+                .putInt(payload.length)
+                .put(payload)
+                .array();
+    }
+
+    /** A track header at {@code row}: interpolation, clock, one key slice array each. */
+    private static void skeletonTrack(
+            ByteBuffer b,
+            int row,
+            int interpolation,
+            int global,
+            int slices,
+            int times,
+            int values) {
+        b.putShort(row, (short) interpolation).putShort(row + 2, (short) global);
+        b.putInt(row + 4, slices).putInt(row + 8, times);
+        b.putInt(row + 12, slices).putInt(row + 16, values);
+    }
+
+    /**
+     * An authored skeleton: global clock 500, Walk then Stand (1000 ms), two bones. Bone 0
+     * translates linearly on Stand (slice 1); bone 1 scales on global clock 0. Every array offset
+     * inside SKB1 counts from the start of the SKB1 data.
+     */
+    static byte[] skeleton(Consumer<ByteBuffer> sks1, Consumer<ByteBuffer> skb1, int parent) {
+        var s = ByteBuffer.allocate(32 + 4 + 128).order(ByteOrder.LITTLE_ENDIAN);
+        s.putInt(0, 1).putInt(4, 32).putInt(8, 2).putInt(12, 36);
+        s.putInt(32, 500);
+        s.putShort(36, (short) 4).putInt(40, 800).putInt(48, 0x20);
+        s.putShort(100, (short) 0).putInt(104, 1000).putInt(112, 0x20);
+        sks1.accept(s);
+        var b = ByteBuffer.allocate(304).order(ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0, 2).putInt(4, 16);
+        for (int bone = 0; bone < 2; bone++) {
+            int row = 16 + bone * 88;
+            b.putInt(row, -1).putShort(row + 8, (short) (bone - 1)).putFloat(row + 80, bone);
+            for (int track : new int[] {16, 36, 56}) {
+                b.putShort(row + track + 2, (short) -1);
+            }
+        }
+        // Bone 0 translation: two slices, keys in slice 1 only.
+        skeletonTrack(b, 16 + 16, 1, -1, 2, 192, 208);
+        b.putInt(192 + 8, 2).putInt(192 + 12, 224);
+        b.putInt(208 + 8, 2).putInt(208 + 12, 232);
+        b.putInt(224, 0).putInt(228, 1000);
+        b.putFloat(232, 0).putFloat(236, 0).putFloat(240, 0);
+        b.putFloat(244, 10).putFloat(248, 0).putFloat(252, 0);
+        // Bone 1 scale: one slice on global clock 0.
+        skeletonTrack(b, 16 + 88 + 56, 1, 0, 1, 256, 264);
+        b.putInt(256, 2).putInt(260, 272);
+        b.putInt(264, 2).putInt(268, 280);
+        b.putInt(272, 0).putInt(276, 500);
+        for (int i = 0; i < 6; i++) {
+            b.putFloat(280 + i * 4, i < 3 ? 1 : 2);
+        }
+        skb1.accept(b);
+        var out = new java.io.ByteArrayOutputStream();
+        out.writeBytes(skeletonChunk("SKL1", new byte[16]));
+        out.writeBytes(skeletonChunk("SKS1", s.array()));
+        out.writeBytes(skeletonChunk("SKB1", b.array()));
+        if (parent != 0) {
+            var pd = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN).putInt(8, parent);
+            out.writeBytes(skeletonChunk("SKPD", pd.array()));
+        }
+        return out.toByteArray();
+    }
+
+    /** The golden model (no bones of its own) naming an external skeleton. */
+    static byte[] skeletonModel(int version) {
+        byte[] bytes = M2ReadersTest.golden("model-" + version + ".m2");
+        byte[] extended = java.util.Arrays.copyOf(bytes, bytes.length + 12);
+        var buffer = ByteBuffer.wrap(extended).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.put(bytes.length, "SKID".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        buffer.putInt(bytes.length + 4, 4);
+        buffer.putInt(bytes.length + 8, 123456);
+        return extended;
+    }
+
+    private static M2IdleAnimation.Idle readSkeleton(int version, byte[] skeletonBytes) {
+        var model = M2ModelReader.read(AssetSource.bytes(skeletonModel(version))).join();
+        var source = AssetSource.bytes(skeletonBytes);
+        var skeleton = M2SkeletonFile.read(source, Cancellation.NONE).join();
+        return M2IdleAnimation.readSkeleton(source, skeleton, model, Cancellation.NONE).join();
+    }
+
+    private static void skeletonRefused(
+            int version, String code, String message, byte[] skeletonBytes) {
+        var error =
+                AssetTasks.unwrap(
+                        assertThrows(
+                                RuntimeException.class,
+                                () -> readSkeleton(version, skeletonBytes)));
+        var format = assertInstanceOf(ModelFormatException.class, error);
+        assertEquals(code, format.code());
+        assertEquals(message, format.getMessage());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void skeletonStandReadsTheSkeletonsBonesSequencesAndTracks(int version) {
+        assertEquals(
+                0,
+                M2ModelReader.read(AssetSource.bytes(skeletonModel(version)))
+                        .join()
+                        .bones()
+                        .size());
+        var idle = readSkeleton(version, skeleton(s -> {}, b -> {}, 0));
+        assertEquals(2, idle.rig().size());
+        assertEquals(0, idle.rig().get(1).parent());
+        assertEquals(1, idle.rig().get(1).pivot().y());
+        assertEquals(1, idle.sequenceIndex());
+        assertEquals(1000, idle.durationMillis());
+        assertArrayEquals(new long[] {500}, idle.globalSequenceMillis());
+        assertEquals(4, idle.keyCount());
+        var translation = idle.bones().get(0).translation();
+        assertArrayEquals(new int[] {0, 1000}, translation.times());
+        assertArrayEquals(new float[] {0, 0, 0, 10, 0, 0}, translation.values());
+        var scale = idle.bones().get(1).scale();
+        assertEquals(0, scale.globalSequence());
+        assertArrayEquals(new float[] {1, 1, 1, 2, 2, 2}, scale.values());
+        assertNull(idle.bones().get(0).rotation());
+        // A parent skeleton is not needed when the skeleton has its own bones and Stand.
+        assertEquals(2, readSkeleton(version, skeleton(s -> {}, b -> {}, 777)).rig().size());
+        // An alias Stand in the skeleton plays its target: Walk has no translation keys.
+        var alias =
+                readSkeleton(
+                        version,
+                        skeleton(s -> s.putInt(112, 0x60).putShort(162, (short) 0), b -> {}, 0));
+        assertEquals(0, alias.sequenceIndex());
+        assertEquals(800, alias.durationMillis());
+        assertNull(alias.bones().get(0).translation());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void skeletonStandRefusals(int version) {
+        // Track arrays count from the SKB1 data and may not start inside its 16-byte header.
+        skeletonRefused(
+                version,
+                "MODEL_INVALID",
+                "The bone track times span lies outside its skeleton section or overlaps its"
+                        + " header.",
+                skeleton(s -> {}, b -> b.putInt(16 + 16 + 8, 8), 0));
+        skeletonRefused(
+                version,
+                "MODEL_INVALID",
+                "The bone track times span lies outside its skeleton section or overlaps its"
+                        + " header.",
+                skeleton(s -> {}, b -> b.putInt(16 + 16 + 8, 300), 0));
+        // Without bones of its own, a child skeleton would need its parent.
+        skeletonRefused(
+                version,
+                "MODEL_UNSUPPORTED",
+                "The skeleton keeps its bones or sequences in its parent skeleton, which idle"
+                        + " evaluation does not read.",
+                skeleton(s -> {}, b -> b.putInt(0, 0), 777));
+        skeletonRefused(
+                version,
+                "MODEL_UNSUPPORTED",
+                "The skeleton has no bones or sequences to animate.",
+                skeleton(s -> {}, b -> b.putInt(0, 0), 0));
+        skeletonRefused(
+                version,
+                "MODEL_UNSUPPORTED",
+                "The skeleton records no Stand sequence (ID 0, variation 0).",
+                skeleton(s -> s.putShort(100, (short) 5), b -> {}, 0));
+        skeletonRefused(
+                version,
+                "MODEL_UNSUPPORTED",
+                "Stand keys are stored in an external animation file, which idle evaluation does"
+                        + " not read.",
+                skeleton(s -> s.putInt(112, 0), b -> {}, 0));
+        skeletonRefused(
+                version,
+                "MODEL_INVALID",
+                "Bone key times are unordered.",
+                skeleton(s -> {}, b -> b.putInt(228, 100).putInt(224, 900), 0));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void skeletonStandNeedsAModelWithoutBonesAndTheMatchingSource(int version) {
+        byte[] skeletonBytes = skeleton(s -> {}, b -> {}, 0);
+        var skeleton =
+                M2SkeletonFile.read(AssetSource.bytes(skeletonBytes), Cancellation.NONE).join();
+        // A model with bones of its own beside SKID.
+        byte[] own = authored(version, a -> {});
+        byte[] withSkid = java.util.Arrays.copyOf(own, own.length + 12);
+        var buffer = ByteBuffer.wrap(withSkid).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.put(own.length, "SKID".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        buffer.putInt(own.length + 4, 4).putInt(own.length + 8, 123456);
+        var bonesModel = M2ModelReader.read(AssetSource.bytes(withSkid)).join();
+        var error =
+                assertInstanceOf(
+                        ModelFormatException.class,
+                        AssetTasks.unwrap(
+                                assertThrows(
+                                        RuntimeException.class,
+                                        () ->
+                                                M2IdleAnimation.readSkeleton(
+                                                                AssetSource.bytes(skeletonBytes),
+                                                                skeleton,
+                                                                bonesModel,
+                                                                Cancellation.NONE)
+                                                        .join())));
+        assertEquals(
+                "The model stores bones of its own beside its external skeleton.",
+                error.getMessage());
+        // A source other than the one the skeleton was read from.
+        var model = M2ModelReader.read(AssetSource.bytes(skeletonModel(version))).join();
+        byte[] longer = java.util.Arrays.copyOf(skeletonBytes, skeletonBytes.length + 4);
+        var mismatch =
+                assertInstanceOf(
+                        ModelFormatException.class,
+                        AssetTasks.unwrap(
+                                assertThrows(
+                                        RuntimeException.class,
+                                        () ->
+                                                M2IdleAnimation.readSkeleton(
+                                                                AssetSource.bytes(longer),
+                                                                skeleton,
+                                                                model,
+                                                                Cancellation.NONE)
+                                                        .join())));
+        assertEquals("Animation source differs from the parsed skeleton.", mismatch.getMessage());
+    }
+
     @ParameterizedTest
     @ValueSource(ints = {272, 274})
     void standFactsCarryRefusalsButStructuralErrorsStillFail(int version) {

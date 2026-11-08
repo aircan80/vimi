@@ -18,6 +18,7 @@ import com.vibeminer.formats.models.M2IdleAnimation;
 import com.vibeminer.formats.models.M2ModelReader;
 import com.vibeminer.formats.models.M2RestDrawSkinReader;
 import com.vibeminer.formats.models.M2RestSkinReader;
+import com.vibeminer.formats.models.M2SkeletonFile;
 import com.vibeminer.formats.models.M2Types;
 import com.vibeminer.formats.models.ModelFormatException;
 import com.vibeminer.formats.tables.BuildTables;
@@ -192,8 +193,12 @@ public final class DisplayModelService implements BuildDisplayModels {
                             routeStand(
                                             reference,
                                             () ->
-                                                    M2IdleAnimation.readBaseRig(
-                                                            AssetSources.file(stream), m, token),
+                                                    m.skeletonFileDataId() != 0
+                                                            ? readSkeletonStand(m, token)
+                                                            : M2IdleAnimation.readBaseRig(
+                                                                    AssetSources.file(stream),
+                                                                    m,
+                                                                    token),
                                             () ->
                                                     M2IdleAnimation.read(
                                                             AssetSources.file(stream), m, token))
@@ -257,6 +262,27 @@ public final class DisplayModelService implements BuildDisplayModels {
             java.util.function.Supplier<T> baseRig,
             java.util.function.Supplier<T> gated) {
         return creatureDisplay(reference) ? baseRig.get() : gated.get();
+    }
+
+    /**
+     * The base rig's Stand from the model's external skeleton file (#384). A skeleton that is not
+     * stored completely is unavailable rather than refused.
+     */
+    private java.util.concurrent.CompletableFuture<M2IdleAnimation.Idle> readSkeletonStand(
+            M2Types.Model m, Cancellation token) {
+        var opened = files.openRead(FileTypes.FileRef.id(m.skeletonFileDataId()), token).join();
+        if (opened.stream() == null) {
+            throw new IllegalArgumentException("Skeleton source is " + opened.state());
+        }
+        try (var stream = opened.stream()) {
+            if (opened.state() != FileTypes.FileReadState.COMPLETE || !stream.holes().isEmpty()) {
+                throw new IllegalArgumentException("Skeleton source is incomplete");
+            }
+            var source = AssetSources.file(stream);
+            var skeleton = M2SkeletonFile.read(source, token).join();
+            return java.util.concurrent.CompletableFuture.completedFuture(
+                    M2IdleAnimation.readSkeleton(source, skeleton, m, token).join());
+        }
     }
 
     /** A display without extended (character) appearance: no customization choice applies. */

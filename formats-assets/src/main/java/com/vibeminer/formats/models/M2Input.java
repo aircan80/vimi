@@ -134,7 +134,7 @@ final class M2Input {
                     words.append(c);
                 }
             }
-            String owner = skin ? "The SKIN file" : "The model";
+            String owner = skin ? "The SKIN file" : "The " + subject;
             String fact =
                     stride == 1
                             ? owner + "'s " + words + " is " + number(count) + " bytes"
@@ -158,7 +158,11 @@ final class M2Input {
                         || count * Math.max(1, stride) > bytes - offset)) {
             throw error(
                     "INVALID",
-                    "The " + name + " span lies outside its model section or overlaps its header.");
+                    "The "
+                            + name
+                            + " span lies outside its "
+                            + subject
+                            + " section or overlaps its header.");
         }
         return new Span(name, origin + offset, (int) count, stride);
     }
