@@ -2107,17 +2107,51 @@ class WorldTerrainTextureSourceTest {
     @Test
     void nonSquareDiffusesAreDrawnStretchedFromTheirLevelOfShortSideFour() throws Exception {
         // 32 x 8 down to 4 x 1 (no 4 x 4 level), and 16 x 8 down to 1 x 1 (which has 4 x 2).
-        for (byte[] diffuse : new byte[][] {blpBgraHalves(32, 8, 4), blpBgraHalves(16, 8, 5)}) {
+        // Also tall (8 x 32) and a long side that is not a power of two (24 x 4, level 0 itself).
+        // Each is bound at its short side and the level whose short side is 4.
+        int[][] shapes = {{32, 8, 4, 8, 1}, {16, 8, 5, 8, 1}, {8, 32, 4, 8, 1}, {24, 4, 1, 4, 0}};
+        for (int[] shape : shapes) {
             var files = new Files();
-            files.sources.put(10L, diffuse);
+            files.sources.put(10L, blpBgraHalves(shape[0], shape[1], shape[2]));
             var pool = new TerrainAtlasPool();
             var source = new WorldTerrainTextureSource(files.files(), pool);
             try (var result = read(source)) {
                 var tile = result.tiles().getFirst();
+                String name = shape[0] + "x" + shape[1];
                 assertEquals(
                         List.of(),
-                        tile.issues().stream().filter(issue -> issue.fileId() == 10).toList());
-                assertEquals(WorldTerrainTextureSource.State.READY, tile.state());
+                        tile.issues().stream().filter(issue -> issue.fileId() == 10).toList(),
+                        name);
+                assertEquals(WorldTerrainTextureSource.State.READY, tile.state(), name);
+                var binding =
+                        tile.receipt().diffuse().stream()
+                                .filter(b -> b.file().fileId() == 10)
+                                .findFirst()
+                                .orElseThrow();
+                assertEquals(shape[3], binding.originalSide(), name);
+                assertEquals(shape[4], binding.level(), name);
+                // Chunk 200 draws file 10 alone: its cell keeps the red and blue halves.
+                try (var lease = result.retainAtlas(TILE.x(), TILE.y()).orElseThrow()) {
+                    lease.withAtlas(
+                            atlas -> {
+                                var m =
+                                        atlas.mappings().stream()
+                                                .filter(c -> c.ordinal() == 200)
+                                                .findFirst()
+                                                .orElseThrow();
+                                var px = atlas.pixels();
+                                boolean red = false, blue = false;
+                                for (int y = 0; y < 32; y++) {
+                                    for (int x = 0; x < 32; x++) {
+                                        int at = ((m.y() * 32 + y) * 512 + m.x() * 32 + x) * 4;
+                                        int r = px.get(at) & 255, b = px.get(at + 2) & 255;
+                                        red |= r > 200 && b < 50;
+                                        blue |= b > 200 && r < 50;
+                                    }
+                                }
+                                assertTrue(red && blue, name + " cell keeps both halves");
+                            });
+                }
             } finally {
                 source.closeAsync().get(5, TimeUnit.SECONDS);
                 pool.closeAsync().get(5, TimeUnit.SECONDS);
@@ -2150,5 +2184,25 @@ class WorldTerrainTextureSourceTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> WorldTerrainTextureSource.boxAverage(pair, 3, 1, 1, 1));
+        // 6 -> 4 is not a whole ratio: each output pixel weighs 1.5 source pixels by the part it
+        // covers (1 and 1/2, then 1/2 and 1).
+        byte[] six = new byte[6 * 4];
+        int[] values = {0, 30, 60, 90, 120, 150};
+        for (int i = 0; i < 6; i++) {
+            six[i * 4] = (byte) values[i];
+        }
+        byte[] four = WorldTerrainTextureSource.boxAverage(six, 6, 1, 4, 1);
+        int[] expected = {10, 50, 100, 140};
+        for (int i = 0; i < 4; i++) {
+            assertEquals(expected[i], four[i * 4] & 255, "pixel " + i);
+        }
+    }
+
+    @Test
+    void aNonSquareLevelOverItsPixelBoundIsALimit() throws Exception {
+        // 2048 x 4: the level of short side 4 is 8,192 pixels, past the 4,096 bound.
+        assertEquals(
+                WorldTerrainTextureSource.DiffuseRefusal.LIMIT,
+                refusalFor(blpBgraHalves(2048, 4, 1)));
     }
 }
