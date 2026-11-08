@@ -527,6 +527,40 @@ class M2IdleAnimationTest {
                 version);
     }
 
+    /** Sequence rows with only the alias flag (0x40) and alias index set; -1 is not an alias. */
+    private static java.util.List<byte[]> aliasRows(int... next) {
+        var rows = new java.util.ArrayList<byte[]>();
+        for (int target : next) {
+            var row = ByteBuffer.allocate(64).order(ByteOrder.LITTLE_ENDIAN);
+            row.putInt(12, target < 0 ? 0x20 : 0x60);
+            row.putShort(62, (short) Math.max(target, 0));
+            rows.add(row.array());
+        }
+        return rows;
+    }
+
+    @org.junit.jupiter.api.Test
+    void aliasTargetFollowsTheWholeChain() {
+        // 0 -> 1 -> 2: two hops end at the first row without the alias flag.
+        assertEquals(2, M2IdleAnimation.aliasTarget(aliasRows(1, 2, -1), 0));
+        // 2 -> 0 -> 1 in a different order.
+        assertEquals(1, M2IdleAnimation.aliasTarget(aliasRows(1, -1, 0), 2));
+        // A row without the alias flag is its own target.
+        assertEquals(2, M2IdleAnimation.aliasTarget(aliasRows(1, 2, -1), 2));
+        // A three-row cycle.
+        aliasRefused("The Stand sequence alias chain contains a cycle.", aliasRows(1, 2, 0));
+        // An alias index equal to the row count.
+        aliasRefused("The Stand sequence aliases an undeclared sequence.", aliasRows(3, 2, -1));
+    }
+
+    private static void aliasRefused(String message, java.util.List<byte[]> rows) {
+        var error =
+                assertThrows(
+                        ModelFormatException.class, () -> M2IdleAnimation.aliasTarget(rows, 0));
+        assertEquals("MODEL_INVALID", error.code());
+        assertEquals(message, error.getMessage());
+    }
+
     @ParameterizedTest
     @ValueSource(ints = {272, 274})
     void sourceMustMatchTheParsedModel(int version) {
