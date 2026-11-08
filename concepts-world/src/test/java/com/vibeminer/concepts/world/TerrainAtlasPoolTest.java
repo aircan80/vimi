@@ -400,12 +400,12 @@ class TerrainAtlasPoolTest {
 
     @Test
     void theByteBoundCoversTheNearHighWorkingSet() {
-        // Twenty HIGH atlases: the NEAR ring (nine active, one staging), a nine-tile batch, one
-        // spare; well under the 34 x HIGH this pool could retain before.
+        // Twenty-two HIGH atlases: a NEAR stream's twelve outputs (nine resident, staged, pending,
+        // retiring), a nine-tile batch beside it, one spare; under the old 34 x HIGH.
         long high =
                 TerrainTileAtlas.maxRetainedBytes(
                         com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK);
-        assertEquals(20 * high, TerrainAtlasPool.MAX_BYTES);
+        assertEquals((12 + 9 + 1) * high, TerrainAtlasPool.MAX_BYTES);
         assertTrue(TerrainAtlasPool.MAX_BYTES < TerrainAtlasPool.MAX_ENTRIES * high);
         // FAR and STANDARD keep the count bound.
         assertTrue(
@@ -414,5 +414,79 @@ class TerrainAtlasPoolTest {
                                         com.vibeminer.rendering.world.TerrainTileSplat
                                                 .STANDARD_MASK)
                         <= TerrainAtlasPool.MAX_BYTES);
+    }
+
+    @Test
+    @SuppressWarnings("try")
+    void evictionTakesTheLeastRecentlyUsedEntryFirst() throws Exception {
+        var pool = new TerrainAtlasPool();
+        try {
+            for (int i = 0; i < TerrainAtlasPool.MAX_ENTRIES; i++) {
+                try (var r = pool.reserve().orElseThrow()) {
+                    r.publish(atlas(), String.format("%064x", i)).close();
+                }
+            }
+            // Touch the oldest; the next reservation must evict entry 1 instead.
+            pool.cached(String.format("%064x", 0)).orElseThrow().close();
+            try (var r = pool.reserve().orElseThrow()) {
+                var touched = pool.cached(String.format("%064x", 0));
+                assertTrue(touched.isPresent(), "the touched entry survives");
+                touched.get().close();
+                assertTrue(
+                        pool.cached(String.format("%064x", 1)).isEmpty(),
+                        "the least recently used entry is evicted");
+            }
+        } finally {
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    @SuppressWarnings("try")
+    void anUnavoidableRefusalKeepsTheCache() throws Exception {
+        boolean splat = WorldTerrainTextureSource.splat;
+        int mask = WorldTerrainTextureSource.splatMask;
+        var pool = new TerrainAtlasPool();
+        var open = new ArrayList<AutoCloseable>();
+        try {
+            // Two cached atlases without splatting.
+            WorldTerrainTextureSource.splat = false;
+            for (int i = 0; i < 2; i++) {
+                try (var r = pool.reserve().orElseThrow()) {
+                    r.publish(atlas(), String.format("%064x", i)).close();
+                }
+            }
+            // Twenty-one pinned HIGH reservations and one pinned reservation without splatting:
+            // none of these needs an eviction.
+            WorldTerrainTextureSource.splat = true;
+            WorldTerrainTextureSource.splatMask =
+                    com.vibeminer.rendering.world.TerrainTileSplat.HIGH_MASK;
+            for (int i = 0; i < 21; i++) {
+                open.add(pool.reserve().orElseThrow());
+            }
+            WorldTerrainTextureSource.splat = false;
+            var small = pool.reserve().orElseThrow();
+            open.add(small);
+            assertEquals(2, pool.stats().cachedEntries());
+            // Another HIGH reservation can't fit even with both cached atlases evicted: it is
+            // refused, and the cache is kept for later requests.
+            WorldTerrainTextureSource.splat = true;
+            assertTrue(pool.reserve().isEmpty());
+            assertEquals(2, pool.stats().cachedEntries());
+            // Once the small reservation closes, evicting the cache makes room.
+            open.remove(small);
+            small.close();
+            try (var r = pool.reserve().orElseThrow()) {
+                assertEquals(0, pool.stats().cachedEntries());
+                assertTrue(pool.stats().chargedBytes() <= TerrainAtlasPool.MAX_BYTES);
+            }
+        } finally {
+            WorldTerrainTextureSource.splat = splat;
+            WorldTerrainTextureSource.splatMask = mask;
+            for (var resource : open) {
+                resource.close();
+            }
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
     }
 }
