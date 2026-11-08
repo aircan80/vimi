@@ -334,6 +334,60 @@ class M2IdleAnimationTest {
 
     @ParameterizedTest
     @ValueSource(ints = {272, 274})
+    void zeroLengthGlobalClocksAdmitKeysAtAnyTime(int version) {
+        // A global sequence of length 0 never advances, so its keys are read in order wherever
+        // they are stamped; the clock stays at 0 and holds the first key.
+        var idle =
+                read(
+                        authored(
+                                version,
+                                a -> {
+                                    a.buffer.putInt(a.at + GLOBALS, 0);
+                                    a.keys(
+                                            1,
+                                            56,
+                                            1,
+                                            0,
+                                            1,
+                                            0,
+                                            new int[] {3333, 3333, 6667},
+                                            v -> {
+                                                for (int i = 0; i < 9; i++) {
+                                                    v.putFloat(1 + i / 3);
+                                                }
+                                            },
+                                            12);
+                                }));
+        assertArrayEquals(new long[] {0}, idle.globalSequenceMillis());
+        var scale = idle.bones().get(1).scale();
+        assertEquals(0, scale.globalSequence());
+        assertArrayEquals(new int[] {3333, 3333, 6667}, scale.times());
+        assertArrayEquals(new float[] {1, 1, 1, 2, 2, 2, 3, 3, 3}, scale.values());
+        // Order is still required on a zero-length clock.
+        refused(
+                "MODEL_INVALID",
+                a -> {
+                    a.buffer.putInt(a.at + GLOBALS, 0);
+                    a.keys(
+                            1,
+                            56,
+                            1,
+                            0,
+                            1,
+                            0,
+                            new int[] {6667, 3333},
+                            v -> {
+                                for (int i = 0; i < 6; i++) {
+                                    v.putFloat(1);
+                                }
+                            },
+                            12);
+                },
+                version);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
     void sourceMustMatchTheParsedModel(int version) {
         byte[] bytes = authored(version, a -> {});
         var model = M2ModelReader.read(AssetSource.bytes(bytes)).join();

@@ -217,6 +217,35 @@ class PreviewAnimationTest {
                 new float[] {500, 0, 0},
                 longClock.pose(rest, 1_079_000L + 500_000).mesh().positions(),
                 0);
+        // A zero-length global clock never advances: it holds the first key at every time.
+        var stillClock =
+                new Bone(
+                        -1,
+                        0,
+                        0,
+                        0,
+                        new Track(
+                                Interpolation.LINEAR,
+                                0,
+                                3,
+                                new int[] {3333, 6667},
+                                new float[] {7, 0, 0, 9, 0, 0}),
+                        null,
+                        null,
+                        false);
+        var still =
+                new PreviewAnimation(
+                        "Stand",
+                        1000,
+                        new long[] {0},
+                        List.of(stillClock),
+                        rest,
+                        new float[0],
+                        rigid(0, 0, 0),
+                        full(3));
+        for (long millis : new long[] {0, 500, 3333, 5000, 6667}) {
+            near(new float[] {7, 0, 0}, still.pose(rest, millis).mesh().positions(), 0);
+        }
         assertThrows(
                 IllegalArgumentException.class,
                 () ->
