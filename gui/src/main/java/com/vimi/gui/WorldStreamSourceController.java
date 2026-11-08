@@ -1551,9 +1551,12 @@ final class WorldStreamSourceController {
         var text = new StringBuilder();
         if (creatures.drawn() > 0)
             text.append("; ").append(creatures.drawn()).append(creatures.drawn() == 1 ? " static creature model on " : " static creature models on ").append(tiles)
-                    .append(tiles == 1 ? " tile" : " tiles").append(creatures.restPosed() == 0 ? " (Stand pose, facing north)"
-                            : creatures.restPosed() == creatures.drawn() ? " (rest pose, facing north)"
-                            : " (" + creatures.restPosed() + " in rest pose, facing north)");
+                    .append(tiles == 1 ? " tile" : " tiles").append(creatures.restPosed() == 0 ? " (Stand pose, facing north"
+                            : creatures.restPosed() == creatures.drawn() ? " (rest pose, facing north"
+                            : " (" + creatures.restPosed() + " in rest pose, facing north")
+                    // The World batch rule (#361) draws texture 1 of each surface, as World objects
+                    // do; humanoid NPC appearances do not go through it.
+                    .append(creatures.drawn() > creatures.npcs().drawn() ? ", first texture per surface)" : ")");
         // Camera-facing parts are not drawn in the World (#360, #384): disclosed per placement.
         if (creatures.billboardsLeftOut() > 0)
             text.append(", ").append(creatures.billboardsLeftOut())

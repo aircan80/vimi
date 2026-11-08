@@ -421,6 +421,7 @@ public final class WorldMeasurementProbe {
                 facts.put(displayId, DisplayModelFacts.of(preview.reference(), preview.appearance().mesh()));
                 appearances.put(displayId, preview.appearance());
                 previews.put(displayId, preview);
+                material.put(displayId, materialOutcome(preview, token));
             }
             return preview;
         }
@@ -454,6 +455,21 @@ public final class WorldMeasurementProbe {
             var idle = inner.worldIdle(displayId, token);
             worldStand.put(displayId, worldOutcome(idle, previews.get(displayId), token));
             return idle;
+        }
+
+        /** The World conversion's outcome for one display's static model (#361). */
+        final Map<Long, String> material = new ConcurrentHashMap<>();
+
+        /** "drawn", or the conversion's refusal, for the static model as the World binds it. */
+        static String materialOutcome(
+                com.vibeminer.concepts.models.DisplayModelTypes.Preview preview, Cancellation token) {
+            var converted = WorldTileCreatures.convert(preview, token);
+            return converted.model() != null ? "drawn" : "not drawn: " + converted.refusal().label;
+        }
+
+        /** Distinct creature displays (no extended display info) per World material outcome. */
+        Map<String, Integer> materialTally() {
+            return tally(material, false);
         }
 
         /** The World's outcome for one display: its Stand outcome, refined by the conversion. */
@@ -716,6 +732,9 @@ public final class WorldMeasurementProbe {
             say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
         say("PROBE displays: sampled creature displays by Stand outcome (all with a preview)");
         for (var entry : display.standTally(false).entrySet())
+            say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
+        say("PROBE displays: sampled creature displays by World material outcome (static model)");
+        for (var entry : display.materialTally().entrySet())
             say(String.format(Locale.ROOT, "PROBE   %4d  %s", entry.getValue(), entry.getKey()));
         say("PROBE displays: sampled creature displays by World Stand outcome (all with a preview)");
         for (var entry : display.worldStandTally().entrySet())

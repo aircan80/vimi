@@ -167,6 +167,22 @@ public final class M2Combiners {
         return (shader & ~known) == 0;
     }
 
+    /**
+     * Whether texture 1 of a batch with {@code count} textures and {@code shader} is sampled with
+     * UV0: the shader names a {@code Diffuse_T1*} vertex shader ({@link #name}) and sets no bit
+     * outside that naming ({@link #namedBitsOnly}). The World's batch rule for objects and
+     * creatures (#360, #361).
+     */
+    public static boolean firstTextureUsesUv0(int count, int shader) {
+        if (shader < 0 || shader > 0xffff || count < 1) {
+            return false;
+        }
+        var names = name(count, shader);
+        return names != null
+                && namedBitsOnly(count, shader)
+                && names.vertexShader().startsWith("Diffuse_T1");
+    }
+
     public static Admission admit(int count, int shader) {
         ShaderNames n = name(count, shader);
         String id = String.format(java.util.Locale.ROOT, "0x%04X", shader);
