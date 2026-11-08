@@ -37,7 +37,7 @@ import javax.management.openmbean.CompositeData;
  * WorldStreamSourceController}, GPU helper and JavaFX presentation over fixed tile
  * neighbourhoods; {@code prep} times the real source path alone (terrain prepareAndWrite and
  * exterior preparation per tile, no helper or FX); {@code refusals} counts terrain texture
- * refusals over whole maps. All report per-stage timings ({@code -Dvimi.world.stageTimings=true}).
+ * refusals over whole maps; {@code water} counts water outcomes over sampled tiles (#171). All report per-stage timings ({@code -Dvimi.world.stageTimings=true}).
  *
  * <p>What it touches: see {@link WorldMeasurementOpen} and docs/world-measurement-baseline.md. It
  * runs only on a copy of the library ({@code -PdataDirectory}), never prepares anything, and
@@ -211,6 +211,7 @@ public final class WorldMeasurementProbe {
                     () -> {
                         switch (System.getProperty("probe.mode", "stream")) {
                             case "refusals" -> refusals(handle, catalog);
+                            case "water" -> water(handle, catalog);
                             case "prep" -> prep(handle, catalog);
                             case "creatures" -> creatures(opened, handle, catalog);
                             default -> stream(handle, catalog);
@@ -1079,6 +1080,87 @@ public final class WorldMeasurementProbe {
                             tiles == 0 ? 0 : 100.0 * supported / (tiles * 256.0)));
             say("PROBE   issue reasons (one per issue) " + reasons);
             say("PROBE   chunk refusals (composer reason/mask issue) " + chunks);
+        }
+    }
+
+    // ---- Water outcomes over whole maps (#171) ----------------------------------------------
+
+    /**
+     * Prepares every {@code probe.stride}-th recorded tile of each map (default every 4th) through
+     * the production terrain and water preparation, without a helper, and counts the water facts:
+     * tile states and reasons, declared, admitted and unresolved layers, cells and issue kinds.
+     */
+    private static void water(BuildWorld handle, WorldService.Catalog catalog) throws Exception {
+        var source =
+                handle.terrainStreaming()
+                        .orElseThrow(() -> new IllegalStateException("No terrain streaming"));
+        var water =
+                handle.waterPreview()
+                        .orElseThrow(() -> new IllegalStateException("No water preview"));
+        int stride = Math.max(1, Integer.getInteger("probe.stride", 4));
+        for (String mapText : System.getProperty("probe.maps", "0,1").split(",")) {
+            long mapId = Long.parseLong(mapText.strip());
+            var map = catalog.maps().stream().filter(m -> m.id() == mapId).findFirst().orElse(null);
+            if (map == null) {
+                say("PROBE map " + mapId + " not in catalog");
+                continue;
+            }
+            var all = handle.inventory(map, Cancellation.NONE).get(5, TimeUnit.MINUTES).world().tiles();
+            var scope = source.createScope(map, Cancellation.NONE);
+            source.activate(scope);
+            var states = new TreeMap<String, Integer>();
+            var issues = new TreeMap<String, Integer>();
+            long declared = 0, admitted = 0, unresolved = 0, cells = 0;
+            int tiles = 0, sampled = 0;
+            long began = System.nanoTime();
+            long budget = TimeUnit.SECONDS.toNanos(Long.getLong("probe.mapSeconds", 240));
+            for (int at = 0; at < all.size(); at += stride) {
+                sampled++;
+                if (System.nanoTime() - began > budget || !beforeDeadline()) break;
+                String key;
+                try (var written =
+                        source.prepareAndWrite(
+                                scope, all.get(at), Cancellation.NONE, (borrow, token) -> () -> {})) {
+                    try (var prepared =
+                            water.prepareAndWrite(written, Cancellation.NONE, (borrow, token) -> () -> {})) {
+                        var facts = prepared.facts();
+                        key = facts.state() + "/" + facts.reason();
+                        declared += facts.declaredLayers();
+                        admitted += facts.admittedLayers();
+                        unresolved += facts.unresolvedLayers();
+                        cells += facts.cells();
+                        for (String issue : facts.issues()) {
+                            // Kinds only: the text before any number.
+                            issues.merge(issue.replaceAll("[-0-9.,]+.*", "").strip(), 1, Integer::sum);
+                        }
+                    } catch (RuntimeException refused) {
+                        key = "refused/" + refused.getClass().getSimpleName();
+                    }
+                } catch (RuntimeException terrainFailed) {
+                    key = "terrain-failed/" + terrainFailed.getClass().getSimpleName();
+                }
+                states.merge(key, 1, Integer::sum);
+                tiles++;
+            }
+            if (tiles < sampled) incomplete = true;
+            say(
+                    String.format(
+                            Locale.ROOT,
+                            "PROBE water map %d (%s): %d of %d sampled tiles (every %d of %d) in %.1f s;"
+                                    + " layers declared %d, admitted %d, unresolved %d; cells %d",
+                            mapId,
+                            map.directory(),
+                            tiles,
+                            sampled,
+                            stride,
+                            all.size(),
+                            seconds(System.nanoTime() - began),
+                            declared,
+                            admitted,
+                            unresolved,
+                            cells));
+            say("PROBE   water states/reasons (one per tile) " + states);
+            say("PROBE   water issue kinds " + issues);
         }
     }
 
