@@ -269,6 +269,25 @@ class DisplayModelServiceTest {
     }
 
     @Test
+    void idleLeftOutVerticesBelongToAnAvailableAnimationAndAreCopied() {
+        assertEquals(0, DisplayModelTypes.Idle.unavailable("x").leftOut().length);
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new DisplayModelTypes.Idle(
+                                DisplayModelTypes.IdleState.UNSUPPORTED,
+                                null,
+                                null,
+                                "x",
+                                new int[] {1}));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new DisplayModelTypes.Idle(
+                                DisplayModelTypes.IdleState.UNSUPPORTED, null, null, "x", null));
+    }
+
+    @Test
     void replacementTexturesUseDisplayVariationsWhileTypeZeroUsesExactTxid() {
         var variations = List.of(100L, 200L, 300L, 400L);
         assertEquals(

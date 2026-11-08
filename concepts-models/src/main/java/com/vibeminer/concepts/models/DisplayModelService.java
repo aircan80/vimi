@@ -102,7 +102,13 @@ public final class DisplayModelService implements BuildDisplayModels {
     @Override
     public CompletableFuture<DisplayModelTypes.Idle> idle(long displayId, Cancellation token) {
         checkDisplay(displayId);
-        return submit(token, request -> loadIdle(displayId, request));
+        return submit(token, request -> loadIdle(displayId, false, request));
+    }
+
+    @Override
+    public CompletableFuture<DisplayModelTypes.Idle> worldIdle(long displayId, Cancellation token) {
+        checkDisplay(displayId);
+        return submit(token, request -> loadIdle(displayId, true, request));
     }
 
     private static void checkDisplay(long displayId) {
@@ -152,7 +158,7 @@ public final class DisplayModelService implements BuildDisplayModels {
         return published;
     }
 
-    private DisplayModelTypes.Idle loadIdle(long displayId, Cancellation token) {
+    private DisplayModelTypes.Idle loadIdle(long displayId, boolean world, Cancellation token) {
         var issues = new ArrayList<String>();
         DisplayModelTypes.Reference reference = null;
         try {
@@ -220,14 +226,26 @@ public final class DisplayModelService implements BuildDisplayModels {
                 }
             }
             try {
-                var animation =
-                        DisplayIdleAnimations.admit(
-                                m,
-                                geometry.vertexLookup(),
-                                idle,
-                                surface.mesh(),
-                                surface.normals(),
-                                token);
+                var admitted =
+                        world
+                                ? DisplayIdleAnimations.admitWorld(
+                                        m,
+                                        geometry.vertexLookup(),
+                                        idle,
+                                        surface.mesh(),
+                                        surface.normals(),
+                                        token)
+                                : new DisplayIdleAnimations.WorldStand(
+                                        DisplayIdleAnimations.admit(
+                                                m,
+                                                geometry.vertexLookup(),
+                                                idle,
+                                                surface.mesh(),
+                                                surface.normals(),
+                                                token),
+                                        new int[0]);
+                var animation = admitted.animation();
+                int leftOut = admitted.leftOut().length;
                 return new DisplayModelTypes.Idle(
                         DisplayModelTypes.IdleState.AVAILABLE,
                         reference,
@@ -236,7 +254,13 @@ public final class DisplayModelService implements BuildDisplayModels {
                                 + animation.durationMillis()
                                 + " ms loop · "
                                 + animation.boneCount()
-                                + " bones evaluated in software.");
+                                + " bones evaluated in software"
+                                + (leftOut == 0
+                                        ? "."
+                                        : " · "
+                                                + leftOut
+                                                + " vertices weighted to billboard bones left out."),
+                        admitted.leftOut());
             } catch (DisplayIdleAnimations.Unsupported unsupported) {
                 return new DisplayModelTypes.Idle(
                         DisplayModelTypes.IdleState.UNSUPPORTED,
