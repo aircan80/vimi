@@ -205,24 +205,46 @@ class WorldObjectBlendedRangeOrderTest {
                 java.util.List.of(
                         java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java")
                                 .toString(),
+                        "--enable-native-access=ALL-UNNAMED",
+                        "-XX:+UseSerialGC",
                         "-XX:TieredStopAtLevel=1",
                         "-cp",
                         System.getProperty("java.class.path"),
                         SortAllocation.class.getName());
-        var child = new ProcessBuilder(command).redirectErrorStream(true).start();
+        // Output goes to a file, so a hung child can't block a read; it is killed after 60 s.
+        var log = java.nio.file.Files.createTempFile("vimi-sort-allocation", ".txt");
+        Process child = null;
         String output;
-        try (var out = child.getInputStream()) {
-            output = new String(out.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        try {
+            child =
+                    new ProcessBuilder(command)
+                            .redirectErrorStream(true)
+                            .redirectOutput(log.toFile())
+                            .start();
+            boolean exited = child.waitFor(60, java.util.concurrent.TimeUnit.SECONDS);
+            output = java.nio.file.Files.readString(log);
+            assertTrue(exited, "child did not exit within 60 s; " + output);
+            assertEquals(0, child.exitValue(), output);
+        } finally {
+            if (child != null) {
+                child.destroyForcibly();
+            }
+            java.nio.file.Files.deleteIfExists(log);
         }
-        assertTrue(child.waitFor(60, java.util.concurrent.TimeUnit.SECONDS), output);
-        assertEquals(0, child.exitValue(), output);
+        // The meter must see a known allocation, or a zero below would prove nothing.
+        long control = measured(output, "control");
+        assertTrue(control >= 800_000, "control allocated " + control + " bytes; " + output);
+        long allocated = measured(output, "sortKeys");
+        assertTrue(allocated < 4096, "allocated " + allocated + " bytes; " + output);
+    }
+
+    private static long measured(String output, String name) {
         var line =
                 output.lines()
-                        .filter(l -> l.startsWith("sortKeys "))
+                        .filter(l -> l.startsWith(name + " "))
                         .findFirst()
                         .orElseThrow(() -> new AssertionError(output));
-        long allocated = Long.parseLong(line.split(" ")[1]);
-        assertTrue(allocated < 4096, "allocated " + allocated + " bytes; " + output);
+        return Long.parseLong(line.split(" ")[1]);
     }
 
     /** Child: sorts 1,000 keys 2,000 times and prints the bytes this thread allocated. */
@@ -233,7 +255,22 @@ class WorldObjectBlendedRangeOrderTest {
             var threads =
                     (com.sun.management.ThreadMXBean)
                             java.lang.management.ManagementFactory.getThreadMXBean();
+            if (!threads.isThreadAllocatedMemorySupported()
+                    || !threads.isThreadAllocatedMemoryEnabled()) {
+                throw new IllegalStateException("thread allocation metering is unavailable");
+            }
             var keys = new long[1000];
+            // Control: 100 arrays of 1,000 longs (over 800,000 bytes) the meter must see.
+            long[][] sink = new long[100][];
+            long start = threads.getCurrentThreadAllocatedBytes();
+            for (int i = 0; i < sink.length; i++) {
+                sink[i] = new long[1000];
+            }
+            System.out.println(
+                    "control "
+                            + (threads.getCurrentThreadAllocatedBytes() - start)
+                            + " "
+                            + sink[99].length);
             // One lambda each, created before measuring: a lambda's first evaluation allocates.
             Sort sortKeys = BgfxWorldStreamRenderer::sortKeys;
             Sort arraysSort = (k, c) -> java.util.Arrays.sort(k, 0, c);
