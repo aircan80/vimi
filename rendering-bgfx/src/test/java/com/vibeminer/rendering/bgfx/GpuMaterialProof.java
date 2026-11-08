@@ -569,8 +569,9 @@ public final class GpuMaterialProof {
 
         /**
          * Cylindrical cards keep one model axis fixed. About Z: level views draw exactly the
-         * spherical card at every yaw, and a view from above foreshortens its height. About Y:
-         * level views keep its height but foreshorten its width as the yaw turns.
+         * spherical card at every yaw, and a view from above foreshortens its height (its width
+         * changes only with perspective, its edges lying at different depths). About Y: level views
+         * foreshorten its width as the yaw turns while its height changes only with perspective.
          */
         private void checkCylindricalCards(Path directory) throws IOException {
             var spherical = rigidCard(.002f);
@@ -589,8 +590,8 @@ public final class GpuMaterialProof {
             int[] zAbove = render(aboutZ.mesh(), aboutZ, above, true);
             int[] s = box(sphericalAbove), z = box(zAbove);
             require(
-                    z[1] > 0 && z[1] < s[1] * .85 && Math.abs(z[0] - s[0]) <= 2,
-                    "From above, a card about Z keeps its width and loses height: spherical "
+                    z[1] > 0 && z[1] < s[1] * .85 && z[0] >= s[0] * .9 && z[0] <= s[0] * 1.25,
+                    "From above, a card about Z keeps about its width and loses height: spherical "
                             + s[0]
                             + "x"
                             + s[1]
@@ -617,7 +618,7 @@ public final class GpuMaterialProof {
                 maxHeight = Math.max(maxHeight, b[1]);
             }
             require(
-                    minWidth > 0 && minWidth < maxWidth * .9 && maxHeight - minHeight <= 2,
+                    minWidth > 0 && minWidth < maxWidth * .5 && maxHeight <= minHeight * 1.15,
                     "Level views keep a card about Y at its height and turn its width: widths "
                             + minWidth
                             + ".."
