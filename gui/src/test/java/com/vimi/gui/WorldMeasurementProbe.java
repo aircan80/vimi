@@ -4,6 +4,7 @@ import com.sun.management.GarbageCollectionNotificationInfo;
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.world.BuildWorld;
 import com.vibeminer.concepts.world.WorldService;
+import com.vibeminer.concepts.world.WorldSky;
 import com.vibeminer.concepts.world.WorldTerrainTextureSource;
 import com.vibeminer.files.FileDecodeTimings;
 import com.vibeminer.formats.world.WorldFormats;
@@ -21,6 +22,7 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
@@ -1232,9 +1234,44 @@ public final class WorldMeasurementProbe {
         }
     }
 
+    /**
+     * The recorded sky at a native position at midnight and noon, through the production index:
+     * its load failure, or each result's state, coverage and which parts it has, plus the
+     * index's source issues.
+     */
+    static String sky(BuildWorld handle, long mapId, double[] position) throws Exception {
+        WorldSky.Index index;
+        try {
+            index = handle.skyIndex(Cancellation.NONE).get(2, TimeUnit.MINUTES);
+        } catch (ExecutionException failed) {
+            return "UNAVAILABLE (" + failed.getCause().getMessage() + ")";
+        }
+        var text = new StringBuilder();
+        for (int time : new int[] {0, 1440}) {
+            var result = index.at(mapId, position[0], position[1], position[2], time);
+            var sample = result.sample();
+            text.append(
+                    String.format(
+                            Locale.ROOT,
+                            "%s %s coverage %.2f fog %s light %s water %s (%s); ",
+                            time == 0 ? "00:00" : "12:00",
+                            result.state(),
+                            result.coverage(),
+                            sample != null && sample.hasFog(),
+                            sample != null && sample.hasLight(),
+                            sample != null && sample.hasWater(),
+                            result.label()));
+        }
+        return text.append(index.sourceIssues().size())
+                .append(" source issues")
+                .append(index.sourceIssues().isEmpty() ? "" : ": " + index.sourceIssues())
+                .toString();
+    }
+
     /** One controller lifetime over one neighbourhood; everything controller-facing on FX. */
     private static final class StreamRun {
         final Scenario scenario;
+        final BuildWorld handle;
         final WorldStreamSourceController controller;
         final WorldService.Inventory inventory;
         final WorldStreamImagePresentation images = new WorldStreamImagePresentation(new ImageView());
@@ -1269,6 +1306,7 @@ public final class WorldMeasurementProbe {
                 WorldFormats.Tile origin,
                 GpuPreviewService gpu) {
             this.scenario = scenario;
+            this.handle = handle;
             this.inventory = inventory;
             this.origin = origin;
             var request =
@@ -1401,6 +1439,8 @@ public final class WorldMeasurementProbe {
                                                     : controller
                                                             .areaAt(camera.x(), camera.y())
                                                             .label())));
+            var position = fx(() -> camera == null ? null : new double[] {camera.x(), camera.y(), camera.z()});
+            say("PROBE sky: " + (position == null ? "no camera" : sky(handle, scenario.map(), position)));
             var fillTimings = WorldStageTimings.snapshot();
             var fillDecode = FileDecodeTimings.snapshot();
             // 2. Rotate in place: frame cost and delivery with every object resident.

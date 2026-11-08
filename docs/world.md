@@ -71,6 +71,14 @@ whose names the definitions mark as verified:
   `FogScaler`.
 - Map: `TimeOfDayOverride`.
 
+Reviewed layouts: Light 5F16BC84; LightParams A7F31923 and 51C96BAD; LightData 360DA016
+and 70C6CD80; Map D43AFAC3 and B47C6F05. The second of each pair is the classic layout
+(2.5.6 for LightParams and LightData, 1.15.4 for Map). Each was checked against the
+definitions for the fields read here: the same verified names, kinds, signedness and
+array lengths. They differ only in fields this reader doesn't use and in whether the
+record ID is stored inline. Any other layout is refused with the table's name. A Map
+refusal only loses the fixed times.
+
 Rows that can't be read are counted and skipped. A partial table is reported on
 every result.
 

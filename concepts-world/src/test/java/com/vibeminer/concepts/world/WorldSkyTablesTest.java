@@ -51,6 +51,21 @@ final class WorldSkyTablesTest {
                     new Field("FogScaler", 1, true));
     private static final List<Field> MAP = List.of(new Field("TimeOfDayOverride", 1, false));
 
+    /** The retail-style layouts (as on 1.60.1) and the classic ones (as on 2.5.6). */
+    private static final Map<String, String>
+            RETAIL =
+                    Map.of(
+                            "Light", "5F16BC84",
+                            "LightParams", "A7F31923",
+                            "LightData", "360DA016",
+                            "Map", "D43AFAC3"),
+            CLASSIC =
+                    Map.of(
+                            "Light", "5F16BC84",
+                            "LightParams", "51C96BAD",
+                            "LightData", "70C6CD80",
+                            "Map", "B47C6F05");
+
     private static Db2Types.Row row(long id, String... values) {
         return new Db2Types.Row(id, false, null, List.of(values), List.of());
     }
@@ -125,8 +140,7 @@ final class WorldSkyTablesTest {
 
     private static MemoryTables.FakeTable table(
             long id, String name, List<Field> fields, List<Db2Types.Row> rows) {
-        return table(
-                id, name, fields, rows, TableTypes.State.READY, WorldSkyTables.LAYOUTS.get(name));
+        return table(id, name, fields, rows, TableTypes.State.READY, RETAIL.get(name));
     }
 
     private static Db2Types.Row light(long id, String... cells) {
@@ -154,7 +168,7 @@ final class WorldSkyTablesTest {
                                                 4, "x", "0", "0", "0", "0", "1", "100", "0", "0",
                                                 "0", "0", "0", "0", "0")),
                                 lightState,
-                                WorldSkyTables.LAYOUTS.get("Light")),
+                                RETAIL.get("Light")),
                         table(2, "LightParams", PARAMS, List.of(row(100, "0"), row(200, "0"))),
                         table(
                                 3,
@@ -185,6 +199,45 @@ final class WorldSkyTablesTest {
                                                 13, "555", "0", "0", "0", "0", "0", "0", "0", "0",
                                                 "0", "0", "0"))),
                         table(4, "Map", MAP, List.of(row(0, "-1"), row(1, "900")))));
+    }
+
+    /** The same tables, each recorded under the layout {@code layouts} names for it. */
+    private static List<MemoryTables.FakeTable> relayout(
+            List<MemoryTables.FakeTable> tables, Map<String, String> layouts) {
+        var result = new ArrayList<MemoryTables.FakeTable>();
+        for (var table : tables) {
+            var entry = table.entry();
+            var counts = entry.counts();
+            String layout = layouts.get(entry.name());
+            var schema = table.schema();
+            result.add(
+                    new MemoryTables.FakeTable(
+                            new TableTypes.Entry(
+                                    entry.fileDataId(),
+                                    entry.name(),
+                                    entry.state(),
+                                    entry.checked(),
+                                    entry.reason(),
+                                    new TableTypes.Counts(
+                                            counts.declaredRows(),
+                                            counts.readableRows(),
+                                            counts.excludedSections(),
+                                            counts.excludedRecords(),
+                                            counts.format(),
+                                            layout),
+                                    entry.contentKey()),
+                            table.columns(),
+                            table.rows(),
+                            new TableSchema(
+                                    schema.columns(),
+                                    List.of(layout),
+                                    schema.match(),
+                                    schema.locale(),
+                                    schema.comment()),
+                            table.protectedIds(),
+                            table.generated()));
+        }
+        return result;
     }
 
     private static BuildTables open(List<MemoryTables.FakeTable> tables) {
@@ -219,6 +272,65 @@ final class WorldSkyTablesTest {
             var fixed = sky.at(1, 0, 0, 0, 0);
             assertTrue(fixed.timeFixedByMap());
             assertEquals(900, fixed.time());
+        }
+    }
+
+    @Test
+    void theReviewedLayoutsAreExactlyTheseAndEachTableKeepsItsOwn() {
+        for (var name : RETAIL.keySet()) {
+            assertEquals(
+                    new java.util.HashSet<>(List.of(RETAIL.get(name), CLASSIC.get(name))),
+                    WorldSkyTables.LAYOUTS.get(name),
+                    name);
+        }
+        assertEquals(RETAIL.keySet(), WorldSkyTables.LAYOUTS.keySet());
+    }
+
+    @Test
+    void classicLayoutsReadTheSameFieldsAsRetailStyleOnes() {
+        try (var retail = open(tables(TableTypes.State.READY));
+                var classic = open(relayout(tables(TableTypes.State.READY), CLASSIC))) {
+            var expected = WorldSky.load(retail, Cancellation.NONE);
+            var sky = WorldSky.load(classic, Cancellation.NONE);
+            assertEquals(expected.sourceIssues(), sky.sourceIssues());
+            for (int time : new int[] {0, 600, 1440}) {
+                assertEquals(expected.at(0, 1000, 0, 0, time), sky.at(0, 1000, 0, 0, time));
+                assertEquals(expected.at(0, 0, 0, 0, time), sky.at(0, 0, 0, 0, time));
+            }
+            var fixed = sky.at(1, 0, 0, 0, 0);
+            assertTrue(fixed.timeFixedByMap());
+            assertEquals(900, fixed.time());
+            var near = sky.at(0, 1000, 0, 0, 600);
+            assertEquals(0xCC88FF, near.sample().skyTop());
+            assertEquals(new WorldSky.Lighting(0xFFE0C0, 0x404060), near.sample().lighting());
+        }
+    }
+
+    @Test
+    void anotherTablesReviewedLayoutOrAnUnreviewedClassicOneIsRefused() {
+        // LightParams under LightData's classic layout, and the other classic Map layout that the
+        // definitions list beside B47C6F05 but that has not been reviewed here.
+        var swapped = new java.util.HashMap<>(CLASSIC);
+        swapped.put("LightParams", CLASSIC.get("LightData"));
+        try (var tables = open(relayout(tables(TableTypes.State.READY), swapped))) {
+            var failure =
+                    assertThrows(
+                            WorldSkyTables.Unavailable.class,
+                            () -> WorldSky.load(tables, Cancellation.NONE));
+            assertEquals(
+                    "LightParams has a layout that has not been reviewed", failure.getMessage());
+        }
+        var otherMap = new java.util.HashMap<>(CLASSIC);
+        otherMap.put("Map", "32401DC5");
+        try (var tables = open(relayout(tables(TableTypes.State.READY), otherMap))) {
+            var sky = WorldSky.load(tables, Cancellation.NONE);
+            assertTrue(
+                    sky.sourceIssues()
+                            .contains(
+                                    "Map fixed times are unavailable: Map has a layout that has"
+                                            + " not been reviewed"),
+                    String.join("\n", sky.sourceIssues()));
+            assertFalse(sky.at(1, 0, 0, 0, 0).timeFixedByMap());
         }
     }
 

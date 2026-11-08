@@ -15,12 +15,29 @@ import java.util.Set;
 
 /** Reads only reviewed layouts and verified field names; unreadable rows are counted, not kept. */
 final class WorldSkyTables {
-    static final Map<String, String> LAYOUTS =
+    /**
+     * Reviewed layouts per table. Each was checked against the definitions for the fields read here
+     * (names, kinds, signedness, array lengths and row ID), and nothing else is admitted:
+     *
+     * <ul>
+     *   <li>Light 5F16BC84 serves both retail-style and classic clients.
+     *   <li>LightParams 51C96BAD (classic clients since 2.5.6) stores ID inline rather than
+     *       non-inline as in A7F31923, and Flags as 8 rather than 32 bits; the four water opacities
+     *       are the same plain floats. Flags and the other fields are not read.
+     *   <li>LightData 70C6CD80 (classic clients since 2.5.6) stores ID non-inline rather than
+     *       inline as in 360DA016; it lacks later trailing fields and stores some unread fog
+     *       colours unsigned. LightParamID (u16), Time (u16), the twelve colours read here (signed
+     *       32-bit), FogEnd and FogScaler match.
+     *   <li>Map B47C6F05 (classic clients since 1.15.4) stores TimeOfDayOverride as signed 16 bits
+     *       with a non-inline ID, as D43AFAC3 does.
+     * </ul>
+     */
+    static final Map<String, Set<String>> LAYOUTS =
             Map.of(
-                    "Light", "5F16BC84",
-                    "LightParams", "A7F31923",
-                    "LightData", "360DA016",
-                    "Map", "D43AFAC3");
+                    "Light", Set.of("5F16BC84"),
+                    "LightParams", Set.of("A7F31923", "51C96BAD"),
+                    "LightData", Set.of("360DA016", "70C6CD80"),
+                    "Map", Set.of("D43AFAC3", "B47C6F05"));
 
     private static final String[] COLOURS = {
         "SkyTopColor",
@@ -331,10 +348,10 @@ final class WorldSkyTables {
                     || result.columns() == null) {
                 throw new Unavailable(name + " is " + (entry == null ? "absent" : entry.state()));
             }
-            String expected = LAYOUTS.get(name);
-            if (entry.counts() == null
-                    || !expected.equals(entry.counts().layoutHash())
-                    || !result.schema().layoutHashes().contains(expected)) {
+            String layout = entry.counts() == null ? null : entry.counts().layoutHash();
+            if (layout == null
+                    || !LAYOUTS.get(name).contains(layout)
+                    || !result.schema().layoutHashes().contains(layout)) {
                 throw new Unavailable(name + " has a layout that has not been reviewed");
             }
             if (entry.state() == TableTypes.State.PARTIAL) {
