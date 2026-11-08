@@ -366,4 +366,20 @@ final class WorldSkyTest {
                 IllegalArgumentException.class,
                 () -> new WorldSky.Water(0, 0, 0, 0, 0, 1.01, 0, 0));
     }
+
+    @Test
+    void blendingWetAndDrySamplesKeepsTheWetOnesWaterLight() {
+        var water = new WorldSky.Water(0x204060, 0x406080, 0x608000, 0x80A0C0, 0.2, 0.8, 0.4, 1);
+        var wet = new WorldSky.Sample(0, 0, 0, 0, 0, 0, null, water, 0, 0);
+        var dry = new WorldSky.Sample(0xFFFFFF, 0, 0, 0, 0, 0, 0, 0);
+        // Water light averages over the share that records it: half the weight, the same colours
+        // and opacities, never halved toward black or zero.
+        var blended = WorldSky.Sample.blend(java.util.List.of(wet, dry), new double[] {0.5, 0.5});
+        assertEquals(water, blended.water());
+        assertEquals(0.5, blended.waterShare(), 1e-9);
+        var weighted =
+                WorldSky.Sample.blend(java.util.List.of(dry, wet), new double[] {0.75, 0.25});
+        assertEquals(water, weighted.water());
+        assertEquals(0.25, weighted.waterShare(), 1e-9);
+    }
 }

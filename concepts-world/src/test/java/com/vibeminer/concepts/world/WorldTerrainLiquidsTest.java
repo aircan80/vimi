@@ -442,7 +442,9 @@ class WorldTerrainLiquidsTest {
                             return null;
                         });
             }
-            assertEquals(0, f.liquidCaptures);
+            // Only the direct format 1 layer looks up its own LiquidType row (once, then once
+            // more to revalidate it); direct water layers need no table.
+            assertEquals(2, f.liquidCaptures);
         }
     }
 
@@ -1498,7 +1500,25 @@ class WorldTerrainLiquidsTest {
                     java.util.Arrays.copyOf(
                             liquids(2, 0, 1, false), 3072 + 2 * 24 + 2 * 8 + 405 + 81 * 8);
             ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN).putShort(3072 + 24 + 2, (short) 1);
+            f.nativeRows.close();
+            f.nativeRows = new AuthoredNativeLiquids(f.files, 130, true, false, 0xFF123456);
             f.payload(p);
+            try (var tile = f.inspect()) {
+                // Its own LiquidType row (1250) is observed for it, so it is drawn in that
+                // row's colour beside the water.
+                assertEquals(WorldTerrainLiquids.State.READY, tile.summary().state());
+                assertEquals(2, tile.summary().admitted());
+                tile.withBorrow(
+                        v -> {
+                            assertEquals(-1, v.colour(0));
+                            assertEquals(0x123456, v.colour(1));
+                            return null;
+                        });
+            }
+            // A direct magma layer whose LiquidType row is absent stays undrawn, alone.
+            byte[] absent = p.clone();
+            ByteBuffer.wrap(absent).order(ByteOrder.LITTLE_ENDIAN).putShort(3072 + 24, (short) 999);
+            f.payload(absent);
             try (var tile = f.inspect()) {
                 assertEquals(WorldTerrainLiquids.State.PARTIAL, tile.summary().state());
                 assertEquals(1, tile.summary().admitted());
@@ -1548,6 +1568,48 @@ class WorldTerrainLiquidsTest {
                 owner.withBorrow(
                         v -> {
                             assertEquals(-1, v.colour(0));
+                            return null;
+                        });
+            }
+        }
+    }
+
+    @Test
+    void aMissingRowLeavesOnlyItsOwnDirectTypeUndrawn() throws Exception {
+        try (var f = new Fixture()) {
+            f.nativeRows.close();
+            f.nativeRows = new AuthoredNativeLiquids(f.files, 130, true, false, 0xFF123456);
+            // Instance 0 water; instances 1 and 2 direct format 1 (magma), of type 1250 (row
+            // present) and 999 (row absent), each with room for its 8-byte vertices.
+            byte[] p =
+                    java.util.Arrays.copyOf(
+                            liquids(3, 0, 1, false), 3072 + 3 * 24 + 3 * 8 + 3 * 405 + 2 * 81 * 8);
+            var b = ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN);
+            int streams = 3072 + 3 * 24 + 3 * 8 + 3 * 405;
+            for (int i = 1; i < 3; i++) {
+                int at = 3072 + i * 24;
+                b.putShort(at, (short) (i == 1 ? 1250 : 999)).putShort(at + 2, (short) 1);
+                // Their own non-overlapping streams after the authored ones, height 5.
+                int stream = streams + (i - 1) * 81 * 8;
+                b.putInt(at + 20, stream);
+                for (int v = 0; v < 81; v++) {
+                    b.putFloat(stream + v * 4, 5);
+                }
+            }
+            f.payload(p);
+            try (var tile = f.inspect()) {
+                assertEquals(WorldTerrainLiquids.State.PARTIAL, tile.summary().state());
+                assertEquals(2, tile.summary().admitted());
+                assertEquals(
+                        WorldTerrainLiquids.Reason.UNSUPPORTED_LAYOUT, tile.summary().reason());
+                tile.withBorrow(
+                        v -> {
+                            assertEquals(2, v.layers());
+                            assertEquals(1250, v.liquidType(1));
+                            assertEquals(0x123456, v.colour(1));
+                            // The present row and the absent row's negative result are both
+                            // kept as proofs.
+                            assertEquals(2, v.tableFacts().size());
                             return null;
                         });
             }

@@ -115,6 +115,49 @@ class DisplayModelServiceTest {
         }
     }
 
+    /**
+     * A table shape outside the reviewed profile (a {@link java.util.NoSuchElementException} while
+     * resolving) is a stated refusal: an unavailable preview naming the reason, not a busy or
+     * failed read.
+     */
+    @Test
+    void unreviewedDisplayTableShapeIsAStatedRefusal() throws Exception {
+        var tables =
+                (com.vibeminer.formats.tables.BuildTables)
+                        java.lang.reflect.Proxy.newProxyInstance(
+                                com.vibeminer.formats.tables.BuildTables.class.getClassLoader(),
+                                new Class<?>[] {com.vibeminer.formats.tables.BuildTables.class},
+                                (proxy, method, args) ->
+                                        switch (method.getName()) {
+                                            case "schema" ->
+                                                    throw new java.util.NoSuchElementException(
+                                                            "no reviewed column");
+                                            case "closeAsync" ->
+                                                    java.util.concurrent.CompletableFuture
+                                                            .completedFuture(null);
+                                            default ->
+                                                    throw new AssertionError(
+                                                            "Unexpected " + method.getName());
+                                        });
+        var files = unusable(com.vibeminer.files.BuildFiles.class, name -> null);
+        var service = new DisplayModelService(tables, files, null);
+        try {
+            var refusal =
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            IllegalArgumentException.class,
+                            () -> service.resolve(5, Cancellation.NONE, new ArrayList<>()));
+            assertEquals("Unreviewed display table shape", refusal.getMessage());
+            assertTrue(refusal.getCause() instanceof java.util.NoSuchElementException);
+            var preview = service.preview(5, Cancellation.NONE).get();
+            assertEquals(DisplayModelTypes.State.UNAVAILABLE, preview.state());
+            assertTrue(
+                    preview.message().contains("Unreviewed display table shape"),
+                    preview.message());
+        } finally {
+            service.closeAsync().get();
+        }
+    }
+
     private static Throwable assertThrowsCause(
             org.junit.jupiter.api.function.Executable executable) {
         var thrown =

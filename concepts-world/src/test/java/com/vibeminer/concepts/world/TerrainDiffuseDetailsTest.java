@@ -164,6 +164,27 @@ final class TerrainDiffuseDetailsTest {
         }
     }
 
+    @Test
+    void aLayerWhoseShortSideIsNotAPowerOfTwoIsRefusedLikeTheAtlasCell() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        long id = 10;
+        files.sources.put(id, WorldTerrainTextureSourceTest.blpBgraHalves(16, 12, 1));
+        var source = new WorldTerrainTextureSource(files.files(), new TerrainAtlasPool());
+        try {
+            var request =
+                    new WorldTerrainTextureSource.Request(
+                            source, null, List.of(), Cancellation.NONE, progress -> {}, false);
+            var refused =
+                    assertThrows(
+                            RuntimeException.class, () -> source.detail(bound(files, id), request));
+            assertEquals(
+                    WorldTerrainTextureSource.DiffuseRefusal.NON_SQUARE,
+                    WorldTerrainTextureSource.diffuseRefusal(refused));
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
     /** BC2 BLP2 with standard mips from {@code base} down to 1; level 0 blue, the rest red. */
     static byte[] blpChain(int base) {
         int levels = Integer.numberOfTrailingZeros(base) + 1;

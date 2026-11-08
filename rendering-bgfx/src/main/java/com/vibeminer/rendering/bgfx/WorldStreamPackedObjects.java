@@ -26,6 +26,9 @@ final class WorldStreamPackedObjects implements AutoCloseable {
     /** Per placement world bounding sphere (x, y, z, radius), see WorldStreamObjectCulling. */
     final double[] spheres;
 
+    /** Per range: model-space centre of a blended range's bounds, see WorldStreamObjectCulling. */
+    final float[] rangeCentres;
+
     final int draws;
 
     /**
@@ -70,6 +73,9 @@ final class WorldStreamPackedObjects implements AutoCloseable {
                         placements,
                         WorldStreamObjectCulling.modelSpheres(
                                 models, meshes, ranges, data.vertices, data.indices, canceled));
+        rangeCentres =
+                WorldStreamObjectCulling.rangeCentres(
+                        meshes, ranges, data.vertices, data.indices, canceled);
         draws = data.draws;
         meshGroups = data.meshGroups.clone();
         portals = new WmoPortalTraversal[data.modelCount()];

@@ -154,7 +154,10 @@ final class WorldStreamTileFile {
      */
     static final byte RIVER = 0, OCEAN = 1, FLAT = 2;
 
-    /** The colour of water that has no liquid colour of its own. */
+    /**
+     * The colour of water that has no liquid colour of its own: untextured diagnostic teal (sRGB
+     * 20, 115, 148), not a claim of the client's water appearance.
+     */
     static final int WATER_RGB = 0x147394;
 
     /**
@@ -1139,10 +1142,6 @@ final class WorldStreamTileFile {
         require(metadata.maxSourceUvErrorTexels() <= h.uvError(), "Understated source UV error");
         TerrainTextureBinding.validatePixels(
                 TerrainTextureBinding.borrow(metadata, atlas), canceled);
-    }
-
-    static byte[] encodeHeader(Header h) {
-        return encodeHeader(h, "00".repeat(32));
     }
 
     /** SHA-256 of a packet's vertex attribute bytes, bound in the header at 260 (#373). */

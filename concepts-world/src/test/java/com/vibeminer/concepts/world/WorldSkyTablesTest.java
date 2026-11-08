@@ -488,4 +488,63 @@ final class WorldSkyTablesTest {
             assertFalse(near.sample().hasWater());
         }
     }
+
+    @Test
+    void anUnreadableWaterColourDropsOnlyThatRowsWaterLight() {
+        String[] alphas = {"0.25", "0.75", "0.5", "1"};
+        var changed = withWater(alphas, alphas);
+        var rows = new ArrayList<Db2Types.Row>();
+        for (var row : changed.get(2).rows()) {
+            var values = new ArrayList<>(row.values());
+            if (row.id() == 11) {
+                values.set(values.size() - 4, "16777216"); // OceanCloseColor past 0xFFFFFF
+            }
+            rows.add(row(row.id(), values.toArray(String[]::new)));
+        }
+        var dataFields = new ArrayList<>(DATA);
+        dataFields.addAll(WATER_COLOURS);
+        changed.set(2, table(3, "LightData", dataFields, rows));
+        try (var tables = open(changed)) {
+            var sky = WorldSky.load(tables, Cancellation.NONE);
+            assertTrue(
+                    sky.sourceIssues()
+                            .contains(
+                                    "1 LightData rows have unreadable water colours; their sky,"
+                                            + " fog and light are kept."),
+                    String.join("\n", sky.sourceIssues()));
+            var near = sky.at(0, 1000, 0, 0, 600);
+            assertEquals(0xCC88FF, near.sample().skyTop());
+            assertEquals(1500, near.sample().fogEnd(), 0);
+            assertTrue(near.sample().hasLight());
+            assertFalse(near.sample().hasWater());
+        }
+    }
+
+    @Test
+    void aSchemaMissingOneWaterOpacityKeepsSkyFogAndLight() {
+        String[] alphas = {"0.25", "0.75", "0.5", "1"};
+        var changed = withWater(alphas, alphas);
+        var paramFields = new ArrayList<>(PARAMS);
+        paramFields.addAll(WATER_ALPHAS.subList(0, 3)); // no WaterDeepAlpha
+        var paramRows = new ArrayList<Db2Types.Row>();
+        for (var row : changed.get(1).rows()) {
+            var values = new ArrayList<>(row.values());
+            values.removeLast();
+            paramRows.add(row(row.id(), values.toArray(String[]::new)));
+        }
+        changed.set(1, table(2, "LightParams", paramFields, paramRows));
+        try (var tables = open(changed)) {
+            var sky = WorldSky.load(tables, Cancellation.NONE);
+            assertTrue(
+                    sky.sourceIssues().stream()
+                            .anyMatch(
+                                    i ->
+                                            i.startsWith("Water light is unavailable")
+                                                    && i.contains("WaterDeepAlpha")),
+                    String.join("\n", sky.sourceIssues()));
+            var near = sky.at(0, 1000, 0, 0, 600);
+            assertTrue(near.sample().hasLight());
+            assertFalse(near.sample().hasWater());
+        }
+    }
 }
