@@ -22,8 +22,9 @@ final class WorldStreamPackedTile implements AutoCloseable {
 
     /**
      * Bytes per mesh vertex: float x, y, z; the RGBA8 fallback colour (unlit); the MCCV colour
-     * (RGBA8: alpha 255 when present, all zero when absent); the normal as unsigned bytes {@code
-     * round(127.5 + 127.5 * n)}, with (128, 128, 128) for an unlit vertex (water).
+     * (terrain: RGBA8 with alpha 255 when present, all zero when absent; water, which has no MCCV:
+     * the depth byte, the liquid kind, then 0, 0, so alpha stays 0); the normal as unsigned bytes
+     * {@code round(127.5 + 127.5 * n)}, with (128, 128, 128) for an unlit vertex (water).
      */
     static final int VERTEX_BYTES = 24;
 

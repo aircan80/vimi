@@ -11,7 +11,10 @@ import java.util.Objects;
 
 /** Bounded v2 command codec only. Does not open packet files or execute commands. */
 final class WorldStreamControl {
-    /** The longest camera line with its sky, light and water tails is 329 bytes (#171, #177). */
+    /**
+     * The longest camera line with its sky, light and water tails is 333 bytes with its newline
+     * (#171, #177).
+     */
     static final int MAX_LINE_BYTES = 384;
 
     sealed interface Command
@@ -215,7 +218,7 @@ final class WorldStreamControl {
             if (parts.length < at + 3) {
                 throw new IllegalArgumentException("Invalid camera light");
             }
-            if (!parts[17].equals("LIGHT") || !parts[18].matches("[0-9a-f]{12}")) {
+            if (!parts[18].matches("[0-9a-f]{12}")) {
                 throw new IllegalArgumentException("Invalid camera light");
             }
             for (int i = 0; i < 6; i++) {

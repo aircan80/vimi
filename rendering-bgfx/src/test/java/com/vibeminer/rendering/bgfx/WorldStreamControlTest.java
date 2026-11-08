@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.rendering.world.TerrainCamera;
+import com.vibeminer.rendering.world.WorldFrameLimits;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -185,7 +186,8 @@ class WorldStreamControlTest {
 
     /**
      * The longest possible camera line, every field at its longest text and the sky tail at its
-     * widest, still fits the control line bound (#177).
+     * widest (a weight or opacity of 1 encodes as {@code 1000}, the largest frame is 2560 x 1600),
+     * still fits the control line bound (#177).
      */
     @Test
     void theLongestCameraWithASkyFitsTheLine() throws IOException {
@@ -195,28 +197,36 @@ class WorldStreamControlTest {
                 new WorldStreamTransport.Sky(
                         new float[] {255, 255, 255},
                         new float[] {255, 255, 255},
-                        0.999,
+                        1,
                         WorldStreamTransport.Sky.MAX_YARDS - 1,
                         WorldStreamTransport.Sky.MAX_YARDS,
                         new float[] {255, 255, 255},
                         new float[] {255, 255, 255},
-                        0.999,
+                        1,
                         filled(12, 255),
-                        filled(4, 0.999f),
-                        0.999);
+                        filled(4, 1),
+                        1);
         var worst =
                 new WorldStreamControl.Camera(
                         NONCE,
                         Long.MAX_VALUE,
                         Long.MAX_VALUE,
-                        800,
-                        500,
+                        WorldFrameLimits.MAX_WIDTH,
+                        WorldFrameLimits.MAX_HEIGHT,
                         new TerrainCamera(longest, longest, longest, longest, longest),
                         sky);
         byte[] encoded = WorldStreamControl.encode(worst);
+        String line = new String(encoded, StandardCharsets.US_ASCII);
+        assertTrue(line.contains(" SKY ffffffffffff 1000 "), line);
         assertTrue(
-                encoded.length <= WorldStreamControl.MAX_LINE_BYTES,
-                "camera line is " + encoded.length + " bytes");
+                line.contains(
+                        " LIGHT ffffffffffff 1000 WATER "
+                                + "ff".repeat(12)
+                                + " 1000 1000 1000 1000 1000"),
+                line);
+        // With its newline.
+        assertEquals(333, encoded.length, line);
+        assertTrue(encoded.length <= WorldStreamControl.MAX_LINE_BYTES);
         assertEquals(worst, WorldStreamControl.decode(encoded, encoded.length));
     }
 
