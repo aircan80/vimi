@@ -22,9 +22,24 @@ public final class WorldStreamTransport {
     /** One tile beside the active residents is staged while the next commit is prepared. */
     public static final int MAX_PREPARED = MAX_RESIDENTS + 1;
 
+    /** One slot's splat layer table: 16 x 16 RGBA8 (issue #174 step 2). */
+    static final int SPLAT_TABLE_BYTES = 16 * 16 * 4;
+
+    /**
+     * Terrain GPU bytes a session holds once, whatever its view distance: the shared splat layer
+     * array at its larger (RGBA8 fallback) size and the horizon's buffers (#372).
+     */
+    static final long SHARED_TERRAIN_GPU_BYTES =
+            Math.max(
+                            WorldStreamDiffuseArray.ARRAY_BYTES,
+                            WorldStreamDiffuseArray.FALLBACK_ARRAY_BYTES)
+                    + WorldStreamHorizon.GPU_BUDGET_BYTES;
+
     /**
      * Tile neighborhood a session keeps resident (issue #173). Every slot is the same fixed size,
-     * so NEAR needs 10 slots and FAR 26; FAR costs about 2.6 times the terrain GPU memory.
+     * so NEAR needs 10 slots and FAR 26. With the splat masks and the shared splat array and
+     * horizon ({@link ViewDistance#terrainGpuBytes}), terrain needs at most 77.8 MiB on NEAR (117.8
+     * MiB with HIGH textures) and 153.6 MiB on FAR, where masks stay 512 on either tier.
      */
     public enum ViewDistance {
         /** The 3 x 3 neighborhood: 9 residents, 10 slots. */
@@ -51,6 +66,38 @@ public final class WorldStreamTransport {
         /** Renderer slots: every resident plus one staged. */
         public int slots() {
             return residents + 1;
+        }
+
+        /**
+         * Side of every splat mask in a session at this distance (issue #174 step 2b-2): 1024 only
+         * on NEAR with HIGH textures, 512 otherwise.
+         */
+        public int splatMaskSide(boolean highTextures) {
+            return com.vibeminer.rendering.world.TerrainTileSplat.maskSide(
+                    highTextures, this == FAR);
+        }
+
+        /**
+         * Fixed GPU bytes of one terrain slot: its terrain and water mesh buffers, its atlas mip
+         * chain, its splat mask mip chain at {@link #splatMaskSide} and its 16 x 16 RGBA8 splat
+         * layer table. Every slot reaches this at most; objects are charged to their own budget.
+         */
+        public long slotGpuBytes(boolean highTextures) {
+            return WorldStreamPackedTile.MAX_GEOMETRY_BYTES
+                    + WorldStreamAtlasMips.CHAIN_BYTES
+                    + com.vibeminer.rendering.world.TerrainTileSplat.maskChainBytes(
+                            splatMaskSide(highTextures))
+                    + SPLAT_TABLE_BYTES;
+        }
+
+        /**
+         * Upper bound of a session's terrain GPU bytes at this distance (issue #173): every slot at
+         * {@link #slotGpuBytes}, the shared splat layer array (the larger RGBA8 fallback, so the
+         * bound holds on every backend) and the horizon's two buffer sets. Exterior objects come on
+         * top, within {@link ObjectTextures#budgetBytes}.
+         */
+        public long terrainGpuBytes(boolean highTextures) {
+            return slots() * slotGpuBytes(highTextures) + SHARED_TERRAIN_GPU_BYTES;
         }
 
         static ViewDistance of(int residents) {
