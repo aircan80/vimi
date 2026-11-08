@@ -213,6 +213,31 @@ final class WorldStreamMaterialClassProof {
                         off[row * WIDTH + x] == after[row * WIDTH + x],
                         "Vertex colours off change only the coloured surface");
             }
+            // #373: objects take the shared World light. No diffuse and an ambient of (0.5, 0.25,
+            // 1) makes the lit surface its texel times that ambient; the unlit one keeps its texel.
+            owner.light(
+                    new WorldLight(
+                            WorldLight.FIXED.direction(),
+                            new float[] {0, 0, 0},
+                            new float[] {0.5f, 0.25f, 1}));
+            var relit = frame(owner, reader, 4, new long[] {0});
+            owner.light(WorldLight.FIXED);
+            int shared = relit[row * WIDTH + WIDTH / 2];
+            double[] ambient = {0.5, 0.25, 1};
+            for (int c = 0; c < 3; c++) {
+                int expected = (int) Math.floor(texel[c] * ambient[c]);
+                require(
+                        Math.abs((shared >>> shift[c] & 255) - expected) <= 1,
+                        "Objects take the World light: "
+                                + Integer.toHexString(shared)
+                                + " channel "
+                                + c
+                                + " expected "
+                                + expected);
+            }
+            require(
+                    relit[row * WIDTH + unlitX] == off[row * WIDTH + unlitX],
+                    "An unlit surface ignores the World light");
             return "unlit="
                     + Integer.toHexString(unlit)
                     + " blendedThenAdditive="
@@ -224,7 +249,9 @@ final class WorldStreamMaterialClassProof {
                     + " coloured="
                     + Integer.toHexString(coloured)
                     + " colouredOff="
-                    + Integer.toHexString(plain);
+                    + Integer.toHexString(plain)
+                    + " worldLight="
+                    + Integer.toHexString(shared);
         }
     }
 

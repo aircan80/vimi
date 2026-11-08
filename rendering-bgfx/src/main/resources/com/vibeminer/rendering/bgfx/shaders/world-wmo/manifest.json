@@ -2,28 +2,12 @@
   "bgfxApi": 156,
   "bgfxCommit": "780f7bf00a29573473b90dcfab9f92a7d8687702",
   "binaries": {
-    "dx11/fs_model.bin": {
-      "compilerHost": "windows-x64",
-      "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
-      "platform": "windows",
-      "profile": "s_5_0",
-      "sha256": "2cbe913b5597938c2416f184491b18c4cb533cb0de9635052a570233e32e3809",
-      "stage": "fragment"
-    },
-    "dx11/vs_model.bin": {
-      "compilerHost": "windows-x64",
-      "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
-      "platform": "windows",
-      "profile": "s_5_0",
-      "sha256": "0f98afda23e0bb004ea4035717230dec52db01a86bb17cab75fc886c67633d32",
-      "stage": "vertex"
-    },
     "glsl/fs_model.bin": {
       "compilerHost": "linux-x64",
       "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
       "platform": "linux",
       "profile": "330",
-      "sha256": "34f2a6aac9ac6e6232583b841603d350999504b872248e25d34e30f6b5f7b452",
+      "sha256": "9bc4c6ca4e57e9792118b8d3d87c84fd981421c05159a97553f23f11e86b939b",
       "stage": "fragment"
     },
     "glsl/vs_model.bin": {
@@ -39,7 +23,7 @@
       "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
       "platform": "osx",
       "profile": "metal",
-      "sha256": "66d33d48b7d5ac96e795f83d24d9c8d4425d0f1551f8e1ccefe181acd35f75ab",
+      "sha256": "265c8a6fb2d51c9f5fdaed21589785831ef52e54620bd11d46fef83b31cd7e75",
       "stage": "fragment"
     },
     "metal/vs_model.bin": {
@@ -55,7 +39,7 @@
       "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
       "platform": "linux",
       "profile": "spirv",
-      "sha256": "52574059662d03a338e2f093876e639982a88f6f76d0a365e3a88f26661f8b1b",
+      "sha256": "1127395b07b7594599d55ba2b2f457c957e11a72d3ae63343be1f6ffba9752ec",
       "stage": "fragment"
     },
     "spirv/vs_model.bin": {
@@ -70,7 +54,7 @@
   "format": "vimi-bgfx-shaders-v1",
   "inputs": {
     "bgfx_shader.sh": "5ad79a2ff5d1b1fd1f22d986f2b0b5dc49f89ffd5ce18e57966b6ab894094508",
-    "fs_model.sc": "e115bc1d74be46689f7bfd9dd663116ddaef9d23ea7644e74856673230f92c96",
+    "fs_model.sc": "00bcb265a7f43bc7054f8f7cedb005946021698f4b414a304d72d547a35d15eb",
     "varying.def.sc": "75cc700a7cd7ee5f5277cab467080f7b410389f9b3d82b5084da611136463851",
     "vs_model.sc": "a952ea6306887ef5b04452282308b897b3273405d550b5e15dd99e7a91a7ad4b"
   },
