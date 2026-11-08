@@ -9,6 +9,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.zip.DataFormatException;
 import java.util.zip.Inflater;
 
@@ -18,6 +19,13 @@ final class BlteChunks {
             MAX_CHUNK_BYTES = 16 << 20,
             MAX_HEADER = 12 + 24 * MAX_CHUNKS,
             ENVELOPE = 16;
+
+    /**
+     * Idle inflaters, reset and reused across chunks and reads instead of one native zlib stream
+     * per chunk. Bounded: callers past the bound get a fresh inflater that is ended after use.
+     */
+    private static final ArrayBlockingQueue<Inflater> IDLE_INFLATERS =
+            new ArrayBlockingQueue<>(Math.max(2, Runtime.getRuntime().availableProcessors()));
 
     record Chunk(
             int ordinal,
@@ -243,7 +251,7 @@ final class BlteChunks {
             throw unsupported("Unsupported chunk mode");
         }
         long started = FileDecodeTimings.start();
-        Inflater inflater = new Inflater();
+        Inflater inflater = borrowInflater();
         try {
             inflater.setInput(encoded, 1, encoded.length - 1);
             byte[] result = new byte[size];
@@ -265,6 +273,19 @@ final class BlteChunks {
         } catch (DataFormatException e) {
             throw invalid("Invalid zlib data");
         } finally {
+            releaseInflater(inflater);
+        }
+    }
+
+    static Inflater borrowInflater() {
+        Inflater idle = IDLE_INFLATERS.poll();
+        return idle != null ? idle : new Inflater();
+    }
+
+    /** Resets the inflater (also after a failed chunk) and keeps it for reuse, or ends it. */
+    static void releaseInflater(Inflater inflater) {
+        inflater.reset();
+        if (!IDLE_INFLATERS.offer(inflater)) {
             inflater.end();
         }
     }
