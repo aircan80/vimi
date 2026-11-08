@@ -2455,7 +2455,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 blendKeys[count++] = blendKey(dx * dx + dy * dy + dz * dz, position, p);
             }
         }
-        java.util.Arrays.sort(blendKeys, 0, count);
+        sortKeys(blendKeys, count);
         for (int i = count - 1; i >= 0; i--) {
             long key = blendKeys[i];
             var objects = slots[active.get(blendPosition(key)).slot()].objects;
@@ -2736,8 +2736,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     /**
      * Sorts {@code keys[0, count)} ascending in place without allocating. {@code Arrays.sort} on a
      * {@code long[]} allocates a small pivot array per partition that only a fully optimized JIT
-     * removes, and this runs per placement per frame. Insertion sort for the usual handful of
-     * ranges, heapsort past that.
+     * removes, and this runs per placement per frame and once per frame over every blended
+     * placement. Insertion sort for the usual handful of keys, heapsort past that.
      */
     static void sortKeys(long[] keys, int count) {
         if (count <= 32) {

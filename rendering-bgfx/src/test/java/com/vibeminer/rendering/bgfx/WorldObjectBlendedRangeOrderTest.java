@@ -194,6 +194,77 @@ class WorldObjectBlendedRangeOrderTest {
         }
     }
 
+    /**
+     * The per-frame placement sort sees hundreds of blended placements, so it takes the heapsort
+     * path. Measured in a child JVM limited to C1, where nothing removes {@code Arrays.sort}'s
+     * scratch allocations, so the check doesn't depend on C2 having compiled the loop.
+     */
+    @Test
+    void sortingManyKeysAllocatesNothingWithoutC2() throws Exception {
+        var command =
+                java.util.List.of(
+                        java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java")
+                                .toString(),
+                        "-XX:TieredStopAtLevel=1",
+                        "-cp",
+                        System.getProperty("java.class.path"),
+                        SortAllocation.class.getName());
+        var child = new ProcessBuilder(command).redirectErrorStream(true).start();
+        String output;
+        try (var out = child.getInputStream()) {
+            output = new String(out.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        assertTrue(child.waitFor(60, java.util.concurrent.TimeUnit.SECONDS), output);
+        assertEquals(0, child.exitValue(), output);
+        var line =
+                output.lines()
+                        .filter(l -> l.startsWith("sortKeys "))
+                        .findFirst()
+                        .orElseThrow(() -> new AssertionError(output));
+        long allocated = Long.parseLong(line.split(" ")[1]);
+        assertTrue(allocated < 4096, "allocated " + allocated + " bytes; " + output);
+    }
+
+    /** Child: sorts 1,000 keys 2,000 times and prints the bytes this thread allocated. */
+    public static final class SortAllocation {
+        private SortAllocation() {}
+
+        public static void main(String[] args) {
+            var threads =
+                    (com.sun.management.ThreadMXBean)
+                            java.lang.management.ManagementFactory.getThreadMXBean();
+            var keys = new long[1000];
+            // One lambda each, created before measuring: a lambda's first evaluation allocates.
+            Sort sortKeys = BgfxWorldStreamRenderer::sortKeys;
+            Sort arraysSort = (k, c) -> java.util.Arrays.sort(k, 0, c);
+            sortMany(keys, sortKeys);
+            long before = threads.getCurrentThreadAllocatedBytes();
+            sortMany(keys, sortKeys);
+            System.out.println("sortKeys " + (threads.getCurrentThreadAllocatedBytes() - before));
+            // For comparison only: what the previous per-frame Arrays.sort allocated here.
+            sortMany(keys, arraysSort);
+            before = threads.getCurrentThreadAllocatedBytes();
+            sortMany(keys, arraysSort);
+            System.out.println(
+                    "Arrays.sort " + (threads.getCurrentThreadAllocatedBytes() - before));
+        }
+
+        private interface Sort {
+            void sort(long[] keys, int count);
+        }
+
+        private static void sortMany(long[] keys, Sort sort) {
+            long seed = 552;
+            for (int i = 0; i < 2_000; i++) {
+                for (int k = 0; k < keys.length; k++) {
+                    seed = seed * 6364136223846793005L + 1442695040888963407L;
+                    keys[k] = seed >>> 1;
+                }
+                sort.sort(keys, keys.length);
+            }
+        }
+    }
+
     @Test
     void aBlendedRangesCentreIsTheMiddleOfItsBounds() {
         int floats = WorldStreamObjectsFile.VERTEX_FLOATS;
