@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
  * an unrelated root. Vertices 0 and 1 follow bone 0.
  */
 class DisplayIdleAnimationsTest {
-    private static final int TRACK_TRANSLATION = 16, TRACK_ROTATION = 36;
+    private static final int TRACK_TRANSLATION = 16, TRACK_ROTATION = 36, TRACK_SCALE = 56;
 
     private static final class Authored {
         final NativeMaterialFixture fixture;
@@ -60,6 +60,29 @@ class DisplayIdleAnimationsTest {
             int row = bone(bone) + TRACK_TRANSLATION;
             body.putShort(row, (short) 1);
             body.putShort(row + 2, (short) -1);
+            body.putInt(row + 4, 1).putInt(row + 8, outerTimes);
+            body.putInt(row + 12, 1).putInt(row + 16, outerValues);
+            return this;
+        }
+
+        /**
+         * Linear scale keys (1,1,1) at 0 and (3,3,3) at 1000 on global clock 0, which this declares
+         * as 1000 ms long.
+         */
+        Authored scale(int bone) {
+            var body = fixture.body;
+            int globals = body.position();
+            fixture.declaration(20, 1, globals);
+            body.putInt(1000);
+            int outerTimes = body.position();
+            body.putInt(2).putInt(outerTimes + 16);
+            int outerValues = body.position();
+            body.putInt(2).putInt(outerTimes + 24);
+            body.putInt(0).putInt(1000);
+            body.putFloat(1).putFloat(1).putFloat(1).putFloat(3).putFloat(3).putFloat(3);
+            int row = bone(bone) + TRACK_SCALE;
+            body.putShort(row, (short) 1);
+            body.putShort(row + 2, (short) 0);
             body.putInt(row + 4, 1).putInt(row + 8, outerTimes);
             body.putInt(row + 12, 1).putInt(row + 16, outerValues);
             return this;
@@ -169,8 +192,49 @@ class DisplayIdleAnimationsTest {
         unsupported("0x1", a -> a.flags(0, 0x201));
         unsupported("0xc", a -> a.flags(1, 0xc));
         unsupported("0x10", a -> a.flags(1, 0x10));
-        unsupported("keyless leaf", a -> a.rotate(1));
-        unsupported("keyless leaf", a -> a.parent(2, 1));
+        unsupported("has rotation keys", a -> a.rotate(1));
+        unsupported("has child bones", a -> a.parent(2, 1));
+    }
+
+    @Test
+    void billboardTranslationKeysMoveTheCardPivot() throws Exception {
+        // Bone 1 is the 0x8 card leaf; its own translation keys are admitted now.
+        var authored = new Authored().translate(0).translate(1);
+        var animation = authored.admit();
+        var parsed = authored.fixture.parse();
+        var rest =
+                DisplayModelService.restSurface(
+                        parsed.model(), parsed.rest().surface(), Cancellation.NONE);
+        var pose = animation.pose(rest.mesh(), 500);
+        // Its parent lifts it by 2 at half time and its own keys by 2 more.
+        assertEquals(4, pose.pivots().get(1).z() - parsed.model().bones().get(1).pivot().z(), 1e-5);
+    }
+
+    @Test
+    void billboardScaleKeysOnAGlobalClockSizeTheCard() throws Exception {
+        var authored = new Authored().translate(0).scale(1);
+        var animation = authored.admit();
+        var parsed = authored.fixture.parse();
+        var rest =
+                DisplayModelService.restSurface(
+                        parsed.model(), parsed.rest().surface(), Cancellation.NONE);
+        // At 500 ms the global clock is halfway: scale 2.
+        var pose = animation.pose(rest.mesh(), 500);
+        var restPivot = parsed.model().bones().get(1).pivot();
+        var pivot = pose.pivots().get(1);
+        float[] before = rest.mesh().positions(), after = pose.mesh().positions();
+        for (int vertex = 2; vertex < 4; vertex++) {
+            assertEquals(
+                    2 * (before[vertex * 3] - restPivot.x()), after[vertex * 3] - pivot.x(), 1e-5);
+            assertEquals(
+                    2 * (before[vertex * 3 + 1] - restPivot.y()),
+                    after[vertex * 3 + 1] - pivot.y(),
+                    1e-5);
+            assertEquals(
+                    2 * (before[vertex * 3 + 2] - restPivot.z()),
+                    after[vertex * 3 + 2] - pivot.z(),
+                    1e-5);
+        }
     }
 
     @Test

@@ -14,9 +14,10 @@ import java.util.List;
  *
  * <p>Only bones that influence a preview vertex, and their ancestors, are checked. Those bones may
  * carry no parent-inheritance or cylindrical-billboard flags. A spherical billboard bone (flags
- * exactly 0x8 within the inspected bits) is admitted only as a childless leaf without own Stand
- * keys whose vertices are rigidly bound to it; its card follows its evaluated pivot. Flags of bones
- * that move no rendered vertex (attachments, effect emitters) do not matter.
+ * exactly 0x8 within the inspected bits) is admitted as a childless leaf without rotation keys
+ * whose vertices are rigidly bound to it: its card follows its evaluated pivot, which its own
+ * translation keys move, and its own scale keys size the card. The camera orients the card. Flags
+ * of bones that move no rendered vertex (attachments, effect emitters) do not matter.
  *
  * <p>Public so Races previews admit their Stand through the same bone-flag profile as Mounts.
  */
@@ -116,12 +117,19 @@ public final class DisplayIdleAnimations {
                                     + Long.toHexString(flags)
                                     + " that idle evaluation does not implement.");
                 }
-                if (parents[index] || tracks.animated()) {
+                if (parents[index]) {
                     throw new Unsupported(
                             "Billboard bone "
                                     + index
-                                    + " is not a keyless leaf; its card orientation is not"
-                                    + " evaluated.");
+                                    + " has child bones, which would turn with the camera;"
+                                    + " idle evaluation does not orient them.");
+                }
+                if (tracks.rotation() != null) {
+                    throw new Unsupported(
+                            "Billboard bone "
+                                    + index
+                                    + " has rotation keys, which turn its card in the screen"
+                                    + " plane; idle evaluation does not evaluate them.");
                 }
                 billboard = true;
             }
@@ -131,9 +139,9 @@ public final class DisplayIdleAnimations {
                             bone.pivot().x(),
                             bone.pivot().y(),
                             bone.pivot().z(),
-                            billboard ? null : track(tracks.translation()),
+                            track(tracks.translation()),
                             billboard ? null : track(tracks.rotation()),
-                            billboard ? null : track(tracks.scale()),
+                            track(tracks.scale()),
                             billboard));
         }
         try {
