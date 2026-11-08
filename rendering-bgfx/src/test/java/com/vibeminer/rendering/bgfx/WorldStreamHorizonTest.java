@@ -27,8 +27,18 @@ class WorldStreamHorizonTest {
                 .array();
     }
 
+    /** A height for tile (x, y) at its MARE sample {@code i}: 17 x 17 corners, then centres. */
+    interface Heights {
+        int at(int x, int y, int i);
+    }
+
     /** Every tile from 20..44 on both axes, rolling hills. */
     static WorldLowRes.LowRes lowRes() {
+        return lowRes((x, y, i) -> (int) (50 + 30 * Math.sin((x * 17 + i) * 0.1)));
+    }
+
+    /** Every tile from 20..44 on both axes, with the given heights. */
+    static WorldLowRes.LowRes lowRes(Heights field) {
         var out = new ByteArrayOutputStream();
         out.writeBytes(
                 chunk(
@@ -42,7 +52,7 @@ class WorldStreamHorizonTest {
                 offsets[x * 64 + y] = out.size();
                 var heights = ByteBuffer.allocate(545 * 2).order(ByteOrder.LITTLE_ENDIAN);
                 for (int i = 0; i < 545; i++) {
-                    heights.putShort((short) (50 + 30 * Math.sin((x * 17 + i) * 0.1)));
+                    heights.putShort((short) field.at(x, y, i));
                 }
                 out.writeBytes(chunk("MARE", heights.array()));
             }
@@ -53,6 +63,66 @@ class WorldStreamHorizonTest {
             b.putInt(maof + 8 + i * 4, offsets[i]);
         }
         return WorldLowRes.read(bytes, () -> false);
+    }
+
+    /**
+     * A WDL ramp rising 10 yd per 1/16 tile toward native north (+x), then one toward west (+y):
+     * the surface normals lean the other way, (-0.287, 0, 0.958) and (0, -0.287, 0.958), so the
+     * World light lights the slope that faces it. Skirt vertices carry only vertical faces and face
+     * straight up.
+     */
+    @Test
+    void horizonNormalsLeanAwayFromTheRampsRise() {
+        // Native x falls by one step (TILE_SIZE / 16) per corner row and 16 per tile x, so a
+        // height of -10 per step rises toward +x; a centre is half a step on.
+        var north =
+                lowRes(
+                        (x, y, i) ->
+                                i < 289
+                                        ? 8000 - (x * 16 + i / 17) * 10
+                                        : 8000 - (x * 16 + (i - 289) / 16) * 10 - 5);
+        var west =
+                lowRes(
+                        (x, y, i) ->
+                                i < 289
+                                        ? 8000 - (y * 16 + i % 17) * 10
+                                        : 8000 - (y * 16 + (i - 289) % 16) * 10 - 5);
+        double k = 10 / (WorldFormats.TILE_SIZE / 16), lean = -k / Math.sqrt(1 + k * k);
+        double up = 1 / Math.sqrt(1 + k * k);
+        expectNormals(north, new double[] {lean, 0, up});
+        expectNormals(west, new double[] {0, lean, up});
+    }
+
+    private static void expectNormals(WorldLowRes.LowRes lowRes, double[] expected) {
+        var packed = WorldStreamHorizon.build(lowRes, 32, 32, 1, () -> false);
+        var vertices = packed.vertices().duplicate().order(ByteOrder.nativeOrder());
+        int stride = WorldStreamHorizon.VERTEX_BYTES, leaning = 0;
+        for (int v = 0; v < packed.vertexCount(); v++) {
+            double[] n = new double[3];
+            for (int c = 0; c < 3; c++) {
+                n[c] = ((vertices.get(v * stride + 20 + c) & 255) - 127.5) / 127.5;
+            }
+            boolean ramp = true, flat = true;
+            for (int c = 0; c < 3; c++) {
+                ramp &= Math.abs(n[c] - expected[c]) < 0.02;
+                flat &= Math.abs(n[c] - (c == 2 ? 1 : 0)) < 0.02;
+            }
+            assertTrue(
+                    ramp || flat,
+                    "vertex "
+                            + v
+                            + " normal "
+                            + java.util.Arrays.toString(n)
+                            + " expected "
+                            + java.util.Arrays.toString(expected));
+            if (ramp) {
+                leaning++;
+            }
+        }
+        // Every surface vertex (545 per tile) leans; only skirt vertices face up.
+        assertTrue(
+                leaning >= packed.tiles() * 545,
+                "leaning " + leaning + " of " + packed.vertexCount());
     }
 
     private static WorldStreamHorizon.Packed await(WorldStreamHorizon horizon) throws Exception {
