@@ -23,6 +23,7 @@ final class WorldStreamObjectsCullProof {
     private static final int WIDTH = 800, HEIGHT = 500;
     private static long camera, sequence;
     private static int farFogPixel, waterBlendPixel, recordedWaterPixel;
+    private static int[] shadedWaterPixels = new int[3], flatLiquidPixels = new int[2];
 
     private WorldStreamObjectsCullProof() {}
 
@@ -274,7 +275,15 @@ final class WorldStreamObjectsCullProof {
                         + " water="
                         + Integer.toHexString(waterBlendPixel)
                         + " recordedWater="
-                        + Integer.toHexString(recordedWaterPixel));
+                        + Integer.toHexString(recordedWaterPixel)
+                        + " deepRiver="
+                        + Integer.toHexString(shadedWaterPixels[0])
+                        + " midOcean="
+                        + Integer.toHexString(shadedWaterPixels[1])
+                        + " flat="
+                        + Integer.toHexString(flatLiquidPixels[0])
+                        + "/"
+                        + Integer.toHexString(flatLiquidPixels[1]));
         System.out.println(
                 "WORLD_OBJECT_MATERIAL_CLASSES_PASS " + WorldStreamMaterialClassProof.run(base));
         System.out.println("WORLD_PORTAL_CULL_PASS " + WorldStreamPortalCullProof.run(base));
@@ -367,9 +376,9 @@ final class WorldStreamObjectsCullProof {
                                                     19,
                                                     120,
                                                     true,
-                                                    // 16 water cells 14..18 yd ahead, to
-                                                    // the right of the quads, under the eye.
-                                                    WorldStreamTileWaterTest.water(16, 8)))
+                                                    // Water 14..18 yd ahead, to the right
+                                                    // of the quads, under the eye.
+                                                    shadingWater()))
                             .get(20, TimeUnit.SECONDS);
             var quad = coverageQuad();
             objects =
@@ -530,8 +539,165 @@ final class WorldStreamObjectsCullProof {
                             + ": "
                             + Integer.toHexString(recorded));
             recordedWaterPixel = recorded;
+            shadingOracles(owner, reader, pixels, focal, wy);
             return partial;
         }
+    }
+
+    /** The {@link #shadingWater} strips: right edges in yd, and kind and depth byte. */
+    private static final float[] STRIP_RIGHT = {9.5f, 11, 12.5f, 14, 15.5f};
+
+    private static final byte[] STRIP_KIND = {
+        WorldStreamTileFile.RIVER,
+        WorldStreamTileFile.RIVER,
+        WorldStreamTileFile.OCEAN,
+        WorldStreamTileFile.FLAT
+    };
+
+    /** Shallow, deep, 0.4 deep (102 / 255) and a flat liquid at full depth. */
+    private static final int[] STRIP_DEPTH = {0, 255, 102, 255};
+
+    private static final int MAGMA = 0xD06800;
+
+    /**
+     * Four water quads side by side, 14..18 yd ahead at 7.5 yd below the eye, each of one kind and
+     * one depth at every corner: shallow river (under the plain water pixel at 10 yd right), deep
+     * river, ocean at 0.4 depth and a flat magma quad.
+     */
+    static WorldStreamTileFile.Water shadingWater() {
+        int quads = STRIP_KIND.length;
+        float[] positions = new float[quads * 12];
+        byte[] depths = new byte[quads * 4];
+        byte[] kinds = new byte[quads * 4];
+        byte[] colours = new byte[quads * 12];
+        int[] indices = new int[quads * 6];
+        for (int q = 0; q < quads; q++) {
+            for (int corner = 0; corner < 4; corner++) {
+                int v = q * 4 + corner;
+                // x north, y west, z up; the eye is at (-20, -2, 20) looking north, so ahead
+                // is x + 20 and right is -2 - y.
+                positions[v * 3] = -2 - (corner / 2) * 4f;
+                positions[v * 3 + 1] = -2 - STRIP_RIGHT[q + corner % 2];
+                positions[v * 3 + 2] = 12.5f;
+                depths[v] = (byte) STRIP_DEPTH[q];
+                kinds[v] = STRIP_KIND[q];
+                int rgb =
+                        STRIP_KIND[q] == WorldStreamTileFile.FLAT
+                                ? MAGMA
+                                : WorldStreamTileFile.WATER_RGB;
+                colours[v * 3] = (byte) (rgb >>> 16);
+                colours[v * 3 + 1] = (byte) (rgb >>> 8);
+                colours[v * 3 + 2] = (byte) rgb;
+            }
+            int base = q * 4, at = q * 6;
+            indices[at] = base;
+            indices[at + 1] = base + 2;
+            indices[at + 2] = base + 1;
+            indices[at + 3] = base + 1;
+            indices[at + 4] = base + 2;
+            indices[at + 5] = base + 3;
+        }
+        return new WorldStreamTileFile.Water(positions, depths, colours, kinds, indices, 1);
+    }
+
+    /**
+     * #171: depth mixes close to far colour and shallow to deep opacity, in that direction, and a
+     * flat liquid draws opaque in its own colour. Without recorded water light every water strip is
+     * the teal at 0.4 over the sky below the horizon; the magma strip is opaque magma. With
+     * recorded water light (river close opaque red, far blue at 0.5; ocean close green, far blue,
+     * opacity 1 to 0.5), the deep river is half blue over the sky, the 0.4-deep ocean (0, 150, 100)
+     * at 0.8, and magma is unchanged.
+     */
+    private static void shadingOracles(
+            WorldStreamNativeOwner owner,
+            WorldFrameFileV2 reader,
+            IntBuffer plain,
+            double focal,
+            int wy)
+            throws Exception {
+        int[] wx = new int[STRIP_KIND.length];
+        float[][] behind = new float[STRIP_KIND.length][];
+        for (int q = 0; q < wx.length; q++) {
+            float right = (STRIP_RIGHT[q] + STRIP_RIGHT[q + 1]) / 2;
+            wx[q] = (int) (WIDTH / 2.0 + focal * right / 16);
+            behind[q] =
+                    WorldFog.STREAM.skyPixel(
+                            COVERAGE_VIEW.pitch(), focal, WIDTH, HEIGHT, wx[q], wy);
+        }
+        float[] teal = {20, 115, 148};
+        float[] magma = {MAGMA >>> 16 & 255, MAGMA >>> 8 & 255, MAGMA & 255};
+        for (int q = 0; q < wx.length; q++) {
+            boolean flat = STRIP_KIND[q] == WorldStreamTileFile.FLAT;
+            expectWater(
+                    plain,
+                    wx[q],
+                    wy,
+                    flat ? magma : teal,
+                    flat ? 1 : 0.4f,
+                    behind[q],
+                    "Plain strip " + q);
+        }
+        float[] water = new float[12];
+        water[1] = 250; // ocean close green
+        water[5] = 250; // ocean far blue
+        water[6] = 200; // river close red
+        water[11] = 200; // river far blue
+        var explorer = WorldStreamTransport.Sky.EXPLORER;
+        var wet =
+                new WorldStreamTransport.Sky(
+                        explorer.horizon(),
+                        explorer.top(),
+                        0,
+                        0,
+                        0,
+                        new float[3],
+                        new float[3],
+                        0,
+                        water,
+                        new float[] {1, 0.5f, 1, 0.5f},
+                        1);
+        var shaded = frame(owner, reader, COVERAGE_NONCE, COVERAGE_VIEW, wet).pixels;
+        expectWater(shaded, wx[0], wy, new float[] {200, 0, 0}, 1, behind[0], "Shallow river");
+        expectWater(shaded, wx[1], wy, new float[] {0, 0, 200}, 0.5f, behind[1], "Deep river");
+        expectWater(
+                shaded, wx[2], wy, new float[] {0, 150, 100}, 0.8f, behind[2], "0.4-deep ocean");
+        expectWater(shaded, wx[3], wy, magma, 1, behind[3], "Flat magma with water light");
+        shadedWaterPixels[0] = shaded.get(wy * WIDTH + wx[1]);
+        shadedWaterPixels[1] = shaded.get(wy * WIDTH + wx[2]);
+        flatLiquidPixels[0] = plain.get(wy * WIDTH + wx[3]);
+        flatLiquidPixels[1] = shaded.get(wy * WIDTH + wx[3]);
+    }
+
+    /** The pixel is {@code colour} at {@code alpha} over {@code behind}, within 3 per channel. */
+    private static void expectWater(
+            IntBuffer pixels,
+            int x,
+            int y,
+            float[] colour,
+            float alpha,
+            float[] behind,
+            String what) {
+        int[] expected = new int[3];
+        for (int c = 0; c < 3; c++) {
+            expected[c] = (int) Math.round(alpha * colour[c] + (1 - alpha) * Math.floor(behind[c]));
+        }
+        int pixel = pixels.get(y * WIDTH + x);
+        int[] got = rgb(pixel, expected[0]);
+        boolean matches = true;
+        for (int c = 0; c < 3; c++) {
+            matches &= Math.abs(got[c] - expected[c]) <= 3;
+        }
+        require(
+                matches,
+                what
+                        + " at "
+                        + x
+                        + ","
+                        + y
+                        + ": "
+                        + Integer.toHexString(pixel)
+                        + " expected "
+                        + java.util.Arrays.toString(expected));
     }
 
     /** A pixel's red, green, blue, in whichever channel order puts red nearest {@code red}. */
