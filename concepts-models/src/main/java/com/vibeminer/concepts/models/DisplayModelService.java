@@ -1121,6 +1121,13 @@ public final class DisplayModelService implements BuildDisplayModels {
                     null,
                     false);
         } catch (RuntimeException failure) {
+            // Retried, never saved, as the pose path treats an UNAVAILABLE Stand and the material
+            // path unavailable static opacity facts. A lasting malformation cannot be told apart
+            // here: on a complete source the model parse accepted (it checks the weights span),
+            // the whole read fails with MODEL_INVALID, the same code as the source differing from
+            // the parsed model or changing during the read, which a later read can clear. A
+            // malformed track already fails the static opacity facts (retried the same way); one
+            // that reaches M2StandWeights becomes that track's refusal, which is saved.
             token.check();
             var cause = AssetTasks.unwrap(failure);
             return new StandSample(
@@ -1466,7 +1473,10 @@ public final class DisplayModelService implements BuildDisplayModels {
 
         /**
          * Texture {@code index} with its alpha scaled by {@code alpha} / 255 (a Stand texture
-         * weight), as one more texture of the binding; one copy per texture and scale.
+         * weight), as one more texture of the binding; one copy per texture and scale. This matches
+         * the weight multiplying the drawn alpha up to 8-bit rounding: a texel whose scaled alpha
+         * rounds to 0 drops out of the mips' colour weighting (all four of a block: their plain
+         * average), so it is invisible or very nearly so.
          */
         Integer scaled(int index, int alpha) {
             Integer existing = scaledCopies.get((long) index << 8 | alpha);
