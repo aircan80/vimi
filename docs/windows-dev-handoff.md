@@ -53,10 +53,6 @@ was published on 2026-11-05 from the #242 merge (`37dd876`); it predates #243–
 which ship in alpha.28. Nothing remains in flight on Linux.
 
 Packaging follow-ups from the #238 review (low priority):
-- Add `libharfbuzz0b` to `DEB_DEPENDS`. On arm64, the glass and font natives link it directly.
-- Consider `Recommends: libvulkan1`. bgfx `dlopen`s it, so `readelf` can't see it.
-- Make the packager compute NEEDED sonames from every image ELF and the native JARs,
-  and fail on unmapped ones.
 - On macOS, `--image-only` skips `codesign --verify`.
 
 ## Windows issues to work on
