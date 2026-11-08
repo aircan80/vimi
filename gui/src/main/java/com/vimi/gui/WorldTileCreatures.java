@@ -719,7 +719,7 @@ final class WorldTileCreatures implements AutoCloseable {
         if (visible.refusal() != null) return Converted.refused(Count.VISIBILITY_UNRESOLVED, visible.refusal());
         // Nothing left to draw is a visibility outcome, not a material one.
         if (mesh.parts().stream().noneMatch(part -> visible.ids().contains(part.id())))
-            return Converted.refused(Count.VISIBILITY_UNRESOLVED, reference.creatureGeosetDataId() > 0
+            return Converted.refused(Count.VISIBILITY_UNRESOLVED, rowsDecideSome(reference, mesh)
                     ? "every geoset is hidden by the display's rows"
                     : "the model has no section 0 or x01 section to draw");
         return surfaces(appearance, visible.ids(), token);
@@ -817,6 +817,20 @@ final class WorldTileCreatures implements AutoCloseable {
         return new Converted(new Model(vertexArray, indices.stream().mapToInt(Integer::intValue).toArray(),
                 ranges.stream().mapToInt(Integer::intValue).toArray(),
                 blends.stream().mapToInt(Integer::intValue).toArray(), images, omitted), null, null);
+    }
+
+    /**
+     * Whether the display's rows decide any of the model's sections: the model records geoset data
+     * and has a section in a group from 1 to 8 or in a group a row chose. Otherwise only the
+     * default decided what is hidden.
+     */
+    static boolean rowsDecideSome(DisplayModelTypes.Reference reference, com.vibeminer.rendering.models.PreviewMesh mesh) {
+        if (reference.creatureGeosetDataId() == null || reference.creatureGeosetDataId() <= 0) return false;
+        var chosen = reference.displayGeosets() == null ? Map.<Integer, Integer>of() : reference.displayGeosets();
+        return mesh.parts().stream().anyMatch(part -> {
+            int g = part.id() / 100;
+            return g >= 1 && (g <= 8 || chosen.containsKey(g));
+        });
     }
 
     /** The geoset IDs a model draws, or why that cannot be decided from recorded facts. */

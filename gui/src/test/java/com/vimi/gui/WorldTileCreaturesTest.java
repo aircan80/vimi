@@ -157,6 +157,9 @@ public final class WorldTileCreaturesTest {
                 "A group without x01 is hidden, another group draws its x01");
         require(visible(0L, Map.of(), hiddenGeosets()).equals(java.util.Set.of(101)),
                 "A model without group 0 draws its x01 sections");
+        // Group 0 draws only section 0; its other sections stay hidden.
+        require(visible(0L, Map.of(), mesh(0, 1, 101)).equals(java.util.Set.of(0, 101)),
+                "Group 0 sections other than 0 are hidden");
         require(refusal(0L, Map.of(), mesh(1, 101)).contains("geoset group 0 has no section 0"),
                 "Group 0 without section 0 is refused");
         var unreadable = WorldTileCreatures.convert(preview(7, 0L, null, geosets()), Cancellation.NONE);
@@ -202,6 +205,15 @@ public final class WorldTileCreaturesTest {
         // ID > 0: a group of 9 or more without a row takes the default: x01, or nothing.
         require(visible(5L, Map.of(), mesh(0, 901)).equals(java.util.Set.of(0, 901)), "Group 9 without a row draws 901");
         require(visible(5L, Map.of(), mesh(0, 902)).equals(java.util.Set.of(0)), "Group 9 without x01 draws nothing");
+        // ID > 0: a row choosing a 9+ group's x00 draws only that section, not also its x01.
+        require(visible(5L, Map.of(9, 0), mesh(0, 900, 901)).equals(java.util.Set.of(0, 900)),
+                "A chosen group 9 draws only its chosen section");
+        // ID > 0: when only the default hides everything (an unlisted 9+ group without x01), the
+        // reason names the default, not the rows.
+        var defaultHid = WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(), mesh(902)), Cancellation.NONE);
+        require(defaultHid.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
+                        && defaultHid.detail().equals("the model has no section 0 or x01 section to draw"),
+                "The default, not the rows, hid it: " + defaultHid.detail());
         // ID > 0: when the rows hide every section there is nothing to draw: a visibility refusal.
         var allHidden = WorldTileCreatures.convert(preview(7, 0L, 5L, Map.of(), hiddenGeosets()), Cancellation.NONE);
         require(allHidden.refusal() == WorldTileCreatures.Count.VISIBILITY_UNRESOLVED
