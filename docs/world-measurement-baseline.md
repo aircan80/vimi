@@ -140,6 +140,11 @@ The camera follows a fixed script:
 The vimi tile coordinate is (x, y) = (filename second, filename first). Goldshire is tile
 `49,31`, and Stormwind City is `48,30`.
 
+**Water mode** (#171, `-Pprobe.mode=water`) prepares every `probe.stride`-th recorded tile (default
+every 4th) of each map in `probe.maps` through the production terrain and water preparation, with
+no helper, GPU or JavaFX. It counts the water facts: tile states and reasons, declared, admitted
+and unresolved MH2O layers, cells, and issue kinds.
+
 **Refusals mode** calls the real `BuildWorld.terrainTextures` over every recorded tile of each
 map, in batches of 9. It counts:
 - tile states;
