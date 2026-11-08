@@ -149,10 +149,46 @@ public final class MeshAppearance {
         }
     }
 
-    public record RigidBillboard(int boneId, Vec3 modelPivot, int[] vertexIndices) {
+    /**
+     * How a rigid card turns toward the camera: fully ({@code SPHERICAL}, bone flag 0x8), or only
+     * about the model's Z axis ({@code CYLINDRICAL_Z}, flag 0x40) or Y axis ({@code CYLINDRICAL_Y},
+     * flag 0x20), which stays fixed.
+     */
+    public enum CardKind {
+        SPHERICAL(1),
+        CYLINDRICAL_Z(2),
+        CYLINDRICAL_Y(3);
+
+        private final int code;
+
+        CardKind(int code) {
+            this.code = code;
+        }
+
+        /** The renderer's card attribute value, and the codec's stored kind. */
+        public int code() {
+            return code;
+        }
+
+        public static CardKind of(int code) {
+            for (var kind : values()) {
+                if (kind.code == code) {
+                    return kind;
+                }
+            }
+            throw new IllegalArgumentException("Unknown card kind " + code);
+        }
+    }
+
+    public record RigidBillboard(int boneId, Vec3 modelPivot, int[] vertexIndices, CardKind kind) {
+        public RigidBillboard(int boneId, Vec3 modelPivot, int[] vertexIndices) {
+            this(boneId, modelPivot, vertexIndices, CardKind.SPHERICAL);
+        }
+
         public RigidBillboard {
             if (boneId < 0
                     || boneId > 65535
+                    || kind == null
                     || modelPivot == null
                     || vertexIndices.length < 1
                     || vertexIndices.length > 8) {
@@ -176,13 +212,14 @@ public final class MeshAppearance {
         public boolean equals(Object other) {
             return other instanceof RigidBillboard b
                     && boneId == b.boneId
+                    && kind == b.kind
                     && modelPivot.equals(b.modelPivot)
                     && java.util.Arrays.equals(vertexIndices, b.vertexIndices);
         }
 
         @Override
         public int hashCode() {
-            return 31 * (31 * boneId + modelPivot.hashCode())
+            return 31 * (31 * (31 * boneId + kind.hashCode()) + modelPivot.hashCode())
                     + java.util.Arrays.hashCode(vertexIndices);
         }
     }

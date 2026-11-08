@@ -415,7 +415,7 @@ public final class PreviewAnimation {
                     bone < 0
                             ? card
                             : new MeshAppearance.RigidBillboard(
-                                    card.boneId(), pose.pivots().get(bone), members));
+                                    card.boneId(), pose.pivots().get(bone), members, card.kind()));
         }
         return new MeshAppearance(
                 pose.mesh(),

@@ -238,6 +238,23 @@ class DisplayIdleAnimationsTest {
     }
 
     @Test
+    void cylindricalCardLeavesAreAdmittedLikeSphericalOnes() throws Exception {
+        for (int flags : new int[] {0x40, 0x20}) {
+            var authored = new Authored().translate(0).translate(1).flags(1, flags);
+            var animation = authored.admit();
+            var parsed = authored.fixture.parse();
+            var rest =
+                    DisplayModelService.restSurface(
+                            parsed.model(), parsed.rest().surface(), Cancellation.NONE);
+            var pose = animation.pose(rest.mesh(), 500);
+            assertEquals(
+                    4, pose.pivots().get(1).z() - parsed.model().bones().get(1).pivot().z(), 1e-5);
+        }
+        unsupported("0x10", a -> a.flags(1, 0x10));
+        unsupported("has rotation keys", a -> a.flags(1, 0x40).rotate(1));
+    }
+
+    @Test
     void sequencesWithoutBoneKeysKeepTheStaticPreview() throws Exception {
         var authored = new Authored();
         var failure = assertThrows(DisplayIdleAnimations.Unsupported.class, authored::admit);

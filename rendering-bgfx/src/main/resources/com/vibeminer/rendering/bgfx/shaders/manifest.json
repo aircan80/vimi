@@ -2,22 +2,6 @@
   "bgfxApi": 156,
   "bgfxCommit": "780f7bf00a29573473b90dcfab9f92a7d8687702",
   "binaries": {
-    "dx11/fs_model.bin": {
-      "compilerHost": "windows-x64",
-      "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
-      "platform": "windows",
-      "profile": "s_5_0",
-      "sha256": "30dcdc05094ad4072c05e0de65452abe50eee6e87be57159490530f28fdf5f12",
-      "stage": "fragment"
-    },
-    "dx11/vs_model.bin": {
-      "compilerHost": "windows-x64",
-      "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
-      "platform": "windows",
-      "profile": "s_5_0",
-      "sha256": "f13e54f040a34eef0940f8cc328d70ca9538a59261ea1809a2670321acd5bc67",
-      "stage": "vertex"
-    },
     "glsl/fs_model.bin": {
       "compilerHost": "linux-x64",
       "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
@@ -31,7 +15,7 @@
       "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
       "platform": "linux",
       "profile": "330",
-      "sha256": "6ebaddb2be1e8b86dcc3f51a3154223e138912bc3ce7f046250cd43cf86814f7",
+      "sha256": "76f93f5f06a5609acd0df6a740d13eddc23a7fa29688583e33edd4017745b37b",
       "stage": "vertex"
     },
     "metal/fs_model.bin": {
@@ -47,7 +31,7 @@
       "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
       "platform": "osx",
       "profile": "metal",
-      "sha256": "a323c39bc381578cb975af390a6b5290bc1a39030e4f227131eac44c29b036c3",
+      "sha256": "ed81f0eace06362ca40ee25e07c3d39b4f70c57ab12371305b122272a1892423",
       "stage": "vertex"
     },
     "spirv/fs_model.bin": {
@@ -63,7 +47,7 @@
       "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
       "platform": "linux",
       "profile": "spirv",
-      "sha256": "b45c359a762732c31e1e73e0a5911b91f0f1cabf53b689dbbeec9bc897dd94e7",
+      "sha256": "1d7f1584cbca8986bee7353378f0f52bf2fec5df4f58d463529b171b6ad726d4",
       "stage": "vertex"
     }
   },
@@ -72,7 +56,7 @@
     "bgfx_shader.sh": "5ad79a2ff5d1b1fd1f22d986f2b0b5dc49f89ffd5ce18e57966b6ab894094508",
     "fs_model.sc": "fe6f3c71427d81852d8d654fad55365bbfbb360c42e7726b5ccf9385f9738e7d",
     "varying.def.sc": "0eaba8d7cdf0cf3fd231ee88b4f1f2cdaac8702ed3b5358258b8f21b154a2c88",
-    "vs_model.sc": "d19ce3b48ae705d34e850632b715f9a347956f19fd82cc8ab978ee4b1aafd931"
+    "vs_model.sc": "9afc51d34a597cd258d811d50aaa86d41a36347bf9f88e0eecd178936c4fde90"
   },
   "lwjglVersion": "3.4.3",
   "shadercVersion": "shaderc, bgfx shader compiler tool, version 1.19.156."

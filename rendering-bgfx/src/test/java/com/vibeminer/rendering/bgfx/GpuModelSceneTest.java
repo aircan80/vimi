@@ -135,6 +135,30 @@ final class GpuModelSceneTest {
             assertEquals(appearance.maximum(axis), scene.maximum(axis));
         }
         assertEquals(4L * 48 + 6 * 4 + 4, scene.uploadBytes());
+        // A cylindrical card carries its kind in the card attribute.
+        for (var kind :
+                new MeshAppearance.CardKind[] {
+                    MeshAppearance.CardKind.CYLINDRICAL_Z, MeshAppearance.CardKind.CYLINDRICAL_Y
+                }) {
+            var cylindrical =
+                    new MeshAppearance(
+                            mesh,
+                            new float[] {0, 0, 1, 0, 1, 1, 0, 1},
+                            new float[0],
+                            List.of(new MeshAppearance.Surface(0, material)),
+                            List.of(new MeshAppearance.Texture(1, 1, new int[] {0x80123456})),
+                            List.of(
+                                    new MeshAppearance.RigidBillboard(
+                                            36,
+                                            new MeshAppearance.Vec3(1, .5f, .5f),
+                                            new int[] {0, 1, 2, 3},
+                                            kind)));
+            var data = GpuModelScene.create(mesh, cylindrical).vertexData();
+            for (int vertex = 0; vertex < 4; vertex++) {
+                assertEquals(
+                        (float) kind.code(), data.get(vertex * GpuModelScene.VERTEX_FLOATS + 11));
+            }
+        }
     }
 
     @Test

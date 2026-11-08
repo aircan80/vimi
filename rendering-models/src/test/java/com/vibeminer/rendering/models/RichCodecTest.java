@@ -57,6 +57,44 @@ class RichCodecTest {
         assertEquals(0x8064503c, copy.textures().getFirst().argb()[0]);
     }
 
+    private static MeshAppearance cardOfKind(MeshAppearance.CardKind kind) {
+        var o = card();
+        return new MeshAppearance(
+                o.mesh(),
+                o.uv,
+                o.normals,
+                o.surfaces(),
+                o.textures(),
+                List.of(
+                        new MeshAppearance.RigidBillboard(
+                                17,
+                                new MeshAppearance.Vec3(0, 0, 0),
+                                new int[] {0, 1, 2, 3},
+                                kind)));
+    }
+
+    @Test
+    void cardKindsRoundTripAndSphericalCardsKeepTheirBytes() {
+        for (var kind : MeshAppearance.CardKind.values()) {
+            var copy = MeshAppearanceCodec.decode(MeshAppearanceCodec.encode(cardOfKind(kind)));
+            assertEquals(kind, copy.billboards().getFirst().kind());
+        }
+        // A spherical card is stored exactly as before; a kind rides above the bone ID.
+        byte[] spherical = MeshAppearanceCodec.encode(card());
+        byte[] aboutZ =
+                MeshAppearanceCodec.encode(cardOfKind(MeshAppearance.CardKind.CYLINDRICAL_Z));
+        assertArrayEquals(
+                spherical,
+                MeshAppearanceCodec.encode(cardOfKind(MeshAppearance.CardKind.SPHERICAL)));
+        int differs = Arrays.mismatch(spherical, aboutZ);
+        int word = differs - 2;
+        var bytes = ByteBuffer.wrap(aboutZ).order(ByteOrder.LITTLE_ENDIAN);
+        assertEquals(2 << 16 | 17, bytes.getInt(word));
+        byte[] unknown = aboutZ.clone();
+        ByteBuffer.wrap(unknown).order(ByteOrder.LITTLE_ENDIAN).putInt(word, 4 << 16 | 17);
+        assertThrows(IllegalArgumentException.class, () -> MeshAppearanceCodec.decode(unknown));
+    }
+
     @Test
     void authoredLegacyV2BytesDecodeThroughOneStageAdapter() {
         byte[] geometry = PreviewMeshCodec.encode(mesh());

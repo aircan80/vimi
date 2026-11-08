@@ -30,7 +30,31 @@ void main()
 {
     vec4 eye = mul(u_modelToEye, vec4(a_position, 1.0));
     vec3 eyeNormal = mul(u_modelToEye, vec4(a_normal, 0.0)).xyz;
-    if (a_texcoord1.w > 0.5)
+    if (a_texcoord1.w > 1.5)
+    {
+        // Cylindrical card (2: turns about model Z, 3: about model Y). The fixed axis keeps its
+        // eye-space direction; the card's +X turns toward the eye within the plane across that
+        // axis. With the eye level with the card this is exactly the spherical card below.
+        vec3 delta = a_position - a_texcoord1.xyz;
+        eye = mul(u_modelToEye, vec4(a_texcoord1.xyz, 1.0));
+        vec3 fixedAxis = a_texcoord1.w > 2.5 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0);
+        vec3 axis = normalize(mul(u_modelToEye, vec4(fixedAxis, 0.0)).xyz);
+        vec3 toward = -eye.xyz - axis * dot(-eye.xyz, axis);
+        if (dot(toward, toward) < 1e-12)
+        {
+            toward = vec3(0.0, 0.0, -1.0) - axis * dot(vec3(0.0, 0.0, -1.0), axis);
+        }
+        if (dot(toward, toward) < 1e-12)
+        {
+            toward = vec3(1.0, 0.0, 0.0) - axis * dot(vec3(1.0, 0.0, 0.0), axis);
+        }
+        toward = normalize(toward);
+        vec3 right = a_texcoord1.w > 2.5 ? axis : cross(toward, axis);
+        vec3 up = a_texcoord1.w > 2.5 ? cross(axis, toward) : axis;
+        eye.xyz += delta.x * toward + delta.y * right + delta.z * up;
+        eyeNormal = a_normal.x * toward + a_normal.y * right + a_normal.z * up;
+    }
+    else if (a_texcoord1.w > 0.5)
     {
         vec3 delta = a_position - a_texcoord1.xyz;
         eye = mul(u_modelToEye, vec4(a_texcoord1.xyz, 1.0));

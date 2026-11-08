@@ -127,7 +127,8 @@ final class DisplayRigidCards {
                     new MeshAppearance.RigidBillboard(
                             group.getKey(),
                             new MeshAppearance.Vec3(pivot.x(), pivot.y(), pivot.z()),
-                            group.getValue().stream().mapToInt(Integer::intValue).toArray()));
+                            group.getValue().stream().mapToInt(Integer::intValue).toArray(),
+                            kind(model.bones().get(group.getKey()).flags())));
         }
         return List.copyOf(cards);
     }
@@ -171,7 +172,7 @@ final class DisplayRigidCards {
             M2BindPoseFacts.Facts facts,
             Cancellation token) {
         if (children[bone] != 0
-                || model.bones().get(bone).flags() != 8
+                || kind(model.bones().get(bone).flags()) == null
                 || !facts.absentOwnTracks().get(bone)) {
             return false;
         }
@@ -191,6 +192,18 @@ final class DisplayRigidCards {
             parent = model.bones().get(parent).parent();
         }
         return true;
+    }
+
+    /**
+     * The card kind of a billboard leaf whose flags are exactly one billboard flag: 0x8 spherical,
+     * 0x40 cylindrical about Z, 0x20 cylindrical about Y; otherwise null.
+     */
+    static MeshAppearance.CardKind kind(long flags) {
+        return flags == 0x8
+                ? MeshAppearance.CardKind.SPHERICAL
+                : flags == 0x40
+                        ? MeshAppearance.CardKind.CYLINDRICAL_Z
+                        : flags == 0x20 ? MeshAppearance.CardKind.CYLINDRICAL_Y : null;
     }
 
     private static boolean bounded(float value) {

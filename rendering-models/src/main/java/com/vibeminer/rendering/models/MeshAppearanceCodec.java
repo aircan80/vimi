@@ -6,7 +6,7 @@ import java.util.ArrayList;
 
 /** Bounded versioned geometry/UV/atlas derivative; byte content is validated before allocation. */
 public final class MeshAppearanceCodec {
-    public static final String REVISION = "mesh-appearance-v3-materials-bind-cards";
+    public static final String REVISION = "mesh-appearance-v4-card-kinds";
     public static final int MAX_BYTES = 40 << 20;
     private static final int MAX_GEOMETRY_BYTES =
             16
@@ -67,7 +67,9 @@ public final class MeshAppearanceCodec {
         for (var card : value.billboards()) {
             int[] members = card.vertexIndices();
             var pivot = card.modelPivot();
-            output.putInt(card.boneId())
+            // The card kind rides above the 16-bit bone ID; 0 reads as spherical.
+            int kind = card.kind() == MeshAppearance.CardKind.SPHERICAL ? 0 : card.kind().code();
+            output.putInt(kind << 16 | card.boneId())
                     .putFloat(pivot.x())
                     .putFloat(pivot.y())
                     .putFloat(pivot.z())
@@ -186,7 +188,15 @@ public final class MeshAppearanceCodec {
             }
             var cards = new ArrayList<MeshAppearance.RigidBillboard>(groupCount);
             for (int i = 0; i < groupCount; i++) {
-                int bone = input.getInt();
+                int word = input.getInt();
+                if (word < 0 || word >>> 16 > MeshAppearance.CardKind.CYLINDRICAL_Y.code()) {
+                    throw new IllegalArgumentException("Invalid billboard bone or kind");
+                }
+                int bone = word & 0xffff;
+                var kind =
+                        word >>> 16 == 0
+                                ? MeshAppearance.CardKind.SPHERICAL
+                                : MeshAppearance.CardKind.of(word >>> 16);
                 var pivot =
                         new MeshAppearance.Vec3(
                                 input.getFloat(), input.getFloat(), input.getFloat());
@@ -198,7 +208,7 @@ public final class MeshAppearanceCodec {
                 for (int j = 0; j < count; j++) {
                     members[j] = input.getInt();
                 }
-                cards.add(new MeshAppearance.RigidBillboard(bone, pivot, members));
+                cards.add(new MeshAppearance.RigidBillboard(bone, pivot, members, kind));
             }
             var textures = readTextures(input, textureCount);
             if (input.hasRemaining()) {
