@@ -20,6 +20,9 @@ import java.util.concurrent.TimeUnit;
  *       of its texel colour; unlit it is the texel colour exactly.
  *   <li>Right, an unlit additive quad of blue (0, 0, 200) at alpha 128: the frame's pixel becomes
  *       the pixel without it plus 200 x 128 / 255 blue, red and green unchanged.
+ *   <li>Far left (#552), two overlapping unlit blended quads in one placement, the near red one
+ *       first in the file and a green one 2 yd behind it: drawn back to front, the red is over the
+ *       green whatever the file order.
  *   <li>Centre, a lit opaque quad facing away from the light (a third of its texel colour) with the
  *       vertex colour (128, 64, 0): with vertex colours on, each channel is its texel times a third
  *       plus the colour; with them off (the default), a third only, and every other pixel equal.
@@ -51,16 +54,28 @@ final class WorldStreamMaterialClassProof {
         // same pixels, right of the additive blue one.
         builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(2, 2, 200, 0, 0, 128)));
         builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(2, 2, 0, 200, 0, 255)));
+        // #552: half-transparent green for the far blended quad of the overlapping pair.
+        builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(2, 2, 0, 200, 0, 128)));
         builder.model();
-        double[][] spans = {{-1.8, -0.6}, {0.6, 1.8}, {-0.4, 0.4}, {2.0, 2.8}, {2.0, 2.8}};
-        var vertices = FloatBuffer.allocate(20 * 8);
-        var indices = IntBuffer.allocate(30);
-        var colours = IntBuffer.allocate(20);
+        // The pair: the near quad at depth 5 and the far one at depth 7 cover the same pixels.
+        double[][] spans = {
+            {-1.8, -0.6},
+            {0.6, 1.8},
+            {-0.4, 0.4},
+            {2.0, 2.8},
+            {2.0, 2.8},
+            {-3.4, -2.2},
+            {-4.76, -3.08}
+        };
+        double[] depths = {5, 5, 5, 5, 5, 5, 7};
+        var vertices = FloatBuffer.allocate(28 * 8);
+        var indices = IntBuffer.allocate(42);
+        var colours = IntBuffer.allocate(28);
         double cp = Math.cos(VIEW.pitch()), sp = Math.sin(VIEW.pitch());
-        for (int q = 0; q < 5; q++) {
+        for (int q = 0; q < 7; q++) {
             for (int corner = 0; corner < 4; corner++) {
                 double right = spans[q][corner == 1 || corner == 2 ? 1 : 0];
-                double up = corner < 2 ? -1 : 1, depth = 5;
+                double depth = depths[q], up = (corner < 2 ? -1 : 1) * depth / 5;
                 // Inverse of TerrainCamera.eye at yaw 0: right = -dy, (up, depth) rotate (dz, dx).
                 double dx = -sp * up + cp * depth, dy = -right, dz = cp * up + sp * depth;
                 vertices.put((float) dx).put((float) dy).put((float) dz);
@@ -78,13 +93,16 @@ final class WorldStreamMaterialClassProof {
         builder.mesh(
                 vertices,
                 indices,
-                new int[] {0, 6, 0, 6, 6, 1, 12, 6, 0, 18, 6, 2, 24, 6, 3},
+                new int[] {0, 6, 0, 6, 6, 1, 12, 6, 0, 18, 6, 2, 24, 6, 3, 30, 6, 2, 36, 6, 4},
                 new int[] {
                     WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT,
                     // Unlit too, so its full blue is added.
                     WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT,
                     WorldStreamObjectsFile.OPAQUE,
                     WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT,
+                    WorldStreamObjectsFile.BLENDED | WorldStreamObjectsFile.UNLIT,
+                    // #552: near red first in the file, then the far green behind it.
+                    WorldStreamObjectsFile.BLENDED | WorldStreamObjectsFile.UNLIT,
                     WorldStreamObjectsFile.BLENDED | WorldStreamObjectsFile.UNLIT
                 },
                 colours);
@@ -102,8 +120,8 @@ final class WorldStreamMaterialClassProof {
     }
 
     /**
-     * Returns "unlit=<argb> blendedThenAdditive=<argb> additive=<before>-><after> coloured=<argb>
-     * colouredOff=<argb>" for the pass line.
+     * Returns "unlit=<argb> blendedThenAdditive=<argb> blendedBackToFront=<argb>
+     * additive=<before>-><after> coloured=<argb> colouredOff=<argb>" for the pass line.
      */
     @SuppressWarnings("try")
     static String run(Path base) throws Exception {
@@ -186,6 +204,26 @@ final class WorldStreamMaterialClassProof {
                             && Math.abs((over >>> 8 & 255) - 200) <= 2
                             && (over >>> blue & 255) <= 2,
                     "Additive after blended: " + Integer.toHexString(over));
+            // #552: the far green blends over what is behind, then the near red over it, though the
+            // red comes first in the file: red is 200a + behind x (1 - a)^2, green 200a(1 - a) +
+            // behind x (1 - a)^2. In file order the two would swap.
+            int pairX = (int) (WIDTH / 2.0 + focal * -2.8 / 5);
+            int pair = after[row * WIDTH + pairX], behind = before[row * WIDTH + pairX];
+            double alpha = 128 / 255.0, keep = (1 - alpha) * (1 - alpha);
+            int pairRed = (int) Math.round(200 * alpha + (behind >>> red & 255) * keep);
+            int pairGreen =
+                    (int) Math.round(200 * alpha * (1 - alpha) + (behind >>> 8 & 255) * keep);
+            require(
+                    Math.abs((pair >>> red & 255) - pairRed) <= 3
+                            && Math.abs((pair >>> 8 & 255) - pairGreen) <= 3,
+                    "Blended ranges back to front: "
+                            + Integer.toHexString(behind)
+                            + " -> "
+                            + Integer.toHexString(pair)
+                            + " expected red "
+                            + pairRed
+                            + " green "
+                            + pairGreen);
             // Lit at a third (facing away from the light) plus the vertex colour, per channel.
             int coloured = after[row * WIDTH + WIDTH / 2];
             int[] texel = {200, 100, 50}, colour = {128, 64, 0}, shift = {red, 8, blue};
@@ -208,7 +246,7 @@ final class WorldStreamMaterialClassProof {
                         Math.abs((plain >>> shift[c] & 255) - expected) <= 1,
                         "Vertex colours off draw the light alone: " + Integer.toHexString(plain));
             }
-            for (int x : new int[] {unlitX, additiveX, overX}) {
+            for (int x : new int[] {unlitX, additiveX, overX, pairX}) {
                 require(
                         off[row * WIDTH + x] == after[row * WIDTH + x],
                         "Vertex colours off change only the coloured surface");
@@ -217,6 +255,8 @@ final class WorldStreamMaterialClassProof {
                     + Integer.toHexString(unlit)
                     + " blendedThenAdditive="
                     + Integer.toHexString(over)
+                    + " blendedBackToFront="
+                    + Integer.toHexString(pair)
                     + " additive="
                     + Integer.toHexString(was)
                     + "->"
