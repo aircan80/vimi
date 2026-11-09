@@ -5771,4 +5771,307 @@ class WorldExteriorObjectsTest {
             }
         }
     }
+
+    // ---- interiors of roots drawn by group, culled by the root's portal set -------------------
+
+    /** Interior without the exterior bit, as real interior groups are: never a start outdoors. */
+    private static final int ROOM = 0x2001;
+
+    /**
+     * Portals of the split-root fixture, in MOGI-local axes: portal 0 in the plane x = 3 between
+     * exterior group 0 (x -1..1) and interior group 2 (x 4..6), portal 1 in the plane x = 100
+     * between interior groups 2 and 3 (x 204..206). MOPR lists each group's references together:
+     * group 0 to 2, group 2 to 0 and to 3, group 3 to 2. A MOGP header never says which group a
+     * reference leads from; the set recovers it from the pairs.
+     */
+    private static byte[] splitPortals() {
+        var v = buffer(8 * 12);
+        for (float x : new float[] {3, 100}) {
+            v.put(floats(x, -1, -1, x, 1, -1, x, 1, 1, x, -1, 1));
+        }
+        var t = buffer(2 * 20);
+        t.putShort((short) 0).putShort((short) 4).put(floats(1, 0, 0, -3));
+        t.putShort((short) 4).putShort((short) 4).put(floats(1, 0, 0, -100));
+        var r = buffer(4 * 8);
+        int[][] refs = {{0, 2, -1}, {0, 0, 1}, {1, 3, -1}, {1, 2, 1}};
+        for (int[] ref : refs) {
+            r.putShort((short) ref[0]).putShort((short) ref[1]).putShort((short) ref[2]);
+            r.putShort((short) 0);
+        }
+        return join(chunk("MOPV", v.array()), chunk("MOPT", t.array()), chunk("MOPR", r.array()));
+    }
+
+    /**
+     * The split root: exteriors 0 (here, 7,19) and 1 (there, 8,19) over an empty tile's building
+     * pool, interiors 2 (here) and 3 (there) joined by portals, and interior 4 (there) whose box
+     * reaches one unit into 7,19.
+     */
+    private static void putSplitWithPortals(Fixture f, byte[]... extras) {
+        var chunks = new ArrayList<byte[]>();
+        chunks.add(splitPortals());
+        chunks.addAll(List.of(extras));
+        putBig(
+                f,
+                new int[] {EXT, EXT, ROOM, ROOM, ROOM},
+                new int[] {60_000, 60_000, 3, 3, 3},
+                new float[] {0, 200, 5, 205, 67.5f},
+                chunks.toArray(byte[][]::new));
+    }
+
+    private static WorldExteriorObjects.Model modelOf(
+            WorldExteriorObjects.TileObjects set, long root) {
+        return set.models().stream()
+                .filter(m -> !m.doodad() && m.rootId() == root)
+                .findFirst()
+                .orElseThrow();
+    }
+
+    @Test
+    void splitRootsDrawTheirInteriorsWithTheWholePortalSet() {
+        // Each tile draws its own interiors after its exteriors, and carries the root's portal
+        // set over all five groups, built from the root alone: no tile reads another's groups.
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecord(files, 8, 19);
+        try (var f = new Fixture(List.of(largePlacement()), files)) {
+            putSplitWithPortals(f);
+            try (var here = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
+                assertEquals(List.of(0, 2), groupsOf(here, BIG));
+                assertEquals(List.of(1, 3, 4), groupsOf(there, BIG));
+                var set = modelOf(here, BIG).portals();
+                assertNotNull(set);
+                var theirs = modelOf(there, BIG).portals();
+                assertEquals(set.groups(), theirs.groups());
+                assertEquals(set.refs(), theirs.refs());
+                assertEquals(2, theirs.portals().size());
+                assertEquals(
+                        List.of(
+                                new WmoPortalTraversal.Ref(0, 2, -1),
+                                new WmoPortalTraversal.Ref(0, 0, 1),
+                                new WmoPortalTraversal.Ref(1, 3, -1),
+                                new WmoPortalTraversal.Ref(1, 2, 1)),
+                        set.refs());
+                assertEquals(
+                        List.of(
+                                new WmoPortalTraversal.Group(EXT, -1, -1, -1, 1, 1, 1, 0, 1),
+                                new WmoPortalTraversal.Group(EXT, 199, -1, -1, 201, 1, 1, 0, 0),
+                                new WmoPortalTraversal.Group(ROOM, 4, -1, -1, 6, 1, 1, 1, 2),
+                                new WmoPortalTraversal.Group(ROOM, 204, -1, -1, 206, 1, 1, 3, 1),
+                                new WmoPortalTraversal.Group(ROOM, 66.5, -1, -1, 68.5, 1, 1, 0, 0)),
+                        set.groups());
+                for (var tile : List.of(here, there)) {
+                    assertEquals(1, tile.count(WorldExteriorObjects.Count.ROOT_PORTALS));
+                    assertEquals(1, tile.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                    assertEquals(0, tile.count(WorldExteriorObjects.Count.ROOT_PORTALS_DROPPED));
+                    assertEquals(
+                            0, tile.count(WorldExteriorObjects.Count.GROUP_INTERIOR_NO_PORTALS));
+                    assertEquals(0, tile.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                }
+                assertEquals(2, here.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(3, there.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                // Each tile sizes the root from its exteriors; each interior is read once, by
+                // the tile owning it.
+                for (long g = BIG + 3; g <= BIG + 5; g++) {
+                    assertEquals(1, f.files.opens.get(g).get(), "group " + g + " read once");
+                }
+            }
+        }
+    }
+
+    @Test
+    void theWalkCrossesTileOwnershipFromAStartGroupAnotherTileOwns() {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecord(files, 8, 19);
+        try (var f = new Fixture(List.of(largePlacement()), files)) {
+            putSplitWithPortals(f);
+            try (var here = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
+                var walk = modelOf(here, BIG).portals().traversal();
+                // In interior 3, which 8,19 draws: the walk starts there and reaches interior 2
+                // through portal 1, so 7,19 draws its interior 2 although it owns no start group,
+                // and through portal 0 behind it 7,19's exterior 0; never 8,19's exterior 1.
+                var inside = walk.visible(205, 0, 0, List.of());
+                assertTrue(inside.inside());
+                assertEquals(java.util.BitSet.valueOf(new long[] {0b01101}), inside.visible());
+                // Outside, the walk starts from both exteriors, one of each tile, and reaches
+                // interior 2 through portal 0; looking off to the side, portal 1 is outside the
+                // view through portal 0, so neither tile draws interior 3 or 4.
+                var outside = walk.visible(-10, 50, 0, List.of());
+                assertFalse(outside.inside());
+                assertEquals(java.util.BitSet.valueOf(new long[] {0b00111}), outside.visible());
+                // Looking straight through both portals, 8,19's interior 3 is reached from 7,19's
+                // interior 2: the walk crosses from one tile's groups to the other's.
+                var through = walk.visible(-10, 0, 0, List.of());
+                assertEquals(java.util.BitSet.valueOf(new long[] {0b01111}), through.visible());
+                // Each tile's meshes name their groups in the shared set.
+                for (var tile : List.of(here, there)) {
+                    for (var mesh : modelOf(tile, BIG).meshes()) {
+                        assertTrue(mesh.groupOrdinal() < walk.groupCount());
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void setDoodadsOfSplitRootInteriorsFollowTheTileDrawingTheirGroup() {
+        // Doodads at local x 5 (in interior 2, here), 66.6 (in interior 4, which 8,19 owns,
+        // though the doodad stands in 7,19), -50 (outdoors, in 7,19) and 205 (in interior 3,
+        // there): each is placed by exactly one tile, the one drawing the walls around it.
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecord(files, 8, 19);
+        try (var f = new Fixture(List.of(largePlacement()), files)) {
+            putModel(f, MODEL, model());
+            putSplitWithPortals(
+                    f,
+                    doodadChunks(
+                            new int[][] {{0, 4}},
+                            new long[] {MODEL},
+                            standing(5, 66.6f, -50, 205)));
+            try (var here = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
+                for (var tile : List.of(here, there)) {
+                    assertEquals(2, tile.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                    assertEquals(2, tile.count(WorldExteriorObjects.Count.SET_DOODAD_OTHER_TILE));
+                    assertEquals(0, tile.count(WorldExteriorObjects.Count.SET_DOODAD_INTERIOR));
+                }
+            }
+        }
+        // Without a portal set (portals not declared) no interior is drawn, and the doodads
+        // inside them are left out by the tile owning their group.
+        try (var f = new Fixture(List.of(largePlacement()), files)) {
+            putModel(f, MODEL, model());
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, INT, INT, INT},
+                    new int[] {60_000, 60_000, 3, 3, 3},
+                    new float[] {0, 200, 5, 205, 67.5f},
+                    doodadChunks(
+                            new int[][] {{0, 4}},
+                            new long[] {MODEL},
+                            standing(5, 66.6f, -50, 205)));
+            try (var here = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
+                assertEquals(List.of(0), groupsOf(here, BIG));
+                assertEquals(List.of(1), groupsOf(there, BIG));
+                assertNull(modelOf(here, BIG).portals());
+                assertEquals(1, here.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(1, here.count(WorldExteriorObjects.Count.SET_DOODAD_INTERIOR));
+                assertEquals(0, there.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(2, there.count(WorldExteriorObjects.Count.SET_DOODAD_INTERIOR));
+                assertEquals(1, here.count(WorldExteriorObjects.Count.GROUP_INTERIOR_NO_PORTALS));
+                assertEquals(2, there.count(WorldExteriorObjects.Count.GROUP_INTERIOR_NO_PORTALS));
+            }
+        }
+    }
+
+    @Test
+    void aSplitRootsSetPastTheTilePortalTablesDrawsNoInterior() {
+        // The tile's own building carries 2,047 portals first; the split root's two no longer fit
+        // MAX_TILE_PORTALS, so its interiors are not read and its exterior draws alone.
+        var normal = Modf.of(NORMAL, 2, 0x8);
+        try (var f = new Fixture(List.of(largePlacement(), normal))) {
+            putSplitWithPortals(f);
+            f.files.sources.put(NORMAL + 1, group(EXT));
+            f.files.sources.put(
+                    NORMAL,
+                    root(
+                            1,
+                            new long[] {NORMAL + 1},
+                            List.of(new Material(0, IMAGE, 0)),
+                            portalChunks(WmoPortalSet.MAX_TILE_PORTALS - 1, false)));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0), groupsOf(set, BIG));
+                assertNull(modelOf(set, BIG).portals());
+                assertNotNull(modelOf(set, NORMAL).portals());
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_PORTALS_DROPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_NO_PORTALS));
+                assertEquals(null, f.files.opens.get(BIG + 3), "the interior is not read");
+            }
+        }
+        // References that do not recover per-group ranges (not listed group by group) drop the
+        // set the same way.
+        try (var f = new Fixture(List.of(largePlacement()))) {
+            var chunks = splitPortals();
+            int mopr = indexOf(chunks, "MOPR") + 8;
+            ByteBuffer.wrap(chunks)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putShort(mopr + 8, (short) 1)
+                    .putShort(mopr + 24, (short) 0);
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, INT, INT, INT},
+                    new int[] {60_000, 60_000, 3, 3, 3},
+                    new float[] {0, 200, 5, 205, 67.5f},
+                    chunks);
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_PORTALS_DROPPED));
+            }
+        }
+    }
+
+    @Test
+    void splitRootInteriorsComeFromWhatItsExteriorsLeftOfTheLargeAllowance() {
+        // Here the exterior takes 120,000 of the 131,072 large vertices; interior 2 (20,000)
+        // no longer fits and is capped, while its exterior still draws.
+        try (var f = new Fixture(List.of(largePlacement()))) {
+            var chunks = new ArrayList<byte[]>();
+            chunks.add(splitPortals());
+            var gfid = new long[5];
+            int[] flags = {EXT, EXT, INT, INT, INT};
+            int[] sizes = {60_000, 60_000, 20_000, 3, 3};
+            for (int g = 0; g < 5; g++) {
+                gfid[g] = BIG + 1 + g;
+                f.files.sources.put(gfid[g], bigGroup(flags[g], sizes[g]));
+            }
+            // A second exterior here, MOGI centre 1: 60,000 + 60,000 vertices of exterior.
+            f.files.sources.put(
+                    BIG,
+                    root(
+                            6,
+                            new long[] {gfid[0], gfid[1], gfid[2], gfid[3], gfid[4], gfid[0]},
+                            List.of(new Material(0, IMAGE, 0)),
+                            mogiBoxes(
+                                    new int[] {EXT, EXT, INT, INT, INT, EXT},
+                                    new float[] {0, 200, 5, 205, 67.5f, 1}),
+                            splitPortals()));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0, 5), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertNull(modelOf(set, BIG).portals(), "no interior drawn, no set carried");
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_PORTALS));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+            }
+        }
+    }
+
+    @Test
+    void aBorderRootsCutoutVerticesNeverMakeItSplit() {
+        // 90,000 opaque vertices fit an empty tile's 98,304; the 45,000-vertex cutout-only group
+        // is over the 32,768 material vertices and is capped when resolved. Sized alone, it must
+        // not count toward the opaque decision: the root is drawn whole, interior included, as
+        // before roots were drawn by group.
+        try (var f = new Fixture(List.of(largePlacement()))) {
+            long a = BIG + 1, b = BIG + 2, cut = BIG + 3, room = BIG + 4;
+            f.files.sources.put(a, bigGroup(EXT, 45_000));
+            f.files.sources.put(b, bigGroup(EXT, 45_000));
+            f.files.sources.put(cut, group(EXT, 45_000, 1, List.of(new Batch(0, 3, 0, 1))));
+            f.files.sources.put(room, group(INT));
+            f.files.sources.put(
+                    BIG,
+                    root(
+                            4,
+                            new long[] {a, b, cut, room},
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE, 0)),
+                            mogiBoxes(new int[] {EXT, EXT, EXT, INT}, new float[] {0, 0, 0, 200})));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(List.of(0, 1, 3), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
+            }
+        }
+    }
 }

@@ -1,6 +1,8 @@
 package com.vibeminer.rendering.world;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -182,9 +184,62 @@ class WmoPortalSetTest {
         // One root's portal tables may use a whole tile's bounds, and the bounds hold the roots and
         // groups a tile reads.
         assertEquals(24, WmoPortalSet.MAX_TILE_SETS);
-        assertEquals(256, WmoPortalSet.MAX_TILE_GROUPS);
+        // The tile's own reads, plus every group of one root drawn by group (at most 512).
+        assertEquals(256 + 512, WmoPortalSet.MAX_TILE_GROUPS);
+        // Stormwind (root 7962574): 289 groups, 319 portals, 626 references.
+        assertTrue(WmoPortalSet.MAX_TILE_GROUPS - 256 >= 289);
+        assertTrue(WmoPortalSet.MAX_TILE_PORTALS >= 319);
+        assertTrue(WmoPortalSet.MAX_TILE_REFS >= 626);
         assertTrue(WmoPortalSet.MAX_TILE_PORTALS >= 1024);
         assertTrue(WmoPortalSet.MAX_TILE_VERTICES >= 4 * WmoPortalSet.MAX_TILE_PORTALS);
         assertTrue(WmoPortalSet.MAX_TILE_REFS >= 2 * WmoPortalSet.MAX_TILE_PORTALS);
+    }
+
+    private static Ref ref(int portal, int group) {
+        return new Ref(portal, group, 1);
+    }
+
+    @Test
+    void referenceRangesAreRecoveredFromPairedPortals() {
+        // Group 0 leads through portals 0 and 1 to groups 1 and 2; each refers back. Group 3 has
+        // no portal.
+        var refs = List.of(ref(0, 1), ref(1, 2), ref(0, 0), ref(1, 0));
+        assertArrayEquals(new int[] {0, 2, 2, 1, 3, 1, 0, 0}, WmoPortalSet.refRanges(refs, 4));
+        assertArrayEquals(new int[] {0, 0}, WmoPortalSet.refRanges(List.of(), 1));
+    }
+
+    @Test
+    void oneSidedReferencesJoinTheSpanTheyLieInOrBothBesideThem() {
+        // Portal 5 is referenced once, from inside group 0's span: group 0's, as MOGP says.
+        var inside = List.of(ref(0, 1), ref(5, 2), ref(1, 2), ref(0, 0), ref(1, 0));
+        assertArrayEquals(new int[] {0, 3, 3, 1, 4, 1}, WmoPortalSet.refRanges(inside, 3));
+        // Portal 5 at the end of group 0's span, before group 1's: given to both, so the walk
+        // never misses it from the group it leads from.
+        var between = List.of(ref(0, 1), ref(1, 2), ref(5, 2), ref(0, 0), ref(1, 0));
+        assertArrayEquals(new int[] {0, 3, 2, 2, 4, 1}, WmoPortalSet.refRanges(between, 3));
+        // At either end of MOPR it joins the first or last span.
+        var ends = List.of(ref(5, 2), ref(0, 1), ref(0, 0), ref(6, 2));
+        assertArrayEquals(new int[] {0, 2, 2, 2, 0, 0}, WmoPortalSet.refRanges(ends, 3));
+    }
+
+    @Test
+    void unrecoverableReferenceRangesAreRefused() {
+        // Group 0's references are split by group 1's: MOPR is not listed group by group.
+        var interleaved = List.of(ref(0, 1), ref(1, 0), ref(2, 2), ref(0, 0), ref(1, 1), ref(2, 0));
+        assertNull(WmoPortalSet.refRanges(interleaved, 3));
+        // Not one portal referenced from both sides.
+        assertNull(WmoPortalSet.refRanges(List.of(ref(0, 1), ref(1, 0)), 2));
+        assertNull(WmoPortalSet.refRanges(List.of(ref(0, 1), ref(0, 0), ref(0, 1)), 2));
+    }
+
+    @Test
+    void recoveredRangesWalkLikeTheRecordedOnes() {
+        // The two-room set's recorded ranges are what the references give.
+        var set = twoRooms();
+        int[] ranges = WmoPortalSet.refRanges(set.refs(), 2);
+        for (int g = 0; g < 2; g++) {
+            assertEquals(set.groups().get(g).firstRef(), ranges[g * 2]);
+            assertEquals(set.groups().get(g).refCount(), ranges[g * 2 + 1]);
+        }
     }
 }

@@ -610,8 +610,9 @@ public final class WorldExteriorObjects {
         /** A LOD0 group of a very large placement that another tile draws. A group bucket. */
         GROUP_OTHER_TILE,
         /**
-         * A set doodad of a very large placement drawn by group whose position lies in another
-         * tile, which places it. A set doodad bucket.
+         * A set doodad of a very large placement drawn by group that another tile places: the one
+         * it stands in, or, inside an interior group's MOGI box, the one owning that group. A set
+         * doodad bucket.
          */
         SET_DOODAD_OTHER_TILE,
         /**
@@ -620,16 +621,18 @@ public final class WorldExteriorObjects {
          */
         ROOT_BY_GROUP,
         /**
-         * An interior group of a root drawn by group that this tile owns, not drawn: such a root
-         * carries no portal set yet (the tile does not read the groups other tiles own), and
-         * unculled interiors would cost every frame. Counted from the MOGI flags without reading
-         * the group, or from its MOGP flags when it was read as exterior. A group bucket.
+         * An interior group of a root drawn by group that this tile owns, not drawn because the
+         * root carries no portal set here (its portals were not retained or their per-group ranges
+         * could not be recovered from the root, see WmoPortalSet.ofGroupInfo, or the set did not
+         * fit the tile's portal tables): unculled interiors would cost every frame. Counted without
+         * reading the group. Also a group read as exterior whose MOGP flags say interior while its
+         * MOGI flags do not: the set, built from MOGI, would never cull it. A group bucket.
          */
         GROUP_INTERIOR_NO_PORTALS,
         /**
          * A set doodad of a root drawn by group standing inside one of its interior groups' MOGI
-         * boxes: not placed while those interiors are not drawn, so it never floats without walls
-         * or spends a cap. A set doodad bucket.
+         * boxes, on the tile owning that group, which does not draw it: not placed, so it never
+         * floats without walls or spends a cap. A set doodad bucket.
          */
         SET_DOODAD_INTERIOR
     }
@@ -1523,10 +1526,15 @@ public final class WorldExteriorObjects {
     /**
      * A root drawn by group, its owned groups classified, waiting for {@link Builder#placeByGroup}:
      * per LOD0 group the exterior copy the sizing pass already read (null otherwise) and whether
-     * the group is still to be read.
+     * the group is still to be read, and the same for its owned MOGI-interior groups.
      */
     private record ByGroup(
-            WmoFormats.Root root, PendingMesh[] ready, boolean[] unread, int[] local) {}
+            WmoFormats.Root root,
+            PendingMesh[] ready,
+            boolean[] unread,
+            PendingMesh[] readyInterior,
+            boolean[] unreadInterior,
+            int[] local) {}
 
     /**
      * One group the sizing pass of a border-crossing root read: its exterior copy (null when it
@@ -1721,6 +1729,12 @@ public final class WorldExteriorObjects {
          * Placements of roots drawn by group, by unique ID: their set doodads follow the owners.
          */
         private final Map<Long, Owner> owners = new HashMap<>();
+
+        /**
+         * The interior groups each drawn placement of a root drawn by group draws, by unique ID:
+         * the set doodads inside them are placed.
+         */
+        private final Map<Long, java.util.BitSet> interiorsDrawn = new HashMap<>();
 
         Builder(
                 WorldStreamScopes.TileAdmission admission,
@@ -2247,8 +2261,9 @@ public final class WorldExteriorObjects {
          * cutout and blended budget come only from what the tile's buildings, doodads and interiors
          * left, so a root drawn by group never displaces any of them. Every limit is checked before
          * anything is resolved; when its cutout and blended ranges do not fit the draws left, only
-         * its opaque ranges are drawn. A root that does not fit, or keeps nothing, still places the
-         * set doodads standing in this tile.
+         * its opaque ranges are drawn. Its owned interior groups follow its exteriors, from what
+         * they left ({@link #byGroupInteriors}), with its portal set. A root that does not fit, or
+         * keeps nothing, still places the set doodads standing in this tile.
          */
         private void placeByGroup() {
             for (var entry : byGroupQueue.entrySet()) {
@@ -2266,6 +2281,7 @@ public final class WorldExteriorObjects {
                 if (opaquePlacements >= MAX_PLACEMENTS
                         || buildings >= MAX_PLACEMENTS
                         || unread > MAX_GROUPS - groupsRead) {
+                    releaseInteriors(heldOf(read));
                     capByGroup(rootId, queued);
                     continue;
                 }
@@ -2322,6 +2338,7 @@ public final class WorldExteriorObjects {
                 if (over
                         || pending.size() > MAX_MESHES - meshes
                         || opaqueCandidates > MAX_DRAWS - drawn) {
+                    releaseInteriors(heldOf(read));
                     capByGroup(rootId, queued);
                     continue;
                 }
@@ -2345,6 +2362,8 @@ public final class WorldExteriorObjects {
                     charge = Charge.BUILDING;
                     skipMaterials = false;
                 }
+                int exteriorMeshes = built.size();
+                var portals = byGroupInteriors(read, built, meshes, drawn, local);
                 for (int i = 0; i < counts.length; i++) {
                     counts[i] += local[i];
                 }
@@ -2355,10 +2374,14 @@ public final class WorldExteriorObjects {
                     doodadsOnly(queued.record(), queued.transform(), rootId, queued.owner());
                     continue;
                 }
-                // Exteriors only, so no portal set: the tile lacks the headers of other tiles'
-                // groups, and no interior of the root is drawn until it can carry one.
+                // With its interiors, the root's portal set over all of its groups: each tile that
+                // draws some of them walks the whole set and skips its own unseen interiors.
                 int model = models.size();
-                models.add(new Model(rootId, false, built, null));
+                models.add(new Model(rootId, false, built, portals));
+                if (built.size() > exteriorMeshes) {
+                    interiorsDrawn.put(
+                            queued.record().uniqueId(), drawnGroups(built, exteriorMeshes));
+                }
                 modelSlots.put(rootId, model);
                 byGroupRoots.add(rootId);
                 rootStates.put(rootId, RootState.DRAWN);
@@ -2392,6 +2415,134 @@ public final class WorldExteriorObjects {
             doodadsOnly(queued.record(), queued.transform(), rootId, queued.owner());
         }
 
+        /**
+         * The owned interior groups of a root drawn by group ({@link #readByGroup}), after its
+         * exteriors and from what they left: they need the root's portal set, built from the root
+         * alone ({@link WmoPortalSet#ofGroupInfo}) and carried within the tile's portal tables;
+         * without one none is read (GROUP_INTERIOR_NO_PORTALS) and the set is counted
+         * ROOT_PORTALS_DROPPED. Each group in order is read from the tile's group reads left, and
+         * admitted while its candidate ranges fit the draws left, a mesh is left and its geometry
+         * fits the large allowance left; otherwise it is GROUP_INTERIOR_CAPPED and later ones may
+         * still fit. Admitted meshes are added to {@code built}. Returns the set when an interior
+         * was admitted (its tables charged), else null.
+         */
+        private WmoPortalSet byGroupInteriors(
+                ByGroup read, List<Mesh> built, int meshes, long drawn, int[] local) {
+            var root = read.root();
+            int candidates = 0;
+            for (int g = 0; g < read.unreadInterior().length; g++) {
+                candidates += read.unreadInterior()[g] || read.readyInterior()[g] != null ? 1 : 0;
+            }
+            if (candidates == 0) {
+                return null;
+            }
+            var held = heldOf(read);
+            WmoPortalSet set = null;
+            if (root.portals().declared()) {
+                try {
+                    set = WmoPortalSet.ofGroupInfo(root);
+                } catch (IllegalArgumentException refused) {
+                    set = null; // not retained, ranges not recoverable, or past the file's bound
+                }
+            }
+            if (set == null || !portalsFit(set)) {
+                if (root.portals().declared()) {
+                    count(Count.ROOT_PORTALS_DROPPED);
+                }
+                local[interiorNotDrawn().ordinal()] += candidates;
+                releaseInteriors(held);
+                return null;
+            }
+            int before = built.size();
+            long used = drawn;
+            for (var mesh : built) {
+                used += mesh.ranges().size();
+            }
+            var headers = new WmoFormats.GroupHeader[read.unreadInterior().length];
+            interiorPass = true;
+            charge = Charge.LARGE;
+            try {
+                for (int g = 0; g < read.unreadInterior().length; g++) {
+                    if (read.unreadInterior()[g]) {
+                        admission.prefetch(root.gfid(g), WorldStreamScopes.DerivedKind.WMO_GROUP);
+                    }
+                }
+                for (int g = 0; g < read.unreadInterior().length; g++) {
+                    var mesh = read.readyInterior()[g];
+                    if (read.unreadInterior()[g]) {
+                        token.check();
+                        if (groupsRead >= MAX_GROUPS) {
+                            local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
+                            continue;
+                        }
+                        groupsRead++;
+                        mesh = readGroup(g, root.gfid(g), root, local, headers);
+                    }
+                    if (mesh == null) {
+                        continue; // counted by readGroup
+                    }
+                    // Whatever its own MOGP flags say, a MOGI-interior group is an interior here,
+                    // as the set says.
+                    if (meshes + built.size() >= MAX_MESHES
+                            || mesh.ranges().size() > MAX_DRAWS - used) {
+                        local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
+                        continue;
+                    }
+                    var admitted = new RootBudget(Allowance.LARGE).admit(mesh, local);
+                    if (admitted == Admission.DROPPED) {
+                        continue; // counted by admit: BATCH_CAPPED, GROUP_EMPTY
+                    }
+                    if (admitted == Admission.OVER) {
+                        local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
+                        continue;
+                    }
+                    var mapped = resolveBuilding(mesh, local);
+                    if (mapped == null) {
+                        local[Count.GROUP_EMPTY.ordinal()]++;
+                        continue;
+                    }
+                    countMaterials(mapped, local);
+                    local[Count.GROUP_DRAWN.ordinal()]++;
+                    used += mapped.ranges().size();
+                    built.add(mapped);
+                }
+            } finally {
+                interiorPass = false;
+                charge = Charge.BUILDING;
+                admission.cancelPrefetch();
+                releaseInteriors(held);
+            }
+            if (built.size() == before) {
+                return null;
+            }
+            portalSets++;
+            portalGroups += set.groups().size();
+            portalCount += set.portals().size();
+            portalVertices += set.vertexCount();
+            portalRefs += set.refs().size();
+            return set;
+        }
+
+        /** The interior copies the sizing pass held for a root drawn by group. */
+        private static List<PendingMesh> heldOf(ByGroup read) {
+            var held = new ArrayList<PendingMesh>();
+            for (var mesh : read.readyInterior()) {
+                if (mesh != null) {
+                    held.add(mesh);
+                }
+            }
+            return held;
+        }
+
+        /** The group ordinals of {@code built} from {@code from} on: the interiors drawn. */
+        private static java.util.BitSet drawnGroups(List<Mesh> built, int from) {
+            var groups = new java.util.BitSet();
+            for (int i = from; i < built.size(); i++) {
+                groups.set(built.get(i).groupOrdinal());
+            }
+            return groups;
+        }
+
         /** How an owned interior group of a root drawn by group is counted. */
         private Count interiorNotDrawn() {
             return interiors ? Count.GROUP_INTERIOR_NO_PORTALS : Count.GROUP_INTERIOR;
@@ -2400,8 +2551,8 @@ public final class WorldExteriorObjects {
         /**
          * The set doodads of every placement of a root drawn by group, after the tile's own set
          * doodads: drawn buildings first, then those that draw no group here, each in admission
-         * order. Only the doodads standing in this tile are placed, and none standing inside one of
-         * the root's interior groups while those are not drawn.
+         * order. Only the doodads this tile owns are placed ({@link ByGroupFilter}): those standing
+         * in it, outside every interior group's box, and those inside an interior group it draws.
          */
         private void placeByGroupSetDoodads() {
             var ordered = new ArrayList<Placement>(byGroupBuildings.size());
@@ -2418,23 +2569,37 @@ public final class WorldExteriorObjects {
             for (var building : ordered) {
                 token.check();
                 var root = byGroupRootFacts.get(building.rootId());
-                var filter = new ByGroupFilter(owners.get(building.uniqueId()), root);
+                var filter =
+                        new ByGroupFilter(
+                                owners.get(building.uniqueId()),
+                                root,
+                                building.model() < 0
+                                        ? null
+                                        : interiorsDrawn.get(building.uniqueId()));
                 placeSetsOf(building, root.doodads(), filter);
             }
             byGroupBuildings.clear();
         }
 
         /**
-         * Which set doodads of a root drawn by group a tile places: those standing in it (the owner
-         * rule on the doodad's position) and outside every interior group's MOGI box.
+         * Which set doodads of a root drawn by group a tile places. A doodad standing inside one of
+         * the root's interior groups' MOGI boxes (the first such group) belongs to the tile owning
+         * that group, which places it only while it draws the group, so it never floats without
+         * walls; any other doodad belongs to the tile it stands in (the owner rule on its
+         * position). The tiles agree on every doodad's tile without seeing each other.
          */
         private static final class ByGroupFilter {
             private final Owner owner;
             private final float[] interiorBoxes;
+            private final int[] interiorGroups;
+            private final boolean[] owned;
+            private final java.util.BitSet drawn;
 
-            ByGroupFilter(Owner owner, WmoFormats.Root root) {
+            ByGroupFilter(Owner owner, WmoFormats.Root root, java.util.BitSet drawn) {
                 this.owner = owner;
+                this.drawn = drawn == null ? new java.util.BitSet() : drawn;
                 var boxes = new ArrayList<float[]>();
+                var groups = new ArrayList<Integer>();
                 if (root.groupInfoBoundsRetained()) {
                     for (int g = 0; g < root.header().groupCount(); g++) {
                         if ((root.groupInfoFlags(g) & INTERIOR) == 0) {
@@ -2446,30 +2611,36 @@ public final class WorldExteriorObjects {
                                 new float[] {
                                     lower.x(), lower.y(), lower.z(), upper.x(), upper.y(), upper.z()
                                 });
+                        groups.add(g);
                     }
                 }
                 interiorBoxes = new float[boxes.size() * 6];
+                interiorGroups = new int[groups.size()];
                 for (int i = 0; i < boxes.size(); i++) {
                     System.arraycopy(boxes.get(i), 0, interiorBoxes, i * 6, 6);
+                    interiorGroups[i] = groups.get(i);
                 }
+                owned = boxes.isEmpty() ? new boolean[0] : owner.owned(root);
             }
 
             /** Null to place the doodad, else the bucket it is left out under. */
             Count refuse(double nativeX, double nativeY, double a, double b, double c) {
-                if (!owner.owns(nativeX, nativeY)) {
-                    return Count.SET_DOODAD_OTHER_TILE;
-                }
-                for (int i = 0; i < interiorBoxes.length; i += 6) {
-                    if (a >= interiorBoxes[i]
-                            && b >= interiorBoxes[i + 1]
-                            && c >= interiorBoxes[i + 2]
-                            && a <= interiorBoxes[i + 3]
-                            && b <= interiorBoxes[i + 4]
-                            && c <= interiorBoxes[i + 5]) {
-                        return Count.SET_DOODAD_INTERIOR;
+                for (int i = 0; i < interiorGroups.length; i++) {
+                    int at = i * 6;
+                    if (a >= interiorBoxes[at]
+                            && b >= interiorBoxes[at + 1]
+                            && c >= interiorBoxes[at + 2]
+                            && a <= interiorBoxes[at + 3]
+                            && b <= interiorBoxes[at + 4]
+                            && c <= interiorBoxes[at + 5]) {
+                        int g = interiorGroups[i];
+                        if (!owned[g]) {
+                            return Count.SET_DOODAD_OTHER_TILE;
+                        }
+                        return drawn.get(g) ? null : Count.SET_DOODAD_INTERIOR;
                     }
                 }
-                return null;
+                return owner.owns(nativeX, nativeY) ? null : Count.SET_DOODAD_OTHER_TILE;
             }
         }
 
@@ -2794,6 +2965,14 @@ public final class WorldExteriorObjects {
          */
         private final class RootBudget {
             long vertices, indices, ranges, pendingVertices, pendingIndices, materialVertices;
+
+            /**
+             * Sized alone, the copies of cutout- and blend-only groups, kept out of the OVER
+             * decision: those groups are capped against the tile's material budget when resolved,
+             * so they never make a root that fits an empty tile split. Bounded as the other copies.
+             */
+            long aloneMaterialVertices, aloneMaterialIndices;
+
             private final Allowance allowance;
 
             RootBudget() {
@@ -2813,7 +2992,14 @@ public final class WorldExteriorObjects {
 
             long[] mark() {
                 return new long[] {
-                    vertices, indices, ranges, pendingVertices, pendingIndices, materialVertices
+                    vertices,
+                    indices,
+                    ranges,
+                    pendingVertices,
+                    pendingIndices,
+                    materialVertices,
+                    aloneMaterialVertices,
+                    aloneMaterialIndices
                 };
             }
 
@@ -2824,6 +3010,8 @@ public final class WorldExteriorObjects {
                 pendingVertices = m[3];
                 pendingIndices = m[4];
                 materialVertices = m[5];
+                aloneMaterialVertices = m[6];
+                aloneMaterialIndices = m[7];
             }
 
             /** Whether the mesh alone fits the tile's empty budgets; otherwise never hold it. */
@@ -2855,6 +3043,16 @@ public final class WorldExteriorObjects {
                 }
                 if (materialOnly) {
                     materialVertices += meshVertices;
+                }
+                if (allowance == Allowance.ALONE && materialOnly && !mesh.ranges().isEmpty()) {
+                    // Its copy is bounded on its own (one more set of both budgets), never
+                    // against the opaque candidates: only a root past that bound is over.
+                    aloneMaterialVertices += meshVertices;
+                    aloneMaterialIndices += mesh.indices().length;
+                    return aloneMaterialVertices > MAX_VERTICES + MAX_MATERIAL_VERTICES
+                                    || aloneMaterialIndices > MAX_INDICES + MAX_MATERIAL_INDICES
+                            ? Admission.OVER
+                            : Admission.ADMITTED;
                 }
                 boolean large = allowance == Allowance.LARGE;
                 long capVertices = large ? MAX_LARGE_VERTICES : MAX_VERTICES;
@@ -3178,6 +3376,10 @@ public final class WorldExteriorObjects {
                         local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
                     } else {
                         interiors.add(mesh);
+                        if (owner != null) {
+                            // Kept for the interiors of a root drawn by group (instance maps).
+                            sized[g] = new Sized(mesh, true, sized[g].counts());
+                        }
                     }
                     continue;
                 }
@@ -3195,11 +3397,12 @@ public final class WorldExteriorObjects {
                     case ADMITTED -> pending.add(mesh);
                     case DROPPED -> {}
                     case OVER -> {
-                        releaseInteriors(interiors);
                         if (owner != null) {
                             // Over an empty tile's building pool: no tile could draw it whole.
-                            return readByGroup(rootId, root, owner, skipped, deferred, sized);
+                            return readByGroup(
+                                    rootId, root, owner, skipped, deferred, sized, interiors);
                         }
+                        releaseInteriors(interiors);
                         count(Count.ROOT_CAPPED);
                         return RootState.CAPPED;
                     }
@@ -3252,12 +3455,16 @@ public final class WorldExteriorObjects {
 
         /**
          * Classifies the LOD0 groups of a root drawn by group ({@link Owner}). Every group another
-         * tile owns is GROUP_OTHER_TILE and is never read here. Owned interior groups are not drawn
-         * until such a root carries a portal set (GROUP_INTERIOR_NO_PORTALS): MOGI-interior ones
-         * are never read, and a group read as exterior whose MOGP flags say interior is dropped. An
-         * owned exterior group the sizing pass read keeps that copy and its counts, so no group is
-         * read or charged twice; the others are read by {@link #placeByGroup}, after everything
-         * else the tile draws. A root none of whose groups is this tile's is ROOT_OTHER_TILE.
+         * tile owns is GROUP_OTHER_TILE and is never read here. An owned exterior group the sizing
+         * pass read keeps that copy and its counts, so no group is read or charged twice; the
+         * others are read by {@link #placeByGroup}, after everything else the tile draws. With
+         * interiors, an owned group MOGI marks interior waits for placeByGroup too (its copy kept
+         * when the sizing pass read it, on instance maps); it is drawn only with the root's portal
+         * set, which describes every group from MOGI. A group read as exterior whose MOGP flags say
+         * interior while MOGI does not is not drawn (GROUP_INTERIOR_NO_PORTALS): the set would call
+         * it exterior and never cull it. A root none of whose groups is this tile's is
+         * ROOT_OTHER_TILE. {@code held} are the interior copies the sizing pass held; those not
+         * kept are released.
          */
         private RootState readByGroup(
                 long rootId,
@@ -3265,7 +3472,8 @@ public final class WorldExteriorObjects {
                 Owner owner,
                 boolean[] skipped,
                 boolean[] deferred,
-                Sized[] sized) {
+                Sized[] sized,
+                List<PendingMesh> held) {
             admission.cancelPrefetch(); // the sizing pass's unread hints
             byGroupRootFacts.put(rootId, root);
             var owned = owner.owned(root);
@@ -3274,6 +3482,11 @@ public final class WorldExteriorObjects {
             int[] local = new int[counts.length];
             var ready = new PendingMesh[lod0];
             var unread = new boolean[lod0];
+            var readyInterior = new PendingMesh[lod0];
+            var unreadInterior = new boolean[lod0];
+            var kept =
+                    java.util.Collections.newSetFromMap(
+                            new java.util.IdentityHashMap<PendingMesh, Boolean>());
             for (int g = 0; g < lod0; g++) {
                 if (root.gfid(g) == 0) {
                     local[Count.GROUP_UNSUPPORTED.ordinal()]++;
@@ -3284,7 +3497,7 @@ public final class WorldExteriorObjects {
                     if (skipped[g]) {
                         local[Count.GROUP_INTERIOR.ordinal()]++;
                     } else if (deferred[g]) {
-                        local[Count.GROUP_INTERIOR_NO_PORTALS.ordinal()]++;
+                        unreadInterior[g] = true;
                     } else if (sized[g] == null) {
                         unread[g] = true;
                     } else {
@@ -3292,14 +3505,26 @@ public final class WorldExteriorObjects {
                         for (int i = 0; i < local.length; i++) {
                             local[i] += sized[g].counts()[i];
                         }
-                        if (sized[g].interior()) {
-                            local[interiorNotDrawn().ordinal()]++;
-                        } else {
+                        if (!sized[g].interior()) {
                             ready[g] = sized[g].mesh();
+                        } else if (!mogiInterior(root, g)) {
+                            local[interiorNotDrawn().ordinal()]++;
+                        } else if (sized[g].mesh() == null) {
+                            local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
+                        } else {
+                            readyInterior[g] = sized[g].mesh();
+                            kept.add(readyInterior[g]);
                         }
                     }
                 }
             }
+            var released = new ArrayList<PendingMesh>();
+            for (var mesh : held) {
+                if (!kept.contains(mesh)) {
+                    released.add(mesh);
+                }
+            }
+            releaseInteriors(released);
             if (!any) {
                 for (int i = 0; i < counts.length; i++) {
                     counts[i] += local[i];
@@ -3307,7 +3532,8 @@ public final class WorldExteriorObjects {
                 count(Count.ROOT_OTHER_TILE);
                 return RootState.OTHER_TILE;
             }
-            byGroupReads.put(rootId, new ByGroup(root, ready, unread, local));
+            byGroupReads.put(
+                    rootId, new ByGroup(root, ready, unread, readyInterior, unreadInterior, local));
             return RootState.BY_GROUP;
         }
 
@@ -3545,12 +3771,7 @@ public final class WorldExteriorObjects {
                     set = null;
                 }
             }
-            if (set == null
-                    || portalSets >= WmoPortalSet.MAX_TILE_SETS
-                    || set.groups().size() > WmoPortalSet.MAX_TILE_GROUPS - portalGroups
-                    || set.portals().size() > WmoPortalSet.MAX_TILE_PORTALS - portalCount
-                    || set.vertexCount() > WmoPortalSet.MAX_TILE_VERTICES - portalVertices
-                    || set.refs().size() > WmoPortalSet.MAX_TILE_REFS - portalRefs) {
+            if (set == null || !portalsFit(set)) {
                 count(Count.ROOT_PORTALS_DROPPED);
                 return null;
             }
@@ -3560,6 +3781,15 @@ public final class WorldExteriorObjects {
             portalVertices += set.vertexCount();
             portalRefs += set.refs().size();
             return set;
+        }
+
+        /** Whether {@code set} fits what is left of the tile's portal tables. */
+        private boolean portalsFit(WmoPortalSet set) {
+            return portalSets < WmoPortalSet.MAX_TILE_SETS
+                    && set.groups().size() <= WmoPortalSet.MAX_TILE_GROUPS - portalGroups
+                    && set.portals().size() <= WmoPortalSet.MAX_TILE_PORTALS - portalCount
+                    && set.vertexCount() <= WmoPortalSet.MAX_TILE_VERTICES - portalVertices
+                    && set.refs().size() <= WmoPortalSet.MAX_TILE_REFS - portalRefs;
         }
 
         private PendingMesh readGroup(
