@@ -105,7 +105,9 @@ public final class Blp2Decoder {
     /**
      * The colour encoding, alpha depth and alpha encoding tuples reviewed for declared handmade mip
      * chains (mip byte 0x02): BC2/8/1, BC3/8/7 and 8-bit-alpha palette (1/8/8). The chain itself is
-     * validated the same way for each: complete, power-of-two, exact and ending at EOF.
+     * validated the same way for each: complete, power-of-two, exact and ending at EOF. The terrain
+     * stream transport ({@code WorldStreamTileFile.handmadeTuple} in rendering-bgfx) admits the
+     * same set and is tested against this method over every byte combination.
      */
     public static boolean isHandmadeTuple(Encoding encoding, int depth, int alpha) {
         return depth == 8

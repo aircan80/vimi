@@ -167,6 +167,98 @@ final class Db2ReaderTest {
     }
 
     @Test
+    void inlineIdStoredAfterArrayFieldsIsReadFromItsOwnStorage() {
+        // Classic sky-table layouts (for example LightParams 51C96BAD) store the inline ID at
+        // field index 2, after two three-element arrays.
+        var definition =
+                Db2Fixture.definition(
+                        "int ID\nint Colour\nint Range\nint Value",
+                        "Colour<32>[3]\nRange<32>[3]\n$id$ID<32>\nValue<32>");
+        var table =
+                Db2Reader.open(
+                                Db2ByteSource.memory(idAfterArrays(2)),
+                                definition,
+                                "1.2.3.4",
+                                new Db2Types.Limits(),
+                                Cancellation.NONE)
+                        .join();
+        var rows = table.readAll(Cancellation.NONE).join();
+        assertEquals(2, rows.size());
+        assertEquals(41, rows.getFirst().id());
+        assertEquals(42, rows.get(1).id());
+        // The arrays before the ID and the field after it keep their own offsets.
+        assertEquals(List.of("1", "2", "3", "4", "5", "6", "41", "-7"), rows.getFirst().values());
+        assertEquals(List.of("11", "12", "13", "14", "15", "16", "42", "-8"), rows.get(1).values());
+        var found = table.findWithOrdinal(42, Cancellation.NONE).join();
+        assertEquals(1, found.ordinal());
+        assertEquals(rows.get(1), ((Db2Types.Found) found.lookup()).row());
+        // A header whose ID index points anywhere else is refused, never read silently.
+        for (int idIndex : new int[] {0, 1, 3, 65535}) {
+            var failure =
+                    assertThrows(
+                            CompletionException.class,
+                            () ->
+                                    Db2Reader.open(
+                                                    Db2ByteSource.memory(idAfterArrays(idIndex)),
+                                                    definition,
+                                                    "1.2.3.4",
+                                                    new Db2Types.Limits(),
+                                                    Cancellation.NONE)
+                                            .join());
+            assertEquals(
+                    "DB2_UNSUPPORTED",
+                    ((Db2FormatException) failure.getCause()).code(),
+                    "idIndex " + idIndex);
+        }
+    }
+
+    /** Two 32-byte records: Colour[3], Range[3], inline ID, Value; all uncompressed 32-bit. */
+    private static byte[] idAfterArrays(int idIndex) {
+        int fields = 4, records = 2, recordSize = 32;
+        int start = 204 + 40 + fields * 4 + fields * 24;
+        var b =
+                java.nio.ByteBuffer.allocate(start + records * recordSize)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.put("WDC5".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).putInt(5);
+        int at = 136;
+        b.putInt(at, records);
+        b.putInt(at + 4, fields);
+        b.putInt(at + 8, recordSize);
+        b.putInt(at + 16, 0x11223344);
+        b.putInt(at + 20, 0x01020304);
+        b.putInt(at + 24, 41);
+        b.putInt(at + 28, 42);
+        b.putShort(at + 36, (short) 0);
+        b.putShort(at + 38, (short) idIndex);
+        b.putInt(at + 40, fields);
+        b.putInt(at + 52, fields * 24);
+        b.putInt(at + 64, 1);
+        b.position(204);
+        b.putLong(0).putInt(start).putInt(records).putInt(0).putInt(0).putInt(0).putInt(0);
+        b.putInt(0).putInt(0);
+        int[] offsets = {0, 12, 24, 28}, widths = {96, 96, 32, 32};
+        for (int offset : offsets) {
+            b.putShort((short) 0).putShort((short) offset);
+        }
+        for (int i = 0; i < fields; i++) {
+            b.putShort((short) (offsets[i] * 8))
+                    .putShort((short) widths[i])
+                    .putInt(0)
+                    .putInt(0)
+                    .putInt(0)
+                    .putInt(0)
+                    .putInt(0);
+        }
+        b.position(start);
+        for (int r = 0; r < records; r++) {
+            b.putInt(10 * r + 1).putInt(10 * r + 2).putInt(10 * r + 3);
+            b.putInt(10 * r + 4).putInt(10 * r + 5).putInt(10 * r + 6);
+            b.putInt(41 + r).putInt(-(r + 7));
+        }
+        return b.array();
+    }
+
+    @Test
     void unknownMagicRetainsLegacyMandatoryHeaderBeforeFormatRefusal() {
         for (int length : new int[] {4, 204}) {
             byte[] bytes = new byte[length];
