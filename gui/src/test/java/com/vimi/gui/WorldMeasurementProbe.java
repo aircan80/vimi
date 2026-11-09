@@ -57,7 +57,8 @@ import javax.management.openmbean.CompositeData;
  *
  * <p>Other properties: {@code probe.build} (default 70790); {@code probe.scenarios} = name:map:x:y
  * list (vimi tile coordinates; default Elwynn around Goldshire 49,31 and Stormwind City 48,30);
- * {@code probe.size}, {@code probe.passes}, {@code probe.objects} for prep; {@code probe.maps} for
+ * {@code probe.size}, {@code probe.passes}, {@code probe.objects} for prep; {@code
+ * probe.interiors=false} for exteriors only; {@code probe.root} to list one WMO root's drawn groups; {@code probe.maps} for
  * refusals (default 0,1); {@code probe.out} for the report; {@code probe.gcLog} for the -Xlog:gc
  * file the task writes.
  */
@@ -234,6 +235,44 @@ public final class WorldMeasurementProbe {
         }
     }
 
+    /**
+     * With {@code probe.root=<WMO root FileDataID>}, the drawn LOD0 group ordinals of that root on
+     * each prepared tile and whether it carries a portal set (#383).
+     */
+    private static void printRoot(
+            String scenario,
+            WorldFormats.Tile tile,
+            com.vibeminer.concepts.world.WorldExteriorObjects.TileObjects set) {
+        long wanted = Long.getLong("probe.root", 0);
+        if (wanted == 0) return;
+        for (var model : set.models()) {
+            if (model.doodad() || model.rootId() != wanted) continue;
+            say(
+                    String.format(
+                            Locale.ROOT,
+                            "PROBE root %d on %s %d,%d: drawn groups %s; portal set %s",
+                            wanted,
+                            scenario,
+                            tile.x(),
+                            tile.y(),
+                            model.meshes().stream()
+                                    .map(com.vibeminer.concepts.world.WorldExteriorObjects.Mesh::groupOrdinal)
+                                    .sorted()
+                                    .toList(),
+                            model.portals() == null
+                                    ? "none"
+                                    : model.portals().groups().size()
+                                            + " groups, "
+                                            + model.portals().portals().size()
+                                            + " portals"));
+        }
+    }
+
+    /** As the World view, unless {@code probe.interiors=false} measures exteriors only (#383). */
+    static boolean probeInteriors() {
+        return WorldView.DRAW_INTERIORS && !"false".equals(System.getProperty("probe.interiors"));
+    }
+
     // ---- Tile prep only: the real source path, no helper, GPU or FX (#422) ----------------
 
     private static void prep(BuildWorld handle, WorldService.Catalog catalog) throws Exception {
@@ -281,12 +320,15 @@ public final class WorldMeasurementProbe {
                         long prepared = WorldStageTimings.start();
                         try (var set =
                                 source.prepareExteriorObjects(
-                                        scope, tile, Cancellation.NONE, detail)) {
+                                        scope, tile, Cancellation.NONE, detail,
+                                        probeInteriors())) {
                             WorldStageTimings.stop("prep.objects", prepared);
                             set.tallyCounts();
                             if (pass == 1) usage.add(set);
+                            if (pass == 1) printRoot(scenario.name(), tile, set);
                         } catch (RuntimeException failed) {
                             WorldStageTimings.stop("prep.objectsFailed", prepared);
+                            say("PROBE objects failed on " + tile + ": " + failed);
                         }
                     }
                     done++;
@@ -1323,9 +1365,9 @@ public final class WorldMeasurementProbe {
                     new WorldStreamSourceController.Request(
                             1, handle, map, inventory, origin, null, catalog.areaIndex());
             var detail = WorldStreamGpuOwner.IMAGE_DETAIL;
-            // As the World view: dungeon and raid maps draw their interiors (#280), and their
-            // roots carry portal sets the renderer culls with (#383).
-            boolean interiors = WorldView.instanceInteriors(map);
+            // As the World view: every map draws its interiors (#280, #383), and their roots
+            // carry portal sets the renderer culls with.
+            boolean interiors = probeInteriors();
             WorldStreamSourceBridge.ExteriorPreparer preparer =
                     (source, scope, tile, cancellation, formats) ->
                             WorldStreamSourceBridge.prepareExterior(

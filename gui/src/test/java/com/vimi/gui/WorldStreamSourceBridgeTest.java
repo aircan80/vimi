@@ -389,17 +389,8 @@ public final class WorldStreamSourceBridgeTest {
         // Budgets are mip-chain texels (#265): the chain of a twice-as-large texture is double
         // within one texel, the 1 x 1 level.
         check(Math.abs(high.totalPixels() - 2 * standard.totalPixels()) <= 3, "High doubles every pool");
-        // #280: dungeon (InstanceType 1) and raid (2) maps draw WMO interiors; others do not.
-        check(WorldView.instanceInteriors(new com.vibeminer.concepts.world.WorldService.MapInfo(
-                36, "Dungeon", "D", 1, 1L)), "Dungeon maps draw interiors");
-        check(WorldView.instanceInteriors(new com.vibeminer.concepts.world.WorldService.MapInfo(
-                249, "Raid", "R", 2, 1L)), "Raid maps draw interiors");
-        check(!WorldView.instanceInteriors(new com.vibeminer.concepts.world.WorldService.MapInfo(
-                0, "Continent", "C", 0, 1L)), "Open-world maps keep exteriors only");
-        check(!WorldView.instanceInteriors(new com.vibeminer.concepts.world.WorldService.MapInfo(
-                30, "Battleground", "B", 3, 1L)), "Battlegrounds keep exteriors only");
-        check(!WorldView.instanceInteriors(new com.vibeminer.concepts.world.WorldService.MapInfo(
-                7, "Unknown", "U", null, 1L)), "An unreadable instance type keeps exteriors only");
+        // #280, #383: every map draws its WMO interiors, open-world maps included.
+        check(WorldView.DRAW_INTERIORS, "Every map draws interiors");
         check(WorldStreamGpuOwner.exteriorsEnabled(null), "Exteriors are on without the property");
         check(WorldStreamGpuOwner.exteriorsEnabled("true"), "true keeps exteriors on");
         check(WorldStreamGpuOwner.exteriorsEnabled(""), "An empty value keeps exteriors on");

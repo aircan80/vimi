@@ -145,6 +145,12 @@ skips the helper, the GPU, FX and the packet files: in stream mode the terrain p
 about 25 ms per tile. Use `-Pprobe.objects=false` for terrain alone. It reports the same series
 as stream mode, so before and after runs compare directly.
 
+Both modes draw WMO interior groups as the World view does (#383); `-Pprobe.interiors=false`
+measures exteriors only, for a before and after on the same build. In prep mode,
+`-Pprobe.root=<WMO root FileDataID>` lists that root's drawn LOD0 groups and whether it carries a
+portal set on each tile. `objects.groups.interiorReadPerTile` is the interior pass's share of
+`objects.groups.readPerTile`.
+
 **Stream mode** builds the production `WorldStreamSourceController` exactly as `WorldView` does:
 - the real `WorldStreamGpuOwner` and helper, on the default backend (D3D11 here);
 - the real exterior preparer;

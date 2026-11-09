@@ -348,14 +348,25 @@ public final class WorldExteriorObjects {
     private WorldExteriorObjects() {}
 
     /**
-     * Whether LOD0 group {@code group} is left unread: outside instances only, when the root's
-     * retained MOGI flags mark it interior (interior wins over exterior, as for MOGP). A group that
-     * is read still follows its own MOGP flags, whatever its MOGI flags said.
+     * Whether LOD0 group {@code group} is left unread: without interiors, when the root's retained
+     * MOGI flags mark it interior (interior wins over exterior, as for MOGP). A group that is read
+     * still follows its own MOGP flags, whatever its MOGI flags said.
      */
     static boolean skipInterior(WmoFormats.Root root, int group, boolean interiors) {
-        return !interiors
-                && root.groupInfoRetained()
-                && (root.groupInfoFlags(group) & INTERIOR) != 0;
+        return !interiors && mogiInterior(root, group);
+    }
+
+    /**
+     * Whether LOD0 group {@code group} waits for the tile's interior read pass (#383): with
+     * interiors, when the root's retained MOGI flags mark it interior. Every building's exterior
+     * groups are read first, so interior reads only spend what of the tile's group reads is left.
+     */
+    static boolean deferInterior(WmoFormats.Root root, int group, boolean interiors) {
+        return interiors && mogiInterior(root, group);
+    }
+
+    private static boolean mogiInterior(WmoFormats.Root root, int group) {
+        return root.groupInfoRetained() && (root.groupInfoFlags(group) & INTERIOR) != 0;
     }
 
     /**
@@ -1287,6 +1298,10 @@ public final class WorldExteriorObjects {
         EMPTY
     }
 
+    /** A drawn root's MOGI-interior groups (flagged) waiting for the interior read pass (#383). */
+    private record DeferredInteriors(
+            WmoFormats.Root root, WmoFormats.GroupHeader[] headers, boolean[] deferred) {}
+
     private record Candidate(int firstIndex, int indexCount, int material, long image, int blend) {}
 
     /** copyModel's marker for a model whose every admitted triangle billboards. */
@@ -1377,6 +1392,21 @@ public final class WorldExteriorObjects {
         /** Interior meshes of drawn roots, held for {@link #placeInteriors}; bounded copies. */
         private final Map<Long, List<PendingMesh>> heldInteriors = new LinkedHashMap<>();
 
+        /**
+         * Drawn roots' MOGI-interior groups, read by {@link #readInteriors}, in admission order.
+         */
+        private final Map<Long, DeferredInteriors> deferredInteriors = new LinkedHashMap<>();
+
+        /** Interior-only roots whose interior groups did not fit the tile's group reads. */
+        private final java.util.Set<Long> interiorReadsCapped = new java.util.HashSet<>();
+
+        /**
+         * True while interiors are read and admitted: a group or image refused at SOURCE_INPUT (not
+         * readable now, such as a file not stored yet) omits only that interior group or batch, as
+         * a missing one does, and never costs the tile its exteriors (#383).
+         */
+        private boolean interiorPass;
+
         private long heldVertices, heldIndices;
 
         /** Portal table rows the carried sets use so far (#383), against WmoPortalSet bounds. */
@@ -1409,10 +1439,15 @@ public final class WorldExteriorObjects {
                 setIds = metadata.setIds();
                 long phase = WorldStageTimings.start();
                 place(metadata.worldObjects());
+                int exteriorReads = groupsRead;
+                readInteriors();
                 fitMaterialDraws();
                 WorldStageTimings.stop("objects.phase.buildings", phase);
-                // LOD0 group files this tile read (MAX_GROUPS), for the measurement probe.
+                // LOD0 group files this tile read (MAX_GROUPS), for the measurement probe; the
+                // interior pass's share separately (#383).
                 WorldStageTimings.value("objects.groups.readPerTile", groupsRead);
+                WorldStageTimings.value(
+                        "objects.groups.interiorReadPerTile", groupsRead - exteriorReads);
                 // Admission ran largest first; the set keeps obj0 source order.
                 placements.sort(java.util.Comparator.comparingInt(Placement::ordinal));
                 // Buildings first, then MDDF doodads, then the drawn buildings' doodad sets, and
@@ -2226,6 +2261,15 @@ public final class WorldExteriorObjects {
             if (heldInteriors.isEmpty()) {
                 return;
             }
+            interiorPass = true;
+            try {
+                admitInteriors();
+            } finally {
+                interiorPass = false;
+            }
+        }
+
+        private void admitInteriors() {
             int[] uses = new int[models.size()];
             for (var placement : placements) {
                 uses[placement.model()]++;
@@ -2253,9 +2297,11 @@ public final class WorldExteriorObjects {
                     continue;
                 }
                 // A model without opaque draws (an interior-only root) holds no building slot
-                // yet; its placements need free slots before an interior can give it one.
+                // yet; its placements need free slots before an interior can give it one. An
+                // interior-only root whose groups did not fit the tile's reads is capped too.
                 boolean needsSlots = admissionDraws(m) == 0;
-                if (needsSlots && uses[m] > MAX_PLACEMENTS - opaquePlacements) {
+                boolean unread = interiorReadsCapped.contains(model.rootId());
+                if (unread || needsSlots && uses[m] > MAX_PLACEMENTS - opaquePlacements) {
                     local[Count.GROUP_INTERIOR_CAPPED.ordinal()] += held.size();
                     if (model.meshes().isEmpty()) {
                         removed[m] = true;
@@ -2355,15 +2401,22 @@ public final class WorldExteriorObjects {
                 return RootState.FAILED;
             }
             int lod0 = (int) groupCount, reads = 0;
-            // Outside instances, groups whose MOGI flags say interior are never read: they would
-            // only be dropped (GROUP_INTERIOR), and must not spend the tile's group reads.
+            // Without interiors, groups whose MOGI flags say interior are never read: they would
+            // only be dropped (GROUP_INTERIOR), and must not spend the tile's group reads. With
+            // interiors they wait for readInteriors, after every building's exterior groups, so
+            // an interior never caps an exterior root (#383).
             var skipped = new boolean[lod0];
+            var deferred = new boolean[lod0];
+            int deferredCount = 0;
             for (int g = 0; g < lod0; g++) {
                 if (root.gfid(g) == 0) {
                     continue;
                 }
                 skipped[g] = skipInterior(root, g, this.interiors);
-                if (!skipped[g]) {
+                deferred[g] = deferInterior(root, g, this.interiors);
+                if (deferred[g]) {
+                    deferredCount++;
+                } else if (!skipped[g]) {
                     reads++;
                 }
             }
@@ -2376,7 +2429,7 @@ public final class WorldExteriorObjects {
             // models and images are not read ahead: caps decided by earlier parsing leave many of
             // them unread, and a capped source must never be fetched.
             for (int g = 0; g < lod0; g++) {
-                if (root.gfid(g) != 0 && !skipped[g]) {
+                if (root.gfid(g) != 0 && !skipped[g] && !deferred[g]) {
                     admission.prefetch(root.gfid(g), WorldStreamScopes.DerivedKind.WMO_GROUP);
                 }
             }
@@ -2399,6 +2452,9 @@ public final class WorldExteriorObjects {
                 if (skipped[g]) {
                     local[Count.GROUP_INTERIOR.ordinal()]++;
                     continue;
+                }
+                if (deferred[g]) {
+                    continue; // counted by readInteriors
                 }
                 groupsRead++;
                 var mesh = readGroup(g, groupId, root, local, headers);
@@ -2448,22 +2504,110 @@ public final class WorldExteriorObjects {
                 counts[i] += local[i];
             }
             var held = interiors;
-            if (built.isEmpty() && held.isEmpty()) {
+            if (built.isEmpty() && held.isEmpty() && deferredCount == 0) {
                 count(Count.ROOT_EMPTY);
                 return RootState.EMPTY;
             }
-            if (!held.isEmpty()) {
+            if (!held.isEmpty() || deferredCount > 0) {
                 // An interior-only root draws nothing until the interior pass; a model with no
                 // meshes costs no draws and takes no building slot until then.
                 heldInteriors.put(rootId, held);
             }
             rootDoodads.put(rootId, root.doodads());
             modelSlots.put(rootId, models.size());
-            models.add(
-                    new Model(
-                            rootId, false, built, this.interiors ? portals(root, headers) : null));
+            WmoPortalSet portals = null;
+            if (deferredCount > 0) {
+                // The portal set needs every group's header: it is decided after the reads.
+                deferredInteriors.put(rootId, new DeferredInteriors(root, headers, deferred));
+            } else if (this.interiors) {
+                portals = portals(root, headers);
+            }
+            models.add(new Model(rootId, false, built, portals));
             count(Count.ROOT_DRAWN);
             return RootState.DRAWN;
+        }
+
+        /**
+         * The interior read pass (#383): after every building's exterior groups were read and
+         * admitted, each drawn root's MOGI-interior groups, roots in admission order (largest
+         * first). A root's interiors are read whole or not at all, from what is left of the tile's
+         * group reads (MAX_GROUPS): one that does not fit is skipped, its groups counted
+         * GROUP_INTERIOR_CAPPED and its exterior drawn as without interiors, and smaller roots
+         * after it may still fit. Read groups are held for {@link #placeInteriors}. The root's
+         * portal set is decided here, once every group's header is known.
+         */
+        private void readInteriors() {
+            if (deferredInteriors.isEmpty()) {
+                return;
+            }
+            var placed = new java.util.HashSet<Integer>();
+            for (var placement : placements) {
+                placed.add(placement.model());
+            }
+            for (var entry : deferredInteriors.entrySet()) {
+                token.check();
+                long rootId = entry.getKey();
+                var pending = entry.getValue();
+                int m = modelSlots.get(rootId);
+                int[] local = new int[counts.length];
+                var held = heldInteriors.get(rootId);
+                int reads = 0;
+                for (int g = 0; g < pending.deferred().length; g++) {
+                    if (pending.deferred()[g]) {
+                        reads++;
+                    }
+                }
+                // A root with no drawn placement could never show its interiors: never read.
+                if (!placed.contains(m) || reads > MAX_GROUPS - groupsRead) {
+                    local[Count.GROUP_INTERIOR_CAPPED.ordinal()] += reads;
+                    for (int i = 0; i < counts.length; i++) {
+                        counts[i] += local[i];
+                    }
+                    if (models.get(m).meshes().isEmpty() && held.isEmpty()) {
+                        interiorReadsCapped.add(rootId);
+                    }
+                    continue;
+                }
+                var root = pending.root();
+                interiorPass = true;
+                try {
+                    for (int g = 0; g < pending.deferred().length; g++) {
+                        if (pending.deferred()[g]) {
+                            admission.prefetch(
+                                    root.gfid(g), WorldStreamScopes.DerivedKind.WMO_GROUP);
+                        }
+                    }
+                    for (int g = 0; g < pending.deferred().length; g++) {
+                        if (!pending.deferred()[g]) {
+                            continue;
+                        }
+                        token.check();
+                        groupsRead++;
+                        var mesh = readGroup(g, root.gfid(g), root, local, pending.headers());
+                        if (mesh == null) {
+                            continue;
+                        }
+                        // Whatever its own MOGP flags say, a MOGI-interior group is admitted as
+                        // an interior: only from what every exterior left.
+                        if (!holdInterior(mesh)) {
+                            local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
+                        } else {
+                            held.add(mesh);
+                        }
+                    }
+                } finally {
+                    interiorPass = false;
+                    admission.cancelPrefetch();
+                }
+                for (int i = 0; i < counts.length; i++) {
+                    counts[i] += local[i];
+                }
+                var model = models.get(m);
+                models.set(
+                        m,
+                        new Model(rootId, false, model.meshes(), portals(root, pending.headers())));
+            }
+            deferredInteriors.clear();
         }
 
         /**
@@ -3809,8 +3953,9 @@ public final class WorldExteriorObjects {
          * Null for an unavailable source (missing, protected or over its cap), for a doodad source
          * refused at SOURCE_INPUT (decoration never costs the tile its buildings), and, when {@code
          * unreadable} is given, for a cutout or blended building image refused at SOURCE_INPUT
-         * (flagged in unreadable[0]). Every other refusal, including any read the opaque-only
-         * profile made and any changed source, fails the whole set.
+         * (flagged in unreadable[0]), and for a group or image the interior pass reads refused at
+         * SOURCE_INPUT. Every other refusal, including any read the opaque-only profile made and
+         * any changed source, fails the whole set.
          */
         private WorldStreamScopes.Input derived(
                 long id, WorldStreamScopes.DerivedKind kind, boolean[] unreadable) {
@@ -3827,6 +3972,15 @@ public final class WorldExteriorObjects {
                         kind == WorldStreamScopes.DerivedKind.M2_MODEL
                                 || kind == WorldStreamScopes.DerivedKind.M2_SKIN
                                 || kind == WorldStreamScopes.DerivedKind.M2_IMAGE;
+                if (interiorPass
+                        && !doodad
+                        && unreadable == null
+                        && WorldSourceRefusals.Site.SOURCE_INPUT.name().equals(refusal.site())
+                        && refusal.getCause() == null
+                        && refusal.getSuppressed().length == 0) {
+                    token.check();
+                    return null; // counted by the caller as unavailable
+                }
                 if ((doodad || unreadable != null)
                         && WorldSourceRefusals.Site.SOURCE_INPUT.name().equals(refusal.site())
                         && refusal.getCause() == null
