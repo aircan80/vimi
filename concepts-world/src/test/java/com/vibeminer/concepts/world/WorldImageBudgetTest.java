@@ -176,4 +176,36 @@ class WorldImageBudgetTest {
                     "level " + level);
         }
     }
+
+    @Test
+    void allocateFirstKeepsEverySecondRequestAtLeastItsSmallestLevel() {
+        int[] sides = {512, 256, 128, 64, 32};
+        var exterior = new WorldImageBudget.Request(1024, 1024, 11);
+        var interior = new WorldImageBudget.Request(64, 64, 7);
+        long budget = WorldImageBudget.cost(1024, 1024, 1);
+        // Alone, the exterior image spends the whole pool at 512: nothing would be left.
+        assertEquals(1, WorldImageBudget.allocate(List.of(exterior), budget, sides)[0]);
+        // First, it is allotted from the pool less the interior's smallest level, so the
+        // interior keeps at least its 32 side and the exterior takes the largest level that
+        // still fits.
+        int[][] levels =
+                WorldImageBudget.allocateFirst(List.of(exterior), List.of(interior), budget, sides);
+        assertEquals(2, levels[0][0]);
+        assertTrue(levels[1][0] >= 0 && levels[1][0] <= 1, "the interior keeps its smallest side");
+        assertEquals(
+                -1,
+                WorldImageBudget.allocate(
+                        List.of(interior), budget - WorldImageBudget.cost(1024, 1024, 1), sides)[0],
+                "after the exterior alone it would not fit");
+        // With room for both, the exterior level is what it would be alone, and the second list
+        // gets what is left.
+        long ample = WorldImageBudget.cost(1024, 1024, 1) + WorldImageBudget.cost(64, 64, 0);
+        levels = WorldImageBudget.allocateFirst(List.of(exterior), List.of(interior), ample, sides);
+        assertEquals(1, levels[0][0]);
+        assertEquals(0, levels[1][0]);
+        // An empty second list reserves nothing.
+        assertArrayEquals(
+                WorldImageBudget.allocate(List.of(exterior), budget, sides),
+                WorldImageBudget.allocateFirst(List.of(exterior), List.of(), budget, sides)[0]);
+    }
 }

@@ -595,6 +595,11 @@ class WorldExteriorObjectsTest {
                     formats);
         }
 
+        /** An open-world map: MOGI-interior groups are read after every exterior (#383). */
+        WorldExteriorObjects.TileObjects runOpenWorld() {
+            return prepareWith(this, WorldExteriorObjects.Interiors.OPEN_WORLD, 0);
+        }
+
         /** A dungeon or raid map: interior WMO groups are drawn too (#280). */
         WorldExteriorObjects.TileObjects runInstance() {
             return WorldExteriorObjects.prepare(
@@ -614,6 +619,37 @@ class WorldExteriorObjectsTest {
         public void close() {
             engine.closeAsync().join();
             nativeMap.close();
+        }
+    }
+
+    /** A run with the given interior mode, for a session sampling {@code formats}. */
+    private static WorldExteriorObjects.TileObjects prepareWith(
+            Fixture f, WorldExteriorObjects.Interiors interiors, int formats) {
+        return prepareWith(f, interiors, WorldExteriorObjects.RETAINED_SOURCE_BYTES, formats);
+    }
+
+    private static WorldExteriorObjects.TileObjects prepareWith(
+            Fixture f, WorldExteriorObjects.Interiors interiors, long retain, int formats) {
+        return WorldExteriorObjects.prepare(
+                f.engine,
+                f.scope,
+                TILE,
+                Cancellation.NONE,
+                WorldExteriorObjects.ModelReader.STANDARD,
+                WorldExteriorObjects.ImageDetail.STANDARD,
+                retain,
+                interiors,
+                formats);
+    }
+
+    /** Files that also record the order in which sources are opened. */
+    private static final class OrderedFiles extends WorldTerrainTextureSourceTest.Files {
+        final List<Long> order = java.util.Collections.synchronizedList(new ArrayList<>());
+
+        @Override
+        com.vibeminer.files.FileReadStream open(long id, Cancellation cancel) {
+            order.add(id);
+            return super.open(id, cancel);
         }
     }
 
@@ -1043,6 +1079,306 @@ class WorldExteriorObjectsTest {
             try (var set = f.runInstance()) {
                 assertTrue(set.count(WorldExteriorObjects.Count.ROOT_CAPPED) >= 1);
             }
+            // On an open-world map both roots' exteriors are read first (220 reads); the city's
+            // 280 interiors do not fit the 36 reads left, so they are capped whole and never
+            // read, and neither root is capped (#383).
+            try (var set = f.runOpenWorld()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(220, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(280, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR));
+                assertEquals(null, f.files.opens.get(INTERIOR), "capped interiors are not read");
+            }
+        }
+    }
+
+    @Test
+    void openWorldInteriorsAreReadAfterEveryExteriorAndDraw() {
+        // A larger root with 2 exterior and 3 MOGI-interior groups, and a smaller exterior-only
+        // root. On an open-world map every group draws, and the larger root's interiors are
+        // opened only after the smaller root's exterior group.
+        long cave = 810, hut = 811, hutGroup = GROUP + 60;
+        var files = new OrderedFiles();
+        try (var f =
+                new Fixture(
+                        List.of(Modf.of(cave, 1, 0x8).sized(50), Modf.of(hut, 2, 0x8)), files)) {
+            f.files.sources.put(
+                    cave,
+                    mogiRoot(
+                            new long[] {GROUP, INTERIOR, INTERIOR, INTERIOR, GROUP},
+                            new int[] {EXT, INT, INT, INT, EXT}));
+            f.files.sources.put(hutGroup, group(EXT));
+            f.files.sources.put(hut, mogiRoot(new long[] {hutGroup}, new int[] {EXT}));
+            try (var set = f.run()) {
+                assertEquals(3, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR));
+                assertEquals(3, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+            }
+            files.order.clear();
+            try (var set = f.runOpenWorld()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(6, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertTrue(
+                        files.order.indexOf(hutGroup) < files.order.indexOf(INTERIOR),
+                        "interiors are opened after every exterior: " + files.order);
+            }
+            // On an instance map the larger root reads its interiors with its exteriors, before
+            // the smaller root is read at all.
+            files.order.clear();
+            try (var set = f.runInstance()) {
+                assertEquals(6, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertTrue(
+                        files.order.indexOf(INTERIOR) < files.order.indexOf(hutGroup),
+                        "instance interiors are read inline: " + files.order);
+            }
+        }
+    }
+
+    @Test
+    void instanceMapsReadADungeonRootWholeBeforeSmallerRoots() {
+        // A dungeon's own building (the largest root) has 6 exterior and 240 MOGI-interior groups;
+        // a smaller exterior root has 20. On an instance map the dungeon root is read whole first
+        // and drawn, and the smaller root no longer fits the tile's reads. On an open-world map
+        // the exteriors come first instead: the smaller root draws and the dungeon's interiors
+        // are capped.
+        long dungeon = 850, small = 851;
+        var groups = new long[246];
+        var flags = new int[246];
+        for (int g = 0; g < 246; g++) {
+            boolean interior = g >= 6;
+            groups[g] = interior ? INTERIOR : GROUP;
+            flags[g] = interior ? INT : EXT;
+        }
+        try (var f =
+                new Fixture(List.of(Modf.of(dungeon, 1, 0x8).sized(90), Modf.of(small, 2, 0x8)))) {
+            f.files.sources.put(dungeon, mogiRoot(groups, flags));
+            f.files.sources.put(GROUP + 50, group(EXT));
+            f.files.sources.put(small, mogiRoot(repeat(GROUP + 50, 20), repeatFlags(EXT, 20)));
+            try (var set = f.runInstance()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(246, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertTrue(set.placements().stream().noneMatch(p -> p.rootId() == small));
+            }
+            try (var set = f.runOpenWorld()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(26, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(240, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+            }
+        }
+    }
+
+    @Test
+    void interiorImagesNeverLowerExteriorImageLevels() {
+        // 40 exterior and 24 interior groups, each drawing its own 512^2 BC1 image, on a session
+        // sampling BC1 (512 sides at their compressed cost): the building pool cannot give every
+        // image 512. Exterior levels are allotted first, from the pool less the interiors'
+        // smallest levels, so here they are the same with and without interiors; the interiors
+        // get what is left, and on every map each keeps at least its smallest side.
+        int bc1 = 1 << com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+        int exteriors = 40, interiors = 24, n = exteriors + interiors;
+        var gfid = new long[n];
+        var mogiFlags = new int[n];
+        var materials = new ArrayList<Material>();
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            for (int g = 0; g < n; g++) {
+                boolean interior = g >= exteriors;
+                gfid[g] = 7000 + g;
+                mogiFlags[g] = interior ? INT : EXT;
+                materials.add(new Material(0, 9000 + g, 0));
+                f.files.sources.put(
+                        gfid[g], group(interior ? INT : EXT, 3, 1, List.of(new Batch(0, 3, 0, g))));
+                f.files.sources.put(9000L + g, blp(512, 512, 10, 0x07e0));
+            }
+            f.files.sources.put(ROOT, root(n, gfid, materials, mogi(mogiFlags)));
+            var without = new java.util.TreeMap<Long, Integer>();
+            try (var set = prepareWith(f, WorldExteriorObjects.Interiors.NONE, bc1)) {
+                for (var image : set.images()) {
+                    without.put(image.id(), image.width());
+                }
+            }
+            assertEquals(exteriors, without.size());
+            assertTrue(without.containsValue(256), "the exteriors alone already compete");
+            var with = new java.util.TreeMap<Long, Integer>();
+            int interiorImages = 0;
+            try (var set = prepareWith(f, WorldExteriorObjects.Interiors.OPEN_WORLD, bc1)) {
+                for (var image : set.images()) {
+                    if (image.id() < 9000 + exteriors) {
+                        with.put(image.id(), image.width());
+                    } else {
+                        interiorImages++;
+                    }
+                }
+            }
+            assertEquals(without, with, "exterior levels are unchanged by interiors");
+            assertEquals(interiors, interiorImages);
+            // A dungeon or raid map shares the pool the same way: every interior image is drawn,
+            // at its smallest side or larger.
+            var instance = new java.util.TreeMap<Long, Integer>();
+            try (var set = prepareWith(f, WorldExteriorObjects.Interiors.INSTANCE, bc1)) {
+                assertEquals(n, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                for (var image : set.images()) {
+                    if (image.id() >= 9000 + exteriors) {
+                        assertTrue(image.width() >= 32, "smallest side kept: " + image.id());
+                        instance.put(image.id(), image.width());
+                    } else {
+                        assertEquals(without.get(image.id()), image.width());
+                    }
+                }
+            }
+            assertEquals(interiors, instance.size());
+        }
+    }
+
+    @Test
+    void aRefusedSecondReadOfAnInteriorImageNeverFailsTheSet() {
+        // Nothing is retained, so each opaque image is read again for its allotted level. The
+        // interior image's second read is refused at SOURCE_INPUT: it keeps its registered level
+        // and the set builds. The same refusal on the exterior image still fails the set.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), refusingSecondRead(IMAGE2))) {
+            putTwoImageRoot(f);
+            try (var set = prepareWith(f, WorldExteriorObjects.Interiors.OPEN_WORLD, 0, 0)) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(2, f.files.opens.get(IMAGE2).get(), "the second read was tried");
+            }
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), refusingSecondRead(IMAGE))) {
+            putTwoImageRoot(f);
+            assertThrows(
+                    WorldTerrainStreaming.Refusal.class,
+                    () -> prepareWith(f, WorldExteriorObjects.Interiors.OPEN_WORLD, 0, 0));
+        }
+    }
+
+    /** An exterior group drawing IMAGE and a MOGI-interior group drawing IMAGE2, both 512^2. */
+    private static void putTwoImageRoot(Fixture f) {
+        f.files.sources.put(
+                ROOT,
+                root(
+                        2,
+                        new long[] {GROUP, INTERIOR},
+                        List.of(new Material(0, IMAGE, 0), new Material(0, IMAGE2, 0)),
+                        mogi(EXT, INT)));
+        f.files.sources.put(GROUP, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+        f.files.sources.put(INTERIOR, group(INT, 3, 1, List.of(new Batch(0, 3, 0, 1))));
+        f.files.sources.put(IMAGE, blp(512, 512, 10, 0x07e0));
+        f.files.sources.put(IMAGE2, blp(512, 512, 10, 0x001f));
+    }
+
+    @Test
+    void anUnreadableInteriorGroupOrImageNeverCostsTheExterior() {
+        // A MOGI-interior group refused at SOURCE_INPUT (not readable now) is only unavailable;
+        // the exterior still draws and the set does not fail.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), refusingReads(INTERIOR, 1))) {
+            f.files.sources.put(ROOT, mogiRoot(new long[] {GROUP, INTERIOR}, new int[] {EXT, INT}));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_UNAVAILABLE));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+            }
+        }
+        // An interior group whose only opaque image is refused at SOURCE_INPUT is omitted alone.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), refusingReads(IMAGE2, 1))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            2,
+                            new long[] {GROUP, INTERIOR},
+                            List.of(new Material(0, IMAGE, 0), new Material(0, IMAGE2, 0)),
+                            mogi(EXT, INT)));
+            f.files.sources.put(INTERIOR, group(INT, 3, 1, List.of(new Batch(0, 3, 0, 1))));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(1, set.models().getFirst().meshes().size());
+                assertTrue(set.count(WorldExteriorObjects.Count.IMAGE_UNAVAILABLE) >= 1);
+            }
+        }
+    }
+
+    @Test
+    void interiorReadsNeverCapALaterExteriorRoot() {
+        // The first (largest) root has 6 exterior and 200 MOGI-interior groups; a later root has
+        // 200 exterior groups. Exteriors come first: the later root is read whole and drawn, the
+        // first root's interiors are capped whole, and a smaller third root's 40 interiors still
+        // fit the reads that are left (256 - 206 - 6 = 44).
+        long city = 820, later = 821, small = 822;
+        var cityGroups = new long[206];
+        var cityFlags = new int[206];
+        for (int g = 0; g < 206; g++) {
+            boolean interior = g >= 6;
+            cityGroups[g] = interior ? INTERIOR : GROUP;
+            cityFlags[g] = interior ? INT : EXT;
+        }
+        var smallGroups = new long[46];
+        var smallFlags = new int[46];
+        for (int g = 0; g < 46; g++) {
+            boolean interior = g >= 6;
+            smallGroups[g] = interior ? INTERIOR : GROUP;
+            smallFlags[g] = interior ? INT : EXT;
+        }
+        try (var f =
+                new Fixture(
+                        List.of(
+                                Modf.of(city, 1, 0x8).sized(90),
+                                Modf.of(later, 2, 0x8).sized(60),
+                                Modf.of(small, 3, 0x8).sized(30)))) {
+            f.files.sources.put(city, mogiRoot(cityGroups, cityFlags));
+            f.files.sources.put(GROUP + 50, group(EXT));
+            f.files.sources.put(later, mogiRoot(repeat(GROUP + 50, 200), repeatFlags(EXT, 200)));
+            f.files.sources.put(small, mogiRoot(smallGroups, smallFlags));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(3, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(200, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(6 + 200 + 46, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(
+                        6,
+                        set.models().stream()
+                                .filter(m -> m.rootId() == city)
+                                .findFirst()
+                                .get()
+                                .meshes()
+                                .size(),
+                        "the city keeps every exterior group");
+                assertEquals(
+                        46,
+                        set.models().stream()
+                                .filter(m -> m.rootId() == small)
+                                .findFirst()
+                                .get()
+                                .meshes()
+                                .size());
+            }
+        }
+    }
+
+    @Test
+    void anInteriorOnlyRootWhoseReadsDoNotFitIsCapped() {
+        // 250 exterior reads leave 6; a root whose 10 groups are all MOGI interior cannot be read
+        // and has nothing else to draw: its root and placement are capped, not drawn empty.
+        long big = 830, cave = 831;
+        try (var f = new Fixture(List.of(Modf.of(big, 1, 0x8).sized(90), Modf.of(cave, 2, 0x8)))) {
+            f.files.sources.put(GROUP + 50, group(EXT));
+            f.files.sources.put(big, mogiRoot(repeat(GROUP + 50, 250), repeatFlags(EXT, 250)));
+            f.files.sources.put(cave, mogiRoot(repeat(INTERIOR, 10), repeatFlags(INT, 10)));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertEquals(10, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertTrue(set.placements().stream().noneMatch(p -> p.rootId() == cave));
+                assertEquals(null, f.files.opens.get(INTERIOR));
+            }
+            // With reads to spare the same interior-only root draws.
+            f.files.sources.put(big, mogiRoot(repeat(GROUP + 50, 200), repeatFlags(EXT, 200)));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertTrue(set.placements().stream().anyMatch(p -> p.rootId() == cave));
+            }
         }
     }
 
@@ -1053,10 +1389,14 @@ class WorldExteriorObjectsTest {
                         mogiRoot(new long[] {GROUP, GROUP}, new int[] {INT, EXT}), () -> false);
         assertTrue(WorldExteriorObjects.skipInterior(flagged, 0, false));
         assertFalse(WorldExteriorObjects.skipInterior(flagged, 1, false));
-        assertFalse(WorldExteriorObjects.skipInterior(flagged, 0, true), "instances read all");
+        assertFalse(WorldExteriorObjects.skipInterior(flagged, 0, true), "interiors read all");
+        assertTrue(WorldExteriorObjects.deferInterior(flagged, 0, true), "read after exteriors");
+        assertFalse(WorldExteriorObjects.deferInterior(flagged, 1, true));
+        assertFalse(WorldExteriorObjects.deferInterior(flagged, 0, false));
         var bare = WmoFormats.root(root(GROUP, GROUP), () -> false);
         assertFalse(bare.groupInfoRetained());
         assertFalse(WorldExteriorObjects.skipInterior(bare, 0, false));
+        assertFalse(WorldExteriorObjects.deferInterior(bare, 0, true));
     }
 
     @Test
@@ -1791,6 +2131,55 @@ class WorldExteriorObjectsTest {
     }
 
     /**
+     * Issue #383: a MOGI-interior group read in the interior pass still gives the root's portal set
+     * its header, so the set is carried whole; when the interiors do not fit the tile's reads the
+     * root draws its exterior alone, without a set, as without interiors.
+     */
+    @Test
+    void deferredInteriorsStillCarryTheRootPortalSet() {
+        var mogiPortals =
+                root(
+                        2,
+                        new long[] {GROUP, INTERIOR},
+                        List.of(new Material(0, IMAGE, 0)),
+                        mogi(EXT, INT),
+                        portalChunks(1, true));
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, mogiPortals);
+            f.files.sources.put(GROUP, portalRange(group(EXT), 0, 1));
+            f.files.sources.put(INTERIOR, portalRange(group(INT), 1, 1));
+            try (var set = f.runOpenWorld()) {
+                var model = set.models().getFirst();
+                assertNotNull(model.portals());
+                assertEquals(
+                        List.of(
+                                new WmoPortalTraversal.Group(EXT, -1, -1, -1, 2, 2, 2, 0, 1),
+                                new WmoPortalTraversal.Group(INT, -1, -1, -1, 2, 2, 2, 1, 1)),
+                        model.portals().groups());
+                assertEquals(2, model.meshes().size());
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_PORTALS));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_PORTALS_DROPPED));
+            }
+        }
+        long big = 840;
+        try (var f = new Fixture(List.of(Modf.of(big, 1, 0x8).sized(90), Modf.of(ROOT, 2, 0x8)))) {
+            f.files.sources.put(GROUP + 50, group(EXT));
+            f.files.sources.put(big, mogiRoot(repeat(GROUP + 50, 255), repeatFlags(EXT, 255)));
+            f.files.sources.put(ROOT, mogiPortals);
+            f.files.sources.put(GROUP, portalRange(group(EXT), 0, 1));
+            f.files.sources.put(INTERIOR, portalRange(group(INT), 1, 1));
+            try (var set = f.runOpenWorld()) {
+                var model = set.models().stream().filter(m -> m.rootId() == ROOT).findFirst().get();
+                assertNull(model.portals());
+                assertEquals(1, model.meshes().size());
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_PORTALS_DROPPED));
+            }
+        }
+    }
+
+    /**
      * A set that cannot be carried whole is dropped and counted, and its root still draws: here a
      * group whose file is missing (no header), and portals the root did not retain (a reference to
      * a group outside MOHD).
@@ -2406,11 +2795,16 @@ class WorldExteriorObjectsTest {
 
     /** Files whose second and later opens of {@code target} read nothing (a refused re-read). */
     private static WorldTerrainTextureSourceTest.Files refusingSecondRead(long target) {
+        return refusingReads(target, 2);
+    }
+
+    /** Files whose opens of {@code target} from the {@code from}-th on read nothing. */
+    private static WorldTerrainTextureSourceTest.Files refusingReads(long target, int from) {
         return new WorldTerrainTextureSourceTest.Files() {
             @Override
             com.vibeminer.files.FileReadStream open(long id, Cancellation cancel) {
                 var actual = super.open(id, cancel);
-                if (id != target || opens.get(id).get() < 2) {
+                if (id != target || opens.get(id).get() < from) {
                     return actual;
                 }
                 return new com.vibeminer.files.FileReadStream() {

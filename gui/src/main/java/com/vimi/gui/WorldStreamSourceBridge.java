@@ -398,10 +398,7 @@ final class WorldStreamSourceBridge {
         return prepareExterior(source, scope, tile, cancellation, creatures, detail, false);
     }
 
-    /**
-     * As above; {@code interiors} also draws interior WMO groups, for dungeon and raid maps
-     * (#280).
-     */
+    /** As above; {@code interiors} also draws interior WMO groups as instance interiors (#280). */
     static ExteriorCopy prepareExterior(
             WorldTerrainStreaming source,
             WorldTerrainStreaming.Scope scope,
@@ -423,6 +420,27 @@ final class WorldStreamSourceBridge {
             CreatureAppender creatures,
             WorldExteriorObjects.ImageDetail detail,
             boolean interiors,
+            int objectFormats) {
+        return prepareExterior(
+                source,
+                scope,
+                tile,
+                cancellation,
+                creatures,
+                detail,
+                WorldExteriorObjects.Interiors.of(interiors),
+                objectFormats);
+    }
+
+    /** As above, with the map's interior mode (#280, #383). */
+    static ExteriorCopy prepareExterior(
+            WorldTerrainStreaming source,
+            WorldTerrainStreaming.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation cancellation,
+            CreatureAppender creatures,
+            WorldExteriorObjects.ImageDetail detail,
+            WorldExteriorObjects.Interiors interiors,
             int objectFormats) {
         WorldExteriorObjects.TileObjects set = null;
         try {
