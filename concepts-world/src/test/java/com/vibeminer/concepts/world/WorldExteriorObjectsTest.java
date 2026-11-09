@@ -5989,15 +5989,15 @@ class WorldExteriorObjectsTest {
                 assertEquals(null, f.files.opens.get(BIG + 3), "the interior is not read");
             }
         }
-        // References that do not recover per-group ranges (not listed group by group) drop the
-        // set the same way.
+        // References that do not recover per-group ranges (every reference from the same side of
+        // its portal, so none is paired) drop the set the same way.
         try (var f = new Fixture(List.of(largePlacement()))) {
             var chunks = splitPortals();
             int mopr = indexOf(chunks, "MOPR") + 8;
             ByteBuffer.wrap(chunks)
                     .order(ByteOrder.LITTLE_ENDIAN)
-                    .putShort(mopr + 8, (short) 1)
-                    .putShort(mopr + 24, (short) 0);
+                    .putShort(mopr + 4, (short) 1)
+                    .putShort(mopr + 20, (short) 1);
             putBig(
                     f,
                     new int[] {EXT, EXT, INT, INT, INT},
@@ -6011,37 +6011,154 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    /** Root {@code root} with groups {@code root + 1 + g} and MOGI boxes, as putBig. */
+    private static void putRoot(
+            Fixture f, long root, int[] flags, int[] sizes, float[] centres, byte[]... extras) {
+        var gfid = new long[flags.length];
+        for (int g = 0; g < flags.length; g++) {
+            gfid[g] = root + 1 + g;
+            f.files.sources.put(gfid[g], bigGroup(flags[g], sizes[g]));
+        }
+        var chunks = new ArrayList<byte[]>();
+        chunks.add(mogiBoxes(flags, centres));
+        chunks.addAll(List.of(extras));
+        f.files.sources.put(
+                root,
+                root(
+                        flags.length,
+                        gfid,
+                        List.of(new Material(0, IMAGE, 0)),
+                        chunks.toArray(byte[][]::new)));
+    }
+
     @Test
     void splitRootInteriorsComeFromWhatItsExteriorsLeftOfTheLargeAllowance() {
-        // Here the exterior takes 120,000 of the 131,072 large vertices; interior 2 (20,000)
-        // no longer fits and is capped, while its exterior still draws.
+        // Here the exteriors take 120,000 of the 131,072 large vertices: interior 2 (20,000) no
+        // longer fits and is capped, but interior 5 after it (3 vertices) still fits and draws.
         try (var f = new Fixture(List.of(largePlacement()))) {
-            var chunks = new ArrayList<byte[]>();
-            chunks.add(splitPortals());
-            var gfid = new long[5];
-            int[] flags = {EXT, EXT, INT, INT, INT};
-            int[] sizes = {60_000, 60_000, 20_000, 3, 3};
-            for (int g = 0; g < 5; g++) {
-                gfid[g] = BIG + 1 + g;
-                f.files.sources.put(gfid[g], bigGroup(flags[g], sizes[g]));
-            }
-            // A second exterior here, MOGI centre 1: 60,000 + 60,000 vertices of exterior.
-            f.files.sources.put(
+            putRoot(
+                    f,
                     BIG,
-                    root(
-                            6,
-                            new long[] {gfid[0], gfid[1], gfid[2], gfid[3], gfid[4], gfid[0]},
-                            List.of(new Material(0, IMAGE, 0)),
-                            mogiBoxes(
-                                    new int[] {EXT, EXT, INT, INT, INT, EXT},
-                                    new float[] {0, 200, 5, 205, 67.5f, 1}),
-                            splitPortals()));
+                    new int[] {EXT, EXT, ROOM, ROOM, ROOM, ROOM, EXT},
+                    new int[] {60_000, 60_000, 20_000, 3, 3, 3, 60_000},
+                    new float[] {0, 200, 5, 205, 67.5f, 6, 1},
+                    splitPortals());
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0, 5, 6), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertNotNull(modelOf(set, BIG).portals());
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_PORTALS));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+            }
+        }
+        // With only the large interior here, nothing is drawn of the interiors and no set is
+        // carried.
+        try (var f = new Fixture(List.of(largePlacement()))) {
+            putRoot(
+                    f,
+                    BIG,
+                    new int[] {EXT, EXT, ROOM, ROOM, ROOM, EXT},
+                    new int[] {60_000, 60_000, 20_000, 3, 3, 60_000},
+                    new float[] {0, 200, 5, 205, 67.5f, 1},
+                    splitPortals());
             try (var set = f.runOpenWorld()) {
                 assertEquals(List.of(0, 5), groupsOf(set, BIG));
-                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
-                assertNull(modelOf(set, BIG).portals(), "no interior drawn, no set carried");
+                assertNull(modelOf(set, BIG).portals());
                 assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_PORTALS));
+            }
+        }
+    }
+
+    @Test
+    void oneSplitRootsInteriorsNeverPushOutAnothersExteriors() {
+        // Two split roots on one tile. The first (larger) has a 60,000-vertex exterior and a
+        // 50,000-vertex interior here; the second a 60,000-vertex exterior here. Every exterior
+        // comes first: both exteriors draw (120,000 of 131,072), and the first root's interior,
+        // which would have pushed the second root's exterior out, is capped instead.
+        long second = 970;
+        var smaller =
+                new Modf(second, 78, 0x8, 10400, 0, 4200, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4100, 10500, 10, 4400);
+        try (var f = new Fixture(List.of(largePlacement(), smaller))) {
+            putRoot(
+                    f,
+                    BIG,
+                    new int[] {EXT, EXT, ROOM, ROOM},
+                    new int[] {60_000, 60_000, 50_000, 3},
+                    new float[] {0, 200, 5, 205},
+                    splitPortals());
+            putRoot(
+                    f,
+                    second,
+                    new int[] {EXT, EXT},
+                    new int[] {60_000, 60_000},
+                    new float[] {0, 200});
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0), groupsOf(set, BIG));
+                assertEquals(List.of(0), groupsOf(set, second));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+            }
+        }
+    }
+
+    @Test
+    void onInstanceMapsInteriorsSizingNeverReachedStillDraw() {
+        // On an instance map interiors are read with the exteriors while sizing; sizing stops at
+        // exterior 1, before interiors 2 to 4. Those still wait for the interior pass and draw
+        // with the set, rather than being read as exteriors and dropped.
+        try (var f = new Fixture(List.of(largePlacement()))) {
+            putSplitWithPortals(f);
+            try (var set = f.runInstance()) {
+                assertEquals(List.of(0, 2), groupsOf(set, BIG));
+                assertNotNull(modelOf(set, BIG).portals());
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_NO_PORTALS));
+            }
+        }
+    }
+
+    @Test
+    void onInstanceMapsASplitRootsHeldInteriorsNeverCrowdOutLaterRoots() {
+        // Sizing the split root holds its 65,000-vertex interior. It leaves the shared bound on
+        // held copies (131,072 vertices) once the root is split, so the later building can still
+        // hold its two interiors (70,000 vertices).
+        var normal = Modf.of(NORMAL, 2, 0x8);
+        try (var f = new Fixture(List.of(largePlacement(), normal))) {
+            putRoot(
+                    f,
+                    BIG,
+                    new int[] {ROOM, EXT, EXT},
+                    new int[] {65_000, 60_000, 60_000},
+                    new float[] {5, 0, 200});
+            f.files.sources.put(NORMAL + 1, group(EXT));
+            f.files.sources.put(NORMAL + 2, bigGroup(INT, 40_000));
+            f.files.sources.put(NORMAL + 3, bigGroup(INT, 30_000));
+            f.files.sources.put(NORMAL, root(NORMAL + 1, NORMAL + 2, NORMAL + 3));
+            try (var set = f.runInstance()) {
+                assertEquals(List.of(1), groupsOf(set, BIG));
+                assertEquals(List.of(0, 1, 2), groupsOf(set, NORMAL));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+            }
+        }
+    }
+
+    @Test
+    void outdoorSetDoodadsOfASplitRootComeBeforeThoseInItsInteriors() {
+        // The doodad inside interior 2 is recorded first; the outdoor one is still placed first.
+        try (var f = new Fixture(List.of(largePlacement()))) {
+            putModel(f, MODEL, model());
+            putSplitWithPortals(
+                    f, doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(5, -50)));
+            try (var set = f.runOpenWorld()) {
+                var placed =
+                        set.placements().stream()
+                                .filter(p -> p.kind() == WorldExteriorObjects.Kind.SET_DOODAD)
+                                .map(WorldExteriorObjects.Placement::x)
+                                .toList();
+                assertEquals(2, placed.size());
+                // Native x = 12,866.67 - local x: the outdoor doodad (local -50) first.
+                assertTrue(placed.get(0) > placed.get(1), placed.toString());
             }
         }
     }

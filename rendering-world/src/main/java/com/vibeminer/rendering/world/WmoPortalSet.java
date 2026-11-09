@@ -183,8 +183,9 @@ public record WmoPortalSet(List<Group> groups, List<Portal> portals, List<Ref> r
      * referenced exactly twice (Stormwind has ten from one group to another that never refers back)
      * cannot be placed that way: inside a group's span it is that group's, as MOGP says; between
      * two groups' spans it is given to both, so the walk may follow it from the wrong group (and
-     * draw more), never miss it. Null when the spans of two groups overlap, or when references
-     * exist but none is paired.
+     * draw more), never miss it; so does every group without a span that could own it (see the loop
+     * below). Two references form a pair only when they name different groups from opposite sides.
+     * Null when the spans of two groups overlap, or when references exist but none is paired.
      */
     public static int[] refRanges(List<Ref> refs, int groupCount) {
         int n = refs.size();
@@ -199,9 +200,15 @@ public record WmoPortalSet(List<Group> groups, List<Portal> portals, List<Ref> r
             seen[2]++;
         }
         for (int[] seen : byPortal.values()) {
-            if (seen[2] == 2) {
-                from[seen[0]] = refs.get(seen[1]).group();
-                from[seen[1]] = refs.get(seen[0]).group();
+            if (seen[2] != 2) {
+                continue;
+            }
+            var a = refs.get(seen[0]);
+            var b = refs.get(seen[1]);
+            // A true pair joins two different groups from opposite sides of the portal.
+            if (a.group() != b.group() && Integer.signum(a.side()) * Integer.signum(b.side()) < 0) {
+                from[seen[0]] = b.group();
+                from[seen[1]] = a.group();
             }
         }
         int[] first = new int[groupCount], last = new int[groupCount];
@@ -229,6 +236,7 @@ public record WmoPortalSet(List<Group> groups, List<Portal> portals, List<Ref> r
         // references in order, a group whose span has ended never appears again.
         var ended = new boolean[groupCount];
         int current = -1;
+        boolean ordered = true;
         for (int i = 0; i < n; i++) {
             int g = from[i];
             if (g < 0 || g == current) {
@@ -240,9 +248,27 @@ public record WmoPortalSet(List<Group> groups, List<Portal> portals, List<Ref> r
             if (current >= 0) {
                 ended[current] = true;
             }
+            ordered &= g > current;
             current = g;
         }
-        // Each run of unplaced references outside every span goes to the spans on both sides.
+        boolean[] spanless = new boolean[groupCount];
+        int firstUnplaced = -1, lastUnplaced = -1;
+        for (int g = 0; g < groupCount; g++) {
+            spanless[g] = first[g] < 0;
+        }
+        for (int i = 0; i < n; i++) {
+            if (from[i] < 0) {
+                if (firstUnplaced < 0) {
+                    firstUnplaced = i;
+                }
+                lastUnplaced = i;
+            }
+        }
+        // Each run of unplaced references outside every span goes to the spans on both sides,
+        // and to every group without a span whose references could lie there: with the spans in
+        // group order, those numbered between the two sides; otherwise every such group gets all
+        // unplaced references. A group whose references are all one-sided is never left without
+        // them.
         for (int i = 0; i < n; ) {
             if (from[i] >= 0) {
                 i++;
@@ -260,8 +286,25 @@ public record WmoPortalSet(List<Group> groups, List<Portal> portals, List<Ref> r
                 if (after >= 0) {
                     first[after] = i;
                 }
+                if (ordered) {
+                    int high = after < 0 ? groupCount : after;
+                    for (int g = before + 1; g < high; g++) {
+                        if (spanless[g]) {
+                            first[g] = first[g] < 0 ? i : Math.min(first[g], i);
+                            last[g] = Math.max(last[g], end);
+                        }
+                    }
+                }
             }
             i = end + 1;
+        }
+        if (!ordered && firstUnplaced >= 0) {
+            for (int g = 0; g < groupCount; g++) {
+                if (spanless[g]) {
+                    first[g] = firstUnplaced;
+                    last[g] = lastUnplaced;
+                }
+            }
         }
         int[] ranges = new int[groupCount * 2];
         for (int g = 0; g < groupCount; g++) {
