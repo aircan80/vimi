@@ -43,9 +43,12 @@ public final class ExteriorObjectLimits {
     /**
      * The interior allowance of very large buildings drawn by group, on top of what their exteriors
      * leave of the large allowance. Owned interior groups, culled by the root's portal set, are
-     * admitted only after every such root's exteriors on the tile, so an exterior never draws from
-     * it and never yields to an interior. On build 70862 Stormwind City's 280 interior groups need
-     * at most 448,746 vertices and 1,247,094 indices on one owner tile (48,30) with its exteriors,
+     * admitted only after every such root's exteriors on the tile, so within a tile an exterior
+     * never draws from it and never yields geometry or slots to an interior. Pixels are shared: the
+     * opaque images of these roots' exteriors and interiors are allotted levels from one list,
+     * after the tile's own exterior images, so drawing the interiors can lower a split root's
+     * exterior image levels slightly. On build 70862 Stormwind City's 280 interior groups need at
+     * most 448,746 vertices and 1,247,094 indices on one owner tile (48,30) with its exteriors,
      * 317,674 vertices and 853,878 indices past the large allowance; the large allowance alone left
      * 115 of them undrawn there.
      */
