@@ -151,6 +151,11 @@ measures exteriors only, for a before and after on the same build. In prep mode,
 portal set on each tile. `objects.groups.interiorReadPerTile` is the interior pass's share of
 `objects.groups.readPerTile`.
 
+On the first pass prep mode also prints one `PROBE tile` line per tile: the vertices and indices
+of its building models, those of every pool, its building placements, drawn, capped and
+drawn-by-group roots (very large placements, see `ExteriorObjectLimits.LARGE_VERTICES`), drawn
+groups and groups another tile draws, and with `probe.root` whether that root is drawn.
+
 **Stream mode** builds the production `WorldStreamSourceController` exactly as `WorldView` does:
 - the real `WorldStreamGpuOwner` and helper, on the default backend (D3D11 here);
 - the real exterior preparer;

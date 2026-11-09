@@ -10,12 +10,14 @@ class ExteriorObjectLimitsTest {
         // Unchanged pools keep the tables they had before #308.
         assertEquals(120, ExteriorObjectLimits.MODELS);
         assertEquals(352, ExteriorObjectLimits.MESHES);
-        assertEquals(1792, ExteriorObjectLimits.RANGES);
-        assertEquals(196_608, ExteriorObjectLimits.VERTICES);
-        assertEquals(589_824, ExteriorObjectLimits.INDICES);
+        // Very large buildings drawn by group add their own vertex, index and range allowance;
+        // and their own opaque images; they take no model, mesh or placement rows of their own.
+        assertEquals(1792 + 512, ExteriorObjectLimits.RANGES);
+        assertEquals(196_608 + 131_072, ExteriorObjectLimits.VERTICES);
+        assertEquals(589_824 + 393_216, ExteriorObjectLimits.INDICES);
         // #308: 64 building + 4,096 doodad placements, 64 + 32 + 192 images, two draws a doodad.
         assertEquals(64 + 4096, ExteriorObjectLimits.PLACEMENTS);
-        assertEquals(64 + 32 + 192, ExteriorObjectLimits.IMAGES);
+        assertEquals(64 + 64 + 32 + 192, ExteriorObjectLimits.IMAGES);
         assertEquals(8192, ExteriorObjectLimits.DRAWS);
     }
 }
