@@ -26,8 +26,8 @@ public final class ExteriorObjectLimits {
      * (Stormwind City's 9 exterior groups need 150,358 vertices and 322,080 indices). Every tile
      * that lists such a placement draws only the groups whose MOGI box centre lies in it, so each
      * group is drawn once over the map, from this allowance and never from the building pool: the
-     * tile's own buildings keep their whole budget. The placement's interior groups the tile owns
-     * use what its exteriors leave of it. On build 70862 the Stormwind tile holding its two largest
+     * tile's own buildings keep their whole budget. Its interior groups are not drawn until such a
+     * placement carries a portal set. On build 70862 the Stormwind tile holding its two largest
      * exterior groups (48,30) needs 111,920 vertices and about 232,000 indices; the other owners
      * need at most 25,383 vertices.
      */

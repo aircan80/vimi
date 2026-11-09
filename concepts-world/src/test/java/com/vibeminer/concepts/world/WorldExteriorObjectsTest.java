@@ -5431,25 +5431,39 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
-    void aByGroupRootsInteriorsUseWhatItsExteriorsLeaveOfTheLargeAllowance() {
-        // The tile's building takes 95,000 of its 98,304 building vertices, so a 20,000-vertex
-        // interior could not fit what the building pool has left; the large placement's owned
-        // interior is drawn from the large allowance after its 60,000-vertex exterior instead.
-        // The interior the neighbour owns is not read here.
+    void splitRootsDrawNoInteriorsYet() {
+        // A root drawn by group carries no portal set (the tile lacks the headers of the groups
+        // other tiles own), so its interiors would draw unculled: none is drawn. The owned
+        // MOGI-interior group is counted without being read, an owned group MOGI calls exterior
+        // but MOGP interior is dropped after its read, and the neighbour's are other-tile. The
+        // tile's own building still draws its interior.
         var normal = Modf.of(NORMAL, 2, 0x8);
         try (var f = new Fixture(List.of(largePlacement(), normal))) {
             putBig(
                     f,
-                    new int[] {EXT, EXT, INT, INT},
-                    new int[] {60_000, 60_000, 20_000, 20_000},
-                    new float[] {0, 200, 5, 205});
-            f.files.sources.put(NORMAL + 1, bigGroup(EXT, 47_500));
-            f.files.sources.put(NORMAL, root(NORMAL + 1, NORMAL + 1));
+                    new int[] {EXT, EXT, INT, INT, EXT},
+                    new int[] {60_000, 60_000, 3, 3, 3},
+                    new float[] {0, 200, 5, 205, 10});
+            f.files.sources.put(BIG + 5, group(INT));
+            f.files.sources.put(NORMAL + 1, group(EXT));
+            f.files.sources.put(NORMAL + 2, group(INT));
+            f.files.sources.put(
+                    NORMAL, mogiRoot(new long[] {NORMAL + 1, NORMAL + 2}, new int[] {EXT, INT}));
             try (var set = f.runOpenWorld()) {
-                assertEquals(List.of(0, 2), groupsOf(set, BIG));
+                assertEquals(List.of(0), groupsOf(set, BIG));
+                assertEquals(List.of(0, 1), groupsOf(set, NORMAL));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_NO_PORTALS));
                 assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_PORTALS_DROPPED));
+                assertEquals(null, f.files.opens.get(BIG + 3), "the owned interior is not read");
                 assertEquals(null, f.files.opens.get(BIG + 4), "the neighbour's interior");
+                var big =
+                        set.models().stream()
+                                .filter(m -> !m.doodad() && m.rootId() == BIG)
+                                .findFirst()
+                                .orElseThrow();
+                assertEquals(null, big.portals());
             }
         }
     }

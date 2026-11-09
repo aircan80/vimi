@@ -618,7 +618,14 @@ public final class WorldExteriorObjects {
          * Drawn roots of very large placements, drawn by group over the tiles that list them, from
          * the large allowance ({@link ExteriorObjectLimits#LARGE_VERTICES}). Not an outcome bucket.
          */
-        ROOT_BY_GROUP
+        ROOT_BY_GROUP,
+        /**
+         * An interior group of a root drawn by group that this tile owns, not drawn: such a root
+         * carries no portal set yet (the tile does not read the groups other tiles own), and
+         * unculled interiors would cost every frame. Counted from the MOGI flags without reading
+         * the group, or from its MOGP flags when it was read as exterior. A group bucket.
+         */
+        GROUP_INTERIOR_NO_PORTALS
     }
 
     /** What a placement draws: an outdoor WMO, an MDDF doodad or a WMO doodad-set entry. */
@@ -1508,10 +1515,6 @@ public final class WorldExteriorObjects {
     private record ByGroup(
             WmoFormats.Root root,
             List<PendingMesh> pending,
-            List<PendingMesh> interiors,
-            boolean[] deferred,
-            int deferredCount,
-            WmoFormats.GroupHeader[] headers,
             int[] local,
             long vertices,
             long indices,
@@ -1534,7 +1537,6 @@ public final class WorldExteriorObjects {
     /** Where resolveBuilding charges a mesh's kept opaque geometry. */
     private enum Charge {
         BUILDING,
-        LARGE,
         /** Already reserved from the large allowance when the root was admitted. */
         RESERVED
     }
@@ -1682,7 +1684,7 @@ public final class WorldExteriorObjects {
         /** The one placement each root drawn by group is placed for, in admission order. */
         private final Map<Long, Queued> byGroupQueue = new LinkedHashMap<>();
 
-        /** Roots drawn by group: their interiors use the large allowance too. */
+        /** Roots drawn by group: their images are allotted after the tile's exteriors. */
         private final java.util.Set<Long> byGroupRoots = new java.util.HashSet<>();
 
         /** Placed buildings drawn by group, by unique ID: their set doodads follow the owners. */
@@ -2212,7 +2214,7 @@ public final class WorldExteriorObjects {
                 for (int i = 0; i < counts.length; i++) {
                     counts[i] += local[i];
                 }
-                if (built.isEmpty() && read.interiors().isEmpty() && read.deferredCount() == 0) {
+                if (built.isEmpty()) {
                     largeVertices -= read.vertices();
                     largeIndices -= read.indices();
                     largeRanges -= read.ranges();
@@ -2221,20 +2223,11 @@ public final class WorldExteriorObjects {
                     count(Count.PLACEMENT_EMPTY);
                     continue;
                 }
-                if (!read.interiors().isEmpty() || read.deferredCount() > 0) {
-                    heldInteriors.put(rootId, read.interiors());
-                }
                 rootDoodads.put(rootId, read.root().doodads());
                 modelSlots.put(rootId, models.size());
-                WmoPortalSet portals = null;
-                if (read.deferredCount() > 0) {
-                    deferredInteriors.put(
-                            rootId,
-                            new DeferredInteriors(read.root(), read.headers(), read.deferred()));
-                } else if (this.interiors) {
-                    portals = portals(read.root(), read.headers());
-                }
-                models.add(new Model(rootId, false, built, portals));
+                // Exteriors only, so no portal set: the tile lacks the headers of other tiles'
+                // groups, and no interior of the root is drawn until it can carry one.
+                models.add(new Model(rootId, false, built, null));
                 byGroupRoots.add(rootId);
                 rootStates.put(rootId, RootState.DRAWN);
                 count(Count.ROOT_DRAWN);
@@ -2244,9 +2237,8 @@ public final class WorldExteriorObjects {
             byGroupQueue.clear();
         }
 
-        /** Returns a capped root's held interiors and its large reservation. */
+        /** Returns a capped root's large reservation. */
         private void releaseByGroup(long rootId, ByGroup read) {
-            releaseInteriors(read.interiors());
             largeVertices -= read.vertices();
             largeIndices -= read.indices();
             largeRanges -= read.ranges();
@@ -2770,9 +2762,6 @@ public final class WorldExteriorObjects {
                 }
                 var kept = new ArrayList<>(model.meshes());
                 boolean slotsTaken = false;
-                // A root drawn by group takes its interiors from what its exteriors left of the
-                // large allowance, never from the tile's building pool.
-                boolean large = byGroupRoots.contains(model.rootId());
                 for (var mesh : held) {
                     token.check();
                     int candidateRanges = mesh.ranges().size();
@@ -2781,9 +2770,7 @@ public final class WorldExteriorObjects {
                         local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
                         continue;
                     }
-                    var admission =
-                            new RootBudget(large ? Allowance.LARGE : Allowance.TILE)
-                                    .admit(mesh, local);
+                    var admission = new RootBudget().admit(mesh, local);
                     if (admission == Admission.DROPPED) {
                         continue; // counted by admit: BATCH_CAPPED, GROUP_EMPTY
                     }
@@ -2791,13 +2778,7 @@ public final class WorldExteriorObjects {
                         local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
                         continue;
                     }
-                    Mesh mapped;
-                    charge = large ? Charge.LARGE : Charge.BUILDING;
-                    try {
-                        mapped = resolveBuilding(mesh, local);
-                    } finally {
-                        charge = Charge.BUILDING;
-                    }
+                    var mapped = resolveBuilding(mesh, local);
                     if (mapped == null) {
                         local[Count.GROUP_EMPTY.ordinal()]++;
                         continue;
@@ -3006,10 +2987,12 @@ public final class WorldExteriorObjects {
         /**
          * Reads the groups of a root drawn by group ({@link Owner}) that this tile owns: its
          * exterior groups are admitted against what is left of the large allowance, which they then
-         * reserve, and are resolved and placed after every other building ({@link #placeByGroup});
-         * its owned interior groups wait for the interior passes as any root's. Every group another
-         * tile owns is GROUP_OTHER_TILE and never read. The groups read while sizing the root are
-         * read again only if they are this tile's. A root none of whose groups is this tile's is
+         * reserve, and are resolved and placed after every other building ({@link #placeByGroup}).
+         * Its owned interior groups are not drawn until such a root carries a portal set
+         * (GROUP_INTERIOR_NO_PORTALS): MOGI-interior ones are never read, and a group read as
+         * exterior whose MOGP flags say interior is dropped. Every group another tile owns is
+         * GROUP_OTHER_TILE and never read. The groups read while sizing the root are read again
+         * only if they are this tile's. A root none of whose groups is this tile's is
          * ROOT_OTHER_TILE; one whose share is over the large allowance is capped here, as any root
          * over the building pool.
          */
@@ -3021,10 +3004,9 @@ public final class WorldExteriorObjects {
                 boolean[] deferred) {
             admission.cancelPrefetch(); // the sizing pass's unread hints
             var owned = owner.owned(root);
-            int lod0 = owned.length, reads = 0, deferredCount = 0;
+            int lod0 = owned.length, reads = 0;
             boolean any = false;
             int[] local = new int[counts.length];
-            var mine = new boolean[lod0];
             for (int g = 0; g < lod0; g++) {
                 if (root.gfid(g) == 0) {
                     local[Count.GROUP_UNSUPPORTED.ordinal()]++;
@@ -3035,8 +3017,7 @@ public final class WorldExteriorObjects {
                     if (skipped[g]) {
                         local[Count.GROUP_INTERIOR.ordinal()]++;
                     } else if (deferred[g]) {
-                        mine[g] = true;
-                        deferredCount++;
+                        local[Count.GROUP_INTERIOR_NO_PORTALS.ordinal()]++;
                     } else {
                         reads++;
                     }
@@ -3059,7 +3040,6 @@ public final class WorldExteriorObjects {
                 }
             }
             var pending = new ArrayList<PendingMesh>();
-            var interiors = new ArrayList<PendingMesh>();
             var headers = new WmoFormats.GroupHeader[lod0];
             var budget = new RootBudget(Allowance.LARGE);
             for (int g = 0; g < lod0; g++) {
@@ -3073,18 +3053,13 @@ public final class WorldExteriorObjects {
                     continue;
                 }
                 if ((mesh.flags() & INTERIOR) != 0) {
-                    if (!holdInterior(mesh)) {
-                        local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
-                    } else {
-                        interiors.add(mesh);
-                    }
+                    local[Count.GROUP_INTERIOR_NO_PORTALS.ordinal()]++;
                     continue;
                 }
                 switch (budget.admit(mesh, local)) {
                     case ADMITTED -> pending.add(mesh);
                     case DROPPED -> {}
                     case OVER -> {
-                        releaseInteriors(interiors);
                         count(Count.ROOT_CAPPED);
                         return RootState.CAPPED;
                     }
@@ -3096,16 +3071,7 @@ public final class WorldExteriorObjects {
             byGroupReads.put(
                     rootId,
                     new ByGroup(
-                            root,
-                            pending,
-                            interiors,
-                            mine,
-                            deferredCount,
-                            headers,
-                            local,
-                            budget.vertices,
-                            budget.indices,
-                            budget.ranges));
+                            root, pending, local, budget.vertices, budget.indices, budget.ranges));
             return RootState.BY_GROUP;
         }
 
@@ -3236,11 +3202,6 @@ public final class WorldExteriorObjects {
                         vertices += vertexCount;
                         indices += used;
                         ranges += kept.size();
-                    }
-                    case LARGE -> {
-                        largeVertices += vertexCount;
-                        largeIndices += used;
-                        largeRanges += kept.size();
                     }
                     case RESERVED -> {} // reserved when the root was admitted
                 }
