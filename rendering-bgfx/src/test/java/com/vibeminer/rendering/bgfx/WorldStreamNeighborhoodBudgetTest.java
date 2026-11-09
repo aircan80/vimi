@@ -123,7 +123,7 @@ final class WorldStreamNeighborhoodBudgetTest {
     void objectTextureTiersSelectAPinnedSessionBudget() {
         var standard = WorldStreamTransport.ObjectTextures.STANDARD;
         var high = WorldStreamTransport.ObjectTextures.HIGH;
-        assertEquals(192L << 20, standard.budgetBytes());
+        assertEquals(212L << 20, standard.budgetBytes());
         assertEquals(256L << 20, high.budgetBytes());
         assertEquals(standard.budgetBytes(), BgfxWorldStreamRenderer.OBJECT_BUDGET_BYTES);
         assertEquals(
@@ -136,6 +136,13 @@ final class WorldStreamNeighborhoodBudgetTest {
         long standardMean = (long) (6.87 * (1 << 20)), highMean = (long) (9.72 * (1 << 20));
         long near = WorldStreamTransport.ViewDistance.NEAR.residents();
         long far = WorldStreamTransport.ViewDistance.FAR.residents();
+        // The heaviest FAR measured (build 70862, the 5 x 5 around Stormwind City with every
+        // interior of the city drawn by group): 24 object sets of 189.7 MiB. STANDARD keeps about
+        // 11% over it.
+        long stormwindFar = (long) (189.7 * (1 << 20));
+        assertTrue(
+                BgfxWorldStreamRenderer.objectsFit(
+                        standard.budgetBytes(), 0, (long) (stormwindFar * 1.11)));
         // NEAR and FAR fit either tier at the mean (FAR: about 172 MiB STANDARD, 243 MiB HIGH).
         assertTrue(
                 BgfxWorldStreamRenderer.objectsFit(standard.budgetBytes(), 0, near * standardMean));
@@ -158,7 +165,7 @@ final class WorldStreamNeighborhoodBudgetTest {
     void exteriorObjectsShareAPinnedStandardBudget() {
         long budget = BgfxWorldStreamRenderer.OBJECT_BUDGET_BYTES;
         // A pinned literal, independent of later per-set limits.
-        assertEquals(192L << 20, budget);
+        assertEquals(212L << 20, budget);
         assertTrue(WorldStreamObjectsFile.MAX_BYTES <= budget);
         assertTrue(BgfxWorldStreamRenderer.objectsFit(0, WorldStreamObjectsFile.MAX_BYTES));
         assertTrue(BgfxWorldStreamRenderer.objectsFit(budget - 100, 100));
@@ -167,12 +174,15 @@ final class WorldStreamNeighborhoodBudgetTest {
         assertTrue(BgfxWorldStreamRenderer.objectsFit(budget, 0));
         assertFalse(BgfxWorldStreamRenderer.objectsFit(-1, 0));
         assertFalse(BgfxWorldStreamRenderer.objectsFit(0, -1));
-        // Twelve 16 MiB sets fit; the thirteenth fails alone.
+        // Thirteen 16 MiB sets fit (208 MiB); the fourteenth fails alone, and a 4 MiB set still
+        // fills the rest.
         long reserved = 0;
-        for (int set = 0; set < 12; set++) {
+        for (int set = 0; set < 13; set++) {
             assertTrue(BgfxWorldStreamRenderer.objectsFit(reserved, 16L << 20));
             reserved += 16L << 20;
         }
-        assertFalse(BgfxWorldStreamRenderer.objectsFit(reserved, 1));
+        assertFalse(BgfxWorldStreamRenderer.objectsFit(reserved, 16L << 20));
+        assertTrue(BgfxWorldStreamRenderer.objectsFit(reserved, 4L << 20));
+        assertFalse(BgfxWorldStreamRenderer.objectsFit(reserved + (4L << 20), 1));
     }
 }

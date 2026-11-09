@@ -66,7 +66,7 @@ final class WorldStreamEnvelopeTest {
         assertEquals(2, ByteBuffer.wrap(highBytes).order(ByteOrder.LITTLE_ENDIAN).getInt(108));
         assertEquals(high, decodeSession(highBytes));
         assertEquals(256L << 20, high.objectBudgetBytes());
-        assertEquals(192L << 20, far.objectBudgetBytes());
+        assertEquals(212L << 20, far.objectBudgetBytes());
         for (int tier : new int[] {0, 3, -1}) {
             byte[] corrupt = highBytes.clone();
             ByteBuffer.wrap(corrupt).order(ByteOrder.LITTLE_ENDIAN).putInt(108, tier);

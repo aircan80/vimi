@@ -83,18 +83,20 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * holds one terrain and water mesh of at most {@link WorldStreamPackedTile#MAX_GEOMETRY_BYTES}
      * (#373) and one mipmapped 512 x 512 RGBA8 atlas (1.40 MB). Exterior objects add at most one
      * validated objects file per slot: up to {@link WorldStreamObjectsFile#MAX_BYTES} of GPU
-     * vertices, indices and RGBA8 textures with their full mip chains (the version 3 maximum
-     * profile with HIGH chains is about 27 MB). Real tiles stay far below that, so instead of a
-     * per-slot worst case the objects share {@link #OBJECT_BUDGET_BYTES}, charged in
-     * Stats.objectBytes. The owner's x4 multisampled colour and depth target adds about 11 MB on
-     * top (issue #357).
+     * vertices, indices and RGBA8 textures with their full mip chains (46 MiB with every table at
+     * its cap, the large and interior allowances of buildings drawn by group included). Real tiles
+     * stay far below that, so instead of a per-slot worst case the objects share {@link
+     * #OBJECT_BUDGET_BYTES}, charged in Stats.objectBytes. The owner's x4 multisampled colour and
+     * depth target adds about 11 MB on top (issue #357).
      */
     static final int SLOT_COUNT = WorldStreamState.SLOTS;
 
     /**
      * STANDARD-tier GPU bytes all resident and building exterior object sets may reserve together:
-     * 192 MiB, pinned as a literal: about 12% over FAR's measured mean of about 172 MiB with mip
-     * chains. The session's object texture tier selects the budget actually enforced (HIGH: 256
+     * 212 MiB, pinned as a literal: about 12% over the heaviest FAR neighbourhood measured, the 5 x
+     * 5 tiles around Stormwind City (0:48:31, build 70862) whose 24 object sets take 189.7 MiB with
+     * every interior of the city drawn by group (FAR's mean over Elwynn is about 172 MiB with mip
+     * chains). The session's object texture tier selects the budget actually enforced (HIGH: 256
      * MiB). A set that does not fit fails alone and its terrain is kept; late objects load
      * nearest-first, so on FAR + HIGH the outer ring is what may report FAILED.
      */
