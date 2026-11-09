@@ -114,6 +114,37 @@ public final class WorldImageBudget {
     }
 
     /**
+     * Levels for two request lists, {@code first} before {@code second} (#383): {@code first} is
+     * allotted by {@link #allocate} from the budget less what every {@code second} request costs at
+     * its smallest allowed side, and {@code second} from what {@code first} leaves. So every {@code
+     * second} request keeps at least its smallest level whenever all smallest levels fit together,
+     * and {@code first} never gives up a level to {@code second} beyond that reserve. Returns the
+     * levels of {@code first}, then of {@code second}.
+     */
+    public static int[][] allocateFirst(
+            List<Request> first, List<Request> second, long budget, int[] sides) {
+        Objects.requireNonNull(first);
+        Objects.requireNonNull(second);
+        if (budget < 0 || sides.length == 0) {
+            throw new IllegalArgumentException("Invalid image budget");
+        }
+        int smallest = sides[sides.length - 1];
+        long reserve = 0;
+        for (var r : second) {
+            reserve += r.cost(r.level(smallest));
+        }
+        int[] firstLevels = allocate(first, Math.max(0, budget - reserve), sides);
+        long spent = 0;
+        for (int i = 0; i < firstLevels.length; i++) {
+            if (firstLevels[i] >= 0) {
+                spent += first.get(i).cost(firstLevels[i]);
+            }
+        }
+        int[] secondLevels = allocate(second, budget - spent, sides);
+        return new int[][] {firstLevels, secondLevels};
+    }
+
+    /**
      * Levels for {@code requests} (highest priority first) within {@code budget} pixels, using the
      * allowed {@code sides} (largest first). Returns -1 for a request that cannot fit at all.
      */

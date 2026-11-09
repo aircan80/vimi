@@ -3652,34 +3652,36 @@ public final class WorldExteriorObjects {
             for (int i = 0; i < used.length; i++) {
                 interiorOnlySlots[i] = used[i] && !exterior[i];
             }
-            // Exterior images first, against the whole pool, exactly as without interiors; then
-            // interior-only images from what they leave (#383), so an interior never lowers an
-            // exterior image's level.
-            var unfitted = new java.util.HashSet<Integer>();
+            // Exterior images first, from the pool less every interior-only image's smallest
+            // level, then interior-only images from what they leave (#383): an interior never
+            // takes a level step an exterior could have had, and every interior image still keeps
+            // at least its smallest level, as when they shared the pool.
             for (var pool : Pool.values()) {
-                long spent = allocatePool(pool, exterior, 0, null);
-                allocatePool(pool, interiorOnlySlots, spent, unfitted);
+                allocatePool(pool, exterior, interiorOnlySlots);
             }
-            dropInteriorRanges(unfitted);
             // Registered pixels are reused only when the drawn level lies above them; every other
             // demand lets them go now instead of holding them, unbudgeted, until the chains.
             releaseRegisteredPixels();
         }
 
-        /**
-         * Allots levels to the pool's demands whose slots are flagged, from the pool's budget less
-         * {@code spent}; returns {@code spent} plus what they cost.
-         */
-        private long allocatePool(
-                Pool pool, boolean[] slots, long spent, java.util.Set<Integer> unfitted) {
-            {
-                var chosen = new ArrayList<Demand>();
-                var requests = new ArrayList<WorldImageBudget.Request>();
-                for (var demand : demands) {
-                    if (demand != null && demand.pool() == pool && slots[demand.slot()]) {
-                        chosen.add(demand);
-                        boolean blocks = sampled(demand);
-                        requests.add(
+        /** Allots levels to the pool's exterior demands, then to its interior-only ones. */
+        private void allocatePool(Pool pool, boolean[] exterior, boolean[] interior) {
+            var firstDemands = new ArrayList<Demand>();
+            var secondDemands = new ArrayList<Demand>();
+            var first = new ArrayList<WorldImageBudget.Request>();
+            var second = new ArrayList<WorldImageBudget.Request>();
+            for (var demand : demands) {
+                if (demand == null || demand.pool() != pool) {
+                    continue;
+                }
+                boolean isExterior = exterior[demand.slot()];
+                if (!isExterior && !interior[demand.slot()]) {
+                    continue;
+                }
+                (isExterior ? firstDemands : secondDemands).add(demand);
+                boolean blocks = sampled(demand);
+                (isExterior ? first : second)
+                        .add(
                                 new WorldImageBudget.Request(
                                         demand.width(),
                                         demand.height(),
@@ -3690,117 +3692,33 @@ public final class WorldExteriorObjects {
                                                 : pool == Pool.DOODAD
                                                         ? MODEL_RGBA_SIDE
                                                         : RGBA_SIDE));
-                    }
-                }
-                long budget =
-                        switch (pool) {
-                            case BUILDING -> detail.buildingPixels();
-                            case MATERIAL -> detail.materialPixels();
-                            case DOODAD -> detail.doodadPixels();
-                        };
-                int[] levels =
-                        WorldImageBudget.allocate(
-                                requests,
-                                Math.max(0, budget - spent),
-                                pool == Pool.DOODAD ? MODEL_IMAGE_SIDES : IMAGE_SIDES);
-                for (int i = 0; i < chosen.size(); i++) {
-                    token.check();
-                    var demand = chosen.get(i);
-                    if (levels[i] < 0 && unfitted != null) {
-                        // An interior image whose smallest level does not fit beside every
-                        // exterior image: its interior batches are dropped (dropInteriorRanges).
-                        unfitted.add(demand.slot());
-                        continue;
-                    }
-                    // Caps keep every pool far above its smallest sides; never drop here.
-                    require(levels[i] >= 0, "EXTERIOR_IMAGE_BUDGET");
-                    spent += requests.get(i).cost(levels[i]);
-                    if (levels[i] != demand.registered()) {
-                        images.set(demand.slot(), relevel(demand, levels[i]));
-                    }
-                }
             }
-            return spent;
+            long budget =
+                    switch (pool) {
+                        case BUILDING -> detail.buildingPixels();
+                        case MATERIAL -> detail.materialPixels();
+                        case DOODAD -> detail.doodadPixels();
+                    };
+            int[][] levels =
+                    WorldImageBudget.allocateFirst(
+                            first,
+                            second,
+                            budget,
+                            pool == Pool.DOODAD ? MODEL_IMAGE_SIDES : IMAGE_SIDES);
+            relevelAll(firstDemands, levels[0]);
+            relevelAll(secondDemands, levels[1]);
         }
 
-        /**
-         * Drops the interior batches drawing an image the budget could not fit after every exterior
-         * image (BATCH_IMAGE_CAPPED), then interior meshes left without a batch
-         * (GROUP_INTERIOR_CAPPED) and roots left without a mesh (EMPTY). Only interior meshes draw
-         * those images, so no exterior batch is touched.
-         */
-        private void dropInteriorRanges(java.util.Set<Integer> unfitted) {
-            if (unfitted.isEmpty()) {
-                return;
+        private void relevelAll(List<Demand> chosen, int[] levels) {
+            for (int i = 0; i < chosen.size(); i++) {
+                token.check();
+                // Caps keep every pool far above its smallest sides; never drop here.
+                require(levels[i] >= 0, "EXTERIOR_IMAGE_BUDGET");
+                var demand = chosen.get(i);
+                if (levels[i] != demand.registered()) {
+                    images.set(demand.slot(), relevel(demand, levels[i]));
+                }
             }
-            int[] uses = new int[models.size()];
-            for (var placement : placements) {
-                uses[placement.model()]++;
-            }
-            boolean[] removed = new boolean[models.size()];
-            for (int m = 0; m < models.size(); m++) {
-                var model = models.get(m);
-                if (model.doodad()) {
-                    continue;
-                }
-                boolean changed = false;
-                var kept = new ArrayList<Mesh>();
-                for (var mesh : model.meshes()) {
-                    if (!interiorMeshes.contains(mesh)) {
-                        kept.add(mesh);
-                        continue;
-                    }
-                    var ranges = new ArrayList<DrawRange>();
-                    for (var range : mesh.ranges()) {
-                        if (!unfitted.contains(range.image())) {
-                            ranges.add(range);
-                            continue;
-                        }
-                        count(Count.BATCH_IMAGE_CAPPED);
-                        counts[Count.BATCH_DRAWN.ordinal()]--;
-                        if (kind(range.blend()) == CUTOUT) {
-                            counts[Count.BATCH_CUTOUT.ordinal()]--;
-                        } else if (kind(range.blend()) >= BLENDED) {
-                            counts[Count.BATCH_BLENDED.ordinal()]--;
-                        }
-                    }
-                    if (ranges.size() == mesh.ranges().size()) {
-                        kept.add(mesh);
-                        continue;
-                    }
-                    changed = true;
-                    if (ranges.isEmpty()) {
-                        counts[Count.GROUP_DRAWN.ordinal()]--;
-                        count(Count.GROUP_INTERIOR_CAPPED);
-                        continue;
-                    }
-                    var trimmed =
-                            new Mesh(
-                                    mesh.groupOrdinal,
-                                    mesh.groupId,
-                                    mesh.groupFlags,
-                                    mesh.vertices,
-                                    mesh.colours,
-                                    mesh.indices,
-                                    ranges);
-                    interiorMeshes.add(trimmed);
-                    kept.add(trimmed);
-                }
-                if (!changed) {
-                    continue;
-                }
-                if (kept.isEmpty()) {
-                    removed[m] = true;
-                    counts[Count.PLACEMENT_DRAWN.ordinal()] -= uses[m];
-                    counts[Count.PLACEMENT_EMPTY.ordinal()] += uses[m];
-                    counts[Count.ROOT_DRAWN.ordinal()]--;
-                    count(Count.ROOT_EMPTY);
-                    rootStates.put(model.rootId(), RootState.EMPTY);
-                    rootDoodads.remove(model.rootId());
-                }
-                models.set(m, new Model(model.rootId(), false, kept, model.portals()));
-            }
-            removeModels(removed);
         }
 
         private void releaseRegisteredPixels() {

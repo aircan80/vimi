@@ -1173,8 +1173,9 @@ class WorldExteriorObjectsTest {
     void interiorImagesNeverLowerExteriorImageLevels() {
         // 40 exterior and 24 interior groups, each drawing its own 512^2 BC1 image, on a session
         // sampling BC1 (512 sides at their compressed cost): the building pool cannot give every
-        // image 512. Exterior levels are allotted first, so they are the same with and without
-        // interiors; the interiors get what is left.
+        // image 512. Exterior levels are allotted first, from the pool less the interiors'
+        // smallest levels, so here they are the same with and without interiors; the interiors
+        // get what is left, and on every map each keeps at least its smallest side.
         int bc1 = 1 << com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
         int exteriors = 40, interiors = 24, n = exteriors + interiors;
         var gfid = new long[n];
@@ -1212,6 +1213,21 @@ class WorldExteriorObjectsTest {
             }
             assertEquals(without, with, "exterior levels are unchanged by interiors");
             assertEquals(interiors, interiorImages);
+            // A dungeon or raid map shares the pool the same way: every interior image is drawn,
+            // at its smallest side or larger.
+            var instance = new java.util.TreeMap<Long, Integer>();
+            try (var set = prepareWith(f, WorldExteriorObjects.Interiors.INSTANCE, bc1)) {
+                assertEquals(n, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                for (var image : set.images()) {
+                    if (image.id() >= 9000 + exteriors) {
+                        assertTrue(image.width() >= 32, "smallest side kept: " + image.id());
+                        instance.put(image.id(), image.width());
+                    } else {
+                        assertEquals(without.get(image.id()), image.width());
+                    }
+                }
+            }
+            assertEquals(interiors, instance.size());
         }
     }
 
