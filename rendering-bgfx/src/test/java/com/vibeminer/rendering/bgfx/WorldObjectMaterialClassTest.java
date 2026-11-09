@@ -127,7 +127,10 @@ class WorldObjectMaterialClassTest {
                 WorldObjectPicking.validClass(
                         WorldStreamObjectsFile.CUTOUT | UNLIT | WorldStreamObjectsFile.TWO_SIDED),
                 "two-sided (#375)");
-        assertFalse(WorldObjectPicking.validClass(0x400), "unknown flag");
+        assertTrue(
+                WorldObjectPicking.validClass(WorldStreamObjectsFile.INTERIOR_LIGHT),
+                "interior light (#383)");
+        assertFalse(WorldObjectPicking.validClass(0x800), "unknown flag");
         assertFalse(WorldObjectPicking.validClass(-1));
         assertEquals(
                 WorldStreamObjectsFile.CUTOUT,
