@@ -332,11 +332,31 @@ public final class WorldExteriorObjects {
 
     private static final WmoFormats.Limits ROOT_LIMITS =
             new WmoFormats.Limits(
-                    1 << 20, 1 << 20, 256, 256, 4096, 65536, 131072, 256, 4, 4L << 20);
+                    1 << 20,
+                    1 << 20,
+                    WmoFormats.MAX_GROUPS,
+                    256,
+                    4096,
+                    65536,
+                    131072,
+                    256,
+                    4,
+                    4L << 20);
     private static final Blp2Types.Limits IMAGE_LIMITS =
             new Blp2Types.Limits(1 << 20, 8192, 65536, 256 << 10, 256 << 10);
 
     private WorldExteriorObjects() {}
+
+    /**
+     * Whether LOD0 group {@code group} is left unread: outside instances only, when the root's
+     * retained MOGI flags mark it interior (interior wins over exterior, as for MOGP). A group that
+     * is read still follows its own MOGP flags, whatever its MOGI flags said.
+     */
+    static boolean skipInterior(WmoFormats.Root root, int group, boolean interiors) {
+        return !interiors
+                && root.groupInfoRetained()
+                && (root.groupInfoFlags(group) & INTERIOR) != 0;
+    }
 
     /**
      * Registered pixels when they are exactly one {@code w x h} RGBA level, else null so the chain
@@ -372,7 +392,7 @@ public final class WorldExteriorObjects {
         PLACEMENT_FAILED_ROOT,
         PLACEMENT_EMPTY,
         ROOT_DRAWN,
-        /** Malformed, or outside the parser ceilings (256 groups/materials, 4096 GFID). */
+        /** Malformed, or outside the parser ceilings (512 groups, 256 materials, 4096 GFID). */
         ROOT_FAILED,
         /** Parsed, but MOTX names, no GFID, zero groups or GFID not a multiple of groups. */
         ROOT_UNSUPPORTED,
@@ -380,7 +400,11 @@ public final class WorldExteriorObjects {
         ROOT_CAPPED,
         ROOT_EMPTY,
         GROUP_DRAWN,
-        /** An interior group, not drawn: the map is not a dungeon or raid (#280). */
+        /**
+         * An interior group, not drawn: the map is not a dungeon or raid (#280). Counts groups
+         * whose root MOGI flags mark them interior, which are then never read, and read groups
+         * whose own MOGP flags do.
+         */
         GROUP_INTERIOR,
         /**
          * An instance interior group that did not fit the tile budgets left after the building's
@@ -1387,6 +1411,8 @@ public final class WorldExteriorObjects {
                 place(metadata.worldObjects());
                 fitMaterialDraws();
                 WorldStageTimings.stop("objects.phase.buildings", phase);
+                // LOD0 group files this tile read (MAX_GROUPS), for the measurement probe.
+                WorldStageTimings.value("objects.groups.readPerTile", groupsRead);
                 // Admission ran largest first; the set keeps obj0 source order.
                 placements.sort(java.util.Comparator.comparingInt(Placement::ordinal));
                 // Buildings first, then MDDF doodads, then the drawn buildings' doodad sets, and
@@ -2329,8 +2355,15 @@ public final class WorldExteriorObjects {
                 return RootState.FAILED;
             }
             int lod0 = (int) groupCount, reads = 0;
+            // Outside instances, groups whose MOGI flags say interior are never read: they would
+            // only be dropped (GROUP_INTERIOR), and must not spend the tile's group reads.
+            var skipped = new boolean[lod0];
             for (int g = 0; g < lod0; g++) {
-                if (root.gfid(g) != 0) {
+                if (root.gfid(g) == 0) {
+                    continue;
+                }
+                skipped[g] = skipInterior(root, g, this.interiors);
+                if (!skipped[g]) {
                     reads++;
                 }
             }
@@ -2343,7 +2376,7 @@ public final class WorldExteriorObjects {
             // models and images are not read ahead: caps decided by earlier parsing leave many of
             // them unread, and a capped source must never be fetched.
             for (int g = 0; g < lod0; g++) {
-                if (root.gfid(g) != 0) {
+                if (root.gfid(g) != 0 && !skipped[g]) {
                     admission.prefetch(root.gfid(g), WorldStreamScopes.DerivedKind.WMO_GROUP);
                 }
             }
@@ -2361,6 +2394,10 @@ public final class WorldExteriorObjects {
                 long groupId = root.gfid(g);
                 if (groupId == 0) {
                     local[Count.GROUP_UNSUPPORTED.ordinal()]++;
+                    continue;
+                }
+                if (skipped[g]) {
+                    local[Count.GROUP_INTERIOR.ordinal()]++;
                     continue;
                 }
                 groupsRead++;

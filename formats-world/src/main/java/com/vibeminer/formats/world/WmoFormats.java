@@ -15,7 +15,7 @@ import java.util.function.BooleanSupplier;
 
 /** Raw WMO17 declarations. No asset resolution, LOD mapping, material or render admission. */
 public final class WmoFormats {
-    public static final String REVISION = "wmo17-facts-v1";
+    public static final String REVISION = "wmo17-facts-v2";
     public static final int MAX_SOURCE_BYTES = 8 << 20, MAX_CHUNKS = 1024;
     public static final long MAX_FACT_BYTES = 12L << 20;
     private static final int MVER = 0x4d564552,
@@ -37,7 +37,8 @@ public final class WmoFormats {
             MODD = 0x4d4f4444,
             MOPV = 0x4d4f5056,
             MOPT = 0x4d4f5054,
-            MOPR = 0x4d4f5052;
+            MOPR = 0x4d4f5052,
+            MOGI = 0x4d4f4749;
 
     /** Doodad declaration ceilings; larger or over-budget declarations are not retained. */
     public static final int MAX_DOODAD_SETS = 256, MAX_DOODAD_DEFS = 32768;
@@ -48,8 +49,16 @@ public final class WmoFormats {
      */
     public static final int MAX_PORTALS = 4096, MAX_PORTAL_VERTICES = 16384, MAX_PORTAL_REFS = 8192;
 
+    /**
+     * Root group ceiling. Capital-city roots record more than 256 groups (Stormwind: 289, 280 of
+     * them interior), so the ceiling is 512; a reader of the groups bounds its own reads.
+     */
+    public static final int MAX_GROUPS = 512;
+
     private static final Set<Integer> ROOT_TAGS =
-            Set.of(MVER, MOHD, MOMT, GFID, MOTX, MOGN, MODS, MODN, MODI, MODD, MOPV, MOPT, MOPR);
+            Set.of(
+                    MVER, MOHD, MOMT, GFID, MOTX, MOGN, MOGI, MODS, MODN, MODI, MODD, MOPV, MOPT,
+                    MOPR);
     private static final Set<Integer> GROUP_TAGS = Set.of(MVER, MOGP);
     private static final Set<Integer> MESH_TAGS = Set.of(MOVT, MONR, MOVI, MOTV, MOBA, MOPY);
 
@@ -73,7 +82,7 @@ public final class WmoFormats {
                     || groupBytes < 12
                     || groupBytes > MAX_SOURCE_BYTES
                     || groups < 0
-                    || groups > 256
+                    || groups > MAX_GROUPS
                     || materials < 0
                     || materials > 256
                     || gfidEntries < 0
@@ -96,7 +105,7 @@ public final class WmoFormats {
             return new Limits(
                     MAX_SOURCE_BYTES,
                     MAX_SOURCE_BYTES,
-                    256,
+                    MAX_GROUPS,
                     256,
                     4096,
                     65536,
@@ -184,6 +193,7 @@ public final class WmoFormats {
         private final GroupNames groupNames;
         private final Doodads doodads;
         private final Portals portals;
+        private final long[] groupInfoFlags;
 
         private Root(
                 RootHeader h,
@@ -195,7 +205,9 @@ public final class WmoFormats {
                 boolean np,
                 GroupNames gn,
                 Doodads d,
-                Portals p) {
+                Portals p,
+                long[] gi) {
+            groupInfoFlags = gi;
             groupNames = gn;
             doodads = d;
             portals = p;
@@ -253,6 +265,29 @@ public final class WmoFormats {
         /** Recorded MOPV, MOPT and MOPR portal declarations; see {@link Portals}. */
         public Portals portals() {
             return portals;
+        }
+
+        /**
+         * True when the root's MOGI group-info flags were retained: one 32-byte SMOGroupInfo
+         * {uint32 flags, CAaBox bounds, int32 nameOffset} per MOHD group (wowdev.wiki WMO), so
+         * {@link #groupInfoFlags(int)} answers for every LOD0 group. False when MOGI is absent,
+         * duplicated, has a partial record, a record count other than the MOHD group count, or does
+         * not fit the root fact budget; a root is never declined because of its MOGI.
+         */
+        public boolean groupInfoRetained() {
+            return groupInfoFlags != null;
+        }
+
+        /**
+         * The raw MOGI flags recorded for LOD0 group {@code group}, the same bits as that group's
+         * MOGP flags (0x8 exterior, 0x2000 interior). Only a hint until the group itself is read:
+         * its MOGP flags remain the authority for a group that is read.
+         */
+        public long groupInfoFlags(int group) {
+            if (groupInfoFlags == null) {
+                throw new IllegalStateException("Group info not retained");
+            }
+            return groupInfoFlags[group];
         }
     }
 
@@ -645,7 +680,8 @@ public final class WmoFormats {
         int setsAt = -1, setsBytes = 0, defsAt = -1, defsBytes = 0, idsAt = -1, idsBytes = 0;
         boolean doodadNames = false, doodadDuplicate = false, portalDuplicate = false;
         int vertsAt = -1, vertsBytes = 0, portalsAt = -1, portalsBytes = 0, refsAt = -1;
-        int refsBytes = 0;
+        int refsBytes = 0, infoAt = -1, infoBytes = 0;
+        boolean infoDuplicate = false;
         while (input.hasRemaining()) {
             check(canceled);
             var chunk = chunk(input, input.limit(), chunks, budget, ROOT_TAGS);
@@ -763,6 +799,12 @@ public final class WmoFormats {
                     refsAt = at;
                     refsBytes = chunk.bytes();
                 }
+                case MOGI -> {
+                    // Like portals, a duplicate group-info declaration leaves it not retained.
+                    infoDuplicate |= !seen.add(MOGI);
+                    infoAt = at;
+                    infoBytes = chunk.bytes();
+                }
                 default -> {
                     /* All unparsed declarations remain in chunks, never inferred empty. */
                 }
@@ -811,6 +853,15 @@ public final class WmoFormats {
                         portalsBytes,
                         refsAt,
                         refsBytes);
+        var groupInfo =
+                groupInfo(
+                        input,
+                        budget,
+                        canceled,
+                        header.groupCount(),
+                        infoDuplicate,
+                        infoAt,
+                        infoBytes);
         return new Root(
                 header,
                 materials,
@@ -821,7 +872,36 @@ public final class WmoFormats {
                 seen.contains(MOTX),
                 groupNames,
                 doodads,
-                portals);
+                portals,
+                groupInfo);
+    }
+
+    /**
+     * MOGI flags in group order, claimed last; null when not retained (see Root#groupInfoRetained).
+     */
+    private static long[] groupInfo(
+            ByteBuffer input,
+            Budget budget,
+            BooleanSupplier canceled,
+            long groupCount,
+            boolean duplicate,
+            int infoAt,
+            int infoBytes) {
+        if (infoAt < 0
+                || duplicate
+                || infoBytes % 32 != 0
+                || infoBytes / 32 != groupCount
+                || !budget.tryClaim(64L + 8L * groupCount)) {
+            return null;
+        }
+        var flags = new long[(int) groupCount];
+        for (int g = 0; g < flags.length; g++) {
+            if ((g & 255) == 0) {
+                check(canceled);
+            }
+            flags[g] = Integer.toUnsignedLong(input.getInt(infoAt + g * 32));
+        }
+        return flags;
     }
 
     /** Portal declarations, claimed after doodads; see {@link Portals} for what is not retained. */
