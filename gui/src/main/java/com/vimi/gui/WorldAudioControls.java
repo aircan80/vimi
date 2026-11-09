@@ -21,7 +21,8 @@ import javafx.util.Duration;
 
 /**
  * World explorer music/ambience controls; the selection logic is {@link WorldAudioDirector}.
- * Both channels start off. The day/night slot follows the local clock unless one is chosen.
+ * In the World explorer both channels start on; a supplied playback (tests) starts with both off.
+ * The day/night slot follows the local clock unless one is chosen.
  */
 final class WorldAudioControls implements AutoCloseable {
     private final CheckBox music = new CheckBox("Music"), ambience = new CheckBox("Ambience");
@@ -38,6 +39,9 @@ final class WorldAudioControls implements AutoCloseable {
 
     WorldAudioControls() {
         this(null);
+        // Nothing plays until the current terrain area resolves, so starting on is safe before a world opens.
+        music.setSelected(true);
+        ambience.setSelected(true);
     }
 
     WorldAudioControls(WorldAudioPlayback playback) {

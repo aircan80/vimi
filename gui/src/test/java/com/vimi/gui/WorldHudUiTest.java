@@ -244,6 +244,8 @@ public final class WorldHudUiTest {
         try {
             var music = com.vibeminer.concepts.world.WorldAreaAudio.Kind.MUSIC;
             var ambience = com.vibeminer.concepts.world.WorldAreaAudio.Kind.AMBIENCE;
+            require(audio.music().isSelected() && audio.ambience().isSelected(),
+                    "Music and ambience start on in the World explorer");
             require(!audio.silent(music).get() && !audio.silent(ambience).get(), "Not silent before any status");
             audio.silent(new WorldAudioPlayback.Status(music, false, "No recorded music here"));
             require(audio.silent(music).get() && !audio.silent(ambience).get(), "No recorded music: music is silent");
