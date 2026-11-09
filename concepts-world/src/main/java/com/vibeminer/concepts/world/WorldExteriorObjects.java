@@ -2157,8 +2157,14 @@ public final class WorldExteriorObjects {
                     case CAPPED -> count(Count.PLACEMENT_CAPPED);
                     case EMPTY -> count(Count.PLACEMENT_EMPTY);
                     case OTHER_TILE -> {
-                        count(Count.PLACEMENT_OTHER_TILE);
-                        doodadsOnly(record, transform, rootId, owner);
+                        if (owner == null) {
+                            // Another placement of the root, inside one tile: the root was decided
+                            // by its largest placement, and this one has no owner rule.
+                            count(Count.PLACEMENT_CAPPED);
+                        } else {
+                            count(Count.PLACEMENT_OTHER_TILE);
+                            doodadsOnly(record, transform, rootId, owner);
+                        }
                     }
                     case BY_GROUP -> {
                         // Its groups are this placement's; another placement of the root is not
@@ -2256,7 +2262,10 @@ public final class WorldExteriorObjects {
                 for (boolean u : read.unread()) {
                     unread += u ? 1 : 0;
                 }
-                if (opaquePlacements >= MAX_PLACEMENTS || unread > MAX_GROUPS - groupsRead) {
+                long buildings = placements.stream().filter(p -> p.kind() == Kind.BUILDING).count();
+                if (opaquePlacements >= MAX_PLACEMENTS
+                        || buildings >= MAX_PLACEMENTS
+                        || unread > MAX_GROUPS - groupsRead) {
                     capByGroup(rootId, queued);
                     continue;
                 }
@@ -2828,12 +2837,12 @@ public final class WorldExteriorObjects {
                 int meshVertices = mesh.vertices().length / VERTEX_FLOATS;
                 boolean materialOnly =
                         mesh.ranges().stream().noneMatch(r -> kind(r.blend()) == OPAQUE);
-                // Sized alone, only the root's own surfaces count, so whether a root is drawn by
-                // group never depends on what the tile already holds; resolveBuilding then caps
-                // such a mesh with the same counts.
-                long tileMaterial =
-                        allowance == Allowance.ALONE ? 0 : Builder.this.materialVertices;
-                if (materialOnly
+                // Sized alone, nothing is dropped here: a drop would depend on the tile, or on
+                // other tiles' groups of a root drawn by group. A mesh that does not fit is capped
+                // against this tile's material budget when it is resolved, with the same counts.
+                long tileMaterial = Builder.this.materialVertices;
+                if (allowance != Allowance.ALONE
+                        && materialOnly
                         && !mesh.ranges().isEmpty()
                         && meshVertices > MAX_MATERIAL_VERTICES - tileMaterial - materialVertices) {
                     // resolveBuilding would cap every range of this cutout- or blend-only mesh on

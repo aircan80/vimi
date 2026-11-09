@@ -5745,4 +5745,30 @@ class WorldExteriorObjectsTest {
         }
         return chunk("MOGI", b.array());
     }
+
+    @Test
+    void anotherPlacementOfASplitRootInsideOneTileIsCappedNotFailed() {
+        // The larger placement decides the root (drawn by 8,19 alone); a second placement of the
+        // same root with bounds inside this tile has no owner rule and is capped, while the first
+        // still places the set doodad standing here.
+        var inside =
+                new Modf(BIG, 78, 0x8, 10400, 0, 4200, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4150, 10500, 10, 4250);
+        try (var f = new Fixture(List.of(largePlacement(), inside))) {
+            putModel(f, MODEL, model());
+            putBig(
+                    f,
+                    new int[] {EXT, EXT},
+                    new int[] {60_000, 60_000},
+                    new float[] {200, 250},
+                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(0, 200)));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_OTHER_TILE));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertPlacementsAccounted(set, 2);
+            }
+        }
+    }
 }
