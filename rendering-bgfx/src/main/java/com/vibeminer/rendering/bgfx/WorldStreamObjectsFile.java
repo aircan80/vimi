@@ -33,7 +33,7 @@ import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
 /**
- * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 7. Structural
+ * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 8. Structural
  * only: the application's closed source bridge is its sole producer, and the OBJECTS command (or
  * the terrain tile header) names its exact length and SHA-256.
  *
@@ -56,8 +56,9 @@ final class WorldStreamObjectsFile {
     // compressed formats the file charges at their stored size, those its session's child samples
     // as blocks (#374); a reader before #374 refuses a nonzero mask there. Version 7 (#383 step
     // 3a): mesh group ordinals and the portal tables of building roots on instance maps, whose
-    // counts follow at header bytes 152-171.
-    static final int VERSION = 7, HEADER_BYTES = 256;
+    // counts follow at header bytes 152-171. Version 8 (#383): the INTERIOR_LIGHT range flag, an
+    // interior group lit by its vertex colours (MOCV plus the root's ambient) instead of the sun.
+    static final int VERSION = 8, HEADER_BYTES = 256;
     // The tables are the sums of the producer's pools (ExteriorObjectLimits): opaque buildings,
     // their cutout and blended surfaces, and doodads. Creature models share whatever room remains.
     static final int MAX_MODELS = ExteriorObjectLimits.MODELS;
@@ -108,13 +109,21 @@ final class WorldStreamObjectsFile {
      * Range material classes: depth-writing opaque, alpha-tested cutout, sorted alpha blend and
      * sorted additive blend (MOMT blend mode 3, #367). A class may carry {@link #UNLIT} (MOMT
      * F_UNLIT): drawn at full intensity, without the light, and {@link #TWO_SIDED} (MOMT
-     * F_UNCULLED), which changes nothing while the pass culls no faces.
+     * F_UNCULLED), which changes nothing while the pass culls no faces, and {@link
+     * #INTERIOR_LIGHT}.
      */
     static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2, ADDITIVE = 3;
 
     static final int UNLIT = com.vibeminer.rendering.world.WorldObjectPicking.UNLIT;
 
     static final int TWO_SIDED = com.vibeminer.rendering.world.WorldObjectPicking.TWO_SIDED;
+
+    /**
+     * Range flag (version 8, #383): a range of an interior WMO group whose vertex colours hold its
+     * light (MOCV plus the root's MOHD ambient), drawn with that light instead of the World sun.
+     */
+    static final int INTERIOR_LIGHT =
+            com.vibeminer.rendering.world.WorldObjectPicking.INTERIOR_LIGHT;
 
     /** The kind of a range class, without its flags. */
     static int kind(int rangeClass) {

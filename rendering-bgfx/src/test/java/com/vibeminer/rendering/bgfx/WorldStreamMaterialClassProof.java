@@ -26,6 +26,9 @@ import java.util.concurrent.TimeUnit;
  *   <li>Centre, a lit opaque quad facing away from the light (a third of its texel colour) with the
  *       vertex colour (128, 64, 0): with vertex colours on, each channel is its texel times a third
  *       plus the colour; with them off (the default), a third only, and every other pixel equal.
+ *   <li>Far right (#383), an interior-light opaque quad with the same vertex colour: its light is
+ *       the vertex colour alone, so each channel is its texel times the colour whatever the sun,
+ *       the World light or the vertex colour switch.
  * </ul>
  *
  * Authored data only.
@@ -65,14 +68,15 @@ final class WorldStreamMaterialClassProof {
             {2.0, 2.8},
             {2.0, 2.8},
             {-3.4, -2.2},
-            {-4.76, -3.08}
+            {-4.76, -3.08},
+            {3.0, 3.8}
         };
-        double[] depths = {5, 5, 5, 5, 5, 5, 7};
-        var vertices = FloatBuffer.allocate(28 * 8);
-        var indices = IntBuffer.allocate(42);
-        var colours = IntBuffer.allocate(28);
+        double[] depths = {5, 5, 5, 5, 5, 5, 7, 5};
+        var vertices = FloatBuffer.allocate(32 * 8);
+        var indices = IntBuffer.allocate(48);
+        var colours = IntBuffer.allocate(32);
         double cp = Math.cos(VIEW.pitch()), sp = Math.sin(VIEW.pitch());
-        for (int q = 0; q < 7; q++) {
+        for (int q = 0; q < 8; q++) {
             for (int corner = 0; corner < 4; corner++) {
                 double right = spans[q][corner == 1 || corner == 2 ? 1 : 0];
                 double depth = depths[q], up = (corner < 2 ? -1 : 1) * depth / 5;
@@ -82,7 +86,7 @@ final class WorldStreamMaterialClassProof {
                 // Facing away from the fixed light: a lit surface would get a third of its colour.
                 vertices.put(0.408248290463863f).put(0.408248290463863f);
                 vertices.put(-0.816496580927726f).put(.5f).put(.5f);
-                colours.put(q == 2 ? COLOUR : 0);
+                colours.put(q == 2 || q == 7 ? COLOUR : 0);
             }
             int base = q * 4;
             indices.put(base).put(base + 1).put(base + 2).put(base).put(base + 2).put(base + 3);
@@ -93,7 +97,9 @@ final class WorldStreamMaterialClassProof {
         builder.mesh(
                 vertices,
                 indices,
-                new int[] {0, 6, 0, 6, 6, 1, 12, 6, 0, 18, 6, 2, 24, 6, 3, 30, 6, 2, 36, 6, 4},
+                new int[] {
+                    0, 6, 0, 6, 6, 1, 12, 6, 0, 18, 6, 2, 24, 6, 3, 30, 6, 2, 36, 6, 4, 42, 6, 0
+                },
                 new int[] {
                     WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT,
                     // Unlit too, so its full blue is added.
@@ -103,7 +109,9 @@ final class WorldStreamMaterialClassProof {
                     WorldStreamObjectsFile.BLENDED | WorldStreamObjectsFile.UNLIT,
                     // #552: near red first in the file, then the far green behind it.
                     WorldStreamObjectsFile.BLENDED | WorldStreamObjectsFile.UNLIT,
-                    WorldStreamObjectsFile.BLENDED | WorldStreamObjectsFile.UNLIT
+                    WorldStreamObjectsFile.BLENDED | WorldStreamObjectsFile.UNLIT,
+                    // #383: lit by its vertex colour instead of the sun.
+                    WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.INTERIOR_LIGHT
                 },
                 colours);
         builder.placement(
@@ -246,6 +254,11 @@ final class WorldStreamMaterialClassProof {
                         Math.abs((plain >>> shift[c] & 255) - expected) <= 1,
                         "Vertex colours off draw the light alone: " + Integer.toHexString(plain));
             }
+            // #383: the interior quad is its texel times its vertex colour, with colours on or off.
+            int interiorX = (int) (WIDTH / 2.0 + focal * 3.4 / 5);
+            int interior = after[row * WIDTH + interiorX];
+            requireInterior(interior, red, blue, "vertex colours on");
+            requireInterior(off[row * WIDTH + interiorX], red, blue, "vertex colours off");
             for (int x : new int[] {unlitX, additiveX, overX, pairX}) {
                 require(
                         off[row * WIDTH + x] == after[row * WIDTH + x],
@@ -276,6 +289,7 @@ final class WorldStreamMaterialClassProof {
             require(
                     relit[row * WIDTH + unlitX] == off[row * WIDTH + unlitX],
                     "An unlit surface ignores the World light");
+            requireInterior(relit[row * WIDTH + interiorX], red, blue, "World ambient changed");
             // Diffuse only, per channel: a light shining along the lit quad's normal gives its
             // texel times the diffuse colour (1, 0.5, 0.25); the same light from the other side
             // (the fixed direction, which the quad faces away from) gives black.
@@ -283,7 +297,9 @@ final class WorldStreamMaterialClassProof {
             float[] toward = {-fixed[0], -fixed[1], -fixed[2]};
             float[] diffuseColour = {1, 0.5f, 0.25f};
             owner.light(new WorldLight(toward, diffuseColour, new float[] {0, 0, 0}));
-            int facing = frame(owner, reader, 5, new long[] {0})[row * WIDTH + WIDTH / 2];
+            var facingFrame = frame(owner, reader, 5, new long[] {0});
+            int facing = facingFrame[row * WIDTH + WIDTH / 2];
+            requireInterior(facingFrame[row * WIDTH + interiorX], red, blue, "sun facing it");
             owner.light(new WorldLight(fixed, diffuseColour, new float[] {0, 0, 0}));
             int fromBehind = frame(owner, reader, 6, new long[] {0})[row * WIDTH + WIDTH / 2];
             owner.light(WorldLight.FIXED);
@@ -321,7 +337,27 @@ final class WorldStreamMaterialClassProof {
                     + " diffuse="
                     + Integer.toHexString(facing)
                     + " fromBehind="
-                    + Integer.toHexString(fromBehind);
+                    + Integer.toHexString(fromBehind)
+                    + " interior="
+                    + Integer.toHexString(interior);
+        }
+    }
+
+    /** The interior quad: texel (200, 100, 50) times its vertex colour (128, 64, 0) / 255. */
+    private static void requireInterior(int pixel, int red, int blue, String when) {
+        int[] texel = {200, 100, 50}, colour = {128, 64, 0}, shift = {red, 8, blue};
+        for (int c = 0; c < 3; c++) {
+            int expected = (int) Math.floor(texel[c] * colour[c] / 255.0);
+            require(
+                    Math.abs((pixel >>> shift[c] & 255) - expected) <= 1,
+                    "Interior surface is lit by its vertex colour ("
+                            + when
+                            + "): "
+                            + Integer.toHexString(pixel)
+                            + " channel "
+                            + c
+                            + " expected "
+                            + expected);
         }
     }
 

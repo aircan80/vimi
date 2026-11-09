@@ -167,6 +167,16 @@ public final class WorldExteriorObjects {
      */
     public static final int TWO_SIDED = 0x200;
 
+    /**
+     * Flag on a range class: the range belongs to an interior group (MOGP 0x2000) whose vertex
+     * colours are carried, so it is lit by them instead of the World sun (#383, #375). In the
+     * client an interior group's light is its baked MOCV plus the root's MOHD ambient colour, not
+     * the outdoor light; {@link Mesh#colours} of such a mesh already holds that sum. An interior
+     * group without vertex colours keeps the World light rather than drawing black.
+     */
+    public static final int INTERIOR_LIGHT =
+            com.vibeminer.rendering.world.WorldObjectPicking.INTERIOR_LIGHT;
+
     /** The kind of a range class, without its flags. */
     public static int kind(int rangeClass) {
         return rangeClass & 0xff;
@@ -203,6 +213,19 @@ public final class WorldExteriorObjects {
      */
     static int packColour(int b, int g, int r) {
         return r | g << 8 | b << 16;
+    }
+
+    /**
+     * The light of one interior vertex (#383): its MOCV colour, stored B, G, R, A, plus the root's
+     * MOHD ambient colour ({@code ambient}, a CImVector read as one little-endian u32, so B in the
+     * low byte), each channel saturated at 255 and packed as {@link #packColour}. Saturating keeps
+     * a surface at most as bright as its texture, the conservative choice while the client's
+     * FixColorVertexAlpha adjustment (#474) is not pinned; MOCV alpha is not used.
+     */
+    static int interiorLight(int b, int g, int r, long ambient) {
+        int ab = (int) (ambient & 0xff), ag = (int) (ambient >>> 8 & 0xff);
+        int ar = (int) (ambient >>> 16 & 0xff);
+        return packColour(Math.min(255, b + ab), Math.min(255, g + ag), Math.min(255, r + ar));
     }
 
     /**
@@ -552,6 +575,12 @@ public final class WorldExteriorObjects {
          */
         GROUP_VERTEX_COLOURS,
         /**
+         * Copied interior groups lit from their vertex colours (#383): MOGP 0x2000 and 0x4 with a
+         * first MOCV of one colour per vertex, carried as MOCV plus the root's MOHD ambient and
+         * drawn with {@link #INTERIOR_LIGHT} instead of the World sun. Not an outcome bucket.
+         */
+        GROUP_INTERIOR_LIGHT,
+        /**
          * Copied exterior triangles whose winding, read counter-clockwise in raw local axes, faces
          * the same way as their vertex normals (issue #375): the evidence that decides which side
          * single-sided surfaces may cull. Not an outcome bucket.
@@ -830,7 +859,9 @@ public final class WorldExteriorObjects {
 
         /**
          * Vertex colours, one {@code r | g << 8 | b << 16} (0..255 each) per vertex, or empty when
-         * the mesh has none (doodads, and groups without MOGP flag 0x4).
+         * the mesh has none (doodads, and groups without MOGP flag 0x4). An exterior group's are
+         * its MOCV; an interior group's are its MOCV plus the root's MOHD ambient ({@link
+         * #INTERIOR_LIGHT}).
          */
         public IntBuffer colours() {
             return IntBuffer.wrap(colours).asReadOnlyBuffer();
@@ -3993,8 +4024,8 @@ public final class WorldExteriorObjects {
         }
 
         /**
-         * Copies one exterior group; null (unsupported) for unusable normals or overlapping
-         * batches.
+         * Copies one group (exterior, or an interior lit from its vertex colours); null
+         * (unsupported) for unusable normals or overlapping batches.
          */
         private PendingMesh copyGroup(
                 int ordinal,
@@ -4077,19 +4108,22 @@ public final class WorldExteriorObjects {
                 vertices[at + 7] = uv.get(v * 2 + 1);
             }
             // MOGP 0x4 declares the first MOCV: B, G, R, A per vertex, its count already checked.
-            // Only exterior groups carry it (#375): an instance interior's MOCV is its main light,
-            // not an addition to the world light, so interiors (#280) carry none and are not
-            // counted in the colour or winding evidence.
+            // An exterior group carries it as an addition to the World light (#375). An interior
+            // group's MOCV is its main light (#383): it carries MOCV plus the root's MOHD ambient
+            // and its ranges are drawn with INTERIOR_LIGHT instead of the sun. Interiors are not
+            // counted in the exterior colour or winding evidence.
             boolean exterior = (flags & INTERIOR) == 0;
             int[] colours = new int[0];
             var mocv = borrow.colors();
-            if (exterior && (flags & VERTEX_COLOURS) != 0 && mocv != null) {
+            if ((flags & VERTEX_COLOURS) != 0 && mocv != null) {
+                long ambient = root.header().ambientColor();
                 colours = new int[count];
                 for (int v = 0; v < count; v++) {
-                    colours[v] =
-                            packColour(mocv.get(v * 4), mocv.get(v * 4 + 1), mocv.get(v * 4 + 2));
+                    int b = mocv.get(v * 4), g = mocv.get(v * 4 + 1), r = mocv.get(v * 4 + 2);
+                    colours[v] = exterior ? packColour(b, g, r) : interiorLight(b, g, r, ambient);
                 }
             }
+            int lightFlag = !exterior && colours.length > 0 ? INTERIOR_LIGHT : 0;
             // Only candidate batch indices are copied, compacted in recorded batch order.
             var source = borrow.indices();
             int[] indices = new int[candidateIndices];
@@ -4106,7 +4140,7 @@ public final class WorldExteriorObjects {
                                 candidate.indexCount(),
                                 candidate.material(),
                                 candidate.image(),
-                                candidate.blend()));
+                                candidate.blend() | lightFlag));
                 used += candidate.indexCount();
             }
             if (exterior) {
@@ -4115,7 +4149,9 @@ public final class WorldExteriorObjects {
             local[Count.BATCH_UNSUPPORTED.ordinal()] += unsupported;
             local[Count.BATCH_FLAGS_IGNORED.ordinal()] += ignoredFlags;
             if (colours.length > 0) {
-                local[Count.GROUP_VERTEX_COLOURS.ordinal()]++;
+                local[
+                        (exterior ? Count.GROUP_VERTEX_COLOURS : Count.GROUP_INTERIOR_LIGHT)
+                                .ordinal()]++;
             }
             return new PendingMesh(ordinal, id, flags, vertices, colours, indices, rebased);
         }

@@ -41,6 +41,51 @@ class WorldObjectMaterialClassTest {
                         WorldStreamObjectsFile.CUTOUT | UNLIT, true));
     }
 
+    /**
+     * Issue #383: an interior-light range adds 4 to w, on top of unlit and additive, so the shader
+     * lights it from its vertex colour instead of the sun; every other component is unchanged and
+     * every combination has its own frame material.
+     */
+    @Test
+    void materialUniformCarriesInteriorLight() {
+        int interior = WorldStreamObjectsFile.INTERIOR_LIGHT;
+        assertArrayEquals(
+                new float[] {0, 0, 0, 4},
+                BgfxWorldStreamRenderer.materialUniform(
+                        WorldStreamObjectsFile.OPAQUE | interior, true));
+        assertArrayEquals(
+                new float[] {BgfxWorldStreamRenderer.CUTOUT_REFERENCE, 0, 1, 5},
+                BgfxWorldStreamRenderer.materialUniform(
+                        WorldStreamObjectsFile.CUTOUT | UNLIT | interior, true));
+        assertArrayEquals(
+                new float[] {0, 1, 0, 6},
+                BgfxWorldStreamRenderer.materialUniform(
+                        WorldStreamObjectsFile.ADDITIVE | interior, false));
+        assertArrayEquals(
+                new float[] {0, 1, 0, 4},
+                BgfxWorldStreamRenderer.materialUniform(
+                        WorldStreamObjectsFile.BLENDED
+                                | interior
+                                | WorldStreamObjectsFile.TWO_SIDED,
+                        false));
+        assertTrue(WorldObjectPicking.validClass(WorldStreamObjectsFile.CUTOUT | interior));
+        var slots = new java.util.HashSet<Integer>();
+        for (int kind = 0; kind <= WorldStreamObjectsFile.ADDITIVE; kind++) {
+            for (int flags : new int[] {0, UNLIT, interior, UNLIT | interior}) {
+                int slot = BgfxWorldStreamRenderer.ObjectFrame.materialSlot(kind | flags);
+                assertTrue(slot >= 0 && slot < 16);
+                assertTrue(slots.add(slot));
+            }
+        }
+        try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            var frame = BgfxWorldStreamRenderer.ObjectFrame.on(stack, false);
+            assertEquals(4f, frame.material(WorldStreamObjectsFile.OPAQUE | interior).get(3));
+            assertEquals(0f, frame.material(WorldStreamObjectsFile.OPAQUE).get(3));
+            assertEquals(
+                    7f, frame.material(WorldStreamObjectsFile.ADDITIVE | UNLIT | interior).get(3));
+        }
+    }
+
     @Test
     void additiveDrawsInTheSortedPassAddingSourceTimesAlpha() {
         assertTrue(WorldStreamObjectsFile.sorted(WorldStreamObjectsFile.ADDITIVE));
