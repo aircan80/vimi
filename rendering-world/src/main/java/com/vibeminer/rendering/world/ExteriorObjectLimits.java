@@ -27,9 +27,10 @@ public final class ExteriorObjectLimits {
      * that lists such a placement draws only the groups whose MOGI box centre lies in it, so each
      * group is drawn once over the map, from this allowance and never from the building pool: the
      * tile's own buildings keep their whole budget. Its owned interior groups, culled by the root's
-     * portal set, come from what its exteriors leave of this allowance. On build 70862 the
-     * Stormwind tile holding its two largest exterior groups (48,30) needs 111,920 vertices and
-     * about 232,000 indices; the other owners need at most 25,383 vertices for exteriors.
+     * portal set, come from what its exteriors leave of this allowance and from the interior
+     * allowance ({@link #LARGE_INTERIOR_VERTICES}). On build 70862 the Stormwind tile holding its
+     * two largest exterior groups (48,30) needs 111,920 vertices and about 232,000 indices; the
+     * other owners need at most 25,383 vertices for exteriors.
      */
     public static final int LARGE_VERTICES = 131_072, LARGE_INDICES = 393_216, LARGE_RANGES = 512;
 
@@ -38,6 +39,20 @@ public final class ExteriorObjectLimits {
      * pixels come from what the tile's own building images leave of the building pixel budget.
      */
     public static final int LARGE_IMAGES = 64;
+
+    /**
+     * The interior allowance of very large buildings drawn by group, on top of what their exteriors
+     * leave of the large allowance. Owned interior groups, culled by the root's portal set, are
+     * admitted only after every such root's exteriors on the tile, so an exterior never draws from
+     * it and never yields to an interior. On build 70862 Stormwind City's 280 interior groups need
+     * at most 448,746 vertices and 1,247,094 indices on one owner tile (48,30) with its exteriors,
+     * 317,674 vertices and 853,878 indices past the large allowance; the large allowance alone left
+     * 115 of them undrawn there.
+     */
+    public static final int LARGE_INTERIOR_VERTICES = 327_680, LARGE_INTERIOR_INDICES = 983_040;
+
+    /** Ranges and opaque image slots of the interior allowance; pixels as {@link #LARGE_IMAGES}. */
+    public static final int LARGE_INTERIOR_RANGES = 1024, LARGE_INTERIOR_IMAGES = 64;
 
     // ---- cutout and blended building surfaces ---------------------------------------------------
 
@@ -79,12 +94,28 @@ public final class ExteriorObjectLimits {
     public static final int MODELS = BUILDING_ROOTS + DOODAD_MODELS;
     public static final int MESHES = BUILDING_MESHES + DOODAD_MODELS;
     public static final int RANGES =
-            BUILDING_RANGES + LARGE_RANGES + MATERIAL_RANGES + DOODAD_RANGES;
+            BUILDING_RANGES
+                    + LARGE_RANGES
+                    + LARGE_INTERIOR_RANGES
+                    + MATERIAL_RANGES
+                    + DOODAD_RANGES;
     public static final int PLACEMENTS = BUILDING_PLACEMENTS + DOODAD_PLACEMENTS;
     public static final int IMAGES =
-            BUILDING_IMAGES + LARGE_IMAGES + MATERIAL_IMAGES + DOODAD_IMAGES;
+            BUILDING_IMAGES
+                    + LARGE_IMAGES
+                    + LARGE_INTERIOR_IMAGES
+                    + MATERIAL_IMAGES
+                    + DOODAD_IMAGES;
     public static final int VERTICES =
-            BUILDING_VERTICES + LARGE_VERTICES + MATERIAL_VERTICES + DOODAD_VERTICES;
+            BUILDING_VERTICES
+                    + LARGE_VERTICES
+                    + LARGE_INTERIOR_VERTICES
+                    + MATERIAL_VERTICES
+                    + DOODAD_VERTICES;
     public static final int INDICES =
-            BUILDING_INDICES + LARGE_INDICES + MATERIAL_INDICES + DOODAD_INDICES;
+            BUILDING_INDICES
+                    + LARGE_INDICES
+                    + LARGE_INTERIOR_INDICES
+                    + MATERIAL_INDICES
+                    + DOODAD_INDICES;
 }

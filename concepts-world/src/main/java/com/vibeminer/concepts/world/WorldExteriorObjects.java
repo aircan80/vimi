@@ -66,6 +66,16 @@ public final class WorldExteriorObjects {
     static final int MAX_LARGE_IMAGES = ExteriorObjectLimits.LARGE_IMAGES;
 
     /**
+     * The interior allowance of roots drawn by group, on top of what their exteriors leave of the
+     * large allowance; never available to an exterior.
+     */
+    static final int MAX_LARGE_INTERIOR_VERTICES = ExteriorObjectLimits.LARGE_INTERIOR_VERTICES;
+
+    static final int MAX_LARGE_INTERIOR_INDICES = ExteriorObjectLimits.LARGE_INTERIOR_INDICES;
+    static final int MAX_LARGE_INTERIOR_RANGES = ExteriorObjectLimits.LARGE_INTERIOR_RANGES;
+    static final int MAX_LARGE_INTERIOR_IMAGES = ExteriorObjectLimits.LARGE_INTERIOR_IMAGES;
+
+    /**
      * BASIC doodad caps, separate from the building caps so buildings are never displaced. The
      * measured reasons for each bound are on {@link ExteriorObjectLimits} (#308): placements were
      * the only cap that bound on Elwynn; a placement is 112 bytes in the objects file and draws its
@@ -1107,21 +1117,25 @@ public final class WorldExteriorObjects {
                             && this.images.size()
                                     <= MAX_IMAGES
                                             + MAX_LARGE_IMAGES
+                                            + MAX_LARGE_INTERIOR_IMAGES
                                             + MAX_MODEL_IMAGES
                                             + MAX_MATERIAL_IMAGES
                             && v
                                     <= MAX_VERTICES
                                             + MAX_LARGE_VERTICES
+                                            + MAX_LARGE_INTERIOR_VERTICES
                                             + MAX_DOODAD_VERTICES
                                             + MAX_MATERIAL_VERTICES
                             && i
                                     <= MAX_INDICES
                                             + MAX_LARGE_INDICES
+                                            + MAX_LARGE_INTERIOR_INDICES
                                             + MAX_DOODAD_INDICES
                                             + MAX_MATERIAL_INDICES
                             && r
                                     <= MAX_RANGES
                                             + MAX_LARGE_RANGES
+                                            + MAX_LARGE_INTERIOR_RANGES
                                             + MAX_DOODAD_RANGES
                                             + MAX_MATERIAL_RANGES
                             && m <= MAX_MESHES + MAX_MODELS
@@ -1591,13 +1605,20 @@ public final class WorldExteriorObjects {
         /** An empty tile's building pool: whether the root could ever fit one alone. */
         ALONE,
         /** What is left of the tile's large allowance. */
-        LARGE
+        LARGE,
+        /**
+         * What is left of the tile's large allowance with the interior allowance added: the owned
+         * interiors of roots drawn by group, after every such root's exteriors.
+         */
+        LARGE_INTERIOR
     }
 
     /** Where resolveBuilding charges a mesh's kept opaque geometry and its images. */
     private enum Charge {
         BUILDING,
-        LARGE
+        LARGE,
+        /** The large allowance, as LARGE, with the interior allowance's image slots added. */
+        LARGE_INTERIOR
     }
 
     /** A drawn root's MOGI-interior groups (flagged) waiting for the interior read pass (#383). */
@@ -2298,9 +2319,10 @@ public final class WorldExteriorObjects {
          * cutout and blended budget come only from what the tile's buildings, doodads and interiors
          * left, so a root drawn by group never displaces any of them. Every limit is checked before
          * anything is resolved; when its cutout and blended ranges do not fit the draws left, only
-         * its opaque ranges are drawn. Its owned interior groups follow its exteriors, from what
-         * they left ({@link #byGroupInteriors}), with its portal set. A root that does not fit, or
-         * keeps nothing, still places the set doodads standing in this tile.
+         * its opaque ranges are drawn. Its owned interior groups follow every split root's
+         * exteriors, from what they left and the interior allowance ({@link #byGroupInteriors}),
+         * with its portal set. A root that does not fit, or keeps nothing, still places the set
+         * doodads standing in this tile.
          */
         private void placeByGroup() {
             // Every split root's exteriors first, then their interiors (as the tile's own roots):
@@ -2549,9 +2571,11 @@ public final class WorldExteriorObjects {
          * without one none is read (GROUP_INTERIOR_NO_PORTALS) and the set is counted
          * ROOT_PORTALS_DROPPED. Each group in order is read from the tile's group reads left, and
          * admitted while its candidate ranges fit the draws left, a mesh is left and its geometry
-         * fits the large allowance left; otherwise it is GROUP_INTERIOR_CAPPED and later ones may
-         * still fit. Admitted meshes are added to {@code built}. Returns the set when an interior
-         * was admitted (its tables charged), else null.
+         * fits what the exteriors left of the large allowance plus the interior allowance ({@link
+         * Allowance#LARGE_INTERIOR}), its images in the large and interior image slots; otherwise
+         * it is GROUP_INTERIOR_CAPPED and later ones may still fit. Admitted meshes are added to
+         * {@code built}. Returns the set when an interior was admitted (its tables charged), else
+         * null.
          */
         private WmoPortalSet byGroupInteriors(
                 ByGroup read, List<Mesh> built, int meshes, long drawn, int[] local) {
@@ -2582,7 +2606,7 @@ public final class WorldExteriorObjects {
             }
             var headers = new WmoFormats.GroupHeader[read.unreadInterior().length];
             interiorPass = true;
-            charge = Charge.LARGE;
+            charge = Charge.LARGE_INTERIOR;
             try {
                 for (int g = 0; g < read.unreadInterior().length; g++) {
                     if (read.unreadInterior()[g]) {
@@ -2610,7 +2634,7 @@ public final class WorldExteriorObjects {
                         local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
                         continue;
                     }
-                    var admitted = new RootBudget(Allowance.LARGE).admit(mesh, local);
+                    var admitted = new RootBudget(Allowance.LARGE_INTERIOR).admit(mesh, local);
                     if (admitted == Admission.DROPPED) {
                         continue; // counted by admit: BATCH_CAPPED, GROUP_EMPTY
                     }
@@ -3193,10 +3217,24 @@ public final class WorldExteriorObjects {
                             ? Admission.OVER
                             : Admission.ADMITTED;
                 }
-                boolean large = allowance == Allowance.LARGE;
-                long capVertices = large ? MAX_LARGE_VERTICES : MAX_VERTICES;
-                long capIndices = large ? MAX_LARGE_INDICES : MAX_INDICES;
-                long capRanges = large ? MAX_LARGE_RANGES : MAX_RANGES;
+                long capVertices =
+                        switch (allowance) {
+                            case LARGE -> MAX_LARGE_VERTICES;
+                            case LARGE_INTERIOR -> MAX_LARGE_VERTICES + MAX_LARGE_INTERIOR_VERTICES;
+                            default -> MAX_VERTICES;
+                        };
+                long capIndices =
+                        switch (allowance) {
+                            case LARGE -> MAX_LARGE_INDICES;
+                            case LARGE_INTERIOR -> MAX_LARGE_INDICES + MAX_LARGE_INTERIOR_INDICES;
+                            default -> MAX_INDICES;
+                        };
+                long capRanges =
+                        switch (allowance) {
+                            case LARGE -> MAX_LARGE_RANGES;
+                            case LARGE_INTERIOR -> MAX_LARGE_RANGES + MAX_LARGE_INTERIOR_RANGES;
+                            default -> MAX_RANGES;
+                        };
                 pendingVertices += meshVertices;
                 pendingIndices += mesh.indices().length;
                 if (pendingVertices > capVertices + MAX_MATERIAL_VERTICES
@@ -3218,19 +3256,19 @@ public final class WorldExteriorObjects {
                 long usedVertices =
                         switch (allowance) {
                             case TILE -> Builder.this.vertices;
-                            case LARGE -> largeVertices;
+                            case LARGE, LARGE_INTERIOR -> largeVertices;
                             case ALONE -> 0;
                         };
                 long usedIndices =
                         switch (allowance) {
                             case TILE -> Builder.this.indices;
-                            case LARGE -> largeIndices;
+                            case LARGE, LARGE_INTERIOR -> largeIndices;
                             case ALONE -> 0;
                         };
                 long usedRanges =
                         switch (allowance) {
                             case TILE -> Builder.this.ranges;
-                            case LARGE -> largeRanges;
+                            case LARGE, LARGE_INTERIOR -> largeRanges;
                             case ALONE -> 0;
                         };
                 if (vertices > capVertices - usedVertices
@@ -3803,7 +3841,7 @@ public final class WorldExteriorObjects {
                         indices += used;
                         ranges += kept.size();
                     }
-                    case LARGE -> {
+                    case LARGE, LARGE_INTERIOR -> {
                         largeVertices += vertexCount;
                         largeIndices += used;
                         largeRanges += kept.size();
@@ -4456,7 +4494,11 @@ public final class WorldExteriorObjects {
                     switch (pool) {
                         case BUILDING ->
                                 large
-                                        ? largeImagesRead >= MAX_LARGE_IMAGES
+                                        ? largeImagesRead
+                                                >= MAX_LARGE_IMAGES
+                                                        + (charge == Charge.LARGE_INTERIOR
+                                                                ? MAX_LARGE_INTERIOR_IMAGES
+                                                                : 0)
                                         : imagesRead >= MAX_IMAGES;
                         case MATERIAL -> materialImagesRead >= MAX_MATERIAL_IMAGES;
                         case DOODAD -> modelImagesRead >= MAX_MODEL_IMAGES;

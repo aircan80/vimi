@@ -842,7 +842,8 @@ final class WorldStreamObjectsFileTest {
         // The pixel cap is the HIGH tier's chain budgets: 2,796,203 + 699,051 + 1,398,101.
         assertEquals(4_893_355, WorldStreamObjectsFile.MAX_PIXELS);
         // Every table at its cap, the portal tables (#383) included, fits the ceiling, which is
-        // derived from them (#308): 33 MiB with the vertex colours of #375 and the large allowance.
+        // derived from them (#308): 33 MiB with the vertex colours of #375 and the large allowance,
+        // 46 MiB with the interior allowance of roots drawn by group.
         long caps =
                 WorldStreamObjectsFile.length(
                                 WorldStreamObjectsFile.MAX_MODELS,
@@ -860,6 +861,7 @@ final class WorldStreamObjectsFileTest {
                                 WmoPortalSet.MAX_TILE_VERTICES,
                                 WmoPortalSet.MAX_TILE_REFS);
         assertTrue(caps > (25 << 20) && caps <= WorldStreamObjectsFile.MAX_BYTES, "caps " + caps);
+        assertEquals(46 << 20, WorldStreamObjectsFile.MAX_BYTES);
         // The ceiling itself is enforced by the reference and by the tile header.
         assertThrows(
                 IllegalArgumentException.class,
