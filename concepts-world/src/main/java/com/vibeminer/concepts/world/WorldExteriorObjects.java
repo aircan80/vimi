@@ -1411,6 +1411,8 @@ public final class WorldExteriorObjects {
                 place(metadata.worldObjects());
                 fitMaterialDraws();
                 WorldStageTimings.stop("objects.phase.buildings", phase);
+                // LOD0 group files this tile read (MAX_GROUPS), for the measurement probe.
+                WorldStageTimings.value("objects.groups.readPerTile", groupsRead);
                 // Admission ran largest first; the set keeps obj0 source order.
                 placements.sort(java.util.Comparator.comparingInt(Placement::ordinal));
                 // Buildings first, then MDDF doodads, then the drawn buildings' doodad sets, and
