@@ -356,6 +356,33 @@ class WmoFormatsTest {
     }
 
     @Test
+    void groupInfoBoundsAreRetainedWithTheFlags() {
+        var b = buffer(64);
+        b.putInt(0, 0x8).putFloat(4, -10).putFloat(8, -20).putFloat(12, -3);
+        b.putFloat(16, 30).putFloat(20, 40).putFloat(24, 5).putInt(28, -1);
+        b.putInt(32, 0x2000).putFloat(36, 100).putFloat(40, 200).putFloat(44, 0);
+        b.putFloat(48, 110).putFloat(52, 210).putFloat(56, 1).putInt(60, -1);
+        var root = WmoFormats.root(rootWithGroups(2, chunk("MOGI", b.array())), () -> false);
+        assertTrue(root.groupInfoBoundsRetained());
+        assertEquals(new WorldPlacements.Vec3(-10, -20, -3), root.groupInfoLower(0));
+        assertEquals(new WorldPlacements.Vec3(30, 40, 5), root.groupInfoUpper(0));
+        assertEquals(new WorldPlacements.Vec3(100, 200, 0), root.groupInfoLower(1));
+        assertEquals(new WorldPlacements.Vec3(110, 210, 1), root.groupInfoUpper(1));
+        assertThrows(IndexOutOfBoundsException.class, () -> root.groupInfoLower(2));
+        // An inverted or non-finite box drops every bound, never the flags.
+        b.putFloat(36, 120);
+        var inverted = WmoFormats.root(rootWithGroups(2, chunk("MOGI", b.array())), () -> false);
+        assertTrue(inverted.groupInfoRetained());
+        assertFalse(inverted.groupInfoBoundsRetained());
+        assertThrows(IllegalStateException.class, () -> inverted.groupInfoLower(0));
+        b.putFloat(36, Float.NaN);
+        assertFalse(
+                WmoFormats.root(rootWithGroups(2, chunk("MOGI", b.array())), () -> false)
+                        .groupInfoBoundsRetained());
+        assertFalse(WmoFormats.root(root(), () -> false).groupInfoBoundsRetained());
+    }
+
+    @Test
     void absentMismatchedPartialDuplicateOrOverBudgetGroupInfoIsNotRetained() {
         var absent = WmoFormats.root(root(), () -> false);
         assertFalse(absent.groupInfoRetained());

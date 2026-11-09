@@ -194,6 +194,7 @@ public final class WmoFormats {
         private final Doodads doodads;
         private final Portals portals;
         private final long[] groupInfoFlags;
+        private final float[] groupInfoBounds;
 
         private Root(
                 RootHeader h,
@@ -206,8 +207,10 @@ public final class WmoFormats {
                 GroupNames gn,
                 Doodads d,
                 Portals p,
-                long[] gi) {
+                long[] gi,
+                float[] gb) {
             groupInfoFlags = gi;
+            groupInfoBounds = gb;
             groupNames = gn;
             doodads = d;
             portals = p;
@@ -288,6 +291,34 @@ public final class WmoFormats {
                 throw new IllegalStateException("Group info not retained");
             }
             return groupInfoFlags[group];
+        }
+
+        /**
+         * True when every LOD0 group's MOGI bounds were retained with its flags: finite, not
+         * inverted, and within the root fact budget. Only a hint about where a group lies, in raw
+         * WMO-local axes; the group's own MOGP bounds are the authority once it is read.
+         */
+        public boolean groupInfoBoundsRetained() {
+            return groupInfoBounds != null;
+        }
+
+        /** The recorded MOGI lower corner of LOD0 group {@code group}, raw WMO-local axes. */
+        public Vec3 groupInfoLower(int group) {
+            return groupInfoCorner(group, 0);
+        }
+
+        /** The recorded MOGI upper corner of LOD0 group {@code group}, raw WMO-local axes. */
+        public Vec3 groupInfoUpper(int group) {
+            return groupInfoCorner(group, 3);
+        }
+
+        private Vec3 groupInfoCorner(int group, int offset) {
+            if (groupInfoBounds == null) {
+                throw new IllegalStateException("Group bounds not retained");
+            }
+            Objects.checkIndex(group, groupInfoBounds.length / 6);
+            int at = group * 6 + offset;
+            return new Vec3(groupInfoBounds[at], groupInfoBounds[at + 1], groupInfoBounds[at + 2]);
         }
     }
 
@@ -862,6 +893,10 @@ public final class WmoFormats {
                         infoDuplicate,
                         infoAt,
                         infoBytes);
+        var groupBounds =
+                groupInfo == null
+                        ? null
+                        : groupBounds(input, budget, canceled, groupInfo.length, infoAt);
         return new Root(
                 header,
                 materials,
@@ -873,7 +908,39 @@ public final class WmoFormats {
                 groupNames,
                 doodads,
                 portals,
-                groupInfo);
+                groupInfo,
+                groupBounds);
+    }
+
+    /**
+     * MOGI bounds (six floats per group, lower then upper corner), claimed after the flags; null
+     * when any is not finite or inverted, or they do not fit the fact budget. The flags stay
+     * retained either way.
+     */
+    private static float[] groupBounds(
+            ByteBuffer input, Budget budget, BooleanSupplier canceled, int groups, int infoAt) {
+        if (!budget.tryClaim(64L + 24L * groups)) {
+            return null;
+        }
+        var bounds = new float[groups * 6];
+        for (int g = 0; g < groups; g++) {
+            if ((g & 255) == 0) {
+                check(canceled);
+            }
+            for (int i = 0; i < 6; i++) {
+                float value = input.getFloat(infoAt + g * 32 + 4 + i * 4);
+                if (!Float.isFinite(value)) {
+                    return null;
+                }
+                bounds[g * 6 + i] = value;
+            }
+            for (int i = 0; i < 3; i++) {
+                if (bounds[g * 6 + i] > bounds[g * 6 + 3 + i]) {
+                    return null;
+                }
+            }
+        }
+        return bounds;
     }
 
     /**

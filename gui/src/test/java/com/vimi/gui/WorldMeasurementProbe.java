@@ -271,6 +271,63 @@ public final class WorldMeasurementProbe {
         }
     }
 
+    /**
+     * One prepared tile's building use: vertices and indices of its building (WMO) models, the
+     * total of every pool, building placements and its root outcomes, so per-tile budgets can be
+     * compared before and after a change.
+     */
+    private static void printTileUsage(
+            String scenario,
+            WorldFormats.Tile tile,
+            com.vibeminer.concepts.world.WorldExteriorObjects.TileObjects set) {
+        long vertices = 0, indices = 0;
+        for (var model : set.models()) {
+            if (model.doodad()) continue;
+            for (var mesh : model.meshes()) {
+                vertices += mesh.vertexCount();
+                indices += mesh.indices().remaining();
+            }
+        }
+        long buildings =
+                set.placements().stream()
+                        .filter(
+                                p ->
+                                        p.kind()
+                                                == com.vibeminer.concepts.world.WorldExteriorObjects
+                                                        .Kind.BUILDING)
+                        .count();
+        long wanted = Long.getLong("probe.root", 0);
+        boolean drawn =
+                set.models().stream().anyMatch(m -> !m.doodad() && m.rootId() == wanted);
+        say(
+                String.format(
+                        Locale.ROOT,
+                        "PROBE tile %s %d,%d: building vertices %d, indices %d; all pools vertices"
+                                + " %d, indices %d; buildings %d; roots drawn %d, capped %d, by group %d;"
+                                + " groups drawn %d, other tile %d%s",
+                        scenario,
+                        tile.x(),
+                        tile.y(),
+                        vertices,
+                        indices,
+                        set.vertices(),
+                        set.indices(),
+                        buildings,
+                        set.count(
+                                com.vibeminer.concepts.world.WorldExteriorObjects.Count.ROOT_DRAWN),
+                        set.count(
+                                com.vibeminer.concepts.world.WorldExteriorObjects.Count.ROOT_CAPPED),
+                        set.count(
+                                com.vibeminer.concepts.world.WorldExteriorObjects.Count
+                                        .ROOT_BY_GROUP),
+                        set.count(
+                                com.vibeminer.concepts.world.WorldExteriorObjects.Count.GROUP_DRAWN),
+                        set.count(
+                                com.vibeminer.concepts.world.WorldExteriorObjects.Count
+                                        .GROUP_OTHER_TILE),
+                        wanted == 0 ? "" : "; root " + wanted + (drawn ? " drawn" : " not drawn")));
+    }
+
     /** As the World view, unless {@code probe.interiors=false} measures exteriors only (#383). */
     static com.vibeminer.concepts.world.WorldExteriorObjects.Interiors probeInteriors(
             WorldService.MapInfo map) {
@@ -332,6 +389,7 @@ public final class WorldMeasurementProbe {
                             set.tallyCounts();
                             if (pass == 1) usage.add(set);
                             if (pass == 1) printRoot(scenario.name(), tile, set);
+                            if (pass == 1) printTileUsage(scenario.name(), tile, set);
                         } catch (RuntimeException failed) {
                             WorldStageTimings.stop("prep.objectsFailed", prepared);
                             say("PROBE objects failed on " + tile + ": " + failed);

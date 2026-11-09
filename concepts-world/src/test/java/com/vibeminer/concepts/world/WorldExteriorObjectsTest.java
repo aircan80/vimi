@@ -45,7 +45,8 @@ class WorldExteriorObjectsTest {
                     WorldExteriorObjects.Count.PLACEMENT_CONFLICTING,
                     WorldExteriorObjects.Count.PLACEMENT_CAPPED,
                     WorldExteriorObjects.Count.PLACEMENT_FAILED_ROOT,
-                    WorldExteriorObjects.Count.PLACEMENT_EMPTY);
+                    WorldExteriorObjects.Count.PLACEMENT_EMPTY,
+                    WorldExteriorObjects.Count.PLACEMENT_OTHER_TILE);
 
     // ---- authored chunk streams -------------------------------------------------------------
 
@@ -92,7 +93,23 @@ class WorldExteriorObjectsTest {
             float heading,
             float roll,
             int scale,
-            float extent) {
+            float extent,
+            float[] bounds) {
+        Modf(
+                long id,
+                long uid,
+                int flags,
+                float x,
+                float y,
+                float z,
+                float pitch,
+                float heading,
+                float roll,
+                int scale,
+                float extent) {
+            this(id, uid, flags, x, y, z, pitch, heading, roll, scale, extent, null);
+        }
+
         Modf(
                 long id,
                 long uid,
@@ -116,11 +133,20 @@ class WorldExteriorObjectsTest {
             return new Modf(id, uid, flags, x, y, z, pitch, heading, roll, scale, half);
         }
 
+        /** The same placement with recorded MODF bounds from raw lower to raw upper corner. */
+        Modf bounded(float... lowerThenUpper) {
+            return new Modf(
+                    id, uid, flags, x, y, z, pitch, heading, roll, scale, extent, lowerThenUpper);
+        }
+
         byte[] bytes() {
             var b = buffer(64);
             b.putInt((int) id).putInt((int) uid).put(floats(x, y, z));
             b.put(floats(pitch, heading, roll))
-                    .put(floats(-extent, -extent, -extent, extent, extent, extent));
+                    .put(
+                            bounds != null
+                                    ? floats(bounds)
+                                    : floats(-extent, -extent, -extent, extent, extent, extent));
             b.putShort((short) flags).putShort((short) 0).putShort((short) 0);
             b.putShort((short) scale);
             return b.array();
@@ -5169,6 +5195,365 @@ class WorldExteriorObjectsTest {
             }
             assertTrue(failedOnce.get(), "the read-ahead met the failure");
             assertEquals(1, files.opens(flaky), "one successful open: the consumer's own");
+        }
+    }
+
+    // ---- very large placements drawn by group -----------------------------------------------
+
+    private static final long BIG = 950, NORMAL = 960;
+
+    /**
+     * A placement across the border of the authored tile (7,19) and its neighbour (8,19): raw
+     * position (10400, 0, 4200) is native (12866.67, 6666.67) in tile 7,19, and the recorded bounds
+     * reach native x 12566.67, in tile 8. Heading 0: native x = 12866.67 - local x, native y =
+     * 6666.67 - local y, so a group whose MOGI box centre has local x 200 belongs to 8,19.
+     */
+    private static Modf largePlacement() {
+        return new Modf(BIG, 77, 0x8, 10400, 0, 4200, 0, 0, 0, 1024)
+                .bounded(10300, -10, 4100, 10500, 10, 4500);
+    }
+
+    /** MOGI with flags and a 2-unit box around each local (x, 0, 0) centre. */
+    private static byte[] mogiBoxes(int[] flags, float[] centres) {
+        var b = buffer(32 * flags.length);
+        for (int i = 0; i < flags.length; i++) {
+            b.putInt(i * 32, flags[i]);
+            b.putFloat(i * 32 + 4, centres[i] - 1).putFloat(i * 32 + 8, -1);
+            b.putFloat(i * 32 + 12, -1).putFloat(i * 32 + 16, centres[i] + 1);
+            b.putFloat(i * 32 + 20, 1).putFloat(i * 32 + 24, 1);
+        }
+        return chunk("MOGI", b.array());
+    }
+
+    /** One exterior group of {@code vertices} vertices drawing one triangle. */
+    private static byte[] bigGroup(int flags, int vertices) {
+        return group(flags, vertices, 1, List.of(new Batch(0, 3, 0, 0)));
+    }
+
+    /**
+     * Groups {@code BIG + 1 + g} with the given flags, vertex counts and MOGI centres, under root
+     * {@code BIG}, with {@code extras} chunks.
+     */
+    private static void putBig(
+            Fixture f, int[] flags, int[] vertices, float[] centres, byte[]... extras) {
+        var gfid = new long[flags.length];
+        for (int g = 0; g < flags.length; g++) {
+            gfid[g] = BIG + 1 + g;
+            f.files.sources.put(gfid[g], bigGroup(flags[g], vertices[g]));
+        }
+        var chunks = new ArrayList<byte[]>();
+        chunks.add(mogiBoxes(flags, centres));
+        chunks.addAll(List.of(extras));
+        f.files.sources.put(
+                BIG,
+                root(
+                        flags.length,
+                        gfid,
+                        List.of(new Material(0, IMAGE, 0)),
+                        chunks.toArray(byte[][]::new)));
+    }
+
+    /** Files whose WDT also records tile ({@code x}, {@code y}) with the same obj0. */
+    private static WorldFormats.Tile alsoRecord(
+            WorldTerrainTextureSourceTest.Files files, int x, int y) {
+        var wdt = ByteBuffer.wrap(files.sources.get(1L)).order(ByteOrder.LITTLE_ENDIAN);
+        int ordinal = x * 64 + y;
+        wdt.putInt(12 + 40 + 8 + ordinal * 8, 1);
+        int at = 12 + 40 + 8 + 32768 + 8 + ordinal * 32;
+        wdt.putInt(at, 2).putInt(at + 4, 4).putInt(at + 12, 3);
+        return new WorldFormats.Tile(x, y, 2, 0, 0, 4, 0, 3, 0, 0);
+    }
+
+    private static WorldExteriorObjects.TileObjects openWorldOn(Fixture f, WorldFormats.Tile tile) {
+        return WorldExteriorObjects.prepare(
+                f.engine,
+                f.scope,
+                tile,
+                Cancellation.NONE,
+                WorldExteriorObjects.ModelReader.STANDARD,
+                WorldExteriorObjects.ImageDetail.STANDARD,
+                WorldExteriorObjects.RETAINED_SOURCE_BYTES,
+                WorldExteriorObjects.Interiors.OPEN_WORLD,
+                0);
+    }
+
+    /** The sorted group ordinals the set draws of {@code root}; empty when not drawn. */
+    private static List<Integer> groupsOf(WorldExteriorObjects.TileObjects set, long root) {
+        return set.models().stream()
+                .filter(m -> !m.doodad() && m.rootId() == root)
+                .flatMap(m -> m.meshes().stream())
+                .map(WorldExteriorObjects.Mesh::groupOrdinal)
+                .sorted()
+                .toList();
+    }
+
+    @Test
+    void ownersFollowTheGroupBoxCentresWithinTheRecordedBounds() {
+        var record = declared(largePlacement());
+        var heading = WorldExteriorObjects.Rotation.heading(1, 0);
+        double x = 51200.0 / 3 - 4200, y = 51200.0 / 3 - 10400;
+        var here = WorldExteriorObjects.Owner.of(record, x, y, 1, heading, 7, 19);
+        var there = WorldExteriorObjects.Owner.of(record, x, y, 1, heading, 8, 19);
+        assertTrue(here.owns(x, y));
+        assertFalse(there.owns(x, y));
+        assertFalse(here.owns(x - 200, y));
+        assertTrue(there.owns(x - 200, y));
+        // A point past the recorded bounds belongs to the nearest tile they cover, so a group
+        // never belongs to a tile that does not list the placement.
+        assertTrue(there.owns(x - 5000, y));
+        assertTrue(here.owns(x + 5000, y + 5000));
+        // Bounds within one tile: never drawn by group.
+        var small =
+                declared(
+                        new Modf(BIG, 77, 0x8, 10400, 0, 4200, 0, 0, 0, 1024)
+                                .bounded(10300, -10, 4150, 10500, 10, 4250));
+        assertEquals(null, WorldExteriorObjects.Owner.of(small, x, y, 1, heading, 7, 19));
+        assertEquals(7, WorldExteriorObjects.Owner.tile(12_866.67));
+        assertEquals(8, WorldExteriorObjects.Owner.tile(12_666.67));
+        assertEquals(0, WorldExteriorObjects.Owner.tile(1e9));
+        assertEquals(63, WorldExteriorObjects.Owner.tile(-1e9));
+    }
+
+    @Test
+    void aVeryLargePlacementIsDrawnByGroupEachGroupByOneTile() {
+        // Two 60,000-vertex exterior groups are over an empty tile's 98,304 building vertices, so
+        // no tile could draw the root whole. Each tile that lists it draws the group whose MOGI
+        // box centre it holds, from the large allowance: together exactly every group, once.
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecord(files, 8, 19);
+        try (var f = new Fixture(List.of(largePlacement()), files)) {
+            putBig(f, new int[] {EXT, EXT}, new int[] {60_000, 60_000}, new float[] {0, 200});
+            try (var here = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
+                assertEquals(List.of(0), groupsOf(here, BIG));
+                assertEquals(List.of(1), groupsOf(there, BIG));
+                for (var set : List.of(here, there)) {
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                    assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                    assertPlacementsAccounted(set, 1);
+                    assertEquals(60_000, set.vertices());
+                }
+                // Repeating a tile gives the same set: the rule reads only the placement and root.
+                try (var again = f.runOpenWorld()) {
+                    assertEquals(counts(here), counts(again));
+                    assertEquals(groupsOf(here, BIG), groupsOf(again, BIG));
+                }
+            }
+        }
+    }
+
+    @Test
+    void aPlacementInOneTileOrOneThatFitsATileIsNeverDrawnByGroup() {
+        // The same oversized root with recorded bounds inside the one tile is capped, as before.
+        var inside =
+                new Modf(BIG, 77, 0x8, 10400, 0, 4200, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4150, 10500, 10, 4250);
+        try (var f = new Fixture(List.of(inside))) {
+            putBig(f, new int[] {EXT, EXT}, new int[] {60_000, 60_000}, new float[] {0, 200});
+            try (var set = f.runOpenWorld()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
+            }
+        }
+        // A placement across the border whose root fits an empty tile is drawn whole by every
+        // tile that lists it, exactly as before: only a root no tile could draw is split.
+        try (var f = new Fixture(List.of(largePlacement()))) {
+            putBig(f, new int[] {EXT, EXT}, new int[] {3, 3}, new float[] {0, 200});
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0, 1), groupsOf(set, BIG));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+            }
+        }
+    }
+
+    @Test
+    void aMultiTileRootThatFitsAnEmptyTileButNotWhatIsLeftIsCappedWhole() {
+        // Sized alone, the 60,000-vertex border root fits an empty tile, so it is never split;
+        // a larger single-tile building admitted first leaves too little for it, and it is
+        // capped whole as without the rule.
+        var normal = Modf.of(NORMAL, 2, 0x8).sized(5000);
+        try (var f = new Fixture(List.of(largePlacement(), normal))) {
+            putBig(f, new int[] {EXT}, new int[] {60_000}, new float[] {0});
+            f.files.sources.put(NORMAL + 1, bigGroup(EXT, 50_000));
+            f.files.sources.put(NORMAL, root(NORMAL + 1));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0), groupsOf(set, NORMAL));
+                assertEquals(List.of(), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+            }
+        }
+    }
+
+    @Test
+    void theLargeAllowanceNeverCrowdsOutTheTilesOwnBuildings() {
+        // A 90,000-vertex building fills most of the tile's 98,304 building vertices; the large
+        // placement's 60,000-vertex share is drawn beside it from the large allowance.
+        var normal = Modf.of(NORMAL, 2, 0x8);
+        try (var f = new Fixture(List.of(largePlacement(), normal))) {
+            putBig(f, new int[] {EXT, EXT}, new int[] {60_000, 60_000}, new float[] {0, 200});
+            f.files.sources.put(NORMAL + 1, bigGroup(EXT, 45_000));
+            f.files.sources.put(NORMAL, root(NORMAL + 1, NORMAL + 1));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0, 1), groupsOf(set, NORMAL));
+                assertEquals(List.of(0), groupsOf(set, BIG));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(150_000, set.vertices());
+            }
+        }
+        // A share over the large allowance (three owned groups, 150,000 vertices) caps only the
+        // large placement on this tile; the tile's building is drawn as before.
+        try (var f = new Fixture(List.of(largePlacement(), normal))) {
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, EXT, EXT},
+                    new int[] {50_000, 60_000, 50_000, 50_000},
+                    new float[] {0, 200, 10, 20});
+            f.files.sources.put(NORMAL + 1, bigGroup(EXT, 45_000));
+            f.files.sources.put(NORMAL, root(NORMAL + 1, NORMAL + 1));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0, 1), groupsOf(set, NORMAL));
+                assertEquals(List.of(), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertPlacementsAccounted(set, 2);
+            }
+        }
+    }
+
+    @Test
+    void aByGroupRootsInteriorsUseWhatItsExteriorsLeaveOfTheLargeAllowance() {
+        // The tile's building takes 95,000 of its 98,304 building vertices, so a 20,000-vertex
+        // interior could not fit what the building pool has left; the large placement's owned
+        // interior is drawn from the large allowance after its 60,000-vertex exterior instead.
+        // The interior the neighbour owns is not read here.
+        var normal = Modf.of(NORMAL, 2, 0x8);
+        try (var f = new Fixture(List.of(largePlacement(), normal))) {
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, INT, INT},
+                    new int[] {60_000, 60_000, 20_000, 20_000},
+                    new float[] {0, 200, 5, 205});
+            f.files.sources.put(NORMAL + 1, bigGroup(EXT, 47_500));
+            f.files.sources.put(NORMAL, root(NORMAL + 1, NORMAL + 1));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0, 2), groupsOf(set, BIG));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(null, f.files.opens.get(BIG + 4), "the neighbour's interior");
+            }
+        }
+    }
+
+    @Test
+    void aTileOwningNoGroupOfALargePlacementDrawsNoneOfIt() {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecord(files, 8, 19);
+        try (var f = new Fixture(List.of(largePlacement()), files)) {
+            putBig(f, new int[] {EXT, EXT}, new int[] {60_000, 60_000}, new float[] {200, 250});
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(), groupsOf(set, BIG));
+                assertEquals(
+                        Map.of(
+                                WorldExteriorObjects.Count.PLACEMENT_OTHER_TILE, 1,
+                                WorldExteriorObjects.Count.ROOT_OTHER_TILE, 1,
+                                WorldExteriorObjects.Count.GROUP_OTHER_TILE, 2),
+                        counts(set));
+                assertPlacementsAccounted(set, 1);
+            }
+            try (var set = openWorldOn(f, neighbour)) {
+                assertEquals(List.of(0, 1), groupsOf(set, BIG));
+            }
+        }
+    }
+
+    @Test
+    void withoutMogiBoundsTheWholeRootBelongsToTheTileAtTheBoundsCentre() {
+        // The recorded bounds' centre, native x 12766.67, lies in tile 8,19: without MOGI boxes
+        // that tile draws every group (120,000 vertices fit the large allowance), 7,19 none.
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecord(files, 8, 19);
+        try (var f = new Fixture(List.of(largePlacement()), files)) {
+            f.files.sources.put(BIG + 1, bigGroup(EXT, 60_000));
+            f.files.sources.put(BIG + 2, bigGroup(EXT, 60_000));
+            f.files.sources.put(BIG, root(BIG + 1, BIG + 2));
+            try (var here = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
+                assertEquals(List.of(), groupsOf(here, BIG));
+                assertEquals(1, here.count(WorldExteriorObjects.Count.ROOT_OTHER_TILE));
+                assertEquals(List.of(0, 1), groupsOf(there, BIG));
+                assertEquals(1, there.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+            }
+        }
+    }
+
+    @Test
+    void setDoodadsOfALargePlacementArePlacedByTheTileTheyStandIn() {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecord(files, 8, 19);
+        var defs =
+                List.of(
+                        new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 1}, 1),
+                        new Modd(0, 200, 0, 0, new double[] {0, 0, 0, 1}, 1),
+                        new Modd(0, 210, 0, 0, new double[] {0, 0, 0, 1}, 1));
+        try (var f = new Fixture(List.of(largePlacement()), files)) {
+            putModel(f, MODEL, model());
+            putBig(
+                    f,
+                    new int[] {EXT, EXT},
+                    new int[] {60_000, 60_000},
+                    new float[] {0, 200},
+                    doodadChunks(new int[][] {{0, 3}}, new long[] {MODEL}, defs));
+            try (var here = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
+                assertEquals(1, here.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(2, here.count(WorldExteriorObjects.Count.SET_DOODAD_OTHER_TILE));
+                assertEquals(2, there.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(1, there.count(WorldExteriorObjects.Count.SET_DOODAD_OTHER_TILE));
+                var placed =
+                        here.placements().stream()
+                                .filter(p -> p.kind() == WorldExteriorObjects.Kind.SET_DOODAD)
+                                .toList();
+                assertEquals(0, placed.getFirst().ordinal());
+            }
+        }
+    }
+
+    @Test
+    void aByGroupRootTakesItsOpaqueImagesFromItsOwnSlots() {
+        // The tile's building registers all 64 building images; the large placement's image
+        // still draws, from the slots kept for roots drawn by group.
+        var normal = Modf.of(NORMAL, 2, 0x8);
+        var materials = new ArrayList<Material>();
+        var batches = new ArrayList<Batch>();
+        for (int i = 0; i < WorldExteriorObjects.MAX_IMAGES; i++) {
+            materials.add(new Material(0, 1000 + i, 0));
+            batches.add(new Batch(3 * i, 3, 0, i));
+        }
+        try (var f = new Fixture(List.of(largePlacement(), normal))) {
+            putBig(f, new int[] {EXT, EXT}, new int[] {60_000, 60_000}, new float[] {0, 200});
+            for (int i = 0; i < WorldExteriorObjects.MAX_IMAGES; i++) {
+                f.files.sources.put(1000L + i, blp(4, 4, 1, 0x0841 * (i + 1)));
+            }
+            f.files.sources.put(
+                    NORMAL + 1, group(EXT, 3, WorldExteriorObjects.MAX_IMAGES, batches));
+            f.files.sources.put(NORMAL, root(1, new long[] {NORMAL + 1}, materials));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0), groupsOf(set, NORMAL));
+                assertEquals(List.of(0), groupsOf(set, BIG));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_IMAGE_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_CAPPED));
+                assertEquals(WorldExteriorObjects.MAX_IMAGES + 1, set.images().size());
+            }
         }
     }
 }

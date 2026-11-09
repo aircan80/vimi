@@ -5,9 +5,9 @@ package com.vibeminer.rendering.world;
  * (WorldExteriorObjects) and the objects file and renderer (WorldStreamObjectsFile), so the pools
  * and the file's tables are derived from the same numbers and cannot drift apart.
  *
- * <p>Three pools never displace each other: opaque buildings, the cutout and blended surfaces of
- * buildings, and doodads (MDDF and WMO set doodads). Creature models share whatever room the file
- * tables leave after them.
+ * <p>Four pools never displace each other: opaque buildings, very large buildings drawn by group,
+ * the cutout and blended surfaces of buildings, and doodads (MDDF and WMO set doodads). Creature
+ * models share whatever room the file tables leave after them.
  */
 public final class ExteriorObjectLimits {
     private ExteriorObjectLimits() {}
@@ -17,6 +17,27 @@ public final class ExteriorObjectLimits {
     public static final int BUILDING_PLACEMENTS = 64, BUILDING_ROOTS = 24;
     public static final int BUILDING_MESHES = 256, BUILDING_RANGES = 1024, BUILDING_IMAGES = 64;
     public static final int BUILDING_VERTICES = 98_304, BUILDING_INDICES = 294_912;
+
+    // ---- very large buildings drawn by group ----------------------------------------------------
+
+    /**
+     * The opaque allowance of very large buildings drawn by group: a placement whose recorded
+     * bounds cross a tile border and whose root's exterior alone is over the opaque building pool
+     * (Stormwind City's 9 exterior groups need 150,358 vertices and 322,080 indices). Every tile
+     * that lists such a placement draws only the groups whose MOGI box centre lies in it, so each
+     * group is drawn once over the map, from this allowance and never from the building pool: the
+     * tile's own buildings keep their whole budget. The placement's interior groups the tile owns
+     * use what its exteriors leave of it. On build 70862 the Stormwind tile holding its two largest
+     * exterior groups (48,30) needs 111,920 vertices and about 232,000 indices; the other owners
+     * need at most 25,383 vertices.
+     */
+    public static final int LARGE_VERTICES = 131_072, LARGE_INDICES = 393_216, LARGE_RANGES = 512;
+
+    /**
+     * Opaque images of very large buildings drawn by group, apart from the building images; their
+     * pixels come from what the tile's own building images leave of the building pixel budget.
+     */
+    public static final int LARGE_IMAGES = 64;
 
     // ---- cutout and blended building surfaces ---------------------------------------------------
 
@@ -57,9 +78,13 @@ public final class ExteriorObjectLimits {
 
     public static final int MODELS = BUILDING_ROOTS + DOODAD_MODELS;
     public static final int MESHES = BUILDING_MESHES + DOODAD_MODELS;
-    public static final int RANGES = BUILDING_RANGES + MATERIAL_RANGES + DOODAD_RANGES;
+    public static final int RANGES =
+            BUILDING_RANGES + LARGE_RANGES + MATERIAL_RANGES + DOODAD_RANGES;
     public static final int PLACEMENTS = BUILDING_PLACEMENTS + DOODAD_PLACEMENTS;
-    public static final int IMAGES = BUILDING_IMAGES + MATERIAL_IMAGES + DOODAD_IMAGES;
-    public static final int VERTICES = BUILDING_VERTICES + MATERIAL_VERTICES + DOODAD_VERTICES;
-    public static final int INDICES = BUILDING_INDICES + MATERIAL_INDICES + DOODAD_INDICES;
+    public static final int IMAGES =
+            BUILDING_IMAGES + LARGE_IMAGES + MATERIAL_IMAGES + DOODAD_IMAGES;
+    public static final int VERTICES =
+            BUILDING_VERTICES + LARGE_VERTICES + MATERIAL_VERTICES + DOODAD_VERTICES;
+    public static final int INDICES =
+            BUILDING_INDICES + LARGE_INDICES + MATERIAL_INDICES + DOODAD_INDICES;
 }
