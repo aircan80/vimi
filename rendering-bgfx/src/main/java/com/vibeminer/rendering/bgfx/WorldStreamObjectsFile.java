@@ -57,7 +57,7 @@ final class WorldStreamObjectsFile {
     // as blocks (#374); a reader before #374 refuses a nonzero mask there. Version 7 (#383 step
     // 3a): mesh group ordinals and the portal tables of building roots on instance maps, whose
     // counts follow at header bytes 152-171. Version 8 (#383): the INTERIOR_LIGHT range flag, an
-    // interior group lit by its vertex colours (MOCV plus the root's ambient) instead of the sun.
+    // interior group lit by its vertex colours (its raw MOCV) instead of the sun.
     static final int VERSION = 8, HEADER_BYTES = 256;
     // The tables are the sums of the producer's pools (ExteriorObjectLimits): opaque buildings,
     // their cutout and blended surfaces, and doodads. Creature models share whatever room remains.
@@ -120,7 +120,7 @@ final class WorldStreamObjectsFile {
 
     /**
      * Range flag (version 8, #383): a range of an interior WMO group whose vertex colours hold its
-     * light (MOCV plus the root's MOHD ambient), drawn with that light instead of the World sun.
+     * light (its raw MOCV), drawn with that light instead of the World sun.
      */
     static final int INTERIOR_LIGHT =
             com.vibeminer.rendering.world.WorldObjectPicking.INTERIOR_LIGHT;

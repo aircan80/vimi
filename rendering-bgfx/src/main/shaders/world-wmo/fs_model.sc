@@ -4,7 +4,7 @@ SAMPLER2D(s_wmoDiffuse, 0);
 // x: alpha-test reference (0 never discards); y: 1 outputs sampled alpha for blending, 0 outputs 1;
 // z: 1 turns the alpha test into an alpha-to-coverage ramp around the reference (multisampled);
 // w: 1 unlit (full intensity, no light) plus 2 additive (fog fades it out, adds no fog colour)
-// plus 4 interior light (#383: the vertex colour, MOCV plus the root's ambient, replaces the sun).
+// plus 4 interior light (#383: the vertex colour, the raw MOCV, replaces the sun).
 uniform vec4 u_wmoMaterial;
 // rgb: sky and fog colour at and below the horizon, 0..255; w: elevation (radians) of u_wmoSkyTop.
 uniform vec4 u_wmoFog;

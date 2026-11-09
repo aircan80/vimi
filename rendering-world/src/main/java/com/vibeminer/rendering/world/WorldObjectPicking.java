@@ -46,8 +46,8 @@ public final class WorldObjectPicking {
     public static final int TWO_SIDED = 0x200;
 
     /**
-     * Flag for a range of an interior WMO group lit by its vertex colours (MOCV plus the root's
-     * ambient) instead of the World sun (#383). Lighting only, never what is hit.
+     * Flag for a range of an interior WMO group lit by its vertex colours (its MOCV) instead of the
+     * World sun (#383). Lighting only, never what is hit.
      */
     public static final int INTERIOR_LIGHT = 0x400;
 

@@ -169,10 +169,10 @@ public final class WorldExteriorObjects {
 
     /**
      * Flag on a range class: the range belongs to an interior group (MOGP 0x2000) whose vertex
-     * colours are carried, so it is lit by them instead of the World sun (#383, #375). In the
-     * client an interior group's light is its baked MOCV plus the root's MOHD ambient colour, not
-     * the outdoor light; {@link Mesh#colours} of such a mesh already holds that sum. An interior
-     * group without vertex colours keeps the World light rather than drawing black.
+     * colours are carried, so it is lit by them instead of the World sun (#383, #375): in the
+     * client an interior group is lit by its baked MOCV, not the outdoor light. The colours are the
+     * raw MOCV; the root's MOHD ambient is not added (see copyGroup). An interior group without
+     * vertex colours keeps the World light rather than drawing black.
      */
     public static final int INTERIOR_LIGHT =
             com.vibeminer.rendering.world.WorldObjectPicking.INTERIOR_LIGHT;
@@ -213,19 +213,6 @@ public final class WorldExteriorObjects {
      */
     static int packColour(int b, int g, int r) {
         return r | g << 8 | b << 16;
-    }
-
-    /**
-     * The light of one interior vertex (#383): its MOCV colour, stored B, G, R, A, plus the root's
-     * MOHD ambient colour ({@code ambient}, a CImVector read as one little-endian u32, so B in the
-     * low byte), each channel saturated at 255 and packed as {@link #packColour}. Saturating keeps
-     * a surface at most as bright as its texture, the conservative choice while the client's
-     * FixColorVertexAlpha adjustment (#474) is not pinned; MOCV alpha is not used.
-     */
-    static int interiorLight(int b, int g, int r, long ambient) {
-        int ab = (int) (ambient & 0xff), ag = (int) (ambient >>> 8 & 0xff);
-        int ar = (int) (ambient >>> 16 & 0xff);
-        return packColour(Math.min(255, b + ab), Math.min(255, g + ag), Math.min(255, r + ar));
     }
 
     /**
@@ -576,8 +563,8 @@ public final class WorldExteriorObjects {
         GROUP_VERTEX_COLOURS,
         /**
          * Copied interior groups lit from their vertex colours (#383): MOGP 0x2000 and 0x4 with a
-         * first MOCV of one colour per vertex, carried as MOCV plus the root's MOHD ambient and
-         * drawn with {@link #INTERIOR_LIGHT} instead of the World sun. Not an outcome bucket.
+         * first MOCV of one colour per vertex, carried as is and drawn with {@link #INTERIOR_LIGHT}
+         * instead of the World sun. Not an outcome bucket.
          */
         GROUP_INTERIOR_LIGHT,
         /**
@@ -860,8 +847,8 @@ public final class WorldExteriorObjects {
         /**
          * Vertex colours, one {@code r | g << 8 | b << 16} (0..255 each) per vertex, or empty when
          * the mesh has none (doodads, and groups without MOGP flag 0x4). An exterior group's are
-         * its MOCV; an interior group's are its MOCV plus the root's MOHD ambient ({@link
-         * #INTERIOR_LIGHT}).
+         * its MOCV, added to the World light; an interior group's are its MOCV as its whole light
+         * ({@link #INTERIOR_LIGHT}).
          */
         public IntBuffer colours() {
             return IntBuffer.wrap(colours).asReadOnlyBuffer();
@@ -4109,18 +4096,22 @@ public final class WorldExteriorObjects {
             }
             // MOGP 0x4 declares the first MOCV: B, G, R, A per vertex, its count already checked.
             // An exterior group carries it as an addition to the World light (#375). An interior
-            // group's MOCV is its main light (#383): it carries MOCV plus the root's MOHD ambient
-            // and its ranges are drawn with INTERIOR_LIGHT instead of the sun. Interiors are not
-            // counted in the exterior colour or winding evidence.
+            // group's MOCV is its whole light (#383): its ranges are drawn with INTERIOR_LIGHT
+            // instead of the sun. The MOHD ambient is not added: the client's FixColorVertexAlpha
+            // is understood to subtract it from interior MOCV at load and its shader to add it
+            // back, so the raw MOCV already holds the full light. That adjustment's alpha term
+            // and the MOHD flags 0x2 and 0x8 are not applied (#474). A group flagged both
+            // exterior (0x8) and interior (0x2000) is lit as interior, as interior wins
+            // elsewhere; the client may light it as outdoor. Interiors are not counted in the
+            // exterior colour or winding evidence.
             boolean exterior = (flags & INTERIOR) == 0;
             int[] colours = new int[0];
             var mocv = borrow.colors();
             if ((flags & VERTEX_COLOURS) != 0 && mocv != null) {
-                long ambient = root.header().ambientColor();
                 colours = new int[count];
                 for (int v = 0; v < count; v++) {
-                    int b = mocv.get(v * 4), g = mocv.get(v * 4 + 1), r = mocv.get(v * 4 + 2);
-                    colours[v] = exterior ? packColour(b, g, r) : interiorLight(b, g, r, ambient);
+                    colours[v] =
+                            packColour(mocv.get(v * 4), mocv.get(v * 4 + 1), mocv.get(v * 4 + 2));
                 }
             }
             int lightFlag = !exterior && colours.length > 0 ? INTERIOR_LIGHT : 0;
